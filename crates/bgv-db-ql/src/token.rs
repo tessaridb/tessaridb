@@ -258,6 +258,8 @@ pub enum Keyword {
     Filters,
     /// `MATCHES` — the text holds this term.
     Matches,
+    /// `SEARCH` — the index holds terms rather than whole values.
+    Search,
     /// `DEFAULT` — what a write with no value for the field uses instead.
     Default,
     /// `AND` — both.
@@ -342,6 +344,7 @@ impl Keyword {
             Self::Analyzer => "ANALYZER",
             Self::Filters => "FILTERS",
             Self::Matches => "MATCHES",
+            Self::Search => "SEARCH",
             Self::Default => "DEFAULT",
             Self::And => "AND",
             Self::Or => "OR",
@@ -399,6 +402,7 @@ impl Keyword {
         Self::Analyzer,
         Self::Filters,
         Self::Matches,
+        Self::Search,
         Self::Default,
         Self::And,
         Self::Or,

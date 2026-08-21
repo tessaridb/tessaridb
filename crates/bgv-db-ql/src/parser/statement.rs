@@ -155,12 +155,25 @@ impl Parser<'_> {
         while self.eat_punct(Punct::Comma) {
             fields.push(self.field_path()?);
         }
-        let unique = self.eat_keyword(Keyword::Unique);
+        // Either marker, in either order, and neither twice — the rule the
+        // table and field declarations already follow.
+        let mut unique = false;
+        let mut search = false;
+        loop {
+            if !unique && self.eat_keyword(Keyword::Unique) {
+                unique = true;
+            } else if !search && self.eat_keyword(Keyword::Search) {
+                search = true;
+            } else {
+                break;
+            }
+        }
         Ok(StatementKind::DefineIndex {
             name,
             table,
             fields,
             unique,
+            search,
             if_not_exists,
         })
     }

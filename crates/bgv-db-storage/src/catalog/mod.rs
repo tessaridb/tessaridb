@@ -31,7 +31,8 @@ use bgv_db_types::{DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId, 
 pub use analyzer::AnalyzerDefinition;
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use definition::{
-    DatabaseDefinition, IndexDefinition, NamespaceDefinition, TableDefinition, TableShape,
+    DatabaseDefinition, IndexDefinition, IndexShape, NamespaceDefinition, TableDefinition,
+    TableShape,
 };
 pub use field::{FieldDefinition, FieldShape};
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
@@ -160,7 +161,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                     id,
                     &format!("{endpoint}_edges"),
                     vec![Path::field(endpoint)],
-                    false,
+                    IndexShape::default(),
                 )?;
                 self.create_field(id, endpoint, FieldKind::Record, FieldShape::default())?;
             }
@@ -185,7 +186,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         table: TableId,
         name: &str,
         fields: Vec<Path>,
-        unique: bool,
+        shape: IndexShape,
     ) -> Result<IndexDefinition> {
         if fields.is_empty() {
             return Err(Error::EmptyIndex {
@@ -216,7 +217,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             table,
             name: name.to_owned(),
             fields,
-            unique,
+            unique: shape.unique,
+            search: shape.search,
         };
         self.write(system::INDEXES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

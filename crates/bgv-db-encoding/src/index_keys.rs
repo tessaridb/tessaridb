@@ -146,6 +146,23 @@ pub struct SecondaryIndexKey {
     pub id: RecordId,
 }
 
+/// One posting of a search index: this term, in this record.
+///
+/// Structurally an entry of a secondary index — an address, a value and a
+/// record — and a **different key kind** all the same. Two reasons: the scan
+/// patterns differ (a term lookup is a prefix read where an ordered index is
+/// also read as a range between two values), and a keyspace that can be swept
+/// on its own is a keyspace that can be reclaimed on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostingKey {
+    /// Which index this posting belongs to.
+    pub address: IndexAddress,
+    /// The term, order-encoded the way every indexed value is.
+    pub term: IndexValues,
+    /// The record holding it.
+    pub id: RecordId,
+}
+
 /// One entry of a unique index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UniqueIndexKey {
@@ -175,6 +192,49 @@ impl SecondaryIndexKey {
         let mut bytes = address.prefix(KeyKind::SecondaryIndex);
         bytes.extend_from_slice(values.as_slice());
         bytes
+    }
+}
+
+impl PostingKey {
+    /// Build a posting key.
+    #[must_use]
+    pub const fn new(address: IndexAddress, term: IndexValues, id: RecordId) -> Self {
+        Self { address, term, id }
+    }
+
+    /// The prefix shared by every posting of one term.
+    ///
+    /// Bounding a scan with this is what turns "find the records holding this
+    /// word" into a range read.
+    #[must_use]
+    pub fn term_prefix(address: &IndexAddress, term: &IndexValues) -> Vec<u8> {
+        let mut bytes = address.prefix(KeyKind::Posting);
+        bytes.extend_from_slice(term.as_slice());
+        bytes
+    }
+}
+
+impl StoreKey for PostingKey {
+    type Value = NoPayload;
+
+    const KIND: KeyKind = KeyKind::Posting;
+
+    fn encode(&self) -> Key {
+        let mut bytes = Self::term_prefix(&self.address, &self.term);
+        let mut writer = KeyWriter::new();
+        record_id::put(&mut writer, &self.id);
+        bytes.extend_from_slice(&writer.finish());
+        Key::from(bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let address = IndexAddress::read(&mut reader)?;
+        let term = take_values(&mut reader)?;
+        let id = record_id::take(&mut reader)?;
+        reader.finish()?;
+        Ok(Self { address, term, id })
     }
 }
 

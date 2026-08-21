@@ -2520,3 +2520,165 @@ fn a_declared_analyzer_survives_a_replica_replaying_the_log() {
         .unwrap();
     assert_eq!(found[0].records().unwrap().len(), 1);
 }
+
+#[test]
+fn a_search_index_changes_the_cost_and_not_the_answer() {
+    use bgv_db_session::AccessPath;
+
+    // The claim SGC.T1's design exists to make true, asserted the way this store
+    // asserts every index: record for record against the same query before the
+    // index existed. A plan returning the right *number* of the wrong rows is
+    // what a count would miss.
+    let store = store();
+    let mut session = ready(&store);
+    searchable(&mut session);
+
+    let script = "SELECT * FROM notes WHERE body MATCHES 'lovelace';";
+    let by_scan = session.run(script).unwrap();
+    assert_eq!(by_scan[0].path(), Some(AccessPath::Scan));
+    let scanned: Vec<_> = by_scan[0].records().unwrap().to_vec();
+
+    session
+        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .unwrap();
+
+    let by_index = session.run(script).unwrap();
+    assert_eq!(by_index[0].path(), Some(AccessPath::Index));
+    assert_eq!(by_index[0].records().unwrap(), scanned.as_slice());
+    assert_eq!(scanned.len(), 1);
+}
+
+#[test]
+fn a_search_index_built_over_existing_rows_answers_every_shape_of_query() {
+    let store = store();
+    let mut session = ready(&store);
+    searchable(&mut session);
+    session
+        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .unwrap();
+
+    // Several terms: the postings of each, intersected.
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES 'ada program';"
+        ),
+        vec![RecordId::Int(1)]
+    );
+    // A term nothing holds.
+    assert!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES 'babbage';"
+        )
+        .is_empty()
+    );
+    // The filters still apply, because they are the field's and not the index's.
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES 'CAFE';"
+        ),
+        vec![RecordId::Int(2)]
+    );
+}
+
+#[test]
+fn an_update_takes_back_the_postings_the_record_no_longer_earns() {
+    let store = store();
+    let mut session = ready(&store);
+    searchable(&mut session);
+    session
+        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .unwrap();
+
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES 'lovelace';"
+        )
+        .len(),
+        1
+    );
+    session
+        .run("UPDATE notes:1 = { body: 'Grace Hopper wrote a compiler' };")
+        .unwrap();
+
+    // The old term is gone and the new one is there — an orphan posting would
+    // show up here as a record that no longer matches.
+    assert!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES 'lovelace';"
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES 'hopper';"
+        ),
+        vec![RecordId::Int(1)]
+    );
+
+    // And a delete takes the rest.
+    session.run("DELETE notes:1;").unwrap();
+    assert!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES 'hopper';"
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn an_ordered_index_is_never_asked_a_term_question() {
+    use bgv_db_session::AccessPath;
+
+    // A search index cannot answer an equality and an ordered index cannot
+    // answer a term. Asking the wrong one would return the wrong rows rather
+    // than none, so the shape is checked against the index.
+    let store = store();
+    let mut session = ready(&store);
+    searchable(&mut session);
+    session
+        .run("DEFINE INDEX by_body_value ON notes FIELDS body;")
+        .unwrap();
+
+    let found = session
+        .run("SELECT * FROM notes WHERE body MATCHES 'lovelace';")
+        .unwrap();
+    assert_eq!(found[0].path(), Some(AccessPath::Scan));
+    assert_eq!(found[0].records().unwrap().len(), 1);
+}
+
+#[test]
+fn a_replica_builds_the_same_postings_from_the_same_log() {
+    use bgv_db_storage::Store;
+
+    let store = store();
+    let mut session = ready(&store);
+    searchable(&mut session);
+    session
+        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .unwrap();
+
+    let replica_backend =
+        std::sync::Arc::new(bgv_db_kv::MemoryBackend::new()) as std::sync::Arc<dyn KvBackend>;
+    let replica = Store::open(std::sync::Arc::clone(&replica_backend)).unwrap();
+    for (sequence, record) in store
+        .log_records(bgv_db_types::Sequence::ZERO, 4096)
+        .unwrap()
+    {
+        replica.apply_record(sequence, &record).unwrap();
+    }
+
+    let mut mirrored = Session::new(&replica);
+    mirrored.run("USE NAMESPACE prod DATABASE orders;").unwrap();
+    let found = mirrored
+        .run("SELECT * FROM notes WHERE body MATCHES 'lovelace';")
+        .unwrap();
+    assert_eq!(found[0].path(), Some(bgv_db_session::AccessPath::Index));
+    assert_eq!(found[0].records().unwrap().len(), 1);
+}

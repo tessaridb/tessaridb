@@ -13,7 +13,9 @@ use bgv_db_encoding::{
     IndexAddress, KeyKind, StoreKey, StoreValue, UniqueIndexKey, encode_payload,
 };
 use bgv_db_kv::{KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
-use bgv_db_storage::{Catalog, Error, IndexDefinition, RecordAddress, Store, TableShape};
+use bgv_db_storage::{
+    Catalog, Error, IndexDefinition, IndexShape, RecordAddress, Store, TableShape,
+};
 use bgv_db_types::{DatabaseId, NamespaceId, Path, RecordId, Sequence, TableId, Value};
 
 struct Fixture {
@@ -43,7 +45,15 @@ impl Fixture {
             .create_table(namespace.id, database.id, "users", TableShape::default())
             .unwrap();
         let index = catalog
-            .create_index(table.id, "by_email", vec![Path::field("email")], unique)
+            .create_index(
+                table.id,
+                "by_email",
+                vec![Path::field("email")],
+                IndexShape {
+                    unique,
+                    search: false,
+                },
+            )
             .unwrap();
         transaction.commit().unwrap();
 
@@ -471,6 +481,7 @@ fn table_with_rows(unique: bool) -> Fixture {
             name: "placeholder".to_owned(),
             fields: vec![Path::field("email")],
             unique,
+            search: false,
         },
     };
     bare.write("u1", Some(Value::from("ada@example.com")))
@@ -491,7 +502,10 @@ fn indexed_after_the_fact(unique: bool) -> Fixture {
             populated.table,
             "by_email",
             vec![Path::field("email")],
-            unique,
+            IndexShape {
+                unique,
+                search: false,
+            },
         )
         .unwrap();
     transaction.commit().unwrap();
@@ -542,7 +556,12 @@ fn rows_written_in_the_transaction_that_defines_the_index_are_indexed_too() {
 
     let mut transaction = fixture.store.begin().unwrap();
     let index = Catalog::new(&mut transaction)
-        .create_index(fixture.table, "by_email", vec![Path::field("email")], false)
+        .create_index(
+            fixture.table,
+            "by_email",
+            vec![Path::field("email")],
+            IndexShape::default(),
+        )
         .unwrap();
     transaction.put(
         RecordAddress::new(
@@ -574,7 +593,15 @@ fn defining_a_unique_index_over_rows_that_already_violate_it_is_refused() {
 
     let mut transaction = fixture.store.begin().unwrap();
     let index = Catalog::new(&mut transaction)
-        .create_index(fixture.table, "by_email", vec![Path::field("email")], true)
+        .create_index(
+            fixture.table,
+            "by_email",
+            vec![Path::field("email")],
+            IndexShape {
+                unique: true,
+                search: false,
+            },
+        )
         .unwrap();
     let error = transaction.commit().unwrap_err();
     assert!(matches!(error, Error::UniqueViolation { .. }), "{error}");
@@ -654,7 +681,7 @@ fn a_replica_builds_the_same_entries_for_an_index_on_a_nested_value() {
             table.id,
             "by_home_city",
             vec![Path::parse("address.city").unwrap()],
-            false,
+            IndexShape::default(),
         )
         .unwrap();
     transaction.commit().unwrap();

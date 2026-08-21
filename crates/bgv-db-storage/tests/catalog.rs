@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use bgv_db_encoding::{decode_payload, encode_payload};
 use bgv_db_kv::{KvBackend, MemoryBackend};
-use bgv_db_storage::{Catalog, Error, RecordAddress, Store, TableShape};
+use bgv_db_storage::{Catalog, Error, IndexShape, RecordAddress, Store, TableShape};
 use bgv_db_types::{Path, RecordId, Sequence, Value};
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
@@ -273,14 +273,22 @@ fn an_index_is_created_on_a_table_and_found_by_it() {
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let by_email = catalog
-        .create_index(table, "by_email", vec![Path::field("email")], true)
+        .create_index(
+            table,
+            "by_email",
+            vec![Path::field("email")],
+            IndexShape {
+                unique: true,
+                search: false,
+            },
+        )
         .unwrap();
     let by_name = catalog
         .create_index(
             table,
             "by_name",
             vec![Path::field("last"), Path::field("first")],
-            false,
+            IndexShape::default(),
         )
         .unwrap();
     transaction.commit().unwrap();
@@ -310,7 +318,12 @@ fn an_index_over_no_fields_is_refused() {
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let error = catalog
-        .create_index(bgv_db_types::TableId::new(table), "empty", vec![], false)
+        .create_index(
+            bgv_db_types::TableId::new(table),
+            "empty",
+            vec![],
+            IndexShape::default(),
+        )
         .unwrap_err();
     assert!(matches!(error, Error::EmptyIndex { .. }), "{error}");
 }
@@ -330,16 +343,37 @@ fn two_indexes_on_one_table_cannot_share_a_name_but_two_tables_can() {
         .unwrap();
 
     catalog
-        .create_index(users.id, "by_id", vec![Path::field("id")], true)
+        .create_index(
+            users.id,
+            "by_id",
+            vec![Path::field("id")],
+            IndexShape {
+                unique: true,
+                search: false,
+            },
+        )
         .unwrap();
     let error = catalog
-        .create_index(users.id, "by_id", vec![Path::field("other")], false)
+        .create_index(
+            users.id,
+            "by_id",
+            vec![Path::field("other")],
+            IndexShape::default(),
+        )
         .unwrap_err();
     assert!(matches!(error, Error::NameTaken { .. }), "{error}");
 
     // The same name on another table is a different index.
     catalog
-        .create_index(carts.id, "by_id", vec![Path::field("id")], true)
+        .create_index(
+            carts.id,
+            "by_id",
+            vec![Path::field("id")],
+            IndexShape {
+                unique: true,
+                search: false,
+            },
+        )
         .unwrap();
     transaction.commit().unwrap();
 }

@@ -60,3 +60,28 @@ SELECT * FROM notes WHERE title MATCHES 'ada';
 --- case: a search composes with everything else a condition can say
 SELECT * FROM notes WHERE body MATCHES 'lovelace' AND title = 'Ada';
 --- expect: rows 1
+
+--- case: an index over the same field changes the cost and not the answer
+DEFINE INDEX by_body ON notes FIELDS body SEARCH;
+--- expect: ok
+
+--- case: the indexed search answers what the scan answered
+SELECT * FROM notes WHERE body MATCHES 'lovelace';
+--- expect: rows 1
+
+--- case: several terms are the postings of each, intersected
+SELECT * FROM notes WHERE body MATCHES 'ada program';
+--- expect: rows 1
+
+--- case: the filters still apply, because they are the field's and not the index's
+SELECT * FROM notes WHERE body MATCHES 'CAFE';
+--- expect: rows 1
+
+--- case: an update takes back the postings the record no longer earns
+UPDATE notes:1 = { body: 'Grace Hopper wrote a compiler', title: 'Ada' };
+SELECT * FROM notes WHERE body MATCHES 'lovelace';
+--- expect: rows 0
+
+--- case: and leaves the ones it now does
+SELECT * FROM notes WHERE body MATCHES 'hopper';
+--- expect: rows 1

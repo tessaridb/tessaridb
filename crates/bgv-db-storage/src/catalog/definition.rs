@@ -23,6 +23,7 @@ const FIELD_DATABASE: &str = "database";
 const FIELD_TABLE: &str = "table";
 const FIELD_FIELDS: &str = "fields";
 const FIELD_UNIQUE: &str = "unique";
+const FIELD_SEARCH: &str = "search";
 const FIELD_SCHEMAFULL: &str = "schemafull";
 const FIELD_EDGE: &str = "edge";
 
@@ -178,6 +179,20 @@ pub struct TableShape {
     pub edge: bool,
 }
 
+/// What a `DEFINE INDEX` says beyond which values it projects.
+///
+/// A struct rather than two booleans, for the reason `ids.rs` gives for
+/// newtyping a `u32`: `create_index(id, "by_body", fields, false, true)`
+/// compiles just as well transposed, and would make a unique index where a
+/// search index was meant.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IndexShape {
+    /// Whether a value may appear more than once.
+    pub unique: bool,
+    /// Whether the index holds terms rather than whole values.
+    pub search: bool,
+}
+
 /// An index on a table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexDefinition {
@@ -199,6 +214,13 @@ pub struct IndexDefinition {
     /// Order is part of the index's identity: an index on `(a, b)` answers a
     /// query about `a` and one on `(b, a)` does not.
     pub fields: Vec<Path>,
+    /// Whether this index holds **terms** rather than whole values.
+    ///
+    /// A search index projects one posting per term the analyzer finds, where an
+    /// ordered index projects one entry per record. Which analyzer is used is
+    /// the **field's** declaration, not this index's — see
+    /// [`bgv_db_types::Analyzer`] for why that distinction is the whole design.
+    pub search: bool,
     /// Whether a value may appear more than once.
     ///
     /// A unique index enforces it through the key layout — its entries carry no
@@ -226,6 +248,7 @@ impl IndexDefinition {
                 ),
             ),
             (FIELD_UNIQUE.to_owned(), Value::Bool(self.unique)),
+            (FIELD_SEARCH.to_owned(), Value::Bool(self.search)),
         ]))
     }
 
@@ -276,6 +299,9 @@ impl IndexDefinition {
             name: field_name(fields, "index")?,
             fields: indexed,
             unique: *unique,
+            // An index written before search existed is an ordered one, so
+            // nothing on disk has to be migrated.
+            search: flag(fields, FIELD_SEARCH, "index")?,
         })
     }
 }
@@ -457,6 +483,7 @@ mod tests {
                 Path::field("email"),
             ],
             unique: false,
+            search: false,
         };
         assert_eq!(
             IndexDefinition::from_value(&index.to_value()).unwrap(),

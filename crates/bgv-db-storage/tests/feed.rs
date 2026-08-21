@@ -14,7 +14,8 @@ use std::sync::Arc;
 use bgv_db_encoding::encode_payload;
 use bgv_db_kv::{KvBackend, MemoryBackend};
 use bgv_db_storage::{
-    Catalog, Change, ChangeKind, RecordAddress, Store, Subscription, TableShape, Transaction, Watch,
+    Catalog, Change, ChangeKind, IndexShape, RecordAddress, Store, Subscription, TableShape,
+    Transaction, Watch,
 };
 use bgv_db_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId, Value};
 
@@ -148,7 +149,7 @@ fn the_catalog_is_not_in_the_feed_and_the_records_beside_it_are() {
             fixture.table,
             "by_name",
             vec![bgv_db_types::Path::field("name")],
-            false,
+            IndexShape::default(),
         )
         .unwrap();
     transaction.put(fixture.at("u1"), record("ada"));

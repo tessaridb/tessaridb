@@ -3,7 +3,7 @@
 use bgv_db_encoding::encode_payload;
 use bgv_db_ql::{FieldPath, Name, RecordTarget, Span, StatementKind, TableRef};
 use bgv_db_storage::{
-    Catalog, EDGE_IN, EDGE_OUT, FieldShape, RecordAddress, TableShape, Transaction,
+    Catalog, EDGE_IN, EDGE_OUT, FieldShape, IndexShape, RecordAddress, TableShape, Transaction,
 };
 use std::collections::BTreeMap;
 
@@ -95,8 +95,19 @@ impl Session<'_> {
                 table,
                 fields,
                 unique,
+                search,
                 if_not_exists,
-            } => self.define_index(transaction, name, table, fields, *unique, *if_not_exists),
+            } => self.define_index(
+                transaction,
+                name,
+                table,
+                fields,
+                IndexShape {
+                    unique: *unique,
+                    search: *search,
+                },
+                *if_not_exists,
+            ),
             StatementKind::Relate {
                 from,
                 edges,
@@ -321,7 +332,7 @@ impl Session<'_> {
         name: &Name,
         table: &TableRef,
         fields: &[FieldPath],
-        unique: bool,
+        shape: IndexShape,
         if_not_exists: bool,
     ) -> Result<Outcome> {
         let (_, id) = self.resolve_table(transaction, table)?;
@@ -329,7 +340,7 @@ impl Session<'_> {
             return Ok(Outcome::Done);
         }
         let fields = fields.iter().map(|field| field.path.clone()).collect();
-        Catalog::new(transaction).create_index(id, &name.text, fields, unique)?;
+        Catalog::new(transaction).create_index(id, &name.text, fields, shape)?;
         Ok(Outcome::Done)
     }
 

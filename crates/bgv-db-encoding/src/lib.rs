@@ -38,8 +38,8 @@ mod value;
 
 pub use error::{Error, Result};
 pub use index_keys::{
-    INDEX_PREFIX_LEN, IndexAddress, IndexTarget, IndexValues, NoPayload, SecondaryIndexKey,
-    UniqueIndexKey,
+    INDEX_PREFIX_LEN, IndexAddress, IndexTarget, IndexValues, NoPayload, PostingKey,
+    SecondaryIndexKey, UniqueIndexKey,
 };
 pub use keys::{
     AppliedPositionKey, FormatVersionKey, LogKey, RecordKey, StoreKey, TABLE_PREFIX_LEN,

@@ -326,6 +326,22 @@ nobody should have to read about. The filters are the part that differs:
 A letter the fold does not know passes through rather than being dropped — a
 letter it has no opinion about is still a letter.
 
+**An index makes it fast and cannot make it different:**
+
+```
+DEFINE INDEX by_body ON notes FIELDS body SEARCH;
+```
+
+A `SEARCH` index holds one posting per term the field's analyzer finds, so a
+`MATCHES` becomes a read of those postings intersected — and the analyzer it
+uses is the field's, which is the same one the scan used. That is why adding or
+dropping the index cannot change a single answer.
+
+A search index answers a term and nothing else, and an ordered index answers an
+equality or a prefix and nothing else. Asking the wrong one would return the
+wrong rows rather than none, so the shape of the test is checked against the
+index before either is used.
+
 **A field with no analyzer holds no terms**, so `MATCHES` over it finds nothing
 rather than failing. A schemaless table is allowed to hold text nobody has
 declared anything about, and refusing the query would make that a mistake. So

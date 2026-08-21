@@ -260,6 +260,7 @@ fn every_definition_form_parses() {
         fields,
         unique,
         if_not_exists,
+        ..
     } = one("DEFINE INDEX by_email ON users FIELDS email UNIQUE;")
     else {
         panic!("expected an index definition");

@@ -70,11 +70,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bgv_db_encoding::{
-    IndexAddress, IndexTarget, IndexValues, LogRecord, Mutation, NoPayload, RecordValue,
-    SecondaryIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
+    IndexAddress, IndexTarget, IndexValues, LogRecord, Mutation, NoPayload, PostingKey,
+    RecordValue, SecondaryIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
 };
 use bgv_db_kv::WriteBatch;
-use bgv_db_types::{RecordId, TableId, Value};
+use bgv_db_types::{Analyzer, RecordId, TableId, Value};
 
 use crate::catalog::{Catalog, IndexDefinition, defined_index};
 use crate::error::{Error, Result};
@@ -92,6 +92,11 @@ pub(crate) fn maintain(
 ) -> Result<WriteBatch> {
     let mut view = store.begin()?;
     let mut by_table: BTreeMap<TableId, Vec<IndexDefinition>> = BTreeMap::new();
+    // The analyzer a search index uses is the **field's** declaration, not the
+    // index's, so it is read from the schema here — once per table rather than
+    // once per record. That is what makes a scan and an index answer the same
+    // question; see `bgv_db_types::Analyzer`.
+    let mut analyzers: BTreeMap<TableId, BTreeMap<String, Analyzer>> = BTreeMap::new();
     // Two records in ONE batch claiming one unique value would each find the key
     // absent and each write it, and the second would silently overwrite the
     // first. A precondition cannot catch that — both are satisfied — so the
@@ -110,6 +115,14 @@ pub(crate) fn maintain(
         if definitions.is_empty() {
             continue;
         }
+        let declared = match analyzers.get(&mutation.table) {
+            Some(found) => found.clone(),
+            None => {
+                let found = analyzers_on(&mut view, mutation.table)?;
+                analyzers.insert(mutation.table, found.clone());
+                found
+            }
+        };
 
         let address = RecordAddress::new(
             mutation.namespace,
@@ -127,6 +140,7 @@ pub(crate) fn maintain(
                 mutation,
                 previous.as_deref(),
                 &mut claimed,
+                &declared,
             )?;
         }
     }
@@ -136,7 +150,7 @@ pub(crate) fn maintain(
     // about to be applied on top of.
     for mutation in record.mutations() {
         if let Some(definition) = defined_index(mutation)? {
-            batch = build(store, batch, &view, record, &definition, &mut claimed)?;
+            batch = build(store, batch, &mut view, record, &definition, &mut claimed)?;
         }
     }
     Ok(batch)
@@ -151,7 +165,7 @@ pub(crate) fn maintain(
 fn build(
     store: &Store,
     mut batch: WriteBatch,
-    view: &Transaction<'_>,
+    view: &mut Transaction<'_>,
     record: &LogRecord,
     definition: &IndexDefinition,
     claimed: &mut BTreeSet<Vec<u8>>,
@@ -180,6 +194,21 @@ fn build(
         };
     }
 
+    if definition.search {
+        let declared = analyzers_on(view, definition.table)?;
+        let analyzer = search_analyzer(definition, &declared);
+        for (id, payload) in &rows {
+            for term in terms_of(definition, analyzer, &decode_payload(payload)?) {
+                batch = batch.put(
+                    PostingKey::keyspace(),
+                    PostingKey::new(address, term, id.clone()).encode(),
+                    NoPayload.encode(),
+                );
+            }
+        }
+        return Ok(batch);
+    }
+
     for (id, payload) in &rows {
         if let Some(values) = project(definition, &decode_payload(payload)?) {
             batch = insert(store, batch, definition, &address, &values, id, claimed)?;
@@ -195,6 +224,7 @@ fn apply_one(
     mutation: &Mutation,
     previous: Option<&[u8]>,
     claimed: &mut BTreeSet<Vec<u8>>,
+    analyzers: &BTreeMap<String, Analyzer>,
 ) -> Result<WriteBatch> {
     let address = IndexAddress::new(
         definition.namespace,
@@ -202,6 +232,28 @@ fn apply_one(
         definition.table,
         definition.id,
     );
+
+    if definition.search {
+        let analyzer = search_analyzer(definition, analyzers);
+        if let Some(bytes) = previous {
+            for term in terms_of(definition, analyzer, &decode_payload(bytes)?) {
+                batch = batch.delete(
+                    PostingKey::keyspace(),
+                    PostingKey::new(address, term, mutation.id.clone()).encode(),
+                );
+            }
+        }
+        if let RecordValue::Present(payload) = &mutation.value {
+            for term in terms_of(definition, analyzer, &decode_payload(payload)?) {
+                batch = batch.put(
+                    PostingKey::keyspace(),
+                    PostingKey::new(address, term, mutation.id.clone()).encode(),
+                    NoPayload.encode(),
+                );
+            }
+        }
+        return Ok(batch);
+    }
 
     // The old entry goes first: a record whose indexed value changed must not
     // leave the entry that pointed at its former value behind, and an entry
@@ -286,6 +338,66 @@ fn remove(
         let key = SecondaryIndexKey::new(*address, values.clone(), id.clone());
         batch.delete(SecondaryIndexKey::keyspace(), key.encode())
     }
+}
+
+/// The analyzer each analysed field of a table declares, by field name.
+fn analyzers_on(view: &mut Transaction<'_>, table: TableId) -> Result<BTreeMap<String, Analyzer>> {
+    let declared = Catalog::new(view).fields_on(table)?;
+    let wanted: BTreeMap<String, String> = declared
+        .into_iter()
+        .filter_map(|field| field.analyzer.map(|named| (field.name, named)))
+        .collect();
+    if wanted.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut resolved = BTreeMap::new();
+    for definition in Catalog::new(view).analyzers()? {
+        for (field, named) in &wanted {
+            if *named == definition.name {
+                resolved.insert(field.clone(), definition.analyzer.clone());
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+/// The analyzer a search index reads its field's text with.
+fn search_analyzer<'a>(
+    definition: &IndexDefinition,
+    analyzers: &'a BTreeMap<String, Analyzer>,
+) -> Option<&'a Analyzer> {
+    definition
+        .fields
+        .first()
+        .and_then(|path| analyzers.get(path.root()))
+}
+
+/// The terms one record contributes to a search index.
+///
+/// Empty when the field declares no analyzer, holds no text, or the record does
+/// not have it — the same "not in this index at all" answer an ordered index
+/// gives, and the same answer a scan gives for the same record.
+fn terms_of(
+    definition: &IndexDefinition,
+    analyzer: Option<&Analyzer>,
+    value: &Value,
+) -> Vec<IndexValues> {
+    let (Some(analyzer), Some(path)) = (analyzer, definition.fields.first()) else {
+        return Vec::new();
+    };
+    let Some(Value::String(text)) = path.resolve(value) else {
+        return Vec::new();
+    };
+    let mut terms: Vec<String> = analyzer.terms(text);
+    // One posting per distinct term: a word twice in one document is one
+    // posting, because the question is membership and a duplicate key would be
+    // written twice to say the same thing.
+    terms.sort_unstable();
+    terms.dedup();
+    terms
+        .into_iter()
+        .map(|term| IndexValues::of(&[Value::from(term.as_str())]))
+        .collect()
 }
 
 /// The indexed values of one record, or `None` when the record is not indexed.

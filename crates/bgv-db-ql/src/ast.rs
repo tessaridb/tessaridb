@@ -98,6 +98,8 @@ pub enum StatementKind {
         fields: Vec<FieldPath>,
         /// Whether two records may share one entry.
         unique: bool,
+        /// Whether the index holds terms rather than whole values.
+        search: bool,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

@@ -301,11 +301,14 @@ impl Session<'_> {
             } => self.traverse(transaction, from, *direction, edges, target.as_ref()),
             Source::Where { table, condition } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
-                let (candidates, path) = self.candidates(transaction, id, context, condition)?;
                 // Resolved once for the query rather than once per record: which
                 // analyzer a field carries is a property of the schema, and the
-                // schema does not change under a read.
+                // schema does not change under a read. Read before the access
+                // path is chosen, because a search index needs it to turn the
+                // query into the terms it holds.
                 let analyzers = self.analyzers_for(transaction, id, condition)?;
+                let (candidates, path) =
+                    self.candidates(transaction, id, context, condition, &analyzers)?;
 
                 // The candidates are tested against the **whole** condition, not
                 // only the conjunct the index answered. That is what makes an
@@ -338,6 +341,7 @@ impl Session<'_> {
         table: TableId,
         context: crate::context::Context,
         condition: &Expr,
+        analyzers: &BTreeMap<Path, Analyzer>,
     ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
         for seek in seekable(condition) {
             // A right-hand side that reads the record is not a constant, so it
@@ -347,8 +351,14 @@ impl Session<'_> {
                 continue;
             };
             let found = match seek.shape {
-                Shape::Equality => transaction.records_by_index(&index, &[wanted])?,
-                Shape::Prefix => {
+                // An ordered index answers an equality and a prefix; it cannot
+                // answer a term, and a search index cannot answer either of the
+                // other two. Asking the wrong one would return the wrong rows
+                // rather than none, so the shapes are checked against the index.
+                Shape::Equality if !index.search => {
+                    transaction.records_by_index(&index, &[wanted])?
+                }
+                Shape::Prefix if !index.search => {
                     let Value::String(pattern) = &wanted else {
                         continue;
                     };
@@ -357,6 +367,26 @@ impl Session<'_> {
                     };
                     transaction.records_with_string_prefix(&index, &prefix)?
                 }
+                Shape::Terms if index.search => {
+                    let (Value::String(query), Some(analyzer)) =
+                        (&wanted, analyzers.get(seek.path))
+                    else {
+                        continue;
+                    };
+                    let terms = analyzer.terms(query);
+                    if terms.is_empty() {
+                        continue;
+                    }
+                    let mut rows = Vec::new();
+                    for id in transaction.records_by_terms(&index, &terms)? {
+                        let at = RecordAddress::new(context.namespace, context.database, table, id);
+                        if let Some(payload) = transaction.get(&at)? {
+                            rows.push((at.id, payload));
+                        }
+                    }
+                    rows
+                }
+                _ => continue,
             };
             return Ok((decode_all(found)?, AccessPath::Index));
         }
@@ -495,6 +525,8 @@ enum Shape {
     Equality,
     /// `<path> LIKE '<literal>%'` — a range over the values beginning with it.
     Prefix,
+    /// `<path> MATCHES '<text>'` — the postings of every term the text holds.
+    Terms,
 }
 
 /// One conjunct an index could narrow with.
@@ -531,6 +563,7 @@ fn seekable(condition: &Expr) -> Vec<Seek<'_>> {
             let shape = match op {
                 BinaryOp::Equal => Shape::Equality,
                 BinaryOp::Like => Shape::Prefix,
+                BinaryOp::Matches => Shape::Terms,
                 // An ordered index can serve `<` and `>` as a bounded range, and
                 // this does not build it: that needs a bounded scan on
                 // `Transaction` and an equivalence test of its own. Reported as

@@ -24,13 +24,13 @@
 //!
 //! Both are demonstrated by the test suite rather than described only here.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
 use bgv_db_constants::MAX_COMMIT_ATTEMPTS;
 use bgv_db_encoding::{
-    IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, RecordKey, RecordValue,
-    SecondaryIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
+    IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, PostingKey, RecordKey,
+    RecordValue, SecondaryIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
 };
 use bgv_db_kv::{KeyRange, ScanDirection, ScanRequest};
 use bgv_db_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId, Value};
@@ -203,6 +203,78 @@ impl<'a> Transaction<'a> {
                 RecordValue::Tombstone => None,
             })
             .collect())
+    }
+
+    /// The records an index says hold `values`, as of this transaction's
+    /// snapshot.
+    ///
+    /// # Sound, and not complete, at an older snapshot
+    ///
+    /// Index entries hold the **current** state — they carry no version, and an
+    /// update removes the entry for the value it replaced. This method therefore
+    /// treats them as candidates and confirms each one by re-deriving the
+    /// record's indexed values at the reader's own snapshot, so a stale entry
+    /// can never produce a row that does not match.
+    ///
+    /// What it cannot do is find a record that held `values` at the snapshot and
+    /// has since changed: its entry is gone, so there is no candidate to
+    /// confirm. A reader at the latest committed state is exact; an older one
+    /// gets no wrong rows and may get fewer.
+    ///
+    /// Uncommitted writes of this transaction participate, because entries are
+    /// derived at commit and a writer would otherwise be unable to find what it
+    /// just wrote.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or stored bytes cannot be
+    /// decoded.
+    /// The records a search index says hold **every** one of these terms.
+    ///
+    /// A candidate set, like every index read: each record is re-checked at the
+    /// reader's own snapshot by the condition that asked, so a stale posting can
+    /// never produce a row that does not match. The intersection is taken here
+    /// rather than by the caller because a posting list per term is what the
+    /// index holds, and narrowing before decoding is the whole saving.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a key cannot be decoded.
+    pub fn records_by_terms(
+        &self,
+        index: &IndexDefinition,
+        terms: &[String],
+    ) -> Result<Vec<RecordId>> {
+        let Some(first) = terms.first() else {
+            return Ok(Vec::new());
+        };
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let mut holding = self.postings(&address, first)?;
+        for term in terms.iter().skip(1) {
+            if holding.is_empty() {
+                break;
+            }
+            let next = self.postings(&address, term)?;
+            holding.retain(|id| next.contains(id));
+        }
+        Ok(holding.into_iter().collect())
+    }
+
+    /// The records one term is posted against.
+    fn postings(&self, address: &IndexAddress, term: &str) -> Result<BTreeSet<RecordId>> {
+        let encoded = IndexValues::of(&[Value::from(term)]);
+        let prefix = PostingKey::term_prefix(address, &encoded);
+        let request = ScanRequest {
+            keyspace: PostingKey::keyspace(),
+            range: KeyRange::prefix(&prefix),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+        let mut found = BTreeSet::new();
+        for (key, _) in self.store.backend().scan(&request)? {
+            found.insert(PostingKey::decode(key.as_slice())?.id);
+        }
+        Ok(found)
     }
 
     /// The records an index says hold `values`, as of this transaction's
