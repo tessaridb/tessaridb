@@ -87,6 +87,16 @@ Three things this table is saying on purpose:
 - **A record literal is `table:id`**, which is also how a record id is written
   everywhere else in the language.
 
+Two lexical rules are stated here because their opposites fail quietly. A `.`
+begins a fraction only when a digit follows it, so `1..10` is a range and not the
+float `1.` beside `.10`. And digits touching a letter are a duration, whatever
+the letter is — `5y` is a duration with an unknown unit and is refused, rather
+than the number five beside a name that fails somewhere else.
+
+`SET` serves both the key-value verb and the set literal. Which one is meant is
+decided by whether a `[` follows, and nothing else in the grammar makes that
+ambiguous.
+
 ## 4. Definition statements
 
 ```
