@@ -698,6 +698,42 @@ Parentheses override, and **two comparisons cannot be written in a row**:
 `1 < age < 100` means "between" to a person and `(1 < age) < 100` to a parser, so
 a grammar that picked one would answer a question nobody asked.
 
+### Counting per window
+
+`GROUP BY` takes an **expression**, so a window is a key like any other:
+
+```
+SELECT count(*) AS held, time::bucket(at, 1h) AS window
+  FROM readings
+ GROUP BY time::bucket(at, 1h);
+
+SELECT mean(level) AS average, time::bucket(at, 1d) AS day
+  FROM readings
+ WHERE at >= datetime '2026-03-01T00:00:00Z'
+ GROUP BY time::bucket(at, 1d)
+ ORDER BY day;
+```
+
+A bare name in `GROUP BY` still reads as a route into the record — the same
+reading `WHERE` and `ORDER BY` give it — so `GROUP BY city` means what it always
+did.
+
+**Windows are anchored at the epoch, not at the data.** The same instant lands in
+the same window in every query, in every process and on every replica; one
+anchored at whatever record happened to arrive first would give two callers
+different answers to one question, and neither would notice. Truncation is toward
+negative infinity, so an instant before the epoch lands in the window that
+*contains* it rather than the one after it.
+
+**A window with no records has no row.** Grouping answers with the groups the
+data has, and filling a gap means knowing the range the caller meant — which the
+statement does not say. A row nobody wrote is worse than a row nobody sees.
+
+**A window is a whole number of seconds.** A sub-second one needs the nanosecond
+remainder in the arithmetic, which is a different function from the one anybody
+asks for; it is refused rather than rounded, because rounding would answer a
+question nobody put.
+
 ### One answer per group
 
 Everything above answers **one row per record**. A fold does not:
@@ -871,7 +907,7 @@ SELECT * FROM users WHERE string::len(name) = 3;
 | `string` | `len` (characters, not bytes) · `lower` · `upper` · `trim` · `concat(a, b)` |
 | `array` | `len` · `first` · `last` |
 | `math` | `abs` · `floor` · `ceil` · `round` (half away from zero) |
-| `time` | `now()` |
+| `time` | `now()` · `bucket(instant, width)` — the start of the window an instant is in |
 | `type` | `of(value)` — the type's name, as §3 spells it |
 | `vector` | `cosine(a, b)` · `euclidean(a, b)` · `dot(a, b)` |
 | `search` | `score(field, 'query')` — see [Ranking](#ranking) |
@@ -1157,6 +1193,8 @@ Named here rather than merely missing, so each absence reads as a decision:
 | `HAVING` | a filter over groups is a second filter position with its own scoping rule — it sees folds where `WHERE` does not — and is worth its own milestone rather than an afterthought |
 | `DISTINCT` | it is `GROUP BY` over the projection with no fold, and one spelling for one thing |
 | an expression over a fold (`mean(age) * 3`) | folds answer after the per-record evaluator has finished, so composing over one needs a second evaluation pass |
+| filling a window that has no records | grouping answers with the groups the data has; filling a gap means knowing the range the caller meant, which the statement does not say |
+| a sub-second window | `time::bucket` takes a whole number of seconds; the nanosecond remainder is a different arithmetic and is refused rather than rounded |
 | a spilling aggregate | groups are built in memory; a store that must aggregate more than fits needs a spill, and that is a measurement away rather than a guess away |
 | user-defined functions | a stored function is a catalog entry with its own lifecycle, permissions and replication story |
 | a separate `NOT NULL` | `REQUIRED` covers absence and null together; splitting them is additive |

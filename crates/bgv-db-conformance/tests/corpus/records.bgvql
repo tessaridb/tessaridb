@@ -220,3 +220,42 @@ DEFINE TABLE notes;
 DEFINE FIELD amount ON notes TYPE decimal;
 CREATE notes:1 = { amuont: dec 12.34 };
 --- expect: ok
+
+# Windows. `GROUP BY` takes an expression, so a window is a key like any other,
+# and `time::bucket` is what the language could not already say.
+
+--- case: readings across three hours
+DEFINE TABLE readings;
+CREATE readings:1 = { at: datetime '2026-03-01T00:05:00Z', level: 1 };
+CREATE readings:2 = { at: datetime '2026-03-01T00:35:00Z', level: 2 };
+CREATE readings:3 = { at: datetime '2026-03-01T01:10:00Z', level: 3 };
+CREATE readings:4 = { at: datetime '2026-03-01T03:10:00Z', level: 4 };
+--- expect: ok
+
+--- case: counting per hour
+SELECT count(*) AS held, time::bucket(at, 1h) AS window FROM readings GROUP BY time::bucket(at, 1h);
+--- expect: rows 3
+
+--- case: a wider window is fewer groups
+SELECT count(*) AS held, time::bucket(at, 1d) AS day FROM readings GROUP BY time::bucket(at, 1d);
+--- expect: rows 1
+
+--- case: a window composes with a filter and an ordering
+SELECT count(*) AS held, time::bucket(at, 1h) AS window FROM readings WHERE at >= datetime '2026-03-01T01:00:00Z' GROUP BY time::bucket(at, 1h) ORDER BY held DESC;
+--- expect: rows 2
+
+--- case: grouping by a bare name still reads it as a route into the record
+SELECT count(*) AS held, level FROM readings GROUP BY level;
+--- expect: rows 4
+
+--- case: a projection that is neither a fold nor a key is refused
+SELECT count(*) AS held, level FROM readings GROUP BY time::bucket(at, 1h);
+--- expect: error UngroupedProjection
+
+--- case: a window of nothing is refused rather than divided by
+SELECT time::bucket(at, 0s) AS window FROM readings;
+--- expect: error CallFailed
+
+--- case: bucketing something that is not an instant names what it wanted
+SELECT time::bucket(level, 1h) AS window FROM readings;
+--- expect: error WrongArgument

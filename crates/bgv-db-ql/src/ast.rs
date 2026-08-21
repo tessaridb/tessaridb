@@ -266,7 +266,12 @@ pub struct Select {
     /// `SELECT count(*) FROM users` folds every record into one group without
     /// naming a key, because the commonest question the language can be asked
     /// should not need a clause that means nothing.
-    pub group: Vec<FieldPath>,
+    ///
+    /// An **expression**, not a path, so a window is sayable:
+    /// `GROUP BY time::bucket(at, 1h)`. A bare name still reads as a route into
+    /// the record — the same reading `WHERE` and `ORDER BY` give it — so
+    /// `GROUP BY city` means what it always did.
+    pub group: Vec<Expr>,
     /// The keys the answer is sorted by, in order of significance.
     pub order: Vec<Ordering>,
     /// Whether the caller will accept an approximate ordering.
@@ -479,6 +484,78 @@ pub struct Expr {
     pub kind: ExprKind,
     /// Where it sits in the source.
     pub span: Span,
+}
+
+impl Expr {
+    /// Whether two expressions say the same thing, wherever they were written.
+    ///
+    /// `==` compares spans, so two textually identical expressions in one
+    /// statement are unequal — which is right for an AST and wrong for the one
+    /// question a caller keeps needing to ask: *is this projection projecting
+    /// that group key?* `GROUP BY time::bucket(at, 1h)` and the projection that
+    /// names it are the same expression written twice, at two places.
+    ///
+    /// The walk compares kinds and recurses; a span never takes part.
+    #[must_use]
+    pub fn same_shape(&self, other: &Self) -> bool {
+        match (&self.kind, &other.kind) {
+            (ExprKind::Not(left), ExprKind::Not(right))
+            | (ExprKind::Negate(left), ExprKind::Negate(right)) => left.same_shape(right),
+            (ExprKind::And(a, b), ExprKind::And(c, d))
+            | (ExprKind::Or(a, b), ExprKind::Or(c, d)) => a.same_shape(c) && b.same_shape(d),
+            (
+                ExprKind::Binary { op, left, right },
+                ExprKind::Binary {
+                    op: other_op,
+                    left: other_left,
+                    right: other_right,
+                },
+            ) => op == other_op && left.same_shape(other_left) && right.same_shape(other_right),
+            (
+                ExprKind::Arithmetic { op, left, right },
+                ExprKind::Arithmetic {
+                    op: other_op,
+                    left: other_left,
+                    right: other_right,
+                },
+            ) => op == other_op && left.same_shape(other_left) && right.same_shape(other_right),
+            (
+                ExprKind::Call {
+                    function,
+                    arguments,
+                    ..
+                },
+                ExprKind::Call {
+                    function: other_function,
+                    arguments: other_arguments,
+                    ..
+                },
+            ) => {
+                function == other_function
+                    && arguments.len() == other_arguments.len()
+                    && arguments
+                        .iter()
+                        .zip(other_arguments.iter())
+                        .all(|(left, right)| left.same_shape(right))
+            }
+            (ExprKind::Array(left), ExprKind::Array(right))
+            | (ExprKind::Set(left), ExprKind::Set(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .zip(right.iter())
+                        .all(|(one, two)| one.same_shape(two))
+            }
+            (ExprKind::Path(left), ExprKind::Path(right)) => left.path == right.path,
+            (ExprKind::Literal(left), ExprKind::Literal(right)) => left == right,
+            (ExprKind::Table(left), ExprKind::Table(right)) => left.name.text == right.name.text,
+            // Everything else — a record target, a nested read, an object — is
+            // compared as written, spans and all. Two nested reads that differ
+            // only in where they sit are not a case this question is ever asked
+            // about, and claiming they are the same would be a guess.
+            (left, right) => left == right,
+        }
+    }
 }
 
 /// The expression forms this milestone accepts.

@@ -68,6 +68,8 @@ pub enum Function {
     /// `search::score(field, 'query')` — how well this record answers the query,
     /// measured against the collection the field's search index summarises.
     SearchScore,
+    /// `time::bucket(instant, 1h)` — the start of the window that instant is in.
+    TimeBucket,
 }
 
 impl Function {
@@ -91,6 +93,7 @@ impl Function {
         Self::VectorEuclidean,
         Self::VectorDot,
         Self::SearchScore,
+        Self::TimeBucket,
     ];
 
     /// How the function is written, group and name together.
@@ -115,6 +118,7 @@ impl Function {
             Self::VectorEuclidean => "vector::euclidean",
             Self::VectorDot => "vector::dot",
             Self::SearchScore => "search::score",
+            Self::TimeBucket => "time::bucket",
         }
     }
 
@@ -127,7 +131,8 @@ impl Function {
             | Self::VectorCosine
             | Self::VectorEuclidean
             | Self::VectorDot
-            | Self::SearchScore => 2,
+            | Self::SearchScore
+            | Self::TimeBucket => 2,
             _ => 1,
         }
     }

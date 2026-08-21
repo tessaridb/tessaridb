@@ -81,6 +81,14 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // against, and neither is a value — so it is answered in the evaluator,
         // where the scope is, and never reaches here.
         Function::SearchScore => Ok(Value::None),
+        // The one function that makes a window sayable, and the reason
+        // `GROUP BY` takes an expression: without it a caller would have to
+        // store the bucket alongside the instant and keep the two in step.
+        Function::TimeBucket => {
+            let instant = datetime_at(function, arguments, 0, span)?;
+            let width = duration_at(function, arguments, 1, span)?;
+            bucket(function, instant, width, span)
+        }
         Function::VectorCosine | Function::VectorEuclidean | Function::VectorDot => {
             let (Some(left), Some(right)) = (arguments.first(), arguments.get(1)) else {
                 return Err(wrong_type(function, 0, "a vector", "nothing", span));
@@ -102,6 +110,59 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
 /// any other — a replica applies what was written rather than asking its own
 /// clock and reaching a different answer. A clock before the epoch is refused
 /// rather than folded to zero: a machine whose time is wrong should say so.
+/// The start of the window `instant` falls in.
+///
+/// Windows are anchored at the **epoch**, not at the first record, so the same
+/// instant lands in the same window in every query, every process and every
+/// replica. A window anchored at whatever data happened to arrive first would
+/// give two callers different answers to the same question, and neither would
+/// notice.
+///
+/// Truncation is toward negative infinity — `div_euclid` and not division — so
+/// an instant before the epoch lands in the window that *contains* it rather
+/// than the one after it. That is the difference between a window boundary and
+/// an off-by-one nobody sees until they query a date in 1969.
+fn bucket(
+    function: Function,
+    instant: &bgv_db_types::Datetime,
+    width: &bgv_db_types::Duration,
+    span: Span,
+) -> Result<Value> {
+    let seconds = width.seconds();
+    if seconds <= 0 && width.nanos() == 0 {
+        return Err(Error::CallFailed {
+            function,
+            reason: "a window has to be longer than nothing",
+            span,
+        });
+    }
+    // Whole seconds only: a sub-second window is a real thing and needs the
+    // nanosecond remainder in the arithmetic, which is a different function from
+    // the one anybody asks for. Refused rather than rounded, because rounding
+    // here would silently answer a question nobody asked.
+    if width.nanos() != 0 {
+        return Err(Error::CallFailed {
+            function,
+            reason: "a window is a whole number of seconds",
+            span,
+        });
+    }
+    let start = instant
+        .seconds()
+        .div_euclid(seconds)
+        .saturating_mul(seconds);
+    bgv_db_types::Datetime::new(start, 0).map_or_else(
+        || {
+            Err(Error::CallFailed {
+                function,
+                reason: "that window does not start at an instant this type holds",
+                span,
+            })
+        },
+        |held| Ok(Value::Datetime(held)),
+    )
+}
+
 fn now(function: Function, span: Span) -> Result<Value> {
     let failed = |reason: &'static str| Error::CallFailed {
         function,
@@ -160,6 +221,30 @@ fn array_at(function: Function, arguments: &[Value], at: usize, span: Span) -> R
     match arguments.get(at) {
         Some(Value::Array(items)) => Ok(items),
         other => Err(wrong_type(function, at, "an array", named(other), span)),
+    }
+}
+
+fn datetime_at(
+    function: Function,
+    arguments: &[Value],
+    at: usize,
+    span: Span,
+) -> Result<&bgv_db_types::Datetime> {
+    match arguments.get(at) {
+        Some(Value::Datetime(held)) => Ok(held),
+        other => Err(wrong_type(function, at, "a datetime", named(other), span)),
+    }
+}
+
+fn duration_at(
+    function: Function,
+    arguments: &[Value],
+    at: usize,
+    span: Span,
+) -> Result<&bgv_db_types::Duration> {
+    match arguments.get(at) {
+        Some(Value::Duration(held)) => Ok(held),
+        other => Err(wrong_type(function, at, "a duration", named(other), span)),
     }
 }
 

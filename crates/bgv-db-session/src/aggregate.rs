@@ -24,7 +24,7 @@
 
 use std::collections::BTreeMap;
 
-use bgv_db_ql::{Aggregate, FieldPath, Projectable, Projected, Span};
+use bgv_db_ql::{Aggregate, Expr, Projectable, Projected, Span};
 use bgv_db_storage::Transaction;
 use bgv_db_types::{Number, RecordId, Value};
 use rust_decimal::Decimal;
@@ -56,17 +56,21 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         records: Vec<(RecordId, Value)>,
         wanted: &[Projected],
-        group: &[FieldPath],
+        group: &[Expr],
     ) -> Result<Vec<(RecordId, Value)>> {
         // Keyed by the group's values so the groups come out in the value
         // system's order; the identity of the first record in each group becomes
         // the group's, so an answer still has one.
         let mut groups: BTreeMap<Vec<Value>, (RecordId, Vec<Vec<Value>>)> = BTreeMap::new();
         for (id, record) in records {
-            let key: Vec<Value> = group
-                .iter()
-                .map(|path| path.path.resolve(&record).cloned().unwrap_or(Value::None))
-                .collect();
+            // Evaluated rather than resolved, so a window — `time::bucket(at,
+            // 1h)` — is a key like any other. A bare name still reads as a route
+            // into the record, so `GROUP BY city` costs the same walk it always
+            // did through one more layer.
+            let mut key = Vec::with_capacity(group.len());
+            for held in group {
+                key.push(self.evaluate_in(transaction, held, Scope::of(&record))?);
+            }
             let entry = groups
                 .entry(key)
                 .or_insert_with(|| (id.clone(), vec![Vec::new(); wanted.len()]));

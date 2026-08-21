@@ -12,22 +12,25 @@
 use bgv_db_types::Number;
 
 use super::Parser;
-use crate::ast::{ExprKind, FieldPath, Ordering, Projectable, Projection};
+use crate::ast::{Expr, FieldPath, Ordering, Projectable, Projection};
 use crate::error::{Error, Result};
 use crate::token::{Punct, Span, Token};
 
 impl Parser<'_> {
     /// `GROUP BY city, address.country`, when it is there.
-    pub(super) fn group_by(&mut self) -> Result<Vec<FieldPath>> {
+    pub(super) fn group_by(&mut self) -> Result<Vec<Expr>> {
         if !self.eat_word("group") {
             return Ok(Vec::new());
         }
         if !self.eat_word("by") {
             return Err(self.error_here("`BY` after `GROUP`"));
         }
-        let mut keys = vec![self.field_path()?];
+        // Read in the condition position, so a bare name is a route into the
+        // record — the reading `WHERE` and `ORDER BY` already give it — and an
+        // expression works, which is what makes a window sayable.
+        let mut keys = vec![self.condition()?];
         while self.eat_punct(Punct::Comma) {
-            keys.push(self.field_path()?);
+            keys.push(self.condition()?);
         }
         Ok(keys)
     }
@@ -102,7 +105,7 @@ impl Parser<'_> {
 /// as many values as the group has records and picking one silently is how a
 /// wrong number reaches a report. It is a property of the statement, so it is
 /// refused when the statement is read.
-pub(super) fn check_grouping(projection: &Projection, group: &[FieldPath]) -> Result<()> {
+pub(super) fn check_grouping(projection: &Projection, group: &[Expr]) -> Result<()> {
     let Projection::Values(values) = projection else {
         // `SELECT *` over a group would answer with whichever record came last.
         if group.is_empty() {
@@ -123,13 +126,10 @@ pub(super) fn check_grouping(projection: &Projection, group: &[FieldPath]) -> Re
         let Projectable::Value(expr) = &value.value else {
             continue;
         };
-        let ExprKind::Path(path) = &expr.kind else {
-            return Err(Error::UngroupedProjection {
-                name: value.name.text.clone(),
-                span: expr.span,
-            });
-        };
-        if !group.iter().any(|key| key.path == path.path) {
+        // The projection has to *be* a group key. Compared by shape rather than
+        // by `==`, because the same expression written twice in one statement
+        // sits at two spans and would otherwise never match itself.
+        if !group.iter().any(|key| key.same_shape(expr)) {
             return Err(Error::UngroupedProjection {
                 name: value.name.text.clone(),
                 span: expr.span,
