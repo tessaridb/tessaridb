@@ -25,10 +25,6 @@ SELECT * FROM users ORDER BY email;
 SELECT * FROM users LIMIT 10;
 --- expect: error Unsupported
 
---- case: projecting named fields
-SELECT name FROM users;
---- expect: error Unsupported
-
 --- case: an expression grouped in parentheses
 SET users:1 = (1);
 --- expect: error Unsupported

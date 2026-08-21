@@ -156,6 +156,31 @@ pub enum Error {
         /// Where the second occurrence is.
         span: Span,
     },
+
+    /// Two projections in one read answer under the same name.
+    ///
+    /// `SELECT address.city, work.city` would write one field twice into a
+    /// name-ordered object and keep whichever came last, so the read would
+    /// quietly return half of what it asked for. Refused here rather than at
+    /// execution because it is a property of the statement.
+    #[error("two projections answer under the name {name:?} (at {span}); one of them needs `AS`")]
+    DuplicateProjection {
+        /// The name they share.
+        name: String,
+        /// Where the second one is.
+        span: Span,
+    },
+
+    /// A projected path ends in a position, so it has no name of its own.
+    ///
+    /// A projection is named by the last step of its path, and `[0]` is not a
+    /// name. Every invented spelling — `tags_0`, `tags`, `_0` — is a convention
+    /// the author would have to learn from a surprise.
+    #[error("the projection at {span} ends in a position and has no name; add `AS <name>`")]
+    UnnamedProjection {
+        /// Where the projection is.
+        span: Span,
+    },
 }
 
 impl Error {
@@ -177,7 +202,9 @@ impl Error {
             | Self::InvalidDecimal { span, .. }
             | Self::InvalidRecordId { span }
             | Self::NotARange { span }
-            | Self::DuplicateField { span, .. } => *span,
+            | Self::DuplicateField { span, .. }
+            | Self::DuplicateProjection { span, .. }
+            | Self::UnnamedProjection { span } => *span,
         }
     }
 }

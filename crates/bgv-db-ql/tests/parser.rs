@@ -7,7 +7,9 @@
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
-use bgv_db_ql::{Error, ExprKind, RecordTarget, Script, Source, StatementKind, Test, parse};
+use bgv_db_ql::{
+    Error, ExprKind, Projection, RecordTarget, Script, Source, StatementKind, Test, parse,
+};
 use bgv_db_types::{Datetime, Number, RecordId, Value};
 
 fn script(source: &str) -> Script {
@@ -496,7 +498,6 @@ fn what_the_specification_leaves_out_is_refused_by_name() {
         ),
         ("SELECT * FROM users ORDER BY email;", "ordering a result"),
         ("SELECT * FROM users LIMIT 10;", "limiting a result"),
-        ("SELECT name FROM users;", "projecting named fields"),
         ("SET k:1 = (1);", "grouping an expression in parentheses"),
     ] {
         let error = parse(source).unwrap_err();
@@ -642,4 +643,68 @@ fn a_position_in_a_route_is_a_whole_number_or_the_statement_is_refused() {
     ] {
         assert!(parse(source).is_err(), "{source} was accepted");
     }
+}
+
+/// The names a projection answers under, in the order written.
+fn projected_names(source: &str) -> Vec<String> {
+    let StatementKind::Select(select) = one(source) else {
+        panic!("not a select");
+    };
+    match select.projection {
+        Projection::Values(values) => values.into_iter().map(|v| v.name.text).collect(),
+        Projection::All => panic!("{source} projected everything"),
+    }
+}
+
+#[test]
+fn a_projection_is_named_by_the_last_step_of_its_route() {
+    assert_eq!(projected_names("SELECT name FROM users;"), ["name"]);
+    assert_eq!(projected_names("SELECT address.city FROM users;"), ["city"]);
+    assert_eq!(projected_names("SELECT history[0].by FROM users;"), ["by"]);
+    assert_eq!(
+        projected_names("SELECT name, address.city FROM users;"),
+        ["name", "city"]
+    );
+}
+
+#[test]
+fn as_names_a_projection_that_has_no_name_of_its_own() {
+    assert_eq!(
+        projected_names("SELECT tags[0] AS first_tag FROM users;"),
+        ["first_tag"]
+    );
+    assert_eq!(
+        projected_names("SELECT address.city AS home FROM users;"),
+        ["home"]
+    );
+
+    // A position is not a name, and inventing one would be a convention learned
+    // from a surprise.
+    let error = parse("SELECT tags[0] FROM users;").unwrap_err();
+    assert!(matches!(error, Error::UnnamedProjection { .. }), "{error}");
+}
+
+#[test]
+fn two_projections_answering_under_one_name_are_refused() {
+    // Both would write into one name-ordered object and the last would win, so
+    // the read would quietly return half of what it asked for.
+    for source in [
+        "SELECT address.city, work.city FROM users;",
+        "SELECT name, email AS name FROM users;",
+        "SELECT a.x AS n, b.y AS n FROM users;",
+    ] {
+        let error = parse(source).unwrap_err();
+        let Error::DuplicateProjection { name, .. } = &error else {
+            panic!("{source} produced {error}");
+        };
+        assert!(!name.is_empty());
+    }
+}
+
+#[test]
+fn the_wildcard_is_still_the_whole_record() {
+    let StatementKind::Select(select) = one("SELECT * FROM users;") else {
+        panic!("not a select");
+    };
+    assert_eq!(select.projection, Projection::All);
 }

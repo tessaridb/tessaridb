@@ -297,6 +297,8 @@ CREATE users:1 = { name: 'ada', email: 'ada@example.com' };
 SELECT * FROM users:1;
 SELECT * FROM users;
 SELECT * FROM users WHERE email = 'ada@example.com';
+SELECT name, address.city FROM users;
+SELECT address.city AS home, tags[0] AS first_tag FROM users;
 
 UPDATE users:1 = { name: 'ada', email: 'ada2@example.com' };
 DELETE users:1;
@@ -307,6 +309,46 @@ record that already exists is refused**, and **`UPDATE` over one that does not
 exist is refused**. The alternative — either verb quietly doing the other's job —
 loses a record with nothing anywhere to notice, and `SET` already exists for the
 caller who means "whatever is there, replace it".
+
+### What a read answers with
+
+`SELECT *` answers with the record as it is stored. A named list answers with
+only the values it asks for, each read by a path (§3):
+
+```
+SELECT name FROM users;
+SELECT address.city FROM users;
+SELECT address.city AS home FROM users;
+SELECT tags[0] AS first_tag FROM users;
+```
+
+**A projection is named by the last step of its path.** `address.city` answers
+under `city`. Naming it `address.city` would put a `.` inside a field name, and a
+field name carrying a delimiter is exactly what a path cannot address — so the
+default would produce answers the grammar that produced them could not read back.
+
+A path ending in a **position** therefore has no name, and `AS` is required:
+`SELECT tags[0]` is refused, `SELECT tags[0] AS first_tag` is not. Refused rather
+than invented, because every invented spelling — `tags_0`, `tags`, `_0` — is a
+convention the author learns from a surprise.
+
+**Two projections that answer under one name are refused**, when the statement is
+read rather than when it runs. `SELECT address.city, work.city` would write one
+field twice into a name-ordered object and keep whichever came last, so the read
+would quietly return half of what it asked for.
+
+**A projected path that reaches nothing leaves its field out**; it does not
+answer `none`. `NONE` means the field is not there, so writing it *into* an
+object would say the field is there and holds not-being-there. The consequence is
+that projected records keep differing shapes, which is the same property that
+lets one table hold documents at all — a caller building a fixed-width table out
+of the answer has to say what an absence should look like, because the store will
+not guess.
+
+The projection does not change the access path. A read whose projection an index
+could answer without touching the record is a *covering* read, and choosing to
+run one is a planner's decision about how to execute the statement rather than a
+change to what the statement says.
 
 `SELECT` resolves to exactly one of the three access paths, and which one is
 decided by the target rather than by a cost model:
@@ -508,6 +550,9 @@ Named here rather than merely missing, so each absence reads as a decision:
 | `NONE` and `NULL` are distinct literals | **contract** — the storage layer keeps them apart |
 | An edge is a record, and traversal is an index read | **contract** — no separate graph keyspace, so edges get MVCC, transactions, replication and the schema check without any of them being built again |
 | An edge is identified by its endpoints | fixed for this milestone; an explicit-id form would be additive |
+| A projection is named by the last step of its path | **contract** — the alternative puts a delimiter inside a field name, which no path can then address |
+| A projected path reaching nothing omits its field rather than answering `none` | **contract** — the same reason `NONE` and `NULL` are different literals |
+| A projection never changes the access path | fixed for this milestone; a covering read is a planner decision |
 | A path names a value inside a record, and one that reaches nothing matches nothing | **contract** — the same answer a missing top-level field has always given, so records of differing shapes share a table without the index or the filter having an opinion about it |
 | An index answers the exact path it projects | **contract** — an index on `address.city` is not one on `address`, for the same reason an index on `(a, b)` is not one on `a` |
 | A declared type constrains a present, non-null value | **contract** — absent is unconstrained, null is allowed, and neither is a hole to be closed later without changing what existing scripts mean |

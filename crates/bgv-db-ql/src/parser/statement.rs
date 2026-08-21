@@ -245,18 +245,11 @@ impl Parser<'_> {
         })
     }
 
-    /// `SELECT * FROM …`, resolving to exactly one access path.
+    /// `SELECT <projection> FROM …`, resolving to exactly one access path.
     pub(super) fn select_statement(&mut self) -> Result<Select> {
         let start = self.span_here();
         self.advance();
-        if !self.eat_punct(Punct::Star) {
-            // A named projection is refused rather than accepted and ignored,
-            // which would return every field to a caller that asked for one.
-            return Err(Error::Unsupported {
-                feature: "projecting named fields",
-                span: self.span_here(),
-            });
-        }
+        let projection = self.projection()?;
         self.expect_keyword(Keyword::From, "`FROM` and what to read")?;
 
         let table = self.table_ref()?;
@@ -288,6 +281,7 @@ impl Parser<'_> {
             Source::Table(table)
         };
         Ok(Select {
+            projection,
             from,
             span: start.to(self.span_behind()),
         })

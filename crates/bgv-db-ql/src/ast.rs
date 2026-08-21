@@ -195,15 +195,40 @@ pub enum StatementKind {
 }
 
 /// A read of records.
-///
-/// The projection is always every field at this milestone, so it is not carried:
-/// a field carrying one possible value says less than its absence does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Select {
+    /// Which values each record answers with.
+    pub projection: Projection,
     /// Which access path the statement resolves to.
     pub from: Source,
     /// Where the statement sits in the source.
     pub span: Span,
+}
+
+/// Which values a read answers with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Projection {
+    /// `*` — the record as it is stored.
+    All,
+    /// A named list, in the order it was written.
+    ///
+    /// Order is carried even though the answer is a name-ordered object, because
+    /// an error naming the second of two colliding projections should point at
+    /// the one the author wrote second.
+    Values(Vec<Projected>),
+}
+
+/// One projected value, and the name it answers under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Projected {
+    /// Where the value is read from.
+    pub path: FieldPath,
+    /// The name it answers under.
+    ///
+    /// Resolved at parse rather than left for the executor: whether two
+    /// projections collide is a property of the statement, so it is knowable
+    /// before anything runs and is refused there.
+    pub name: Name,
 }
 
 /// The three access paths the store has, named by what the statement targets.

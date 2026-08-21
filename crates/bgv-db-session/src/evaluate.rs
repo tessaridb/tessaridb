@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 
 use bgv_db_encoding::decode_payload;
 use bgv_db_ql::{
-    Direction, Expr, ExprKind, FieldPath, RecordTarget, Select, Source, Span, TableRef, Test,
+    Direction, Expr, ExprKind, FieldPath, Projected, Projection, RecordTarget, Select, Source,
+    Span, TableRef, Test,
 };
 use bgv_db_storage::{Catalog, RecordAddress, Transaction};
 use bgv_db_types::{Number, Path, RecordId, RecordRef, Value, ValueRange};
@@ -101,13 +102,40 @@ impl Session<'_> {
         }
     }
 
-    /// A read, as the records it found.
+    /// A read, as the records it found, shaped by what it asked for.
+    ///
+    /// The projection is applied here — once, above the four sources — so a
+    /// record read by identity, by scan, by index and by traversal all answer in
+    /// the same shape. Four applications would be four chances for one of them
+    /// to differ.
+    ///
+    /// It does not change the access path. A projection that an index could
+    /// answer without touching the record is a covering read, which is a
+    /// planner's decision about how to run the statement rather than a change to
+    /// what the statement says.
     pub(crate) fn read(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
     ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
-        match &select.from {
+        let (records, path) = self.read_source(transaction, &select.from)?;
+        let Projection::Values(wanted) = &select.projection else {
+            return Ok((records, path));
+        };
+        let projected = records
+            .into_iter()
+            .map(|(id, record)| (id, project(&record, wanted)))
+            .collect();
+        Ok((projected, path))
+    }
+
+    /// The records a source produces, as they are stored.
+    fn read_source(
+        &self,
+        transaction: &mut Transaction<'_>,
+        from: &Source,
+    ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
+        match from {
             Source::Record(target) => {
                 let (_, address) = self.address(transaction, target)?;
                 let found = match transaction.get(&address)? {
@@ -269,6 +297,24 @@ impl Session<'_> {
             records.into_iter().map(|(_, value)| value).collect(),
         ))
     }
+}
+
+/// One record, reduced to the values a read asked for.
+///
+/// **A route that reaches nothing omits its field** rather than answering
+/// `none`. `Value::None` means the field is not there, so writing it into an
+/// object would say the field is there and holds not-being-there — the
+/// contradiction the value system spends its own rules avoiding. The consequence
+/// is that projected records keep differing shapes, which is the same property
+/// that makes a table able to hold documents at all.
+fn project(record: &Value, wanted: &[Projected]) -> Value {
+    let mut projected = BTreeMap::new();
+    for value in wanted {
+        if let Some(found) = value.path.path.resolve(record) {
+            projected.insert(value.name.text.clone(), found.clone());
+        }
+    }
+    Value::Object(projected)
 }
 
 fn decode_all(found: Vec<(RecordId, Vec<u8>)>) -> Result<Vec<(RecordId, Value)>> {

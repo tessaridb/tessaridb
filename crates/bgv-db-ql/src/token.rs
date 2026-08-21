@@ -218,6 +218,8 @@ pub enum Keyword {
     From,
     /// `WHERE`
     Where,
+    /// `AS` — names a projected value.
+    As,
     /// `CONTAINS` — membership: does this collection hold that value.
     Contains,
     /// `LIKE` — a pattern over the whole value, as SQL spells it.
@@ -289,6 +291,7 @@ impl Keyword {
             Self::Select => "SELECT",
             Self::From => "FROM",
             Self::Where => "WHERE",
+            Self::As => "AS",
             Self::Contains => "CONTAINS",
             Self::Like => "LIKE",
             Self::Ilike => "ILIKE",
@@ -337,6 +340,7 @@ impl Keyword {
         Self::Select,
         Self::From,
         Self::Where,
+        Self::As,
         Self::Contains,
         Self::Like,
         Self::Ilike,

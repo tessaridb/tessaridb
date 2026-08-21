@@ -198,6 +198,8 @@ fn script_kind(error: &bgv_db_ql::Error) -> &'static str {
         bgv_db_ql::Error::InvalidRecordId { .. } => "InvalidRecordId",
         bgv_db_ql::Error::NotARange { .. } => "NotARange",
         bgv_db_ql::Error::DuplicateField { .. } => "DuplicateField",
+        bgv_db_ql::Error::DuplicateProjection { .. } => "DuplicateProjection",
+        bgv_db_ql::Error::UnnamedProjection { .. } => "UnnamedProjection",
         _ => "Unnamed",
     }
 }

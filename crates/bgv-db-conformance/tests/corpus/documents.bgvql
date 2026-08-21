@@ -73,3 +73,27 @@ SELECT * FROM orders.people;
 --- case: a position is a whole number
 SELECT * FROM people WHERE tags[-1] = 'old';
 --- expect: error UnexpectedToken
+
+--- case: a read may ask for some of a record rather than all of it
+SELECT name FROM people;
+--- expect: rows 4
+
+--- case: a projected route answers under the last step of its name
+SELECT address.city FROM people;
+--- expect: rows 4
+
+--- case: AS names a projection, and a position needs one
+SELECT address.city AS home, tags[0] AS first_tag FROM people:1;
+--- expect: rows 1
+
+--- case: a position with no name is refused
+SELECT tags[0] FROM people;
+--- expect: error UnnamedProjection
+
+--- case: two projections answering under one name are refused
+SELECT address.city, work.city FROM people;
+--- expect: error DuplicateProjection
+
+--- case: a projection does not change the access path
+SELECT name FROM people WHERE address.city = 'Paris';
+--- expect: rows 1

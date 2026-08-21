@@ -8,9 +8,9 @@
 use bgv_db_types::{Number, Path, Step};
 
 use super::Parser;
-use crate::ast::{FieldPath, Name};
-use crate::error::Result;
-use crate::token::{Punct, Spanned, Token};
+use crate::ast::{FieldPath, Name, Projected, Projection};
+use crate::error::{Error, Result};
+use crate::token::{Keyword, Punct, Spanned, Token};
 
 impl Parser<'_> {
     /// A route to a value inside a record: `email`, `address.city`, `tags[0]`.
@@ -54,6 +54,55 @@ impl Parser<'_> {
         let at = u64::try_from(*at).map_err(|_| self.error_here(expected))?;
         self.advance();
         Ok(at)
+    }
+
+    /// What a read answers with: `*`, or a list of routes with their names.
+    pub(super) fn projection(&mut self) -> Result<Projection> {
+        if self.eat_punct(Punct::Star) {
+            return Ok(Projection::All);
+        }
+        let mut values = vec![self.projected()?];
+        while self.eat_punct(Punct::Comma) {
+            let next = self.projected()?;
+            // Two projections answering under one name would write one field
+            // twice into a name-ordered object and keep whichever came last.
+            // Knowable from the statement alone, so it is refused here.
+            if let Some(clash) = values.iter().find(|held| held.name.text == next.name.text) {
+                return Err(Error::DuplicateProjection {
+                    name: clash.name.text.clone(),
+                    span: next.name.span,
+                });
+            }
+            values.push(next);
+        }
+        Ok(Projection::Values(values))
+    }
+
+    /// One projected route, and the name it answers under.
+    ///
+    /// The default name is the **last step** of the route, so `address.city`
+    /// answers under `city`. Naming it `address.city` would put a delimiter
+    /// inside a field name — and a field name carrying a delimiter is precisely
+    /// what a route cannot address, so the answer could not be read back by the
+    /// grammar that produced it.
+    fn projected(&mut self) -> Result<Projected> {
+        let path = self.field_path()?;
+        if self.eat_keyword(Keyword::As) {
+            let name = self.name()?;
+            return Ok(Projected { path, name });
+        }
+        let text = match path.path.steps().last() {
+            None => path.path.root().to_owned(),
+            Some(Step::Field(name)) => name.clone(),
+            // A position is not a name, and inventing one would be a convention
+            // learned from a surprise.
+            Some(Step::Index(_)) => return Err(Error::UnnamedProjection { span: path.span }),
+        };
+        let span = path.span;
+        Ok(Projected {
+            path,
+            name: Name { text, span },
+        })
     }
 
     /// A bare name, which is never a keyword.

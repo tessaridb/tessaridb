@@ -1248,3 +1248,124 @@ fn a_position_in_a_route_is_a_whole_number() {
         assert!(refused.is_err(), "{filter} was accepted");
     }
 }
+
+#[test]
+fn a_read_may_ask_for_some_of_a_record_rather_than_all_of_it() {
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    let found = session.run("SELECT name FROM people:1;").unwrap();
+    let records = found[0].records().unwrap();
+    assert_eq!(
+        records[0].1,
+        Value::Object(std::collections::BTreeMap::from([(
+            "name".to_owned(),
+            Value::String("ada".to_owned())
+        )]))
+    );
+}
+
+#[test]
+fn a_projected_route_answers_under_the_last_step_of_its_name() {
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    let found = session.run("SELECT address.city FROM people:1;").unwrap();
+    let record = &found[0].records().unwrap()[0].1;
+    assert_eq!(field(record, "city"), &Value::String("Paris".to_owned()));
+
+    let renamed = session
+        .run("SELECT address.city AS home, tags[0] AS first_tag FROM people:1;")
+        .unwrap();
+    let record = &renamed[0].records().unwrap()[0].1;
+    assert_eq!(field(record, "home"), &Value::String("Paris".to_owned()));
+    assert_eq!(
+        field(record, "first_tag"),
+        &Value::String("urgent".to_owned())
+    );
+}
+
+#[test]
+fn a_projected_route_that_reaches_nothing_leaves_its_field_out() {
+    // Not `none`. `Value::None` says the field is not there, so writing it into
+    // an object would say the field is there and holds not-being-there. The
+    // consequence is that projected records keep differing shapes, which is the
+    // property that lets one table hold documents at all.
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    let found = session
+        .run("SELECT name, address.city FROM people;")
+        .unwrap();
+    let records = found[0].records().unwrap();
+    assert_eq!(records.len(), 4);
+
+    let shapes: Vec<usize> = records
+        .iter()
+        .map(|(_, record)| match record {
+            Value::Object(fields) => fields.len(),
+            other => panic!("not an object: {other:?}"),
+        })
+        .collect();
+    // people:1 and :2 have a nested city; :3 holds `address` as text; :4 has none.
+    assert_eq!(shapes, vec![2, 2, 1, 1]);
+}
+
+#[test]
+fn a_projection_applies_to_every_source_and_changes_no_access_path() {
+    use bgv_db_session::AccessPath;
+
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+    session
+        .run(
+            "DEFINE INDEX by_home_city ON people FIELDS address.city;\n\
+             DEFINE TABLE knows EDGE;\n\
+             RELATE people:1->knows->people:2;",
+        )
+        .unwrap();
+
+    for (script, expected) in [
+        ("SELECT name FROM people:1;", AccessPath::Record),
+        ("SELECT name FROM people;", AccessPath::Scan),
+        (
+            "SELECT name FROM people WHERE address.city = 'Paris';",
+            AccessPath::Index,
+        ),
+        (
+            "SELECT name FROM people:1->knows->people;",
+            AccessPath::Index,
+        ),
+    ] {
+        let found = session.run(script).unwrap();
+        assert_eq!(found[0].path(), Some(expected), "{script}");
+        for (_, record) in found[0].records().unwrap() {
+            let Value::Object(fields) = record else {
+                panic!("{script} did not project an object");
+            };
+            assert_eq!(fields.keys().collect::<Vec<_>>(), vec!["name"], "{script}");
+        }
+    }
+}
+
+#[test]
+fn a_projection_shapes_a_read_standing_in_a_value_position() {
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    session
+        .run("DEFINE TABLE audit; CREATE audit:1 = { who: (SELECT name FROM people:1) };")
+        .unwrap();
+    let found = session.run("SELECT * FROM audit:1;").unwrap();
+    let who = field(&found[0].records().unwrap()[0].1, "who");
+    assert_eq!(field(who, "name"), &Value::String("ada".to_owned()));
+    let Value::Object(fields) = who else {
+        panic!("not an object");
+    };
+    assert_eq!(fields.len(), 1, "the projection did not reach the subquery");
+}
