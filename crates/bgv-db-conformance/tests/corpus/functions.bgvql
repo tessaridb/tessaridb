@@ -78,3 +78,28 @@ SELECT (quantity + 1) * 2 AS doubled FROM lines:1;
 --- case: a negation of something that is not a literal
 SELECT -quantity AS owed FROM lines:1;
 --- expect: rows 1
+
+--- case: vectors to search
+DEFINE TABLE points;
+CREATE points:1 = { name: 'east', at: [1.0, 0.0] };
+CREATE points:2 = { name: 'north-east', at: [0.7, 0.7] };
+CREATE points:3 = { name: 'north', at: [0.0, 1.0] };
+CREATE points:4 = { name: 'wrong shape', at: [1.0] };
+CREATE points:5 = { name: 'none at all' };
+--- expect: ok
+
+--- case: a nearest-neighbour query is an order and a bound
+SELECT * FROM points ORDER BY vector::cosine(at, [1.0, 0.0]) LIMIT 2;
+--- expect: rows 2
+
+--- case: what has no distance is infinitely far, so it never crowds out a neighbour
+SELECT * FROM points ORDER BY vector::cosine(at, [1.0, 0.0]);
+--- expect: rows 5
+
+--- case: three distances, because three questions
+SELECT vector::cosine(at, [2.0, 0.0]) AS angle, vector::euclidean(at, [2.0, 0.0]) AS gap, vector::dot(at, [2.0, 0.0]) AS inner FROM points:1;
+--- expect: rows 1
+
+--- case: ordering by anything computed, which the same widening bought
+SELECT * FROM points ORDER BY string::len(name) DESC LIMIT 1;
+--- expect: rows 1

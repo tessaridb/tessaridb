@@ -212,7 +212,10 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         select: &Select,
     ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
-        let (records, path) = self.read_source(transaction, &select.from)?;
+        // The analyzers travel with the records because a sort key is an
+        // expression too, and one holding a `MATCHES` must mean the same thing
+        // there as it does in the `WHERE` that produced them.
+        let (records, path, analyzers) = self.read_source(transaction, &select.from)?;
         let records = match &select.projection {
             Projection::All => records,
             Projection::Values(wanted) if folds(wanted) || !select.group.is_empty() => {
@@ -232,7 +235,23 @@ impl Session<'_> {
         // works, because a projected record keeps the shape it was given only
         // where the projection preserved it — which is why the sort falls back
         // to the route when the name is not there.
-        let records = crate::shape::sorted(records, &select.order);
+        let records = if select.order.is_empty() {
+            records
+        } else {
+            let mut keyed = Vec::with_capacity(records.len());
+            for (id, record) in records {
+                let mut keys = Vec::with_capacity(select.order.len());
+                for key in &select.order {
+                    keys.push(self.evaluate_in(
+                        transaction,
+                        &key.key,
+                        Scope::searching(&record, &analyzers),
+                    )?);
+                }
+                keyed.push((keys, id, record));
+            }
+            crate::shape::sorted(keyed, &select.order)
+        };
         Ok((
             crate::shape::bounded(records, select.start, select.limit),
             path,
@@ -274,11 +293,7 @@ impl Session<'_> {
     }
 
     /// The records a source produces, as they are stored.
-    fn read_source(
-        &self,
-        transaction: &mut Transaction<'_>,
-        from: &Source,
-    ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
+    fn read_source(&self, transaction: &mut Transaction<'_>, from: &Source) -> Result<Reached> {
         match from {
             Source::Record(target) => {
                 let (_, address) = self.address(transaction, target)?;
@@ -286,19 +301,23 @@ impl Session<'_> {
                     Some(payload) => vec![(address.id, decode_payload(&payload)?)],
                     None => Vec::new(),
                 };
-                Ok((found, AccessPath::Record))
+                Ok((found, AccessPath::Record, BTreeMap::new()))
             }
             Source::Table(table) => {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 let found = transaction.scan_table(context.namespace, context.database, id)?;
-                Ok((decode_all(found)?, AccessPath::Scan))
+                Ok((decode_all(found)?, AccessPath::Scan, BTreeMap::new()))
             }
             Source::Traverse {
                 from,
                 direction,
                 edges,
                 target,
-            } => self.traverse(transaction, from, *direction, edges, target.as_ref()),
+            } => {
+                let (found, path) =
+                    self.traverse(transaction, from, *direction, edges, target.as_ref())?;
+                Ok((found, path, BTreeMap::new()))
+            }
             Source::Where { table, condition } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 // Resolved once for the query rather than once per record: which
@@ -325,7 +344,7 @@ impl Session<'_> {
                         matched.push((id, record));
                     }
                 }
-                Ok((matched, path))
+                Ok((matched, path, analyzers))
             }
         }
     }
@@ -579,6 +598,14 @@ fn seekable(condition: &Expr) -> Vec<Seek<'_>> {
         _ => Vec::new(),
     }
 }
+
+/// What a source produced: the records, how they were reached, and the
+/// analyzers the fields it searched declare.
+///
+/// The analyzers travel with the records because a sort key is an expression
+/// too, and one holding a `MATCHES` must mean the same thing there as in the
+/// `WHERE` that produced them.
+type Reached = (Vec<(RecordId, Value)>, AccessPath, BTreeMap<Path, Analyzer>);
 
 /// What the evaluator can see besides the expression itself.
 ///

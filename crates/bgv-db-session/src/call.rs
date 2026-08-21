@@ -22,11 +22,12 @@ use crate::error::{Error, Result};
 /// works when every record has every field. It is the same rule a filter
 /// already applies one level up, carried into the calls.
 ///
-/// [`Function::TypeOf`] is the one exception, and it is the exception that shows
-/// the rule: it is the only function asking *about* the value rather than
-/// computing from it, so an absence is its answer rather than its obstacle.
+/// The exceptions are the functions that **have** an answer for one, listed by
+/// [`Function::answers_for_absence`]: `type::of` asks about a value rather than
+/// computing from one, and a distance to something that is not there is
+/// unbounded rather than unknown.
 pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Result<Value> {
-    if function != Function::TypeOf
+    if !function.answers_for_absence()
         && arguments
             .iter()
             .any(|value| !value.is_present() || *value == Value::Null)
@@ -76,6 +77,12 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // value like any other — a replica applies what was written rather than
         // asking its own clock and reaching a different answer.
         Function::TimeNow => now(function, span),
+        Function::VectorCosine | Function::VectorEuclidean | Function::VectorDot => {
+            let (Some(left), Some(right)) = (arguments.first(), arguments.get(1)) else {
+                return Err(wrong_type(function, 0, "a vector", "nothing", span));
+            };
+            Ok(crate::vector::distance(function, left, right))
+        }
         Function::TypeOf => {
             let Some(value) = arguments.first() else {
                 return Err(wrong_type(function, 0, "a value", "nothing", span));

@@ -22,31 +22,13 @@ use bgv_db_types::{RecordId, Value};
 /// the same every time whatever access path ran. Without that, adding an
 /// index would reorder equal rows — an answer that changes when an index
 /// appears, which is the shape this store keeps refusing.
+/// The keys are evaluated **once per record** by the caller rather than inside
+/// the comparison, because a sort compares a record many times and an expression
+/// is evaluated every time it is asked for.
 pub(crate) fn sorted(
-    records: Vec<(RecordId, Value)>,
+    mut keyed: Vec<(Vec<Value>, RecordId, Value)>,
     order: &[Ordering],
 ) -> Vec<(RecordId, Value)> {
-    if order.is_empty() {
-        return records;
-    }
-    // The keys are read once per record rather than inside the comparison,
-    // because a sort compares a record many times and a route is walked
-    // every time it is asked for.
-    let mut keyed = Vec::with_capacity(records.len());
-    for (id, record) in records {
-        let mut keys = Vec::with_capacity(order.len());
-        for key in order {
-            keys.push(
-                key.key
-                    .path
-                    .resolve(&record)
-                    .cloned()
-                    .unwrap_or(Value::None),
-            );
-        }
-        keyed.push((keys, id, record));
-    }
-
     keyed.sort_by(|left, right| {
         for (position, key) in order.iter().enumerate() {
             let Some((held, other)) = left.0.get(position).zip(right.0.get(position)) else {

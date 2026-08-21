@@ -2682,3 +2682,111 @@ fn a_replica_builds_the_same_postings_from_the_same_log() {
     assert_eq!(found[0].path(), Some(bgv_db_session::AccessPath::Index));
     assert_eq!(found[0].records().unwrap().len(), 1);
 }
+
+/// Notes with embeddings, one missing and one the wrong shape.
+fn embedded(session: &mut Session<'_>) {
+    session
+        .run(
+            "DEFINE TABLE notes;\n\
+             CREATE notes:1 = { title: 'east', embedding: [1.0, 0.0] };\n\
+             CREATE notes:2 = { title: 'north-east', embedding: [0.7, 0.7] };\n\
+             CREATE notes:3 = { title: 'north', embedding: [0.0, 1.0] };\n\
+             CREATE notes:4 = { title: 'west', embedding: [-1.0, 0.0] };\n\
+             CREATE notes:5 = { title: 'wrong shape', embedding: [1.0] };\n\
+             CREATE notes:6 = { title: 'none at all' };",
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_nearest_neighbour_query_is_an_order_and_a_bound() {
+    // No operator of its own: "the three most similar" is something this
+    // language could already say, once it could say the distance.
+    let store = store();
+    let mut session = ready(&store);
+    embedded(&mut session);
+
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes ORDER BY vector::cosine(embedding, [1.0, 0.0]) LIMIT 3;"
+        ),
+        vec![RecordId::Int(1), RecordId::Int(2), RecordId::Int(3)]
+    );
+}
+
+#[test]
+fn a_record_with_no_distance_is_infinitely_far_rather_than_nearest() {
+    let store = store();
+    let mut session = ready(&store);
+    embedded(&mut session);
+
+    // Six records answer, not four: the wrong-shaped and the missing embedding
+    // are infinitely far rather than absent, so they sort **last** and a bounded
+    // read never mistakes them for neighbours.
+    let ordered = found_ids(
+        &mut session,
+        "SELECT * FROM notes ORDER BY vector::cosine(embedding, [1.0, 0.0]);",
+    );
+    assert_eq!(ordered.len(), 6);
+    assert_eq!(ordered[0], RecordId::Int(1), "the nearest first");
+    assert_eq!(ordered[3], RecordId::Int(4), "then the furthest real one");
+    assert_eq!(
+        &ordered[4..],
+        &[RecordId::Int(5), RecordId::Int(6)],
+        "and what has no distance is last"
+    );
+}
+
+#[test]
+fn the_three_distances_answer_three_questions() {
+    let store = store();
+    let mut session = ready(&store);
+    embedded(&mut session);
+
+    let found = session
+        .run(
+            "SELECT vector::cosine(embedding, [2.0, 0.0]) AS angle, \
+             vector::euclidean(embedding, [2.0, 0.0]) AS gap, \
+             vector::dot(embedding, [2.0, 0.0]) AS inner \
+             FROM notes:1;",
+        )
+        .unwrap();
+    let record = &found[0].records().unwrap()[0].1;
+    // Cosine ignores magnitude; the other two do not. That is why all three
+    // exist rather than one being picked.
+    assert_eq!(field(record, "angle"), &Value::Number(Number::float(0.0)));
+    assert_eq!(field(record, "gap"), &Value::Number(Number::float(1.0)));
+    assert_eq!(field(record, "inner"), &Value::Number(Number::float(2.0)));
+}
+
+#[test]
+fn ordering_by_an_expression_works_for_anything_computed() {
+    // The widening a nearest-neighbour query needed turns out to be general.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE people;\n\
+             CREATE people:1 = { name: 'barbara' };\n\
+             CREATE people:2 = { name: 'ada' };\n\
+             CREATE people:3 = { name: 'grace' };",
+        )
+        .unwrap();
+
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM people ORDER BY string::len(name), name;"
+        ),
+        vec![RecordId::Int(2), RecordId::Int(3), RecordId::Int(1)]
+    );
+    // And `DESC` still reverses it.
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM people ORDER BY string::len(name) DESC LIMIT 1;"
+        ),
+        vec![RecordId::Int(1)]
+    );
+}

@@ -687,6 +687,7 @@ SELECT * FROM users WHERE string::len(name) = 3;
 | `math` | `abs` · `floor` · `ceil` · `round` (half away from zero) |
 | `time` | `now()` |
 | `type` | `of(value)` — the type's name, as §3 spells it |
+| `vector` | `cosine(a, b)` · `euclidean(a, b)` · `dot(a, b)` |
 
 **What earns a place: a function is here when it cannot be expressed by what the
 language already has.** That is why there is no `array::contains` (`CONTAINS`
@@ -700,11 +701,46 @@ set of functions is known then. What each argument holds is checked when it runs
 and a wrong one names the function, the position, what was wanted and what was
 there.
 
+### Nearest neighbours
+
+This language needs no operator for k-nearest-neighbour, because **"the ten most
+similar" is an order and a bound**, and it has both:
+
+```
+SELECT * FROM notes ORDER BY vector::cosine(embedding, [0.1, 0.9]) LIMIT 10;
+```
+
+A vector is an **array of numbers** — not a sixteenth type. The value system's
+set is fixed, an array of numbers is a vector, and a new type would need an
+encoding, an ordering, a literal syntax and a migration to buy nothing.
+
+Three distances, because three questions: `cosine` measures the angle and
+ignores magnitude, `euclidean` measures distance in space, `dot` is the inner
+product. Embedding models are trained for one or another, and using the wrong
+one returns plausible neighbours that are not the nearest — silently — which is
+why all three exist rather than one being picked.
+
+**Cosine answers a distance, not a similarity** (`1 - cos θ`), so smaller is
+nearer and `ORDER BY` reads the way every other ordering reads. A similarity
+would sort backwards and every query would carry a `DESC` nobody could explain.
+
+**What has no distance is infinitely far, not absent.** Vectors of different
+lengths, an empty one, a value that is not an array, a record with no embedding
+at all: each answers `+∞`. `NONE` would sort *below* every value, so a bounded
+read would answer with the records that have no vector, in first place, looking
+exactly like results. The two are still told apart by the thing that tells
+values apart — `WHERE embedding = NONE` — because sorting is the only thing a
+distance is for.
+
+The statement above is **final**: an index over the vectors would serve it
+faster and cannot change an answer, because a distance is a function of the two
+values and of nothing else.
+
 **An absent or null argument answers `none`**, without the function being run —
 so `array::len(tags)` over a table where some records have no `tags` narrows
-rather than failing. `type::of` is the exception, and it is the exception that
-shows the rule: it is the only function asking *about* a value rather than
-computing from one.
+rather than failing. The exceptions are the functions that **have** an answer for one: `type::of`
+asks about a value rather than computing from one, and a `vector` distance to
+something that is not there is unbounded rather than unknown.
 
 `time::now()` is read once, in the session, so the instant that reaches the log
 is a value like any other — a replica applies what was written rather than
@@ -879,7 +915,7 @@ Named here rather than merely missing, so each absence reads as a decision:
 | stemming | a filter, and one could be added under the rule above; a correct stemmer is a language-specific artefact rather than a hundred lines, and a bad one is worse than none |
 | n-grams, so `MATCHES` never answers a substring question | index size proportional to text length × (max − min), paid on every write; Q-31 holds the measurement that would decide it |
 | phrase queries (`'"ada lovelace"'`) | they need positions in the postings and a second matching rule |
-| vector search | a reserved key kind, no engine yet |
+| a vector **index** | nearest-neighbour search works today over a scan, ordered by a distance. The index that makes it fast has a reserved key kind (`0x13`) and is not built — and when it is, it cannot change an answer, because a distance is a function of two values and of no index. |
 | ranking, highlighting, fuzzy matching | ranking needs a score that a projection can carry and an `ORDER BY` can name, which is a language surface rather than an index feature |
 | `[*]` in a path — "any element of this array" | it turns a path from a function into a relation: the filter becomes existential, a projection returns several values, and the index becomes a multikey one with entries per element and a reclamation rule of its own. Three features wearing one syntax. |
 | declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
@@ -926,6 +962,10 @@ Named here rather than merely missing, so each absence reads as a decision:
 | Numeric kinds promote int → decimal → float | **contract** |
 | Division produces at least a decimal | **contract** — truncating integer division is a wrong number that looks right |
 | Overflow and division by zero are failures | **contract** |
+| A vector is an array of numbers, not a type of its own | **contract** |
+| Cosine is a distance, so smaller is nearer | **contract** |
+| What has no distance is `+∞`, so a bounded read never mistakes it for a neighbour | **contract** |
+| `ORDER BY` takes an expression | **contract** |
 | A function is added only when the language cannot already say it | **contract** — the rule that keeps the surface from growing by association |
 | An absent or null argument makes a call answer `none` | **contract** — except `type::of`, which asks about the value rather than computing from it |
 | Anything computed in a projection needs `AS` | **contract** |

@@ -52,7 +52,7 @@ impl Parser<'_> {
     }
 
     fn ordering(&mut self) -> Result<Ordering> {
-        let key = self.field_path()?;
+        let key = self.condition()?;
         // `ASC` is accepted and means nothing, because a reader who writes it is
         // saying what they mean and a grammar that refused would be pedantry.
         let descending = if self.eat_word("desc") {

@@ -59,6 +59,12 @@ pub enum Function {
     TimeNow,
     /// `type::of(value)` — the type's name, as §3 spells it.
     TypeOf,
+    /// `vector::cosine(a, b)` — the angle between two vectors, as a distance.
+    VectorCosine,
+    /// `vector::euclidean(a, b)` — the distance between two points.
+    VectorEuclidean,
+    /// `vector::dot(a, b)` — the inner product.
+    VectorDot,
 }
 
 impl Function {
@@ -78,6 +84,9 @@ impl Function {
         Self::MathRound,
         Self::TimeNow,
         Self::TypeOf,
+        Self::VectorCosine,
+        Self::VectorEuclidean,
+        Self::VectorDot,
     ];
 
     /// How the function is written, group and name together.
@@ -98,6 +107,9 @@ impl Function {
             Self::MathRound => "math::round",
             Self::TimeNow => "time::now",
             Self::TypeOf => "type::of",
+            Self::VectorCosine => "vector::cosine",
+            Self::VectorEuclidean => "vector::euclidean",
+            Self::VectorDot => "vector::dot",
         }
     }
 
@@ -106,9 +118,29 @@ impl Function {
     pub const fn arity(self) -> usize {
         match self {
             Self::TimeNow => 0,
-            Self::StringConcat => 2,
+            Self::StringConcat | Self::VectorCosine | Self::VectorEuclidean | Self::VectorDot => 2,
             _ => 1,
         }
+    }
+
+    /// Whether this function has an answer for an argument that holds nothing.
+    ///
+    /// Most do not: a function of an absence is an absence, which is what lets a
+    /// read over documents of differing shapes narrow instead of failing. Two
+    /// kinds do:
+    ///
+    /// - [`Function::TypeOf`] asks *about* a value rather than computing from
+    ///   one, and the type of an absence is `none`.
+    /// - The distances answer `+∞`, because the distance to something that is
+    ///   not there is unbounded — and because `NONE` sorts below every value, so
+    ///   propagating it would make a bounded nearest-neighbour read answer with
+    ///   the records that have no vector at all, in first place.
+    #[must_use]
+    pub const fn answers_for_absence(self) -> bool {
+        matches!(
+            self,
+            Self::TypeOf | Self::VectorCosine | Self::VectorEuclidean | Self::VectorDot
+        )
     }
 
     /// The function a `group::name` spells, if there is one.

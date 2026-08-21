@@ -243,8 +243,13 @@ pub struct Select {
 /// One sort key, and which way it runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ordering {
-    /// What to sort by: a route into the record, or a projected name.
-    pub key: FieldPath,
+    /// What to sort by.
+    ///
+    /// Read in the condition position, so a bare name is a route into the
+    /// record — or a projected name, since ordering runs after projection. An
+    /// **expression** works too, which is what makes a nearest-neighbour query
+    /// an ordinary `ORDER BY … LIMIT` rather than an operator of its own.
+    pub key: Expr,
     /// Whether the order is reversed.
     pub descending: bool,
 }

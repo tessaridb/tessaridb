@@ -31,6 +31,7 @@ mod outcome;
 mod search;
 mod session;
 mod shape;
+mod vector;
 
 pub use error::{Error, Result};
 pub use outcome::{AccessPath, Outcome};
