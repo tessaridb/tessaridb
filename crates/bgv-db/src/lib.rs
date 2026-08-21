@@ -41,12 +41,13 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
 use bgv_db_kv::{KvBackend, MemoryBackend};
 use bgv_db_lsm::LsmBackend;
-use bgv_db_storage::Store;
+use bgv_db_storage::{Catalog, Store};
 
 pub use bgv_db_lsm::{Durability, StoreConfig};
 pub use bgv_db_session::{AccessPath, Error, Outcome, Result, Session};
@@ -55,6 +56,38 @@ pub use bgv_db_types::{
     Datetime, Duration, FieldKind, Number, Path as FieldPath, RecordId, RecordRef, Sequence, Step,
     TableId, Value,
 };
+
+/// Every table an answer's references point at.
+///
+/// Walked rather than assumed: a reference can be anywhere in a record — in a
+/// field, inside an array, nested in an object — and a walk that stopped at the
+/// top level would render the common shapes and miss the interesting ones.
+fn referenced(value: &Value, into: &mut BTreeSet<TableId>) {
+    match value {
+        Value::Record(held) => {
+            into.insert(held.table);
+        }
+        Value::Table(held) => {
+            into.insert(*held);
+        }
+        Value::Array(items) => {
+            for item in items {
+                referenced(item, into);
+            }
+        }
+        Value::Set(items) => {
+            for item in items {
+                referenced(item, into);
+            }
+        }
+        Value::Object(fields) => {
+            for held in fields.values() {
+                referenced(held, into);
+            }
+        }
+        _ => {}
+    }
+}
 
 /// An open database.
 ///
@@ -145,6 +178,57 @@ impl Db {
     #[must_use]
     pub const fn from_store(store: Store) -> Self {
         Self { store }
+    }
+
+    /// The names of the tables an answer's record references point at.
+    ///
+    /// # Why an answer cannot be rendered without this
+    ///
+    /// A record reference holds a table **id** and a record id, because that is
+    /// what the key grammar stores and what a reference has to be to survive a
+    /// rename. The name the language writes — `users:1` — lives in the catalog.
+    /// So a renderer handed a `Value` alone cannot produce a reference anybody
+    /// can use: the console would print `1:2` and a JSON client would receive
+    /// `"1:2"`, which is indistinguishable from a value it could follow and is
+    /// not one.
+    ///
+    /// # Why it is here rather than in each surface
+    ///
+    /// Because there are two of them. The console and the HTTP endpoint both
+    /// need this, and two implementations of "what is this table called" would
+    /// eventually disagree about a renamed table — with one surface answering
+    /// the old name and the other the new, which is worse than neither
+    /// answering.
+    ///
+    /// # Why it walks the answer first
+    ///
+    /// The catalog is only read when the answer actually holds a reference, so a
+    /// read of records that carry none costs a walk over values already in
+    /// memory rather than a catalog scan. Most answers hold none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read.
+    pub fn names_in(&self, records: &[(RecordId, Value)]) -> Result<BTreeMap<TableId, String>> {
+        let mut wanted = BTreeSet::new();
+        for (_, held) in records {
+            referenced(held, &mut wanted);
+        }
+        let mut named = BTreeMap::new();
+        if wanted.is_empty() {
+            return Ok(named);
+        }
+        let mut transaction = self.store.begin()?;
+        let catalog = Catalog::new(&mut transaction);
+        for table in wanted {
+            // A reference to a table that has been dropped keeps its id and
+            // gains no name, the same way a reference to a deleted record keeps
+            // its id: the field still says what it says.
+            if let Some(held) = catalog.table(table)? {
+                named.insert(table, held.name);
+            }
+        }
+        Ok(named)
     }
 
     /// The store underneath.

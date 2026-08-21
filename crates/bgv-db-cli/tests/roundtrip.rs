@@ -11,11 +11,13 @@
 //! written in a debugging form the lexer will not read, and a record reference
 //! cannot be written at all.
 //!
-//! **Two of the fifteen are deliberately absent from the fixture**: a `table`
-//! and a `record` both hold an id, and the name the language writes lives in the
-//! catalog, so neither can be rendered without a lookup the renderer has no way
-//! to make. That is Q-50 and it is a defect the JSON encoder shares. Excluding
-//! them keeps this test asserting something true rather than asserting nothing.
+//! **Two of the fifteen are absent from the fixture**, and no longer because
+//! they cannot be rendered. A `table` and a `record` hold an id, and the name
+//! comes from a resolver the caller supplies (`Db::names_in`) — which this test
+//! deliberately does not, because what it is checking is the *value* renderer
+//! and a resolver would make it a test of two things. That references render as
+//! `users:1` and paste back is asserted where a catalog exists: `routes.rs` for
+//! the JSON surface, and by hand for the console.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
@@ -92,7 +94,11 @@ fn every_value_kind_survives_being_printed_and_read_back() {
 
     // And the per-record form the command line actually prints, which puts the
     // id in front of the value.
-    let line = render::record(&bgv_db_types::RecordId::Int(9), &again);
+    let line = render::record(
+        &bgv_db_types::RecordId::Int(9),
+        &again,
+        &render::Names::new(),
+    );
     assert!(line.starts_with("9: {"), "{line}");
 }
 
@@ -104,5 +110,7 @@ fn every_value_kind_survives_being_printed_and_read_back() {
 mod render;
 
 fn bgv_db_cli_render(held: &Value) -> String {
-    render::value(held)
+    // The fixture holds no reference, by design — see the module note — so an
+    // empty resolver is the honest one here.
+    render::value(held, &render::Names::new())
 }

@@ -32,10 +32,20 @@
 //! language writes them as, bytes are hex. Each is a string, and each parses
 //! back through the same reader that read it from a script.
 
-use bgv_db::Value;
+use std::collections::BTreeMap;
+
+use bgv_db::{TableId, Value};
+
+/// What a table id is called, for the references an answer carries.
+///
+/// A record reference holds an **id** and the name lives in the catalog, so
+/// without this a client receives `"1:2"` — indistinguishable from a reference
+/// it could follow, and not one. `Db::names_in` builds it once per answer, and
+/// only when the answer holds a reference at all.
+pub(crate) type Names = BTreeMap<TableId, String>;
 
 /// Append `value` to `out` as JSON.
-pub(crate) fn write(out: &mut String, value: &Value) {
+pub(crate) fn write(out: &mut String, value: &Value, names: &Names) {
     match value {
         // Reached only at a position that has already decided to write
         // something; a field or an envelope key holding `none` is omitted by its
@@ -51,10 +61,13 @@ pub(crate) fn write(out: &mut String, value: &Value) {
             }
             string(out, &hex);
         }
-        Value::Duration(held) => string(out, &held.to_string()),
-        Value::Datetime(held) => string(out, &held.to_string()),
+        // Both use the writers that live beside their readers in
+        // `bgv_db_types::text`, so what a client receives parses back through
+        // the reader that read it from a script.
+        Value::Duration(held) => string(out, &held.to_literal()),
+        Value::Datetime(held) => string(out, &held.to_rfc3339()),
         Value::Uuid(_) | Value::Table(_) | Value::Record(_) | Value::Range(_) => {
-            string(out, &spelled(value));
+            string(out, &spelled(value, names));
         }
         Value::Array(items) => {
             out.push('[');
@@ -62,7 +75,7 @@ pub(crate) fn write(out: &mut String, value: &Value) {
                 if position > 0 {
                     out.push(',');
                 }
-                write(out, item);
+                write(out, item, names);
             }
             out.push(']');
         }
@@ -72,7 +85,7 @@ pub(crate) fn write(out: &mut String, value: &Value) {
                 if position > 0 {
                     out.push(',');
                 }
-                write(out, item);
+                write(out, item, names);
             }
             out.push(']');
         }
@@ -91,7 +104,7 @@ pub(crate) fn write(out: &mut String, value: &Value) {
                 }
                 string(out, name);
                 out.push(':');
-                write(out, held);
+                write(out, held, names);
                 written = written.saturating_add(1);
             }
             out.push('}');
@@ -120,7 +133,7 @@ fn number_of(out: &mut String, number: &bgv_db::Number) {
 }
 
 /// The text this language writes a value as.
-fn spelled(value: &Value) -> String {
+fn spelled(value: &Value, names: &Names) -> String {
     match value {
         Value::Uuid(bytes) => {
             let mut text = String::with_capacity(36);
@@ -132,8 +145,17 @@ fn spelled(value: &Value) -> String {
             }
             text
         }
-        Value::Table(id) => id.to_string(),
-        Value::Record(reference) => reference.to_string(),
+        // The name where the catalog has one. A table that has been dropped
+        // keeps its id, the way a reference to a deleted record does — and it is
+        // spelled visibly as an id rather than as a name that would not resolve.
+        Value::Table(id) => names
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| format!("<table {id}>")),
+        Value::Record(reference) => names.get(&reference.table).map_or_else(
+            || format!("<record {reference}>"),
+            |named| format!("{named}:{}", reference.id),
+        ),
         other => other.type_name().to_owned(),
     }
 }
@@ -172,11 +194,11 @@ mod tests {
 
     use bgv_db::{Number, Value};
 
-    use super::write;
+    use super::{Names, write};
 
     fn json(value: &Value) -> String {
         let mut out = String::new();
-        write(&mut out, value);
+        write(&mut out, value, &Names::new());
         out
     }
 

@@ -461,3 +461,28 @@ fn a_store_with_a_background_failure_is_taken_out_of_rotation() {
     // somebody to read code at three in the morning.
     assert!(body.contains("flush or compaction"), "{body}");
 }
+
+#[test]
+fn a_record_reference_comes_back_as_something_a_client_can_follow() {
+    // Before this, a reference rendered as `"1:2"` — the table's **id** where
+    // its name belongs — which is indistinguishable from a reference a client
+    // could use and is not one. The same defect was in the console, and one
+    // resolver serves both, because two would eventually disagree about a table
+    // that had been renamed.
+    let (_node, address) = node();
+    let script = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
+                  USE DATABASE orders; DEFINE TABLE users; DEFINE TABLE posts; \
+                  CREATE users:1 = { name: 'ada' }; \
+                  CREATE posts:1 = { author: users:1, tags: [users:1] }; \
+                  SELECT * FROM posts:1;";
+    let (status, body) = request(&address, "POST", "/script", script);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(r#""author":"users:1""#), "{body}");
+    // And inside an array, because a reference can be anywhere in a record and a
+    // resolver that only walked the top level would miss the interesting shapes.
+    assert!(body.contains(r#"["users:1"]"#), "{body}");
+    assert!(
+        !body.contains(r#""1:1""#),
+        "an id leaked into the answer: {body}"
+    );
+}

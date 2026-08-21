@@ -96,7 +96,7 @@ pub fn run(
         match session.run(&script) {
             Ok(outcomes) => {
                 for outcome in &outcomes {
-                    report(out, outcome)?;
+                    report(db, out, outcome)?;
                 }
             }
             Err(refusal) => {
@@ -119,18 +119,29 @@ pub fn run(
 }
 
 /// What one statement answered.
-fn report(out: &mut impl Write, outcome: &bgv_db::Outcome) -> std::io::Result<()> {
+///
+/// The table names are resolved once per answer rather than per value, and only
+/// when the answer holds a reference at all — `Db::names_in` walks it first, so
+/// a read of records that carry none never touches the catalog.
+fn report(db: &Db, out: &mut impl Write, outcome: &bgv_db::Outcome) -> std::io::Result<()> {
     match outcome.records() {
         Some([]) => writeln!(out, "(no records)"),
         Some(records) => {
+            let names = db.names_in(records).unwrap_or_default();
             for (id, held) in records {
-                writeln!(out, "{}", render::record(id, held))?;
+                writeln!(out, "{}", render::record(id, held, &names))?;
             }
             let path = outcome.path().map_or("", bgv_db::AccessPath::name);
             writeln!(out, "({} record(s), via {path})", records.len())
         }
         None => match outcome.value() {
-            Some(held) => writeln!(out, "{}", render::value(held)),
+            Some(held) => {
+                // One value, wrapped so the same walk finds its references.
+                let held = held.clone();
+                let one = [(bgv_db_types::RecordId::Int(0), held)];
+                let names = db.names_in(&one).unwrap_or_default();
+                writeln!(out, "{}", render::value(&one[0].1, &names))
+            }
             None => writeln!(out, "ok"),
         },
     }

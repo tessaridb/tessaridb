@@ -116,12 +116,28 @@ pub(crate) fn script(db: &Db, source: &str, credentials: Option<&Credentials>) -
     }
     match session.run(source) {
         Ok(outcomes) => {
+            // Resolved once for the whole answer rather than per outcome, and
+            // only when something in it holds a reference: a record reference
+            // carries a table id, and a client receiving `"1:2"` cannot follow
+            // it. See `Db::names_in`.
+            let referenced: Vec<(bgv_db::RecordId, bgv_db::Value)> = outcomes
+                .iter()
+                .flat_map(|outcome| match outcome {
+                    Outcome::Records { records, .. } => records.clone(),
+                    Outcome::Value(held) => {
+                        vec![(bgv_db::RecordId::Int(0), held.clone())]
+                    }
+                    _ => Vec::new(),
+                })
+                .collect();
+            let names = db.names_in(&referenced).unwrap_or_default();
+
             let mut body = String::from(r#"{"results":["#);
             for (position, outcome) in outcomes.iter().enumerate() {
                 if position > 0 {
                     body.push(',');
                 }
-                encode(&mut body, outcome);
+                encode(&mut body, outcome, &names);
             }
             body.push_str("]}");
             Answer::new(200, body)
@@ -131,7 +147,7 @@ pub(crate) fn script(db: &Db, source: &str, credentials: Option<&Credentials>) -
 }
 
 /// One outcome, as the object a caller parses.
-fn encode(body: &mut String, outcome: &Outcome) {
+fn encode(body: &mut String, outcome: &Outcome, names: &json::Names) {
     match outcome {
         Outcome::Done => body.push_str(r#"{"kind":"done"}"#),
         Outcome::Value(value) => {
@@ -141,7 +157,7 @@ fn encode(body: &mut String, outcome: &Outcome) {
             // carried by the key — see `json`.
             if value.is_present() {
                 body.push_str(r#","value":"#);
-                json::write(body, value);
+                json::write(body, value, names);
             }
             body.push('}');
         }
@@ -166,7 +182,7 @@ fn encode(body: &mut String, outcome: &Outcome) {
                 body.push_str(r#"{"id":"#);
                 json::string(body, &id.to_string());
                 body.push_str(r#","value":"#);
-                json::write(body, record);
+                json::write(body, record, names);
                 body.push('}');
             }
             body.push_str("]}");

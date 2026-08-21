@@ -24,17 +24,27 @@
 //! covering all fifteen — so a type added to the language without a rendering
 //! fails a test rather than printing something that cannot be read back.
 
-use bgv_db_types::{Number, Value};
+use std::collections::BTreeMap;
+
+use bgv_db_types::{Number, TableId, Value};
+
+/// What a table id is called, for the references an answer carries.
+///
+/// A record reference holds an **id**, and the name the language writes lives in
+/// the catalog — so without this a reference renders as `1:2`, which is not
+/// something anybody can paste back. `Db::names_in` builds it, and builds it
+/// only when an answer holds a reference at all.
+pub type Names = BTreeMap<TableId, String>;
 
 /// One value, in the language's own syntax.
 #[must_use]
-pub fn value(held: &Value) -> String {
+pub fn value(held: &Value, names: &Names) -> String {
     let mut out = String::new();
-    write(&mut out, held);
+    write(&mut out, held, names);
     out
 }
 
-fn write(out: &mut String, held: &Value) {
+fn write(out: &mut String, held: &Value, names: &Names) {
     match held {
         Value::None => out.push_str("NONE"),
         Value::Null => out.push_str("NULL"),
@@ -67,21 +77,25 @@ fn write(out: &mut String, held: &Value) {
             }
             string_into(out, &text);
         }
-        // A table and a record reference both hold an **id**, and the name
-        // lives in the catalog — so neither can be written as the language
-        // writes it without a lookup this function has no way to make. They are
-        // rendered as what they are, and Q-50 holds the fix (a name resolver at
-        // the rendering boundary, which the JSON encoder needs too, for the same
-        // reason and with the same symptom).
-        Value::Table(id) => out.push_str(&format!("<table {id}>")),
-        Value::Record(reference) => out.push_str(&format!("<record {reference}>")),
+        // A table and a record reference both hold an **id**; the name comes
+        // from the resolver. A table whose name is not there was dropped, and
+        // keeps its id the way a reference to a deleted record does — rendered
+        // visibly as not-a-literal rather than as a name that would not parse.
+        Value::Table(id) => match names.get(id) {
+            Some(named) => out.push_str(named),
+            None => out.push_str(&format!("<table {id}>")),
+        },
+        Value::Record(reference) => match names.get(&reference.table) {
+            Some(named) => out.push_str(&format!("{named}:{}", reference.id)),
+            None => out.push_str(&format!("<record {reference}>")),
+        },
         Value::Array(items) => {
             out.push('[');
             for (position, item) in items.iter().enumerate() {
                 if position > 0 {
                     out.push_str(", ");
                 }
-                write(out, item);
+                write(out, item, names);
             }
             out.push(']');
         }
@@ -91,7 +105,7 @@ fn write(out: &mut String, held: &Value) {
                 if position > 0 {
                     out.push_str(", ");
                 }
-                write(out, item);
+                write(out, item, names);
             }
             out.push(']');
         }
@@ -109,7 +123,7 @@ fn write(out: &mut String, held: &Value) {
                     string_into(out, name);
                 }
                 out.push_str(": ");
-                write(out, item);
+                write(out, item, names);
             }
             out.push_str(" }");
         }
@@ -117,9 +131,9 @@ fn write(out: &mut String, held: &Value) {
             // A range's ends are bounds, and the language spells an inclusive
             // upper end `..=`. An unbounded end is written as nothing, which is
             // what the grammar reads.
-            bound_into(out, &range.start, false);
+            bound_into(out, &range.start, false, names);
             out.push_str("..");
-            bound_into(out, &range.end, true);
+            bound_into(out, &range.end, true, names);
         }
     }
 }
@@ -157,15 +171,15 @@ fn number_into(out: &mut String, held: &Number) {
 ///
 /// `upper` decides where the `=` of an inclusive bound goes: the language writes
 /// it after the dots, so it belongs to the upper end and never to the lower one.
-fn bound_into(out: &mut String, held: &core::ops::Bound<Value>, upper: bool) {
+fn bound_into(out: &mut String, held: &core::ops::Bound<Value>, upper: bool, names: &Names) {
     match held {
         core::ops::Bound::Included(value) => {
             if upper {
                 out.push('=');
             }
-            write(out, value);
+            write(out, value, names);
         }
-        core::ops::Bound::Excluded(value) => write(out, value),
+        core::ops::Bound::Excluded(value) => write(out, value, names),
         core::ops::Bound::Unbounded => {}
     }
 }
@@ -198,8 +212,8 @@ fn is_a_name(text: &str) -> bool {
 
 /// One record of an answer, as `id: value`.
 #[must_use]
-pub fn record(id: &bgv_db_types::RecordId, held: &Value) -> String {
-    format!("{id}: {}", value(held))
+pub fn record(id: &bgv_db_types::RecordId, held: &Value, names: &Names) -> String {
+    format!("{id}: {}", value(held, names))
 }
 
 #[cfg(test)]
@@ -210,7 +224,12 @@ mod tests {
 
     use bgv_db_types::{Number, Value};
 
-    use super::{is_a_name, value};
+    use super::{Names, is_a_name, value};
+
+    /// No table has a name in these — none of them renders a reference.
+    fn unnamed() -> Names {
+        Names::new()
+    }
 
     #[test]
     fn a_decimal_keeps_the_marker_that_keeps_it_exact() {
@@ -219,19 +238,19 @@ mod tests {
         let held = Value::Number(Number::Decimal(
             rust_decimal::Decimal::try_from(12.34_f64).expect("a decimal"),
         ));
-        assert_eq!(value(&held), "dec 12.34");
+        assert_eq!(value(&held, &unnamed()), "dec 12.34");
     }
 
     #[test]
     fn a_whole_float_keeps_a_fraction_so_it_does_not_read_back_as_an_integer() {
-        assert_eq!(value(&Value::Number(Number::float(2.0))), "2.0");
-        assert_eq!(value(&Value::Number(Number::from(2_i64))), "2");
+        assert_eq!(value(&Value::Number(Number::float(2.0)), &unnamed()), "2.0");
+        assert_eq!(value(&Value::Number(Number::from(2_i64)), &unnamed()), "2");
     }
 
     #[test]
     fn a_string_that_would_end_itself_is_escaped() {
-        assert_eq!(value(&Value::from("it's")), "'it\\'s'");
-        assert_eq!(value(&Value::from("a\nb")), "'a\\nb'");
+        assert_eq!(value(&Value::from("it's"), &unnamed()), "'it\\'s'");
+        assert_eq!(value(&Value::from("a\nb"), &unnamed()), "'a\\nb'");
     }
 
     #[test]
@@ -240,7 +259,7 @@ mod tests {
             ("plain".to_owned(), Value::from(1_i64)),
             ("with space".to_owned(), Value::from(2_i64)),
         ]);
-        let rendered = value(&Value::Object(fields));
+        let rendered = value(&Value::Object(fields), &unnamed());
         assert!(rendered.contains("plain: 1"), "{rendered}");
         assert!(rendered.contains("'with space': 2"), "{rendered}");
     }
@@ -263,6 +282,6 @@ mod tests {
             Value::Object(BTreeMap::from([("a".to_owned(), Value::from(1_i64))])),
             Value::Array(vec![Value::None, Value::Null]),
         ]);
-        assert_eq!(value(&held), "[{ a: 1 }, [NONE, NULL]]");
+        assert_eq!(value(&held, &unnamed()), "[{ a: 1 }, [NONE, NULL]]");
     }
 }
