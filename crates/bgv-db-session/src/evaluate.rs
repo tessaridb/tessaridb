@@ -128,14 +128,34 @@ impl Session<'_> {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 let wanted = self.evaluate(transaction, value)?;
 
-                // An index serves an equality on a named field. Nothing indexes
-                // a text match yet, and nothing indexes `ANY` — both fall to a
-                // scan, and the statement stays exactly the same on the day one
-                // does.
+                // An index serves an equality on a named field.
                 if *test == Test::Equals {
                     if let Some(index) = self.index_on_field(transaction, id, &field.text)? {
                         let found = transaction.records_by_index(&index, &[wanted])?;
                         return Ok((decode_all(found)?, AccessPath::Index));
+                    }
+                }
+
+                // And it serves a pattern that is a literal followed by a
+                // trailing `%`, because that asks for the values beginning with
+                // the literal — a range over the same ordered index. No new
+                // index kind, no new statement, and the same records the scan
+                // would have found. Every other shape of pattern, and every
+                // `ILIKE`, keeps the scan: a case-folded or infix match needs a
+                // second stored form, which is an analyzer decision, and serving
+                // a narrower answer quickly would be worse than serving the
+                // right one slowly.
+                if *test == Test::Like {
+                    if let Value::String(pattern) = &wanted {
+                        if let Some(prefix) = literal_prefix(pattern) {
+                            if let Some(index) =
+                                self.index_on_field(transaction, id, &field.text)?
+                            {
+                                let found =
+                                    transaction.records_with_string_prefix(&index, &prefix)?;
+                                return Ok((decode_all(found)?, AccessPath::Index));
+                            }
+                        }
                     }
                 }
 
@@ -236,6 +256,37 @@ fn holds(held: &Value, wanted: &Value) -> bool {
         Value::Set(items) => items.contains(wanted),
         _ => false,
     }
+}
+
+/// The literal a pattern begins with, when the pattern is exactly that literal
+/// followed by a trailing `%`.
+///
+/// Only that shape. For it, "begins with the literal" and "matches the pattern"
+/// are the same statement, so a range read over the index needs no second test
+/// and cannot answer differently from a scan. `'%a%'`, `'a_b%'` and `'a%b'` are
+/// all left to the scan rather than served from a bound that would be a guess.
+///
+/// The escape is honoured, so `'50\%%'` asks for values beginning with `50%`.
+fn literal_prefix(pattern: &str) -> Option<String> {
+    let mut literal = String::new();
+    let mut characters = pattern.chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '\\' => literal.push(characters.next()?),
+            '_' => return None,
+            '%' => {
+                return match (characters.next(), literal.is_empty()) {
+                    // A trailing `%` and something before it.
+                    (None, false) => Some(literal),
+                    _ => None,
+                };
+            }
+            other => literal.push(other),
+        }
+    }
+    // No wildcard at all. That is an equality written the long way, and it is
+    // left alone rather than quietly rewritten into one.
+    None
 }
 
 /// SQL's `LIKE`, over the whole value.

@@ -176,8 +176,9 @@ decided by the target rather than by a cost model:
 |---|---|
 | `FROM users:1` | the record by its identity |
 | `FROM users WHERE <indexed field> = <value>` | the index |
+| `FROM users WHERE <indexed field> LIKE '<literal>%'` | the index, as a range |
 | `FROM users WHERE <field> = <value>` (no index) | the table, testing each record |
-| `FROM users WHERE <field> LIKE <pattern>` | the table, testing each record |
+| `FROM users WHERE <field> LIKE <any other pattern>` | the table, testing each record |
 | `FROM users` | every record of the table |
 
 A `WHERE` names a field and a test:
@@ -213,11 +214,27 @@ answers that a real text index later disagrees with. A query whose answer change
 when an index is added is worse than a slow one.
 
 **Which access path runs is decided by what exists, not by how the query is
-written.** An equality on an indexed field is an index read; everything else
-reads the table and tests each record. The statement is identical either way,
-so adding an index later makes existing queries faster without rewriting any of
-them. The path taken is reported with the result, so a scan is visible rather
+written.** An index read serves two shapes: an equality on an indexed field, and
+a `LIKE` pattern that is a literal followed by a trailing `%`, which asks for the
+values beginning with that literal and is a range over the same index. Everything
+else reads the table and tests each record. The statement is identical either
+way, so adding an index later makes existing queries faster without rewriting any
+of them. The path taken is reported with the result, so a scan is visible rather
 than folklore.
+
+| Filter | With an index on the field |
+|---|---|
+| `field = 'ada'` | index read |
+| `field LIKE 'ada%'` | index read — a range over the values beginning with `ada` |
+| `field LIKE '%ada'`, `'%ada%'`, `'a_a%'`, `'ada%lace'` | scan |
+| `field ILIKE 'ada%'` | scan |
+| `field CONTAINS 'ada'` | scan |
+
+`ILIKE` keeps the scan in every shape, because the index holds one case and
+folding at read time is not what it stores. An infix or suffix pattern keeps it
+because an ordered index answers "begins with" and not "contains". Both are
+reported as scans rather than served as a narrower answer quickly — a statement
+whose answer changes when an index appears is worse than a slow one.
 
 That property holds on populated data too, and it is the reason `DEFINE INDEX`
 builds its entries in the same commit (§4). An index that existed while empty

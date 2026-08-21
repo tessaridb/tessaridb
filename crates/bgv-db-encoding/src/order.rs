@@ -107,6 +107,24 @@ impl KeyWriter {
     /// which is what makes a shorter component sort before a longer one that
     /// extends it.
     pub fn put_variable(&mut self, value: &[u8]) -> &mut Self {
+        self.put_variable_unterminated(value);
+        self.buffer.push(ESCAPE);
+        self.buffer.push(TERMINATOR);
+        self
+    }
+
+    /// Append the escaped body of a variable-length component, with no
+    /// terminator.
+    ///
+    /// This is what a **prefix** of such a component encodes to, and it is what
+    /// makes a range scan over "values beginning with P" exact: the escape is
+    /// byte-local, so these bytes are a byte-prefix of the encoding of `value`
+    /// exactly when `value` begins with them.
+    ///
+    /// It exists so the escape rule has one implementation rather than two. A
+    /// second copy that drifted would not fail to compile — it would return the
+    /// wrong rows.
+    pub fn put_variable_unterminated(&mut self, value: &[u8]) -> &mut Self {
         self.buffer.reserve(value.len().saturating_add(2));
         for &byte in value {
             if byte == ESCAPE {
@@ -116,8 +134,6 @@ impl KeyWriter {
                 self.buffer.push(byte);
             }
         }
-        self.buffer.push(ESCAPE);
-        self.buffer.push(TERMINATOR);
         self
     }
 

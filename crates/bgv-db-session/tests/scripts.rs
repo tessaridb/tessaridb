@@ -602,3 +602,143 @@ fn a_qualified_name_reaches_another_database_in_the_same_namespace() {
         &Value::String("grace".to_owned())
     );
 }
+
+#[test]
+fn a_prefix_pattern_on_an_indexed_field_is_a_range_read_answering_exactly_as_the_scan_did() {
+    use bgv_db_session::AccessPath;
+
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE people;\n\
+             CREATE people:1 = { name: 'ada lovelace' };\n\
+             CREATE people:2 = { name: 'adam smith' };\n\
+             CREATE people:3 = { name: 'grace hopper' };\n\
+             CREATE people:4 = { name: 'ad' };",
+        )
+        .unwrap();
+
+    let by_scan = session
+        .run("SELECT * FROM people WHERE name LIKE 'ada%';")
+        .unwrap();
+    assert_eq!(by_scan[0].path(), Some(AccessPath::Scan));
+    assert_eq!(
+        by_scan[0].records().unwrap().len(),
+        2,
+        "'adam smith' begins with 'ada' too"
+    );
+
+    session
+        .run("DEFINE INDEX by_name ON people FIELDS name;")
+        .unwrap();
+
+    let by_index = session
+        .run("SELECT * FROM people WHERE name LIKE 'ada%';")
+        .unwrap();
+    assert_eq!(by_index[0].path(), Some(AccessPath::Index));
+    // The records, not the count: a plan that returns the right number of the
+    // wrong rows is the failure this comparison exists to catch.
+    assert_eq!(by_index[0].records(), by_scan[0].records());
+
+    // A prefix shorter than a stored value, and one that is a whole value.
+    for (pattern, expected) in [("ad%", 3), ("ada lovelace%", 1), ("adam%", 1), ("z%", 0)] {
+        let found = session
+            .run(&format!(
+                "SELECT * FROM people WHERE name LIKE '{pattern}';"
+            ))
+            .unwrap();
+        assert_eq!(found[0].path(), Some(AccessPath::Index), "{pattern}");
+        assert_eq!(found[0].records().unwrap().len(), expected, "{pattern}");
+    }
+}
+
+#[test]
+fn only_a_trailing_wildcard_uses_the_index_and_the_rest_keep_the_scan() {
+    // The invariant that makes this safe to add: where the index cannot answer
+    // the exact question, the scan does, and the cost is reported rather than
+    // the answer narrowed.
+    use bgv_db_session::AccessPath;
+
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE people;\n\
+             CREATE people:1 = { name: 'ada lovelace' };\n\
+             DEFINE INDEX by_name ON people FIELDS name;",
+        )
+        .unwrap();
+
+    for pattern in ["%lovelace", "%love%", "a_a%", "ada%lace", "%"] {
+        let found = session
+            .run(&format!(
+                "SELECT * FROM people WHERE name LIKE '{pattern}';"
+            ))
+            .unwrap();
+        assert_eq!(found[0].path(), Some(AccessPath::Scan), "{pattern}");
+    }
+
+    // ILIKE keeps the scan even in the shape LIKE would index, because the index
+    // stores one case and folding at query time is not what it holds.
+    let folded = session
+        .run("SELECT * FROM people WHERE name ILIKE 'ADA%';")
+        .unwrap();
+    assert_eq!(folded[0].path(), Some(AccessPath::Scan));
+    assert_eq!(folded[0].records().unwrap().len(), 1);
+}
+
+#[test]
+fn an_escaped_wildcard_in_the_prefix_is_read_as_the_character_it_escapes() {
+    use bgv_db_session::AccessPath;
+
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE codes;\n\
+             CREATE codes:1 = { label: '50% off' };\n\
+             CREATE codes:2 = { label: '50 off' };\n\
+             DEFINE INDEX by_label ON codes FIELDS label;",
+        )
+        .unwrap();
+
+    let found = session
+        // Two backslashes in the script: the lexer resolves them to one, so the
+        // pattern the matcher sees is `50\%%` — an escaped `%`, then a wildcard.
+        .run("SELECT * FROM codes WHERE label LIKE '50\\\\%%';")
+        .unwrap();
+    assert_eq!(found[0].path(), Some(AccessPath::Index));
+    assert_eq!(found[0].records().unwrap().len(), 1);
+}
+
+#[test]
+fn a_prefix_read_sees_this_transactions_own_writes_and_not_its_stale_entries() {
+    use bgv_db_session::AccessPath;
+
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE people;\n\
+             CREATE people:1 = { name: 'ada lovelace' };\n\
+             DEFINE INDEX by_name ON people FIELDS name;",
+        )
+        .unwrap();
+
+    let outcomes = session
+        .run(
+            "BEGIN;\n\
+             CREATE people:2 = { name: 'adam smith' };\n\
+             UPDATE people:1 = { name: 'grace hopper' };\n\
+             SELECT * FROM people WHERE name LIKE 'ad%';\n\
+             COMMIT;",
+        )
+        .unwrap();
+
+    let found = &outcomes[3];
+    assert_eq!(found.path(), Some(AccessPath::Index));
+    let records = found.records().unwrap();
+    assert_eq!(records.len(), 1, "the new record, and not the moved one");
+    assert_eq!(records[0].0.to_string(), "2");
+}

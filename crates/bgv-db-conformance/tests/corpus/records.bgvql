@@ -158,3 +158,24 @@ SELECT * FROM guests WHERE handle = 'katherine';
 CREATE members:3 = { handle: 'ada' };
 DEFINE INDEX by_unique_handle ON members FIELDS handle UNIQUE;
 --- expect: error UniqueViolation
+
+--- case: a prefix pattern on an indexed field is answered by the index
+DEFINE TABLE staff;
+CREATE staff:1 = { handle: 'ada lovelace' };
+CREATE staff:2 = { handle: 'adam smith' };
+CREATE staff:3 = { handle: 'grace hopper' };
+DEFINE INDEX by_handle ON staff FIELDS handle;
+SELECT * FROM staff WHERE handle LIKE 'ada%';
+--- expect: rows 2
+
+--- case: a prefix that matches one value
+SELECT * FROM staff WHERE handle LIKE 'grace%';
+--- expect: rows 1
+
+--- case: an infix pattern still answers correctly, over a scan
+SELECT * FROM staff WHERE handle LIKE '%smith';
+--- expect: rows 1
+
+--- case: ILIKE answers the folded question over a scan
+SELECT * FROM staff WHERE handle ILIKE 'ADA%';
+--- expect: rows 2

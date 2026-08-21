@@ -74,6 +74,18 @@ const BOUND_UNBOUNDED: u8 = 0;
 const BOUND_INCLUDED: u8 = 1;
 const BOUND_EXCLUDED: u8 = 2;
 
+/// Append the bytes every encoded string beginning with `prefix` starts with.
+///
+/// The tag and the escaped body, and nothing else: no terminator, no end
+/// marker. Bounding a scan with this asks "values beginning with `prefix`" and
+/// gets exactly them, because the escape is byte-local (see
+/// [`KeyWriter::put_variable_unterminated`]).
+pub(crate) fn put_string_prefix(writer: &mut KeyWriter, prefix: &str) {
+    writer
+        .put_u8(TAG_STRING)
+        .put_variable_unterminated(prefix.as_bytes());
+}
+
 /// Append `value` in its order-preserving form.
 pub(crate) fn put(writer: &mut KeyWriter, value: &Value) {
     match value {

@@ -29,7 +29,7 @@ use std::ops::Bound;
 
 use bgv_db_constants::MAX_COMMIT_ATTEMPTS;
 use bgv_db_encoding::{
-    IndexAddress, IndexTarget, IndexValues, LogRecord, Mutation, RecordKey, RecordValue,
+    IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, RecordKey, RecordValue,
     SecondaryIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
 };
 use bgv_db_kv::{KeyRange, ScanDirection, ScanRequest};
@@ -265,6 +265,106 @@ impl<'a> Transaction<'a> {
             }
         }
         Ok(found.into_iter().collect())
+    }
+
+    /// The records an index says hold a string beginning with `prefix`, as of
+    /// this transaction's snapshot.
+    ///
+    /// A range read rather than a point read, and exact rather than approximate:
+    /// a string encodes as its tag, its escaped bytes and a terminator, and the
+    /// escape is byte-local, so the entries beginning with the encoded prefix are
+    /// exactly the entries whose value begins with `prefix`. Nothing needs
+    /// filtering out afterwards.
+    ///
+    /// Only the **first** indexed field is bounded, so this serves an index on
+    /// that field and the leading field of a composite one. Candidates are
+    /// confirmed at the reader's own snapshot exactly as
+    /// [`Transaction::records_by_index`] does, with the same soundness and the
+    /// same incompleteness at an older snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or stored bytes cannot be
+    /// decoded.
+    pub fn records_with_string_prefix(
+        &self,
+        index: &IndexDefinition,
+        prefix: &str,
+    ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let kind = if index.unique {
+            KeyKind::UniqueIndex
+        } else {
+            KeyKind::SecondaryIndex
+        };
+        let mut bounds = address.prefix(kind);
+        bounds.extend_from_slice(&IndexValues::string_prefix(prefix));
+        let request = ScanRequest {
+            keyspace: kind.keyspace(),
+            range: KeyRange::prefix(&bounds),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+
+        let mut found: BTreeMap<RecordId, Vec<u8>> = BTreeMap::new();
+        for (key, value) in self.store.backend().scan(&request)? {
+            // A unique entry carries the record it points at in its value; a
+            // secondary one carries it in its key.
+            let id = if index.unique {
+                IndexTarget::decode(value.as_slice())?.id
+            } else {
+                SecondaryIndexKey::decode(key.as_slice())?.id
+            };
+            let record = RecordAddress::new(index.namespace, index.database, index.table, id);
+            if let Some(payload) = self.confirm_prefix(index, &record, prefix)? {
+                found.insert(record.id, payload);
+            }
+        }
+
+        // The same reason as the equality path: a record this transaction wrote
+        // has no entry yet, and one it changed still has the entry for its
+        // former value.
+        for pending in self.writes.keys() {
+            if pending.namespace != index.namespace
+                || pending.database != index.database
+                || pending.table != index.table
+            {
+                continue;
+            }
+            match self.confirm_prefix(index, pending, prefix)? {
+                Some(payload) => {
+                    found.insert(pending.id.clone(), payload);
+                }
+                None => {
+                    found.remove(&pending.id);
+                }
+            }
+        }
+        Ok(found.into_iter().collect())
+    }
+
+    /// The record's payload, if it exists at the snapshot and its first indexed
+    /// value is still a string beginning with `prefix`.
+    fn confirm_prefix(
+        &self,
+        index: &IndexDefinition,
+        address: &RecordAddress,
+        prefix: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(payload) = self.get(address)? else {
+            return Ok(None);
+        };
+        let value = decode_payload(&payload)?;
+        let Some(values) = crate::index::project(index, &value) else {
+            return Ok(None);
+        };
+        if values
+            .as_slice()
+            .starts_with(&IndexValues::string_prefix(prefix))
+        {
+            return Ok(Some(payload));
+        }
+        Ok(None)
     }
 
     /// The record ids the index entries point at, unconfirmed.

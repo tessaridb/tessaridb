@@ -115,6 +115,19 @@ impl IndexValues {
         Self(writer.finish())
     }
 
+    /// The bytes shared by every entry whose first indexed value is a string
+    /// beginning with `prefix`.
+    ///
+    /// Not an [`IndexValues`] — it is deliberately *not* a complete encoding,
+    /// because a complete one selects one value and this selects a range. Append
+    /// it to an index's own prefix and scan.
+    #[must_use]
+    pub fn string_prefix(prefix: &str) -> Vec<u8> {
+        let mut writer = KeyWriter::new();
+        index_value::put_string_prefix(&mut writer, prefix);
+        writer.finish()
+    }
+
     /// The encoded bytes.
     #[must_use]
     pub fn as_slice(&self) -> &[u8] {
