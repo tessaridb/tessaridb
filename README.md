@@ -7,10 +7,51 @@ time-series data in one engine, behind one query language — **bgvQL** — over
 pluggable key–value substrate. It runs as an embedded library, as a single self-hosted
 node, or as a cluster that distributes both data and engine roles across nodes.
 
-> **Status: pre-alpha.** Nothing here is usable yet. The repository currently
-> holds the workspace skeleton and the design record. Interfaces, the query
-> language and the on-disk format are all unstable and will change without
-> notice.
+> **Status: pre-alpha.** Embedded use works today; the node, the network
+> interfaces and the cluster do not exist yet. Interfaces, the query language
+> and the on-disk format are all unstable and will change without notice.
+
+## Opening one
+
+```rust
+use bgv_db::Db;
+
+let db = Db::open("./data")?;          // or Db::in_memory()
+let mut session = db.session();
+
+session.run(
+    "DEFINE NAMESPACE prod;
+     USE NAMESPACE prod;
+     DEFINE DATABASE orders;
+     USE DATABASE orders;
+     DEFINE TABLE users SCHEMAFULL;
+     DEFINE FIELD email ON users TYPE string REQUIRED;
+     DEFINE FIELD joined ON users TYPE datetime DEFAULT time::now();
+     DEFINE INDEX by_email ON users FIELDS email UNIQUE;",
+)?;
+
+session.run("CREATE users:1 = { email: 'ada@example.com', city: 'Paris' };")?;
+
+let found = session.run(
+    "SELECT email, string::upper(city) AS city
+       FROM users
+      WHERE email LIKE 'ada%' AND city = 'Paris';",
+)?;
+```
+
+The two ways of opening differ in where the bytes live and in nothing else.
+
+Following what changes is a cursor over the same log that carries replication,
+so it needs no setup and loses nothing by being slow:
+
+```rust
+use bgv_db::{Db, Sequence, Watch};
+
+let mut watching = Db::subscribe(Sequence::ZERO, Watch::default());
+for change in db.poll(&mut watching, 128)? {
+    println!("{:?} {:?}", change.id, change.kind);
+}
+```
 
 ## Why
 
