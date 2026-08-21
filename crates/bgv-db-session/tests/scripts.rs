@@ -3087,3 +3087,31 @@ fn a_filter_reports_the_index_it_used_and_the_scan_when_there_is_none() {
         .unwrap();
     assert_eq!(scanned[0].path(), Some(AccessPath::Scan));
 }
+
+#[test]
+fn one_statement_observes_one_instant() {
+    // A behaviour change, and an improvement, so it is asserted rather than
+    // assumed. `time::now()` in a projection used to be evaluated once per
+    // record — so a read of a thousand rows could observe a thousand instants,
+    // and an `ORDER BY time::now()` would order by the clock rather than by
+    // anything the caller asked about. Folding a constant subexpression once per
+    // statement is what makes a read mean one moment.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE users;\n\
+             CREATE users:1 = { name: 'ada' };\n\
+             CREATE users:2 = { name: 'grace' };\n\
+             CREATE users:3 = { name: 'edith' };",
+        )
+        .unwrap();
+
+    let outcomes = session.run("SELECT time::now() AS at FROM users;").unwrap();
+    let records = outcomes[0].records().unwrap();
+    assert_eq!(records.len(), 3);
+    let first = field(&records[0].1, "at");
+    for (_, record) in records {
+        assert_eq!(field(record, "at"), first, "one statement, two instants");
+    }
+}

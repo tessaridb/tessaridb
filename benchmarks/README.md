@@ -25,34 +25,51 @@ sorted, and indexed by nearest rank, so a reported latency is one that was
 observed. A cumulative histogram reports a healthy p99 straight through a real
 regression, which is the failure this avoids rather than economises on.
 
-## What the first baselines said
+## What the first baselines said, and what they corrected
 
 Recorded 2026-08-22 on macOS / aarch64, 2000 records per workload, release build.
-Two of these are worth more than the numbers.
 
-**A nearest-neighbour read costs the same on both backends** — 12.6 ms in memory
-and 12.8 ms on disk. It is therefore **CPU-bound in the distance computation**,
-not I/O-bound, and an index helps by reducing how many distances are computed
-rather than how many pages are read. That is the case for the HNSW index stated
-as a measurement instead of an intuition, and it says the benefit does not depend
-on the engine underneath.
+**The harness found a ten-millisecond bug on its first day, and then disproved
+the conclusion drawn from its own first run.** That sequence is worth keeping.
 
-**A scan is CPU-bound and an index read is I/O-bound.** `filter-scan` is nearly
-the same on both backends (880 µs / 1043 µs) because the cost is decoding and
-testing two thousand records; `filter-index` doubles on disk (51 µs / 102 µs)
-because the cost is reads. The index still wins by 10× on disk.
+The first run showed a nearest-neighbour read at 12.5 ms and — because it cost
+the same in memory as on disk, where every other workload differs by a factor —
+the conclusion recorded was "CPU-bound in the distance computation". True about
+the CPU, wrong about the distance.
 
-The rest, for the record:
+Decomposing it settled the question. Sorting the same 2000 records by a plain
+path costs 1.5 ms; the same distance with a **one**-component query vector costs
+2.3 ms, and with four or eight components it costs the same again. A short query
+is a length mismatch, so the distance returns `+∞` before doing any arithmetic —
+and every record scoring `+∞` means the sort has nothing to order. The cost
+appeared only at the width where the keys finally differed.
+
+So the time was in the **sort**. The value system defines the order across
+numbers by their decimal projections, so comparing two floats converts both — and
+a sort compares each key about `log n` times. Two thousand float keys meant some
+forty thousand conversions to answer twenty-two thousand questions. Projecting
+each key once, eagerly, hands the comparator the identical decimals it would have
+computed: **12.5 ms → 3.7 ms**, with a test asserting that every pair of values
+compares the same way before and after.
 
 | Claim | In memory | On disk |
 |---|---|---|
-| an index beats the scan of the same equality | 880 µs → 51 µs (17×) | 1043 µs → 102 µs (10×) |
-| a search index beats the scan of the same term | 1600 µs → 7.2 µs (222×) | 1760 µs → 16 µs (110×) |
-| ranking costs little over the search it ranks | 7.2 µs → 11.6 µs | 16 µs → 24 µs |
-| durability costs about seven times a write | 7.1 µs | 48.5 µs |
+| an index beats the scan of the same equality | 849 µs → 46 µs (18×) | 1043 µs → 102 µs (10×) |
+| a search index beats the scan of the same term | 1569 µs → 7.0 µs (224×) | 1760 µs → 16 µs (110×) |
+| ranking costs little over the search it ranks | 7.0 µs → 11.7 µs | 16 µs → 24 µs |
+| durability costs about seven times a write | 7.4 µs | 48.5 µs |
+| a nearest-neighbour read over 2000 × 32 dimensions | 3.68 ms | 3.82 ms |
 
-Every one of those was a claim some earlier wave made about cost. None of them
-had a number until this harness existed.
+The last row is still nearly identical across backends, so the read is still
+CPU-bound — now genuinely in the distance, which is where an HNSW index will
+reduce the work. Its recall stays measurable against the scan, because the scan's
+ten *are* the exact ten.
+
+**A scan is CPU-bound and an index read is I/O-bound.** `filter-scan` is nearly
+the same on both backends because the cost is decoding and testing two thousand
+records; `filter-index` doubles on disk because the cost is reads. The index
+still wins by 10× on disk, but the *shape* of the win differs by backend, which a
+single-backend harness would have hidden.
 
 ## What is deliberately not measured here
 

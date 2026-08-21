@@ -279,6 +279,7 @@ fn vector(db: &Db) -> Result<Vec<Report>> {
         );
     }
     reports.push(nearest.summarise("vector-nearest-scan"));
+
     Ok(reports)
 }
 

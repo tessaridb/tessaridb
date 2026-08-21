@@ -116,6 +116,18 @@ impl Number {
         }
     }
 
+    /// Whether this number sits among the ordinary numbers rather than at one of
+    /// the three edges the order places outside them.
+    ///
+    /// Exposed because a caller that wants to precompute the projection this
+    /// order is defined by has to know which numbers *have* one — and the three
+    /// that do not are decided here, so asking anywhere else would be a second
+    /// answer to one question.
+    #[must_use]
+    pub fn position_is_finite(&self) -> bool {
+        self.position() == Position::Finite
+    }
+
     /// The sign of a finite float that no decimal can hold.
     fn sign_of_huge_float(&self) -> Option<Ordering> {
         match self {

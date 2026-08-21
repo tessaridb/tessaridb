@@ -240,9 +240,14 @@ impl Session<'_> {
                 self.grouped(transaction, records, wanted, &select.group)?
             }
             Projection::Values(wanted) => {
+                // Folded once, above the loop: a projection's constant parts are
+                // constant across every record it is applied to, and rebuilding
+                // them per record is what the benchmark harness found dominating
+                // a nearest-neighbour read.
+                let wanted = self.folded_projection(transaction, wanted)?;
                 let mut projected = Vec::with_capacity(records.len());
                 for (id, record) in records {
-                    projected.push((id, self.project(transaction, &record, wanted, &searched)?));
+                    projected.push((id, self.project(transaction, &record, &wanted, &searched)?));
                 }
                 projected
             }
@@ -256,13 +261,19 @@ impl Session<'_> {
         let records = if select.order.is_empty() {
             records
         } else {
+            // The same fold, for the same reason: `ORDER BY vector::cosine(embedding,
+            // [… 32 numbers])` was rebuilding the query vector for every record.
+            let mut folded = Vec::with_capacity(select.order.len());
+            for key in &select.order {
+                folded.push(self.folded(transaction, &key.key)?);
+            }
             let mut keyed = Vec::with_capacity(records.len());
             for (id, record) in records {
-                let mut keys = Vec::with_capacity(select.order.len());
-                for key in &select.order {
+                let mut keys = Vec::with_capacity(folded.len());
+                for key in &folded {
                     keys.push(self.evaluate_in(
                         transaction,
-                        &key.key,
+                        key,
                         Scope::searching(&record, &searched),
                     )?);
                 }
