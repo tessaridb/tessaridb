@@ -15,12 +15,18 @@ use bgv_db_kv::{KeyRange, KvBackend, ScanDirection, ScanRequest, WriteBatch};
 use bgv_db_types::Sequence;
 
 use crate::error::{Error, Result};
+use crate::snapshots::Registry;
 use crate::transaction::Transaction;
 
 /// A record store over a key-value backend.
+///
+/// Cloning a store shares one backend **and one snapshot registry**: two handles
+/// to the same store are not two stores, and a floor computed from half the live
+/// readers would reclaim versions the other half is still reading.
 #[derive(Debug, Clone)]
 pub struct Store {
     backend: Arc<dyn KvBackend>,
+    snapshots: Arc<Registry>,
 }
 
 impl Store {
@@ -35,7 +41,10 @@ impl Store {
     /// Returns an error when the backend fails, when the stored metadata cannot
     /// be decoded, or when the on-disk format is newer than this build.
     pub fn open(backend: Arc<dyn KvBackend>) -> Result<Self> {
-        let store = Self { backend };
+        let store = Self {
+            backend,
+            snapshots: Arc::new(Registry::default()),
+        };
         match store.read_format_version()? {
             Some(found) => found.check_supported()?,
             None => store.write_initial_metadata()?,
@@ -50,6 +59,45 @@ impl Store {
     /// Returns an error when the committed tail cannot be read or decoded.
     pub fn begin(&self) -> Result<Transaction<'_>> {
         Ok(Transaction::new(self, self.committed_tail()?))
+    }
+
+    /// The oldest sequence any live reader can still need.
+    ///
+    /// Versions strictly older than the newest version at or below this may be
+    /// reclaimed; nothing at or above it may be. With no reader live the floor is
+    /// the committed tail, because a transaction that begins next will begin
+    /// there.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the committed tail cannot be read, which is only
+    /// consulted when no snapshot is live.
+    pub fn retention_floor(&self) -> Result<Sequence> {
+        match self.snapshots.oldest() {
+            Some(oldest) => Ok(oldest),
+            None => self.committed_tail(),
+        }
+    }
+
+    /// How long the oldest live snapshot has been held, if one is.
+    ///
+    /// ADR-0005 §9 calls snapshot lifetime an operational limit rather than an
+    /// application detail, because a long-held snapshot postpones every tombstone
+    /// in the store. This is the value that limit is checked against.
+    #[must_use]
+    pub fn oldest_snapshot_age(&self) -> Option<std::time::Duration> {
+        self.snapshots.oldest_age()
+    }
+
+    /// How many distinct snapshots are being read from.
+    #[must_use]
+    pub fn live_snapshots(&self) -> usize {
+        self.snapshots.len()
+    }
+
+    /// The registry a transaction registers itself with.
+    pub(crate) fn snapshot_registry(&self) -> &Arc<Registry> {
+        &self.snapshots
     }
 
     /// The highest sequence that has been committed.

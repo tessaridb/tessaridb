@@ -25,6 +25,7 @@ mod catalog;
 mod error;
 mod index;
 mod log;
+mod snapshots;
 mod store;
 mod transaction;
 

@@ -85,6 +85,12 @@ impl RecordAddress {
 }
 
 /// A unit of work at a fixed snapshot.
+///
+/// Dropping one releases its snapshot. That is deliberately not left to
+/// [`Transaction::commit`] and [`Transaction::rollback`]: the retention floor is
+/// bounded by the oldest live snapshot, so a transaction that is simply let go
+/// of without either call would freeze reclamation for the life of the process —
+/// silently, as space that never comes back.
 #[derive(Debug)]
 pub struct Transaction<'a> {
     store: &'a Store,
@@ -93,7 +99,10 @@ pub struct Transaction<'a> {
 }
 
 impl<'a> Transaction<'a> {
-    pub(crate) const fn new(store: &'a Store, snapshot: Sequence) -> Self {
+    pub(crate) fn new(store: &'a Store, snapshot: Sequence) -> Self {
+        // Registered here rather than by the caller, so that a snapshot cannot
+        // be read from without the store knowing it is being read from.
+        store.snapshot_registry().register(snapshot);
         Self {
             store,
             snapshot,
@@ -452,5 +461,11 @@ impl<'a> Transaction<'a> {
         let decoded_key = RecordKey::decode(key.as_slice())?;
         let decoded_value = RecordValue::decode(value.as_slice())?;
         Ok(Some((decoded_key.version, decoded_value)))
+    }
+}
+
+impl Drop for Transaction<'_> {
+    fn drop(&mut self) {
+        self.store.snapshot_registry().release(self.snapshot);
     }
 }
