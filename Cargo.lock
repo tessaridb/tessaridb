@@ -206,6 +206,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bgv-db-wire"
+version = "0.0.0"
+dependencies = [
+ "bgv-db",
+ "bgv-db-encoding",
+ "bgv-db-types",
+ "rust_decimal",
+ "thiserror",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

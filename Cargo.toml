@@ -23,6 +23,7 @@ bgv-db-session = { path = "crates/bgv-db-session" }
 bgv-db-conformance = { path = "crates/bgv-db-conformance" }
 bgv-db = { path = "crates/bgv-db" }
 bgv-db-backup = { path = "crates/bgv-db-backup" }
+bgv-db-wire = { path = "crates/bgv-db-wire" }
 bgv-db-http = { path = "crates/bgv-db-http" }
 
 thiserror = "2"

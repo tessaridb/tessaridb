@@ -102,6 +102,52 @@ for change in db.poll(&mut watching, 128)? {
 }
 ```
 
+## Talking to one over the wire
+
+```rust
+use std::sync::Arc;
+use bgv_db::Db;
+use bgv_db_wire::{Client, Node};
+
+let node = Node::bind(Arc::new(Db::open("./data")?), "127.0.0.1:9080")?;
+std::thread::spawn(move || node.serve());
+
+let mut client = Client::connect("127.0.0.1:9080")?;
+let answers = client.run("SELECT * FROM users LIMIT 2;", None)?;
+```
+
+The same statements as the HTTP route, and the same sessions — what differs is
+what a value is when it arrives. **JSON has six types and this store has
+fifteen.** The HTTP endpoint pays that deliberately, because a browser is owed
+JSON, and it quotes a decimal so it is not silently a double; a client reading
+that back has to *guess* whether `"12.34"` is a decimal and `"2s"` a duration.
+Here a value travels through the codec the store writes records with, so fifteen
+types go out and fifteen come back and neither end decides anything.
+
+Frames are `<kind> <length> <body>`, and a declared length above 16 MiB is
+refused **before anything is allocated** — a length from a stranger is not a
+promise, and allocating on one is the oldest denial of service there is. An
+unknown frame kind closes the connection rather than being skipped, because a
+protocol that ignores what it does not understand is one where a version mismatch
+looks like silence. A *refusal* closes nothing: a client that mistyped a
+statement has not stopped being a client.
+
+It takes **no dependency at all** — `std::net`, the frames, and the encoding
+crate — and it is synchronous, a thread per connection. That is the decision
+rather than the shortfall: a commit is a compare-and-set, so an async server over
+it would be `spawn_blocking` at every call, a thread pool wearing a runtime's
+clothes. The cost is a thread per *connection*, which will matter when idle
+subscribers outnumber what a thread each is worth, and that is the trigger for
+revisiting it.
+
+> **There is no TLS here either.** Credentials travel as they were given. This
+> belongs on a trusted network or behind something that terminates TLS, and says
+> so rather than leaving it to be assumed.
+
+Frame kinds above 3 are reserved for **subscription push**, which is why this is
+framed rather than request-and-reply: a server that pushes has to be able to send
+what the client did not ask for. It is not built yet.
+
 ## From a terminal
 
 ```
@@ -133,8 +179,8 @@ happens. Either way the exit code says what happened.
 Two things it does not do. **There is no line editing or history** — both mean a
 dependency, and a terminal library is a large surface to take for a convenience,
 so `.help` says so rather than leaving it to be found by pressing up. And it
-opens the store **in this process**: a client that talks to a running node over
-HTTP is the other half of this and is not built yet.
+opens the store **in this process**: the other half — a prompt against a running
+node, over the wire protocol above — is not built yet.
 
 ## Is it well
 
@@ -229,25 +275,24 @@ outward.
 crates/
   bgv-db-types        leaf   the value system, record ids, newtypes
   bgv-db-constants    leaf   tunables, each with unit and rationale
-  bgv-db-kv                  key-value contract, conformance suite, in-memory backend
+  bgv-db-kv                  key-value contract, atomic conditional batches, in-memory backend
   bgv-db-lsm                 persistent backend, durability levels, engine options
   bgv-db-encoding            key grammar and value codec over the KV layer
-  bgv-db-storage             records and transactions (snapshot isolation)
+  bgv-db-storage             records, transactions, indexes (snapshot isolation on the log)
   bgv-db-ql                  bgvQL: lexer, parser, AST
-  bgv-db-planner             logical and physical planning
-  bgv-db-exec                execution engine and per-model operators
-  bgv-db-index               index kinds: btree, full-text, vector, graph
-  bgv-db-core                sessions, auth, permissions, schema catalog
-  bgv-db-cluster             node roles, membership, sharding, replication
-  bgv-db-rpc                 wire protocol
-  bgv-db-api                 REST surface
-  bgv-db-cli          bin    command-line client
-  bgv-db-node         bin    server / cluster node
+  bgv-db-session             running a script: catalog, planning, execution, permissions
+  bgv-db                     the embedded front door — open, run, follow the changes
+  bgv-db-http                the HTTP surface
+  bgv-db-wire                the wire protocol
+  bgv-db-backup              log as backup, replay as restore
+  bgv-db-conformance         the executable definition of bgvQL: corpora and runner
+  bgv-db-cli          bin    `bgv` — a prompt and a script runner
+  bgv-db-bench        bin    workload harness, exact percentiles, recorded baselines
 ```
 
-Only the leaf crates exist today. The rest of the layout is provisional and is
-re-derived from the feature matrix before each crate is created — the shape above
-records intent, not a commitment.
+Cluster membership, sharding and replication have no crate yet; they will be
+derived from the feature matrix when the node grows past one. The list above is
+what exists, not a plan.
 
 ## Building
 

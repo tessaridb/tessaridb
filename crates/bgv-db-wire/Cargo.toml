@@ -1,0 +1,22 @@
+[package]
+name = "bgv-db-wire"
+description = "The wire protocol for bgv-db: framed TCP carrying values in the store's own encoding"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+bgv-db.workspace = true
+bgv-db-encoding.workspace = true
+bgv-db-types.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rust_decimal.workspace = true
+
+[lints]
+workspace = true
