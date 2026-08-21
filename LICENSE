@@ -1,0 +1,52 @@
+bgv-db Commercial License
+
+Copyright (c) boogvar. All rights reserved.
+
+1. Proprietary software
+
+   bgv-db and its source code are proprietary and confidential. They are
+   licensed, not sold. This repository is not open source and is not made
+   available under any open-source or source-available public licence.
+
+2. Commercial licence required
+
+   Any use of this software — including use, copying, modification, merging,
+   publication, distribution, sublicensing, hosting, offering it as a service,
+   or creating derivative works, in whole or in part — requires a valid
+   commercial licence granted in writing by the copyright holder.
+
+   No rights are granted by the mere availability of this source code. Access to
+   the repository does not constitute a licence.
+
+3. Licence terms
+
+   Commercial licences are issued on a per-agreement basis. Scope, term, seat or
+   node counts, redistribution rights, support and pricing are defined in the
+   applicable licence agreement, which prevails over this file where the two
+   differ.
+
+   To obtain a licence, contact the copyright holder.
+
+4. Third-party components
+
+   Third-party dependencies remain under their own licences. Their terms are not
+   altered by this licence, and this licence does not extend to them.
+
+5. Confidentiality
+
+   Where this source is disclosed under an agreement, it is disclosed in
+   confidence and may not be published or shared beyond the terms of that
+   agreement.
+
+6. No warranty
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+7. Limitation of liability
+
+   IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+   OR OTHER DEALINGS IN THE SOFTWARE.
