@@ -9,11 +9,18 @@ use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Span, Spanned, Token};
 
 impl Parser<'_> {
-    /// A value, possibly a range of two.
+    /// A value or a test, at the loosest binding.
     ///
-    /// A range binds looser than anything else and cannot nest, which is the
-    /// whole of the precedence in this grammar: there are no operators.
+    /// Precedence, loosest first: `OR`, `AND`, `NOT`, then the comparisons —
+    /// which are **non-associative**, so `a < b < c` is refused rather than read
+    /// as one of the two things it might mean — then a range, then a primary.
+    /// Parentheses override, as everywhere.
     pub(super) fn expression(&mut self) -> Result<Expr> {
+        self.disjunction()
+    }
+
+    /// A value, possibly a range of two.
+    pub(super) fn spanned_range(&mut self) -> Result<Expr> {
         let start = self.primary()?;
         let inclusive = if self.eat_punct(Punct::DotDot) {
             false
@@ -40,6 +47,16 @@ impl Parser<'_> {
             return self.keyword_value(keyword, span);
         }
         match self.peek() {
+            // The one token whose meaning depends on where it stands: a route
+            // into the record in a condition, a table in a value position.
+            Some(Token::Ident(_)) if self.reading_paths && !self.record_follows() => {
+                let path = self.field_path()?;
+                let span = path.span;
+                Ok(Expr {
+                    kind: ExprKind::Path(path),
+                    span,
+                })
+            }
             Some(Token::Ident(_)) => self.table_or_record(),
             Some(Token::Punct(Punct::BracketOpen)) => {
                 let (items, span) = self.items(Punct::BracketClose, span)?;
@@ -287,12 +304,22 @@ impl Parser<'_> {
 
     /// `(SELECT * FROM users:1)` — the only thing parentheses hold, because
     /// there are no operators to group.
+    /// What stands between parentheses: an embedded read, or a grouping.
+    ///
+    /// Grouping exists because precedence exists. `a AND (b OR c)` has to be
+    /// writable the moment `AND` binds tighter than `OR`, and a language whose
+    /// precedence cannot be overridden makes the author restructure the query
+    /// instead of saying what they mean.
     fn embedded_select(&mut self, open: Span) -> Result<Expr> {
         self.advance();
         if self.peek_keyword() != Some(Keyword::Select) {
-            return Err(Error::Unsupported {
-                feature: "grouping an expression in parentheses",
-                span: open,
+            let inner = self.expression()?;
+            let end = self.expect_punct(Punct::ParenClose, "`)` after the expression")?;
+            // The span covers the parentheses, so a failure inside a group
+            // points at the group rather than at one token of it.
+            return Ok(Expr {
+                kind: inner.kind,
+                span: open.to(end),
             });
         }
         let select = self.select_statement()?;

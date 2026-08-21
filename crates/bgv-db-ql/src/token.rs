@@ -111,8 +111,18 @@ pub enum Punct {
     DotDot,
     /// `..=` — an inclusive range.
     DotDotEquals,
-    /// `=` — assignment, and equality in a filter.
+    /// `=` — assignment, and equality in a condition.
     Equals,
+    /// `!=` — inequality.
+    NotEquals,
+    /// `<` — below, in the value system's declared order.
+    Less,
+    /// `<=` — below or equal.
+    LessOrEqual,
+    /// `>` — above.
+    Greater,
+    /// `>=` — above or equal.
+    GreaterOrEqual,
     /// `*` — every field.
     Star,
     /// `{`
@@ -145,6 +155,11 @@ impl Punct {
             Self::DotDot => "..",
             Self::DotDotEquals => "..=",
             Self::Equals => "=",
+            Self::NotEquals => "!=",
+            Self::Less => "<",
+            Self::LessOrEqual => "<=",
+            Self::Greater => ">",
+            Self::GreaterOrEqual => ">=",
             Self::Star => "*",
             Self::BraceOpen => "{",
             Self::BraceClose => "}",
@@ -220,6 +235,12 @@ pub enum Keyword {
     Where,
     /// `AS` — names a projected value.
     As,
+    /// `AND` — both.
+    And,
+    /// `OR` — either.
+    Or,
+    /// `IN` — membership, with the collection on the right.
+    In,
     /// `CONTAINS` — membership: does this collection hold that value.
     Contains,
     /// `LIKE` — a pattern over the whole value, as SQL spells it.
@@ -292,6 +313,9 @@ impl Keyword {
             Self::From => "FROM",
             Self::Where => "WHERE",
             Self::As => "AS",
+            Self::And => "AND",
+            Self::Or => "OR",
+            Self::In => "IN",
             Self::Contains => "CONTAINS",
             Self::Like => "LIKE",
             Self::Ilike => "ILIKE",
@@ -341,6 +365,9 @@ impl Keyword {
         Self::From,
         Self::Where,
         Self::As,
+        Self::And,
+        Self::Or,
+        Self::In,
         Self::Contains,
         Self::Like,
         Self::Ilike,

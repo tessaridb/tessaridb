@@ -10,20 +10,75 @@ use std::collections::BTreeMap;
 
 use bgv_db_encoding::decode_payload;
 use bgv_db_ql::{
-    Direction, Expr, ExprKind, FieldPath, Projected, Projection, RecordTarget, Select, Source,
-    Span, TableRef, Test,
+    BinaryOp, Direction, Expr, ExprKind, Projected, Projection, RecordTarget, Select, Source, Span,
+    TableRef,
 };
 use bgv_db_storage::{Catalog, RecordAddress, Transaction};
-use bgv_db_types::{Number, Path, RecordId, RecordRef, Value, ValueRange};
+use bgv_db_types::{Number, Path, RecordId, RecordRef, TableId, Value, ValueRange};
 
+use crate::condition::{apply, boolean, literal_prefix};
 use crate::error::{Error, Result};
 use crate::outcome::AccessPath;
 use crate::session::Session;
 
 impl Session<'_> {
-    /// The value an expression denotes.
+    /// The value an expression denotes, with no record in scope.
     pub(crate) fn evaluate(&self, transaction: &mut Transaction<'_>, expr: &Expr) -> Result<Value> {
+        self.evaluate_in(transaction, expr, None)
+    }
+
+    /// The value an expression denotes, against the record being tested.
+    ///
+    /// The scope is what separates a condition from a value: a path is only
+    /// meaningful when there **is** a record, and in a value position there is
+    /// not — which is why `CREATE audit:1 = { subject: users }` writes a table
+    /// and `WHERE users = 3` reads a field.
+    pub(crate) fn evaluate_in(
+        &self,
+        transaction: &mut Transaction<'_>,
+        expr: &Expr,
+        record: Option<&Value>,
+    ) -> Result<Value> {
         match &expr.kind {
+            ExprKind::Path(field) => {
+                let Some(record) = record else {
+                    return Err(Error::NoRecordInScope { span: field.span });
+                };
+                // A route that reaches nothing **is** `none`: the field is not
+                // there, which is precisely what `none` says. That is what makes
+                // `WHERE email = NONE` find the records without an email
+                // without the language needing an `IS NULL` operator at all.
+                Ok(field.path.resolve(record).cloned().unwrap_or(Value::None))
+            }
+            ExprKind::Not(operand) => {
+                let held = self.evaluate_in(transaction, operand, record)?;
+                Ok(Value::Bool(!boolean(&held, operand.span)?))
+            }
+            // Short-circuit: the right side is not evaluated when the left
+            // already decides. It is not only a saving — it is what lets
+            // `x = NONE OR x.y = 1` be written without the second half having to
+            // be meaningful for every record.
+            ExprKind::And(left, right) => {
+                let held = self.evaluate_in(transaction, left, record)?;
+                if !boolean(&held, left.span)? {
+                    return Ok(Value::Bool(false));
+                }
+                let held = self.evaluate_in(transaction, right, record)?;
+                Ok(Value::Bool(boolean(&held, right.span)?))
+            }
+            ExprKind::Or(left, right) => {
+                let held = self.evaluate_in(transaction, left, record)?;
+                if boolean(&held, left.span)? {
+                    return Ok(Value::Bool(true));
+                }
+                let held = self.evaluate_in(transaction, right, record)?;
+                Ok(Value::Bool(boolean(&held, right.span)?))
+            }
+            ExprKind::Binary { op, left, right } => {
+                let left = self.evaluate_in(transaction, left, record)?;
+                let right = self.evaluate_in(transaction, right, record)?;
+                Ok(Value::Bool(apply(*op, &left, &right)))
+            }
             ExprKind::Literal(value) => Ok(value.clone()),
             ExprKind::Table(table) => {
                 let (_, id) = self.resolve_table(transaction, table)?;
@@ -33,21 +88,23 @@ impl Session<'_> {
                 let (_, address) = self.address(transaction, target)?;
                 Ok(Value::Record(RecordRef::new(address.table, address.id)))
             }
-            ExprKind::Array(items) => Ok(Value::Array(self.values(transaction, items)?)),
+            ExprKind::Array(items) => Ok(Value::Array(self.values(transaction, items, record)?)),
             ExprKind::Set(items) => Ok(Value::Set(
-                self.values(transaction, items)?.into_iter().collect(),
+                self.values(transaction, items, record)?
+                    .into_iter()
+                    .collect(),
             )),
             ExprKind::Object(fields) => {
                 let mut object = BTreeMap::new();
                 for field in fields {
-                    let value = self.evaluate(transaction, &field.value)?;
+                    let value = self.evaluate_in(transaction, &field.value, record)?;
                     object.insert(field.name.text.clone(), value);
                 }
                 Ok(Value::Object(object))
             }
             ExprKind::Range(range) => {
-                let start = self.evaluate(transaction, &range.start)?;
-                let end = self.evaluate(transaction, &range.end)?;
+                let start = self.evaluate_in(transaction, &range.start, record)?;
+                let end = self.evaluate_in(transaction, &range.end, record)?;
                 let end = if range.inclusive {
                     Bound::Included(end)
                 } else {
@@ -63,10 +120,15 @@ impl Session<'_> {
         }
     }
 
-    fn values(&self, transaction: &mut Transaction<'_>, items: &[Expr]) -> Result<Vec<Value>> {
+    fn values(
+        &self,
+        transaction: &mut Transaction<'_>,
+        items: &[Expr],
+        record: Option<&Value>,
+    ) -> Result<Vec<Value>> {
         let mut values = Vec::with_capacity(items.len());
         for item in items {
-            values.push(self.evaluate(transaction, item)?);
+            values.push(self.evaluate_in(transaction, item, record)?);
         }
         Ok(values)
     }
@@ -155,53 +217,61 @@ impl Session<'_> {
                 edges,
                 target,
             } => self.traverse(transaction, from, *direction, edges, target.as_ref()),
-            Source::Filter {
-                table,
-                field,
-                test,
-                value,
-            } => {
+            Source::Where { table, condition } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
-                let wanted = self.evaluate(transaction, value)?;
+                let (candidates, path) = self.candidates(transaction, id, context, condition)?;
 
-                // An index serves an equality on a named field.
-                if *test == Test::Equals {
-                    if let Some(index) = self.index_on_path(transaction, id, &field.path)? {
-                        let found = transaction.records_by_index(&index, &[wanted])?;
-                        return Ok((decode_all(found)?, AccessPath::Index));
+                // The candidates are tested against the **whole** condition, not
+                // only the conjunct the index answered. That is what makes an
+                // index a narrowing device rather than an answer, and it is why
+                // adding one still cannot change what a query returns.
+                let mut matched = Vec::new();
+                for (id, record) in candidates {
+                    let held = self.evaluate_in(transaction, condition, Some(&record))?;
+                    if boolean(&held, condition.span)? {
+                        matched.push((id, record));
                     }
                 }
-
-                // And it serves a pattern that is a literal followed by a
-                // trailing `%`, because that asks for the values beginning with
-                // the literal — a range over the same ordered index. No new
-                // index kind, no new statement, and the same records the scan
-                // would have found. Every other shape of pattern, and every
-                // `ILIKE`, keeps the scan: a case-folded or infix match needs a
-                // second stored form, which is an analyzer decision, and serving
-                // a narrower answer quickly would be worse than serving the
-                // right one slowly.
-                if *test == Test::Like {
-                    if let Value::String(pattern) = &wanted {
-                        if let Some(prefix) = literal_prefix(pattern) {
-                            if let Some(index) = self.index_on_path(transaction, id, &field.path)? {
-                                let found =
-                                    transaction.records_with_string_prefix(&index, &prefix)?;
-                                return Ok((decode_all(found)?, AccessPath::Index));
-                            }
-                        }
-                    }
-                }
-
-                let scanned =
-                    decode_all(transaction.scan_table(context.namespace, context.database, id)?)?;
-                let matched = scanned
-                    .into_iter()
-                    .filter(|(_, record)| matches_filter(record, field, *test, &wanted))
-                    .collect();
-                Ok((matched, AccessPath::Scan))
+                Ok((matched, path))
             }
         }
+    }
+
+    /// The records worth testing, and how they were reached.
+    ///
+    /// An index narrows when the condition contains an equality or a prefix
+    /// pattern on an indexed path; otherwise the table is read. Which one
+    /// happens is decided by what exists, never by how the query was written.
+    fn candidates(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: TableId,
+        context: crate::context::Context,
+        condition: &Expr,
+    ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
+        for seek in seekable(condition) {
+            // A right-hand side that reads the record is not a constant, so it
+            // cannot be a bound; `seekable` has already excluded those.
+            let wanted = self.evaluate(transaction, seek.value)?;
+            let Some(index) = self.index_on_path(transaction, table, seek.path)? else {
+                continue;
+            };
+            let found = match seek.shape {
+                Shape::Equality => transaction.records_by_index(&index, &[wanted])?,
+                Shape::Prefix => {
+                    let Value::String(pattern) = &wanted else {
+                        continue;
+                    };
+                    let Some(prefix) = literal_prefix(pattern) else {
+                        continue;
+                    };
+                    transaction.records_with_string_prefix(&index, &prefix)?
+                }
+            };
+            return Ok((decode_all(found)?, AccessPath::Index));
+        }
+        let scanned = transaction.scan_table(context.namespace, context.database, table)?;
+        Ok((decode_all(scanned)?, AccessPath::Scan))
     }
 
     /// One hop along an edge table, and optionally one more into its far side.
@@ -347,191 +417,80 @@ pub(crate) fn within(id: &RecordId, start: &RecordId, end: &RecordId, inclusive:
     if inclusive { id <= end } else { id < end }
 }
 
-/// Whether one record satisfies a filter.
-///
-/// A route that reaches nothing matches nothing. That covers a record which is
-/// not an object at all — a space holds single values, and searching one by
-/// field is a question with no answer rather than an error — and it covers every
-/// way a nested route can end early, which is the same answer the index gives
-/// for the same record. The two agreeing is not a coincidence: both ask
-/// [`Path::resolve`].
-fn matches_filter(record: &Value, field: &FieldPath, test: Test, wanted: &Value) -> bool {
-    field
-        .path
-        .resolve(record)
-        .is_some_and(|held| satisfies(held, test, wanted))
+/// The shape of a test an index can answer.
+enum Shape {
+    /// `<path> = <constant>` — one entry.
+    Equality,
+    /// `<path> LIKE '<literal>%'` — a range over the values beginning with it.
+    Prefix,
 }
 
-/// Whether one held value satisfies the test.
-fn satisfies(held: &Value, test: Test, wanted: &Value) -> bool {
-    match test {
-        Test::Equals => held == wanted,
-        Test::Like => like(held, wanted, false),
-        Test::Ilike => like(held, wanted, true),
-        Test::Contains => holds(held, wanted),
-    }
+/// One conjunct an index could narrow with.
+struct Seek<'a> {
+    path: &'a Path,
+    value: &'a Expr,
+    shape: Shape,
 }
 
-/// Membership: does this collection hold that value.
+/// The conjuncts of a condition an index could serve, outermost first.
 ///
-/// A different question from [`Test::Like`], which is why the language has both.
-/// Only a collection answers it — a field holding a single value is not a
-/// one-element collection, because treating it as one would make
-/// `name CONTAINS 'ada'` quietly mean `name = 'ada'` and hide a mistake in the
-/// query rather than showing it as no match.
-fn holds(held: &Value, wanted: &Value) -> bool {
-    match held {
-        Value::Array(items) => items.contains(wanted),
-        Value::Set(items) => items.contains(wanted),
-        _ => false,
-    }
-}
-
-/// The literal a pattern begins with, when the pattern is exactly that literal
-/// followed by a trailing `%`.
+/// Only `AND` is walked into. Under `OR` neither side alone narrows the
+/// answer — a record satisfying the other half would be missed — and under `NOT`
+/// an index that finds the matching records is exactly the wrong set. Both are
+/// left to the scan rather than served with a bound that would be a guess.
 ///
-/// Only that shape. For it, "begins with the literal" and "matches the pattern"
-/// are the same statement, so a range read over the index needs no second test
-/// and cannot answer differently from a scan. `'%a%'`, `'a_b%'` and `'a%b'` are
-/// all left to the scan rather than served from a bound that would be a guess.
-///
-/// The escape is honoured, so `'50\%%'` asks for values beginning with `50%`.
-fn literal_prefix(pattern: &str) -> Option<String> {
-    let mut literal = String::new();
-    let mut characters = pattern.chars();
-    while let Some(character) = characters.next() {
-        match character {
-            '\\' => literal.push(characters.next()?),
-            '_' => return None,
-            '%' => {
-                return match (characters.next(), literal.is_empty()) {
-                    // A trailing `%` and something before it.
-                    (None, false) => Some(literal),
-                    _ => None,
-                };
-            }
-            other => literal.push(other),
+/// A right-hand side that reads the record is not a constant and cannot be a
+/// bound, so it is excluded here rather than discovered when it is evaluated
+/// without a record in scope.
+fn seekable(condition: &Expr) -> Vec<Seek<'_>> {
+    match &condition.kind {
+        ExprKind::And(left, right) => {
+            let mut found = seekable(left);
+            found.extend(seekable(right));
+            found
         }
-    }
-    // No wildcard at all. That is an equality written the long way, and it is
-    // left alone rather than quietly rewritten into one.
-    None
-}
-
-/// SQL's `LIKE`, over the whole value.
-///
-/// Only text matches a text pattern: a number in that field is not an error, it
-/// simply does not satisfy the filter. Deliberately no tokenising, stemming or
-/// ranking — those belong to an analyzer, and a scan-shaped approximation of one
-/// would give answers a real text index later disagrees with.
-fn like(held: &Value, wanted: &Value, fold_case: bool) -> bool {
-    let (Value::String(text), Value::String(pattern)) = (held, wanted) else {
-        return false;
-    };
-    if fold_case {
-        matches_pattern(&text.to_lowercase(), &pattern.to_lowercase())
-    } else {
-        matches_pattern(text, pattern)
-    }
-}
-
-/// `%` stands for any run of characters, `_` for exactly one, and `\\` escapes
-/// either of them.
-///
-/// Iterative with a single backtrack point rather than recursive: a pattern of
-/// many `%` would otherwise cost exponentially in the length of the text, which
-/// is a denial of service written by whoever typed the query.
-fn matches_pattern(text: &str, pattern: &str) -> bool {
-    let text: Vec<char> = text.chars().collect();
-    let pattern: Vec<char> = pattern.chars().collect();
-    let (mut t, mut p) = (0_usize, 0_usize);
-    let (mut star_at, mut resume) = (None, 0_usize);
-
-    while t < text.len() {
-        let current = pattern.get(p).copied();
-        let escaped = current == Some('\\');
-        let literal = if escaped {
-            pattern.get(p.saturating_add(1)).copied()
-        } else {
-            current
-        };
-        match (current, literal) {
-            (Some('%'), _) if !escaped => {
-                star_at = Some(p);
-                p = p.saturating_add(1);
-                resume = t;
+        ExprKind::Binary { op, left, right } => {
+            let ExprKind::Path(field) = &left.kind else {
+                return Vec::new();
+            };
+            if reads_a_record(right) {
+                return Vec::new();
             }
-            (Some('_'), _) if !escaped => {
-                p = p.saturating_add(1);
-                t = t.saturating_add(1);
-            }
-            (Some(_), Some(want)) if text.get(t).copied() == Some(want) => {
-                p = p.saturating_add(if escaped { 2 } else { 1 });
-                t = t.saturating_add(1);
-            }
-            _ => {
-                // No match here. Give the last `%` one more character and retry.
-                let Some(star) = star_at else {
-                    return false;
-                };
-                resume = resume.saturating_add(1);
-                t = resume;
-                p = star.saturating_add(1);
-            }
+            let shape = match op {
+                BinaryOp::Equal => Shape::Equality,
+                BinaryOp::Like => Shape::Prefix,
+                // An ordered index can serve `<` and `>` as a bounded range, and
+                // this does not build it: that needs a bounded scan on
+                // `Transaction` and an equivalence test of its own. Reported as
+                // a scan until it does, rather than served as a guess.
+                _ => return Vec::new(),
+            };
+            vec![Seek {
+                path: &field.path,
+                value: right,
+                shape,
+            }]
         }
+        _ => Vec::new(),
     }
-    pattern
-        .get(p..)
-        .is_some_and(|rest| rest.iter().all(|c| *c == '%'))
 }
 
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::panic)]
-
-    use super::matches_pattern;
-
-    #[test]
-    fn a_pattern_covers_the_whole_value() {
-        assert!(matches_pattern("ada", "ada"));
-        assert!(!matches_pattern("ada lovelace", "ada"));
-        assert!(matches_pattern("ada lovelace", "ada%"));
-        assert!(matches_pattern("ada lovelace", "%lovelace"));
-        assert!(matches_pattern("ada lovelace", "%love%"));
-        assert!(!matches_pattern("ada", ""));
-        assert!(matches_pattern("", ""));
-        assert!(matches_pattern("", "%"));
-    }
-
-    #[test]
-    fn an_underscore_stands_for_exactly_one_character() {
-        assert!(matches_pattern("ada", "ad_"));
-        assert!(!matches_pattern("ad", "ad_"));
-        assert!(!matches_pattern("adam", "ad_"));
-    }
-
-    #[test]
-    fn a_backslash_makes_a_wildcard_literal() {
-        assert!(matches_pattern("100%", "100\\%"));
-        assert!(!matches_pattern("100x", "100\\%"));
-        assert!(matches_pattern("a_b", "a\\_b"));
-        assert!(!matches_pattern("axb", "a\\_b"));
-    }
-
-    #[test]
-    fn many_wildcards_do_not_cost_exponentially() {
-        // The reason the matcher backtracks from one remembered star rather than
-        // recursing: this pattern against this text is the classic blow-up, and
-        // it is written by whoever typed the query.
-        let text = "a".repeat(64);
-        assert!(!matches_pattern(&text, "%a%a%a%a%a%a%a%a%b"));
-        assert!(matches_pattern(&text, "%a%a%a%a%a%a%a%a%a"));
-    }
-
-    #[test]
-    fn trailing_wildcards_match_nothing_at_all() {
-        assert!(matches_pattern("ada", "ada%"));
-        assert!(matches_pattern("ada", "ada%%%"));
-        assert!(!matches_pattern("ada", "ada_"));
+/// Whether an expression reads the record being tested.
+fn reads_a_record(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Path(_) => true,
+        ExprKind::Not(inner) => reads_a_record(inner),
+        ExprKind::And(left, right) | ExprKind::Or(left, right) => {
+            reads_a_record(left) || reads_a_record(right)
+        }
+        ExprKind::Binary { left, right, .. } => reads_a_record(left) || reads_a_record(right),
+        ExprKind::Array(items) | ExprKind::Set(items) => items.iter().any(reads_a_record),
+        ExprKind::Object(fields) => fields.iter().any(|field| reads_a_record(&field.value)),
+        ExprKind::Range(range) => reads_a_record(&range.start) || reads_a_record(&range.end),
+        ExprKind::Literal(_)
+        | ExprKind::Table(_)
+        | ExprKind::Record(_)
+        | ExprKind::Get(_)
+        | ExprKind::Select(_) => false,
     }
 }

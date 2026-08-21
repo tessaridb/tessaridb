@@ -258,30 +258,52 @@ pub enum Source {
         /// The table the far endpoint is read from, when the statement names one.
         target: Option<TableRef>,
     },
-    /// The records that satisfy a filter.
+    /// The records a condition holds for.
     ///
     /// Which access path this becomes is decided when it runs, by what exists:
-    /// an index read where an index serves the test, a scan where none does.
-    /// The statement is the same either way, which is what lets an index be
-    /// added later without rewriting a single query.
-    Filter {
+    /// an index read where an index serves one of the condition's conjuncts, a
+    /// scan where none does. The statement is the same either way, which is what
+    /// lets an index be added later without rewriting a single query — and the
+    /// candidates an index offers are still tested against the **whole**
+    /// condition, because the index answered one conjunct and the statement
+    /// asked for all of them.
+    Where {
         /// The table being read.
         table: TableRef,
-        /// The value the test applies to, named by where it sits in the record.
-        field: FieldPath,
-        /// What the test is.
-        test: Test,
-        /// The value tested against.
-        value: Box<Expr>,
+        /// What each record must satisfy.
+        condition: Box<Expr>,
     },
 }
 
-/// What a filter tests.
+/// An operator taking two values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Test {
-    /// The field holds exactly this value.
-    Equals,
-    /// The field's text matches a pattern, as SQL's `LIKE` does.
+pub enum BinaryOp {
+    /// `=` — the two values are the same value.
+    Equal,
+    /// `!=` — they are not.
+    NotEqual,
+    /// `<` — below, in the value system's declared order across types.
+    Less,
+    /// `<=` — below or the same.
+    LessOrEqual,
+    /// `>` — above.
+    Greater,
+    /// `>=` — above or the same.
+    GreaterOrEqual,
+    /// `IN` — the collection on the **right** holds the value on the left.
+    ///
+    /// The mirror of [`BinaryOp::Contains`], and both exist because both read
+    /// naturally in different sentences: `'urgent' IN tags` and
+    /// `tags CONTAINS 'urgent'` ask the same question from either end.
+    In,
+    /// `CONTAINS` — the collection on the **left** holds the value on the right.
+    ///
+    /// Membership, not substring — a different question from [`BinaryOp::Like`],
+    /// which is why both exist. `tags CONTAINS 'urgent'` asks whether an array
+    /// or a set holds that element; `body LIKE '%urgent%'` asks whether text
+    /// contains those characters.
+    Contains,
+    /// `LIKE` — the text matches a pattern, as SQL's `LIKE` does.
     ///
     /// The pattern covers the **whole** value — which is why a substring search
     /// is written `'%text%'` — with `%` standing for any run of characters and
@@ -289,13 +311,25 @@ pub enum Test {
     Like,
     /// The same, ignoring case.
     Ilike,
-    /// The field is a collection, and it holds this value.
-    ///
-    /// Membership, not substring — a different question from [`Test::Like`],
-    /// which is why both exist. `tags CONTAINS 'urgent'` asks whether an array
-    /// or a set holds that element; `body LIKE '%urgent%'` asks whether text
-    /// contains those characters.
-    Contains,
+}
+
+impl BinaryOp {
+    /// How the operator is written.
+    #[must_use]
+    pub const fn spelling(self) -> &'static str {
+        match self {
+            Self::Equal => "=",
+            Self::NotEqual => "!=",
+            Self::Less => "<",
+            Self::LessOrEqual => "<=",
+            Self::Greater => ">",
+            Self::GreaterOrEqual => ">=",
+            Self::In => "IN",
+            Self::Contains => "CONTAINS",
+            Self::Like => "LIKE",
+            Self::Ilike => "ILIKE",
+        }
+    }
 }
 
 /// A value written in the source.
@@ -309,14 +343,43 @@ pub struct Expr {
 
 /// The expression forms this milestone accepts.
 ///
-/// There is no arithmetic, no comparison and no call: an expression is a value,
-/// a container of expressions, or a read. The reads are what make a key-value
-/// value usable inside a record statement without either model knowing about
-/// the other.
+/// There is no arithmetic and no call yet: an expression is a value, a container
+/// of expressions, a read, or a test built out of those. The reads are what make
+/// a key-value value usable inside a record statement without either model
+/// knowing about the other.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExprKind {
     /// A literal that is already a whole value.
     Literal(Value),
+    /// A value read out of the record being tested: `name`, `address.city`.
+    ///
+    /// Only meaningful where there **is** a record — inside a condition. In a
+    /// value position a bare name is a table, which is why the two positions
+    /// read the same token differently and why the parser knows which it is in.
+    Path(FieldPath),
+    /// `NOT <expr>` — the operand must be a boolean.
+    Not(Box<Expr>),
+    /// `<expr> AND <expr>` — both must be booleans, and the right is evaluated
+    /// only when the left holds.
+    ///
+    /// Separate from [`ExprKind::Binary`] rather than an operator inside it,
+    /// because composing conditions and comparing values are genuinely
+    /// different: one short-circuits and demands booleans, the other takes any
+    /// two values and always looks at both. Folding them together would leave
+    /// every value-level operator with two arms it can never reach.
+    And(Box<Expr>, Box<Expr>),
+    /// `<expr> OR <expr>` — the right is evaluated only when the left does not
+    /// hold.
+    Or(Box<Expr>, Box<Expr>),
+    /// Two values and an operator.
+    Binary {
+        /// Which operator.
+        op: BinaryOp,
+        /// The left operand.
+        left: Box<Expr>,
+        /// The right operand.
+        right: Box<Expr>,
+    },
     /// A table named in a value position.
     Table(TableRef),
     /// A record named in a value position: `users:1`.

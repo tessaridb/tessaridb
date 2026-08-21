@@ -154,6 +154,10 @@ fn value_of(expr: &Expr) -> Option<Value> {
             .map(Value::Object),
         ExprKind::Table(_) | ExprKind::Record(_) | ExprKind::Range(_) => None,
         ExprKind::Get(_) | ExprKind::Select(_) => None,
+        // A test is not a value, and a path needs a record to read from —
+        // neither can stand where a corpus says what it expects.
+        ExprKind::Path(_) | ExprKind::Not(_) => None,
+        ExprKind::And(_, _) | ExprKind::Or(_, _) | ExprKind::Binary { .. } => None,
     }
 }
 
@@ -177,6 +181,8 @@ fn kind_name(error: &Error) -> &'static str {
         Error::InvalidKeyBound { .. } => "InvalidKeyBound",
         Error::NotAnEdgeTable { .. } => "NotAnEdgeTable",
         Error::EdgePropertiesNotAnObject { .. } => "EdgePropertiesNotAnObject",
+        Error::ConditionNotBoolean { .. } => "ConditionNotBoolean",
+        Error::NoRecordInScope { .. } => "NoRecordInScope",
         _ => "Unnamed",
     }
 }

@@ -19,6 +19,7 @@
 
 #![forbid(unsafe_code)]
 
+mod condition;
 mod context;
 mod error;
 mod evaluate;

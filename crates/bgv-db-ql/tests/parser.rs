@@ -8,7 +8,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use bgv_db_ql::{
-    Error, ExprKind, Projection, RecordTarget, Script, Source, StatementKind, Test, parse,
+    BinaryOp, Error, ExprKind, Projection, RecordTarget, Script, Source, StatementKind, parse,
 };
 use bgv_db_types::{Datetime, Number, RecordId, Value};
 
@@ -317,15 +317,35 @@ fn the_three_select_forms_are_the_three_access_paths() {
     else {
         panic!("expected a read");
     };
-    let Source::Filter {
-        field, value, test, ..
-    } = select.from
-    else {
+    let Source::Where { condition, .. } = select.from else {
         panic!("expected a filtered read");
     };
-    assert_eq!(test, Test::Equals);
+    let ExprKind::Binary { op, left, right } = condition.kind else {
+        panic!("expected a comparison");
+    };
+    assert_eq!(op, BinaryOp::Equal);
+    let ExprKind::Path(field) = left.kind else {
+        panic!("expected a path on the left");
+    };
     assert_eq!(field.path.to_string(), "email");
-    assert!(matches!(value.kind, ExprKind::Literal(Value::String(_))));
+    assert!(matches!(right.kind, ExprKind::Literal(Value::String(_))));
+}
+
+/// The operator and the route a one-comparison condition is built from.
+fn compared(source: &str) -> (BinaryOp, String) {
+    let StatementKind::Select(select) = one(source) else {
+        panic!("expected a read");
+    };
+    let Source::Where { condition, .. } = select.from else {
+        panic!("expected a filtered read");
+    };
+    let ExprKind::Binary { op, left, .. } = condition.kind else {
+        panic!("expected a comparison");
+    };
+    let ExprKind::Path(field) = left.kind else {
+        panic!("expected a path on the left");
+    };
+    (op, field.path.to_string())
 }
 
 #[test]
@@ -333,29 +353,24 @@ fn a_pattern_match_is_its_own_test_rather_than_an_equality() {
     // The caller of this store names its fields — agents reach it through
     // bgv-ai-memory, which knows its own schema — so the form is the standard
     // one and nothing searches unnamed fields.
-    let StatementKind::Select(select) = one("SELECT * FROM notes WHERE body LIKE '%ada%';") else {
-        panic!("expected a read");
-    };
-    let Source::Filter { field, test, .. } = select.from else {
-        panic!("expected a filtered read");
-    };
-    assert_eq!(field.path.to_string(), "body");
-    assert_eq!(test, Test::Like);
+    assert_eq!(
+        compared("SELECT * FROM notes WHERE body LIKE '%ada%';"),
+        (BinaryOp::Like, "body".to_owned())
+    );
 }
 
 #[test]
 fn membership_and_pattern_matching_are_different_tests() {
     // `CONTAINS` asks whether a collection holds a value; `LIKE` asks whether
     // text holds characters. Neither is a spelling of the other.
-    let StatementKind::Select(select) = one("SELECT * FROM notes WHERE tags CONTAINS 'urgent';")
-    else {
-        panic!("expected a read");
-    };
-    let Source::Filter { field, test, .. } = select.from else {
-        panic!("expected a filtered read");
-    };
-    assert_eq!(field.path.to_string(), "tags");
-    assert_eq!(test, Test::Contains);
+    assert_eq!(
+        compared("SELECT * FROM notes WHERE tags CONTAINS 'urgent';"),
+        (BinaryOp::Contains, "tags".to_owned())
+    );
+    assert_eq!(
+        compared("SELECT * FROM notes WHERE tags IN 'urgent';"),
+        (BinaryOp::In, "tags".to_owned())
+    );
 }
 
 #[test]
@@ -437,10 +452,13 @@ fn a_key_value_read_stands_where_a_value_stands() {
     else {
         panic!("expected a read");
     };
-    let Source::Filter { value, .. } = select.from else {
+    let Source::Where { condition, .. } = select.from else {
         panic!("expected a filtered read");
     };
-    assert!(matches!(value.kind, ExprKind::Get(_)));
+    let ExprKind::Binary { right, .. } = condition.kind else {
+        panic!("expected a comparison");
+    };
+    assert!(matches!(right.kind, ExprKind::Get(_)));
 
     let ExprKind::Object(fields) = written(
         "CREATE audit:1 = {\n  actor:  GET sessions:'abc',\n  target: (SELECT * FROM users:1),\n}",
@@ -498,7 +516,6 @@ fn what_the_specification_leaves_out_is_refused_by_name() {
         ),
         ("SELECT * FROM users ORDER BY email;", "ordering a result"),
         ("SELECT * FROM users LIMIT 10;", "limiting a result"),
-        ("SET k:1 = (1);", "grouping an expression in parentheses"),
     ] {
         let error = parse(source).unwrap_err();
         let Error::Unsupported { feature: named, .. } = &error else {
@@ -523,13 +540,12 @@ fn a_word_that_names_an_absent_feature_is_still_a_legal_name() {
 
 #[test]
 fn every_failure_points_at_the_characters_that_caused_it() {
-    // `=` is the only comparison the language has, so a `>` is not a wrong
-    // operator — it is a character the grammar never uses, and the failure
-    // points at it rather than at the statement around it.
-    let source = "SELECT * FROM users WHERE email > 'ada';";
+    // `@` is a character the grammar never uses, and the failure points at it
+    // rather than at the statement around it.
+    let source = "SELECT * FROM users WHERE email @ 'ada';";
     let error = parse(source).unwrap_err();
     let span = error.span();
-    assert_eq!(source.get(span.start..span.end), Some(">"), "{error}");
+    assert_eq!(source.get(span.start..span.end), Some("@"), "{error}");
 
     let source = "CREATE users:1 = { name: };";
     let error = parse(source).unwrap_err();
@@ -578,7 +594,13 @@ fn the_whole_specification_script_parses() {
 fn filtered_on(source: &str) -> String {
     match one(source) {
         StatementKind::Select(select) => match select.from {
-            Source::Filter { field, .. } => field.path.to_string(),
+            Source::Where { condition, .. } => match condition.kind {
+                ExprKind::Binary { left, .. } => match left.kind {
+                    ExprKind::Path(field) => field.path.to_string(),
+                    other => panic!("{source} compared {other:?}"),
+                },
+                other => panic!("{source} parsed as {other:?}"),
+            },
             other => panic!("{source} parsed as {other:?}"),
         },
         other => panic!("{source} parsed as {other:?}"),
@@ -707,4 +729,78 @@ fn the_wildcard_is_still_the_whole_record() {
         panic!("not a select");
     };
     assert_eq!(select.projection, Projection::All);
+}
+
+#[test]
+fn conditions_bind_in_the_order_the_specification_states() {
+    // `OR` loosest, then `AND`, then `NOT`, then the comparisons. Asserted on
+    // the shape of the tree rather than on what it answers, because the answer
+    // would be the same for several wrong shapes over the right data.
+    let StatementKind::Select(select) = one("SELECT * FROM users WHERE a = 1 AND b = 2 OR c = 3;")
+    else {
+        panic!("not a select");
+    };
+    let Source::Where { condition, .. } = select.from else {
+        panic!("not a filtered read");
+    };
+    let ExprKind::Or(left, right) = condition.kind else {
+        panic!("`OR` should be outermost");
+    };
+    assert!(matches!(left.kind, ExprKind::And(_, _)));
+    assert!(matches!(right.kind, ExprKind::Binary { .. }));
+}
+
+#[test]
+fn parentheses_say_the_other_thing() {
+    let StatementKind::Select(select) =
+        one("SELECT * FROM users WHERE a = 1 AND (b = 2 OR c = 3);")
+    else {
+        panic!("not a select");
+    };
+    let Source::Where { condition, .. } = select.from else {
+        panic!("not a filtered read");
+    };
+    let ExprKind::And(_, right) = condition.kind else {
+        panic!("`AND` should be outermost");
+    };
+    assert!(matches!(right.kind, ExprKind::Or(_, _)));
+}
+
+#[test]
+fn two_comparisons_in_a_row_are_refused_rather_than_read_as_one_of_them() {
+    // `1 < age < 100` means "between" to a person and `(1 < age) < 100` to a
+    // parser. A grammar that silently picks one answers a question nobody asked.
+    assert!(parse("SELECT * FROM users WHERE 1 < age < 100;").is_err());
+}
+
+#[test]
+fn a_name_reads_as_a_route_in_a_condition_and_a_table_in_a_value() {
+    let StatementKind::Select(select) = one("SELECT * FROM users WHERE users = 3;") else {
+        panic!("not a select");
+    };
+    let Source::Where { condition, .. } = select.from else {
+        panic!("not a filtered read");
+    };
+    let ExprKind::Binary { left, .. } = condition.kind else {
+        panic!("not a comparison");
+    };
+    assert!(matches!(left.kind, ExprKind::Path(_)));
+
+    // The same word, in a value position, is the table.
+    assert!(matches!(
+        written("CREATE audit:1 = users"),
+        ExprKind::Table(_)
+    ));
+
+    // And with a `:` after it, a record — in either position.
+    let StatementKind::Select(select) = one("SELECT * FROM users WHERE owner = users:1;") else {
+        panic!("not a select");
+    };
+    let Source::Where { condition, .. } = select.from else {
+        panic!("not a filtered read");
+    };
+    let ExprKind::Binary { right, .. } = condition.kind else {
+        panic!("not a comparison");
+    };
+    assert!(matches!(right.kind, ExprKind::Record(_)));
 }

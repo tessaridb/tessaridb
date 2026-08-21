@@ -132,4 +132,33 @@ pub enum Error {
         /// Where the bound was written.
         span: Span,
     },
+
+    /// A condition that is not a boolean.
+    ///
+    /// Every operator that composes a condition answers with one, so this only
+    /// happens when a bare path or literal stands where a question was meant.
+    /// `WHERE tags` is not a question with a false answer; it is a question that
+    /// was not finished, and an empty result would hide that.
+    #[error("a condition must be a boolean, not {found} (at {span})")]
+    ConditionNotBoolean {
+        /// The type that stood there instead.
+        found: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A route into a record, written where there is no record.
+    ///
+    /// **Unreachable through the language today**, and kept anyway. Two separate
+    /// mechanisms hold the invariant — the parser only reads a bare name as a
+    /// route inside a condition, and `seekable` refuses to use a right-hand side
+    /// that reads the record as an index bound — and neither is expressed in a
+    /// type. The alternative to this failure is answering `none`, which would be
+    /// a wrong answer rather than a refusal, and a wrong answer from a filter is
+    /// the failure mode this store spends most of its rules avoiding.
+    #[error("there is no record here to read a path from (at {span})")]
+    NoRecordInScope {
+        /// Where the path was written.
+        span: Span,
+    },
 }

@@ -365,29 +365,82 @@ decided by the target rather than by a cost model:
 | `FROM users:2<-follows<-users` | the index, on the edge table's `in` |
 | `FROM users` | every record of the table |
 
-A `WHERE` names a path (§3) and a test. A plain field name is a path of one
-step, so every filter that could be written before still reads the same:
+A `WHERE` takes a **condition**: an expression that answers with a boolean. In a
+condition a bare name is a path (§3) into the record being tested, so every
+filter that could be written before still reads the same:
 
 ```
 SELECT * FROM users WHERE email = 'ada@example.com';
 SELECT * FROM users WHERE address.city = 'Paris';
 SELECT * FROM users WHERE tags[0] = 'urgent';
+SELECT * FROM users WHERE age >= 18 AND city = 'Paris';
+SELECT * FROM users WHERE city = 'Paris' AND (age = 17 OR name = 'grace');
+SELECT * FROM users WHERE NOT (city = 'Lyon');
 SELECT * FROM notes WHERE body LIKE '%lovelace%';
 SELECT * FROM notes WHERE body ILIKE 'ada%';
 SELECT * FROM notes WHERE tags CONTAINS 'urgent';
+SELECT * FROM notes WHERE 'urgent' IN tags;
 ```
 
-`=` is exact equality on the whole value. `LIKE` is SQL's pattern match, and it
-is spelled the way SQL spells it because that is what a person or a tool writes
-without thinking: the pattern covers the **whole** value, `%` stands for any run
-of characters, `_` for exactly one, and `\` escapes either. That whole-value
-anchoring is why a substring search is written `'%text%'`. `ILIKE` is the same
-test ignoring case.
+The operators, and how tightly they bind — loosest first:
+
+| Level | Operators |
+|---|---|
+| loosest | `OR` |
+| | `AND` |
+| | `NOT` |
+| tightest | `=` `!=` `<` `<=` `>` `>=` `IN` `CONTAINS` `LIKE` `ILIKE` |
+
+Parentheses override, and **two comparisons cannot be written in a row**:
+`1 < age < 100` means "between" to a person and `(1 < age) < 100` to a parser, so
+a grammar that picked one would answer a question nobody asked.
+
+### What a comparison means
+
+`=` is exact equality on the whole value. `<` and `>` are the value system's
+**declared order across types** (`docs/value-system.md` §3) — the same order
+every index range read already uses, because a comparison that disagreed with
+the order its own index is stored in is the failure this store keeps refusing: an
+answer that changes when an index appears.
+
+Three consequences, stated rather than discovered:
+
+- **There is no three-valued logic.** A comparison answers true or false and
+  never "unknown", so `NOT (age = 17)` holds for a record with no `age`.
+- **A comparison can cross types.** `age > 18` holds for a record whose `age` is
+  the text `'nineteen'`, because a string ranks above a number. `SCHEMAFULL`
+  with `TYPE int` is how a table stops holding both.
+- **`NONE` and `NULL` are not small values.** An *ordered* comparison against
+  either is false, so `age <= 17` does not find every record with no age
+  recorded. Equality still sees them as themselves — which is the whole reason
+  the language needs no `IS NULL`:
+
+```
+SELECT * FROM users WHERE age = NONE;
+SELECT * FROM users WHERE age = NULL;
+```
+
+Those are two different questions and both are already sayable. A path that
+reaches nothing evaluates to `NONE`, because that is exactly what `NONE` means.
+
+`LIKE` is SQL's pattern match, spelled the way SQL spells it because that is what
+a person or a tool writes without thinking: the pattern covers the **whole**
+value, `%` stands for any run of characters, `_` for exactly one, and `\`
+escapes either. That whole-value anchoring is why a substring search is written
+`'%text%'`. `ILIKE` is the same test ignoring case.
 
 `CONTAINS` is a different question again: **membership**, not text. `tags
 CONTAINS 'urgent'` asks whether an array or a set holds that element, where
 `body LIKE '%urgent%'` asks whether text holds those characters. Both exist
-because both are asked, and neither is a spelling of the other.
+because both are asked, and neither is a spelling of the other. `IN` is the same
+question from the other end — `'urgent' IN tags` — because both read naturally
+in different sentences.
+
+**A condition must be a boolean.** Every operator above answers with one, so this
+only bites when a bare path or literal stands where a question was meant:
+`WHERE tags` is refused, naming the type it found. It is not a question with a
+false answer; it is a question that was not finished, and an empty result would
+hide that.
 
 Only text satisfies a text pattern, and only a collection satisfies membership —
 a number in that field is not an error, the record simply does not match. A field
@@ -401,21 +454,39 @@ answers that a real text index later disagrees with. A query whose answer change
 when an index is added is worse than a slow one.
 
 **Which access path runs is decided by what exists, not by how the query is
-written.** An index read serves two shapes: an equality on an indexed field, and
+written.** An index read serves two shapes: an equality on an indexed path, and
 a `LIKE` pattern that is a literal followed by a trailing `%`, which asks for the
-values beginning with that literal and is a range over the same index. Everything
-else reads the table and tests each record. The statement is identical either
-way, so adding an index later makes existing queries faster without rewriting any
-of them. The path taken is reported with the result, so a scan is visible rather
-than folklore.
+values beginning with that literal and is a range over the same index. Either may
+sit inside a conjunction: `city = 'Paris' AND age = 17` uses an index on `city`
+if there is one.
 
-| Filter | With an index on that exact path |
+**The records an index offers are then tested against the whole condition.** The
+index answered one conjunct and the statement asked for all of them, which is
+what makes an index a narrowing device rather than an answer — and is why adding
+one still cannot change what a query returns.
+
+Neither side of an `OR` may narrow by itself, because a record satisfying the
+other half would be missed; under a `NOT` an index finding the matching records
+is exactly the wrong set. Both keep the scan. So does a comparison whose
+right-hand side reads the record — `left = right` has no one value to seek to.
+
+Everything else reads the table and tests each record. The statement is identical
+either way, so adding an index later makes existing queries faster without
+rewriting any of them. The path taken is reported with the result, so a scan is
+visible rather than folklore.
+
+| Condition | With an index on that exact path |
 |---|---|
 | `path = 'ada'` | index read |
+| `path = 'ada' AND <anything>` | index read, then the rest applied |
 | `path LIKE 'ada%'` | index read — a range over the values beginning with `ada` |
 | `path LIKE '%ada'`, `'%ada%'`, `'a_a%'`, `'ada%lace'` | scan |
 | `path ILIKE 'ada%'` | scan |
-| `path CONTAINS 'ada'` | scan |
+| `path CONTAINS 'ada'`, `'ada' IN path` | scan |
+| `path < 'ada'`, `path > 'ada'` | scan — an ordered index could serve this as a range, and that is not built yet |
+| `path = 'ada' OR <anything>` | scan |
+| `NOT (path = 'ada')` | scan |
+| `path = <another path>` | scan — no single value to seek to |
 
 **On that exact path**, and no other. An index on `address.city` serves a filter
 on `address.city` and not one on `address`, for the same reason an index on
@@ -535,9 +606,12 @@ Named here rather than merely missing, so each absence reads as a decision:
 | `[*]` in a path — "any element of this array" | it turns a path from a function into a relation: the filter becomes existential, a projection returns several values, and the index becomes a multikey one with entries per element and a reclamation rule of its own. Three features wearing one syntax. |
 | declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
 | aggregation and grouping | needs an execution layer this milestone has not built |
-| functions and expressions beyond literals and reads | a language surface to design once, not accrete |
+| arithmetic | `WHERE` needs comparison and composition, not `+`; arithmetic's first real consumer is a computed projection, and what `int + decimal` produces, what division by zero does and what overflow does deserve a milestone with a consumer to test them against |
+| functions | a registry and an arity rule of their own |
+| an ordered range read from `<` and `>` | the index can serve it; it needs a bounded scan on the storage layer and an equivalence test of its own. Reported as a scan until then, never served as a guess |
+| three-valued logic | §5 — comparison answers true or false, and `= NONE` / `= NULL` say what `IS NULL` would |
 | permissions in the language | there is no session identity yet |
-| a mandatory field, a default, an `ASSERT` | each needs an expression surface, which is the row above this one; `SCHEMAFULL` already catches the misspelling that motivated declarations |
+| a mandatory field, a default, an `ASSERT` | each needs the expression surface to grow functions first; `SCHEMAFULL` already catches the misspelling that motivated declarations |
 | changing a declared type in place | `DROP FIELD` then `DEFINE FIELD` re-checks every row through the one path; a migration primitive is its own work |
 
 ## 9. What is fixed here, and what can still move
@@ -550,6 +624,12 @@ Named here rather than merely missing, so each absence reads as a decision:
 | `NONE` and `NULL` are distinct literals | **contract** — the storage layer keeps them apart |
 | An edge is a record, and traversal is an index read | **contract** — no separate graph keyspace, so edges get MVCC, transactions, replication and the schema check without any of them being built again |
 | An edge is identified by its endpoints | fixed for this milestone; an explicit-id form would be additive |
+| A filter is a condition, and a condition is a boolean | **contract** |
+| Comparison is the value system's declared order, including across types | **contract** — a comparison disagreeing with the order its index is stored in is an answer that changes when an index appears |
+| An ordered comparison against `NONE` or `NULL` is false | **contract** — they are the absence of a value, not a small one |
+| `= NONE` and `= NULL` are the two questions `IS NULL` would blur together | **contract** |
+| An index narrows a conjunct; the whole condition still decides | **contract** — what keeps an index from changing an answer |
+| A bare name is a path in a condition and a table in a value position | **contract** |
 | A projection is named by the last step of its path | **contract** — the alternative puts a delimiter inside a field name, which no path can then address |
 | A projected path reaching nothing omits its field rather than answering `none` | **contract** — the same reason `NONE` and `NULL` are different literals |
 | A projection never changes the access path | fixed for this milestone; a covering read is a planner decision |

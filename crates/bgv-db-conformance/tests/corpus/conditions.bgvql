@@ -1,0 +1,91 @@
+# Conditions: a filter is an expression that answers with a boolean.
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+--- expect: ok
+
+--- case: a table holding several types in one field, and two absences
+DEFINE TABLE people;
+CREATE people:1 = { name: 'ada', age: 17, city: 'Paris', tags: ['urgent'] };
+CREATE people:2 = { name: 'grace', age: 45, city: 'Lyon', tags: ['old'] };
+CREATE people:3 = { name: 'alan', age: 'nineteen', city: 'Paris' };
+CREATE people:4 = { name: 'edsger', age: NULL, city: 'Lyon' };
+CREATE people:5 = { name: 'barbara', city: 'Paris' };
+--- expect: ok
+
+--- case: equality is exact on the whole value
+SELECT * FROM people WHERE city = 'Paris';
+--- expect: rows 3
+
+--- case: inequality is its complement
+SELECT * FROM people WHERE city != 'Paris';
+--- expect: rows 2
+
+--- case: an ordered comparison follows the declared order, across types
+SELECT * FROM people WHERE age > 18;
+--- expect: rows 2
+
+--- case: none and null are not small values
+SELECT * FROM people WHERE age < 1000;
+--- expect: rows 2
+
+--- case: the absent field is found by the literal that names it
+SELECT * FROM people WHERE age = NONE;
+--- expect: rows 1
+
+--- case: and the null one by the other literal
+SELECT * FROM people WHERE age = NULL;
+--- expect: rows 1
+
+--- case: conjunction narrows
+SELECT * FROM people WHERE city = 'Paris' AND age = 17;
+--- expect: rows 1
+
+--- case: AND binds tighter than OR
+SELECT * FROM people WHERE city = 'Paris' AND age = 17 OR name = 'grace';
+--- expect: rows 2
+
+--- case: and parentheses say the other thing
+SELECT * FROM people WHERE city = 'Paris' AND (age = 17 OR name = 'grace');
+--- expect: rows 1
+
+--- case: negation, with no third truth value
+SELECT * FROM people WHERE NOT (age = 17);
+--- expect: rows 4
+
+--- case: membership from the collection's end
+SELECT * FROM people WHERE tags CONTAINS 'urgent';
+--- expect: rows 1
+
+--- case: and from the value's end
+SELECT * FROM people WHERE 'urgent' IN tags;
+--- expect: rows 1
+
+--- case: a pattern covers the whole value
+SELECT * FROM people WHERE name LIKE 'ad%';
+--- expect: rows 1
+
+--- case: an index narrows one conjunct and the rest still applies
+DEFINE INDEX by_city ON people FIELDS city;
+--- expect: ok
+
+--- case: the indexed conjunction answers what the scan answered
+SELECT * FROM people WHERE city = 'Paris' AND age = 17;
+--- expect: rows 1
+
+--- case: a bare name in a value position is still a table
+DEFINE TABLE audit;
+CREATE audit:1 = { subject: people };
+--- expect: ok
+
+--- case: a condition that is not a boolean is refused
+SELECT * FROM people WHERE name;
+--- expect: error ConditionNotBoolean
+
+--- case: two comparisons in a row are refused
+SELECT * FROM people WHERE 1 < age < 100;
+--- expect: error UnexpectedToken

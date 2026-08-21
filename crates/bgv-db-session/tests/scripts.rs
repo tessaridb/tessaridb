@@ -1369,3 +1369,263 @@ fn a_projection_shapes_a_read_standing_in_a_value_position() {
     };
     assert_eq!(fields.len(), 1, "the projection did not reach the subquery");
 }
+
+/// A table holding several types in one field, so comparison has to say what it
+/// means across them rather than only within numbers.
+fn mixed_ages(session: &mut Session<'_>) {
+    session
+        .run(
+            "DEFINE TABLE people;\n\
+             CREATE people:1 = { name: 'ada', age: 17, city: 'Paris' };\n\
+             CREATE people:2 = { name: 'grace', age: 45, city: 'Lyon' };\n\
+             CREATE people:3 = { name: 'alan', age: 'nineteen', city: 'Paris' };\n\
+             CREATE people:4 = { name: 'edsger', age: NULL, city: 'Lyon' };\n\
+             CREATE people:5 = { name: 'barbara', city: 'Paris' };",
+        )
+        .unwrap();
+}
+
+fn found_ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
+    let outcomes = session.run(script).unwrap();
+    outcomes[0]
+        .records()
+        .unwrap()
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+#[test]
+fn comparison_follows_the_value_systems_order_and_says_so_across_types() {
+    let store = store();
+    let mut session = ready(&store);
+    mixed_ages(&mut session);
+
+    // 45 only among the numbers — but `'nineteen'` is a string, and a string
+    // ranks above a number, so it is above 18 too. Surprising once, and
+    // consistent with the order every index range read already uses.
+    assert_eq!(
+        found_ids(&mut session, "SELECT * FROM people WHERE age > 18;"),
+        vec![RecordId::Int(2), RecordId::Int(3)]
+    );
+    assert_eq!(
+        found_ids(&mut session, "SELECT * FROM people WHERE age <= 17;"),
+        vec![RecordId::Int(1)]
+    );
+    // `none` and `null` are not small values. Following the declared order here
+    // would put every record with no age recorded under seventeen.
+    assert_eq!(
+        found_ids(&mut session, "SELECT * FROM people WHERE age < 1000;"),
+        vec![RecordId::Int(1), RecordId::Int(2)]
+    );
+}
+
+#[test]
+fn absent_and_null_are_found_by_the_literals_that_name_them() {
+    // No `IS NULL` operator, because `= NULL` already means it — and `= NONE`
+    // means the other thing, which SQL cannot say at all.
+    let store = store();
+    let mut session = ready(&store);
+    mixed_ages(&mut session);
+
+    assert_eq!(
+        found_ids(&mut session, "SELECT * FROM people WHERE age = NONE;"),
+        vec![RecordId::Int(5)]
+    );
+    assert_eq!(
+        found_ids(&mut session, "SELECT * FROM people WHERE age = NULL;"),
+        vec![RecordId::Int(4)]
+    );
+}
+
+#[test]
+fn conditions_compose_and_parentheses_override_the_precedence() {
+    let store = store();
+    let mut session = ready(&store);
+    mixed_ages(&mut session);
+
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM people WHERE city = 'Paris' AND age = 17;"
+        ),
+        vec![RecordId::Int(1)]
+    );
+    // `AND` binds tighter than `OR`, so this is `(a AND b) OR c`.
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM people WHERE city = 'Paris' AND age = 17 OR name = 'grace';"
+        ),
+        vec![RecordId::Int(1), RecordId::Int(2)]
+    );
+    // …and parentheses say the other thing.
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM people WHERE city = 'Paris' AND (age = 17 OR name = 'grace');"
+        ),
+        vec![RecordId::Int(1)]
+    );
+    // No three-valued logic: `NOT` over a record with no `age` holds, because
+    // the field is absent and absent is not seventeen.
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM people WHERE NOT (age = 17) AND city = 'Paris';"
+        ),
+        vec![RecordId::Int(3), RecordId::Int(5)]
+    );
+}
+
+#[test]
+fn membership_reads_from_either_end() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE notes;\n\
+             CREATE notes:1 = { tags: ['urgent', 'old'] };\n\
+             CREATE notes:2 = { tags: ['old'] };",
+        )
+        .unwrap();
+
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE tags CONTAINS 'urgent';"
+        ),
+        vec![RecordId::Int(1)]
+    );
+    assert_eq!(
+        found_ids(&mut session, "SELECT * FROM notes WHERE 'urgent' IN tags;"),
+        vec![RecordId::Int(1)]
+    );
+}
+
+#[test]
+fn a_condition_that_is_not_a_boolean_is_refused_by_the_type_it_found() {
+    let store = store();
+    let mut session = ready(&store);
+    mixed_ages(&mut session);
+
+    let error = session.run("SELECT * FROM people WHERE name;").unwrap_err();
+    assert!(
+        matches!(
+            error,
+            Error::ConditionNotBoolean {
+                found: "string",
+                ..
+            }
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_bare_name_is_a_route_in_a_condition_and_a_table_in_a_value() {
+    let store = store();
+    let mut session = ready(&store);
+    mixed_ages(&mut session);
+
+    // In a value position `people` is the table itself.
+    session
+        .run("DEFINE TABLE audit; CREATE audit:1 = { subject: people };")
+        .unwrap();
+    let found = session.run("SELECT * FROM audit:1;").unwrap();
+    assert!(matches!(
+        field(&found[0].records().unwrap()[0].1, "subject"),
+        Value::Table(_)
+    ));
+
+    // In a condition the same word reads the record's own field.
+    assert_eq!(
+        found_ids(&mut session, "SELECT * FROM people WHERE name = 'ada';"),
+        vec![RecordId::Int(1)]
+    );
+}
+
+#[test]
+fn an_index_narrows_a_conjunction_and_the_rest_of_it_still_applies() {
+    use bgv_db_session::AccessPath;
+
+    let store = store();
+    let mut session = ready(&store);
+    mixed_ages(&mut session);
+
+    let script = "SELECT * FROM people WHERE city = 'Paris' AND age = 17;";
+    let by_scan = session.run(script).unwrap();
+    assert_eq!(by_scan[0].path(), Some(AccessPath::Scan));
+    let scanned: Vec<_> = by_scan[0].records().unwrap().to_vec();
+
+    session
+        .run("DEFINE INDEX by_city ON people FIELDS city;")
+        .unwrap();
+
+    let by_index = session.run(script).unwrap();
+    assert_eq!(by_index[0].path(), Some(AccessPath::Index));
+    // Record for record. The index answered `city = 'Paris'` — three records —
+    // and the other conjunct still had to remove two of them.
+    assert_eq!(by_index[0].records().unwrap(), scanned.as_slice());
+    assert_eq!(scanned.len(), 1);
+}
+
+#[test]
+fn neither_side_of_an_or_may_narrow_by_itself() {
+    use bgv_db_session::AccessPath;
+
+    // An index over one half of an `OR` would miss every record satisfying the
+    // other half, so the whole condition keeps the scan.
+    let store = store();
+    let mut session = ready(&store);
+    mixed_ages(&mut session);
+    session
+        .run("DEFINE INDEX by_city ON people FIELDS city;")
+        .unwrap();
+
+    let found = session
+        .run("SELECT * FROM people WHERE city = 'Paris' OR age = 45;")
+        .unwrap();
+    assert_eq!(found[0].path(), Some(AccessPath::Scan));
+    assert_eq!(found[0].records().unwrap().len(), 4);
+}
+
+#[test]
+fn a_comparison_against_another_field_is_never_used_as_a_bound() {
+    use bgv_db_session::AccessPath;
+
+    // The right-hand side reads the record, so there is no one value to seek to.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE pairs;\n\
+             DEFINE INDEX by_left ON pairs FIELDS left;\n\
+             CREATE pairs:1 = { left: 'a', right: 'a' };\n\
+             CREATE pairs:2 = { left: 'a', right: 'b' };",
+        )
+        .unwrap();
+
+    let found = session
+        .run("SELECT * FROM pairs WHERE left = right;")
+        .unwrap();
+    assert_eq!(found[0].path(), Some(AccessPath::Scan));
+    assert_eq!(found[0].records().unwrap().len(), 1);
+}
+
+#[test]
+fn an_ordered_comparison_is_reported_as_a_scan_rather_than_served_as_a_guess() {
+    use bgv_db_session::AccessPath;
+
+    // An ordered index could serve `>` as a bounded range and this milestone
+    // does not build it. Reported honestly instead of quietly.
+    let store = store();
+    let mut session = ready(&store);
+    mixed_ages(&mut session);
+    session
+        .run("DEFINE INDEX by_age ON people FIELDS age;")
+        .unwrap();
+
+    let found = session.run("SELECT * FROM people WHERE age > 18;").unwrap();
+    assert_eq!(found[0].path(), Some(AccessPath::Scan));
+}

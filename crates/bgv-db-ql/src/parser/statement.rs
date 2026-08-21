@@ -4,7 +4,7 @@ use super::Parser;
 use bgv_db_types::FieldKind;
 
 use crate::ast::{
-    Direction, ExprKind, RangeExpr, RecordTarget, Select, Source, Statement, StatementKind, Test,
+    Direction, ExprKind, RangeExpr, RecordTarget, Select, Source, Statement, StatementKind,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -260,22 +260,9 @@ impl Parser<'_> {
                 None => Source::Record(record),
             }
         } else if self.eat_keyword(Keyword::Where) {
-            let field = self.field_path()?;
-            let test = if self.eat_keyword(Keyword::Like) {
-                Test::Like
-            } else if self.eat_keyword(Keyword::Ilike) {
-                Test::Ilike
-            } else if self.eat_keyword(Keyword::Contains) {
-                Test::Contains
-            } else {
-                self.expect_punct(Punct::Equals, "`=`, `LIKE`, `ILIKE` or `CONTAINS`")?;
-                Test::Equals
-            };
-            Source::Filter {
+            Source::Where {
                 table,
-                field,
-                test,
-                value: Box::new(self.expression()?),
+                condition: Box::new(self.condition()?),
             }
         } else {
             Source::Table(table)

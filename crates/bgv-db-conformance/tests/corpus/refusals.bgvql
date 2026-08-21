@@ -25,13 +25,17 @@ SELECT * FROM users ORDER BY email;
 SELECT * FROM users LIMIT 10;
 --- expect: error Unsupported
 
---- case: an expression grouped in parentheses
-SET users:1 = (1);
---- expect: error Unsupported
-
---- case: a comparison the language does not have
-SELECT * FROM users WHERE email > 'ada';
+--- case: a character the grammar never uses
+SELECT * FROM users WHERE email @ 'ada';
 --- expect: error UnexpectedCharacter
+
+--- case: two comparisons in a row, which could mean either of two things
+SELECT * FROM users WHERE 1 < age < 100;
+--- expect: error UnexpectedToken
+
+--- case: a condition that is not a boolean
+SELECT * FROM users WHERE email;
+--- expect: error ConditionNotBoolean
 
 --- case: an object that names one field twice
 CREATE users:2 = { name: 'ada', name: 'grace' };

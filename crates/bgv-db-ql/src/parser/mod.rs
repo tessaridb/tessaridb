@@ -12,6 +12,7 @@
 //! it — which is precisely what the marker exists to prevent — so the decimal is
 //! read from the characters the author wrote.
 
+mod condition;
 mod expression;
 mod path;
 mod statement;
@@ -33,6 +34,7 @@ pub fn parse(source: &str) -> Result<Script> {
         source,
         tokens,
         position: 0,
+        reading_paths: false,
     }
     .script()
 }
@@ -42,6 +44,14 @@ struct Parser<'a> {
     source: &'a str,
     tokens: Vec<Spanned>,
     position: usize,
+    /// Whether a bare name here reads as a route into a record.
+    ///
+    /// True inside a condition and false everywhere else, because `users` means
+    /// the table in `CREATE audit:1 = { subject: users }` and the field in
+    /// `WHERE users = 3`. Held on the parser rather than threaded through every
+    /// expression rule, since every rule between the condition and the name
+    /// would otherwise carry a parameter it does not use.
+    reading_paths: bool,
 }
 
 impl Parser<'_> {
@@ -63,6 +73,20 @@ impl Parser<'_> {
 
     fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.position).map(|spanned| &spanned.token)
+    }
+
+    /// Whether what stands here is a record reference rather than a route.
+    ///
+    /// `users:1` is a record in either position; `users` and `users.name` are a
+    /// route in a condition. One token of lookahead past the name decides it,
+    /// which keeps the grammar backtrack-free.
+    fn record_follows(&self) -> bool {
+        matches!(
+            self.tokens
+                .get(self.position.saturating_add(1))
+                .map(|s| &s.token),
+            Some(Token::Punct(Punct::Colon))
+        )
     }
 
     /// The keyword under the cursor, if there is one.

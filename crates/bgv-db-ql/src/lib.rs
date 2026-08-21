@@ -20,8 +20,8 @@ mod parser;
 mod token;
 
 pub use ast::{
-    Direction, Expr, ExprKind, Field, FieldPath, Name, Projected, Projection, RangeExpr,
-    RecordTarget, Script, Select, Source, Statement, StatementKind, TableRef, Test,
+    BinaryOp, Direction, Expr, ExprKind, Field, FieldPath, Name, Projected, Projection, RangeExpr,
+    RecordTarget, Script, Select, Source, Statement, StatementKind, TableRef,
 };
 pub use error::{Error, Result};
 pub use lexer::tokenize;

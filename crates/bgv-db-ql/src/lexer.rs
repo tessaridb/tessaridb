@@ -314,6 +314,23 @@ impl<'a> Lexer<'a> {
                 self.advance('-');
                 Punct::ArrowLeft
             }
+            // `<-` is taken above, so what is left is a comparison. The order
+            // matters: reading `<` first would make every backward traversal
+            // lex as "below, then a minus".
+            '<' if self.peek() == Some('=') => {
+                self.advance('=');
+                Punct::LessOrEqual
+            }
+            '<' => Punct::Less,
+            '>' if self.peek() == Some('=') => {
+                self.advance('=');
+                Punct::GreaterOrEqual
+            }
+            '>' => Punct::Greater,
+            '!' if self.peek() == Some('=') => {
+                self.advance('=');
+                Punct::NotEquals
+            }
             '(' => Punct::ParenOpen,
             ')' => Punct::ParenClose,
             '.' => {
