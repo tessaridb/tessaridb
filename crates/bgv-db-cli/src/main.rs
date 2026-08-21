@@ -42,6 +42,8 @@ usage: bgv [<path>] [-e <script> | -f <file>]
   <path>          a store on disk; omitted, the store is in memory and is lost
   -e <script>     run this and exit
   -f <file>       run this file and exit
+  --backup <file> write the store's log to <file> and exit
+  --restore <file> replay <file> into an empty store and exit
   --help          this
 
 with neither -e nor -f, statements are read from standard input: a prompt when
@@ -54,7 +56,7 @@ struct Asked {
     source: Source,
 }
 
-/// Where the statements come from.
+/// Where the statements come from, or what else was asked for.
 #[derive(Debug)]
 enum Source {
     /// Standard input, prompting or not depending on what it is.
@@ -63,6 +65,10 @@ enum Source {
     Inline(String),
     /// A file.
     File(PathBuf),
+    /// Write this store's log to a file.
+    Backup(PathBuf),
+    /// Replay a file into this store.
+    Restore(PathBuf),
 }
 
 fn main() -> ExitCode {
@@ -108,6 +114,18 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                     .ok_or_else(|| "-f wants a path".to_owned())?;
                 source = Source::File(PathBuf::from(path));
             }
+            "--backup" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| "--backup wants a path".to_owned())?;
+                source = Source::Backup(PathBuf::from(path));
+            }
+            "--restore" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| "--restore wants a path".to_owned())?;
+                source = Source::Restore(PathBuf::from(path));
+            }
             other if other.starts_with('-') => {
                 return Err(format!("unknown option {other:?}\n\n{USAGE}"));
             }
@@ -142,6 +160,11 @@ fn run(asked: Asked) -> Result<Ended, String> {
             let mut input = io::Cursor::new(held);
             session::run(&db, &mut input, &mut out, Mode::Script)
         }
+        // A backup is a store operation rather than a script, so it does not go
+        // through the session at all — and an operator rehearses a restore with
+        // a command, which is what "rehearsed" in the readiness checklist means.
+        Source::Backup(path) => return backup(&db, &path).map(|()| Ended::Fine),
+        Source::Restore(path) => return restore(&db, &path).map(|()| Ended::Fine),
         Source::Standard => {
             let stdin = io::stdin();
             // A prompt is for a person. Piped input gets none, so the output is
@@ -162,6 +185,49 @@ fn run(asked: Asked) -> Result<Ended, String> {
         }
     };
     ended.map_err(|failure| failure.to_string())
+}
+
+/// Write the store's log to a file.
+///
+/// The whole store, because state is a pure function of the log — so this is a
+/// complete backup and not a partial one, and restoring it is a replay.
+fn backup(db: &Db, path: &std::path::Path) -> Result<(), String> {
+    let mut out = std::io::BufWriter::new(
+        fs::File::create(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
+    );
+    let written = bgv_db_backup::write(db.store(), &mut out)
+        .map_err(|failure| format!("{}: {failure}", path.display()))?;
+    out.flush()
+        .map_err(|failure| format!("{}: {failure}", path.display()))?;
+    println!(
+        "{} record(s) to {}, at sequence {}",
+        written.records,
+        path.display(),
+        written.tail
+    );
+    Ok(())
+}
+
+/// Replay a file into an empty store.
+fn restore(db: &Db, path: &std::path::Path) -> Result<(), String> {
+    let mut input = std::io::BufReader::new(
+        fs::File::open(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
+    );
+    let held = bgv_db_backup::read(db.store(), &mut input)
+        .map_err(|failure| format!("{}: {failure}", path.display()))?;
+    println!("{} record(s) from {}", held.records, path.display());
+    if held.truncated {
+        // Said loudly and on the error stream, because a partial restore that
+        // reads as a success is how somebody learns later that the last hour is
+        // gone.
+        eprintln!(
+            "warning: {} was cut short — it says it holds {} record(s) and {} were read",
+            path.display(),
+            held.tail,
+            held.records
+        );
+    }
+    Ok(())
 }
 
 /// One line saying what was opened, because "which store am I in" is the first

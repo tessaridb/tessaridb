@@ -136,6 +136,16 @@ impl Db {
         Ok(self.store.changes_since(from, limit)?)
     }
 
+    /// The store underneath.
+    ///
+    /// Exposed for the operations that are not statements. A backup is a read of
+    /// the log rather than a query, and giving this facade one method per such
+    /// tool would make it grow with the tools rather than with the database.
+    #[must_use]
+    pub const fn store(&self) -> &Store {
+        &self.store
+    }
+
     /// The position of the newest committed change.
     ///
     /// A subscription starting after this one sees only what happens next.

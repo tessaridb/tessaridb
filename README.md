@@ -136,6 +136,32 @@ so `.help` says so rather than leaving it to be found by pressing up. And it
 opens the store **in this process**: a client that talks to a running node over
 HTTP is the other half of this and is not built yet.
 
+## Backing up
+
+A backup of this store is its **log**, because the records, the indexes, the
+catalog, the search statistics and the vector graph are all derived from it by a
+pure function (ADR-0001). So a restore is a replay, through the same code a
+replica runs.
+
+```
+bgv ./data --backup ./monday.bgvlog
+bgv ./restored --restore ./monday.bgvlog
+```
+
+A restore refuses a store that already holds something — merging a backup into a
+populated store is not a restore, and the sequences would collide with a
+different meaning. A file that has been cut short restores what it holds and says
+so on the error stream, because a backup interrupted at record nine thousand is
+still nine thousand records and refusing it outright would throw away what
+somebody is holding in a bad week.
+
+**What this makes testable is worth more than the feature.** If a restored store
+differed from the original anywhere, something here would not be derived from the
+log — so the acceptance test restores a store that has exercised every engine and
+compares the two keyspace by keyspace, byte for byte.
+
+Timed on two thousand records: 0.8 ms to write, 13 ms to replay.
+
 ## Why
 
 Most systems that need more than one data model end up running more than one

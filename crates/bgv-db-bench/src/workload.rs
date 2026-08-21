@@ -17,7 +17,14 @@
 
 use std::time::Instant;
 
-use bgv_db::{Db, Result};
+use bgv_db::Db;
+
+/// What a workload can fail with.
+///
+/// Boxed because a workload may touch more than the database — the restore
+/// rehearsal runs a backup, whose failures are its own — and a harness only ever
+/// prints an error rather than deciding on one.
+pub type Failable<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 use crate::samples::{Report, Samples};
 
@@ -44,7 +51,7 @@ pub struct Workload {
     /// What the numbers it produces mean.
     pub about: &'static str,
     /// Run it against an open database.
-    pub run: fn(&Db) -> Result<Vec<Report>>,
+    pub run: fn(&Db) -> Failable<Vec<Report>>,
 }
 
 /// Every workload, so `--list` cannot drift from what `--workload` accepts.
@@ -70,6 +77,11 @@ pub const ALL: &[Workload] = &[
         run: search,
     },
     Workload {
+        name: "restore",
+        about: "a backup and the restore that replays it — the readiness row that has to be timed",
+        run: restore,
+    },
+    Workload {
         name: "vector-index",
         about: "the same read served by a graph, with the recall it buys against the exact scan",
         run: vector_index,
@@ -88,7 +100,7 @@ pub fn by_name(name: &str) -> Option<&'static Workload> {
 }
 
 /// A namespace and database to work in.
-fn prepared(db: &Db) -> Result<()> {
+fn prepared(db: &Db) -> Failable<()> {
     db.session().run(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench;\n\
          DEFINE DATABASE bench; USE DATABASE bench;",
@@ -110,7 +122,7 @@ macro_rules! timed {
     }};
 }
 
-fn write(db: &Db) -> Result<Vec<Report>> {
+fn write(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
     session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE TABLE people;")?;
@@ -129,7 +141,7 @@ fn write(db: &Db) -> Result<Vec<Report>> {
     Ok(vec![samples.summarise("write")])
 }
 
-fn read_by_id(db: &Db) -> Result<Vec<Report>> {
+fn read_by_id(db: &Db) -> Failable<Vec<Report>> {
     let mut reports = write(db)?;
     let mut session = db.session();
     session.run("USE NAMESPACE bench; USE DATABASE bench;")?;
@@ -145,7 +157,7 @@ fn read_by_id(db: &Db) -> Result<Vec<Report>> {
     Ok(reports)
 }
 
-fn filter(db: &Db) -> Result<Vec<Report>> {
+fn filter(db: &Db) -> Failable<Vec<Report>> {
     let mut reports = write(db)?;
     let mut session = db.session();
     session.run("USE NAMESPACE bench; USE DATABASE bench;")?;
@@ -220,7 +232,7 @@ fn filter(db: &Db) -> Result<Vec<Report>> {
     Ok(reports)
 }
 
-fn search(db: &Db) -> Result<Vec<Report>> {
+fn search(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
     session.run(
@@ -291,7 +303,7 @@ fn search(db: &Db) -> Result<Vec<Report>> {
     Ok(reports)
 }
 
-fn vector(db: &Db) -> Result<Vec<Report>> {
+fn vector(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
     session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE TABLE items;")?;
@@ -326,6 +338,55 @@ fn vector(db: &Db) -> Result<Vec<Report>> {
     Ok(reports)
 }
 
+/// A backup, and the restore that replays it.
+///
+/// The readiness checklist asks for a restore that is **rehearsed and timed**,
+/// and a time nobody measured is neither. Both halves are one operation each
+/// rather than a hundred, so the numbers are the wall time of the thing an
+/// operator would actually run — a p50 over one sample is that sample, and the
+/// row says `ops 1` so nobody reads it as a throughput.
+fn restore(db: &Db) -> Failable<Vec<Report>> {
+    prepared(db)?;
+    let mut session = db.session();
+    session.run(
+        "USE NAMESPACE bench; USE DATABASE bench;\n\
+         DEFINE TABLE people;\n\
+         DEFINE INDEX by_city ON people FIELDS city;",
+    )?;
+    for n in 0..RECORDS {
+        session.run(&format!(
+            "CREATE people:{n} = {{ name: 'person {n}', city: 'city {}' }};",
+            n % 50
+        ))?;
+    }
+
+    let mut taken = Samples::with_capacity(1);
+    let mut held = Vec::new();
+    let written = timed!(taken, bgv_db_backup::write(db.store(), &mut held))?;
+    let mut reports = vec![taken.summarise("backup")];
+    reports.push(Report::measurement(
+        "backup size",
+        &format!("{} record(s), {} bytes", written.records, held.len()),
+    ));
+
+    // Into a fresh store, because a restore into anything else is refused.
+    let target = Db::in_memory()?;
+    let mut replayed = Samples::with_capacity(1);
+    let outcome = timed!(
+        replayed,
+        bgv_db_backup::read(target.store(), &mut held.as_slice())
+    )?;
+    reports.push(replayed.summarise("restore"));
+    reports.push(Report::measurement(
+        "restored",
+        &format!(
+            "{} record(s), truncated: {}",
+            outcome.records, outcome.truncated
+        ),
+    ));
+    Ok(reports)
+}
+
 /// The graph, against the scan it is meant to replace.
 ///
 /// Recall is **measured** rather than asserted: for each query the approximate
@@ -333,7 +394,7 @@ fn vector(db: &Db) -> Result<Vec<Report>> {
 /// reported as a percentage. That the exact answer is available at all is what
 /// makes this index testable — the scan's ten *are* the right ten, so there is
 /// nothing to argue about.
-fn vector_index(db: &Db) -> Result<Vec<Report>> {
+fn vector_index(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
     session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE TABLE items;")?;

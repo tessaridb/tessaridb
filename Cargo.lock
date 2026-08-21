@@ -71,10 +71,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "bgv-db-backup"
+version = "0.0.0"
+dependencies = [
+ "bgv-db-encoding",
+ "bgv-db-kv",
+ "bgv-db-session",
+ "bgv-db-storage",
+ "bgv-db-types",
+ "thiserror",
+]
+
+[[package]]
 name = "bgv-db-bench"
 version = "0.0.0"
 dependencies = [
  "bgv-db",
+ "bgv-db-backup",
  "bgv-db-types",
 ]
 
@@ -83,6 +96,7 @@ name = "bgv-db-cli"
 version = "0.0.0"
 dependencies = [
  "bgv-db",
+ "bgv-db-backup",
  "bgv-db-kv",
  "bgv-db-session",
  "bgv-db-storage",

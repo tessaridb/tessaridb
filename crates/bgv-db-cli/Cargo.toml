@@ -15,6 +15,8 @@ path = "src/main.rs"
 
 [dependencies]
 bgv-db.workspace = true
+bgv-db-backup.workspace = true
+bgv-db-storage.workspace = true
 bgv-db-types.workspace = true
 
 [dev-dependencies]
@@ -23,7 +25,6 @@ bgv-db-types.workspace = true
 rust_decimal.workspace = true
 bgv-db-kv.workspace = true
 bgv-db-session.workspace = true
-bgv-db-storage.workspace = true
 
 [lints]
 workspace = true
