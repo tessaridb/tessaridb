@@ -24,6 +24,7 @@ const FIELD_TABLE: &str = "table";
 const FIELD_FIELDS: &str = "fields";
 const FIELD_UNIQUE: &str = "unique";
 const FIELD_SCHEMAFULL: &str = "schemafull";
+const FIELD_EDGE: &str = "edge";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +64,15 @@ pub struct TableDefinition {
     /// a schema, because the mistake worth catching — a misspelled field name —
     /// writes a field nobody declared.
     pub schemafull: bool,
+    /// Whether the table holds edges rather than plain records.
+    ///
+    /// An edge table is an ordinary table whose records carry `out` and `in`
+    /// record references, and which carries an index on each of them — so that
+    /// traversal is an index read rather than a scan, without the caller having
+    /// had to know to declare those indexes. The flag is what `RELATE` checks
+    /// before writing, because an edge nothing can traverse to is worse than a
+    /// refusal.
+    pub edge: bool,
 }
 
 impl NamespaceDefinition {
@@ -127,14 +137,15 @@ impl TableDefinition {
             (FIELD_DATABASE.to_owned(), number(self.database.get())),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
             (FIELD_SCHEMAFULL.to_owned(), Value::Bool(self.schemafull)),
+            (FIELD_EDGE.to_owned(), Value::Bool(self.edge)),
         ]))
     }
 
     /// Read a definition back.
     ///
-    /// An entry written before tables could carry a schema has no `schemafull`
-    /// field, and reads as schemaless — which is what such a table is. Refusing
-    /// it instead would make an added constraint unreadable rather than absent.
+    /// An entry written before a flag existed does not carry it, and reads as
+    /// `false` — which is what such a table is. Refusing it instead would make an
+    /// added property unreadable rather than absent.
     ///
     /// # Errors
     ///
@@ -142,25 +153,29 @@ impl TableDefinition {
     /// wrong type.
     pub fn from_value(value: &Value) -> Result<Self> {
         let fields = object(value, "table")?;
-        let schemafull = match fields.get(FIELD_SCHEMAFULL) {
-            Some(Value::Bool(declared)) => *declared,
-            None => false,
-            Some(other) => {
-                return Err(Error::CatalogMalformed {
-                    entity: "table",
-                    field: FIELD_SCHEMAFULL,
-                    found: other.type_name(),
-                });
-            }
-        };
         Ok(Self {
             id: TableId::new(field_id(fields, FIELD_ID, "table")?),
             namespace: NamespaceId::new(field_id(fields, FIELD_NAMESPACE, "table")?),
             database: DatabaseId::new(field_id(fields, FIELD_DATABASE, "table")?),
             name: field_name(fields, "table")?,
-            schemafull,
+            schemafull: flag(fields, FIELD_SCHEMAFULL, "table")?,
+            edge: flag(fields, FIELD_EDGE, "table")?,
         })
     }
+}
+
+/// What kind of table to create.
+///
+/// A struct rather than two `bool` parameters in a row, for the reason
+/// [`bgv_db_types::TableId`] is a newtype rather than a `u32`: `create_table(ns,
+/// db, "follows", false, true)` compiles just as well with the pair transposed,
+/// and would create a schemafull table where an edge table was meant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TableShape {
+    /// Refuse a field the table has no declaration for.
+    pub schemafull: bool,
+    /// Hold edges: records carrying `out` and `in`, each with an index.
+    pub edge: bool,
 }
 
 /// An index on a table.
@@ -305,6 +320,31 @@ pub(crate) fn field_id(
     }
 }
 
+/// A boolean property of a definition.
+///
+/// Absent reads as `false`, so an entry written before the property existed is
+/// readable rather than refused. A value of the wrong type is **not** read as
+/// `false`: something wrote a well-formed value that is not a flag, which is an
+/// integrity problem, and defaulting it would silently drop a constraint.
+///
+/// One reader for every flag, because a second copy that drifted would not fail
+/// to compile — it would change what a table is.
+pub(crate) fn flag(
+    fields: &BTreeMap<String, Value>,
+    field: &'static str,
+    entity: &'static str,
+) -> Result<bool> {
+    match fields.get(field) {
+        Some(Value::Bool(declared)) => Ok(*declared),
+        None => Ok(false),
+        Some(other) => Err(Error::CatalogMalformed {
+            entity,
+            field,
+            found: other.type_name(),
+        }),
+    }
+}
+
 pub(crate) fn field_name(fields: &BTreeMap<String, Value>, entity: &'static str) -> Result<String> {
     match fields.get(FIELD_NAME) {
         Some(Value::String(name)) => Ok(name.clone()),
@@ -349,6 +389,7 @@ mod tests {
             database: DatabaseId::new(3),
             name: "line_items".to_owned(),
             schemafull: true,
+            edge: false,
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),

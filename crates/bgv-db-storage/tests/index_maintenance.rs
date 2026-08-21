@@ -13,7 +13,7 @@ use bgv_db_encoding::{
     IndexAddress, KeyKind, StoreKey, StoreValue, UniqueIndexKey, encode_payload,
 };
 use bgv_db_kv::{KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
-use bgv_db_storage::{Catalog, Error, IndexDefinition, RecordAddress, Store};
+use bgv_db_storage::{Catalog, Error, IndexDefinition, RecordAddress, Store, TableShape};
 use bgv_db_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId, Value};
 
 struct Fixture {
@@ -40,7 +40,7 @@ impl Fixture {
         let namespace = catalog.create_namespace("prod").unwrap();
         let database = catalog.create_database(namespace.id, "orders").unwrap();
         let table = catalog
-            .create_table(namespace.id, database.id, "users", false)
+            .create_table(namespace.id, database.id, "users", TableShape::default())
             .unwrap();
         let index = catalog
             .create_index(table.id, "by_email", vec!["email".to_owned()], unique)
@@ -452,7 +452,7 @@ fn table_with_rows(unique: bool) -> Fixture {
     let namespace = catalog.create_namespace("prod").unwrap();
     let database = catalog.create_database(namespace.id, "orders").unwrap();
     let table = catalog
-        .create_table(namespace.id, database.id, "users", false)
+        .create_table(namespace.id, database.id, "users", TableShape::default())
         .unwrap();
     transaction.commit().unwrap();
 

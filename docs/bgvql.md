@@ -115,6 +115,7 @@ DEFINE INDEX by_email ON users FIELDS email UNIQUE;
 DEFINE INDEX by_name ON users FIELDS last, first;
 
 DEFINE TABLE accounts SCHEMAFULL;
+DEFINE TABLE follows EDGE;
 DEFINE FIELD balance ON accounts TYPE decimal;
 DEFINE FIELD opened_at ON accounts TYPE datetime;
 
@@ -202,6 +203,44 @@ way: the statement reads the whole table inside the commit.
 `DROP FIELD` removes the rule and not the data. The rows keep the field; the
 store simply stops having an opinion about it.
 
+### Edge tables
+
+`DEFINE TABLE follows EDGE` declares a table that holds **edges**: ordinary
+records carrying `out` and `in`, which are record references. Declaring it
+creates an index **and** a `TYPE record` declaration on each of those two fields,
+in the same commit.
+
+That is the whole of the graph engine, and the indexes are why. Traversal is an
+index read, so an edge table whose indexes the caller had to remember to declare
+would traverse for some callers and scan for others — the same statement
+answering at two different costs depending on something nobody wrote down. The
+declaration creates them, so it cannot happen.
+
+The declarations are what let the two markers combine: `DEFINE TABLE follows EDGE
+SCHEMAFULL` works because `out` and `in` are already declared, and nobody should
+have to declare fields the store itself fills in. Both markers may appear in
+either order.
+
+## 4a. Edges
+
+```
+RELATE users:1->follows->users:2;
+RELATE users:1->follows->users:2 = { since: datetime '2026-01-01T00:00:00Z' };
+```
+
+`RELATE` writes one record into the edge table, carrying `out: users:1` and
+`in: users:2` plus whatever the optional `= { … }` gives it. Relating through a
+table that was not declared `EDGE` is refused rather than accommodated: the
+indexes would not be there, so the relation would be written where traversal
+cannot find it, and a write nothing can read back is worse than a refusal.
+
+**An edge is identified by its endpoints**, so `RELATE` is idempotent —
+re-asserting a link that is already there replaces it rather than adding a second
+copy. That is the right default for a caller that re-states what it knows, and it
+means two edges between the same pair in the same table are one edge with
+properties rather than two records. A caller who needs several distinct edges
+between one pair uses several edge tables, one per relation.
+
 ## 5. Record statements
 
 ```
@@ -231,6 +270,9 @@ decided by the target rather than by a cost model:
 | `FROM users WHERE <indexed field> LIKE '<literal>%'` | the index, as a range |
 | `FROM users WHERE <field> = <value>` (no index) | the table, testing each record |
 | `FROM users WHERE <field> LIKE <any other pattern>` | the table, testing each record |
+| `FROM users:1->follows` | the index, on the edge table's `out` |
+| `FROM users:1->follows->users` | the same index, then each far endpoint by its identity |
+| `FROM users:2<-follows<-users` | the index, on the edge table's `in` |
 | `FROM users` | every record of the table |
 
 A `WHERE` names a field and a test:
@@ -387,7 +429,8 @@ Named here rather than merely missing, so each absence reads as a decision:
 | Absent | Why |
 |---|---|
 | joins | no planner, and a join without one is a nested scan pretending otherwise |
-| graph traversal | the edge key kind is reserved and unimplemented |
+| paths longer than one hop, and filters inside a path | `a->e->b` is one hop to the edge and one to its far side, which is the shape that makes traversal useful; `->{1..3}`, mid-path filters and shortest-path are a language surface to design once |
+| several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |
 | a text **index** | `LIKE` works today over a scan; the index that makes it fast, with its analyzer, is its own milestone. The statement will not change when it lands. |
 | vector search | a reserved key kind, no engine yet |
 | ranking, highlighting, stemming, fuzzy matching | analyzer decisions; approximating them over a scan now would disagree with the index later |
@@ -405,6 +448,8 @@ Named here rather than merely missing, so each absence reads as a decision:
 | A space is a table of single values; workspace = database | **contract** (ADR-0010) |
 | Key-value verbs are expressions, and compose at one snapshot | **contract** |
 | `NONE` and `NULL` are distinct literals | **contract** — the storage layer keeps them apart |
+| An edge is a record, and traversal is an index read | **contract** — no separate graph keyspace, so edges get MVCC, transactions, replication and the schema check without any of them being built again |
+| An edge is identified by its endpoints | fixed for this milestone; an explicit-id form would be additive |
 | A declared type constrains a present, non-null value | **contract** — absent is unconstrained, null is allowed, and neither is a hole to be closed later without changing what existing scripts mean |
 | A schema is enforced by the store, not by the session | **contract** — a check the session owned would be one every other writer bypasses |
 | A declaration constrains the rows that predate it, in its own commit | **contract** — the alternative is a constraint that can be declared and not hold |

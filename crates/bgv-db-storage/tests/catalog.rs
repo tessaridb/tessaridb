@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use bgv_db_encoding::{decode_payload, encode_payload};
 use bgv_db_kv::{KvBackend, MemoryBackend};
-use bgv_db_storage::{Catalog, Error, RecordAddress, Store};
+use bgv_db_storage::{Catalog, Error, RecordAddress, Store, TableShape};
 use bgv_db_types::{RecordId, Sequence, Value};
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
@@ -28,7 +28,7 @@ fn create_tree(store: &Store, names: (&str, &str, &str)) -> (u32, u32, u32) {
     let namespace = catalog.create_namespace(names.0).unwrap();
     let database = catalog.create_database(namespace.id, names.1).unwrap();
     let table = catalog
-        .create_table(namespace.id, database.id, names.2, false)
+        .create_table(namespace.id, database.id, names.2, TableShape::default())
         .unwrap();
     let ids = (namespace.id.get(), database.id.get(), table.id.get());
     transaction.commit().unwrap();
@@ -111,10 +111,10 @@ fn the_same_name_in_two_databases_is_two_different_tables() {
     let first = catalog.create_database(namespace.id, "a").unwrap();
     let second = catalog.create_database(namespace.id, "b").unwrap();
     let left = catalog
-        .create_table(namespace.id, first.id, "users", false)
+        .create_table(namespace.id, first.id, "users", TableShape::default())
         .unwrap();
     let right = catalog
-        .create_table(namespace.id, second.id, "users", false)
+        .create_table(namespace.id, second.id, "users", TableShape::default())
         .unwrap();
     assert_ne!(left.id, right.id);
     transaction.commit().unwrap();
@@ -164,7 +164,7 @@ fn an_id_is_never_handed_out_again_after_a_drop() {
             bgv_db_types::NamespaceId::new(namespace),
             bgv_db_types::DatabaseId::new(database),
             "gone",
-            false,
+            TableShape::default(),
         )
         .unwrap();
     // ...but the id is not. A reused id would let a stale key resolve against a
@@ -195,7 +195,7 @@ fn a_table_cannot_be_created_under_a_database_from_another_namespace() {
     let database = catalog.create_database(first.id, "orders").unwrap();
 
     let error = catalog
-        .create_table(second.id, database.id, "users", false)
+        .create_table(second.id, database.id, "users", TableShape::default())
         .unwrap_err();
     assert!(matches!(error, Error::NoSuchParent { .. }), "{error}");
 }
@@ -208,7 +208,7 @@ fn defining_a_table_and_writing_to_it_is_one_transaction() {
     let namespace = catalog.create_namespace("prod").unwrap();
     let database = catalog.create_database(namespace.id, "orders").unwrap();
     let table = catalog
-        .create_table(namespace.id, database.id, "users", false)
+        .create_table(namespace.id, database.id, "users", TableShape::default())
         .unwrap();
     let address = RecordAddress::new(namespace.id, database.id, table.id, RecordId::from("u1"));
     transaction.put(
@@ -323,10 +323,10 @@ fn two_indexes_on_one_table_cannot_share_a_name_but_two_tables_can() {
     let namespace = catalog.create_namespace("prod").unwrap();
     let database = catalog.create_database(namespace.id, "orders").unwrap();
     let users = catalog
-        .create_table(namespace.id, database.id, "users", false)
+        .create_table(namespace.id, database.id, "users", TableShape::default())
         .unwrap();
     let carts = catalog
-        .create_table(namespace.id, database.id, "carts", false)
+        .create_table(namespace.id, database.id, "carts", TableShape::default())
         .unwrap();
 
     catalog
@@ -405,5 +405,89 @@ fn a_scan_at_an_older_snapshot_does_not_see_later_writes() {
         decode_payload(&live[0].1).unwrap(),
         Value::from(1_i64),
         "and sees the version that was current then"
+    );
+}
+
+#[test]
+fn an_edge_table_carries_an_index_on_each_endpoint_from_the_moment_it_exists() {
+    // Traversal is an index read, so an edge table whose indexes the caller had
+    // to remember to declare would traverse for some callers and scan for
+    // others. The declaration creates them, in the same commit.
+    let (_backend, store) = store();
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").unwrap();
+    let database = catalog.create_database(namespace.id, "orders").unwrap();
+    let follows = catalog
+        .create_table(
+            namespace.id,
+            database.id,
+            "follows",
+            TableShape {
+                edge: true,
+                ..TableShape::default()
+            },
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+
+    let mut transaction = store.begin().unwrap();
+    let catalog = Catalog::new(&mut transaction);
+    let mut indexed: Vec<Vec<String>> = catalog
+        .indexes_on(follows.id)
+        .unwrap()
+        .into_iter()
+        .map(|index| index.fields)
+        .collect();
+    indexed.sort();
+    assert_eq!(
+        indexed,
+        vec![vec!["in".to_owned()], vec!["out".to_owned()]],
+        "an edge table needs both directions"
+    );
+    assert!(catalog.table(follows.id).unwrap().unwrap().edge);
+
+    // And each endpoint is declared, so an edge table can also be schemafull
+    // without the caller declaring fields the store itself fills in.
+    let mut declared: Vec<(String, bgv_db_types::FieldKind)> = catalog
+        .fields_on(follows.id)
+        .unwrap()
+        .into_iter()
+        .map(|field| (field.name, field.kind))
+        .collect();
+    declared.sort();
+    assert_eq!(
+        declared,
+        vec![
+            ("in".to_owned(), bgv_db_types::FieldKind::Record),
+            ("out".to_owned(), bgv_db_types::FieldKind::Record),
+        ]
+    );
+}
+
+#[test]
+fn a_plain_table_gets_no_indexes_it_did_not_ask_for() {
+    let (_backend, store) = store();
+    let (_, _, table) = create_tree(&store, ("prod", "orders", "users"));
+    let mut transaction = store.begin().unwrap();
+    let catalog = Catalog::new(&mut transaction);
+    assert!(
+        catalog
+            .indexes_on(bgv_db_types::TableId::new(table))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        catalog
+            .fields_on(bgv_db_types::TableId::new(table))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !catalog
+            .table(bgv_db_types::TableId::new(table))
+            .unwrap()
+            .unwrap()
+            .edge
     );
 }

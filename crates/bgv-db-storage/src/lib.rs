@@ -32,8 +32,8 @@ mod store;
 mod transaction;
 
 pub use catalog::{
-    Catalog, DatabaseDefinition, FieldDefinition, IndexDefinition, NamespaceDefinition,
-    SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition,
+    Catalog, DatabaseDefinition, EDGE_IN, EDGE_OUT, FieldDefinition, IndexDefinition,
+    NamespaceDefinition, SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition, TableShape,
 };
 pub use error::{Error, Result};
 pub use reclaim::Reclaimed;

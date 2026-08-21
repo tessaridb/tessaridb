@@ -30,6 +30,7 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DropTable { .. } => "DROP TABLE",
         StatementKind::DropIndex { .. } => "DROP INDEX",
         StatementKind::DropField { .. } => "DROP FIELD",
+        StatementKind::Relate { .. } => "RELATE",
         StatementKind::Create { .. } => "CREATE",
         StatementKind::Select(_) => "SELECT",
         StatementKind::Update { .. } => "UPDATE",
@@ -59,6 +60,7 @@ pub const FORMS: &[&str] = &[
     "DROP TABLE",
     "DROP INDEX",
     "DROP FIELD",
+    "RELATE",
     "CREATE",
     "SELECT",
     "UPDATE",
@@ -113,6 +115,7 @@ mod tests {
              DROP TABLE t;\
              DROP INDEX i ON t;\
              DROP FIELD f ON t;\
+             RELATE t:1->e->t:2;\
              CREATE t:1 = 1;\
              SELECT * FROM t;\
              UPDATE t:1 = 1;\

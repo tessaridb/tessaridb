@@ -69,12 +69,14 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
-    /// `DEFINE TABLE users SCHEMAFULL`
+    /// `DEFINE TABLE users SCHEMAFULL` / `DEFINE TABLE follows EDGE`
     DefineTable {
         /// The name to create.
         name: Name,
         /// Whether the table refuses a field it does not declare.
         schemafull: bool,
+        /// Whether the table holds edges, with an index on each endpoint.
+        edge: bool,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -115,6 +117,17 @@ pub enum StatementKind {
         name: Name,
         /// The table it was declared on.
         table: TableRef,
+    },
+    /// `RELATE users:1->follows->users:2` / `… = { since: … }`
+    Relate {
+        /// The edge's source.
+        from: RecordTarget,
+        /// The edge table the relation is recorded in.
+        edges: TableRef,
+        /// The edge's target.
+        to: RecordTarget,
+        /// The edge's own properties, when the statement gives any.
+        value: Option<Expr>,
     },
     /// `DROP TABLE users` — removes the definition, not the records.
     DropTable {
@@ -204,6 +217,22 @@ pub enum Source {
     Record(RecordTarget),
     /// Every record of a table.
     Table(TableRef),
+    /// The far side of one hop along an edge table.
+    ///
+    /// `users:1->follows` reads the edge records themselves;
+    /// `users:1->follows->users` resolves one step further and reads the records
+    /// the edges point at. Both are index reads, because an edge table carries
+    /// an index on each endpoint from the moment it is declared.
+    Traverse {
+        /// Where the walk starts.
+        from: RecordTarget,
+        /// Which way the arrows point.
+        direction: Direction,
+        /// The edge table being walked.
+        edges: TableRef,
+        /// The table the far endpoint is read from, when the statement names one.
+        target: Option<TableRef>,
+    },
     /// The records that satisfy a filter.
     ///
     /// Which access path this becomes is decided when it runs, by what exists:
@@ -308,6 +337,35 @@ pub struct Name {
     pub text: String,
     /// Where it sits in the source.
     pub span: Span,
+}
+
+/// Which endpoint of an edge a traversal starts from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// `->` — the walk starts at the edge's `out` and arrives at its `in`.
+    Outgoing,
+    /// `<-` — the walk starts at the edge's `in` and arrives at its `out`.
+    Incoming,
+}
+
+impl Direction {
+    /// The endpoint field a walk in this direction matches on.
+    #[must_use]
+    pub const fn from_field(self) -> &'static str {
+        match self {
+            Self::Outgoing => "out",
+            Self::Incoming => "in",
+        }
+    }
+
+    /// The endpoint field a walk in this direction arrives at.
+    #[must_use]
+    pub const fn to_field(self) -> &'static str {
+        match self {
+            Self::Outgoing => "in",
+            Self::Incoming => "out",
+        }
+    }
 }
 
 /// A table, optionally qualified by its database.

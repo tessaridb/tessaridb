@@ -100,6 +100,32 @@ pub enum Error {
         span: Span,
     },
 
+    /// A table used as an edge table that was not declared as one.
+    ///
+    /// Refused rather than accommodated: an edge table carries an index on each
+    /// endpoint, and without them a relation would be written that traversal
+    /// could not find. A write nothing can read back is worse than a refusal.
+    #[error("{table} is not an edge table — define it with `EDGE` (at {span})")]
+    NotAnEdgeTable {
+        /// The table as written.
+        table: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// An edge was given properties that are not a set of named fields.
+    ///
+    /// An edge record already carries `out` and `in`; anything else it holds has
+    /// to be named, so there is nowhere for a bare value to go. Refused where it
+    /// is written rather than dropped on the way to the store.
+    #[error("an edge's properties must be an object, not {found} (at {span})")]
+    EdgePropertiesNotAnObject {
+        /// The type that was given instead.
+        found: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
     /// A range bound that no record identity can be.
     #[error("a key range is bounded by record identities (at {span})")]
     InvalidKeyBound {

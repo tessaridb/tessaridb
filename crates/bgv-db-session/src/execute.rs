@@ -1,9 +1,11 @@
 //! Running one statement against the store.
 
 use bgv_db_encoding::encode_payload;
-use bgv_db_ql::{Name, Span, StatementKind, TableRef};
-use bgv_db_storage::{Catalog, Transaction};
-use bgv_db_types::{FieldId, FieldKind, IndexId, RecordId, TableId};
+use bgv_db_ql::{Name, RecordTarget, Span, StatementKind, TableRef};
+use bgv_db_storage::{Catalog, EDGE_IN, EDGE_OUT, RecordAddress, TableShape, Transaction};
+use std::collections::BTreeMap;
+
+use bgv_db_types::{FieldId, FieldKind, IndexId, RecordId, RecordRef, TableId, Value};
 
 use crate::error::{Error, Result};
 use crate::evaluate::{key_bound, within};
@@ -29,14 +31,30 @@ impl Session<'_> {
             StatementKind::DefineTable {
                 name,
                 schemafull,
+                edge,
                 if_not_exists,
-            } => self.define_table(transaction, name, *schemafull, *if_not_exists, span),
+            } => self.define_table(
+                transaction,
+                name,
+                TableShape {
+                    schemafull: *schemafull,
+                    edge: *edge,
+                },
+                *if_not_exists,
+                span,
+            ),
             // A space holds single values rather than named fields (ADR-0010),
             // so there is nothing for a schema to declare about one.
             StatementKind::DefineSpace {
                 name,
                 if_not_exists,
-            } => self.define_table(transaction, name, false, *if_not_exists, span),
+            } => self.define_table(
+                transaction,
+                name,
+                TableShape::default(),
+                *if_not_exists,
+                span,
+            ),
             StatementKind::DefineField {
                 name,
                 table,
@@ -56,6 +74,12 @@ impl Session<'_> {
                 unique,
                 if_not_exists,
             } => self.define_index(transaction, name, table, fields, *unique, *if_not_exists),
+            StatementKind::Relate {
+                from,
+                edges,
+                to,
+                value,
+            } => self.relate(transaction, from, edges, to, value.as_ref()),
             StatementKind::DropTable { table } => {
                 let (_, id) = self.resolve_table(transaction, table)?;
                 Catalog::new(transaction).drop_table(id)?;
@@ -126,6 +150,73 @@ impl Session<'_> {
         }
     }
 
+    /// Write an edge between two records.
+    ///
+    /// The edge is an ordinary record in the edge table, carrying `out` and `in`
+    /// as record references — so it takes part in the transaction, replicates
+    /// through the same path, and is found by the endpoint indexes the table was
+    /// given when it was declared. Nothing about a graph needed its own keyspace.
+    ///
+    /// **The edge's identity is derived from its endpoints**, which makes
+    /// `RELATE` idempotent: re-asserting a link that is already there replaces it
+    /// rather than adding a second copy. That is the right default for a caller
+    /// that re-states what it knows, and it is why two edges between the same
+    /// pair in the same table are one edge with properties rather than two
+    /// records (Q-41).
+    fn relate(
+        &self,
+        transaction: &mut Transaction<'_>,
+        from: &RecordTarget,
+        edges: &TableRef,
+        to: &RecordTarget,
+        value: Option<&bgv_db_ql::Expr>,
+    ) -> Result<Outcome> {
+        let (context, edge_table) = self.resolve_table(transaction, edges)?;
+        if !Catalog::new(transaction)
+            .table(edge_table)?
+            .is_some_and(|found| found.edge)
+        {
+            return Err(Error::NotAnEdgeTable {
+                table: edges.name.text.clone(),
+                span: edges.span,
+            });
+        }
+        let (_, out) = self.address(transaction, from)?;
+        let (_, into) = self.address(transaction, to)?;
+
+        let mut fields = match value {
+            Some(expression) => match self.evaluate(transaction, expression)? {
+                Value::Object(given) => given,
+                // A non-object edge property has nowhere to live beside the two
+                // endpoints, so it is refused where it is written rather than
+                // silently dropped.
+                other => {
+                    return Err(Error::EdgePropertiesNotAnObject {
+                        found: other.type_name(),
+                        span: edges.span,
+                    });
+                }
+            },
+            None => BTreeMap::new(),
+        };
+        fields.insert(
+            EDGE_OUT.to_owned(),
+            Value::Record(RecordRef::new(out.table, out.id.clone())),
+        );
+        fields.insert(
+            EDGE_IN.to_owned(),
+            Value::Record(RecordRef::new(into.table, into.id.clone())),
+        );
+
+        let id = RecordId::from(format!(
+            "{}:{}->{}:{}",
+            out.table, out.id, into.table, into.id
+        ));
+        let address = RecordAddress::new(context.namespace, context.database, edge_table, id);
+        transaction.put(address, encode_payload(&Value::Object(fields)).into_bytes());
+        Ok(Outcome::Done)
+    }
+
     fn define_namespace(
         &self,
         transaction: &mut Transaction<'_>,
@@ -166,7 +257,7 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
-        schemafull: bool,
+        shape: TableShape,
         if_not_exists: bool,
         span: Span,
     ) -> Result<Outcome> {
@@ -182,7 +273,7 @@ impl Session<'_> {
             context.namespace,
             context.database,
             &name.text,
-            schemafull,
+            shape,
         )?;
         Ok(Outcome::Done)
     }

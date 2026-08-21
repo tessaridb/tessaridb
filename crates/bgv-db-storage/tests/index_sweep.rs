@@ -35,7 +35,7 @@ use bgv_db_encoding::{
     decode_payload, encode_payload,
 };
 use bgv_db_kv::{KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
-use bgv_db_storage::{Catalog, Error, IndexDefinition, RecordAddress, Store};
+use bgv_db_storage::{Catalog, Error, IndexDefinition, RecordAddress, Store, TableShape};
 use bgv_db_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
 
 /// The seed the workload runs from. Printed by every failing assertion.
@@ -91,7 +91,7 @@ impl Fixture {
         let namespace = catalog.create_namespace("prod").unwrap();
         let database = catalog.create_database(namespace.id, "orders").unwrap();
         let table = catalog
-            .create_table(namespace.id, database.id, "people", false)
+            .create_table(namespace.id, database.id, "people", TableShape::default())
             .unwrap();
         let indexes = vec![
             catalog

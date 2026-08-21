@@ -182,8 +182,6 @@ fn absent_feature(word: &str) -> Option<&'static str> {
         ("match", "full-text search"),
         ("search", "full-text search"),
         ("knn", "vector search"),
-        ("relate", "graph traversal"),
-        ("traverse", "graph traversal"),
         ("grant", "permissions in the language"),
         ("revoke", "permissions in the language"),
         ("permissions", "permissions in the language"),

@@ -175,6 +175,8 @@ fn kind_name(error: &Error) -> &'static str {
         Error::RecordExists { .. } => "RecordExists",
         Error::NoSuchRecord { .. } => "NoSuchRecord",
         Error::InvalidKeyBound { .. } => "InvalidKeyBound",
+        Error::NotAnEdgeTable { .. } => "NotAnEdgeTable",
+        Error::EdgePropertiesNotAnObject { .. } => "EdgePropertiesNotAnObject",
         _ => "Unnamed",
     }
 }

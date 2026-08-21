@@ -25,16 +25,24 @@ mod field;
 mod system;
 
 use bgv_db_encoding::{decode_payload, encode_payload};
-use bgv_db_types::{DatabaseId, IndexId, NamespaceId, RecordId, TableId, Value};
+use bgv_db_types::{DatabaseId, FieldKind, IndexId, NamespaceId, RecordId, TableId, Value};
 
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
-pub use definition::{DatabaseDefinition, IndexDefinition, NamespaceDefinition, TableDefinition};
+pub use definition::{
+    DatabaseDefinition, IndexDefinition, NamespaceDefinition, TableDefinition, TableShape,
+};
 pub use field::FieldDefinition;
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 
 use crate::error::{Error, Result};
 use crate::transaction::{RecordAddress, Transaction};
 use system::Level;
+
+/// The field an edge's source endpoint is written to.
+pub const EDGE_OUT: &str = "out";
+
+/// The field an edge's target endpoint is written to.
+pub const EDGE_IN: &str = "in";
 
 /// Reads and writes the catalog through one transaction.
 #[derive(Debug)]
@@ -99,10 +107,13 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
 
     /// Create a table inside an existing database.
     ///
-    /// `schemafull` decides whether the table refuses a field it has no
-    /// declaration for. It is fixed at creation: changing it on a populated
+    /// The shape is fixed at creation. Changing `schemafull` on a populated
     /// table is a migration, and the honest spelling of one is a drop and a
     /// redefinition, which re-checks every row through the same path.
+    ///
+    /// An edge table additionally gets an index on `out` and one on `in`, in
+    /// this same commit, so that traversal is an index read without the caller
+    /// having had to know to declare them.
     ///
     /// # Errors
     ///
@@ -114,7 +125,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         namespace: NamespaceId,
         database: DatabaseId,
         name: &str,
-        schemafull: bool,
+        shape: TableShape,
     ) -> Result<TableDefinition> {
         let parent = self.database(database)?;
         if parent.is_none_or(|found| found.namespace != namespace) {
@@ -131,10 +142,27 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             namespace,
             database,
             name: name.to_owned(),
-            schemafull,
+            schemafull: shape.schemafull,
+            edge: shape.edge,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
+        if shape.edge {
+            // Each endpoint gets both an index and a declaration. The index is
+            // what makes traversal a range read; the declaration is what lets an
+            // edge table also be `SCHEMAFULL`, since nobody writes `out` and `in`
+            // by hand and a caller should not have to declare fields the store
+            // itself fills in.
+            for endpoint in [EDGE_OUT, EDGE_IN] {
+                self.create_index(
+                    id,
+                    &format!("{endpoint}_edges"),
+                    vec![endpoint.to_owned()],
+                    false,
+                )?;
+                self.create_field(id, endpoint, FieldKind::Record)?;
+            }
+        }
         Ok(definition)
     }
 

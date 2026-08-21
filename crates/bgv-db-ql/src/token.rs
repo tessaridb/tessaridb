@@ -123,6 +123,10 @@ pub enum Punct {
     BracketOpen,
     /// `]`
     BracketClose,
+    /// `->` — a traversal step following an edge from its source.
+    ArrowRight,
+    /// `<-` — a traversal step following an edge from its target.
+    ArrowLeft,
     /// `(`
     ParenOpen,
     /// `)`
@@ -146,6 +150,8 @@ impl Punct {
             Self::BraceClose => "}",
             Self::BracketOpen => "[",
             Self::BracketClose => "]",
+            Self::ArrowRight => "->",
+            Self::ArrowLeft => "<-",
             Self::ParenOpen => "(",
             Self::ParenClose => ")",
         }
@@ -192,6 +198,10 @@ pub enum Keyword {
     Type,
     /// `SCHEMAFULL` — the table refuses a field it does not declare.
     Schemafull,
+    /// `EDGE` — the table holds edges, and carries an index on each endpoint.
+    Edge,
+    /// `RELATE` — record an edge between two records.
+    Relate,
     /// `UNIQUE`
     Unique,
     /// `IF`
@@ -269,6 +279,8 @@ impl Keyword {
             Self::Field => "FIELD",
             Self::Type => "TYPE",
             Self::Schemafull => "SCHEMAFULL",
+            Self::Edge => "EDGE",
+            Self::Relate => "RELATE",
             Self::Unique => "UNIQUE",
             Self::If => "IF",
             Self::Not => "NOT",
@@ -315,6 +327,8 @@ impl Keyword {
         Self::Field,
         Self::Type,
         Self::Schemafull,
+        Self::Edge,
+        Self::Relate,
         Self::Unique,
         Self::If,
         Self::Not,

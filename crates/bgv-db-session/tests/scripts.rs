@@ -903,3 +903,148 @@ fn dropping_a_declaration_leaves_the_data_and_removes_only_the_rule() {
     let found = session.run("SELECT * FROM members;").unwrap();
     assert_eq!(found[0].records().unwrap().len(), 2);
 }
+
+#[test]
+fn a_traversal_is_an_index_read_and_says_so() {
+    use bgv_db_session::AccessPath;
+
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE users;\n\
+             DEFINE TABLE follows EDGE;\n\
+             CREATE users:1 = { handle: 'ada' };\n\
+             CREATE users:2 = { handle: 'grace' };\n\
+             RELATE users:1->follows->users:2;",
+        )
+        .unwrap();
+
+    let found = session.run("SELECT * FROM users:1->follows;").unwrap();
+    assert_eq!(found[0].path(), Some(AccessPath::Index));
+
+    let reached = session
+        .run("SELECT * FROM users:1->follows->users;")
+        .unwrap();
+    assert_eq!(reached[0].path(), Some(AccessPath::Index));
+    let records = reached[0].records().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(field(&records[0].1, "handle"), &Value::from("grace"));
+}
+
+#[test]
+fn the_two_directions_answer_the_mirrored_question_over_the_same_data() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE users;\n\
+             DEFINE TABLE follows EDGE;\n\
+             CREATE users:1 = { handle: 'ada' };\n\
+             CREATE users:2 = { handle: 'grace' };\n\
+             CREATE users:3 = { handle: 'katherine' };\n\
+             RELATE users:1->follows->users:3;\n\
+             RELATE users:2->follows->users:3;",
+        )
+        .unwrap();
+
+    // Nobody follows ada; two people follow katherine.
+    let out = session
+        .run("SELECT * FROM users:1->follows->users;")
+        .unwrap();
+    assert_eq!(out[0].records().unwrap().len(), 1);
+    let into = session
+        .run("SELECT * FROM users:3<-follows<-users;")
+        .unwrap();
+    assert_eq!(into[0].records().unwrap().len(), 2);
+    let none = session
+        .run("SELECT * FROM users:1<-follows<-users;")
+        .unwrap();
+    assert!(none[0].records().unwrap().is_empty());
+}
+
+#[test]
+fn an_edges_own_properties_survive_beside_its_endpoints() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE users;\n\
+             DEFINE TABLE follows EDGE;\n\
+             CREATE users:1 = { handle: 'ada' };\n\
+             CREATE users:2 = { handle: 'grace' };\n\
+             RELATE users:1->follows->users:2 = { weight: 3 };",
+        )
+        .unwrap();
+
+    let found = session.run("SELECT * FROM users:1->follows;").unwrap();
+    let records = found[0].records().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(field(&records[0].1, "weight"), &Value::Number(3.into()));
+    // And the endpoints the store wrote, not something the caller had to.
+    assert!(matches!(field(&records[0].1, "out"), Value::Record(_)));
+    assert!(matches!(field(&records[0].1, "in"), Value::Record(_)));
+}
+
+#[test]
+fn a_property_that_is_not_a_set_of_named_fields_is_refused_where_it_is_written() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE users;\n\
+             DEFINE TABLE follows EDGE;\n\
+             CREATE users:1 = { handle: 'ada' };\n\
+             CREATE users:2 = { handle: 'grace' };",
+        )
+        .unwrap();
+    let error = session
+        .run("RELATE users:1->follows->users:2 = 7;")
+        .unwrap_err();
+    assert!(error.to_string().contains("object"), "{error}");
+}
+
+#[test]
+fn a_second_arrow_pointing_the_other_way_is_refused_rather_than_answered() {
+    // `a->e<-b` would read as "the edges out of a, then whichever record their
+    // `out` names" — which is a again, for every edge.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE TABLE users;\nDEFINE TABLE follows EDGE;\nCREATE users:1 = { handle: 'ada' };")
+        .unwrap();
+    assert!(
+        session
+            .run("SELECT * FROM users:1->follows<-users;")
+            .is_err()
+    );
+}
+
+#[test]
+fn an_edge_table_may_also_be_schemafull_in_either_order() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE TABLE knows EDGE SCHEMAFULL;\nDEFINE TABLE likes SCHEMAFULL EDGE;")
+        .unwrap();
+}
+
+#[test]
+fn a_schemafull_edge_table_still_accepts_the_endpoints_the_store_writes() {
+    // The two interact: an edge record carries `out` and `in`, which a schemafull
+    // table refuses unless they are declared. Declaring them is the edge table's
+    // own job, not the caller's — nobody writes those fields by hand.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE users;\n\
+             DEFINE TABLE knows EDGE SCHEMAFULL;\n\
+             CREATE users:1 = { handle: 'ada' };\n\
+             CREATE users:2 = { handle: 'grace' };",
+        )
+        .unwrap();
+    session.run("RELATE users:1->knows->users:2;").unwrap();
+    let found = session.run("SELECT * FROM users:1->knows;").unwrap();
+    assert_eq!(found[0].records().unwrap().len(), 1);
+}

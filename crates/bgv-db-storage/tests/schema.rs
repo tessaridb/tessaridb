@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use bgv_db_encoding::encode_payload;
 use bgv_db_kv::{KvBackend, MemoryBackend};
-use bgv_db_storage::{Catalog, Error, RecordAddress, Store};
+use bgv_db_storage::{Catalog, Error, RecordAddress, Store, TableShape};
 use bgv_db_types::{DatabaseId, FieldKind, NamespaceId, RecordId, Sequence, TableId, Value};
 
 struct Fixture {
@@ -33,7 +33,15 @@ impl Fixture {
         let namespace = catalog.create_namespace("prod").unwrap();
         let database = catalog.create_database(namespace.id, "orders").unwrap();
         let table = catalog
-            .create_table(namespace.id, database.id, "users", schemafull)
+            .create_table(
+                namespace.id,
+                database.id,
+                "users",
+                TableShape {
+                    schemafull,
+                    ..TableShape::default()
+                },
+            )
             .unwrap();
         transaction.commit().unwrap();
 

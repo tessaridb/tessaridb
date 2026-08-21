@@ -9,8 +9,10 @@ use core::ops::Bound;
 use std::collections::BTreeMap;
 
 use bgv_db_encoding::decode_payload;
-use bgv_db_ql::{Expr, ExprKind, Name, RecordTarget, Select, Source, Span, Test};
-use bgv_db_storage::{RecordAddress, Transaction};
+use bgv_db_ql::{
+    Direction, Expr, ExprKind, Name, RecordTarget, Select, Source, Span, TableRef, Test,
+};
+use bgv_db_storage::{Catalog, RecordAddress, Transaction};
 use bgv_db_types::{Number, RecordId, RecordRef, Value, ValueRange};
 
 use crate::error::{Error, Result};
@@ -119,6 +121,12 @@ impl Session<'_> {
                 let found = transaction.scan_table(context.namespace, context.database, id)?;
                 Ok((decode_all(found)?, AccessPath::Scan))
             }
+            Source::Traverse {
+                from,
+                direction,
+                edges,
+                target,
+            } => self.traverse(transaction, from, *direction, edges, target.as_ref()),
             Source::Filter {
                 table,
                 field,
@@ -168,6 +176,78 @@ impl Session<'_> {
                 Ok((matched, AccessPath::Scan))
             }
         }
+    }
+
+    /// One hop along an edge table, and optionally one more into its far side.
+    ///
+    /// Both halves are index reads. The edge table was given an index on each
+    /// endpoint when it was declared, so finding the edges out of a record is
+    /// `records_by_index` on `out` — the same call an equality filter makes, with
+    /// a record reference standing where any other value would.
+    ///
+    /// A dangling far endpoint yields nothing for that hop rather than an error.
+    /// A record can be deleted while an edge still names it, and that is a state
+    /// of the graph, not a failure of the query — the alternative is a read that
+    /// breaks because of a write it has nothing to do with.
+    fn traverse(
+        &self,
+        transaction: &mut Transaction<'_>,
+        from: &RecordTarget,
+        direction: Direction,
+        edges: &TableRef,
+        target: Option<&TableRef>,
+    ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
+        let (_, edge_table) = self.resolve_table(transaction, edges)?;
+        if !Catalog::new(transaction)
+            .table(edge_table)?
+            .is_some_and(|found| found.edge)
+        {
+            return Err(Error::NotAnEdgeTable {
+                table: edges.name.text.clone(),
+                span: edges.span,
+            });
+        }
+        let Some(index) = self.index_on_field(transaction, edge_table, direction.from_field())?
+        else {
+            // An edge table always has both, so reaching here means the catalog
+            // and the flag disagree — which is corruption, not a slow path.
+            return Err(Error::NotAnEdgeTable {
+                table: edges.name.text.clone(),
+                span: edges.span,
+            });
+        };
+
+        let (_, start) = self.address(transaction, from)?;
+        let anchor = Value::Record(RecordRef::new(start.table, start.id.clone()));
+        let found = decode_all(transaction.records_by_index(&index, &[anchor])?)?;
+
+        let Some(target) = target else {
+            return Ok((found, AccessPath::Index));
+        };
+
+        let (context, target_table) = self.resolve_table(transaction, target)?;
+        let mut reached = Vec::new();
+        for (_, edge) in found {
+            let Value::Object(fields) = &edge else {
+                continue;
+            };
+            let Some(Value::Record(far)) = fields.get(direction.to_field()) else {
+                continue;
+            };
+            if far.table != target_table {
+                continue;
+            }
+            let address = RecordAddress::new(
+                context.namespace,
+                context.database,
+                target_table,
+                far.id.clone(),
+            );
+            if let Some(payload) = transaction.get(&address)? {
+                reached.push((far.id.clone(), decode_payload(&payload)?));
+            }
+        }
+        Ok((reached, AccessPath::Index))
     }
 
     /// A read standing where a value stands.

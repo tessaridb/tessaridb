@@ -1,0 +1,62 @@
+# Edges and traversal. An edge is a record and traversal is an index read, so
+# every case here is exercising machinery the other corpora already cover — which
+# is the point of the design.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE social;
+USE DATABASE social;
+DEFINE TABLE users;
+DEFINE TABLE follows EDGE;
+CREATE users:1 = { handle: 'ada' };
+CREATE users:2 = { handle: 'grace' };
+CREATE users:3 = { handle: 'katherine' };
+--- expect: ok
+
+--- case: an edge is written between two records
+RELATE users:1->follows->users:2;
+RELATE users:1->follows->users:3;
+--- expect: ok
+
+--- case: an edge may carry properties of its own
+RELATE users:2->follows->users:3 = { since: datetime '2026-01-01T00:00:00Z' };
+--- expect: ok
+
+--- case: one arrow reads the edges themselves
+SELECT * FROM users:1->follows;
+--- expect: rows 2
+
+--- case: two arrows resolve the far endpoint
+SELECT * FROM users:1->follows->users;
+--- expect: rows 2
+
+--- case: the other direction asks the mirrored question
+SELECT * FROM users:3<-follows<-users;
+--- expect: rows 2
+
+--- case: a record nobody follows has no incoming edges
+SELECT * FROM users:1<-follows<-users;
+--- expect: rows 0
+
+--- case: RELATE is idempotent, because an edge is identified by its endpoints
+RELATE users:1->follows->users:2;
+SELECT * FROM users:1->follows;
+--- expect: rows 2
+
+--- case: a deleted endpoint drops out of the traversal rather than failing it
+DELETE users:3;
+SELECT * FROM users:1->follows->users;
+--- expect: rows 1
+
+--- case: the edge itself survives its dangling endpoint
+SELECT * FROM users:1->follows;
+--- expect: rows 2
+
+--- case: relating through a table that is not an edge table is refused
+RELATE users:1->users->users:2;
+--- expect: error NotAnEdgeTable
+
+--- case: traversing a table that is not an edge table is refused
+SELECT * FROM users:1->users;
+--- expect: error NotAnEdgeTable

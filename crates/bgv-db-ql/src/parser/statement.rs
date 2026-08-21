@@ -3,7 +3,10 @@
 use super::Parser;
 use bgv_db_types::FieldKind;
 
-use crate::ast::{ExprKind, Name, RangeExpr, Select, Source, Statement, StatementKind, Test};
+use crate::ast::{
+    Direction, ExprKind, Name, RangeExpr, RecordTarget, Select, Source, Statement, StatementKind,
+    Test,
+};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Spanned, Token};
 
@@ -36,6 +39,7 @@ impl Parser<'_> {
                     target: self.record_target()?,
                 }
             }
+            Some(Keyword::Relate) => self.relate_statement()?,
             Some(Keyword::Keys) => self.keys_statement()?,
             Some(Keyword::Begin) => {
                 self.advance();
@@ -100,9 +104,25 @@ impl Parser<'_> {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
                 let name = self.name()?;
+                // Either marker, in either order, and neither twice. Order-free
+                // because there is no reading under which one has to precede the
+                // other, and a grammar that insisted would only be remembered
+                // wrong.
+                let mut schemafull = false;
+                let mut edge = false;
+                loop {
+                    if !schemafull && self.eat_keyword(Keyword::Schemafull) {
+                        schemafull = true;
+                    } else if !edge && self.eat_keyword(Keyword::Edge) {
+                        edge = true;
+                    } else {
+                        break;
+                    }
+                }
                 Ok(StatementKind::DefineTable {
                     name,
-                    schemafull: self.eat_keyword(Keyword::Schemafull),
+                    schemafull,
+                    edge,
                     if_not_exists,
                 })
             }
@@ -242,7 +262,11 @@ impl Parser<'_> {
 
         let table = self.table_ref()?;
         let from = if self.peek() == Some(&Token::Punct(Punct::Colon)) {
-            Source::Record(self.record_target_after(table)?)
+            let record = self.record_target_after(table)?;
+            match self.arrow() {
+                Some(direction) => self.traversal(record, direction)?,
+                None => Source::Record(record),
+            }
         } else if self.eat_keyword(Keyword::Where) {
             let field = self.name()?;
             let test = if self.eat_keyword(Keyword::Like) {
@@ -267,6 +291,63 @@ impl Parser<'_> {
         Ok(Select {
             from,
             span: start.to(self.span_behind()),
+        })
+    }
+
+    /// The rest of `users:1->follows` or `users:1->follows->users`.
+    ///
+    /// The second arrow must point the same way as the first. A mixed pair would
+    /// read as "the edges out of `a`, then whichever record their `out` names" —
+    /// which is `a` again, for every edge, and is a query nobody means to write.
+    fn traversal(&mut self, from: RecordTarget, direction: Direction) -> Result<Source> {
+        let edges = self.table_ref()?;
+        let target = match self.arrow() {
+            Some(second) if second == direction => Some(self.table_ref()?),
+            Some(_) => {
+                return Err(self.error_here("a second arrow pointing the same way as the first"));
+            }
+            None => None,
+        };
+        Ok(Source::Traverse {
+            from,
+            direction,
+            edges,
+            target,
+        })
+    }
+
+    /// One traversal arrow, consumed if it is there.
+    fn arrow(&mut self) -> Option<Direction> {
+        if self.eat_punct(Punct::ArrowRight) {
+            return Some(Direction::Outgoing);
+        }
+        if self.eat_punct(Punct::ArrowLeft) {
+            return Some(Direction::Incoming);
+        }
+        None
+    }
+
+    /// `RELATE users:1->follows->users:2 = { since: … }`
+    ///
+    /// The `= { … }` is optional, because most edges carry nothing but their two
+    /// endpoints, and a required empty object would be noise on every line.
+    fn relate_statement(&mut self) -> Result<StatementKind> {
+        self.advance();
+        let from = self.record_target()?;
+        self.expect_punct(Punct::ArrowRight, "`->` and the edge table")?;
+        let edges = self.table_ref()?;
+        self.expect_punct(Punct::ArrowRight, "`->` and the record to relate to")?;
+        let to = self.record_target()?;
+        let value = if self.eat_punct(Punct::Equals) {
+            Some(self.expression()?)
+        } else {
+            None
+        };
+        Ok(StatementKind::Relate {
+            from,
+            edges,
+            to,
+            value,
         })
     }
 

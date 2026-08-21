@@ -304,6 +304,16 @@ impl<'a> Lexer<'a> {
             '}' => Punct::BraceClose,
             '[' => Punct::BracketOpen,
             ']' => Punct::BracketClose,
+            // `--` was consumed as a comment and `-<digit>` as a number before
+            // reaching here, so a `-` left over is an arrow or nothing.
+            '-' if self.peek() == Some('>') => {
+                self.advance('>');
+                Punct::ArrowRight
+            }
+            '<' if self.peek() == Some('-') => {
+                self.advance('-');
+                Punct::ArrowLeft
+            }
             '(' => Punct::ParenOpen,
             ')' => Punct::ParenClose,
             '.' => {
