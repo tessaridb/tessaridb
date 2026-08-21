@@ -276,6 +276,19 @@ pub enum Error {
         span: Span,
     },
 
+    /// A vector distance this store does not have.
+    ///
+    /// The distance is declared rather than defaulted, because a default would
+    /// silently decide which queries the index can serve — so a name nobody
+    /// recognises is refused rather than replaced with a guess.
+    #[error("there is no vector distance called {name:?}; try `cosine` or `euclidean` (at {span})")]
+    NoSuchDistance {
+        /// The name as written.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
     /// A role this language does not have.
     #[error("there is no role called {name:?} (at {span})")]
     NoSuchRole {

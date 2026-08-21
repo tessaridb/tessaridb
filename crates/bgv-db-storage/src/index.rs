@@ -79,6 +79,7 @@ use bgv_db_types::{Analyzer, RecordId, TableId, Value};
 
 use crate::catalog::{Catalog, IndexDefinition, defined_index};
 use crate::error::{Error, Result};
+use crate::graph;
 use crate::store::Store;
 use crate::transaction::{RecordAddress, Transaction};
 
@@ -210,6 +211,21 @@ fn build(
         };
     }
 
+    if let Some(distance) = definition.vector {
+        // The graph is built in the commit that defines the index, the same way
+        // every other index is — so a definition over a populated table and a
+        // definition over an empty one followed by writes reach the same state.
+        let mut graph = graph::Graph::empty(distance);
+        let mut written: BTreeMap<RecordId, bgv_db_encoding::VectorNode> = BTreeMap::new();
+        for (id, payload) in &rows {
+            let Some(held) = projected_vector(definition, &decode_payload(payload)?) else {
+                continue;
+            };
+            written.extend(graph.insert(id, held));
+        }
+        return Ok(graph::write(batch, &address, &written));
+    }
+
     if definition.search {
         let declared = analyzers_on(view, definition.table)?;
         let analyzer = search_analyzer(definition, &declared);
@@ -259,6 +275,30 @@ fn apply_one(
         definition.table,
         definition.id,
     );
+
+    if let Some(distance) = definition.vector {
+        // The graph is read from committed state and edited, then the nodes the
+        // edit touched are written. Reading the whole graph per mutation is the
+        // cost this shape pays, and it is stated in `graph.rs` rather than
+        // discovered: an index over more vectors than fit in memory wants a
+        // paging walk, which is not this.
+        let mut graph = graph::Graph::read(store, &address, distance)?;
+        let previous_vector = previous
+            .map(decode_payload)
+            .transpose()?
+            .and_then(|held| projected_vector(definition, &held));
+        if previous_vector.is_some() {
+            graph.remove(&mutation.id);
+            batch = graph::erase(batch, &address, &mutation.id);
+        }
+        if let RecordValue::Present(payload) = &mutation.value
+            && let Some(held) = projected_vector(definition, &decode_payload(payload)?)
+        {
+            let touched = graph.insert(&mutation.id, held);
+            batch = graph::write(batch, &address, &touched);
+        }
+        return Ok(batch);
+    }
 
     if definition.search {
         let analyzer = search_analyzer(definition, analyzers);
@@ -423,6 +463,17 @@ struct Analysed {
     /// How many tokens the text holds, **with** repeats — this is a length, and
     /// a length that collapsed repeats would not be one.
     tokens: u64,
+}
+
+/// The vector one record contributes to a vector index.
+///
+/// `None` when the field is absent, holds something that is not an array of
+/// numbers, or holds an empty one — the same "not in this index at all" answer
+/// an ordered index gives for a missing field, and the same reading the
+/// language's own distance functions do.
+fn projected_vector(definition: &IndexDefinition, value: &Value) -> Option<Vec<f64>> {
+    let path = definition.fields.first()?;
+    graph::vector_of(path.resolve(value)?)
 }
 
 /// The terms one record contributes to a search index.

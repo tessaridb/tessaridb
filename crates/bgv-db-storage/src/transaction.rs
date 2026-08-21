@@ -261,6 +261,34 @@ impl<'a> Transaction<'a> {
         Ok(holding.into_iter().collect())
     }
 
+    /// The records a vector index says are nearest, nearest first.
+    ///
+    /// **Approximate**, and the only method on this type that is. A navigable
+    /// graph returns the neighbours a greedy walk found, and showing that it
+    /// missed none would mean the scan the index exists to avoid — which is why
+    /// the language makes a statement ask for this before it may be used.
+    ///
+    /// A candidate set like every index read: each record is resolved at the
+    /// reader's own snapshot, so a node left behind by a deleted record can
+    /// never produce a row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a node cannot be decoded.
+    pub fn records_by_vector(
+        &self,
+        index: &IndexDefinition,
+        query: &[f64],
+        wanted: usize,
+    ) -> Result<Vec<RecordId>> {
+        let Some(distance) = index.vector else {
+            return Ok(Vec::new());
+        };
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let graph = crate::graph::Graph::read(self.store, &address, distance)?;
+        Ok(graph.nearest(query, wanted))
+    }
+
     /// What a search index knows about its collection as a whole.
     ///
     /// An index that has never been written to has no statistics key, and the

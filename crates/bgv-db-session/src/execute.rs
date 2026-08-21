@@ -4,6 +4,7 @@ use bgv_db_encoding::encode_payload;
 use bgv_db_ql::{FieldPath, Name, RecordTarget, Span, StatementKind, TableRef};
 use bgv_db_storage::{
     Catalog, EDGE_IN, EDGE_OUT, FieldShape, IndexShape, RecordAddress, TableShape, Transaction,
+    VectorDistance,
 };
 use std::collections::BTreeMap;
 
@@ -112,6 +113,7 @@ impl Session<'_> {
                 fields,
                 unique,
                 search,
+                vector,
                 if_not_exists,
             } => self.define_index(
                 transaction,
@@ -121,6 +123,17 @@ impl Session<'_> {
                 IndexShape {
                     unique: *unique,
                     search: *search,
+                    vector: match vector {
+                        Some(named) => {
+                            Some(VectorDistance::parse(&named.text).ok_or_else(|| {
+                                Error::NoSuchDistance {
+                                    name: named.text.clone(),
+                                    span: named.span,
+                                }
+                            })?)
+                        }
+                        None => None,
+                    },
                 },
                 *if_not_exists,
             ),

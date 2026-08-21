@@ -58,12 +58,21 @@ compares the same way before and after.
 | a search index beats the scan of the same term | 1569 µs → 7.0 µs (224×) | 1760 µs → 16 µs (110×) |
 | ranking costs little over the search it ranks | 7.0 µs → 11.7 µs | 16 µs → 24 µs |
 | durability costs about seven times a write | 7.4 µs | 48.5 µs |
-| a nearest-neighbour read over 2000 × 32 dimensions | 3.68 ms | 3.82 ms |
+| a nearest-neighbour read over 2000 × 32 dimensions | 3.65 ms | 3.80 ms |
+| the same read served by a vector index | 0.62 ms (5.9×) | 0.83 ms (4.6×) |
 
-The last row is still nearly identical across backends, so the read is still
-CPU-bound — now genuinely in the distance, which is where an HNSW index will
-reduce the work. Its recall stays measurable against the scan, because the scan's
-ten *are* the exact ten.
+The scan row is still nearly identical across backends, so the read is CPU-bound
+in the distance — which is why an index helps by computing **fewer** of them, and
+why its benefit barely depends on the engine underneath. Recall is reported on
+every run at 100% of the exact ten, which the scan supplies: the scan's ten *are*
+the right ten, so there is nothing to argue about.
+
+**The recall number was 1% for an hour, and the fixture was why.** The generator
+took its jitter modulo sixty, which made thousands of records share a vector
+exactly — and recall measured over duplicates is a measurement of which tie a sort
+broke. It read as a broken index through two wrong fixes before the data was
+looked at. A benchmark fixture is an input like any other and deserves the same
+suspicion as the thing it measures.
 
 **A scan is CPU-bound and an index read is I/O-bound.** `filter-scan` is nearly
 the same on both backends because the cost is decoding and testing two thousand

@@ -31,6 +31,9 @@ const RECORDS: u64 = 2_000;
 /// How many reads each read phase performs.
 const READS: u64 = 2_000;
 
+/// How many nearest-neighbour queries the index workload asks.
+const QUERIES: usize = 100;
+
 /// The dimension of the vectors the nearest-neighbour workload writes.
 const DIMENSIONS: usize = 32;
 
@@ -65,6 +68,11 @@ pub const ALL: &[Workload] = &[
         name: "search",
         about: "a term search over a full-text index, against the scan of the same condition",
         run: search,
+    },
+    Workload {
+        name: "vector-index",
+        about: "the same read served by a graph, with the recall it buys against the exact scan",
+        run: vector_index,
     },
     Workload {
         name: "vector",
@@ -283,23 +291,119 @@ fn vector(db: &Db) -> Result<Vec<Report>> {
     Ok(reports)
 }
 
+/// The graph, against the scan it is meant to replace.
+///
+/// Recall is **measured** rather than asserted: for each query the approximate
+/// ten are compared against the exact ten of the same read, and the overlap is
+/// reported as a percentage. That the exact answer is available at all is what
+/// makes this index testable — the scan's ten *are* the right ten, so there is
+/// nothing to argue about.
+fn vector_index(db: &Db) -> Result<Vec<Report>> {
+    prepared(db)?;
+    let mut session = db.session();
+    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE TABLE items;")?;
+    for n in 0..RECORDS {
+        session.run(&format!(
+            "CREATE items:{n} = {{ embedding: {} }};",
+            embedding(n)
+        ))?;
+    }
+
+    let mut built = Samples::with_capacity(1);
+    timed!(
+        built,
+        session.run("DEFINE INDEX by_embedding ON items FIELDS embedding VECTOR euclidean;")?
+    );
+    let mut reports = vec![built.summarise("vector-index-build")];
+
+    let mut exact = Samples::with_capacity(QUERIES);
+    let mut approximate = Samples::with_capacity(QUERIES);
+    let mut overlap = 0_u64;
+    let mut asked = 0_u64;
+    for n in 0..QUERIES {
+        let query = embedding(u64::try_from(n).unwrap_or(0).saturating_add(RECORDS));
+        let exact_read =
+            format!("SELECT * FROM items ORDER BY vector::euclidean(embedding, {query}) LIMIT 10;");
+        let walked_read = format!("{} APPROXIMATE;", exact_read.trim_end_matches(';'));
+
+        let truth = ids(timed!(exact, session.run(&exact_read)?));
+        let found = ids(timed!(approximate, session.run(&walked_read)?));
+        overlap = overlap.saturating_add(
+            u64::try_from(found.iter().filter(|id| truth.contains(id)).count()).unwrap_or(0),
+        );
+        asked = asked.saturating_add(u64::try_from(truth.len()).unwrap_or(0));
+    }
+    reports.push(exact.summarise("vector-exact-scan"));
+    reports.push(approximate.summarise("vector-graph-walk"));
+
+    // The number this node's acceptance names, and the only one here that is not
+    // a latency — so it is written as what it is.
+    let recall = if asked == 0 {
+        0.0
+    } else {
+        f64::from(u32::try_from(overlap).unwrap_or(0)) * 100.0
+            / f64::from(u32::try_from(asked).unwrap_or(1))
+    };
+    reports.push(Report::measurement(
+        "recall",
+        &format!("{recall:.1}% of the exact ten, over {asked} asked"),
+    ));
+    Ok(reports)
+}
+
+/// The record ids an answer carried.
+fn ids(outcomes: Vec<bgv_db::Outcome>) -> Vec<bgv_db_types::RecordId> {
+    outcomes
+        .first()
+        .and_then(|outcome| outcome.records())
+        .map(|records| records.iter().map(|(id, _)| id.clone()).collect())
+        .unwrap_or_default()
+}
+
 /// A deterministic vector, so two runs measure the same data.
 ///
 /// Not random: a benchmark whose input changes between runs cannot be compared
 /// with itself, which is the one thing a baseline is for.
 fn embedding(n: u64) -> String {
+    clustered(n)
+}
+
+/// A vector drawn near one of a few centres, the way a real embedding is.
+///
+/// Uniform-random points in thirty-two dimensions have no neighbourhood
+/// structure at all — every pair is nearly the same distance apart — so a graph
+/// index has nothing to navigate and a benchmark over them measures the curse of
+/// dimensionality rather than the index. Real embeddings cluster, which is the
+/// property that makes an approximate index work; so the fixture clusters too.
+fn clustered(n: u64) -> String {
+    const CENTRES: u64 = 40;
+    let centre = n % CENTRES;
     let mut components = String::from("[");
     for dimension in 0..DIMENSIONS {
         if dimension > 0 {
             components.push_str(", ");
         }
-        let seed = n
-            .wrapping_mul(2_654_435_761)
-            .wrapping_add(u64::try_from(dimension).unwrap_or(0).wrapping_mul(97));
-        // A value in `0.000..0.999`, written as a decimal so the parser reads it
-        // as one rather than as an integer.
-        let scaled = seed % 1_000;
-        components.push_str(&format!("0.{scaled:03}"));
+        let axis = u64::try_from(dimension).unwrap_or(0);
+        // The centre decides most of each component; the record's own identity
+        // moves it a little.
+        // The jitter is wide and well mixed on purpose. An earlier version took
+        // it modulo sixty, which made thousands of records share a vector
+        // exactly — and recall measured over duplicates is a measurement of
+        // which tie a sort broke, not of whether a search found anything. It
+        // read as a broken index until the fixture was looked at.
+        let base = centre
+            .wrapping_mul(7_919)
+            .wrapping_add(axis.wrapping_mul(104_729))
+            % 1_000;
+        let mut mixed = n
+            .wrapping_add(1)
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(axis.wrapping_mul(1_442_695_040_888_963_407));
+        mixed ^= mixed >> 33;
+        mixed = mixed.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        mixed ^= mixed >> 29;
+        let held = base.wrapping_add(mixed % 200).wrapping_sub(100) % 1_000;
+        components.push_str(&format!("0.{held:03}"));
     }
     components.push(']');
     components

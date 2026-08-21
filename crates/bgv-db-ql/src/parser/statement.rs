@@ -156,25 +156,49 @@ impl Parser<'_> {
         while self.eat_punct(Punct::Comma) {
             fields.push(self.field_path()?);
         }
-        // Either marker, in either order, and neither twice — the rule the
-        // table and field declarations already follow.
-        let mut unique = false;
-        let mut search = false;
+        // **One** marker, and the third is why this changed. `UNIQUE` says how
+        // entries collide, `SEARCH` says the entries are terms, `VECTOR` says
+        // they are a graph — three different index kinds wearing three flags, of
+        // which at most one can be true. Accepting two used to be possible and
+        // the first one checked simply won, so `UNIQUE SEARCH` was an index
+        // whose uniqueness was silently ignored. Adding a third made that
+        // inconsistency a thing to answer rather than inherit.
+        /// Which of the three an index is.
+        enum Marker {
+            Unique,
+            Search,
+            /// With the distance its graph is built for, which is required —
+            /// a default would silently decide which queries the index serves.
+            Vector(crate::Name),
+        }
+        let mut kind: Option<Marker> = None;
         loop {
-            if !unique && self.eat_keyword(Keyword::Unique) {
-                unique = true;
-            } else if !search && self.eat_keyword(Keyword::Search) {
-                search = true;
+            let held = if self.eat_keyword(Keyword::Unique) {
+                Marker::Unique
+            } else if self.eat_keyword(Keyword::Search) {
+                Marker::Search
+            } else if self.eat_word("vector") {
+                // Contextual, like `order` and `fetch`: a field called `vector`
+                // in a database of embeddings is not a name to take away.
+                Marker::Vector(self.name()?)
             } else {
                 break;
+            };
+            if kind.is_some() {
+                return Err(self.error_here("one index kind, not two"));
             }
+            kind = Some(held);
         }
         Ok(StatementKind::DefineIndex {
             name,
             table,
             fields,
-            unique,
-            search,
+            unique: matches!(kind, Some(Marker::Unique)),
+            search: matches!(kind, Some(Marker::Search)),
+            vector: match kind {
+                Some(Marker::Vector(distance)) => Some(distance),
+                _ => None,
+            },
             if_not_exists,
         })
     }
@@ -381,6 +405,10 @@ impl Parser<'_> {
         // commute.
         let skip = self.bound("start")?;
         let limit = self.bound("limit")?;
+        // Last, because it qualifies the whole read rather than any one clause,
+        // and contextual like the rest: a field called `approximate` stays a
+        // field.
+        let approximate = self.eat_word("approximate");
         super::shape::check_grouping(&projection, &group)?;
         Ok(Select {
             projection,
@@ -388,6 +416,7 @@ impl Parser<'_> {
             fetch,
             group,
             order,
+            approximate,
             start: skip,
             limit,
             span: start.to(self.span_behind()),

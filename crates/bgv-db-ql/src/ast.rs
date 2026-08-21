@@ -100,6 +100,13 @@ pub enum StatementKind {
         unique: bool,
         /// Whether the index holds terms rather than whole values.
         search: bool,
+        /// The distance a vector index's graph is built with, when it is one.
+        ///
+        /// Carried as the word the author wrote rather than as a parsed kind,
+        /// because which distances exist is the store's question and not the
+        /// grammar's: a name the store does not know is refused where the store
+        /// knows what it knows, with the span the author can see.
+        vector: Option<Name>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -262,6 +269,16 @@ pub struct Select {
     pub group: Vec<FieldPath>,
     /// The keys the answer is sorted by, in order of significance.
     pub order: Vec<Ordering>,
+    /// Whether the caller will accept an approximate ordering.
+    ///
+    /// **Permission, not a demand.** Every index in this store may change what a
+    /// read costs and none may change what it answers — except a vector index,
+    /// whose graph returns the neighbours a walk found and cannot show it missed
+    /// none. So the exception is written in the statement: a read that does not
+    /// say this gets the exact scan, and one that does may be served by the
+    /// graph if there is one. With no such index it is still exact, which is
+    /// better than what was asked for; the reported access path says which.
+    pub approximate: bool,
     /// How many records to pass over before answering.
     pub start: Option<u64>,
     /// How many to answer with at most.

@@ -52,6 +52,7 @@ impl Fixture {
                 IndexShape {
                     unique,
                     search: false,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -482,6 +483,7 @@ fn table_with_rows(unique: bool) -> Fixture {
             fields: vec![Path::field("email")],
             unique,
             search: false,
+            vector: None,
         },
     };
     bare.write("u1", Some(Value::from("ada@example.com")))
@@ -505,6 +507,7 @@ fn indexed_after_the_fact(unique: bool) -> Fixture {
             IndexShape {
                 unique,
                 search: false,
+                vector: None,
             },
         )
         .unwrap();
@@ -600,6 +603,7 @@ fn defining_a_unique_index_over_rows_that_already_violate_it_is_refused() {
             IndexShape {
                 unique: true,
                 search: false,
+                vector: None,
             },
         )
         .unwrap();

@@ -76,8 +76,8 @@ because renumbering after data exists is a full rebuild.
 | `0x01` | `Record` | `data` | implemented |
 | `0x10` | `SecondaryIndex` | `index` | implemented |
 | `0x11` | `UniqueIndex` | `index` | implemented |
-| `0x12` | `Posting` (full-text) | `index` | reserved — SG4 |
-| `0x13` | `VectorNode` | `index` | reserved — SG4 |
+| `0x12` | `Posting` (full-text) | `index` | implemented |
+| `0x13` | `VectorNode` | `index` | implemented — see §6.2c |
 | `0x14` | `Edge` (graph) | `index` | reserved, **not needed** — see §9a |
 | `0x15` | `SearchStatistics` | `index` | implemented — see §3b |
 | `0x20` | `LogEntry` | `log` | implemented |
@@ -86,7 +86,7 @@ because renumbering after data exists is a full rebuild.
 | `0x32` | `NamespaceCatalog` | `meta` | reserved, unused — see §9 |
 | `0x33` | `DatabaseCatalog` | `meta` | reserved, unused — see §9 |
 | `0x34` | `TableCatalog` | `meta` | reserved, unused — see §9 |
-| `0x35` | `IndexCatalog` | `meta` | reserved — SG4 |
+| `0x35` | `IndexCatalog` | `meta` | reserved, unused — see §9 |
 | `0x36` | `IdAllocator` | `meta` | reserved, unused — see §9 |
 | `0x37` | `BackfillWatermark` | `meta` | reserved — SG4 |
 
@@ -364,6 +364,33 @@ counted. `terms` is the token count **with repeats**, because it exists to be
 divided by `documents` and yield an average document *length*. The postings
 deduplicate and this does not; both come from one analyzer pass over the same
 text, so they cannot drift apart.
+
+### 6.2c `VectorNode` — keyspace `index`
+
+```
+key    <0x13> <namespace:u32> <database:u32> <table:u32> <index:u32> <level:u8> <record-id>
+value  <dimensions:u32> <component:f64 × dimensions> <neighbours:u32> <record-id × neighbours>
+```
+
+One node of a vector index's navigable graph.
+
+**The level byte is reserved and is always zero.** A hierarchical graph assigns
+each node a level, and the layers improve routing at large collection sizes — but
+a level drawn from a generator is what a store whose index entries are *derived
+rather than logged* cannot have, because two replicas would build different
+graphs from one log and disagree, silently, about which records are nearest. One
+layer needs no levels: insertion order is log order, which every replica replays
+identically. The byte is in the key anyway, because reserving room costs nothing
+today and cannot be done retroactively, and because it sorts before the record id
+so a future level's nodes group together.
+
+**The vector is in the node.** A walk visits many nodes and answers with few, so
+carrying it here means the search touches index keys and decodes no records until
+the answer is chosen.
+
+Components are stored as their **bit patterns**, not in the order-preserving form
+an index key uses: nothing here has to sort, and the walk wants numbers to
+compute with.
 
 ### 6.3 `FormatVersion` — keyspace `meta`
 

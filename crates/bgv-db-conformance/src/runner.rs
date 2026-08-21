@@ -194,6 +194,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::SignInRefused => "SignInRefused",
         Error::NoSuchRole { .. } => "NoSuchRole",
         Error::NoSearchIndex { .. } => "NoSearchIndex",
+        Error::NoSuchDistance { .. } => "NoSuchDistance",
         Error::OutsideTenancy { .. } => "OutsideTenancy",
         Error::NotArithmetic { .. } => "NotArithmetic",
         Error::ArithmeticFailed { .. } => "ArithmeticFailed",

@@ -52,8 +52,8 @@
 
 use core::cmp::Ordering;
 
-use bgv_db_ql::{BinaryOp, Expr, ExprKind, Projectable, Projected};
-use bgv_db_storage::{IndexDefinition, Transaction};
+use bgv_db_ql::{BinaryOp, Expr, ExprKind, Function, Projectable, Projected, Select};
+use bgv_db_storage::{IndexDefinition, Transaction, VectorDistance};
 use bgv_db_types::{Path, Value};
 
 use crate::condition::literal_prefix;
@@ -453,6 +453,92 @@ impl Session<'_> {
     }
 }
 
+/// A read a vector index could serve, when the statement asks for one.
+///
+/// Recognised rather than requested: the language has no nearest-neighbour
+/// operator, because "the ten most similar" is an order and a bound and it
+/// already had both (SGC.T4 W1). So the index's job is to notice that shape and
+/// answer it faster — and to notice it **only** when the statement said
+/// `APPROXIMATE`, because a graph's answer is not the scan's.
+///
+/// Every condition below is a way the shape can fail to be the one a graph
+/// answers, and each is a scan rather than a guess:
+///
+/// - no `APPROXIMATE`, so the caller has not accepted an approximate ordering;
+/// - more than one sort key, or a descending one — a distance orders ascending,
+///   and a second key orders records the graph never ranked;
+/// - no `LIMIT`, so the read wants every record and a walk has nothing to cut;
+/// - a sort key that is not a distance call on a path and a constant;
+/// - `GROUP BY`, which folds the records a walk would have chosen between.
+pub(crate) struct Nearest<'a> {
+    /// The field holding the vectors.
+    pub(crate) path: &'a Path,
+    /// The query vector, still an expression.
+    pub(crate) query: &'a Expr,
+    /// Which distance the statement asked for.
+    pub(crate) distance: Function,
+    /// How many records to walk for, `START` included.
+    pub(crate) wanted: usize,
+}
+
+/// The nearest-neighbour read this statement is, if it is one.
+pub(crate) fn nearest(select: &Select) -> Option<Nearest<'_>> {
+    if !select.approximate || !select.group.is_empty() {
+        return None;
+    }
+    let [ordering] = select.order.as_slice() else {
+        return None;
+    };
+    if ordering.descending {
+        return None;
+    }
+    let ExprKind::Call {
+        function,
+        arguments,
+        ..
+    } = &ordering.key.kind
+    else {
+        return None;
+    };
+    // `dot` is excluded: the inner product grows with similarity, so ordering by
+    // it ascending asks for the *least* similar — a query the language allows
+    // and a graph of nearest neighbours does not answer.
+    if !matches!(function, Function::VectorCosine | Function::VectorEuclidean) {
+        return None;
+    }
+    let (Some(first), Some(second)) = (arguments.first(), arguments.get(1)) else {
+        return None;
+    };
+    let ExprKind::Path(field) = &first.kind else {
+        return None;
+    };
+    if reads_a_record(second) {
+        return None;
+    }
+    let limit = select.limit?;
+    // A `START` skips records the walk still has to find, so it is added to what
+    // the walk asks for rather than making the read unservable.
+    let wanted = limit.saturating_add(select.start.unwrap_or(0));
+    Some(Nearest {
+        path: &field.path,
+        query: second,
+        distance: *function,
+        wanted: usize::try_from(wanted).unwrap_or(usize::MAX),
+    })
+}
+
+/// Whether an index's declared distance answers this statement's.
+///
+/// A graph whose edges were chosen by one measure approximates that measure and
+/// no other, so a mismatch is a scan — exact, and reported as such.
+pub(crate) const fn answers(declared: VectorDistance, asked: Function) -> bool {
+    matches!(
+        (declared, asked),
+        (VectorDistance::Cosine, Function::VectorCosine)
+            | (VectorDistance::Euclidean, Function::VectorEuclidean)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::panic)]
@@ -472,6 +558,7 @@ mod tests {
             fields: vec![Path::field("x")],
             search,
             unique,
+            vector: None,
         }
     }
 

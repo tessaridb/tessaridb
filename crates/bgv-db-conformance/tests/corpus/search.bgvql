@@ -117,3 +117,42 @@ SELECT search::score(title, 'ada') AS relevance FROM notes;
 --- case: and a single record is not a collection either
 SELECT search::score(body, 'hopper') AS relevance FROM notes:9;
 --- expect: error NoSearchIndex
+
+# The vector index. Every other index in this store changes what a read costs and
+# not what it answers; this one cannot, so the statement has to ask.
+
+--- case: a table of vectors to search
+DEFINE TABLE points;
+CREATE points:1 = { at: [0.0, 0.0] };
+CREATE points:2 = { at: [1.0, 0.0] };
+CREATE points:3 = { at: [5.0, 0.0] };
+--- expect: ok
+
+--- case: a vector index declares the distance its graph is built for
+DEFINE INDEX by_at ON points FIELDS at VECTOR euclidean;
+--- expect: ok
+
+--- case: a distance the store does not have is refused where it is written
+DEFINE INDEX by_at2 ON points FIELDS at VECTOR manhattan;
+--- expect: error NoSuchDistance
+
+--- case: one index kind and not two
+DEFINE INDEX by_at3 ON points FIELDS at SEARCH VECTOR cosine;
+--- expect: error UnexpectedToken
+
+--- case: without the word the read is the exact scan it always was
+SELECT * FROM points ORDER BY vector::euclidean(at, [0.1, 0.0]) LIMIT 2;
+--- expect: rows 2
+
+--- case: with the word, the graph may serve it
+SELECT * FROM points ORDER BY vector::euclidean(at, [0.1, 0.0]) LIMIT 2 APPROXIMATE;
+--- expect: rows 2
+
+--- case: asking approximately of a field with no index is still exact
+SELECT * FROM points ORDER BY vector::cosine(at, [0.1, 0.9]) LIMIT 2 APPROXIMATE;
+--- expect: rows 2
+
+--- case: approximate is contextual, so a field may be called it
+CREATE points:4 = { approximate: true, vector: 'a field called vector' };
+SELECT approximate FROM points:4;
+--- expect: rows 1

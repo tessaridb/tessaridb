@@ -382,6 +382,16 @@ impl Session<'_> {
             Source::Table(table) => {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 let searched = self.searched_for(transaction, id, &shown(select))?;
+                // A statement that asked for an approximate ordering, over a
+                // field carrying a graph built for the distance it named, is the
+                // one read in this store an index answers differently from a
+                // scan. Every other shape falls through to the scan below, which
+                // is exact.
+                if let Some(walk) = plan::nearest(select)
+                    && let Some(found) = self.walk(transaction, context, id, &walk)?
+                {
+                    return Ok((found, AccessPath::Index, searched));
+                }
                 let found = transaction.scan_table(context.namespace, context.database, id)?;
                 Ok((decode_all(found)?, AccessPath::Scan, searched))
             }
@@ -461,6 +471,45 @@ impl Session<'_> {
         }
         let scanned = transaction.scan_table(context.namespace, context.database, table)?;
         Ok((decode_all(scanned)?, AccessPath::Scan))
+    }
+
+    /// Walk a vector index, when there is one that answers this read.
+    ///
+    /// `None` means there is not — no index on the path, one built for another
+    /// distance, or a query that is not a vector — and the caller scans, which
+    /// is exact. That is the whole safety story: the approximate path is taken
+    /// only when the statement asked and the index matches, and the exact path
+    /// is what every other case falls into.
+    fn walk(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: crate::context::Context,
+        table: TableId,
+        wanted: &plan::Nearest<'_>,
+    ) -> Result<Option<Vec<(RecordId, Value)>>> {
+        let Some(index) = self.index_on_path(transaction, table, wanted.path)? else {
+            return Ok(None);
+        };
+        let Some(declared) = index.vector else {
+            return Ok(None);
+        };
+        if !plan::answers(declared, wanted.distance) {
+            return Ok(None);
+        }
+        let Some(query) = bgv_db_storage::vector_of(&self.evaluate(transaction, wanted.query)?)
+        else {
+            return Ok(None);
+        };
+        let mut rows = Vec::new();
+        for id in transaction.records_by_vector(&index, &query, wanted.wanted)? {
+            // Resolved at this reader's own snapshot, like every index read, so
+            // a node left behind by a deleted record produces nothing.
+            let at = RecordAddress::new(context.namespace, context.database, table, id);
+            if let Some(payload) = transaction.get(&at)? {
+                rows.push((at.id, decode_payload(&payload)?));
+            }
+        }
+        Ok(Some(rows))
     }
 
     /// Run the candidate the plan chose.

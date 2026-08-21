@@ -24,6 +24,7 @@
 mod catalog;
 mod error;
 mod feed;
+mod graph;
 mod index;
 mod log;
 mod reclaim;
@@ -35,10 +36,11 @@ mod transaction;
 pub use catalog::{
     AnalyzerDefinition, Catalog, DatabaseDefinition, EDGE_IN, EDGE_OUT, FieldDefinition,
     FieldShape, IndexDefinition, IndexShape, NamespaceDefinition, Role, SYSTEM_DATABASE,
-    SYSTEM_NAMESPACE, TableDefinition, TableShape, UserDefinition,
+    SYSTEM_NAMESPACE, TableDefinition, TableShape, UserDefinition, VectorDistance,
 };
 pub use error::{Error, Result};
 pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
+pub use graph::vector_of;
 pub use reclaim::Reclaimed;
 pub use store::Store;
 pub use transaction::{RecordAddress, Transaction};

@@ -59,6 +59,7 @@ impl Samples {
             p90: at_percentile(&self.held, 90),
             p99: at_percentile(&self.held, 99),
             max: self.held.last().copied().unwrap_or_default(),
+            note: None,
         }
     }
 }
@@ -99,9 +100,30 @@ pub struct Report {
     pub p99: Duration,
     /// The slowest single operation.
     pub max: Duration,
+    /// A measurement that is not a latency, written across the row instead.
+    ///
+    /// Recall is the one number this harness produces that is not a time, and
+    /// dressing it as a phase gave it a throughput column reading a trillion
+    /// operations a second. A row that says what it is beats a row that fits.
+    pub note: Option<String>,
 }
 
 impl Report {
+    /// A measurement that is not a latency.
+    #[must_use]
+    pub fn measurement(what: &str, said: &str) -> Self {
+        Self {
+            phase: what.to_owned(),
+            operations: 0,
+            total: Duration::ZERO,
+            p50: Duration::ZERO,
+            p90: Duration::ZERO,
+            p99: Duration::ZERO,
+            max: Duration::ZERO,
+            note: Some(said.to_owned()),
+        }
+    }
+
     /// Operations per second, or `0.0` when nothing was measured.
     ///
     /// Derived from the summed operation time rather than from wall clock, so a
@@ -120,6 +142,9 @@ impl Report {
     /// baseline file both use — so the two cannot drift apart.
     #[must_use]
     pub fn row(&self) -> String {
+        if let Some(said) = &self.note {
+            return format!("| {} | **{said}** | | | | | |", self.phase);
+        }
         format!(
             "| {} | {} | {:.0} | {} | {} | {} | {} |",
             self.phase,

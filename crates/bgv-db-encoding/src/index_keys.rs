@@ -281,6 +281,137 @@ impl StoreValue for SearchStatistics {
     }
 }
 
+/// One record's place in a vector index's graph.
+///
+/// ```text
+/// key    <0x13> <ns:u32> <db:u32> <tb:u32> <ix:u32> <level:u8> <record-id>
+/// value  <dimensions:u32> <component:f64 × dimensions> <neighbours:u32> <record-id × neighbours>
+/// ```
+///
+/// # The level byte is reserved and always zero
+///
+/// A hierarchical graph assigns each node a level, and the layers improve
+/// routing at large collection sizes. This index has one layer, because a level
+/// drawn from a generator is exactly what a store whose index entries are
+/// **derived rather than logged** cannot have: two replicas would build
+/// different graphs from one log and disagree, silently, about which ten records
+/// are nearest.
+///
+/// The byte is in the key anyway. Reserving room costs nothing today and cannot
+/// be done retroactively — the same argument the key-kind table itself makes —
+/// and it sorts before the record id so a future level's nodes group together.
+///
+/// # The vector is in the node
+///
+/// A walk visits many nodes and answers with few, so carrying the vector here
+/// means the search touches index keys and decodes no records until the answer
+/// is chosen. Measured on this store, decoding the records is about a seventh of
+/// a linear nearest-neighbour read; here it is avoided as a side effect rather
+/// than pursued as a feature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorNodeKey {
+    /// Which index this node belongs to.
+    pub address: IndexAddress,
+    /// Which layer. Always zero until the graph has more than one.
+    pub level: u8,
+    /// The record the node stands for.
+    pub id: RecordId,
+}
+
+impl VectorNodeKey {
+    /// Name one node.
+    #[must_use]
+    pub const fn new(address: IndexAddress, level: u8, id: RecordId) -> Self {
+        Self { address, level, id }
+    }
+
+    /// The prefix every node of one level shares.
+    #[must_use]
+    pub fn level_prefix(address: &IndexAddress, level: u8) -> Vec<u8> {
+        let mut bytes = address.prefix(KeyKind::VectorNode);
+        bytes.push(level);
+        bytes
+    }
+}
+
+impl StoreKey for VectorNodeKey {
+    type Value = VectorNode;
+
+    const KIND: KeyKind = KeyKind::VectorNode;
+
+    fn encode(&self) -> Key {
+        let mut bytes = Self::level_prefix(&self.address, self.level);
+        let mut writer = KeyWriter::new();
+        record_id::put(&mut writer, &self.id);
+        bytes.extend_from_slice(&writer.finish());
+        Key::from(bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let address = IndexAddress::read(&mut reader)?;
+        let level = reader.take_u8()?;
+        let id = record_id::take(&mut reader)?;
+        reader.finish()?;
+        Ok(Self { address, level, id })
+    }
+}
+
+/// What a node holds: the record's vector, and who it points at.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorNode {
+    /// The record's vector, as the distance functions want it.
+    pub vector: Vec<f64>,
+    /// The records this node links to, in the order the graph chose.
+    pub neighbours: Vec<RecordId>,
+}
+
+impl VectorNode {
+    /// Build a node.
+    #[must_use]
+    pub const fn new(vector: Vec<f64>, neighbours: Vec<RecordId>) -> Self {
+        Self { vector, neighbours }
+    }
+}
+
+impl StoreValue for VectorNode {
+    fn encode(&self) -> Value {
+        let mut writer = KeyWriter::new();
+        writer.put_u32(u32::try_from(self.vector.len()).unwrap_or(u32::MAX));
+        for component in &self.vector {
+            // The bit pattern, not a decimal projection: this is storage for
+            // arithmetic rather than an index key, so nothing here has to sort.
+            writer.put_u64(component.to_bits());
+        }
+        writer.put_u32(u32::try_from(self.neighbours.len()).unwrap_or(u32::MAX));
+        for neighbour in &self.neighbours {
+            record_id::put(&mut writer, neighbour);
+        }
+        let body = writer.finish();
+        let mut buffer = with_header(0, body.len());
+        buffer.extend_from_slice(&body);
+        Value::from(buffer)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let (_, payload) = split_header(bytes, 0)?;
+        let mut reader = KeyReader::new(KeyKind::VectorNode, payload);
+        let dimensions = reader.take_u32()?;
+        let mut vector = Vec::with_capacity(usize::try_from(dimensions).unwrap_or(0));
+        for _ in 0..dimensions {
+            vector.push(f64::from_bits(reader.take_u64()?));
+        }
+        let count = reader.take_u32()?;
+        let mut neighbours = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
+        for _ in 0..count {
+            neighbours.push(record_id::take(&mut reader)?);
+        }
+        reader.finish()?;
+        Ok(Self { vector, neighbours })
+    }
+}
+
 /// One entry of a unique index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UniqueIndexKey {
@@ -520,6 +651,22 @@ mod tests {
         let encoded = held.encode();
         let read = SearchStatistics::decode(encoded.as_slice()).expect("statistics");
         assert_eq!(read, held);
+    }
+
+    #[test]
+    fn a_vector_node_survives_the_round_trip() {
+        use super::{RecordId, VectorNode, VectorNodeKey};
+        let node = VectorNode::new(
+            vec![0.123, 0.999, 0.0, 1.0, 0.5],
+            vec![RecordId::Int(1), RecordId::Int(2)],
+        );
+        let encoded = node.encode();
+        let read = VectorNode::decode(encoded.as_slice()).expect("a node");
+        assert_eq!(read, node);
+
+        let key = VectorNodeKey::new(address(), 0, RecordId::Int(7));
+        let bytes = key.encode();
+        assert_eq!(VectorNodeKey::decode(bytes.as_slice()).expect("a key"), key);
     }
 
     #[test]

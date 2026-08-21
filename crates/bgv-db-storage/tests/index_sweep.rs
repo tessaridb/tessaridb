@@ -104,6 +104,7 @@ impl Fixture {
                     IndexShape {
                         unique: true,
                         search: false,
+                        vector: None,
                     },
                 )
                 .unwrap(),

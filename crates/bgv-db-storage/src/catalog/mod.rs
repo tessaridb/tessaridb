@@ -33,7 +33,7 @@ pub use analyzer::AnalyzerDefinition;
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use definition::{
     DatabaseDefinition, IndexDefinition, IndexShape, NamespaceDefinition, TableDefinition,
-    TableShape,
+    TableShape, VectorDistance,
 };
 pub use field::{FieldDefinition, FieldShape};
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
@@ -221,6 +221,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             fields,
             unique: shape.unique,
             search: shape.search,
+            vector: shape.vector,
         };
         self.write(system::INDEXES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

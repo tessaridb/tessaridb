@@ -509,6 +509,56 @@ more than one could, is the planner's decision and is described below.
 | `FROM users:2<-follows<-users` | the index, on the edge table's `in` |
 | `FROM users` | every record of the table |
 
+### Asking for an approximate ordering
+
+Every index in this store may change what a read **costs** and none may change
+what it **answers** — except one. A vector index is a navigable graph, and a walk
+through it returns the neighbours it found; showing that it missed none would
+mean doing the scan the index exists to avoid.
+
+So the exception is written in the statement:
+
+```
+DEFINE INDEX by_embedding ON notes FIELDS embedding VECTOR cosine;
+
+SELECT * FROM notes
+ ORDER BY vector::cosine(embedding, [0.1, 0.9])
+ LIMIT 10
+ APPROXIMATE;
+```
+
+**`APPROXIMATE` is permission, not a demand.** A read that does not say it gets
+the exact scan, whatever indexes exist. A read that says it gets the graph *if*
+there is one that answers it — and otherwise still gets the exact scan, which is
+better than what was asked for. The access path an answer reports says which
+happened.
+
+**The index declares its distance, and there is no default.** A graph whose edges
+were chosen by one measure approximates that measure and no other: cosine ranks
+by angle and euclidean by separation, and for vectors nobody normalised they
+disagree. A read using the other distance is not served, and a default would have
+decided that silently. `vector::dot` is served by neither, because the inner
+product grows with similarity — ordering by it ascending asks for the *least*
+similar.
+
+Several other shapes fall back to the scan rather than being served with a guess:
+a read with no `LIMIT` (a walk has nothing to cut), a `DESC` ordering (that asks
+for the furthest), a second sort key (it orders records the graph never ranked),
+and a `GROUP BY` (it folds the records a walk would have chosen between).
+
+**What it buys, measured rather than claimed:** on two thousand clustered
+thirty-two-dimensional vectors, a read of the ten nearest goes from 3.7 ms to
+0.62 ms — about six times — while returning the same ten. Recall is measured by
+the benchmark harness on every run and by a test with a floor, because it is the
+one property here that cannot be argued into existence.
+
+**Deletion decays recall.** Removing a record removes its node and the edges out
+of it; the edges *into* it are left, because finding them means reading every node
+that might point there. Correctness is unaffected — an index read is a candidate
+set and each candidate is resolved at the reader's own snapshot, so a removed
+record never reaches an answer — but a graph that has churned heavily walks
+through holes. The remedy is a rebuild, which is not built.
+
 ### Following a reference
 
 A record reference is a value — `posts:1` may hold `author: users:1` — so a
@@ -1064,7 +1114,9 @@ Named here rather than merely missing, so each absence reads as a decision:
 | stemming | a filter, and one could be added under the rule above; a correct stemmer is a language-specific artefact rather than a hundred lines, and a bad one is worse than none |
 | n-grams, so `MATCHES` never answers a substring question | index size proportional to text length × (max − min), paid on every write; Q-31 holds the measurement that would decide it |
 | phrase queries (`'"ada lovelace"'`) | they need positions in the postings and a second matching rule |
-| a vector **index** | nearest-neighbour search works today over a scan, ordered by a distance. The index that makes it fast has a reserved key kind (`0x13`) and is not built — and when it is, it cannot change an answer, because a distance is a function of two values and of no index. |
+| layers in the vector index | a hierarchical graph assigns each node a random level, and a random level is what a store whose index entries are *derived rather than logged* cannot have — two replicas would build different graphs from one log. A level derived from a hash of the record id is the right shape when the layers earn their cost; the key already reserves the byte. |
+| a filtered nearest-neighbour read | the graph answers a distance question and knows nothing of a `WHERE`, so combining them needs either over-fetching by an unknown factor or a filtered walk |
+| rebuilding a vector index that has churned | deletion leaves the edges *into* a removed node, so recall decays with churn. Correctness does not — a candidate that does not resolve produces no row. |
 | highlighting, fuzzy matching, phrase and proximity queries | each needs postings to carry more than membership — offsets for a highlight or a phrase, an edit automaton for fuzziness — which is a different index rather than a bigger one. Ranking itself is built: see [Ranking](#ranking) |
 | per-index `k1` / `b`, per-field weighting | tuning knobs nobody can yet turn responsibly: this project has no labelled relevance set to measure a different value against, and a knob chosen without one is a guess with a syntax |
 | `[*]` in a path — "any element of this array" | it turns a path from a function into a relation: the filter becomes existential, a projection returns several values, and the index becomes a multikey one with entries per element and a reclamation rule of its own. Three features wearing one syntax. |

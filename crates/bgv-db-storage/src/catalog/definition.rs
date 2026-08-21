@@ -24,6 +24,7 @@ const FIELD_TABLE: &str = "table";
 const FIELD_FIELDS: &str = "fields";
 const FIELD_UNIQUE: &str = "unique";
 const FIELD_SEARCH: &str = "search";
+const FIELD_VECTOR: &str = "vector";
 const FIELD_SCHEMAFULL: &str = "schemafull";
 const FIELD_EDGE: &str = "edge";
 
@@ -191,6 +192,49 @@ pub struct IndexShape {
     pub unique: bool,
     /// Whether the index holds terms rather than whole values.
     pub search: bool,
+    /// The distance a vector index is built with, when it is one.
+    pub vector: Option<VectorDistance>,
+}
+
+/// Which distance a vector index's graph is built and searched with.
+///
+/// **The index declares it, and there is no default**, because a default would
+/// silently decide which queries the index can serve. A graph whose edges were
+/// chosen by one distance approximates that distance and no other: cosine
+/// measures an angle and euclidean measures a separation, and for vectors nobody
+/// normalised they rank differently. Serving a cosine query from a euclidean
+/// graph would return plausible neighbours that are not the nearest — the exact
+/// failure this whole node is arranged to prevent.
+///
+/// A read whose distance does not match the index's gets the scan, which is
+/// exact, and says so through the access path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VectorDistance {
+    /// The angle between two vectors, as `1 - cos θ`.
+    Cosine,
+    /// The distance between two points.
+    Euclidean,
+}
+
+impl VectorDistance {
+    /// How it is written in a definition, and stored in the catalog.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Cosine => "cosine",
+            Self::Euclidean => "euclidean",
+        }
+    }
+
+    /// The distance this word names.
+    #[must_use]
+    pub fn parse(word: &str) -> Option<Self> {
+        match word {
+            "cosine" => Some(Self::Cosine),
+            "euclidean" => Some(Self::Euclidean),
+            _ => None,
+        }
+    }
 }
 
 /// An index on a table.
@@ -226,6 +270,14 @@ pub struct IndexDefinition {
     /// A unique index enforces it through the key layout — its entries carry no
     /// record id, so a second record with the same value writes the same key.
     pub unique: bool,
+    /// The distance this index's graph is built with, when it is a vector index.
+    ///
+    /// It answers "which records are nearest this one" and nothing else, the way
+    /// a search index answers a term and nothing else. It is the one index in
+    /// this store whose answer is **approximate**, which is why a statement has
+    /// to ask for it by name before it may serve one — and why the distance is
+    /// declared rather than assumed.
+    pub vector: Option<VectorDistance>,
 }
 
 impl IndexDefinition {
@@ -249,6 +301,11 @@ impl IndexDefinition {
             ),
             (FIELD_UNIQUE.to_owned(), Value::Bool(self.unique)),
             (FIELD_SEARCH.to_owned(), Value::Bool(self.search)),
+            (
+                FIELD_VECTOR.to_owned(),
+                self.vector
+                    .map_or(Value::None, |held| Value::from(held.name())),
+            ),
         ]))
     }
 
@@ -302,6 +359,19 @@ impl IndexDefinition {
             // An index written before search existed is an ordered one, so
             // nothing on disk has to be migrated.
             search: flag(fields, FIELD_SEARCH, "index")?,
+            // An index written before vector indexes existed holds no such
+            // field and is not one, the same way one written before search was
+            // an ordered index.
+            vector: match fields.get(FIELD_VECTOR) {
+                Some(Value::String(word)) => Some(VectorDistance::parse(word).ok_or_else(
+                    || Error::CatalogMalformed {
+                        entity: "index",
+                        field: FIELD_VECTOR,
+                        found: "a name that is not a distance",
+                    },
+                )?),
+                _ => None,
+            },
         })
     }
 }
@@ -484,6 +554,7 @@ mod tests {
             ],
             unique: false,
             search: false,
+            vector: None,
         };
         assert_eq!(
             IndexDefinition::from_value(&index.to_value()).unwrap(),
