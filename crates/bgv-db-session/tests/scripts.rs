@@ -1771,3 +1771,162 @@ fn a_computed_projection_needs_a_name_of_its_own() {
     );
     assert!(session.run("SELECT name FROM people;").is_ok());
 }
+
+#[test]
+fn a_required_field_must_hold_a_value_and_null_is_not_one() {
+    // One marker covering both absence and null, deliberately: a field that must
+    // be present but may hold nothing constrains almost nothing.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE users;\n\
+             DEFINE FIELD email ON users TYPE string REQUIRED;",
+        )
+        .unwrap();
+
+    session
+        .run("CREATE users:1 = { email: 'ada@example.com' };")
+        .unwrap();
+    assert!(session.run("CREATE users:2 = { name: 'grace' };").is_err());
+    assert!(session.run("CREATE users:3 = { email: NULL };").is_err());
+    assert!(session.run("CREATE users:4 = { email: NONE };").is_err());
+}
+
+#[test]
+fn requiring_a_field_over_rows_that_lack_it_writes_nothing_at_all() {
+    // The symmetry SG4.T2 established: a constraint that can be declared over
+    // data violating it is a constraint the store does not have, while every
+    // reader afterwards believes it does.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE TABLE users; CREATE users:1 = { name: 'ada' };")
+        .unwrap();
+
+    assert!(
+        session
+            .run("DEFINE FIELD email ON users TYPE string REQUIRED;")
+            .is_err()
+    );
+    // Not even the declaration landed, so a later write is still accepted.
+    session.run("CREATE users:2 = { name: 'grace' };").unwrap();
+}
+
+#[test]
+fn a_default_fills_a_field_a_write_leaves_out() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE notes;\n\
+             DEFINE FIELD state ON notes TYPE string DEFAULT 'open';\n\
+             DEFINE FIELD seen ON notes TYPE int DEFAULT 1 + 1;\n\
+             CREATE notes:1 = { body: 'first' };\n\
+             CREATE notes:2 = { body: 'second', state: 'closed' };",
+        )
+        .unwrap();
+
+    let found = session.run("SELECT * FROM notes;").unwrap();
+    let records = found[0].records().unwrap();
+    assert_eq!(
+        field(&records[0].1, "state"),
+        &Value::String("open".to_owned())
+    );
+    assert_eq!(
+        field(&records[0].1, "seen"),
+        &Value::Number(Number::Integer(2))
+    );
+    // A supplied value is left alone.
+    assert_eq!(
+        field(&records[1].1, "state"),
+        &Value::String("closed".to_owned())
+    );
+}
+
+#[test]
+fn a_default_is_evaluated_and_not_stored_as_an_expression() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE notes;\n\
+             DEFINE FIELD created ON notes TYPE datetime DEFAULT time::now();\n\
+             CREATE notes:1 = { body: 'first' };",
+        )
+        .unwrap();
+
+    let found = session.run("SELECT * FROM notes:1;").unwrap();
+    let created = field(&found[0].records().unwrap()[0].1, "created");
+    assert!(matches!(created, Value::Datetime(_)), "{created:?}");
+}
+
+#[test]
+fn a_required_field_with_a_default_always_holds_a_value() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE notes;\n\
+             DEFINE FIELD state ON notes TYPE string REQUIRED DEFAULT 'open';\n\
+             CREATE notes:1 = { body: 'first' };",
+        )
+        .unwrap();
+
+    let found = session.run("SELECT * FROM notes:1;").unwrap();
+    assert_eq!(
+        field(&found[0].records().unwrap()[0].1, "state"),
+        &Value::String("open".to_owned())
+    );
+}
+
+#[test]
+fn a_default_does_not_reach_backwards_over_rows_already_written() {
+    // A default is about the moment of writing. A retroactive one would be a
+    // bulk rewrite hiding inside a `DEFINE`.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE TABLE notes; CREATE notes:1 = { body: 'first' };")
+        .unwrap();
+    session
+        .run("DEFINE FIELD state ON notes TYPE string DEFAULT 'open';")
+        .unwrap();
+
+    let found = session.run("SELECT * FROM notes:1;").unwrap();
+    let record = &found[0].records().unwrap()[0].1;
+    let Value::Object(fields) = record else {
+        panic!("not an object");
+    };
+    assert!(!fields.contains_key("state"), "{fields:?}");
+}
+
+#[test]
+fn a_default_is_checked_when_it_is_declared_and_not_when_it_first_bites() {
+    let store = store();
+    let mut session = ready(&store);
+    session.run("DEFINE TABLE notes;").unwrap();
+
+    // The wrong type, caught before the declaration lands.
+    let error = session
+        .run("DEFINE FIELD seen ON notes TYPE int DEFAULT 'open';")
+        .unwrap_err();
+    assert!(
+        matches!(error, Error::DefaultDoesNotMatch { .. }),
+        "{error}"
+    );
+
+    // A default is a value-position expression, so a bare name is a *table* and
+    // not the record's field — and a table that does not exist is refused here
+    // rather than on somebody's first write.
+    assert!(
+        session
+            .run("DEFINE FIELD echo ON notes TYPE string DEFAULT body;")
+            .is_err()
+    );
+
+    // Neither declaration landed, so the field name is still free.
+    session
+        .run("DEFINE FIELD seen ON notes TYPE int DEFAULT 0;")
+        .unwrap();
+}

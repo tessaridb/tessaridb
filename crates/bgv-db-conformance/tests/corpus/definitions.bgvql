@@ -77,3 +77,36 @@ DROP FIELD seen_at ON users;
 DEFINE TABLE accounts SCHEMAFULL;
 DEFINE FIELD balance ON accounts TYPE decimal;
 --- expect: ok
+
+--- case: a field may be required
+DEFINE TABLE ledgers;
+DEFINE FIELD holder ON ledgers TYPE string REQUIRED;
+--- expect: ok
+
+--- case: and a record leaving it out is refused
+CREATE ledgers:1 = { balance: dec 0.00 };
+--- expect: error MissingRequiredField
+
+--- case: null is not a value for this purpose
+CREATE ledgers:2 = { holder: NULL };
+--- expect: error MissingRequiredField
+
+--- case: a record holding one is accepted
+CREATE ledgers:3 = { holder: 'ada' };
+--- expect: ok
+
+--- case: a field may fill itself in
+DEFINE FIELD opened ON ledgers TYPE datetime DEFAULT time::now();
+--- expect: ok
+
+--- case: and a write leaving it out gets one
+CREATE ledgers:4 = { holder: 'grace' };
+--- expect: ok
+
+--- case: a default is checked against the type its field declares
+DEFINE FIELD tier ON ledgers TYPE int DEFAULT 'gold';
+--- expect: error DefaultDoesNotMatch
+
+--- case: requiring a field over rows that lack it writes nothing
+DEFINE FIELD nickname ON ledgers TYPE string REQUIRED;
+--- expect: error MissingRequiredField

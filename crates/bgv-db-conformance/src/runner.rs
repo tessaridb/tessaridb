@@ -187,6 +187,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::EdgePropertiesNotAnObject { .. } => "EdgePropertiesNotAnObject",
         Error::ConditionNotBoolean { .. } => "ConditionNotBoolean",
         Error::NoRecordInScope { .. } => "NoRecordInScope",
+        Error::DefaultDoesNotMatch { .. } => "DefaultDoesNotMatch",
         Error::NotArithmetic { .. } => "NotArithmetic",
         Error::ArithmeticFailed { .. } => "ArithmeticFailed",
         Error::WrongArgument { .. } => "WrongArgument",
@@ -229,6 +230,7 @@ fn store_kind(error: &bgv_db_storage::Error) -> &'static str {
         bgv_db_storage::Error::UniqueViolation { .. } => "UniqueViolation",
         bgv_db_storage::Error::SchemaViolation { .. } => "SchemaViolation",
         bgv_db_storage::Error::UndeclaredField { .. } => "UndeclaredField",
+        bgv_db_storage::Error::MissingRequiredField { .. } => "MissingRequiredField",
         bgv_db_storage::Error::NoSuchParent { .. } => "NoSuchParent",
         _ => "Unnamed",
     }

@@ -70,8 +70,8 @@ use crate::transaction::Transaction;
 /// Where a table lives, and what it declares, once this record is applied.
 #[derive(Debug, Default)]
 struct TableSchema {
-    /// Declared fields, by name.
-    fields: BTreeMap<String, FieldKind>,
+    /// Declared fields, by name: what each may hold, and whether it must.
+    fields: BTreeMap<String, Declared>,
     /// Whether an undeclared field is refused.
     schemafull: bool,
 }
@@ -85,6 +85,15 @@ impl TableSchema {
     fn constrains_nothing(&self) -> bool {
         self.fields.is_empty() && !self.schemafull
     }
+}
+
+/// What one declaration constrains.
+#[derive(Debug, Clone, Copy)]
+struct Declared {
+    /// What the field may hold when it holds anything.
+    kind: FieldKind,
+    /// Whether it must hold something: present, and not `null`.
+    required: bool,
 }
 
 /// A table addressed the way a scan needs it.
@@ -163,12 +172,12 @@ fn check(schema: &TableSchema, value: &Value, table: TableId, id: &RecordId) -> 
     };
     for (name, held) in fields {
         match schema.fields.get(name.as_str()) {
-            Some(kind) if !kind.accepts(held) => {
+            Some(declared) if !declared.kind.accepts(held) => {
                 return Err(Error::SchemaViolation {
                     table: table.get(),
                     record: id.to_string(),
                     field: name.clone(),
-                    declared: kind.name(),
+                    declared: declared.kind.name(),
                     found: held.type_name(),
                 });
             }
@@ -183,6 +192,25 @@ fn check(schema: &TableSchema, value: &Value, table: TableId, id: &RecordId) -> 
             None => {}
         }
     }
+
+    // A requirement is checked over the **declarations**, not over what the
+    // record holds — a field that is absent is absent from the loop above, so
+    // the one constraint about absence is the one that cannot be expressed
+    // there.
+    for (name, declared) in &schema.fields {
+        if !declared.required {
+            continue;
+        }
+        let held = fields.get(name.as_str()).unwrap_or(&Value::None);
+        if !held.is_present() || *held == Value::Null {
+            return Err(Error::MissingRequiredField {
+                table: table.get(),
+                record: id.to_string(),
+                field: name.clone(),
+                found: held.type_name(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -195,10 +223,18 @@ fn build_schema(
     let mut schemafull = Catalog::new(view)
         .table(table)?
         .is_some_and(|found| found.schemafull);
-    let mut fields: BTreeMap<String, FieldKind> = Catalog::new(view)
+    let mut fields: BTreeMap<String, Declared> = Catalog::new(view)
         .fields_on(table)?
         .into_iter()
-        .map(|declared| (declared.name, declared.kind))
+        .map(|declared| {
+            (
+                declared.name,
+                Declared {
+                    kind: declared.kind,
+                    required: declared.required,
+                },
+            )
+        })
         .collect();
 
     for mutation in record.mutations() {
@@ -207,7 +243,13 @@ fn build_schema(
                 schemafull = declared.schemafull;
             }
             Some(CatalogChange::FieldDefined(declared)) if declared.table == table => {
-                fields.insert(declared.name, declared.kind);
+                fields.insert(
+                    declared.name,
+                    Declared {
+                        kind: declared.kind,
+                        required: declared.required,
+                    },
+                );
             }
             // A tombstone carries only the field's id, so what it removed has to
             // be read back from the state this record is applied on top of.

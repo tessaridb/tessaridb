@@ -32,7 +32,7 @@ mod store;
 mod transaction;
 
 pub use catalog::{
-    Catalog, DatabaseDefinition, EDGE_IN, EDGE_OUT, FieldDefinition, IndexDefinition,
+    Catalog, DatabaseDefinition, EDGE_IN, EDGE_OUT, FieldDefinition, FieldShape, IndexDefinition,
     NamespaceDefinition, SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition, TableShape,
 };
 pub use error::{Error, Result};

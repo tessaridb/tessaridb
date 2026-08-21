@@ -2,7 +2,9 @@
 
 use bgv_db_encoding::encode_payload;
 use bgv_db_ql::{FieldPath, Name, RecordTarget, Span, StatementKind, TableRef};
-use bgv_db_storage::{Catalog, EDGE_IN, EDGE_OUT, RecordAddress, TableShape, Transaction};
+use bgv_db_storage::{
+    Catalog, EDGE_IN, EDGE_OUT, FieldShape, RecordAddress, TableShape, Transaction,
+};
 use std::collections::BTreeMap;
 
 use bgv_db_types::{FieldId, FieldKind, IndexId, RecordId, RecordRef, TableId, Value};
@@ -59,8 +61,20 @@ impl Session<'_> {
                 name,
                 table,
                 kind,
+                required,
+                default,
                 if_not_exists,
-            } => self.define_field(transaction, name, table, *kind, *if_not_exists),
+            } => self.define_field(
+                transaction,
+                name,
+                table,
+                *kind,
+                FieldShape {
+                    required: *required,
+                    default: default.as_ref().map(|written| written.text.clone()),
+                },
+                *if_not_exists,
+            ),
             StatementKind::DropField { name, table } => {
                 let (_, id) = self.resolve_table(transaction, table)?;
                 let field = self.field_named(transaction, id, name)?;
@@ -104,6 +118,7 @@ impl Session<'_> {
                     });
                 }
                 let payload = self.evaluate(transaction, value)?;
+                let payload = self.with_defaults(transaction, address.table, payload)?;
                 transaction.put(address, encode_payload(&payload).into_bytes());
                 Ok(Outcome::Done)
             }
@@ -115,7 +130,10 @@ impl Session<'_> {
                         span: target.span,
                     });
                 }
+                // An update replaces the whole record, so it is a write like a
+                // create and the defaults apply to it the same way.
                 let payload = self.evaluate(transaction, value)?;
+                let payload = self.with_defaults(transaction, address.table, payload)?;
                 transaction.put(address, encode_payload(&payload).into_bytes());
                 Ok(Outcome::Done)
             }
@@ -213,7 +231,10 @@ impl Session<'_> {
             out.table, out.id, into.table, into.id
         ));
         let address = RecordAddress::new(context.namespace, context.database, edge_table, id);
-        transaction.put(address, encode_payload(&Value::Object(fields)).into_bytes());
+        // An edge is an ordinary record, so an edge table's declarations apply
+        // to it — including their defaults.
+        let payload = self.with_defaults(transaction, edge_table, Value::Object(fields))?;
+        transaction.put(address, encode_payload(&payload).into_bytes());
         Ok(Outcome::Done)
     }
 
@@ -317,14 +338,72 @@ impl Session<'_> {
         name: &Name,
         table: &TableRef,
         kind: FieldKind,
+        shape: FieldShape,
         if_not_exists: bool,
     ) -> Result<Outcome> {
         let (_, id) = self.resolve_table(transaction, table)?;
         if if_not_exists && self.field_named(transaction, id, name).is_ok() {
             return Ok(Outcome::Done);
         }
-        Catalog::new(transaction).create_field(id, &name.text, kind)?;
+        // The default is stored as the text it was written as, so it is read
+        // back by parsing rather than by decoding a syntax tree — and a
+        // definition stays legible in a dump.
+        //
+        // It is also **evaluated once, here**, and checked against the kind the
+        // field declares. That is the same symmetry the rest of this wave
+        // follows: a declaration is checked when it is made rather than when it
+        // first bites. Without it, `DEFAULT 'open'` on a `TYPE int` field, or a
+        // default naming something that does not exist, would be accepted and
+        // would then fail on the first write — by which time the declaration is
+        // in the catalog and the failure looks like the write's fault.
+        if let Some(written) = &shape.default {
+            let expression = bgv_db_ql::parse_expression(written)?;
+            let value = self.evaluate(transaction, &expression)?;
+            if !kind.accepts(&value) {
+                return Err(Error::DefaultDoesNotMatch {
+                    field: name.text.clone(),
+                    declared: kind.name(),
+                    found: value.type_name(),
+                    span: name.span,
+                });
+            }
+        }
+        Catalog::new(transaction).create_field(id, &name.text, kind, shape)?;
         Ok(Outcome::Done)
+    }
+
+    /// A record with its table's defaults filled in.
+    ///
+    /// Applied by the session rather than by the store, because a default is
+    /// about what gets **written** and not about what is valid: the value is
+    /// materialised before the store ever sees it, so a replica applies a record
+    /// that already carries it and nothing has to be evaluated twice.
+    ///
+    /// Only fields the record leaves absent are filled. A record that supplies
+    /// `null` supplied a value, and a default replacing it would make `null`
+    /// unwritable on any field that has one.
+    fn with_defaults(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: TableId,
+        payload: Value,
+    ) -> Result<Value> {
+        let Value::Object(mut fields) = payload else {
+            return Ok(payload);
+        };
+        let declared = Catalog::new(transaction).fields_on(table)?;
+        for field in declared {
+            let Some(written) = field.default else {
+                continue;
+            };
+            if fields.get(&field.name).is_some_and(Value::is_present) {
+                continue;
+            }
+            let expression = bgv_db_ql::parse_expression(&written)?;
+            let value = self.evaluate(transaction, &expression)?;
+            fields.insert(field.name, value);
+        }
+        Ok(Value::Object(fields))
     }
 
     fn field_named(

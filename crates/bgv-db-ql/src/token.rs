@@ -250,6 +250,10 @@ pub enum Keyword {
     Where,
     /// `AS` — names a projected value.
     As,
+    /// `REQUIRED` — the field must hold a value.
+    Required,
+    /// `DEFAULT` — what a write with no value for the field uses instead.
+    Default,
     /// `AND` — both.
     And,
     /// `OR` — either.
@@ -328,6 +332,8 @@ impl Keyword {
             Self::From => "FROM",
             Self::Where => "WHERE",
             Self::As => "AS",
+            Self::Required => "REQUIRED",
+            Self::Default => "DEFAULT",
             Self::And => "AND",
             Self::Or => "OR",
             Self::In => "IN",
@@ -380,6 +386,8 @@ impl Keyword {
         Self::From,
         Self::Where,
         Self::As,
+        Self::Required,
+        Self::Default,
         Self::And,
         Self::Or,
         Self::In,

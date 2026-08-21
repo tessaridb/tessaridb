@@ -10,7 +10,7 @@
 //! override, as everywhere.
 
 use super::Parser;
-use crate::ast::{ArithmeticOp, BinaryOp, Expr, ExprKind};
+use crate::ast::{ArithmeticOp, BinaryOp, Expr, ExprKind, Written};
 use crate::error::Result;
 use crate::token::{Keyword, Punct};
 
@@ -28,6 +28,23 @@ impl Parser<'_> {
         let parsed = self.expression();
         self.reading_paths = outer;
         parsed
+    }
+
+    /// An expression, kept as the text it was written as.
+    ///
+    /// Parsed so that it is known to be one, and then taken from the source, so
+    /// what the catalog stores is what the author typed.
+    pub(super) fn written_expression(&mut self) -> Result<Written> {
+        let parsed = self.expression()?;
+        let text = self
+            .source
+            .get(parsed.span.start..parsed.span.end)
+            .unwrap_or_default()
+            .to_owned();
+        Ok(Written {
+            text,
+            span: parsed.span,
+        })
     }
 
     pub(super) fn disjunction(&mut self) -> Result<Expr> {

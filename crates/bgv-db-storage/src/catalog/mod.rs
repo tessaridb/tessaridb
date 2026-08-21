@@ -31,7 +31,7 @@ pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use definition::{
     DatabaseDefinition, IndexDefinition, NamespaceDefinition, TableDefinition, TableShape,
 };
-pub use field::FieldDefinition;
+pub use field::{FieldDefinition, FieldShape};
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 
 use crate::error::{Error, Result};
@@ -160,7 +160,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                     vec![Path::field(endpoint)],
                     false,
                 )?;
-                self.create_field(id, endpoint, FieldKind::Record)?;
+                self.create_field(id, endpoint, FieldKind::Record, FieldShape::default())?;
             }
         }
         Ok(definition)

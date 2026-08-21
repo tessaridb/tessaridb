@@ -119,6 +119,24 @@ pub enum Error {
         found: &'static str,
     },
 
+    /// A required field that holds nothing.
+    ///
+    /// "Required" covers both absence and `null`, deliberately: a field that
+    /// must be present but may hold nothing is a constraint that constrains
+    /// almost nothing, and the distinction between the two stays available on
+    /// every field that is not required.
+    #[error("record {record} in table {table} leaves required field {field} holding {found}")]
+    MissingRequiredField {
+        /// The table the record is in.
+        table: u32,
+        /// The record's identity.
+        record: String,
+        /// The field that must hold a value.
+        field: String,
+        /// What it holds instead.
+        found: &'static str,
+    },
+
     /// A record carries a field a `SCHEMAFULL` table does not declare.
     ///
     /// This is the misspelling that a schemaless table accepts in silence: the
@@ -191,6 +209,7 @@ impl Error {
             | Self::EmptyIndex { .. }
             | Self::UniqueViolation { .. }
             | Self::SchemaViolation { .. }
+            | Self::MissingRequiredField { .. }
             | Self::UndeclaredField { .. }
             | Self::IdSpaceExhausted { .. } => ErrorCategory::Validation,
             Self::CatalogMalformed { .. } => ErrorCategory::Corruption,

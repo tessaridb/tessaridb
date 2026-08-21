@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use bgv_db_encoding::encode_payload;
 use bgv_db_kv::{KvBackend, MemoryBackend};
-use bgv_db_storage::{Catalog, Error, RecordAddress, Store, TableShape};
+use bgv_db_storage::{Catalog, Error, FieldShape, RecordAddress, Store, TableShape};
 use bgv_db_types::{DatabaseId, FieldKind, NamespaceId, RecordId, Sequence, TableId, Value};
 
 struct Fixture {
@@ -64,8 +64,42 @@ impl Fixture {
 
     fn declare(&self, name: &str, kind: FieldKind) -> Result<Sequence, Error> {
         let mut transaction = self.store.begin().unwrap();
-        Catalog::new(&mut transaction).create_field(self.table, name, kind)?;
+        Catalog::new(&mut transaction).create_field(
+            self.table,
+            name,
+            kind,
+            FieldShape::default(),
+        )?;
         transaction.commit()
+    }
+
+    fn require(&self, name: &str, kind: FieldKind) -> Result<Sequence, Error> {
+        let mut transaction = self.store.begin().unwrap();
+        Catalog::new(&mut transaction).create_field(
+            self.table,
+            name,
+            kind,
+            FieldShape {
+                required: true,
+                default: None,
+            },
+        )?;
+        transaction.commit()
+    }
+
+    fn declared(&self, name: &str) -> Option<bgv_db_storage::FieldDefinition> {
+        let mut transaction = self.store.begin().unwrap();
+        Catalog::new(&mut transaction)
+            .fields_on(self.table)
+            .unwrap()
+            .into_iter()
+            .find(|field| field.name == name)
+    }
+
+    fn remove(&self, id: &str) {
+        let mut transaction = self.store.begin().unwrap();
+        transaction.delete(self.at(id));
+        transaction.commit().unwrap();
     }
 
     fn write(&self, id: &str, fields: &[(&str, Value)]) -> Result<Sequence, Error> {
@@ -237,7 +271,12 @@ fn a_row_written_in_the_transaction_that_declares_the_field_is_checked_against_i
 
     let mut transaction = fixture.store.begin().unwrap();
     Catalog::new(&mut transaction)
-        .create_field(fixture.table, "email", FieldKind::String)
+        .create_field(
+            fixture.table,
+            "email",
+            FieldKind::String,
+            FieldShape::default(),
+        )
         .unwrap();
     transaction.put(
         fixture.at("u1"),
@@ -261,7 +300,12 @@ fn a_row_and_its_declaration_may_arrive_in_either_order_within_one_transaction()
         encode_payload(&record(&[("email", Value::from("ada@example.com"))])).into_bytes(),
     );
     Catalog::new(&mut transaction)
-        .create_field(fixture.table, "email", FieldKind::String)
+        .create_field(
+            fixture.table,
+            "email",
+            FieldKind::String,
+            FieldShape::default(),
+        )
         .unwrap();
     transaction.commit().unwrap();
 
@@ -307,7 +351,12 @@ fn dropping_a_declaration_loosens_what_the_table_accepts() {
     let fixture = Fixture::new(false);
     let mut transaction = fixture.store.begin().unwrap();
     let declared = Catalog::new(&mut transaction)
-        .create_field(fixture.table, "email", FieldKind::String)
+        .create_field(
+            fixture.table,
+            "email",
+            FieldKind::String,
+            FieldShape::default(),
+        )
         .unwrap();
     transaction.commit().unwrap();
     assert!(
@@ -333,7 +382,12 @@ fn a_declaration_dropped_in_the_same_transaction_no_longer_constrains_the_write(
     let fixture = Fixture::new(false);
     let mut transaction = fixture.store.begin().unwrap();
     let declared = Catalog::new(&mut transaction)
-        .create_field(fixture.table, "email", FieldKind::String)
+        .create_field(
+            fixture.table,
+            "email",
+            FieldKind::String,
+            FieldShape::default(),
+        )
         .unwrap();
     transaction.commit().unwrap();
 
@@ -402,5 +456,64 @@ fn a_user_table_sharing_an_id_with_a_system_table_is_still_its_own_table() {
         fixture
             .write("u1", &[("stauts", Value::from("open"))])
             .is_err()
+    );
+}
+
+#[test]
+fn a_required_field_must_hold_a_value_and_null_is_not_one() {
+    let fixture = Fixture::new(false);
+    fixture
+        .write("u1", &[("name", Value::from("ada"))])
+        .unwrap();
+    fixture
+        .write("u2", &[("email", Value::from("a@b"))])
+        .unwrap();
+
+    // Declared over rows that already violate it: refused, writing nothing.
+    assert!(fixture.require("email", FieldKind::String).is_err());
+    assert!(fixture.declared("email").is_none());
+
+    // Once the offending row is gone, the declaration lands and then binds.
+    fixture.remove("u1");
+    fixture.require("email", FieldKind::String).unwrap();
+    assert!(
+        fixture
+            .write("u3", &[("name", Value::from("grace"))])
+            .is_err()
+    );
+    assert!(fixture.write("u4", &[("email", Value::Null)]).is_err());
+    fixture
+        .write("u5", &[("email", Value::from("c@d"))])
+        .unwrap();
+}
+
+#[test]
+fn a_replica_reaches_the_same_verdict_about_a_required_field() {
+    // The requirement is enforced on the store's apply path, so a replica
+    // computes it from the log rather than being told.
+    let fixture = Fixture::new(false);
+    fixture.require("email", FieldKind::String).unwrap();
+    fixture
+        .write("u1", &[("email", Value::from("a@b"))])
+        .unwrap();
+    assert!(
+        fixture
+            .write("u2", &[("name", Value::from("ada"))])
+            .is_err()
+    );
+
+    let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    for (sequence, record) in fixture.store.log_records(Sequence::ZERO, 1024).unwrap() {
+        replica.apply_record(sequence, &record).unwrap();
+    }
+    // Everything the leader committed applies; nothing it refused is in the log.
+    assert_eq!(
+        replica.log_records(Sequence::ZERO, 1024).unwrap().len(),
+        fixture
+            .store
+            .log_records(Sequence::ZERO, 1024)
+            .unwrap()
+            .len()
     );
 }

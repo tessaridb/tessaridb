@@ -173,10 +173,28 @@ impl Parser<'_> {
         self.expect_keyword(Keyword::On, "`ON` and the table the field is on")?;
         let table = self.table_ref()?;
         self.expect_keyword(Keyword::Type, "`TYPE` and what the field may hold")?;
+        let kind = self.field_kind()?;
+        // Either marker, in either order, and neither twice — the rule
+        // `DEFINE TABLE`'s two flags already follow, for the same reason: there
+        // is no reading under which one has to precede the other, and a grammar
+        // that insisted would only be remembered wrong.
+        let mut required = false;
+        let mut default = None;
+        loop {
+            if !required && self.eat_keyword(Keyword::Required) {
+                required = true;
+            } else if default.is_none() && self.eat_keyword(Keyword::Default) {
+                default = Some(self.written_expression()?);
+            } else {
+                break;
+            }
+        }
         Ok(StatementKind::DefineField {
             name,
             table,
-            kind: self.field_kind()?,
+            kind,
+            required,
+            default,
             if_not_exists,
         })
     }

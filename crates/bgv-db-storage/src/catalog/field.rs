@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use bgv_db_encoding::decode_payload;
 use bgv_db_types::{DatabaseId, FieldId, FieldKind, NamespaceId, RecordId, TableId, Value};
 
-use super::definition::{field_id, field_name, number, object};
+use super::definition::{field_id, field_name, flag, number, object};
 use super::{Catalog, Level, id_key, qualify, system};
 use crate::error::{Error, Result};
 
@@ -25,8 +25,23 @@ const FIELD_NAMESPACE: &str = "namespace";
 const FIELD_DATABASE: &str = "database";
 const FIELD_TABLE: &str = "table";
 const FIELD_KIND: &str = "kind";
+const FIELD_REQUIRED: &str = "required";
+const FIELD_DEFAULT: &str = "default";
 
 const ENTITY: &str = "field";
+
+/// What a declaration says beyond the field's type.
+///
+/// A struct rather than two more parameters, for the reason `ids.rs` gives for
+/// newtyping a `u32`: `create_field(id, "email", FieldKind::String, true, None)`
+/// compiles just as well with the boolean meaning something else.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FieldShape {
+    /// Whether the field must hold a value.
+    pub required: bool,
+    /// The expression a write uses when it supplies none, as written.
+    pub default: Option<String>,
+}
 
 /// A declared field on a table.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +58,22 @@ pub struct FieldDefinition {
     pub name: String,
     /// What values it accepts.
     pub kind: FieldKind,
+    /// Whether the field must hold a value: present, and not `null`.
+    ///
+    /// One marker rather than two, deliberately. The store keeps `none` and
+    /// `null` apart everywhere else, so covering both here is a choice: it is
+    /// what a caller means by "required", and a field that must be present but
+    /// may hold nothing is a constraint that constrains almost nothing. The
+    /// distinction stays available on every field that is not required.
+    pub required: bool,
+    /// The expression a write uses when it supplies no value, as written.
+    ///
+    /// Stored as **text** and parsed by the layer that can parse it. The store
+    /// cannot evaluate a bgvQL expression — the language sits above it — and a
+    /// default does not need it to: the value is materialised by the session
+    /// before the record is written, so a replica applies a record that already
+    /// carries it.
+    pub default: Option<String>,
 }
 
 impl FieldDefinition {
@@ -61,6 +92,11 @@ impl FieldDefinition {
             (FIELD_TABLE.to_owned(), number(self.table.get())),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
             (FIELD_KIND.to_owned(), Value::from(self.kind.name())),
+            (FIELD_REQUIRED.to_owned(), Value::Bool(self.required)),
+            (
+                FIELD_DEFAULT.to_owned(),
+                self.default.as_deref().map_or(Value::None, Value::from),
+            ),
         ]))
     }
 
@@ -96,6 +132,20 @@ impl FieldDefinition {
             table: TableId::new(field_id(fields, FIELD_TABLE, ENTITY)?),
             name: field_name(fields, ENTITY)?,
             kind,
+            // A definition written before either existed reads as neither, so
+            // nothing on disk has to be migrated.
+            required: flag(fields, FIELD_REQUIRED, ENTITY)?,
+            default: match fields.get(FIELD_DEFAULT) {
+                Some(Value::String(written)) => Some(written.clone()),
+                None | Some(Value::None) => None,
+                Some(other) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: ENTITY,
+                        field: FIELD_DEFAULT,
+                        found: other.type_name(),
+                    });
+                }
+            },
         })
     }
 }
@@ -116,6 +166,7 @@ impl Catalog<'_, '_> {
         table: TableId,
         name: &str,
         kind: FieldKind,
+        shape: FieldShape,
     ) -> Result<FieldDefinition> {
         let Some(parent) = self.table(table)? else {
             return Err(Error::NoSuchParent {
@@ -141,6 +192,8 @@ impl Catalog<'_, '_> {
             table,
             name: name.to_owned(),
             kind,
+            required: shape.required,
+            default: shape.default,
         };
         self.write(system::FIELDS, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
@@ -230,7 +283,51 @@ mod tests {
             table: TableId::new(3),
             name: "email".to_owned(),
             kind,
+            required: false,
+            default: None,
         }
+    }
+
+    #[test]
+    fn a_declaration_round_trips_what_it_requires_and_what_it_fills_in() {
+        let mut original = definition(FieldKind::Datetime);
+        original.required = true;
+        original.default = Some("time::now()".to_owned());
+        assert_eq!(
+            FieldDefinition::from_value(&original.to_value()).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn a_declaration_written_before_either_existed_requires_nothing_and_fills_nothing() {
+        // Every definition on disk today predates both, so nothing migrates.
+        let fields = BTreeMap::from([
+            (FIELD_ID.to_owned(), number(4)),
+            (FIELD_NAMESPACE.to_owned(), number(1)),
+            (FIELD_DATABASE.to_owned(), number(2)),
+            (FIELD_TABLE.to_owned(), number(3)),
+            (FIELD_NAME.to_owned(), Value::from("email")),
+            (FIELD_KIND.to_owned(), Value::from("string")),
+        ]);
+        let read = FieldDefinition::from_value(&Value::Object(fields)).unwrap();
+        assert!(!read.required);
+        assert_eq!(read.default, None);
+    }
+
+    #[test]
+    fn a_stored_default_that_is_not_text_is_corruption() {
+        let mut fields = BTreeMap::from([
+            (FIELD_ID.to_owned(), number(4)),
+            (FIELD_NAMESPACE.to_owned(), number(1)),
+            (FIELD_DATABASE.to_owned(), number(2)),
+            (FIELD_TABLE.to_owned(), number(3)),
+            (FIELD_NAME.to_owned(), Value::from("email")),
+            (FIELD_KIND.to_owned(), Value::from("string")),
+        ]);
+        fields.insert(FIELD_DEFAULT.to_owned(), Value::Bool(true));
+        let error = FieldDefinition::from_value(&Value::Object(fields)).unwrap_err();
+        assert_eq!(error.code(), "corruption");
     }
 
     #[test]

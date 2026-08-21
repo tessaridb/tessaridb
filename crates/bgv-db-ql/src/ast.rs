@@ -109,6 +109,14 @@ pub enum StatementKind {
         table: TableRef,
         /// What the field is allowed to hold.
         kind: FieldKind,
+        /// Whether the field must hold a value: present, and not `null`.
+        required: bool,
+        /// What a write supplying no value uses instead.
+        ///
+        /// A **value-position** expression, so it cannot read the record it is
+        /// filling in — which would be a rule about evaluation order nobody
+        /// would guess.
+        default: Option<Written>,
         /// Whether re-declaring an existing name is accepted.
         if_not_exists: bool,
     },
@@ -478,6 +486,20 @@ pub struct RangeExpr {
     pub end: Box<Expr>,
     /// Whether the upper bound is included: `..=` rather than `..`.
     pub inclusive: bool,
+}
+
+/// An expression kept as the text it was written as.
+///
+/// The parser validates it by parsing it and then keeps the **source slice**,
+/// because that is what the catalog stores: a definition should stay legible in
+/// a dump, and a printer that rebuilt the text from the tree would be a second
+/// grammar to keep in step with the first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+    /// The text, exactly as the author wrote it.
+    pub text: String,
+    /// Where it sits in the source.
+    pub span: Span,
 }
 
 /// A route to a value inside a record, as written.

@@ -28,5 +28,5 @@ pub use ast::{
 pub use error::{Error, Result};
 pub use function::Function;
 pub use lexer::tokenize;
-pub use parser::parse;
+pub use parser::{parse, parse_expression};
 pub use token::{Keyword, Punct, Span, Spanned, Token};

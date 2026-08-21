@@ -154,7 +154,8 @@ DEFINE INDEX by_home_city ON users FIELDS address.city;
 DEFINE TABLE accounts SCHEMAFULL;
 DEFINE TABLE follows EDGE;
 DEFINE FIELD balance ON accounts TYPE decimal;
-DEFINE FIELD opened_at ON accounts TYPE datetime;
+DEFINE FIELD opened_at ON accounts TYPE datetime DEFAULT time::now();
+DEFINE FIELD holder ON accounts TYPE string REQUIRED;
 
 DROP FIELD opened_at ON accounts;
 DROP INDEX by_email ON users;
@@ -242,6 +243,39 @@ way: the statement reads the whole table inside the commit.
 
 `DROP FIELD` removes the rule and not the data. The rows keep the field; the
 store simply stops having an opinion about it.
+
+**`REQUIRED` means the field must hold a value** — present, and not `null`. One
+marker covering both, deliberately: it is what a caller means by "required", and
+a field that must be present but may hold nothing is a constraint that
+constrains almost nothing. The `NONE`/`NULL` distinction stays fully available on
+every field that is not required, and two separate markers remain sayable later.
+
+Like every other declaration, requiring a field holds the rows already in the
+table to it: `REQUIRED` over data that violates it is refused, writing nothing at
+all — not even the declaration.
+
+**`DEFAULT <expr>` fills the field in when a write leaves it out.** The
+expression is evaluated once per write, in the session, so the value that reaches
+the store is a value like any other and a replica applies what was written rather
+than evaluating anything again.
+
+Four things about it, each stated rather than discovered:
+
+- **A supplied value is left alone**, including `NULL`. A default that replaced
+  `null` would make `null` unwritable on any field that has one.
+- **It does not reach backwards.** Rows written before the declaration keep
+  whatever they had; a retroactive default would be a bulk rewrite hiding inside
+  a `DEFINE`.
+- **It is a value-position expression**, so a bare name is a *table* and not the
+  record's field. A default cannot read the record it is filling in, which would
+  be a rule about evaluation order nobody would guess.
+- **It is checked when it is declared**, not when it first bites: the expression
+  is evaluated once at `DEFINE FIELD` and checked against the type the field
+  declares. `TYPE int DEFAULT 'open'` is refused there, rather than accepted and
+  then failing on somebody's first write.
+
+`REQUIRED` and `DEFAULT` compose, and together they mean "this field always holds
+a value".
 
 **A declaration names a top-level field, never a path.** `TYPE object` says the
 field holds an object and nothing about what is inside it, and `SCHEMAFULL`
@@ -679,11 +713,13 @@ Named here rather than merely missing, so each absence reads as a decision:
 | declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
 | aggregation and grouping | needs an execution layer this milestone has not built |
 | user-defined functions | a stored function is a catalog entry with its own lifecycle, permissions and replication story |
+| a separate `NOT NULL` | `REQUIRED` covers absence and null together; splitting them is additive |
+| a default on a whole table | a different feature wearing a similar word |
 | `||` as a second spelling for concatenation | `string::concat` says it, and a second spelling for one thing is a decision to take once rather than by accident |
 | an ordered range read from `<` and `>` | the index can serve it; it needs a bounded scan on the storage layer and an equivalence test of its own. Reported as a scan until then, never served as a guess |
 | three-valued logic | §5 — comparison answers true or false, and `= NONE` / `= NULL` say what `IS NULL` would |
 | permissions in the language | there is no session identity yet |
-| a mandatory field, a default, an `ASSERT` | the expression surface they wait on now exists; this is next, not absent by design |
+| `ASSERT` | it needs an expression **evaluated where validation lives**, and validation lives on the store's apply path so that a replica reaches the same verdict without anything being sent. The store sits below the language and cannot parse or evaluate bgvQL. The fix has a shape — a guard the store calls and the session implements — and inverting the layering is not it. |
 | changing a declared type in place | `DROP FIELD` then `DEFINE FIELD` re-checks every row through the one path; a migration primitive is its own work |
 
 ## 9. What is fixed here, and what can still move
@@ -696,6 +732,9 @@ Named here rather than merely missing, so each absence reads as a decision:
 | `NONE` and `NULL` are distinct literals | **contract** — the storage layer keeps them apart |
 | An edge is a record, and traversal is an index read | **contract** — no separate graph keyspace, so edges get MVCC, transactions, replication and the schema check without any of them being built again |
 | An edge is identified by its endpoints | fixed for this milestone; an explicit-id form would be additive |
+| `REQUIRED` means present and not null | **contract** |
+| A default fills only what a write leaves out, and never reaches backwards | **contract** |
+| A default is a value-position expression, checked when it is declared | **contract** |
 | A filter is a condition, and a condition is a boolean | **contract** |
 | Numeric kinds promote int → decimal → float | **contract** |
 | Division produces at least a decimal | **contract** — truncating integer division is a wrong number that looks right |

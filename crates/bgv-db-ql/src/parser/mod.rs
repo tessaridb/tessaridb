@@ -17,7 +17,7 @@ mod expression;
 mod path;
 mod statement;
 
-use crate::ast::Script;
+use crate::ast::{Expr, Script};
 use crate::error::{Error, Result};
 use crate::lexer::tokenize;
 use crate::token::{Keyword, Punct, Span, Spanned, Token};
@@ -37,6 +37,33 @@ pub fn parse(source: &str) -> Result<Script> {
         reading_paths: false,
     }
     .script()
+}
+
+/// Read `source` into one expression, with nothing around it.
+///
+/// The way a default stored in the catalog is read back. A definition keeps the
+/// text it was written as (the same choice a field kind and a path already
+/// make), so something has to turn that text into an expression again, and the
+/// crate that can parse is this one.
+///
+/// # Errors
+///
+/// Returns the first failure, and refuses text that parses as an expression
+/// followed by anything else — a stored default is one expression or it is not
+/// a default.
+pub fn parse_expression(source: &str) -> Result<Expr> {
+    let tokens = tokenize(source)?;
+    let mut parser = Parser {
+        source,
+        tokens,
+        position: 0,
+        reading_paths: false,
+    };
+    let expression = parser.expression()?;
+    if parser.peek().is_some() {
+        return Err(parser.error_here("the end of the expression"));
+    }
+    Ok(expression)
 }
 
 /// A cursor over the tokens, and the source they came from.

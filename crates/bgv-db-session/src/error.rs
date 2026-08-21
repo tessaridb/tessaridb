@@ -201,6 +201,23 @@ pub enum Error {
         span: Span,
     },
 
+    /// A default that cannot satisfy the type its own field declares.
+    ///
+    /// Checked when the declaration is made rather than when it first bites: by
+    /// the time a write failed on it, the declaration would be in the catalog
+    /// and the failure would look like the write's fault.
+    #[error("the default for {field} is {found}, and the field is declared {declared} (at {span})")]
+    DefaultDoesNotMatch {
+        /// The field being declared.
+        field: String,
+        /// The type it declares.
+        declared: &'static str,
+        /// The type its default evaluated to.
+        found: &'static str,
+        /// Where the field was named.
+        span: Span,
+    },
+
     /// A route into a record, written where there is no record.
     ///
     /// **Unreachable through the language today**, and kept anyway. Two separate
