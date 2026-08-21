@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 use bgv_db_encoding::encode_payload;
 use bgv_db_kv::{KvBackend, MemoryBackend};
-use bgv_db_storage::{Catalog, Change, ChangeKind, RecordAddress, Store, TableShape, Transaction};
+use bgv_db_storage::{
+    Catalog, Change, ChangeKind, RecordAddress, Store, Subscription, TableShape, Transaction, Watch,
+};
 use bgv_db_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId, Value};
 
 struct Fixture {
@@ -273,4 +275,202 @@ fn a_limit_bounds_commits_and_never_splits_one() {
     assert_eq!(sequences[0], sequences[1]);
     assert_eq!(sequences[2], sequences[3]);
     assert_ne!(sequences[1], sequences[2]);
+}
+
+// ------------------------------------------------------------- subscriptions
+
+/// A second table, so a filtered subscription has something to ignore.
+fn other_table(fixture: &Fixture) -> TableId {
+    let mut transaction = fixture.begin();
+    let table = Catalog::new(&mut transaction)
+        .create_table(
+            fixture.namespace,
+            fixture.database,
+            "notes",
+            TableShape::default(),
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+    table.id
+}
+
+fn write(fixture: &Fixture, table: TableId, id: &str, name: &str) {
+    let mut transaction = fixture.begin();
+    transaction.put(
+        RecordAddress::new(
+            fixture.namespace,
+            fixture.database,
+            table,
+            RecordId::from(id),
+        ),
+        record(name),
+    );
+    transaction.commit().unwrap();
+}
+
+#[test]
+fn a_subscription_receives_every_change_across_several_polls() {
+    let fixture = Fixture::new();
+    for round in 0..5_u8 {
+        write(&fixture, fixture.table, &format!("u{round}"), "ada");
+    }
+
+    let mut subscription = Subscription::new(Sequence::ZERO, Watch::default());
+    let mut received = Vec::new();
+    loop {
+        let batch = subscription.poll(&fixture.store, 2).unwrap();
+        let before = subscription.position();
+        received.extend(batch);
+        if subscription.position() == before && received.len() >= 5 {
+            break;
+        }
+        if subscription.position() > fixture.store.committed_tail().unwrap() {
+            break;
+        }
+    }
+    assert_eq!(received, fixture.changes());
+    assert_eq!(subscription.delivered(), 5);
+    assert_eq!(subscription.dropped(), 0);
+}
+
+#[test]
+fn a_filtered_subscription_receives_only_its_table_and_still_advances() {
+    // The failure a filter invites: a subscriber watching one table stalling on
+    // a run of writes to another, because it only advanced over what matched.
+    let fixture = Fixture::new();
+    let notes = other_table(&fixture);
+    for round in 0..4_u8 {
+        write(&fixture, notes, &format!("n{round}"), "noise");
+    }
+    write(&fixture, fixture.table, "u1", "ada");
+
+    let mut subscription = Subscription::new(Sequence::ZERO, Watch::table(fixture.table));
+    let mut received = Vec::new();
+    for _ in 0..8 {
+        received.extend(subscription.poll(&fixture.store, 1).unwrap());
+    }
+    assert_eq!(received.len(), 1, "{received:?}");
+    assert_eq!(named(&received[0]).as_deref(), Some("ada"));
+    assert_eq!(subscription.delivered(), 1);
+}
+
+#[test]
+fn what_was_delivered_plus_what_was_dropped_is_what_was_emitted() {
+    // G001's C4, stated as an identity rather than as a feeling.
+    let fixture = Fixture::new();
+    for round in 0..10_u8 {
+        write(&fixture, fixture.table, &format!("u{round}"), "ada");
+    }
+    let emitted = u64::try_from(fixture.changes().len()).expect("a count");
+    assert_eq!(emitted, 10);
+
+    let mut subscription = Subscription::new(Sequence::ZERO, Watch::default());
+    // Take a few, then decide to be current rather than complete.
+    let first = subscription.poll(&fixture.store, 3).unwrap();
+    let tail = fixture.store.committed_tail().unwrap();
+    let skipped = subscription.skip_to(&fixture.store, after(tail)).unwrap();
+    let rest = subscription.poll(&fixture.store, 1024).unwrap();
+
+    assert!(rest.is_empty(), "the skip should have reached the end");
+    assert_eq!(
+        subscription.delivered() + subscription.dropped(),
+        emitted,
+        "delivered {} + dropped {} != emitted {emitted}",
+        subscription.delivered(),
+        subscription.dropped()
+    );
+    assert_eq!(
+        subscription.delivered(),
+        u64::try_from(first.len()).expect("a count")
+    );
+    assert_eq!(skipped, subscription.dropped());
+    assert!(skipped > 0, "the skip must be able to lose something");
+}
+
+#[test]
+fn a_skip_counts_only_what_the_subscription_watches() {
+    let fixture = Fixture::new();
+    let notes = other_table(&fixture);
+    for round in 0..3_u8 {
+        write(&fixture, fixture.table, &format!("u{round}"), "ada");
+        write(&fixture, notes, &format!("n{round}"), "noise");
+    }
+
+    let mut subscription = Subscription::new(Sequence::ZERO, Watch::table(fixture.table));
+    let tail = fixture.store.committed_tail().unwrap();
+    let skipped = subscription.skip_to(&fixture.store, after(tail)).unwrap();
+    assert_eq!(
+        skipped, 3,
+        "the other table's writes are not this one's loss"
+    );
+}
+
+#[test]
+fn a_skip_backwards_does_nothing_and_a_poll_after_one_does_not_repeat() {
+    let fixture = Fixture::new();
+    for round in 0..4_u8 {
+        write(&fixture, fixture.table, &format!("u{round}"), "ada");
+    }
+
+    let mut subscription = Subscription::new(Sequence::ZERO, Watch::default());
+    let taken = subscription.poll(&fixture.store, 3).unwrap();
+    let reached = subscription.position();
+
+    assert_eq!(
+        subscription
+            .skip_to(&fixture.store, Sequence::ZERO)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        subscription.position(),
+        reached,
+        "a skip backwards moved it"
+    );
+
+    let after_skip = subscription.poll(&fixture.store, 1024).unwrap();
+    for change in &after_skip {
+        assert!(!taken.contains(change), "a change was delivered twice");
+    }
+}
+
+#[test]
+fn two_subscriptions_at_different_positions_do_not_interfere() {
+    // The store holds no registry of subscribers, so there is nothing for them
+    // to share and nothing to clean up when one disappears.
+    let fixture = Fixture::new();
+    for round in 0..4_u8 {
+        write(&fixture, fixture.table, &format!("u{round}"), "ada");
+    }
+
+    let mut ahead = Subscription::new(Sequence::ZERO, Watch::default());
+    ahead.poll(&fixture.store, 1024).unwrap();
+
+    let mut behind = Subscription::new(Sequence::ZERO, Watch::default());
+    let all = behind.poll(&fixture.store, 1024).unwrap();
+
+    assert_eq!(all, fixture.changes());
+    assert_eq!(ahead.delivered(), behind.delivered());
+}
+
+#[test]
+fn a_position_carries_to_another_store_holding_the_same_log() {
+    // A subscription is a value the caller holds, and its position is a
+    // sequence — so a restarted process, or a replica, resumes from exactly
+    // where it stopped.
+    let fixture = Fixture::new();
+    write(&fixture, fixture.table, "u1", "ada");
+    let mut subscription = Subscription::new(Sequence::ZERO, Watch::default());
+    subscription.poll(&fixture.store, 1024).unwrap();
+    write(&fixture, fixture.table, "u2", "grace");
+
+    let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    for (sequence, log) in fixture.store.log_records(Sequence::ZERO, 1024).unwrap() {
+        replica.apply_record(sequence, &log).unwrap();
+    }
+
+    let resumed = subscription.poll(&replica, 1024).unwrap();
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(named(&resumed[0]).as_deref(), Some("grace"));
 }

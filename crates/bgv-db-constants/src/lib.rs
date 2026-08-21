@@ -21,3 +21,19 @@
 /// embedded store while still surfacing sustained contention quickly. It is
 /// provisional until measured under a real write workload.
 pub const MAX_COMMIT_ATTEMPTS: u32 = 8;
+
+/// How many log records a subscription reads at a time while skipping a backlog
+/// it has decided not to receive.
+///
+/// Unit: log records.
+///
+/// A skip counts exactly what it discards, by reading it — an inexact drop count
+/// is a number nobody can act on. That read is bounded so the memory a skip
+/// needs does not scale with how far behind the subscriber fell, which is
+/// precisely the situation a skip exists for.
+///
+/// Two hundred and fifty-six is a starting value: large enough that skipping a
+/// long backlog is not dominated by round trips, small enough that one batch of
+/// decoded changes is a bounded allocation. Provisional until measured against a
+/// real backlog.
+pub const SKIP_BATCH_RECORDS: usize = 256;

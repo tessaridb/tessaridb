@@ -28,11 +28,13 @@
 //! feed with a different shape; conflating them would put rows nobody asked for
 //! into every subscription.
 
+use bgv_db_constants::SKIP_BATCH_RECORDS;
 use bgv_db_encoding::{LogRecord, RecordValue, decode_payload};
 use bgv_db_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId, Value};
 
 use crate::catalog::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 use crate::error::Result;
+use crate::store::Store;
 
 /// What a read of the feed found, and where to resume.
 ///
@@ -111,4 +113,155 @@ pub(crate) fn changes_in(sequence: Sequence, record: &LogRecord) -> Result<Vec<C
         });
     }
     Ok(changes)
+}
+
+/// Which changes a subscriber is watching for.
+///
+/// Inside the subscription rather than applied by the caller afterwards, because
+/// the filter is part of what "emitted" *means* for that subscriber: one
+/// watching `users` should not have its loss account inflated by every write to
+/// every other table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Watch {
+    /// The table to watch, or every table when absent.
+    pub table: Option<TableId>,
+}
+
+impl Watch {
+    /// Watch one table.
+    #[must_use]
+    pub const fn table(table: TableId) -> Self {
+        Self { table: Some(table) }
+    }
+
+    /// Whether this change is one the subscriber asked for.
+    #[must_use]
+    pub fn covers(self, change: &Change) -> bool {
+        self.table.is_none_or(|table| table == change.table)
+    }
+}
+
+/// A durable cursor over the feed, and what it has and has not seen.
+///
+/// # Why a cursor rather than a queue
+///
+/// The usual subscription is a bounded in-memory queue per subscriber, filled at
+/// commit time and dropping the oldest when it overflows. This store does not do
+/// that, because it **already has a better buffer**: the log is durable, ordered
+/// and unbounded, so a subscriber that keeps a position cannot lose anything by
+/// being slow — it can only be behind. A queue in front of it would be a second,
+/// worse buffer whose drops are caused by memory pressure rather than by any
+/// decision anyone made.
+///
+/// The consequence is that the store holds **no registry of subscribers**: a
+/// subscription is a value the caller holds and can persist, so there is nothing
+/// to leak, nothing to clean up when a client disappears, and no lock on the
+/// commit path. Its position is a [`Sequence`], so a restarted process — or a
+/// replica — resumes from exactly where it stopped.
+///
+/// # The loss account, and why it is not vacuous
+///
+/// If nothing can ever be lost, `dropped` is always zero and "no loss under
+/// backlog" is satisfied by saying nothing. So the one operation that *can* lose
+/// is [`Subscription::skip_to`], for a subscriber that has decided it would
+/// rather be current than complete — and it counts exactly what it skips, by
+/// reading it. **A skip is the only way to lose a change, and it is always the
+/// subscriber's own decision.**
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Subscription {
+    position: Sequence,
+    watch: Watch,
+    delivered: u64,
+    dropped: u64,
+}
+
+impl Subscription {
+    /// Watch from a position onward.
+    #[must_use]
+    pub const fn new(from: Sequence, watch: Watch) -> Self {
+        Self {
+            position: from,
+            watch,
+            delivered: 0,
+            dropped: 0,
+        }
+    }
+
+    /// Where the next read will start.
+    #[must_use]
+    pub const fn position(self) -> Sequence {
+        self.position
+    }
+
+    /// How many changes this subscription has been given.
+    #[must_use]
+    pub const fn delivered(self) -> u64 {
+        self.delivered
+    }
+
+    /// How many it skipped past without being given.
+    #[must_use]
+    pub const fn dropped(self) -> u64 {
+        self.dropped
+    }
+}
+
+impl Subscription {
+    /// The next changes this subscription is watching for.
+    ///
+    /// Advances over every record it **read**, not only over the ones that
+    /// matched — a subscriber watching one table would otherwise stall on a run
+    /// of writes to another, asking for the same records forever. That is the
+    /// same reason [`Changes`] carries a position at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a record cannot be decoded.
+    pub fn poll(&mut self, store: &Store, limit: usize) -> Result<Vec<Change>> {
+        let answer = store.changes_since(self.position, limit)?;
+        let watch = self.watch;
+        let matched: Vec<Change> = answer
+            .changes
+            .into_iter()
+            .filter(|change| watch.covers(change))
+            .collect();
+        self.position = answer.next;
+        self.delivered = self
+            .delivered
+            .saturating_add(matched.len().try_into().unwrap_or(u64::MAX));
+        Ok(matched)
+    }
+
+    /// Give up on the backlog below `target`, counting exactly what is lost.
+    ///
+    /// For a subscriber that has decided it would rather be current than
+    /// complete. The count is exact because it is taken by reading what is
+    /// discarded: an approximate loss figure is one nobody can act on, and
+    /// reading to count is still far cheaper than delivering.
+    ///
+    /// Returns how many watched changes were skipped. A target at or behind the
+    /// current position does nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a record cannot be decoded.
+    pub fn skip_to(&mut self, store: &Store, target: Sequence) -> Result<u64> {
+        let mut skipped = 0_u64;
+        while self.position < target {
+            let answer = store.changes_since(self.position, SKIP_BATCH_RECORDS)?;
+            if answer.next == self.position {
+                // Nothing left in the log: the target is beyond its end, and the
+                // subscriber has skipped everything there was to skip.
+                break;
+            }
+            for change in &answer.changes {
+                if change.sequence < target && self.watch.covers(change) {
+                    skipped = skipped.saturating_add(1);
+                }
+            }
+            self.position = answer.next.min(target);
+        }
+        self.dropped = self.dropped.saturating_add(skipped);
+        Ok(skipped)
+    }
 }

@@ -37,7 +37,7 @@ pub use catalog::{
     NamespaceDefinition, SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition, TableShape,
 };
 pub use error::{Error, Result};
-pub use feed::{Change, ChangeKind, Changes};
+pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use reclaim::Reclaimed;
 pub use store::Store;
 pub use transaction::{RecordAddress, Transaction};
