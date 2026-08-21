@@ -1,0 +1,20 @@
+[package]
+name = "bgv-db-storage"
+description = "Records and transactions over the bgv-db key-value substrate: snapshot isolation on the log sequence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+bgv-db-constants.workspace = true
+bgv-db-encoding.workspace = true
+bgv-db-kv.workspace = true
+bgv-db-types.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

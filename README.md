@@ -57,7 +57,7 @@ crates/
   bgv-db-constants    leaf   tunables, each with unit and rationale
   bgv-db-kv                  key-value abstraction; memory and RocksDB backends
   bgv-db-encoding            key grammar and value codec over the KV layer
-  bgv-db-storage             records, indexes, transactions over the KV layer
+  bgv-db-storage             records and transactions (snapshot isolation)
   bgv-db-ql                  bgvQL: lexer, parser, AST
   bgv-db-planner             logical and physical planning
   bgv-db-exec                execution engine and per-model operators

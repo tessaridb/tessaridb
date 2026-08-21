@@ -31,11 +31,11 @@ prove it, so nothing on this list stays an intention.
 
 | Missing guarantee | Supplied by | Proven by | Status |
 |---|---|---|---|
-| **Sequencing.** The backend assigns no version, timestamp or order to writes | the engine's log — ADR-0001 | log replay determinism test | not built |
-| **Multi-statement transactions.** A batch is atomic; a transaction spanning reads and writes over time is not | the transaction layer, built from batches plus preconditions | isolation test under concurrent writers | not built |
-| **Snapshot isolation.** Concurrent readers and writers get no isolation beyond individual operations | the engine's MVCC layer, keyed on the log sequence | concurrent read-write consistency test | not built |
-| **Serializability.** Even once MVCC exists, the ceiling is not serializable by default | open decision — Q-2026-08-21-03 | — | undecided |
-| **Range or predicate locks.** Conflict detection is per key, so phantoms are possible | the transaction layer, if the chosen isolation requires it | phantom-read test | not built |
+| **Sequencing.** The backend assigns no version, timestamp or order to writes | the record store's committed tail; the replication log extends it — ADR-0001 | log replay determinism test | **partial** — the store assigns sequences; the log follows |
+| **Multi-statement transactions.** A batch is atomic; a transaction spanning reads and writes over time is not | the transaction layer, built from batches plus preconditions | isolation test under concurrent writers | **built** — `bgv-db-storage` |
+| **Snapshot isolation.** Concurrent readers and writers get no isolation beyond individual operations | the MVCC layer, keyed on the sequence — ADR-0006 | concurrent read-write consistency test | **built** — `bgv-db-storage` |
+| **Serializability.** The declared level is snapshot isolation, so write skew is permitted | not provided — ADR-0006 records the SSI upgrade path, which changes no bytes on disk | write-skew test, which asserts the anomaly **happens** | **deliberately absent** |
+| **Range or predicate locks.** Conflict detection is per record, so phantoms are possible | not provided at snapshot isolation; would arrive with SSI | phantom-read test | **deliberately absent** |
 | **Secondary index maintenance.** Index entries are ordinary keys in the index keyspace; nothing maintains them automatically | the engine, writing index entries in the *same batch* as the record | orphan-index-entry sweep | not built |
 | **Uniqueness.** No constraint exists | the engine, via an `Absent` precondition in the same batch | `absent-precondition-guards-uniqueness` | **proven at this layer** |
 | **Retention or garbage collection.** Delete exists; deciding what and when does not | the engine's GC, over log and MVCC versions | space-reclamation test | not built |
