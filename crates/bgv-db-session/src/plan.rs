@@ -51,6 +51,7 @@
 //! predict which of two equal candidates wins.
 
 use core::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use bgv_db_ql::{BinaryOp, Expr, ExprKind, Function, Projectable, Projected, Select};
 use bgv_db_storage::{IndexDefinition, Transaction, VectorDistance};
@@ -75,6 +76,11 @@ pub(crate) enum Shape {
     Terms,
     /// `<path> LIKE '<literal>%'` — a range over the values beginning with it.
     Prefix,
+    /// `<path> < <constant>`, and the other three orderings — a bounded scan.
+    ///
+    /// Ranked beside a prefix and for the same reason: both can be the whole
+    /// table, and neither's size is knowable without doing the read.
+    Range,
 }
 
 /// What a chosen candidate hands the executor, ready to run.
@@ -96,6 +102,19 @@ pub(crate) enum Served {
     Prefix(String),
     /// The terms whose postings are intersected.
     Terms(Vec<String>),
+    /// The two ends of an ordered scan, either of which may be absent.
+    ///
+    /// Both are carried as **values**, not as byte bounds, because the index
+    /// encoding normalises — `1` and `1.0` become the same bytes — so an
+    /// exclusive end cannot be said in bytes at all. It does not need to be: the
+    /// scan takes both ends inclusive and the condition that asked discards what
+    /// it does not want, which it was going to do to every candidate anyway.
+    Range {
+        /// The lower end, when the condition gave one.
+        lower: Option<Value>,
+        /// The upper end, when it gave one.
+        upper: Option<Value>,
+    },
 }
 
 impl Served {
@@ -105,6 +124,7 @@ impl Served {
             Self::Equality(_) => Shape::Equality,
             Self::Prefix(_) => Shape::Prefix,
             Self::Terms(_) => Shape::Terms,
+            Self::Range { .. } => Shape::Range,
         }
     }
 }
@@ -191,6 +211,12 @@ impl Session<'_> {
         searched: &Searched,
     ) -> Result<Vec<Candidate>> {
         let mut offered = Vec::new();
+        // `at >= x AND at < y` is one range written as two conjuncts, and
+        // serving one of them would read half a table to find a day. Bounds on
+        // one path are gathered before anything is offered; bounds on different
+        // paths are not combined, because they narrow independently and the
+        // planner is what chooses between them.
+        let mut bounds: BTreeMap<&Path, (Option<Value>, Option<Value>)> = BTreeMap::new();
         for seek in seekable(condition) {
             // A right-hand side that reads the record is not a constant, so it
             // cannot be a bound; `seekable` has already excluded those.
@@ -225,6 +251,24 @@ impl Session<'_> {
                     };
                     (Served::Prefix(prefix), Rows::Unknown)
                 }
+                Shape::Range if !index.search && index.vector.is_none() => {
+                    let (lower, upper) = bounds.entry(seek.path).or_default();
+                    // The tighter of two bounds in one direction wins; a
+                    // condition may say `at > 1 AND at > 5` and mean the second.
+                    let end = match seek.op {
+                        BinaryOp::Greater | BinaryOp::GreaterOrEqual => lower,
+                        _ => upper,
+                    };
+                    let tighter = match (&end, &seek.op) {
+                        (None, _) => true,
+                        (Some(held), BinaryOp::Greater | BinaryOp::GreaterOrEqual) => bound > *held,
+                        (Some(held), _) => bound < *held,
+                    };
+                    if tighter {
+                        *end = Some(bound);
+                    }
+                    continue;
+                }
                 Shape::Terms if index.search => {
                     let (Value::String(query), Some(analyzer)) =
                         (&bound, searched.analyzer(seek.path))
@@ -255,6 +299,23 @@ impl Session<'_> {
                 rows,
             });
         }
+
+        for (path, (lower, upper)) in bounds {
+            let Some(index) = declared
+                .iter()
+                .find(|index| index.fields.as_slice() == core::slice::from_ref(path))
+            else {
+                continue;
+            };
+            offered.push(Candidate {
+                served: Served::Range { lower, upper },
+                index: index.clone(),
+                // A range can be the whole table and its size is not knowable
+                // without doing the read, which is the same answer a prefix
+                // gives.
+                rows: Rows::Unknown,
+            });
+        }
         Ok(offered)
     }
 }
@@ -264,6 +325,9 @@ struct Seek<'a> {
     path: &'a Path,
     value: &'a Expr,
     shape: Shape,
+    /// Which comparison it was, which a range needs and the others do not: the
+    /// direction and whether the end is inclusive both live here.
+    op: BinaryOp,
 }
 
 /// The conjuncts of a condition an index could serve, outermost first.
@@ -294,16 +358,18 @@ fn seekable(condition: &Expr) -> Vec<Seek<'_>> {
                 BinaryOp::Equal => Shape::Equality,
                 BinaryOp::Like => Shape::Prefix,
                 BinaryOp::Matches => Shape::Terms,
-                // An ordered index can serve `<` and `>` as a bounded range, and
-                // this does not build it: that needs a bounded scan on
-                // `Transaction` and an equivalence test of its own. Reported as
-                // a scan until it does, rather than served as a guess.
+                // The four orderings are a bounded scan over the ordered index,
+                // which is safe because byte order **is** value order
+                // (`docs/key-grammar.md` §1).
+                BinaryOp::Less | BinaryOp::LessOrEqual => Shape::Range,
+                BinaryOp::Greater | BinaryOp::GreaterOrEqual => Shape::Range,
                 _ => return Vec::new(),
             };
             vec![Seek {
                 path: &field.path,
                 value: right,
                 shape,
+                op: *op,
             }]
         }
         _ => Vec::new(),
@@ -567,6 +633,10 @@ mod tests {
             Shape::Equality => Served::Equality(Value::from("x")),
             Shape::Prefix => Served::Prefix("x".to_owned()),
             Shape::Terms => Served::Terms(vec!["x".to_owned()]),
+            Shape::Range => Served::Range {
+                lower: Some(Value::from("a")),
+                upper: Some(Value::from("z")),
+            },
         };
         Candidate {
             served,
@@ -616,6 +686,27 @@ mod tests {
                 candidate("narrow", Shape::Terms, Rows::AtMost(3)),
             ]),
             "narrow"
+        );
+    }
+
+    #[test]
+    fn an_ordered_range_ranks_with_a_prefix_and_below_a_value() {
+        // Both are ranges that can be the whole table, and neither's size is
+        // knowable without doing the read.
+        assert_eq!(
+            winner(vec![
+                candidate("by_range", Shape::Range, Rows::Unknown),
+                candidate("by_value", Shape::Equality, Rows::Unknown),
+            ]),
+            "by_value"
+        );
+        assert_eq!(
+            winner(vec![
+                candidate("by_prefix", Shape::Prefix, Rows::Unknown),
+                candidate("by_range", Shape::Range, Rows::Unknown),
+            ]),
+            "by_prefix",
+            "ties keep the one written first"
         );
     }
 

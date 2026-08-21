@@ -33,12 +33,28 @@ use bgv_db_encoding::{
     RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, StoreKey, StoreValue,
     UniqueIndexKey, decode_payload,
 };
-use bgv_db_kv::{KeyRange, ScanDirection, ScanRequest};
+use bgv_db_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 use bgv_db_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId, Value};
 
 use crate::catalog::IndexDefinition;
 use crate::error::{Error, Result};
 use crate::store::Store;
+
+/// The first byte string after every key beginning with these bytes.
+///
+/// Incrementing the last byte that can be incremented, and dropping the trailing
+/// `0xFF`s — the standard way to turn "everything with this prefix" into an
+/// exclusive upper bound. All-`0xFF` bytes have no successor, and the answer is
+/// then an empty vector, which `KeyRange::between` reads as unbounded above.
+fn after(mut bytes: Vec<u8>) -> Vec<u8> {
+    while let Some(last) = bytes.pop() {
+        if last != u8::MAX {
+            bytes.push(last.saturating_add(1));
+            return bytes;
+        }
+    }
+    bytes
+}
 
 /// Where a record lives: its table, and its identity within it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -259,6 +275,99 @@ impl<'a> Transaction<'a> {
             holding.retain(|id| next.contains(id));
         }
         Ok(holding.into_iter().collect())
+    }
+
+    /// The records an ordered index holds between two bounds.
+    ///
+    /// # Both ends are inclusive, and that is not a limitation
+    ///
+    /// The index encoding **normalises** — `1`, `1.0` and `dec 1.00` become the
+    /// same bytes — so the bytes equal to a bound are indistinguishable from the
+    /// bound itself, and an exclusive byte bound cannot be expressed. It does not
+    /// need to be: an index read is a **candidate set**, and the condition that
+    /// asked is re-tested against every record it produces. So the scan takes
+    /// both ends inclusive, over-fetching by at most the entries exactly equal to
+    /// a bound, and `> x` discards those the way it discards everything else.
+    ///
+    /// Fewer moving parts than an exclusive byte bound, and provably the same
+    /// answer.
+    ///
+    /// An absent bound is unbounded on that side, so one comparison serves as
+    /// well as two.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a key cannot be decoded.
+    pub fn records_in_range(
+        &self,
+        index: &IndexDefinition,
+        lower: Option<&Value>,
+        upper: Option<&Value>,
+    ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let kind = if index.unique {
+            KeyKind::UniqueIndex
+        } else {
+            KeyKind::SecondaryIndex
+        };
+        let prefix = address.prefix(kind);
+        let start = match lower {
+            Some(held) => {
+                let mut bytes = prefix.clone();
+                bytes.extend_from_slice(IndexValues::of(core::slice::from_ref(held)).as_slice());
+                bytes
+            }
+            None => prefix.clone(),
+        };
+        // The end is exclusive in `KeyRange::between`, and the bound itself must
+        // be included — so the stop point is one byte past every key that begins
+        // with the bound's encoding.
+        let end = match upper {
+            Some(held) => {
+                let mut bytes = prefix.clone();
+                bytes.extend_from_slice(IndexValues::of(core::slice::from_ref(held)).as_slice());
+                after(bytes)
+            }
+            None => after(prefix.clone()),
+        };
+
+        let request = ScanRequest {
+            keyspace: kind.keyspace(),
+            range: KeyRange::between(Key::from(start), Key::from(end)),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+        let mut found: BTreeMap<RecordId, Vec<u8>> = BTreeMap::new();
+        for (key, value) in self.store.backend().scan(&request)? {
+            let id = if index.unique {
+                IndexTarget::decode(value.as_slice())?.id
+            } else {
+                SecondaryIndexKey::decode(key.as_slice())?.id
+            };
+            let record = RecordAddress::new(index.namespace, index.database, index.table, id);
+            if let Some(payload) = self.get(&record)? {
+                found.insert(record.id, payload);
+            }
+        }
+        // A record this transaction wrote but has not committed has no index
+        // entry yet, so it is folded in the way every other index read folds it.
+        for (address, held) in &self.writes {
+            if address.namespace != index.namespace
+                || address.database != index.database
+                || address.table != index.table
+            {
+                continue;
+            }
+            match held {
+                RecordValue::Present(payload) => {
+                    found.insert(address.id.clone(), payload.clone());
+                }
+                RecordValue::Tombstone => {
+                    found.remove(&address.id);
+                }
+            }
+        }
+        Ok(found.into_iter().collect())
     }
 
     /// The records a vector index says are nearest, nearest first.

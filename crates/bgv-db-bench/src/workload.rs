@@ -182,6 +182,41 @@ fn filter(db: &Db) -> Result<Vec<Report>> {
         );
     }
     reports.push(served.summarise("filter-index"));
+
+    // The same shape for an ordered range: the scan first, so the index does not
+    // measure a table it has already warmed.
+    let mut ranged = Samples::with_capacity(100);
+    for n in 0..100 {
+        timed!(
+            ranged,
+            session.run(&format!(
+                "SELECT * FROM people WHERE age >= {} AND age < {};",
+                n % 80_u64,
+                (n % 80_u64).saturating_add(5)
+            ))?
+        );
+    }
+    reports.push(ranged.summarise("range-scan"));
+
+    let mut bounded = Samples::with_capacity(1);
+    timed!(
+        bounded,
+        session.run("DEFINE INDEX by_age ON people FIELDS age;")?
+    );
+    reports.push(bounded.summarise("range-build-index"));
+
+    let mut walked = Samples::with_capacity(100);
+    for n in 0..100 {
+        timed!(
+            walked,
+            session.run(&format!(
+                "SELECT * FROM people WHERE age >= {} AND age < {};",
+                n % 80_u64,
+                (n % 80_u64).saturating_add(5)
+            ))?
+        );
+    }
+    reports.push(walked.summarise("range-index"));
     Ok(reports)
 }
 

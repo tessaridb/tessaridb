@@ -55,6 +55,7 @@ compares the same way before and after.
 | Claim | In memory | On disk |
 |---|---|---|
 | an index beats the scan of the same equality | 849 µs → 46 µs (18×) | 1043 µs → 102 µs (10×) |
+| and the scan of the same ordered range | 849 µs → 105 µs (8×) | 1013 µs → 273 µs (3.7×) |
 | a search index beats the scan of the same term | 1569 µs → 7.0 µs (224×) | 1760 µs → 16 µs (110×) |
 | ranking costs little over the search it ranks | 7.0 µs → 11.7 µs | 16 µs → 24 µs |
 | durability costs about seven times a write | 7.4 µs | 48.5 µs |

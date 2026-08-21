@@ -1614,11 +1614,28 @@ fn a_comparison_against_another_field_is_never_used_as_a_bound() {
 }
 
 #[test]
-fn an_ordered_comparison_is_reported_as_a_scan_rather_than_served_as_a_guess() {
+fn an_ordered_comparison_is_served_by_the_index_and_answers_what_the_scan_did() {
     use bgv_db_session::AccessPath;
 
-    // An ordered index could serve `>` as a bounded range and this milestone
-    // does not build it. Reported honestly instead of quietly.
+    // This test used to assert the opposite — that an ordered comparison was
+    // *reported* as a scan, because the bounded read was not built and reporting
+    // it honestly was the whole of what could be promised. It is built now, so
+    // the assertion moves to the thing that actually matters: the rows are the
+    // rows the scan gave, and only the path changed.
+    let scanned = {
+        let store = store();
+        let mut session = ready(&store);
+        mixed_ages(&mut session);
+        let found = session.run("SELECT * FROM people WHERE age > 18;").unwrap();
+        assert_eq!(found[0].path(), Some(AccessPath::Scan));
+        found[0]
+            .records()
+            .unwrap()
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>()
+    };
+
     let store = store();
     let mut session = ready(&store);
     mixed_ages(&mut session);
@@ -1627,7 +1644,14 @@ fn an_ordered_comparison_is_reported_as_a_scan_rather_than_served_as_a_guess() {
         .unwrap();
 
     let found = session.run("SELECT * FROM people WHERE age > 18;").unwrap();
-    assert_eq!(found[0].path(), Some(AccessPath::Scan));
+    assert_eq!(found[0].path(), Some(AccessPath::Index));
+    let served: Vec<_> = found[0]
+        .records()
+        .unwrap()
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect();
+    assert_eq!(served, scanned);
 }
 
 #[test]

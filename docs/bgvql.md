@@ -502,6 +502,7 @@ more than one could, is the planner's decision and is described below.
 | `FROM users:1` | the record by its identity |
 | `FROM users WHERE <indexed path> = <value>` | the index |
 | `FROM users WHERE <indexed path> LIKE '<literal>%'` | the index, as a range |
+| `FROM users WHERE <indexed path> > <value>` (and `<`, `<=`, `>=`) | the index, as a bounded scan |
 | `FROM users WHERE <path> = <value>` (no index) | the table, testing each record |
 | `FROM users WHERE <path> LIKE <any other pattern>` | the table, testing each record |
 | `FROM users:1->follows` | the index, on the edge table's `out` |
@@ -600,6 +601,38 @@ Four rules, each of which is a decision rather than an omission:
 one snapshot and two reads of one address at one snapshot must answer the same
 thing — so a hundred posts by three authors is three reads. Turning many point
 reads into one batched request is a planner decision and is not made here.
+
+### Reading a range
+
+The four orderings are served by an ordered index, as a bounded scan:
+
+```
+SELECT * FROM readings WHERE at >= datetime '2026-01-01T00:00:00Z'
+                         AND at <  datetime '2026-02-01T00:00:00Z';
+SELECT * FROM people WHERE age > 18;
+SELECT * FROM people WHERE name >= 'a' AND name < 'b';
+```
+
+**Two bounds on one field are one scan.** `at >= x AND at < y` is a range written
+as two conjuncts, and serving only one of them would read half a table to find a
+day. Two bounds in the same direction keep the tighter.
+
+**It is not a time feature.** A datetime is a value like any other and is
+order-encoded like any other, so the same statement works over numbers, strings
+and instants. A range read that only worked for time would be a narrower thing
+with a date in its name.
+
+Why it is safe is already stated elsewhere: byte order **is** value order
+(`docs/key-grammar.md` §1), so the entries between two bounds are the entries in
+the byte range between their encodings.
+
+One subtlety, and the store's own rule dissolves it. The encoding **normalises** —
+`1`, `1.0` and `dec 1.00` become one byte string — so an exclusive end cannot be
+said in bytes: the bytes equal to the bound are the bound. That would matter in a
+store where an index read is an answer. Here an index read is a **candidate set**
+and the condition decides, so the scan takes both ends inclusive, over-fetches by
+at most the entries exactly equal to a bound, and `> x` discards them the way it
+discards everything else. Measured on two thousand records: 845 µs to 107 µs.
 
 ### Which index runs
 
@@ -1129,7 +1162,9 @@ Named here rather than merely missing, so each absence reads as a decision:
 | a separate `NOT NULL` | `REQUIRED` covers absence and null together; splitting them is additive |
 | a default on a whole table | a different feature wearing a similar word |
 | `||` as a second spelling for concatenation | `string::concat` says it, and a second spelling for one thing is a decision to take once rather than by accident |
-| an ordered range read from `<` and `>` | the index can serve it; it needs a bounded scan on the storage layer and an equivalence test of its own. Reported as a scan until then, never served as a guess |
+| a range over the first column of a **composite** index | an index whose field list is one path serves a range today; a prefix of a multi-column one needs its own bound construction and its own equivalence test |
+| a descending bounded scan | `ORDER BY` sorts what the range produced; making the scan itself run backwards is a saving that needs the `LIMIT` pushed into it |
+| `BETWEEN` | `a >= x AND a <= y` says it, and one spelling for one thing |
 | three-valued logic | §5 — comparison answers true or false, and `= NONE` / `= NULL` say what `IS NULL` would |
 | a grant matrix, per-table permissions, row-level security | the three roles cover who may read, who may write, and who may declare users. A matrix over verbs and tables needs a `GRANT` statement, a revocation story and a place to put a per-object list — a real feature, and a different one |
 | tokens, or a session that outlives a request | a token is a second credential with its own lifetime, revocation and storage |

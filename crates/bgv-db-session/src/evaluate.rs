@@ -532,6 +532,9 @@ impl Session<'_> {
             plan::Served::Prefix(prefix) => {
                 transaction.records_with_string_prefix(&chosen.index, prefix)
             }
+            plan::Served::Range { lower, upper } => {
+                transaction.records_in_range(&chosen.index, lower.as_ref(), upper.as_ref())
+            }
             plan::Served::Terms(terms) => {
                 let mut rows = Vec::new();
                 for id in transaction.records_by_terms(&chosen.index, terms)? {
