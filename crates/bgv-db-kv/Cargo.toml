@@ -1,0 +1,16 @@
+[package]
+name = "bgv-db-kv"
+description = "Ordered key-value substrate for bgv-db: backend trait, atomic conditional batches, in-memory backend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

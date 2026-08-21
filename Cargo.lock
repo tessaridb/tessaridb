@@ -7,6 +7,13 @@ name = "bgv-db-constants"
 version = "0.0.0"
 
 [[package]]
+name = "bgv-db-kv"
+version = "0.0.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "bgv-db-types"
 version = "0.0.0"
 dependencies = [
