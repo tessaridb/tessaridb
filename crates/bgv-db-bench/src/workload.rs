@@ -388,7 +388,10 @@ fn capacity(db: &Db) -> Failable<Vec<Report>> {
             );
             written = written.saturating_add(1);
         }
-        reports.push(samples.summarise(&format!("batch {} ({written} records)", batch.saturating_add(1))));
+        reports.push(samples.summarise(&format!(
+            "batch {} ({written} records)",
+            batch.saturating_add(1)
+        )));
         if let Some(resident) = resident_bytes() {
             reports.push(Report::measurement(
                 "  resident",
