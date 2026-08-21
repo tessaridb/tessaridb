@@ -25,6 +25,7 @@ mod catalog;
 mod error;
 mod index;
 mod log;
+mod reclaim;
 mod snapshots;
 mod store;
 mod transaction;
@@ -34,5 +35,6 @@ pub use catalog::{
     SYSTEM_NAMESPACE, TableDefinition,
 };
 pub use error::{Error, Result};
+pub use reclaim::Reclaimed;
 pub use store::Store;
 pub use transaction::{RecordAddress, Transaction};
