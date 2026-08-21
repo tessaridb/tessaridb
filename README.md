@@ -31,7 +31,7 @@ it is a general-purpose database that happens to have a demanding first user.
 | Goal | What it means here |
 |---|---|
 | **Multi-model** | Documents, graph edges, relational tables and columns, vectors, full-text, time-series — over one record store, not bolted together |
-| **One query language** | **bgvQL** — a single surface for every model, including graph traversal and vector search |
+| **One query language** | **bgvQL** — a single surface for every model, including graph traversal and vector search ([the milestone-1 subset](docs/bgvql.md)) |
 | **Pluggable storage** | Everything above the key–value layer is written against one trait, and two backends prove it: in-memory, and durable on a log-structured merge-tree engine |
 | **Transactional** | Real transactions with a declared isolation level, not best-effort batching |
 | **Real-time** | Change subscriptions as a first-class feature, not polling |
