@@ -346,3 +346,205 @@ mod tests {
         }
     }
 }
+
+impl Datetime {
+    /// Write an instant as RFC 3339 text: `1970-01-01T00:00:00Z`.
+    ///
+    /// The inverse of [`Datetime::parse_rfc3339`], and it lives beside it for
+    /// the reason this module gives for the reader: every front door has to turn
+    /// an instant into text, and two writers for one literal disagree
+    /// eventually. That the reader was written here and the writer was not is
+    /// how the console came to print `0.000000000` where an instant belonged.
+    ///
+    /// Always `Z`, because this type has no zone — a zone is a rendering choice,
+    /// and the one this store makes is to render the moment it stored.
+    ///
+    /// Sub-second digits appear only when there are any, so an instant on a
+    /// whole second reads the way anybody writes one.
+    #[must_use]
+    pub fn to_rfc3339(self) -> String {
+        let seconds = self.seconds();
+        let days = seconds.div_euclid(SECONDS_PER_DAY);
+        let within = seconds.rem_euclid(SECONDS_PER_DAY);
+        let (year, month, day) = civil_from_days(days);
+        let hour = within.div_euclid(SECONDS_PER_HOUR);
+        let minute = within
+            .rem_euclid(SECONDS_PER_HOUR)
+            .div_euclid(SECONDS_PER_MINUTE);
+        let second = within.rem_euclid(SECONDS_PER_MINUTE);
+        let mut text = format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}");
+        if self.nanos() > 0 {
+            // Trailing zeros trimmed: `.5` and `.500000000` name one instant,
+            // and the shorter is the one a person writes.
+            let fraction = format!("{:09}", self.nanos());
+            text.push('.');
+            text.push_str(fraction.trim_end_matches('0'));
+        }
+        text.push('Z');
+        text
+    }
+}
+
+impl crate::time::Duration {
+    /// Write a span in the language's own duration syntax: `1h30m`, `2s`, `-500ms`.
+    ///
+    /// Not [`core::fmt::Display`], which writes `5400.000000000s` — a debugging
+    /// form that the language's lexer will not read back, because a duration
+    /// there is digits touching a letter and carries no fraction.
+    ///
+    /// A zero span is `0s`, since an empty string is not a literal.
+    #[must_use]
+    pub fn to_literal(self) -> String {
+        // The magnitude is written and the sign prefixed, so the units below do
+        // not each have to know about it.
+        let negative = self.seconds() < 0;
+        let mut whole = self.seconds().unsigned_abs();
+        let nanos = self.nanos();
+        let mut text = String::new();
+        if negative {
+            text.push('-');
+        }
+        for (unit, size) in [("h", 3_600_u64), ("m", 60)] {
+            let held = whole.div_euclid(size);
+            if held > 0 {
+                text.push_str(&format!("{held}{unit}"));
+                whole = whole.rem_euclid(size);
+            }
+        }
+        if whole > 0 {
+            text.push_str(&format!("{whole}s"));
+        }
+        if nanos > 0 {
+            // Milliseconds, microseconds and nanoseconds in turn, so a remainder
+            // is written in the largest unit that holds it exactly.
+            let mut remainder = nanos;
+            for (unit, size) in [("ms", 1_000_000_u32), ("us", 1_000), ("ns", 1)] {
+                let held = remainder.div_euclid(size);
+                if held > 0 {
+                    text.push_str(&format!("{held}{unit}"));
+                    remainder = remainder.rem_euclid(size);
+                }
+            }
+        }
+        if text.is_empty() || text == "-" {
+            text.push_str("0s");
+        }
+        text
+    }
+}
+
+/// The civil date a day count names, inverse of [`days_from_civil`].
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let shifted = days.saturating_add(719_468);
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era = day_of_era
+        .saturating_sub(day_of_era.div_euclid(1_460))
+        .saturating_add(day_of_era.div_euclid(36_524))
+        .saturating_sub(day_of_era.div_euclid(146_096))
+        .div_euclid(365);
+    let year = year_of_era.saturating_add(era.saturating_mul(400));
+    let day_of_year = day_of_era.saturating_sub(
+        year_of_era
+            .saturating_mul(365)
+            .saturating_add(year_of_era.div_euclid(4))
+            .saturating_sub(year_of_era.div_euclid(100)),
+    );
+    let shifted_month = day_of_year
+        .saturating_mul(5)
+        .saturating_add(2)
+        .div_euclid(153);
+    let day = day_of_year
+        .saturating_sub(
+            153_i64
+                .saturating_mul(shifted_month)
+                .saturating_add(2)
+                .div_euclid(5),
+        )
+        .saturating_add(1);
+    let month = if shifted_month < 10 {
+        shifted_month.saturating_add(3)
+    } else {
+        shifted_month.saturating_sub(9)
+    };
+    let year = if month <= 2 {
+        year.saturating_add(1)
+    } else {
+        year
+    };
+    (year, month, day)
+}
+
+#[cfg(test)]
+mod writing {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
+    use crate::time::{Datetime, Duration};
+
+    #[test]
+    fn an_instant_round_trips_through_its_own_text() {
+        // The property the module exists for, now asserted in both directions:
+        // the reader was written here and the writer was not, which is how the
+        // console came to print `0.000000000` where an instant belonged.
+        for (seconds, nanos) in [
+            (0_i64, 0_u32),
+            (1, 0),
+            (1_000_000_000, 0),
+            (-1, 0),
+            (-86_400, 0),
+            (1_755_000_000, 123_456_789),
+            (951_782_400, 500_000_000),
+        ] {
+            let held = Datetime::new(seconds, nanos).expect("an instant");
+            let text = held.to_rfc3339();
+            let again = Datetime::parse_rfc3339(&text)
+                .unwrap_or_else(|| panic!("{text:?} did not read back"));
+            assert_eq!(held, again, "{text}");
+        }
+    }
+
+    #[test]
+    fn the_epoch_is_written_the_way_everybody_writes_it() {
+        let epoch = Datetime::new(0, 0).expect("the epoch");
+        assert_eq!(epoch.to_rfc3339(), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn a_leap_day_survives_both_directions() {
+        // The date arithmetic's own edge, and the one a wrong inverse gets
+        // wrong: 2000 is a leap year and 1900 is not.
+        let text = "2000-02-29T12:00:00Z";
+        let held = Datetime::parse_rfc3339(text).expect("a leap day");
+        assert_eq!(held.to_rfc3339(), text);
+    }
+
+    #[test]
+    fn a_fraction_keeps_only_the_digits_it_has() {
+        let half = Datetime::new(0, 500_000_000).expect("half a second");
+        assert_eq!(half.to_rfc3339(), "1970-01-01T00:00:00.5Z");
+        let precise = Datetime::new(0, 123_456_789).expect("nine digits");
+        assert_eq!(precise.to_rfc3339(), "1970-01-01T00:00:00.123456789Z");
+    }
+
+    #[test]
+    fn a_duration_is_written_in_the_language_s_own_units() {
+        // `Display` writes `5400.000000000s`, which the lexer will not read: a
+        // duration there is digits touching a letter and carries no fraction.
+        let cases: &[(i64, u32, &str)] = &[
+            (0, 0, "0s"),
+            (2, 0, "2s"),
+            (5_400, 0, "1h30m"),
+            (3_600, 0, "1h"),
+            (90, 0, "1m30s"),
+            (-2, 0, "-2s"),
+            (0, 500_000_000, "500ms"),
+            (0, 1, "1ns"),
+            (0, 1_500, "1us500ns"),
+            (61, 250_000_000, "1m1s250ms"),
+        ];
+        for (seconds, nanos, expected) in cases {
+            let held = Duration::new(*seconds, *nanos).expect("a duration");
+            assert_eq!(held.to_literal(), *expected, "{seconds}s {nanos}ns");
+        }
+    }
+}

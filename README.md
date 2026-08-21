@@ -102,6 +102,40 @@ for change in db.poll(&mut watching, 128)? {
 }
 ```
 
+## From a terminal
+
+```
+cargo install --path crates/bgv-db-cli    # installs `bgv`
+
+bgv                                    an in-memory store, and a prompt
+bgv ./data                             a store on disk, and a prompt
+bgv ./data -e 'SELECT * FROM users;'   one script, then exit
+bgv ./data -f setup.bgvql              a file
+echo 'SELECT * FROM users;' | bgv ./data
+```
+
+```
+bgv> CREATE users:1 = { name: 'ada', joined: datetime '2026-01-15T09:30:00Z' };
+ok
+bgv> SELECT * FROM users;
+1: { joined: datetime '2026-01-15T09:30:00Z', name: 'ada' }
+(1 record(s), via scan)
+```
+
+Answers print in **bgvQL's own syntax**, so what comes out can be pasted back in.
+JSON is what the HTTP endpoint speaks, and it had to decide how fifteen types
+become six; a terminal is owed no such compromise.
+
+A refusal at a prompt prints its message and the next statement runs; in a script
+it stops, because carrying on past a failed step is how a half-applied migration
+happens. Either way the exit code says what happened.
+
+Two things it does not do. **There is no line editing or history** — both mean a
+dependency, and a terminal library is a large surface to take for a convenience,
+so `.help` says so rather than leaving it to be found by pressing up. And it
+opens the store **in this process**: a client that talks to a running node over
+HTTP is the other half of this and is not built yet.
+
 ## Why
 
 Most systems that need more than one data model end up running more than one

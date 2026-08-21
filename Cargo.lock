@@ -79,6 +79,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bgv-db-cli"
+version = "0.0.0"
+dependencies = [
+ "bgv-db",
+ "bgv-db-kv",
+ "bgv-db-session",
+ "bgv-db-storage",
+ "bgv-db-types",
+ "rust_decimal",
+]
+
+[[package]]
 name = "bgv-db-conformance"
 version = "0.0.0"
 dependencies = [
