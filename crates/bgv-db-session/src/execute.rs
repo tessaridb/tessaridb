@@ -166,12 +166,13 @@ impl Session<'_> {
         Ok(Outcome::Done)
     }
 
-    /// An index is declared here and **not** backfilled.
+    /// The definition is written here; its entries are built by the commit.
     ///
-    /// Records that predate it are not writes, so maintenance never sees them:
-    /// the index holds nothing about them, and a `UNIQUE` index does not
-    /// constrain them either, until a backfill succeeds. That is stated in
-    /// `docs/bgvql.md` §4 rather than left to be discovered.
+    /// Nothing more is needed at this layer, and that is the point: a catalog
+    /// entry is an ordinary record, so index maintenance sees the definition in
+    /// the same log record and projects the table's rows under it into the same
+    /// batch. The definition and its entries land together or neither does,
+    /// inside an open `BEGIN` as much as outside one.
     fn define_index(
         &self,
         transaction: &mut Transaction<'_>,

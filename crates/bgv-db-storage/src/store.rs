@@ -183,20 +183,6 @@ impl Store {
         Ok(())
     }
 
-    /// Index every record already in an index's table.
-    ///
-    /// An index only sees mutations, so one declared on a table that already
-    /// holds rows indexes none of them until this runs. Returns how many records
-    /// were indexed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when two existing records violate a unique index, when
-    /// concurrent writes refused every attempt, or when the backend fails.
-    pub fn backfill_index(&self, index: &crate::catalog::IndexDefinition) -> Result<usize> {
-        crate::index::backfill(self, index)
-    }
-
     /// The backend, for the transaction's read and commit paths.
     pub(crate) fn backend(&self) -> &Arc<dyn KvBackend> {
         &self.backend

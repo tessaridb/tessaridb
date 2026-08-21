@@ -187,12 +187,10 @@ fn the_access_path_follows_what_exists_rather_than_how_the_query_is_written() {
 }
 
 #[test]
-fn an_index_over_rows_that_predate_it_changes_the_answer_until_it_is_backfilled() {
-    // The sharp edge of letting both paths serve one statement. Maintenance sees
-    // writes, and rows written before the index are not writes — so the index
-    // knows nothing about them and the same query returns fewer records, with no
-    // error anywhere. Pinned here so a backfill-on-define change has a test that
-    // notices. Logged as Q-30.
+fn an_index_over_rows_that_predate_it_answers_exactly_as_the_scan_did() {
+    // The property the whole access-path design rests on: which path runs is
+    // decided by what exists, and the answer is the same either way. It only
+    // holds because the index is built in the commit that defines it.
     use bgv_db_session::AccessPath;
 
     let store = store();
@@ -205,7 +203,6 @@ fn an_index_over_rows_that_predate_it_changes_the_answer_until_it_is_backfilled(
         .run("SELECT * FROM users WHERE email = 'ada@example.com';")
         .unwrap();
     assert_eq!(by_scan[0].path(), Some(AccessPath::Scan));
-    assert_eq!(by_scan[0].records().unwrap().len(), 1);
 
     session
         .run("DEFINE INDEX by_email ON users FIELDS email;")
@@ -215,7 +212,39 @@ fn an_index_over_rows_that_predate_it_changes_the_answer_until_it_is_backfilled(
         .run("SELECT * FROM users WHERE email = 'ada@example.com';")
         .unwrap();
     assert_eq!(by_index[0].path(), Some(AccessPath::Index));
-    assert_eq!(by_index[0].records().unwrap().len(), 0, "see Q-30");
+    assert_eq!(by_index[0].records(), by_scan[0].records());
+}
+
+#[test]
+fn an_index_defined_inside_an_open_transaction_is_built_with_it() {
+    // The case that ruled out calling the standalone backfill from the statement:
+    // it drives its own commit loop against the committed tail, so it could
+    // neither see this transaction's writes nor land atomically with them.
+    use bgv_db_session::AccessPath;
+
+    let store = store();
+    let mut session = ready(&store);
+    session.run("DEFINE TABLE users;").unwrap();
+    session
+        .run("CREATE users:1 = { email: 'ada@example.com' };")
+        .unwrap();
+
+    session
+        .run(
+            "BEGIN;\n\
+             DEFINE INDEX by_email ON users FIELDS email;\n\
+             CREATE users:2 = { email: 'grace@example.com' };\n\
+             COMMIT;",
+        )
+        .unwrap();
+
+    for email in ["ada@example.com", "grace@example.com"] {
+        let found = session
+            .run(&format!("SELECT * FROM users WHERE email = '{email}';"))
+            .unwrap();
+        assert_eq!(found[0].path(), Some(AccessPath::Index));
+        assert_eq!(found[0].records().unwrap().len(), 1, "{email}");
+    }
 }
 
 #[test]

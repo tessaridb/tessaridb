@@ -22,7 +22,7 @@
 mod definition;
 mod system;
 
-use bgv_db_encoding::{decode_payload, encode_payload};
+use bgv_db_encoding::{Mutation, RecordValue, decode_payload, encode_payload};
 use bgv_db_types::{DatabaseId, IndexId, NamespaceId, RecordId, TableId, Value};
 
 pub use definition::{DatabaseDefinition, IndexDefinition, NamespaceDefinition, TableDefinition};
@@ -419,6 +419,34 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         };
         Ok(Some(decode_payload(&bytes)?))
     }
+}
+
+/// The index this mutation defines, if it defines one.
+///
+/// A catalog entry is an ordinary record (ADR-0009), so `DEFINE INDEX` reaches
+/// the log as a write into the system index table. Index maintenance asks this
+/// so that it can build a new index's entries in the same commit that defines
+/// it, rather than leaving an index that knows nothing about the rows already
+/// in its table.
+///
+/// # Errors
+///
+/// Returns [`Error::CatalogMalformed`] when the record in the index table is not
+/// a definition, and a decoding failure otherwise.
+pub(crate) fn defined_index(mutation: &Mutation) -> Result<Option<IndexDefinition>> {
+    if mutation.namespace != SYSTEM_NAMESPACE
+        || mutation.database != SYSTEM_DATABASE
+        || mutation.table != system::INDEXES
+    {
+        return Ok(None);
+    }
+    // A dropped index has nothing to build. Its existing entries are left where
+    // they are — unreachable, because index ids are never reused — and reclaiming
+    // them is its own piece of work (Q-33), not this one's.
+    let RecordValue::Present(payload) = &mutation.value else {
+        return Ok(None);
+    };
+    IndexDefinition::from_value(&decode_payload(payload)?).map(Some)
 }
 
 /// An identifier as a record id: widened, never cast.

@@ -28,8 +28,9 @@ struct Fixture {
 impl Fixture {
     /// A namespace, a database, a table and one index on `email`, all committed.
     ///
-    /// The index is committed before any record is written, because maintenance
-    /// reads the catalog as of the committed state and a backfill is not built.
+    /// The index is committed before any record is written, so these tests
+    /// exercise the ordinary per-mutation path. `indexed_after_the_fact` builds
+    /// the same shape the other way round.
     fn new(unique: bool) -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(Arc::clone(&backend)).unwrap();
@@ -286,6 +287,31 @@ fn a_replica_derives_the_same_entries_from_the_same_log() {
 }
 
 #[test]
+fn a_replica_builds_the_same_entries_for_an_index_defined_over_existing_rows() {
+    // The define-time build reads rows that are not in the record it is applying,
+    // so it is the one place where a replica could compute something different.
+    // It cannot: it reads them at the same position from the same log.
+    let source = indexed_after_the_fact(false);
+    assert_eq!(source.entries().len(), 2);
+
+    let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    for (sequence, record) in source.store.log_records(Sequence::ZERO, 1024).unwrap() {
+        replica.apply_record(sequence, &record).unwrap();
+    }
+
+    let mirrored = Fixture {
+        backend: replica_backend,
+        store: replica,
+        namespace: source.namespace,
+        database: source.database,
+        table: source.table,
+        index: source.index.clone(),
+    };
+    assert_eq!(mirrored.entries(), source.entries());
+}
+
+#[test]
 fn a_unique_lookup_returns_the_record_that_holds_the_value() {
     let fixture = Fixture::new(true);
     fixture
@@ -413,8 +439,11 @@ fn a_deleted_record_is_not_returned_by_a_lookup() {
     );
 }
 
-/// A table with rows, and an index declared on it *afterwards*.
-fn indexed_after_the_fact(unique: bool) -> Fixture {
+/// A table holding rows, with no index on it yet.
+///
+/// The `index` field is a placeholder until one is defined; nothing reads it
+/// before then.
+fn table_with_rows(unique: bool) -> Fixture {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let store = Store::open(Arc::clone(&backend)).unwrap();
 
@@ -449,27 +478,39 @@ fn indexed_after_the_fact(unique: bool) -> Fixture {
     bare.write("u2", Some(Value::from("grace@example.com")))
         .unwrap();
     bare.write("u3", None).unwrap();
+    bare
+}
 
-    let mut transaction = bare.store.begin().unwrap();
+/// A table with rows, and an index declared on it *afterwards*.
+fn indexed_after_the_fact(unique: bool) -> Fixture {
+    let populated = table_with_rows(unique);
+
+    let mut transaction = populated.store.begin().unwrap();
     let index = Catalog::new(&mut transaction)
-        .create_index(bare.table, "by_email", vec!["email".to_owned()], unique)
+        .create_index(
+            populated.table,
+            "by_email",
+            vec!["email".to_owned()],
+            unique,
+        )
         .unwrap();
     transaction.commit().unwrap();
 
-    Fixture { index, ..bare }
+    Fixture { index, ..populated }
 }
 
 #[test]
-fn an_index_declared_after_the_rows_holds_nothing_until_it_is_backfilled() {
+fn an_index_declared_after_the_rows_indexes_them_in_the_same_commit() {
+    // The rows predate the index, so they are not mutations in the record that
+    // defines it. Nothing but the define-time build can put them in the index —
+    // and without them the same query answers with fewer records and raises
+    // nothing, which is the whole reason this exists.
     let fixture = indexed_after_the_fact(false);
-    assert!(
-        fixture.entries().is_empty(),
-        "maintenance only sees mutations"
+    assert_eq!(
+        fixture.entries().len(),
+        2,
+        "the record with no email is not in the index"
     );
-
-    let indexed = fixture.store.backfill_index(&fixture.index).unwrap();
-    assert_eq!(indexed, 2, "the record with no email is not in the index");
-    assert_eq!(fixture.entries().len(), 2);
 
     let transaction = fixture.store.begin().unwrap();
     let found = transaction
@@ -480,14 +521,10 @@ fn an_index_declared_after_the_rows_holds_nothing_until_it_is_backfilled() {
 }
 
 #[test]
-fn a_backfill_is_idempotent_and_composes_with_maintenance() {
+fn entries_built_at_define_compose_with_later_maintenance() {
     let fixture = indexed_after_the_fact(false);
-    assert_eq!(fixture.store.backfill_index(&fixture.index).unwrap(), 2);
-    assert_eq!(fixture.store.backfill_index(&fixture.index).unwrap(), 2);
-    assert_eq!(fixture.entries().len(), 2);
-
-    // A write after the backfill is maintained normally, and one that changes a
-    // value leaves no entry behind.
+    // The two paths derive entries the same way, so a write after the definition
+    // is maintained normally and one that changes a value leaves nothing behind.
     fixture
         .write("u4", Some(Value::from("new@example.com")))
         .unwrap();
@@ -498,35 +535,73 @@ fn a_backfill_is_idempotent_and_composes_with_maintenance() {
 }
 
 #[test]
-fn a_backfill_refuses_a_unique_index_two_existing_rows_already_violate() {
-    let fixture = indexed_after_the_fact(true);
-    // `u1` already holds this address, so the index cannot become unique.
-    fixture
-        .write("u4", Some(Value::from("ada@example.com")))
-        .unwrap();
-    let before = fixture.entries();
+fn rows_written_in_the_transaction_that_defines_the_index_are_indexed_too() {
+    // These cannot come from the ordinary per-mutation path: it reads the
+    // catalog as of the state below this commit, where the index does not exist.
+    let fixture = table_with_rows(false);
 
-    let error = fixture.store.backfill_index(&fixture.index).unwrap_err();
-    assert!(matches!(error, Error::UniqueViolation { .. }), "{error}");
+    let mut transaction = fixture.store.begin().unwrap();
+    let index = Catalog::new(&mut transaction)
+        .create_index(fixture.table, "by_email", vec!["email".to_owned()], false)
+        .unwrap();
+    transaction.put(
+        RecordAddress::new(
+            fixture.namespace,
+            fixture.database,
+            fixture.table,
+            RecordId::from("u4"),
+        ),
+        encode_payload(&Fixture::record(Some(Value::from("new@example.com")))).into_bytes(),
+    );
+    transaction.commit().unwrap();
+
+    let built = Fixture { index, ..fixture };
     assert_eq!(
-        fixture.entries(),
-        before,
-        "a refused backfill writes nothing at all"
+        built.entries().len(),
+        3,
+        "two that predated it, and the one"
     );
 }
 
 #[test]
-fn a_unique_index_does_not_constrain_rows_it_has_not_been_backfilled_over() {
-    // The hazard worth naming: until the backfill runs, the rows that predate
-    // the index have no entries, so maintenance has nothing to collide with and
-    // accepts a duplicate of one of them. The constraint begins to hold when the
-    // backfill succeeds — and the backfill is what refuses to let it "begin"
-    // over data that already violates it.
-    let fixture = indexed_after_the_fact(true);
+fn defining_a_unique_index_over_rows_that_already_violate_it_is_refused() {
+    let fixture = table_with_rows(true);
+    // Nothing constrains this yet, which is exactly the state the definition has
+    // to inspect rather than trust.
     fixture
         .write("u4", Some(Value::from("ada@example.com")))
-        .expect("accepted, because u1's entry does not exist yet");
+        .unwrap();
 
-    assert_eq!(fixture.entries().len(), 1, "only the new row is indexed");
-    assert!(fixture.store.backfill_index(&fixture.index).is_err());
+    let mut transaction = fixture.store.begin().unwrap();
+    let index = Catalog::new(&mut transaction)
+        .create_index(fixture.table, "by_email", vec!["email".to_owned()], true)
+        .unwrap();
+    let error = transaction.commit().unwrap_err();
+    assert!(matches!(error, Error::UniqueViolation { .. }), "{error}");
+
+    let refused = Fixture { index, ..fixture };
+    assert!(
+        refused.entries().is_empty(),
+        "a refused definition writes nothing at all"
+    );
+    let mut transaction = refused.store.begin().unwrap();
+    assert!(
+        Catalog::new(&mut transaction)
+            .indexes_on(refused.table)
+            .unwrap()
+            .is_empty(),
+        "and the definition itself does not land either"
+    );
+}
+
+#[test]
+fn a_unique_index_constrains_the_rows_that_predate_it() {
+    // The constraint is enforced from the moment it is declared, because the
+    // rows it was declared over are in it. It can no longer be declared and
+    // unenforced.
+    let fixture = indexed_after_the_fact(true);
+    let error = fixture
+        .write("u4", Some(Value::from("ada@example.com")))
+        .unwrap_err();
+    assert!(matches!(error, Error::UniqueViolation { .. }), "{error}");
 }

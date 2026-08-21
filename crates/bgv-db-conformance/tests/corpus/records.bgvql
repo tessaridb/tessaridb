@@ -136,3 +136,25 @@ SELECT * FROM users WHERE tags CONTAINS 'urg';
 --- case: a single value is not a one-element collection
 SELECT * FROM users WHERE name CONTAINS 'grace hopper';
 --- expect: rows 0
+
+--- case: an index defined over rows that predate it answers for them
+DEFINE TABLE members;
+CREATE members:1 = { handle: 'ada' };
+CREATE members:2 = { handle: 'grace' };
+DEFINE INDEX by_handle ON members FIELDS handle;
+SELECT * FROM members WHERE handle = 'ada';
+--- expect: rows 1
+
+--- case: and it is built inside an open transaction too
+BEGIN;
+DEFINE TABLE guests;
+CREATE guests:1 = { handle: 'katherine' };
+DEFINE INDEX by_handle ON guests FIELDS handle;
+COMMIT;
+SELECT * FROM guests WHERE handle = 'katherine';
+--- expect: rows 1
+
+--- case: a unique index over rows that already violate it is refused
+CREATE members:3 = { handle: 'ada' };
+DEFINE INDEX by_unique_handle ON members FIELDS handle UNIQUE;
+--- expect: error UniqueViolation

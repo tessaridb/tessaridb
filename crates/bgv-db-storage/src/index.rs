@@ -36,31 +36,39 @@
 //! entries and reclaiming old ones in the background, which is a larger piece of
 //! work than this one and is not started.
 //!
-//! # The backfill, and what it does not do
+//! # An index is built in the commit that defines it
 //!
-//! Maintenance only sees mutations, so an index created on a table that already
-//! holds rows indexes none of them until [`backfill`] is run. The backfill reads
-//! the table at one snapshot and writes every entry in **one batch**, guarded on
-//! the committed position not having moved — so a write that lands mid-backfill
-//! refuses the batch rather than letting it write a stale entry, and the whole
-//! pass is retried.
+//! Maintenance sees mutations, and rows written before an index existed are not
+//! mutations in the record that defines it. Left there, an index declared on a
+//! populated table would know nothing about those rows — and since a filter is
+//! served by an index when one exists and by a scan when one does not, the same
+//! query would answer with *fewer* records and raise nothing.
 //!
-//! That guard is also its limit: on a table large enough that a pass takes
-//! longer than the gap between writes, it never converges. The answer is a
-//! resumable watermark, whose key kind is reserved (`0x37`) and whose work is
-//! not started.
+//! So a definition is treated as what it is. A catalog entry is an ordinary
+//! record in the system tenancy (ADR-0009), so `DEFINE INDEX` arrives here as a
+//! mutation like any other, and [`build`] projects the table's rows under the
+//! new index into the **same batch**. The definition and its entries land
+//! together or not at all, and a replica computes the same entries from the same
+//! record — no new log shape, and nothing for a caller to remember.
 //!
-//! **A unique index does not constrain rows it has not been backfilled over.**
-//! Those rows have no entries, so maintenance has nothing to collide with and
-//! will accept a duplicate of one of them. The constraint begins to hold when
-//! the backfill succeeds — which is also what refuses to let it begin over data
-//! that already violates it. Declaring a unique index on a populated table and
-//! not backfilling it leaves a constraint that is declared and not enforced.
+//! The rows it indexes are the committed ones *overlaid with this record's own
+//! mutations*, because the per-mutation path above cannot cover them: it reads
+//! the catalog below this commit, where the index does not exist yet.
+//!
+//! **What it costs.** Defining an index reads the whole table inside the commit.
+//! On a table large enough that the pass outlasts the gap between writes, the
+//! commit's compare-and-set on the applied position loses repeatedly and the
+//! statement fails with [`Error::CommitContention`] — it does not half-build.
+//! The answer is a resumable watermark, whose key kind is reserved (`0x37`) and
+//! whose work is not started.
+//!
+//! One consequence worth naming: a `UNIQUE` index over rows that **already**
+//! violate it is now refused at the moment it is defined, because the claims
+//! collide while the batch is still being built. A unique constraint can no
+//! longer be declared and unenforced.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use bgv_db_constants::MAX_COMMIT_ATTEMPTS;
-use bgv_db_encoding::AppliedPositionKey;
 use bgv_db_encoding::{
     IndexAddress, IndexTarget, IndexValues, LogRecord, Mutation, NoPayload, RecordValue,
     SecondaryIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
@@ -68,10 +76,10 @@ use bgv_db_encoding::{
 use bgv_db_kv::WriteBatch;
 use bgv_db_types::{RecordId, TableId, Value};
 
-use crate::catalog::{Catalog, IndexDefinition};
+use crate::catalog::{Catalog, IndexDefinition, defined_index};
 use crate::error::{Error, Result};
 use crate::store::Store;
-use crate::transaction::RecordAddress;
+use crate::transaction::{RecordAddress, Transaction};
 
 /// Add the index writes a log record implies to `batch`.
 ///
@@ -120,6 +128,61 @@ pub(crate) fn maintain(
                 previous.as_deref(),
                 &mut claimed,
             )?;
+        }
+    }
+
+    // Second pass, and it has to be second: an index defined by this record is
+    // invisible to the catalog read above, which sees the state this record is
+    // about to be applied on top of.
+    for mutation in record.mutations() {
+        if let Some(definition) = defined_index(mutation)? {
+            batch = build(store, batch, &view, record, &definition, &mut claimed)?;
+        }
+    }
+    Ok(batch)
+}
+
+/// Every entry a newly defined index implies, added to the commit that defines
+/// it.
+///
+/// The rows are the committed ones as of `view`, overlaid with this record's own
+/// mutations for that table — so a script that defines an index and writes to the
+/// table in one transaction indexes both what was there and what it just wrote.
+fn build(
+    store: &Store,
+    mut batch: WriteBatch,
+    view: &Transaction<'_>,
+    record: &LogRecord,
+    definition: &IndexDefinition,
+    claimed: &mut BTreeSet<Vec<u8>>,
+) -> Result<WriteBatch> {
+    let address = IndexAddress::new(
+        definition.namespace,
+        definition.database,
+        definition.table,
+        definition.id,
+    );
+    let mut rows: BTreeMap<RecordId, Vec<u8>> = view
+        .scan_table(definition.namespace, definition.database, definition.table)?
+        .into_iter()
+        .collect();
+
+    for mutation in record.mutations() {
+        if mutation.namespace != definition.namespace
+            || mutation.database != definition.database
+            || mutation.table != definition.table
+        {
+            continue;
+        }
+        match &mutation.value {
+            RecordValue::Present(payload) => rows.insert(mutation.id.clone(), payload.clone()),
+            RecordValue::Tombstone => rows.remove(&mutation.id),
+        };
+    }
+
+    for (id, payload) in &rows {
+        if let Some(values) = project(definition, &decode_payload(payload)?) {
+            batch = insert(store, batch, definition, &address, &values, id, claimed)?;
         }
     }
     Ok(batch)
@@ -242,51 +305,4 @@ pub(crate) fn project(definition: &IndexDefinition, value: &Value) -> Option<Ind
         }
     }
     Some(IndexValues::of(&projected))
-}
-
-/// Index every record already in the table an index is declared on.
-///
-/// Returns how many records were indexed — records missing an indexed field are
-/// counted out, because they are not in the index.
-///
-/// # Errors
-///
-/// Returns [`Error::UniqueViolation`] when two existing records already hold one
-/// value of a unique index, and [`Error::CommitContention`] when a concurrent
-/// write refused every attempt.
-pub(crate) fn backfill(store: &Store, index: &IndexDefinition) -> Result<usize> {
-    let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
-    for _ in 0..MAX_COMMIT_ATTEMPTS {
-        let tail = store.committed_tail()?;
-        let view = store.begin()?;
-        let records = view.scan_table(index.namespace, index.database, index.table)?;
-
-        // The precondition is the whole correctness argument: the records were
-        // read at `tail`, so the entries derived from them are only valid while
-        // the store is still at `tail`. A write that lands meanwhile refuses the
-        // batch instead of leaving an entry describing a value that is no longer
-        // there.
-        let mut batch = WriteBatch::new().expect_value(
-            AppliedPositionKey::keyspace(),
-            AppliedPositionKey.encode(),
-            tail.encode(),
-        );
-        let mut claimed: BTreeSet<Vec<u8>> = BTreeSet::new();
-        let mut indexed = 0_usize;
-        for (id, payload) in &records {
-            if let Some(values) = project(index, &decode_payload(payload)?) {
-                batch = insert(store, batch, index, &address, &values, id, &mut claimed)?;
-                indexed = indexed.saturating_add(1);
-            }
-        }
-
-        match store.backend().apply(batch) {
-            Ok(()) => return Ok(indexed),
-            Err(bgv_db_kv::Error::Conflict { .. }) => continue,
-            Err(other) => return Err(other.into()),
-        }
-    }
-    Err(Error::CommitContention {
-        attempts: MAX_COMMIT_ATTEMPTS,
-    })
 }

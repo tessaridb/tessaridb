@@ -133,15 +133,19 @@ users` — which is where the same clause sits in SQL and therefore where it wil
 be typed. It is not the same as re-running the statement: a name is unique
 within its parent, and a plain `DEFINE` over an existing name is refused.
 
-Two behaviours of `DEFINE INDEX` are stated here because they are surprising and
-because neither raises an error:
+`DEFINE INDEX` **builds the index in the commit that defines it.** An index
+declared on a table that already holds rows indexes those rows, including rows
+written earlier in the same transaction, and a `UNIQUE` index constrains them
+from the moment it exists — declaring one over data that already violates it is
+refused, and the refusal writes nothing at all, not even the definition.
 
-- An index declared on a table that already holds rows **indexes none of them**
-  until it is backfilled. Maintenance sees writes, and rows that predate the
-  index are not writes.
-- A `UNIQUE` index therefore **does not constrain those rows** either, until the
-  backfill succeeds. A unique index declared on populated data and left
-  un-backfilled is declared and not enforced.
+There is no separate backfill to remember, because an index that is visible and
+empty would answer a query with *fewer* records and raise nothing.
+
+The cost is stated rather than hidden: defining an index reads the whole table
+inside the commit. On a table large enough that the pass outlasts the gap between
+concurrent writes, the statement fails with a contention error instead of
+half-building the index.
 
 `DROP TABLE` removes the definition. It does not delete the table's records,
 because that is bulk work whose cost belongs where a caller can see it.
@@ -215,12 +219,10 @@ so adding an index later makes existing queries faster without rewriting any of
 them. The path taken is reported with the result, so a scan is visible rather
 than folklore.
 
-**With one exception, and it is sharp.** An index declared on a table that
-already holds rows indexes none of them until it is backfilled (§4). Until then
-the same statement a scan answered correctly is answered by an index that knows
-nothing about those rows — and it returns *fewer* records, with no error. On
-populated data, define the index and backfill it before relying on it, or the
-change of access path is also a change of answer.
+That property holds on populated data too, and it is the reason `DEFINE INDEX`
+builds its entries in the same commit (§4). An index that existed while empty
+would answer the same statement with *fewer* records and raise nothing — a change
+of access path that is also a change of answer.
 
 **An index read is confirmed, not trusted.** Every candidate the index offers is
 re-checked against the reading transaction's own snapshot, so a stale entry can
