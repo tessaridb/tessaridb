@@ -21,7 +21,7 @@ mod token;
 
 pub use ast::{
     Expr, ExprKind, Field, Name, RangeExpr, RecordTarget, Script, Select, Source, Statement,
-    StatementKind, TableRef,
+    StatementKind, TableRef, Test,
 };
 pub use error::{Error, Result};
 pub use lexer::tokenize;

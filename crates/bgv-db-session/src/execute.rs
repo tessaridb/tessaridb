@@ -96,7 +96,10 @@ impl Session<'_> {
             StatementKind::Get { target } => {
                 Ok(Outcome::Value(self.read_key(transaction, target)?))
             }
-            StatementKind::Select(select) => Ok(Outcome::Records(self.read(transaction, select)?)),
+            StatementKind::Select(select) => {
+                let (records, path) = self.read(transaction, select)?;
+                Ok(Outcome::Records { records, path })
+            }
             StatementKind::Keys { space, range } => self.keys(transaction, space, range.as_ref()),
             // The transaction verbs and `USE` never reach here; the session
             // handles them, because they change what the next statement runs in

@@ -27,5 +27,5 @@ mod outcome;
 mod session;
 
 pub use error::{Error, Result};
-pub use outcome::Outcome;
+pub use outcome::{AccessPath, Outcome};
 pub use session::Session;

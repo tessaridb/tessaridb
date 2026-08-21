@@ -9,11 +9,12 @@ use core::ops::Bound;
 use std::collections::BTreeMap;
 
 use bgv_db_encoding::decode_payload;
-use bgv_db_ql::{Expr, ExprKind, RecordTarget, Select, Source, Span};
+use bgv_db_ql::{Expr, ExprKind, Name, RecordTarget, Select, Source, Span, Test};
 use bgv_db_storage::{RecordAddress, Transaction};
 use bgv_db_types::{Number, RecordId, RecordRef, Value, ValueRange};
 
 use crate::error::{Error, Result};
+use crate::outcome::AccessPath;
 use crate::session::Session;
 
 impl Session<'_> {
@@ -103,30 +104,48 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
-    ) -> Result<Vec<(RecordId, Value)>> {
+    ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
         match &select.from {
             Source::Record(target) => {
                 let (_, address) = self.address(transaction, target)?;
-                match transaction.get(&address)? {
-                    Some(payload) => Ok(vec![(address.id, decode_payload(&payload)?)]),
-                    None => Ok(Vec::new()),
-                }
+                let found = match transaction.get(&address)? {
+                    Some(payload) => vec![(address.id, decode_payload(&payload)?)],
+                    None => Vec::new(),
+                };
+                Ok((found, AccessPath::Record))
             }
             Source::Table(table) => {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 let found = transaction.scan_table(context.namespace, context.database, id)?;
-                decode_all(found)
+                Ok((decode_all(found)?, AccessPath::Scan))
             }
-            Source::Index {
+            Source::Filter {
                 table,
                 field,
+                test,
                 value,
             } => {
-                let (_, id) = self.resolve_table(transaction, table)?;
-                let index = self.index_on_field(transaction, id, &field.text, field.span)?;
+                let (context, id) = self.resolve_table(transaction, table)?;
                 let wanted = self.evaluate(transaction, value)?;
-                let found = transaction.records_by_index(&index, &[wanted])?;
-                decode_all(found)
+
+                // An index serves an equality on a named field. Nothing indexes
+                // a text match yet, and nothing indexes `ANY` — both fall to a
+                // scan, and the statement stays exactly the same on the day one
+                // does.
+                if *test == Test::Equals {
+                    if let Some(index) = self.index_on_field(transaction, id, &field.text)? {
+                        let found = transaction.records_by_index(&index, &[wanted])?;
+                        return Ok((decode_all(found)?, AccessPath::Index));
+                    }
+                }
+
+                let scanned =
+                    decode_all(transaction.scan_table(context.namespace, context.database, id)?)?;
+                let matched = scanned
+                    .into_iter()
+                    .filter(|(_, record)| matches_filter(record, field, *test, &wanted))
+                    .collect();
+                Ok((matched, AccessPath::Scan))
             }
         }
     }
@@ -137,7 +156,7 @@ impl Session<'_> {
     /// array, so that the shape of the answer follows the shape of the question
     /// rather than the number of rows that happened to match.
     fn read_as_value(&self, transaction: &mut Transaction<'_>, select: &Select) -> Result<Value> {
-        let records = self.read(transaction, select)?;
+        let (records, _) = self.read(transaction, select)?;
         if matches!(select.from, Source::Record(_)) {
             return Ok(records
                 .into_iter()
@@ -178,4 +197,145 @@ pub(crate) fn within(id: &RecordId, start: &RecordId, end: &RecordId, inclusive:
         return false;
     }
     if inclusive { id <= end } else { id < end }
+}
+
+/// Whether one record satisfies a filter.
+///
+/// A record that is not an object has no fields, so it matches nothing — a space
+/// holds single values, and searching one by field is a question with no answer
+/// rather than an error.
+fn matches_filter(record: &Value, field: &Name, test: Test, wanted: &Value) -> bool {
+    let Value::Object(object) = record else {
+        return false;
+    };
+    object
+        .get(&field.text)
+        .is_some_and(|held| satisfies(held, test, wanted))
+}
+
+/// Whether one held value satisfies the test.
+fn satisfies(held: &Value, test: Test, wanted: &Value) -> bool {
+    match test {
+        Test::Equals => held == wanted,
+        Test::Like => like(held, wanted, false),
+        Test::Ilike => like(held, wanted, true),
+    }
+}
+
+/// SQL's `LIKE`, over the whole value.
+///
+/// Only text matches a text pattern: a number in that field is not an error, it
+/// simply does not satisfy the filter. Deliberately no tokenising, stemming or
+/// ranking — those belong to an analyzer, and a scan-shaped approximation of one
+/// would give answers a real text index later disagrees with.
+fn like(held: &Value, wanted: &Value, fold_case: bool) -> bool {
+    let (Value::String(text), Value::String(pattern)) = (held, wanted) else {
+        return false;
+    };
+    if fold_case {
+        matches_pattern(&text.to_lowercase(), &pattern.to_lowercase())
+    } else {
+        matches_pattern(text, pattern)
+    }
+}
+
+/// `%` stands for any run of characters, `_` for exactly one, and `\\` escapes
+/// either of them.
+///
+/// Iterative with a single backtrack point rather than recursive: a pattern of
+/// many `%` would otherwise cost exponentially in the length of the text, which
+/// is a denial of service written by whoever typed the query.
+fn matches_pattern(text: &str, pattern: &str) -> bool {
+    let text: Vec<char> = text.chars().collect();
+    let pattern: Vec<char> = pattern.chars().collect();
+    let (mut t, mut p) = (0_usize, 0_usize);
+    let (mut star_at, mut resume) = (None, 0_usize);
+
+    while t < text.len() {
+        let current = pattern.get(p).copied();
+        let escaped = current == Some('\\');
+        let literal = if escaped {
+            pattern.get(p.saturating_add(1)).copied()
+        } else {
+            current
+        };
+        match (current, literal) {
+            (Some('%'), _) if !escaped => {
+                star_at = Some(p);
+                p = p.saturating_add(1);
+                resume = t;
+            }
+            (Some('_'), _) if !escaped => {
+                p = p.saturating_add(1);
+                t = t.saturating_add(1);
+            }
+            (Some(_), Some(want)) if text.get(t).copied() == Some(want) => {
+                p = p.saturating_add(if escaped { 2 } else { 1 });
+                t = t.saturating_add(1);
+            }
+            _ => {
+                // No match here. Give the last `%` one more character and retry.
+                let Some(star) = star_at else {
+                    return false;
+                };
+                resume = resume.saturating_add(1);
+                t = resume;
+                p = star.saturating_add(1);
+            }
+        }
+    }
+    pattern
+        .get(p..)
+        .is_some_and(|rest| rest.iter().all(|c| *c == '%'))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::panic)]
+
+    use super::matches_pattern;
+
+    #[test]
+    fn a_pattern_covers_the_whole_value() {
+        assert!(matches_pattern("ada", "ada"));
+        assert!(!matches_pattern("ada lovelace", "ada"));
+        assert!(matches_pattern("ada lovelace", "ada%"));
+        assert!(matches_pattern("ada lovelace", "%lovelace"));
+        assert!(matches_pattern("ada lovelace", "%love%"));
+        assert!(!matches_pattern("ada", ""));
+        assert!(matches_pattern("", ""));
+        assert!(matches_pattern("", "%"));
+    }
+
+    #[test]
+    fn an_underscore_stands_for_exactly_one_character() {
+        assert!(matches_pattern("ada", "ad_"));
+        assert!(!matches_pattern("ad", "ad_"));
+        assert!(!matches_pattern("adam", "ad_"));
+    }
+
+    #[test]
+    fn a_backslash_makes_a_wildcard_literal() {
+        assert!(matches_pattern("100%", "100\\%"));
+        assert!(!matches_pattern("100x", "100\\%"));
+        assert!(matches_pattern("a_b", "a\\_b"));
+        assert!(!matches_pattern("axb", "a\\_b"));
+    }
+
+    #[test]
+    fn many_wildcards_do_not_cost_exponentially() {
+        // The reason the matcher backtracks from one remembered star rather than
+        // recursing: this pattern against this text is the classic blow-up, and
+        // it is written by whoever typed the query.
+        let text = "a".repeat(64);
+        assert!(!matches_pattern(&text, "%a%a%a%a%a%a%a%a%b"));
+        assert!(matches_pattern(&text, "%a%a%a%a%a%a%a%a%a"));
+    }
+
+    #[test]
+    fn trailing_wildcards_match_nothing_at_all() {
+        assert!(matches_pattern("ada", "ada%"));
+        assert!(matches_pattern("ada", "ada%%%"));
+        assert!(!matches_pattern("ada", "ada_"));
+    }
 }

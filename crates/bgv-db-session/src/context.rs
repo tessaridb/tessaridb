@@ -86,27 +86,22 @@ impl Session<'_> {
         Ok((context, id))
     }
 
-    /// The index that answers a filter on exactly this field.
+    /// The index that answers an equality on exactly this field, if one exists.
     ///
-    /// A filter over an unindexed field is refused here rather than executed as
-    /// a scan-and-filter, so that the only statement whose cost is a whole table
-    /// is the one that says so.
+    /// Absence is not an error. Which access path a filter takes is decided by
+    /// what exists, not by how the query was written — that is what lets an index
+    /// be added later without rewriting a single query.
     pub(crate) fn index_on_field(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
         field: &str,
-        span: Span,
-    ) -> Result<IndexDefinition> {
-        Catalog::new(transaction)
+    ) -> Result<Option<IndexDefinition>> {
+        Ok(Catalog::new(transaction)
             .indexes_on(table)?
             .into_iter()
             .find(|index| {
                 index.fields.len() == 1 && index.fields.first().is_some_and(|f| f == field)
-            })
-            .ok_or_else(|| Error::NoIndexOnField {
-                field: field.to_owned(),
-                span,
-            })
+            }))
     }
 }

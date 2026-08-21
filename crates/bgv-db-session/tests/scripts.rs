@@ -149,22 +149,116 @@ fn the_three_access_paths_answer_from_the_store() {
 }
 
 #[test]
-fn a_filter_over_an_unindexed_field_is_refused_rather_than_scanned() {
+fn the_access_path_follows_what_exists_rather_than_how_the_query_is_written() {
+    use bgv_db_session::AccessPath;
+
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE users; CREATE users:1 = { name: 'ada' };")
+        .run(
+            "DEFINE TABLE users;\n\
+             CREATE users:1 = { name: 'ada lovelace', email: 'ada@example.com' };\n\
+             CREATE users:2 = { name: 'grace hopper', email: 'grace@example.com' };",
+        )
         .unwrap();
 
-    let error = session
-        .run("SELECT * FROM users WHERE name = 'ada';")
-        .unwrap_err();
-    let Error::NoIndexOnField { field, span } = &error else {
-        panic!("{error}");
-    };
-    assert_eq!(field, "name");
-    // The message points at the field, not at the statement.
-    assert!(span.start > 0, "{error}");
+    // No index on `name`, so the same statement reads the table and tests each
+    // record. Correct, and it says so.
+    let scanned = session
+        .run("SELECT * FROM users WHERE name = 'ada lovelace';")
+        .unwrap();
+    assert_eq!(scanned[0].records().unwrap().len(), 1);
+    assert_eq!(scanned[0].path(), Some(AccessPath::Scan));
+
+    // An index exists on `email`, so the equivalent statement becomes an index
+    // read. The record is written after the index so that maintenance sees it —
+    // see the next test for what happens when it is not.
+    session
+        .run(
+            "DEFINE INDEX by_email ON users FIELDS email UNIQUE;\n\
+             CREATE users:3 = { name: 'katherine johnson', email: 'kj@example.com' };",
+        )
+        .unwrap();
+    let indexed = session
+        .run("SELECT * FROM users WHERE email = 'kj@example.com';")
+        .unwrap();
+    assert_eq!(indexed[0].records().unwrap().len(), 1);
+    assert_eq!(indexed[0].path(), Some(AccessPath::Index));
+}
+
+#[test]
+fn an_index_over_rows_that_predate_it_changes_the_answer_until_it_is_backfilled() {
+    // The sharp edge of letting both paths serve one statement. Maintenance sees
+    // writes, and rows written before the index are not writes — so the index
+    // knows nothing about them and the same query returns fewer records, with no
+    // error anywhere. Pinned here so a backfill-on-define change has a test that
+    // notices. Logged as Q-30.
+    use bgv_db_session::AccessPath;
+
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE TABLE users; CREATE users:1 = { email: 'ada@example.com' };")
+        .unwrap();
+
+    let by_scan = session
+        .run("SELECT * FROM users WHERE email = 'ada@example.com';")
+        .unwrap();
+    assert_eq!(by_scan[0].path(), Some(AccessPath::Scan));
+    assert_eq!(by_scan[0].records().unwrap().len(), 1);
+
+    session
+        .run("DEFINE INDEX by_email ON users FIELDS email;")
+        .unwrap();
+
+    let by_index = session
+        .run("SELECT * FROM users WHERE email = 'ada@example.com';")
+        .unwrap();
+    assert_eq!(by_index[0].path(), Some(AccessPath::Index));
+    assert_eq!(by_index[0].records().unwrap().len(), 0, "see Q-30");
+}
+
+#[test]
+fn a_pattern_match_follows_sql_and_is_anchored_to_the_whole_value() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE notes;\n\
+             CREATE notes:1 = { body: 'Ada Lovelace wrote the first program' };\n\
+             CREATE notes:2 = { body: 'Grace Hopper found the first bug' };",
+        )
+        .unwrap();
+
+    let found = session
+        .run("SELECT * FROM notes WHERE body LIKE '%Lovelace%';")
+        .unwrap();
+    assert_eq!(found[0].records().unwrap().len(), 1);
+
+    // Anchored to the whole value, exactly as SQL is — which is why a substring
+    // search needs both wildcards.
+    let unanchored = session
+        .run("SELECT * FROM notes WHERE body LIKE 'Lovelace';")
+        .unwrap();
+    assert!(unanchored[0].records().unwrap().is_empty());
+
+    let folded = session
+        .run("SELECT * FROM notes WHERE body ILIKE '%lovelace%';")
+        .unwrap();
+    assert_eq!(folded[0].records().unwrap().len(), 1);
+
+    let none = session
+        .run("SELECT * FROM notes WHERE body LIKE '%babbage%';")
+        .unwrap();
+    assert!(none[0].records().unwrap().is_empty());
+
+    // A field that is not text never matches a text test, rather than erroring:
+    // the record simply does not satisfy the filter.
+    session.run("CREATE notes:3 = { body: 42 };").unwrap();
+    let still = session
+        .run("SELECT * FROM notes WHERE body LIKE '%Lovelace%';")
+        .unwrap();
+    assert_eq!(still[0].records().unwrap().len(), 1);
 }
 
 #[test]

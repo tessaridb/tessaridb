@@ -184,15 +184,37 @@ pub enum Source {
     Record(RecordTarget),
     /// Every record of a table.
     Table(TableRef),
-    /// The records an index points at.
-    Index {
+    /// The records that satisfy a filter.
+    ///
+    /// Which access path this becomes is decided when it runs, by what exists:
+    /// an index read where an index serves the test, a scan where none does.
+    /// The statement is the same either way, which is what lets an index be
+    /// added later without rewriting a single query.
+    Filter {
         /// The table being read.
         table: TableRef,
-        /// The field the filter names; it must carry an index.
+        /// The field the test applies to.
         field: Name,
-        /// The value the field must hold.
+        /// What the test is.
+        test: Test,
+        /// The value tested against.
         value: Box<Expr>,
     },
+}
+
+/// What a filter tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Test {
+    /// The field holds exactly this value.
+    Equals,
+    /// The field's text matches a pattern, as SQL's `LIKE` does.
+    ///
+    /// The pattern covers the **whole** value — which is why a substring search
+    /// is written `'%text%'` — with `%` standing for any run of characters and
+    /// `_` for exactly one.
+    Like,
+    /// The same, ignoring case.
+    Ilike,
 }
 
 /// A value written in the source.

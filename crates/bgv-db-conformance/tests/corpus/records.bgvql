@@ -80,3 +80,41 @@ SET every:1 = {
 };
 GET every:1;
 --- expect: ok
+
+--- case: a filter over an unindexed field reads the table and tests each record
+# Correct everywhere, linear in the size of the table, and the outcome says so.
+# The statement does not change on the day an index serves it.
+SELECT * FROM users WHERE name = 'ada lovelace';
+--- expect: rows 1
+
+--- case: a pattern covers the whole value, so a substring needs both wildcards
+SELECT * FROM users WHERE name LIKE '%lovelace%';
+--- expect: rows 1
+
+--- case: and an unanchored pattern matches nothing, exactly as in SQL
+SELECT * FROM users WHERE name LIKE 'lovelace';
+--- expect: rows 0
+
+--- case: a prefix pattern is the shape a text index can serve later
+SELECT * FROM users WHERE name LIKE 'ada%';
+--- expect: rows 1
+
+--- case: the underscore stands for exactly one character
+SELECT * FROM users WHERE name LIKE 'ad_ lovelace';
+--- expect: rows 1
+
+--- case: ILIKE is the same test ignoring case
+SELECT * FROM users WHERE name ILIKE '%LOVELACE%';
+--- expect: rows 1
+
+--- case: LIKE does not ignore case
+SELECT * FROM users WHERE name LIKE '%LOVELACE%';
+--- expect: rows 0
+
+--- case: a pattern that matches nothing finds nothing
+SELECT * FROM users WHERE name LIKE '%babbage%';
+--- expect: rows 0
+
+--- case: an indexed equality still goes through the index
+SELECT * FROM users WHERE email = 'ada@example.com';
+--- expect: rows 1

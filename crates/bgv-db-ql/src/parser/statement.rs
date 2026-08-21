@@ -1,7 +1,7 @@
 //! One statement at a time.
 
 use super::Parser;
-use crate::ast::{ExprKind, Name, RangeExpr, Select, Source, Statement, StatementKind};
+use crate::ast::{ExprKind, Name, RangeExpr, Select, Source, Statement, StatementKind, Test};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Spanned, Token};
 
@@ -192,13 +192,18 @@ impl Parser<'_> {
             Source::Record(self.record_target_after(table)?)
         } else if self.eat_keyword(Keyword::Where) {
             let field = self.name()?;
-            self.expect_punct(
-                Punct::Equals,
-                "`=` — the only comparison this milestone has",
-            )?;
-            Source::Index {
+            let test = if self.eat_keyword(Keyword::Like) {
+                Test::Like
+            } else if self.eat_keyword(Keyword::Ilike) {
+                Test::Ilike
+            } else {
+                self.expect_punct(Punct::Equals, "`=`, `LIKE` or `ILIKE`")?;
+                Test::Equals
+            };
+            Source::Filter {
                 table,
                 field,
+                test,
                 value: Box::new(self.expression()?),
             }
         } else {

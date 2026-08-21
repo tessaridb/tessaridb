@@ -172,13 +172,46 @@ decided by the target rather than by a cost model:
 |---|---|
 | `FROM users:1` | the record by its identity |
 | `FROM users WHERE <indexed field> = <value>` | the index |
+| `FROM users WHERE <field> = <value>` (no index) | the table, testing each record |
+| `FROM users WHERE <field> LIKE <pattern>` | the table, testing each record |
 | `FROM users` | every record of the table |
 
-A `WHERE` over a field with no index is refused at this milestone rather than
-silently executed as a scan-and-filter. A statement whose cost is a table scan
-should say so, and `FROM users` already does. The refusal comes from the
-catalog when the statement runs, not from the grammar: whether a field carries
-an index is not a property of the text.
+A `WHERE` names a field and a test:
+
+```
+SELECT * FROM users WHERE email = 'ada@example.com';
+SELECT * FROM notes WHERE body LIKE '%lovelace%';
+SELECT * FROM notes WHERE body ILIKE 'ada%';
+```
+
+`=` is exact equality on the whole value. `LIKE` is SQL's pattern match, and it
+is spelled the way SQL spells it because that is what a person or a tool writes
+without thinking: the pattern covers the **whole** value, `%` stands for any run
+of characters, `_` for exactly one, and `\` escapes either. That whole-value
+anchoring is why a substring search is written `'%text%'`. `ILIKE` is the same
+test ignoring case.
+
+Only text satisfies a text pattern — a number in that field is not an error, the
+record simply does not match.
+
+Deliberately nothing cleverer: no tokenising, no stemming, no ranking. Those
+belong to an analyzer, and a scan-shaped approximation of one now would give
+answers that a real text index later disagrees with. A query whose answer changes
+when an index is added is worse than a slow one.
+
+**Which access path runs is decided by what exists, not by how the query is
+written.** An equality on an indexed field is an index read; everything else
+reads the table and tests each record. The statement is identical either way,
+so adding an index later makes existing queries faster without rewriting any of
+them. The path taken is reported with the result, so a scan is visible rather
+than folklore.
+
+**With one exception, and it is sharp.** An index declared on a table that
+already holds rows indexes none of them until it is backfilled (§4). Until then
+the same statement a scan answered correctly is answered by an index that knows
+nothing about those rows — and it returns *fewer* records, with no error. On
+populated data, define the index and backfill it before relying on it, or the
+change of access path is also a change of answer.
 
 **An index read is confirmed, not trusted.** Every candidate the index offers is
 re-checked against the reading transaction's own snapshot, so a stale entry can
@@ -275,9 +308,10 @@ Named here rather than merely missing, so each absence reads as a decision:
 |---|---|
 | joins | no planner, and a join without one is a nested scan pretending otherwise |
 | graph traversal | the edge key kind is reserved and unimplemented |
-| full-text and vector search | same — reserved kinds, no engine yet |
+| a text **index** | `LIKE` works today over a scan; the index that makes it fast, with its analyzer, is its own milestone. The statement will not change when it lands. |
+| vector search | a reserved key kind, no engine yet |
+| ranking, highlighting, stemming, fuzzy matching | analyzer decisions; approximating them over a scan now would disagree with the index later |
 | aggregation and grouping | needs an execution layer this milestone has not built |
-| `WHERE` over an unindexed field | refused rather than silently a scan-and-filter |
 | functions and expressions beyond literals and reads | a language surface to design once, not accrete |
 | permissions in the language | there is no session identity yet |
 | schema on a table | tables are schemaless at this milestone; `DEFINE INDEX` is the only per-field statement |

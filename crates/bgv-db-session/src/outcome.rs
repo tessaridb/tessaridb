@@ -13,8 +13,17 @@ use bgv_db_types::{RecordId, Value};
 pub enum Outcome {
     /// The statement did its work and has nothing to report.
     Done,
-    /// Records, in key order, each with its identity.
-    Records(Vec<(RecordId, Value)>),
+    /// Records, in key order, each with its identity, and how they were found.
+    ///
+    /// The path is reported rather than inferred because it is the difference
+    /// between a read that stays fast as the table grows and one that does not.
+    /// A caller that never sees it cannot tell them apart until it is slow.
+    Records {
+        /// What was found.
+        records: Vec<(RecordId, Value)>,
+        /// How.
+        path: AccessPath,
+    },
     /// One value — or [`Value::None`] when the key holds nothing.
     ///
     /// `None` and a stored `Null` are different answers, which is the point of
@@ -24,12 +33,48 @@ pub enum Outcome {
     Keys(Vec<RecordId>),
 }
 
+/// How a read reached its records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessPath {
+    /// Straight to one record by its identity.
+    Record,
+    /// Through an index.
+    Index,
+    /// Every record of the table was read and tested.
+    ///
+    /// Correct, and linear in the size of the table. A text search reports this
+    /// until a text index exists to serve it; the statement does not change when
+    /// one does.
+    Scan,
+}
+
+impl AccessPath {
+    /// A short stable name, for logs and for a client that shows the cost.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Record => "record",
+            Self::Index => "index",
+            Self::Scan => "scan",
+        }
+    }
+}
+
 impl Outcome {
     /// The records this outcome carries, if it carries any.
     #[must_use]
     pub fn records(&self) -> Option<&[(RecordId, Value)]> {
         match self {
-            Self::Records(records) => Some(records),
+            Self::Records { records, .. } => Some(records),
+            _ => None,
+        }
+    }
+
+    /// How the records were found, if this outcome carries records.
+    #[must_use]
+    pub const fn path(&self) -> Option<AccessPath> {
+        match self {
+            Self::Records { path, .. } => Some(*path),
             _ => None,
         }
     }

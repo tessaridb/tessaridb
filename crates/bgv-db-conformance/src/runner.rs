@@ -169,7 +169,6 @@ fn kind_name(error: &Error) -> &'static str {
         Error::NoNamespaceSelected { .. } => "NoNamespaceSelected",
         Error::NoDatabaseSelected { .. } => "NoDatabaseSelected",
         Error::Unknown { .. } => "Unknown",
-        Error::NoIndexOnField { .. } => "NoIndexOnField",
         Error::NestedTransaction { .. } => "NestedTransaction",
         Error::NoOpenTransaction { .. } => "NoOpenTransaction",
         Error::UnclosedTransaction { .. } => "UnclosedTransaction",

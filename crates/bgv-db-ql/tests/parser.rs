@@ -7,7 +7,7 @@
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
-use bgv_db_ql::{Error, ExprKind, RecordTarget, Script, Source, StatementKind, parse};
+use bgv_db_ql::{Error, ExprKind, RecordTarget, Script, Source, StatementKind, Test, parse};
 use bgv_db_types::{Datetime, Number, RecordId, Value};
 
 fn script(source: &str) -> Script {
@@ -315,11 +315,30 @@ fn the_three_select_forms_are_the_three_access_paths() {
     else {
         panic!("expected a read");
     };
-    let Source::Index { field, value, .. } = select.from else {
-        panic!("expected an index read");
+    let Source::Filter {
+        field, value, test, ..
+    } = select.from
+    else {
+        panic!("expected a filtered read");
     };
+    assert_eq!(test, Test::Equals);
     assert_eq!(field.text, "email");
     assert!(matches!(value.kind, ExprKind::Literal(Value::String(_))));
+}
+
+#[test]
+fn a_pattern_match_is_its_own_test_rather_than_an_equality() {
+    // The caller of this store names its fields — agents reach it through
+    // bgv-ai-memory, which knows its own schema — so the form is the standard
+    // one and nothing searches unnamed fields.
+    let StatementKind::Select(select) = one("SELECT * FROM notes WHERE body LIKE '%ada%';") else {
+        panic!("expected a read");
+    };
+    let Source::Filter { field, test, .. } = select.from else {
+        panic!("expected a filtered read");
+    };
+    assert_eq!(field.text, "body");
+    assert_eq!(test, Test::Like);
 }
 
 #[test]
@@ -401,8 +420,8 @@ fn a_key_value_read_stands_where_a_value_stands() {
     else {
         panic!("expected a read");
     };
-    let Source::Index { value, .. } = select.from else {
-        panic!("expected an index read");
+    let Source::Filter { value, .. } = select.from else {
+        panic!("expected a filtered read");
     };
     assert!(matches!(value.kind, ExprKind::Get(_)));
 

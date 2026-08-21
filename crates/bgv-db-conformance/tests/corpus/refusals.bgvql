@@ -33,10 +33,6 @@ SELECT name FROM users;
 SET users:1 = (1);
 --- expect: error Unsupported
 
---- case: a filter over a field that carries no index
-SELECT * FROM users WHERE name = 'ada';
---- expect: error NoIndexOnField
-
 --- case: a comparison the language does not have
 SELECT * FROM users WHERE email > 'ada';
 --- expect: error UnexpectedCharacter

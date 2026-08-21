@@ -53,18 +53,6 @@ pub enum Error {
         span: Span,
     },
 
-    /// A filter over a field that carries no index.
-    ///
-    /// Refused rather than executed as a scan-and-filter: a statement whose cost
-    /// is a whole table should say so, and `SELECT * FROM users` already does.
-    #[error("no index on {field:?} (at {span}) — define one, or read the whole table")]
-    NoIndexOnField {
-        /// The field the filter named.
-        field: String,
-        /// Where it was written.
-        span: Span,
-    },
-
     /// `BEGIN` inside a transaction that is already open.
     #[error("a transaction is already open (at {span})")]
     NestedTransaction {

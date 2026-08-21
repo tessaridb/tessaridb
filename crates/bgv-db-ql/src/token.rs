@@ -202,6 +202,10 @@ pub enum Keyword {
     From,
     /// `WHERE`
     Where,
+    /// `LIKE` — a pattern over the whole value, as SQL spells it.
+    Like,
+    /// `ILIKE` — the same, ignoring case.
+    Ilike,
     /// `UPDATE`
     Update,
     /// `DELETE`
@@ -262,6 +266,8 @@ impl Keyword {
             Self::Select => "SELECT",
             Self::From => "FROM",
             Self::Where => "WHERE",
+            Self::Like => "LIKE",
+            Self::Ilike => "ILIKE",
             Self::Update => "UPDATE",
             Self::Delete => "DELETE",
             Self::Get => "GET",
@@ -302,6 +308,8 @@ impl Keyword {
         Self::Select,
         Self::From,
         Self::Where,
+        Self::Like,
+        Self::Ilike,
         Self::Update,
         Self::Delete,
         Self::Get,
