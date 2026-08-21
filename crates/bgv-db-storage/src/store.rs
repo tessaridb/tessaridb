@@ -15,6 +15,7 @@ use bgv_db_kv::{KeyRange, KvBackend, ScanDirection, ScanRequest, WriteBatch};
 use bgv_db_types::Sequence;
 
 use crate::error::{Error, Result};
+use crate::feed::Changes;
 use crate::snapshots::Registry;
 use crate::transaction::Transaction;
 
@@ -116,6 +117,49 @@ impl Store {
             Some(value) => Ok(Sequence::decode(value.as_slice())?),
             None => Ok(Sequence::ZERO),
         }
+    }
+
+    /// Read log records from `from` onward, oldest first.
+    ///
+    /// `limit` bounds the read because a log is unbounded by nature and a caller
+    /// that asks for "the rest of it" is asking for however much has accumulated
+    /// since it last looked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a stored record cannot be
+    /// decoded.
+    /// The record changes from `from` onward, oldest first.
+    ///
+    /// A projection of [`Store::log_records`] and nothing more: the feed holds no
+    /// state, cannot disagree with what was committed, and is identical on a
+    /// replica reading the same log. Catalog changes are not in it — a
+    /// subscriber watching `users` did not ask for the rows that describe
+    /// `users` — and a change says what a record *became* rather than whether it
+    /// is new; both are explained in [`crate::feed`].
+    ///
+    /// `limit` bounds the **log records** read, not the changes produced, so one
+    /// commit is never returned half-way: a subscriber applies a commit as the
+    /// unit it was written as. For the same reason the answer carries the
+    /// position to resume from — a commit that only touched the catalog yields
+    /// no changes, and a reader given only a list could not tell that from
+    /// "nothing has happened" and would ask for the same records forever.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails, or when a record or a payload
+    /// cannot be decoded. A payload that cannot be decoded is corruption rather
+    /// than a change to skip.
+    pub fn changes_since(&self, from: Sequence, limit: usize) -> Result<Changes> {
+        let records = self.log_records(from, limit)?;
+        let next = records.last().map_or(from, |(sequence, _)| {
+            Sequence::new(sequence.get().saturating_add(1))
+        });
+        let mut changes = Vec::new();
+        for (sequence, record) in records {
+            changes.extend(crate::feed::changes_in(sequence, &record)?);
+        }
+        Ok(Changes { changes, next })
     }
 
     /// Read log records from `from` onward, oldest first.

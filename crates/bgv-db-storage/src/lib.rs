@@ -23,6 +23,7 @@
 
 mod catalog;
 mod error;
+mod feed;
 mod index;
 mod log;
 mod reclaim;
@@ -36,6 +37,7 @@ pub use catalog::{
     NamespaceDefinition, SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition, TableShape,
 };
 pub use error::{Error, Result};
+pub use feed::{Change, ChangeKind, Changes};
 pub use reclaim::Reclaimed;
 pub use store::Store;
 pub use transaction::{RecordAddress, Transaction};
