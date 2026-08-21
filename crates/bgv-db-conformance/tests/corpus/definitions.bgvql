@@ -1,0 +1,52 @@
+# Definition statements: the catalog, reached only through the language.
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database are defined and selected
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+--- expect: ok
+
+--- case: a table is defined
+DEFINE TABLE users;
+--- expect: ok
+
+--- case: a space is defined
+DEFINE SPACE sessions;
+--- expect: ok
+
+--- case: an index is defined over one field
+DEFINE INDEX by_email ON users FIELDS email UNIQUE;
+--- expect: ok
+
+--- case: an index is defined over several fields, and is not unique
+DEFINE INDEX by_name ON users FIELDS last, first;
+--- expect: ok
+
+--- case: a name is unique within its parent
+DEFINE TABLE users;
+--- expect: error NameTaken
+
+--- case: if not exists accepts a definition that already stands
+DEFINE TABLE IF NOT EXISTS users;
+DEFINE INDEX IF NOT EXISTS by_email ON users FIELDS email UNIQUE;
+--- expect: ok
+
+--- case: an index is removed
+DROP INDEX by_name ON users;
+--- expect: ok
+
+--- case: a table is removed, and its name is free again
+DROP TABLE users;
+DEFINE TABLE users;
+--- expect: ok
+
+--- case: a definition in another database is reached by qualifying it
+DEFINE DATABASE archive;
+USE DATABASE archive;
+DEFINE TABLE users;
+CREATE users:1 = { name: 'grace' };
+USE DATABASE orders;
+SELECT * FROM archive.users;
+--- expect: rows 1

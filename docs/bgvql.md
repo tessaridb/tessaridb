@@ -97,6 +97,13 @@ than the number five beside a name that fails somewhere else.
 decided by whether a `[` follows, and nothing else in the grammar makes that
 ambiguous.
 
+**A field name inside an object may be a reserved word**, so `{ unique: true,
+where: 'here' }` is written the obvious way. A field name is always followed by
+`:` and can never be a verb in that position, so nothing about the grammar
+depends on context. A name that is not a word at all is written as text:
+`{ 'two words': 1 }`. Everywhere else — tables, spaces, indexes, databases — a
+reserved word is not available as a name.
+
 ## 4. Definition statements
 
 ```

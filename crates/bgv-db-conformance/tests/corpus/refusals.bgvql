@@ -1,0 +1,63 @@
+# What docs/bgvql.md §8 leaves out, refused by name rather than misread.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+DEFINE TABLE users;
+CREATE users:1 = { name: 'ada', email: 'ada@example.com' };
+--- expect: ok
+
+--- case: joins
+SELECT * FROM users JOIN orders;
+--- expect: error Unsupported
+
+--- case: aggregation and grouping
+SELECT * FROM users GROUP BY email;
+--- expect: error Unsupported
+
+--- case: ordering a result
+SELECT * FROM users ORDER BY email;
+--- expect: error Unsupported
+
+--- case: limiting a result
+SELECT * FROM users LIMIT 10;
+--- expect: error Unsupported
+
+--- case: projecting named fields
+SELECT name FROM users;
+--- expect: error Unsupported
+
+--- case: an expression grouped in parentheses
+SET users:1 = (1);
+--- expect: error Unsupported
+
+--- case: a filter over a field that carries no index
+SELECT * FROM users WHERE name = 'ada';
+--- expect: error NoIndexOnField
+
+--- case: a comparison the language does not have
+SELECT * FROM users WHERE email > 'ada';
+--- expect: error UnexpectedCharacter
+
+--- case: an object that names one field twice
+CREATE users:2 = { name: 'ada', name: 'grace' };
+--- expect: error DuplicateField
+
+--- case: a float is not a record identity
+DELETE users:1.5;
+--- expect: error InvalidRecordId
+
+--- case: text after a marker that is not the value it marks
+SET users:1 = datetime 'yesterday';
+--- expect: error InvalidDatetime
+
+--- case: a name the catalog does not hold
+SELECT * FROM missing;
+--- expect: error Unknown
+
+--- case: a word that names an absent feature is still a legal name
+DEFINE TABLE order;
+SELECT * FROM order;
+--- expect: rows 0

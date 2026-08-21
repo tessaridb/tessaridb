@@ -1,0 +1,82 @@
+# Record statements, and the three access paths.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+DEFINE TABLE users;
+DEFINE INDEX by_email ON users FIELDS email UNIQUE;
+--- expect: ok
+
+--- case: a record is created
+CREATE users:1 = { name: 'ada', email: 'ada@example.com' };
+CREATE users:2 = { name: 'grace', email: 'grace@example.com' };
+--- expect: ok
+
+--- case: a record by its identity
+SELECT * FROM users:1;
+--- expect: rows 1
+
+--- case: every record of a table
+SELECT * FROM users;
+--- expect: rows 2
+
+--- case: the records an index points at
+SELECT * FROM users WHERE email = 'grace@example.com';
+--- expect: rows 1
+
+--- case: a read that matches nothing answers with nothing
+SELECT * FROM users WHERE email = 'nobody@example.com';
+--- expect: rows 0
+
+--- case: a record is replaced whole
+UPDATE users:1 = { name: 'ada lovelace', email: 'ada@example.com' };
+SELECT * FROM users WHERE email = 'ada@example.com';
+--- expect: rows 1
+
+--- case: a create never replaces
+CREATE users:1 = { name: 'someone else' };
+--- expect: error RecordExists
+
+--- case: an update never invents
+UPDATE users:99 = { name: 'nobody' };
+--- expect: error NoSuchRecord
+
+--- case: a record is deleted, and the index forgets it with the record
+DELETE users:2;
+SELECT * FROM users WHERE email = 'grace@example.com';
+--- expect: rows 0
+
+--- case: a unique index refuses a second record holding the same value
+CREATE users:3 = { email: 'ada@example.com' };
+--- expect: error UniqueViolation
+
+--- case: a record id is any of its four kinds
+CREATE users:'ada' = { name: 'by text' };
+CREATE users:0x0a1b = { name: 'by bytes' };
+CREATE users:uuid '550e8400-e29b-41d4-a716-446655440000' = { name: 'by uuid' };
+--- expect: ok
+
+--- case: every value type survives a round trip through the store
+DEFINE SPACE every;
+SET every:1 = {
+  nothing:  NONE,
+  empty:    NULL,
+  yes:      true,
+  count:    42,
+  measure:  1.5,
+  money:    dec 12.34,
+  text:     'ada',
+  raw:      0x0a1b,
+  span:     1h30m,
+  moment:   datetime '2026-09-01T00:00:00Z',
+  unique:   uuid '550e8400-e29b-41d4-a716-446655440000',
+  where:    users,
+  who:      users:1,
+  many:     [1, 2],
+  distinct: set [1, 2, 2],
+  between:  1..10,
+};
+GET every:1;
+--- expect: ok

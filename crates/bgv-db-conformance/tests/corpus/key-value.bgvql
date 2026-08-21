@@ -1,0 +1,75 @@
+# The key-value model: a space is a table whose records hold a single value.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+DEFINE SPACE sessions;
+--- expect: ok
+
+--- case: a key holds a whole value
+SET sessions:'abc' = 42;
+GET sessions:'abc';
+--- expect: value 42
+
+--- case: a write replaces and never merges
+SET sessions:'abc' = { user: 1, live: true };
+SET sessions:'abc' = 'replaced';
+GET sessions:'abc';
+--- expect: value 'replaced'
+
+--- case: a key that holds nothing and a key that is not there are different answers
+SET sessions:'here' = NULL;
+GET sessions:'here';
+--- expect: value NULL
+
+--- case: and the one that is not there
+GET sessions:'gone';
+--- expect: value NONE
+
+--- case: a key is removed
+DEL sessions:'abc';
+GET sessions:'abc';
+--- expect: value NONE
+
+--- case: the keys of a space
+SET sessions:'a' = 1;
+SET sessions:'f' = 2;
+SET sessions:'m' = 3;
+SET sessions:'z' = 4;
+KEYS FROM sessions;
+--- expect: keys 5
+
+--- case: a range bounds the keys, excluding its end
+# 'here' is written earlier in this file and sorts between 'f' and 'm', which is
+# the point: text keys order lexicographically, so a range means what the byte
+# order says and not what the eye expects.
+KEYS FROM sessions RANGE 'a'..'m';
+--- expect: keys 3
+
+--- case: and includes it when it says so
+KEYS FROM sessions RANGE 'a'..='m';
+--- expect: keys 4
+
+--- case: a key-value read stands where a value stands
+DEFINE TABLE users;
+DEFINE INDEX by_email ON users FIELDS email UNIQUE;
+CREATE users:1 = { name: 'ada', email: 'ada@example.com' };
+DEFINE SPACE emails;
+SET emails:'primary' = 'ada@example.com';
+SELECT * FROM users WHERE email = GET emails:'primary';
+--- expect: rows 1
+
+--- case: an embedded read of one record answers with that record's own value
+DEFINE TABLE audit;
+CREATE audit:1 = {
+  actor:  GET emails:'primary',
+  target: (SELECT * FROM users:1),
+};
+SELECT * FROM audit:1;
+--- expect: rows 1
+
+--- case: a range bound has to be something a key could be
+KEYS FROM sessions RANGE 1.5..2.5;
+--- expect: error InvalidKeyBound

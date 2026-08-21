@@ -1,0 +1,57 @@
+# Transactions: what lands together, and what does not land at all.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+--- expect: ok
+
+--- case: a definition and a write land together
+BEGIN;
+DEFINE TABLE users;
+CREATE users:1 = { name: 'ada' };
+COMMIT;
+--- expect: ok
+
+--- case: and they are both there afterwards
+SELECT * FROM users;
+--- expect: rows 1
+
+--- case: a cancelled transaction leaves nothing behind
+BEGIN;
+DEFINE TABLE accounts;
+CREATE accounts:1 = { balance: 10 };
+CANCEL;
+--- expect: ok
+
+--- case: not even the table it defined
+SELECT * FROM accounts;
+--- expect: error Unknown
+
+--- case: a script that opens a transaction and never closes it discards and says so
+BEGIN;
+CREATE users:2 = { name: 'grace' };
+--- expect: error UnclosedTransaction
+
+--- case: and the discarded write is not there
+SELECT * FROM users;
+--- expect: rows 1
+
+--- case: a second BEGIN inside one is refused
+BEGIN;
+BEGIN;
+--- expect: error NestedTransaction
+
+--- case: a COMMIT with nothing open is refused
+COMMIT;
+--- expect: error NoOpenTransaction
+
+--- case: a space and a table commit together, because a database is the unit
+BEGIN;
+DEFINE SPACE sessions;
+SET sessions:'abc' = users:1;
+CREATE users:3 = { name: 'hopper' };
+COMMIT;
+SELECT * FROM users;
+--- expect: rows 2

@@ -245,11 +245,31 @@ impl Parser<'_> {
         })
     }
 
-    /// A field name, which may be written as text when it is not a bare name.
+    /// A field name.
+    ///
+    /// A reserved word is accepted here, and that is not the contextual-keyword
+    /// trap it looks like: a field name is always followed by `:` and can never
+    /// be a verb in this position, so nothing about the grammar depends on where
+    /// the reader is standing. What it buys is that `unique`, `where`, `range`,
+    /// `index` and `table` stay usable as what they usually are — ordinary words
+    /// in someone's data. The name is taken from the **source text** rather than
+    /// the keyword's spelling, because a field name is case-sensitive and the
+    /// keyword is not.
+    ///
+    /// Text is also accepted, for a name that is not a word at all.
     fn field_name(&mut self) -> Result<Name> {
         if matches!(self.peek(), Some(Token::Str(_))) {
             let (text, span) = self.quoted_field_name()?;
             return Ok(Name { text, span });
+        }
+        if matches!(self.peek(), Some(Token::Keyword(_))) {
+            let span = self.span_here();
+            self.advance();
+            let text = self.source.get(span.start..span.end).unwrap_or_default();
+            return Ok(Name {
+                text: text.to_owned(),
+                span,
+            });
         }
         self.name()
     }

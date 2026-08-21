@@ -20,6 +20,7 @@ bgv-db-storage = { path = "crates/bgv-db-storage" }
 bgv-db-lsm = { path = "crates/bgv-db-lsm" }
 bgv-db-ql = { path = "crates/bgv-db-ql" }
 bgv-db-session = { path = "crates/bgv-db-session" }
+bgv-db-conformance = { path = "crates/bgv-db-conformance" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

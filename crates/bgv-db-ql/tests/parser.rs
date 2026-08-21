@@ -167,6 +167,30 @@ fn containers_hold_expressions_and_tolerate_a_trailing_comma() {
 }
 
 #[test]
+fn a_field_name_may_be_a_reserved_word_or_text() {
+    // `unique`, `where`, `range`, `index` and `table` are ordinary words in
+    // someone's data. A field name is always followed by `:` and can never be a
+    // verb there, so accepting them costs the grammar nothing.
+    let ExprKind::Object(fields) =
+        written("SET k:1 = { unique: 1, where: 2, table: 3, 'two words': 4 }")
+    else {
+        panic!("expected an object");
+    };
+    let names: Vec<&str> = fields
+        .iter()
+        .map(|field| field.name.text.as_str())
+        .collect();
+    assert_eq!(names, ["unique", "where", "table", "two words"]);
+
+    // The name comes from the source, so its case survives — a field name is
+    // case-sensitive and a keyword is not.
+    let ExprKind::Object(fields) = written("SET k:1 = { Unique: 1 }") else {
+        panic!("expected an object");
+    };
+    assert_eq!(fields[0].name.text, "Unique");
+}
+
+#[test]
 fn an_object_that_names_one_field_twice_is_refused() {
     // Keeping either occurrence stores a value the author did not write, and
     // nothing downstream can tell which one was meant.
