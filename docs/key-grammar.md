@@ -78,7 +78,7 @@ because renumbering after data exists is a full rebuild.
 | `0x11` | `UniqueIndex` | `index` | implemented |
 | `0x12` | `Posting` (full-text) | `index` | reserved — SG4 |
 | `0x13` | `VectorNode` | `index` | reserved — SG4 |
-| `0x14` | `Edge` (graph) | `index` | reserved — SG4 |
+| `0x14` | `Edge` (graph) | `index` | reserved, **not needed** — see §9a |
 | `0x20` | `LogEntry` | `log` | implemented |
 | `0x30` | `FormatVersion` | `meta` | implemented |
 | `0x31` | `AppliedPosition` | `meta` | implemented |
@@ -88,6 +88,28 @@ because renumbering after data exists is a full rebuild.
 | `0x35` | `IndexCatalog` | `meta` | reserved — SG4 |
 | `0x36` | `IdAllocator` | `meta` | reserved, unused — see §9 |
 | `0x37` | `BackfillWatermark` | `meta` | reserved — SG4 |
+
+### 3a. The edge tag, and why it is unused
+
+`0x14` was reserved for a graph adjacency key. The graph engine was then built
+without one, and the reservation stands rather than being withdrawn.
+
+An edge turned out to be an ordinary **record**: a row in an edge table carrying
+`out` and `in`, which hold record references. A record reference is one of the
+fifteen value types and is order-encoded like any other, so "the edges out of
+`users:1`" is "the records whose `out` equals `users:1`" — a read of an ordinary
+secondary index (`0x10`), which an edge table is given on each endpoint when it
+is declared.
+
+What that bought is everything an adjacency keyspace would have had to reimplement
+one at a time: MVCC versions, transactional atomicity with the records at both
+ends, replication through the same apply path, the schema check, and the
+bidirectional index sweep that already exists. What it costs is one index-id
+indirection in the key, which is a fixed-width prefix either way.
+
+The tag is **not withdrawn**. Withdrawing it would let a future kind reuse the
+byte, and a byte that once meant one thing and later means another is not
+something a stored key can be asked about. It costs one row in the table above.
 
 Tags are grouped by family (`0x0_` data, `0x1_` index, `0x2_` log, `0x3_` meta)
 so a hex dump is readable and each family has room to grow.

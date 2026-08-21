@@ -491,3 +491,82 @@ fn a_plain_table_gets_no_indexes_it_did_not_ask_for() {
             .edge
     );
 }
+
+#[test]
+fn a_replica_rebuilds_an_edge_table_with_its_indexes_and_its_declarations() {
+    // Declaring an edge table writes five catalog records in one commit — the
+    // table, two indexes and two field declarations. A replica has only that log
+    // record, so this is where the shape could be built on the leader and not on
+    // the replica.
+    let (_backend, store) = store();
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").unwrap();
+    let database = catalog.create_database(namespace.id, "social").unwrap();
+    let users = catalog
+        .create_table(namespace.id, database.id, "users", TableShape::default())
+        .unwrap();
+    let follows = catalog
+        .create_table(
+            namespace.id,
+            database.id,
+            "follows",
+            TableShape {
+                edge: true,
+                ..TableShape::default()
+            },
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+
+    // An edge, so the endpoint indexes have an entry to disagree about.
+    let mut transaction = store.begin().unwrap();
+    let edge = Value::Object(
+        [
+            (
+                "out".to_owned(),
+                Value::Record(bgv_db_types::RecordRef::new(users.id, RecordId::Int(1))),
+            ),
+            (
+                "in".to_owned(),
+                Value::Record(bgv_db_types::RecordRef::new(users.id, RecordId::Int(2))),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    transaction.put(
+        RecordAddress::new(namespace.id, database.id, follows.id, RecordId::Int(1)),
+        encode_payload(&edge).into_bytes(),
+    );
+    transaction.commit().unwrap();
+
+    let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    for (sequence, record) in store.log_records(Sequence::ZERO, 1024).unwrap() {
+        replica.apply_record(sequence, &record).unwrap();
+    }
+
+    let mut transaction = replica.begin().unwrap();
+    let catalog = Catalog::new(&mut transaction);
+    assert!(catalog.table(follows.id).unwrap().unwrap().edge);
+    assert_eq!(catalog.indexes_on(follows.id).unwrap().len(), 2);
+    assert_eq!(catalog.fields_on(follows.id).unwrap().len(), 2);
+
+    // And the entry the index holds is the same one, so a traversal on the
+    // replica answers what it answers on the leader.
+    let index = catalog
+        .indexes_on(follows.id)
+        .unwrap()
+        .into_iter()
+        .find(|index| index.fields == vec!["out".to_owned()])
+        .expect("an edge table has an index on out");
+    let anchor = Value::Record(bgv_db_types::RecordRef::new(users.id, RecordId::Int(1)));
+    assert_eq!(
+        transaction
+            .records_by_index(&index, &[anchor])
+            .unwrap()
+            .len(),
+        1
+    );
+}
