@@ -165,6 +165,13 @@ bgv ./data --backup ./monday.bgvlog
 bgv ./restored --restore ./monday.bgvlog
 ```
 
+**A store's `*.log` files are not logs to tidy away — they are its newest data.**
+Removing the live one discards every write since the last flush, silently: the
+store opens, answers, reports no failure, and is simply an earlier store. A
+write-ahead file the engine has already recorded is refused when it goes missing,
+but the live one cannot be, because once it is gone there is nothing left to
+notice with. Copy the whole directory, or use `--backup`.
+
 A restore refuses a store that already holds something — merging a backup into a
 populated store is not a restore, and the sequences would collide with a
 different meaning. A file that has been cut short restores what it holds and says
