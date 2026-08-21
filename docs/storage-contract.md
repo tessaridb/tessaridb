@@ -73,6 +73,7 @@ help. Callers branch on the category, never on the message text.
 | `unavailable` | **yes** | a dependency is temporarily unreachable |
 | `corruption` | no | stored data failed an integrity check; an operator decision |
 | `lifecycle` | no | shutting down, or the keyspace was dropped |
+| `incompatible` | no | the data is intact but written in a format this binary does not support; deploy a newer binary rather than repair the store |
 | `internal` | no | a bug or violated invariant |
 
 A missing key is not in this table because it is not an error — it is `None` from

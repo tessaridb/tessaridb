@@ -1,10 +1,17 @@
 //! Shared value types for `bgv-db`.
 //!
-//! This crate is a dependency leaf: it defines the identifiers, value types and
-//! newtypes every other crate in the workspace speaks in, and depends on nothing
-//! inside the workspace itself.
+//! This crate is a dependency leaf: it defines the identifiers and value types
+//! every other crate in the workspace speaks in, and depends on nothing inside
+//! the workspace itself.
 //!
-//! Nothing is implemented yet. The crate exists so the workspace layout, lint
-//! configuration and CI pipeline are in place before the first real type lands.
+//! What lives here is what more than one layer needs to name — the tenancy
+//! identifiers, the log sequence, and the identity of a record. Anything a
+//! single layer owns stays in that layer.
 
 #![forbid(unsafe_code)]
+
+mod ids;
+mod record_id;
+
+pub use ids::{DatabaseId, NamespaceId, Sequence, TableId};
+pub use record_id::RecordId;

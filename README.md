@@ -3,8 +3,8 @@
 A multi-model database written in Rust.
 
 `bgv-db` stores documents, graphs, relational tables, vectors, full-text and
-time-series data in one engine, behind one query language, over a pluggable
-key–value substrate. It runs as an embedded library, as a single self-hosted
+time-series data in one engine, behind one query language — **bgvQL** — over a
+pluggable key–value substrate. It runs as an embedded library, as a single self-hosted
 node, or as a cluster that distributes both data and engine roles across nodes.
 
 > **Status: pre-alpha.** Nothing here is usable yet. The repository currently
@@ -31,7 +31,7 @@ it is a general-purpose database that happens to have a demanding first user.
 | Goal | What it means here |
 |---|---|
 | **Multi-model** | Documents, graph edges, relational tables and columns, vectors, full-text, time-series — over one record store, not bolted together |
-| **One query language** | A single surface for every model, including graph traversal and vector search |
+| **One query language** | **bgvQL** — a single surface for every model, including graph traversal and vector search |
 | **Pluggable storage** | Everything above the key–value layer is written against a trait. In-memory and RocksDB first |
 | **Transactional** | Real transactions with a declared isolation level, not best-effort batching |
 | **Real-time** | Change subscriptions as a first-class feature, not polling |
@@ -56,8 +56,9 @@ crates/
   bgv-db-types        leaf   value types, record ids, newtypes
   bgv-db-constants    leaf   tunables, each with unit and rationale
   bgv-db-kv                  key-value abstraction; memory and RocksDB backends
+  bgv-db-encoding            key grammar and value codec over the KV layer
   bgv-db-storage             records, indexes, transactions over the KV layer
-  bgv-db-ql                  query language: lexer, parser, AST
+  bgv-db-ql                  bgvQL: lexer, parser, AST
   bgv-db-planner             logical and physical planning
   bgv-db-exec                execution engine and per-model operators
   bgv-db-index               index kinds: btree, full-text, vector, graph

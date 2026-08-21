@@ -38,6 +38,13 @@ pub enum ErrorCategory {
     ///
     /// A lifecycle condition, not a data problem.
     Lifecycle,
+    /// The stored data is intact but this binary cannot interpret it — an
+    /// on-disk format written by a newer version.
+    ///
+    /// Distinct from [`Corruption`](Self::Corruption) because the operator
+    /// action is the opposite one: deploy a binary that understands the format,
+    /// rather than repair or restore the data.
+    Incompatible,
     /// A bug or violated invariant.
     Internal,
 }
@@ -53,6 +60,7 @@ impl ErrorCategory {
             Self::Unavailable => "unavailable",
             Self::Corruption => "corruption",
             Self::Lifecycle => "lifecycle",
+            Self::Incompatible => "incompatible",
             Self::Internal => "internal",
         }
     }
@@ -69,6 +77,7 @@ impl ErrorCategory {
             | Self::Validation
             | Self::Corruption
             | Self::Lifecycle
+            | Self::Incompatible
             | Self::Internal => false,
         }
     }
@@ -252,6 +261,7 @@ mod tests {
         assert!(!ErrorCategory::Validation.is_retryable());
         assert!(!ErrorCategory::Corruption.is_retryable());
         assert!(!ErrorCategory::Lifecycle.is_retryable());
+        assert!(!ErrorCategory::Incompatible.is_retryable());
         assert!(!ErrorCategory::Internal.is_retryable());
     }
 
@@ -264,6 +274,7 @@ mod tests {
             (ErrorCategory::Unavailable, "unavailable"),
             (ErrorCategory::Corruption, "corruption"),
             (ErrorCategory::Lifecycle, "lifecycle"),
+            (ErrorCategory::Incompatible, "incompatible"),
             (ErrorCategory::Internal, "internal"),
         ];
         for (category, code) in expected {

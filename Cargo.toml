@@ -15,9 +15,12 @@ publish = false
 bgv-db-types = { path = "crates/bgv-db-types" }
 bgv-db-constants = { path = "crates/bgv-db-constants" }
 bgv-db-kv = { path = "crates/bgv-db-kv" }
+bgv-db-encoding = { path = "crates/bgv-db-encoding" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
+
+proptest = "1"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
