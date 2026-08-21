@@ -38,6 +38,17 @@ const RECORDS: u64 = 2_000;
 /// How many reads each read phase performs.
 const READS: u64 = 2_000;
 
+/// How many batches the capacity workload writes.
+///
+/// Enough to cross the memtable ceiling, because a capacity run that stops short
+/// of the first flush measures a store that has not yet done the thing it will
+/// spend its life doing. At the observed rate that is somewhere past a hundred
+/// and fifty thousand records.
+const CAPACITY_BATCHES: u64 = 100;
+
+/// How many records each of those batches holds.
+const CAPACITY_BATCH: u64 = 2_500;
+
 /// How many nearest-neighbour queries the index workload asks.
 const QUERIES: usize = 100;
 
@@ -75,6 +86,11 @@ pub const ALL: &[Workload] = &[
         name: "search",
         about: "a term search over a full-text index, against the scan of the same condition",
         run: search,
+    },
+    Workload {
+        name: "capacity",
+        about: "sustained writes in escalating batches, with p99 and resident memory per batch",
+        run: capacity,
     },
     Workload {
         name: "restore",
@@ -336,6 +352,68 @@ fn vector(db: &Db) -> Failable<Vec<Report>> {
     reports.push(nearest.summarise("vector-nearest-scan"));
 
     Ok(reports)
+}
+
+/// How much this store takes before it stops meeting a bound, and what grows.
+///
+/// The readiness gate asks for **capacity measured at a latency bound with the
+/// saturating resource named**, which is the one never-waived row nothing here
+/// could answer. It needs three things a throughput number alone does not give:
+/// a bound to be measured against, a shape over a growing store rather than a
+/// single point, and something observable about what is running out.
+///
+/// So this writes in escalating batches and reports, per batch, the throughput,
+/// the p99 and the process's resident memory. A store whose p99 climbs while
+/// memory is flat is bound by the device or by compaction; one whose memory
+/// climbs with it is bound by what it is holding. The numbers say which, and the
+/// checklist records the reading rather than this function guessing at it.
+fn capacity(db: &Db) -> Failable<Vec<Report>> {
+    prepared(db)?;
+    let mut session = db.session();
+    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE TABLE load;")?;
+
+    let mut reports = Vec::new();
+    let mut written = 0_u64;
+    for batch in 0..CAPACITY_BATCHES {
+        let mut samples = Samples::with_capacity(usize::try_from(CAPACITY_BATCH).unwrap_or(0));
+        for _ in 0..CAPACITY_BATCH {
+            let n = written;
+            timed!(
+                samples,
+                session.run(&format!(
+                    "CREATE load:{n} = {{ name: 'record {n}', city: 'city {}', \
+                     note: 'a line of prose long enough to be a real payload rather than a token' }};",
+                    n % 100
+                ))?
+            );
+            written = written.saturating_add(1);
+        }
+        reports.push(samples.summarise(&format!("batch {} ({written} records)", batch.saturating_add(1))));
+        if let Some(resident) = resident_bytes() {
+            reports.push(Report::measurement(
+                "  resident",
+                &format!("{} KiB after {written} records", resident / 1024),
+            ));
+        }
+    }
+    Ok(reports)
+}
+
+/// This process's resident memory, in bytes.
+///
+/// Read by asking the operating system's own tool rather than by linking one:
+/// `ps` is on every platform this runs on, the harness is not a production path,
+/// and a dependency taken to read one number would be in the tree for ever. A
+/// platform where it does not answer reports nothing rather than a guess.
+fn resident_bytes() -> Option<u64> {
+    let held = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p"])
+        .arg(std::process::id().to_string())
+        .output()
+        .ok()?;
+    let text = String::from_utf8(held.stdout).ok()?;
+    // `ps` reports kibibytes on both platforms this is run on.
+    text.trim().parse::<u64>().ok()?.checked_mul(1024)
 }
 
 /// A backup, and the restore that replays it.
