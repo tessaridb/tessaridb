@@ -13,10 +13,17 @@
 //!
 //! **Correctness**
 //!
-//! - Atomic flush. A batch here writes a record in one region and the position
-//!   that accounts for it in another. Without atomic flush the regions flush
-//!   independently and recovery can restore one past the other, leaving a record
-//!   that nothing will ever reconcile.
+//! - Atomic flush, and it is worth being exact about what it does here, because
+//!   the obvious reason is the wrong one. The engine's own header (11.8.1,
+//!   `options.h`) says it is *not* necessary when the WAL is always enabled,
+//!   because the WAL restores the database to its last persistent state — and
+//!   this store never disables the WAL, at either durability level. What it buys
+//!   is the sentence after: an auto-triggered flush covers **every** region at
+//!   once. A batch here writes a record in one region and the position that
+//!   accounts for it in another, so flushing them together keeps the regions at
+//!   one point rather than leaving recovery to reconcile two. The cost is that a
+//!   ceiling crossed by one region rewrites the memtables of all of them,
+//!   including cold ones.
 //! - Tolerate a corrupted trailing WAL record, *and* verify the WAL set against
 //!   the manifest. This works as a pair and not as two settings. At
 //!   [`Durability::PowerLossSafe`] every acknowledged write is synced before it
