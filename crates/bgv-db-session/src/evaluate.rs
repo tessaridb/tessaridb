@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 
 use bgv_db_encoding::decode_payload;
 use bgv_db_ql::{
-    BinaryOp, Direction, Expr, ExprKind, Projectable, Projected, Projection, RecordTarget, Select,
-    Source, Span, TableRef,
+    BinaryOp, Direction, Expr, ExprKind, Function, Projectable, Projected, Projection,
+    RecordTarget, Select, Source, Span, TableRef,
 };
 use bgv_db_storage::{Catalog, RecordAddress, Transaction};
 use bgv_db_types::{Analyzer, Number, Path, RecordId, RecordRef, TableId, Value, ValueRange};
@@ -22,7 +22,8 @@ use crate::call::call;
 use crate::condition::{apply, boolean, literal_prefix};
 use crate::error::{Error, Result};
 use crate::outcome::AccessPath;
-use crate::search::matches_terms;
+use crate::rank::{Corpus, score};
+use crate::search::{Searched, matches_terms};
 use crate::session::Session;
 
 impl Session<'_> {
@@ -87,6 +88,13 @@ impl Session<'_> {
                 arguments,
                 span,
             } => {
+                // A score is the second thing in this language that needs more
+                // than its arguments — the field's analyzer, and what the
+                // collection looks like. `call` takes values, and neither of
+                // those is one, so it is answered here where the scope is.
+                if *function == Function::SearchScore {
+                    return self.rank(transaction, arguments, scope, *span);
+                }
                 let arguments = self.values(transaction, arguments, scope)?;
                 call(*function, &arguments, *span)
             }
@@ -212,10 +220,10 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         select: &Select,
     ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
-        // The analyzers travel with the records because a sort key is an
-        // expression too, and one holding a `MATCHES` must mean the same thing
-        // there as it does in the `WHERE` that produced them.
-        let (records, path, analyzers) = self.read_source(transaction, &select.from)?;
+        // The searched context travels with the records because a sort key is
+        // an expression too, and one holding a `MATCHES` or a score must mean
+        // the same thing there as it does in the `WHERE` that produced them.
+        let (records, path, searched) = self.read_source(transaction, select)?;
         let records = match &select.projection {
             Projection::All => records,
             Projection::Values(wanted) if folds(wanted) || !select.group.is_empty() => {
@@ -224,7 +232,7 @@ impl Session<'_> {
             Projection::Values(wanted) => {
                 let mut projected = Vec::with_capacity(records.len());
                 for (id, record) in records {
-                    projected.push((id, self.project(transaction, &record, wanted)?));
+                    projected.push((id, self.project(transaction, &record, wanted, &searched)?));
                 }
                 projected
             }
@@ -245,7 +253,7 @@ impl Session<'_> {
                     keys.push(self.evaluate_in(
                         transaction,
                         &key.key,
-                        Scope::searching(&record, &analyzers),
+                        Scope::searching(&record, &searched),
                     )?);
                 }
                 keyed.push((keys, id, record));
@@ -275,6 +283,7 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         record: &Value,
         wanted: &[Projected],
+        searched: &Searched,
     ) -> Result<Value> {
         let mut projected = BTreeMap::new();
         for value in wanted {
@@ -284,7 +293,11 @@ impl Session<'_> {
                 // become one.
                 continue;
             };
-            let held = self.evaluate_in(transaction, expr, Scope::of(record))?;
+            // The searched context reaches here as well as the `WHERE` and the
+            // `ORDER BY`: a projection is where a caller most often asks for a
+            // score, and it needs the same collection the ordering measures
+            // against or the two would disagree in the same statement.
+            let held = self.evaluate_in(transaction, expr, Scope::searching(record, searched))?;
             if held.is_present() {
                 projected.insert(value.name.text.clone(), held);
             }
@@ -292,21 +305,64 @@ impl Session<'_> {
         Ok(Value::Object(projected))
     }
 
+    /// What one record scores against the collection its field is indexed in.
+    ///
+    /// The first argument must be a **path**: a score is measured against the
+    /// statistics of one indexed field, and an arbitrary expression names no
+    /// field to have statistics for. Refusing that is refusing to guess.
+    fn rank(
+        &self,
+        transaction: &mut Transaction<'_>,
+        arguments: &[Expr],
+        scope: Scope<'_>,
+        span: Span,
+    ) -> Result<Value> {
+        let (Some(first), Some(second)) = (arguments.first(), arguments.get(1)) else {
+            return Ok(Value::None);
+        };
+        let ExprKind::Path(field) = &first.kind else {
+            return Err(Error::NoSearchIndex {
+                field: "that expression".to_owned(),
+                span,
+            });
+        };
+        // Refused before either argument is evaluated: there is nothing to
+        // measure against, so evaluating them would be work done to reach a
+        // conclusion already known.
+        let (Some(corpus), Some(analyzer)) =
+            (scope.corpus(&field.path), scope.analyzer(&field.path))
+        else {
+            return Err(Error::NoSearchIndex {
+                field: field.path.to_string(),
+                span,
+            });
+        };
+        let held = self.evaluate_in(transaction, first, scope)?;
+        let wanted = self.evaluate_in(transaction, second, scope)?;
+        Ok(score(corpus, analyzer, &held, &wanted))
+    }
+
     /// The records a source produces, as they are stored.
-    fn read_source(&self, transaction: &mut Transaction<'_>, from: &Source) -> Result<Reached> {
-        match from {
+    ///
+    /// Takes the whole statement rather than only its source, because what the
+    /// searched fields need is decided by every expression the read evaluates —
+    /// a `SELECT … ORDER BY search::score(body, 'x') FROM notes` searches a
+    /// field its source never mentions.
+    fn read_source(&self, transaction: &mut Transaction<'_>, select: &Select) -> Result<Reached> {
+        match &select.from {
             Source::Record(target) => {
                 let (_, address) = self.address(transaction, target)?;
                 let found = match transaction.get(&address)? {
                     Some(payload) => vec![(address.id, decode_payload(&payload)?)],
                     None => Vec::new(),
                 };
-                Ok((found, AccessPath::Record, BTreeMap::new()))
+                Ok((found, AccessPath::Record, Searched::default()))
             }
             Source::Table(table) => {
                 let (context, id) = self.resolve_table(transaction, table)?;
+                let searched = self.searched_for(transaction, id, &shown(select))?;
                 let found = transaction.scan_table(context.namespace, context.database, id)?;
-                Ok((decode_all(found)?, AccessPath::Scan, BTreeMap::new()))
+                Ok((decode_all(found)?, AccessPath::Scan, searched))
             }
             Source::Traverse {
                 from,
@@ -316,18 +372,21 @@ impl Session<'_> {
             } => {
                 let (found, path) =
                     self.traverse(transaction, from, *direction, edges, target.as_ref())?;
-                Ok((found, path, BTreeMap::new()))
+                Ok((found, path, Searched::default()))
             }
             Source::Where { table, condition } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 // Resolved once for the query rather than once per record: which
                 // analyzer a field carries is a property of the schema, and the
-                // schema does not change under a read. Read before the access
-                // path is chosen, because a search index needs it to turn the
+                // schema does not change under a read; nor does the collection a
+                // score is measured against. Read before the access path is
+                // chosen, because a search index needs the analyzer to turn the
                 // query into the terms it holds.
-                let analyzers = self.analyzers_for(transaction, id, condition)?;
+                let mut expressions: Vec<&Expr> = vec![condition];
+                expressions.extend(shown(select));
+                let searched = self.searched_for(transaction, id, &expressions)?;
                 let (candidates, path) =
-                    self.candidates(transaction, id, context, condition, &analyzers)?;
+                    self.candidates(transaction, id, context, condition, &searched)?;
 
                 // The candidates are tested against the **whole** condition, not
                 // only the conjunct the index answered. That is what makes an
@@ -338,13 +397,13 @@ impl Session<'_> {
                     let held = self.evaluate_in(
                         transaction,
                         condition,
-                        Scope::searching(&record, &analyzers),
+                        Scope::searching(&record, &searched),
                     )?;
                     if boolean(&held, condition.span)? {
                         matched.push((id, record));
                     }
                 }
-                Ok((matched, path, analyzers))
+                Ok((matched, path, searched))
             }
         }
     }
@@ -360,7 +419,7 @@ impl Session<'_> {
         table: TableId,
         context: crate::context::Context,
         condition: &Expr,
-        analyzers: &BTreeMap<Path, Analyzer>,
+        searched: &Searched,
     ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
         for seek in seekable(condition) {
             // A right-hand side that reads the record is not a constant, so it
@@ -388,7 +447,7 @@ impl Session<'_> {
                 }
                 Shape::Terms if index.search => {
                     let (Value::String(query), Some(analyzer)) =
-                        (&wanted, analyzers.get(seek.path))
+                        (&wanted, searched.analyzer(seek.path))
                     else {
                         continue;
                     };
@@ -599,25 +658,25 @@ fn seekable(condition: &Expr) -> Vec<Seek<'_>> {
     }
 }
 
-/// What a source produced: the records, how they were reached, and the
-/// analyzers the fields it searched declare.
+/// What a source produced: the records, how they were reached, and what its
+/// searched fields need.
 ///
-/// The analyzers travel with the records because a sort key is an expression
-/// too, and one holding a `MATCHES` must mean the same thing there as in the
-/// `WHERE` that produced them.
-type Reached = (Vec<(RecordId, Value)>, AccessPath, BTreeMap<Path, Analyzer>);
+/// The searched context travels with the records because a sort key is an
+/// expression too, and one holding a `MATCHES` or a score must mean the same
+/// thing there as in the `WHERE` that produced them.
+type Reached = (Vec<(RecordId, Value)>, AccessPath, Searched);
 
 /// What the evaluator can see besides the expression itself.
 ///
-/// The record a condition is being tested against, and the analyzers the
-/// searched fields declare. Both are absent in a value position, where there is
-/// no record and nothing to search.
+/// The record a condition is being tested against, and what its searched fields
+/// need. Both are absent in a value position, where there is no record and
+/// nothing to search.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Scope<'a> {
     /// The record being tested, when there is one.
     pub(crate) record: Option<&'a Value>,
-    /// The analyzer each searched path carries.
-    analyzers: Option<&'a BTreeMap<Path, Analyzer>>,
+    /// The analyzers and collection statistics the searched paths need.
+    searched: Option<&'a Searched>,
 }
 
 impl<'a> Scope<'a> {
@@ -625,22 +684,47 @@ impl<'a> Scope<'a> {
     pub(crate) const fn of(record: &'a Value) -> Self {
         Self {
             record: Some(record),
-            analyzers: None,
+            searched: None,
         }
     }
 
-    /// A record, and the analyzers its searched fields declare.
-    const fn searching(record: &'a Value, analyzers: &'a BTreeMap<Path, Analyzer>) -> Self {
+    /// A record, and what its searched fields need.
+    const fn searching(record: &'a Value, searched: &'a Searched) -> Self {
         Self {
             record: Some(record),
-            analyzers: Some(analyzers),
+            searched: Some(searched),
         }
     }
 
     /// The analyzer this path's field declares, if it declares one.
     fn analyzer(self, path: &Path) -> Option<&'a Analyzer> {
-        self.analyzers.and_then(|named| named.get(path))
+        self.searched.and_then(|held| held.analyzer(path))
     }
+
+    /// What this path's collection looks like, if it was ranked against.
+    fn corpus(self, path: &Path) -> Option<&'a Corpus> {
+        self.searched.and_then(|held| held.corpus(path))
+    }
+}
+
+/// The expressions a read evaluates besides its condition: what it projects,
+/// and what it orders by.
+///
+/// A fold is left out. `search::score` inside one would be scoring the group
+/// rather than the record, which is a different question and is not this one.
+fn shown(select: &Select) -> Vec<&Expr> {
+    let mut found = Vec::new();
+    if let Projection::Values(wanted) = &select.projection {
+        for projected in wanted {
+            if let Projectable::Value(expr) = &projected.value {
+                found.push(expr);
+            }
+        }
+    }
+    for ordering in &select.order {
+        found.push(&ordering.key);
+    }
+    found
 }
 
 /// Whether an expression reads the record being tested.

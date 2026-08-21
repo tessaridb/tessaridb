@@ -717,6 +717,7 @@ SELECT * FROM users WHERE string::len(name) = 3;
 | `time` | `now()` |
 | `type` | `of(value)` — the type's name, as §3 spells it |
 | `vector` | `cosine(a, b)` · `euclidean(a, b)` · `dot(a, b)` |
+| `search` | `score(field, 'query')` — see [Ranking](#ranking) |
 
 **What earns a place: a function is here when it cannot be expressed by what the
 language already has.** That is why there is no `array::contains` (`CONTAINS`
@@ -729,6 +730,50 @@ element" is otherwise unsayable.
 set of functions is known then. What each argument holds is checked when it runs,
 and a wrong one names the function, the position, what was wanted and what was
 there.
+
+### Ranking
+
+Relevance is an ordinary expression too, so a ranked search is the same shape as
+a nearest-neighbour read — an order and a bound:
+
+```
+SELECT title, search::score(body, 'lock contention') AS relevance
+  FROM notes
+ WHERE body MATCHES 'lock contention'
+ ORDER BY relevance DESC
+ LIMIT 10;
+```
+
+`search::score` computes **BM25**: a word occurring here counts for more when
+fewer other documents hold it, repeating it helps less each time, and a long
+document is not rewarded for holding a word by accident.
+
+**A score is measured against a collection, and that is the whole difference
+from `MATCHES`.** `MATCHES` asks whether *this* text holds *these* words, which
+is a property of the record — so a scan and an index answer it identically, and
+adding an index cannot change what a query returns. A score asks how much that
+matters, which cannot be read off any one record: it needs how many documents
+there are, how long a typical one is, and how many hold each word. Those are
+maintained by the search index alongside its postings.
+
+So **a score over a field with no search index is refused**, naming the field.
+Answering zero instead, or scoring against whatever records happened to be read,
+would produce an ordering that looks exactly like a ranking and is not one — and
+nobody checks an order that looks right. A refusal is a statement that did not
+run; a plausible wrong order is a statement that did. For the same reason a
+single-record read (`FROM notes:9`) has no collection in scope and is refused
+too.
+
+**A record holding none of the query's words scores `0`**, which is the computed
+answer rather than an absence standing in for one, and sorts where it belongs
+under the `DESC` a ranked read is written with.
+
+`k1 = 1.2` and `b = 0.75` — how fast repetition stops helping, and how much
+length is held against a document — are **constants of this implementation**, not
+options on the index. That has a cost worth stating plainly: changing them in a
+release changes the order results come back in, without any statement changing.
+They become part of `DEFINE INDEX` when there is a measurement to justify a
+different value.
 
 ### Nearest neighbours
 
@@ -945,7 +990,8 @@ Named here rather than merely missing, so each absence reads as a decision:
 | n-grams, so `MATCHES` never answers a substring question | index size proportional to text length × (max − min), paid on every write; Q-31 holds the measurement that would decide it |
 | phrase queries (`'"ada lovelace"'`) | they need positions in the postings and a second matching rule |
 | a vector **index** | nearest-neighbour search works today over a scan, ordered by a distance. The index that makes it fast has a reserved key kind (`0x13`) and is not built — and when it is, it cannot change an answer, because a distance is a function of two values and of no index. |
-| ranking, highlighting, fuzzy matching | ranking needs a score that a projection can carry and an `ORDER BY` can name, which is a language surface rather than an index feature |
+| highlighting, fuzzy matching, phrase and proximity queries | each needs postings to carry more than membership — offsets for a highlight or a phrase, an edit automaton for fuzziness — which is a different index rather than a bigger one. Ranking itself is built: see [Ranking](#ranking) |
+| per-index `k1` / `b`, per-field weighting | tuning knobs nobody can yet turn responsibly: this project has no labelled relevance set to measure a different value against, and a knob chosen without one is a guess with a syntax |
 | `[*]` in a path — "any element of this array" | it turns a path from a function into a relation: the filter becomes existential, a projection returns several values, and the index becomes a multikey one with entries per element and a reclamation rule of its own. Three features wearing one syntax. |
 | declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
 | `HAVING` | a filter over groups is a second filter position with its own scoping rule — it sees folds where `WHERE` does not — and is worth its own milestone rather than an afterthought |

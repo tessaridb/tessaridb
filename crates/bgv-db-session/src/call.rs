@@ -77,6 +77,10 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // value like any other — a replica applies what was written rather than
         // asking its own clock and reaching a different answer.
         Function::TimeNow => now(function, span),
+        // A score needs the record's analyzer and the collection it is measured
+        // against, and neither is a value — so it is answered in the evaluator,
+        // where the scope is, and never reaches here.
+        Function::SearchScore => Ok(Value::None),
         Function::VectorCosine | Function::VectorEuclidean | Function::VectorDot => {
             let (Some(left), Some(right)) = (arguments.first(), arguments.get(1)) else {
                 return Err(wrong_type(function, 0, "a vector", "nothing", span));

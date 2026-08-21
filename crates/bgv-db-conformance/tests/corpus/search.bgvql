@@ -85,3 +85,35 @@ SELECT * FROM notes WHERE body MATCHES 'lovelace';
 --- case: and leaves the ones it now does
 SELECT * FROM notes WHERE body MATCHES 'hopper';
 --- expect: rows 1
+
+# Ranking. A score is not a property of a document — it measures one against the
+# collection — so it needs statistics the index maintains, and is refused where
+# there are none rather than answered with a number that orders nothing at all.
+
+--- case: another note, so there is a collection to rank within
+CREATE notes:9 = { body: 'hopper hopper hopper and nothing else', title: 'Grace' };
+--- expect: ok
+
+--- case: a score is an ordinary expression, addressable in a projection
+SELECT search::score(body, 'hopper') AS relevance FROM notes;
+--- expect: rows 5
+
+--- case: and in an ORDER BY, which is all a ranked read is
+SELECT * FROM notes ORDER BY search::score(body, 'hopper') DESC LIMIT 1;
+--- expect: rows 1
+
+--- case: a record holding none of the query's words scores zero, not nothing
+SELECT * FROM notes WHERE search::score(body, 'unheardof') > 0;
+--- expect: rows 0
+
+--- case: a score with the wrong number of arguments is refused before anything runs
+SELECT search::score(body) AS relevance FROM notes;
+--- expect: error WrongArity
+
+--- case: a score over a field with no search index is refused, naming the field
+SELECT search::score(title, 'ada') AS relevance FROM notes;
+--- expect: error NoSearchIndex
+
+--- case: and a single record is not a collection either
+SELECT search::score(body, 'hopper') AS relevance FROM notes:9;
+--- expect: error NoSearchIndex

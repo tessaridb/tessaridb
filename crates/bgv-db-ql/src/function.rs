@@ -65,6 +65,9 @@ pub enum Function {
     VectorEuclidean,
     /// `vector::dot(a, b)` — the inner product.
     VectorDot,
+    /// `search::score(field, 'query')` — how well this record answers the query,
+    /// measured against the collection the field's search index summarises.
+    SearchScore,
 }
 
 impl Function {
@@ -87,6 +90,7 @@ impl Function {
         Self::VectorCosine,
         Self::VectorEuclidean,
         Self::VectorDot,
+        Self::SearchScore,
     ];
 
     /// How the function is written, group and name together.
@@ -110,6 +114,7 @@ impl Function {
             Self::VectorCosine => "vector::cosine",
             Self::VectorEuclidean => "vector::euclidean",
             Self::VectorDot => "vector::dot",
+            Self::SearchScore => "search::score",
         }
     }
 
@@ -118,7 +123,11 @@ impl Function {
     pub const fn arity(self) -> usize {
         match self {
             Self::TimeNow => 0,
-            Self::StringConcat | Self::VectorCosine | Self::VectorEuclidean | Self::VectorDot => 2,
+            Self::StringConcat
+            | Self::VectorCosine
+            | Self::VectorEuclidean
+            | Self::VectorDot
+            | Self::SearchScore => 2,
             _ => 1,
         }
     }
@@ -135,11 +144,19 @@ impl Function {
     ///   not there is unbounded — and because `NONE` sorts below every value, so
     ///   propagating it would make a bounded nearest-neighbour read answer with
     ///   the records that have no vector at all, in first place.
+    /// - [`Function::SearchScore`] answers `0`: a record with no text in the
+    ///   field holds none of the query's words, and a document holding none of
+    ///   them scores zero. That is the computed answer and not a stand-in for
+    ///   one.
     #[must_use]
     pub const fn answers_for_absence(self) -> bool {
         matches!(
             self,
-            Self::TypeOf | Self::VectorCosine | Self::VectorEuclidean | Self::VectorDot
+            Self::TypeOf
+                | Self::VectorCosine
+                | Self::VectorEuclidean
+                | Self::VectorDot
+                | Self::SearchScore
         )
     }
 

@@ -79,6 +79,7 @@ because renumbering after data exists is a full rebuild.
 | `0x12` | `Posting` (full-text) | `index` | reserved — SG4 |
 | `0x13` | `VectorNode` | `index` | reserved — SG4 |
 | `0x14` | `Edge` (graph) | `index` | reserved, **not needed** — see §9a |
+| `0x15` | `SearchStatistics` | `index` | implemented — see §3b |
 | `0x20` | `LogEntry` | `log` | implemented |
 | `0x30` | `FormatVersion` | `meta` | implemented |
 | `0x31` | `AppliedPosition` | `meta` | implemented |
@@ -116,6 +117,23 @@ so a hex dump is readable and each family has room to grow.
 
 Every decode error names the kind it was decoding. An error that reports opaque
 bytes leaves an operator unable to tell which subsystem wrote the bad key.
+
+### 3b. The search-statistics tag
+
+`0x15` holds what a full-text index knows about its collection rather than about
+any one document: how many records hold at least one term, and how many tokens
+those records hold in total.
+
+It is a **key kind and not a value on the postings** because it is not a fact
+about a posting. A posting says a term is in a document; a score says how much
+that matters, and that needs the collection's size and its typical document
+length — neither of which any record can be asked for. They are maintained on
+write, in the same batch as the postings they summarise, for the reason index
+entries are: state written outside the batch that implies it is state nothing
+will ever reconcile.
+
+It sits in the `index` keyspace rather than `meta` because it is derived from the
+postings, is meaningless without them, and is swept with them.
 
 ## 4. Component encodings
 
@@ -325,6 +343,27 @@ so a shorter list sorts before a longer one that extends it.
 
 Values are encoded per §4.5 and §7a, and each is self-delimiting, which is what
 lets the parser find where the list ends and the record id begins.
+
+A full-text posting is `0x12` with the same shape as a secondary entry, its term
+in the value position.
+
+### 6.2b `SearchStatistics` — keyspace `index`
+
+```
+key    <0x15> <namespace:u32> <database:u32> <table:u32> <index:u32>
+value  <documents:u64> <terms:u64>
+```
+
+The key is exactly the 17-byte index prefix with **no suffix**, so one index has
+exactly one of these and reading it is a point read rather than a scan for the
+single entry a prefix would hold.
+
+`documents` counts the records contributing at least one term; a record whose
+indexed field is absent, empty, or not text is not in the index and is not
+counted. `terms` is the token count **with repeats**, because it exists to be
+divided by `documents` and yield an average document *length*. The postings
+deduplicate and this does not; both come from one analyzer pass over the same
+text, so they cannot drift apart.
 
 ### 6.3 `FormatVersion` — keyspace `meta`
 

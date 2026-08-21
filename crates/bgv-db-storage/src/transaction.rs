@@ -30,7 +30,8 @@ use std::ops::Bound;
 use bgv_db_constants::MAX_COMMIT_ATTEMPTS;
 use bgv_db_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, PostingKey, RecordKey,
-    RecordValue, SecondaryIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
+    RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, StoreKey, StoreValue,
+    UniqueIndexKey, decode_payload,
 };
 use bgv_db_kv::{KeyRange, ScanDirection, ScanRequest};
 use bgv_db_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId, Value};
@@ -258,6 +259,57 @@ impl<'a> Transaction<'a> {
             holding.retain(|id| next.contains(id));
         }
         Ok(holding.into_iter().collect())
+    }
+
+    /// What a search index knows about its collection as a whole.
+    ///
+    /// An index that has never been written to has no statistics key, and the
+    /// answer is the empty collection rather than an error: nothing is wrong
+    /// with an index over no documents, and a caller ranking against one gets
+    /// the same score for every record because that is the true answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or the stored value cannot be
+    /// decoded.
+    pub fn search_statistics(&self, index: &IndexDefinition) -> Result<SearchStatistics> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let key = SearchStatisticsKey::new(address).encode();
+        match self
+            .store
+            .backend()
+            .get(SearchStatisticsKey::keyspace(), &key)?
+        {
+            Some(bytes) => Ok(SearchStatistics::decode(bytes.as_slice())?),
+            None => Ok(SearchStatistics::default()),
+        }
+    }
+
+    /// How many documents this index posts the term against.
+    ///
+    /// The count a ranking needs, and it is a count of the postings rather than
+    /// a number kept beside them — the postings *are* the answer, so a
+    /// maintained copy would be a second statement of one fact.
+    ///
+    /// The keys are **counted, not decoded**: a term held by a million records
+    /// would otherwise cost a million record-id allocations to answer a question
+    /// about the number one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails.
+    pub fn document_frequency(&self, index: &IndexDefinition, term: &str) -> Result<u64> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let encoded = IndexValues::of(&[Value::from(term)]);
+        let prefix = PostingKey::term_prefix(&address, &encoded);
+        let request = ScanRequest {
+            keyspace: PostingKey::keyspace(),
+            range: KeyRange::prefix(&prefix),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+        let found = self.store.backend().scan(&request)?.len();
+        Ok(u64::try_from(found).unwrap_or(u64::MAX))
     }
 
     /// The records one term is posted against.

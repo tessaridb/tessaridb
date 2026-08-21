@@ -37,3 +37,36 @@ pub const MAX_COMMIT_ATTEMPTS: u32 = 8;
 /// decoded changes is a bounded allocation. Provisional until measured against a
 /// real backlog.
 pub const SKIP_BATCH_RECORDS: usize = 256;
+
+/// How quickly repeating a term stops improving a BM25 score.
+///
+/// Unit: dimensionless.
+///
+/// A relevance score that counted occurrences linearly could be lifted without
+/// limit by repeating one word, which is both wrong about language and an open
+/// invitation to anyone writing the documents. `k1` is the point at which each
+/// further occurrence buys noticeably less than the last: the term's
+/// contribution approaches `k1 + 1` times its weight and never exceeds it.
+///
+/// `1.2` is the value the literature settled on across TREC collections, and it
+/// is the value nearly every production engine ships. It is a starting value
+/// here for the same reason it is elsewhere — nothing in this project has been
+/// measured against a labelled relevance set, and a number chosen without one
+/// would be a guess dressed as a decision.
+pub const BM25_K1: f64 = 1.2;
+
+/// How much a document's length is held against it in a BM25 score.
+///
+/// Unit: dimensionless, in `0.0..=1.0`.
+///
+/// At `0.0` length is ignored entirely, so a long document holding a term once
+/// ranks with a short one that does — which favours whichever document happens
+/// to be longest. At `1.0` length is fully normalised away, which over-punishes
+/// the long document that is genuinely the better answer.
+///
+/// `0.75` is the standard compromise and the same starting value `BM25_K1` is.
+/// Both become options on the index definition when there is a measurement to
+/// justify a different value; until then, changing either in a release changes
+/// ranking order without any statement changing, which is stated in
+/// `docs/bgvql.md` rather than left to be discovered.
+pub const BM25_B: f64 = 0.75;

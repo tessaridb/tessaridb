@@ -71,7 +71,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bgv_db_encoding::{
     IndexAddress, IndexTarget, IndexValues, LogRecord, Mutation, NoPayload, PostingKey,
-    RecordValue, SecondaryIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
+    RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, StoreKey, StoreValue,
+    UniqueIndexKey, decode_payload,
 };
 use bgv_db_kv::WriteBatch;
 use bgv_db_types::{Analyzer, RecordId, TableId, Value};
@@ -80,6 +81,25 @@ use crate::catalog::{Catalog, IndexDefinition, defined_index};
 use crate::error::{Error, Result};
 use crate::store::Store;
 use crate::transaction::{RecordAddress, Transaction};
+
+/// What one log record accumulates while its index writes are built.
+///
+/// Both fields are facts a single mutation cannot see on its own: the unique
+/// values already claimed *within this batch*, and how each search index's
+/// collection statistics have moved so far. They travel together because they
+/// have the same lifetime and the same reason to exist — the batch is the unit
+/// of atomicity, so it is also the unit these are true of.
+#[derive(Debug, Default)]
+struct Pending {
+    /// Unique index keys this batch has already written.
+    ///
+    /// Two records in ONE batch claiming one unique value would each find the
+    /// key absent and each write it, and the second would silently overwrite the
+    /// first. A precondition cannot catch that — both are satisfied.
+    claimed: BTreeSet<Vec<u8>>,
+    /// How each search index's statistics move, written once at the end.
+    moved: BTreeMap<IndexAddress, Delta>,
+}
 
 /// Add the index writes a log record implies to `batch`.
 ///
@@ -97,11 +117,7 @@ pub(crate) fn maintain(
     // once per record. That is what makes a scan and an index answer the same
     // question; see `bgv_db_types::Analyzer`.
     let mut analyzers: BTreeMap<TableId, BTreeMap<String, Analyzer>> = BTreeMap::new();
-    // Two records in ONE batch claiming one unique value would each find the key
-    // absent and each write it, and the second would silently overwrite the
-    // first. A precondition cannot catch that — both are satisfied — so the
-    // claims are tracked here.
-    let mut claimed: BTreeSet<Vec<u8>> = BTreeSet::new();
+    let mut pending = Pending::default();
 
     for mutation in record.mutations() {
         let definitions = match by_table.get(&mutation.table) {
@@ -139,8 +155,8 @@ pub(crate) fn maintain(
                 definition,
                 mutation,
                 previous.as_deref(),
-                &mut claimed,
                 &declared,
+                &mut pending,
             )?;
         }
     }
@@ -150,10 +166,10 @@ pub(crate) fn maintain(
     // about to be applied on top of.
     for mutation in record.mutations() {
         if let Some(definition) = defined_index(mutation)? {
-            batch = build(store, batch, &mut view, record, &definition, &mut claimed)?;
+            batch = build(store, batch, &mut view, record, &definition, &mut pending)?;
         }
     }
-    Ok(batch)
+    settle(store, batch, &pending.moved)
 }
 
 /// Every entry a newly defined index implies, added to the commit that defines
@@ -168,7 +184,7 @@ fn build(
     view: &mut Transaction<'_>,
     record: &LogRecord,
     definition: &IndexDefinition,
-    claimed: &mut BTreeSet<Vec<u8>>,
+    pending: &mut Pending,
 ) -> Result<WriteBatch> {
     let address = IndexAddress::new(
         definition.namespace,
@@ -197,8 +213,11 @@ fn build(
     if definition.search {
         let declared = analyzers_on(view, definition.table)?;
         let analyzer = search_analyzer(definition, &declared);
+        let counted = pending.moved.entry(address).or_default();
         for (id, payload) in &rows {
-            for term in terms_of(definition, analyzer, &decode_payload(payload)?) {
+            let analysed = terms_of(definition, analyzer, &decode_payload(payload)?);
+            counted.added(analysed.tokens);
+            for term in analysed.postings {
                 batch = batch.put(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, id.clone()).encode(),
@@ -211,7 +230,15 @@ fn build(
 
     for (id, payload) in &rows {
         if let Some(values) = project(definition, &decode_payload(payload)?) {
-            batch = insert(store, batch, definition, &address, &values, id, claimed)?;
+            batch = insert(
+                store,
+                batch,
+                definition,
+                &address,
+                &values,
+                id,
+                &mut pending.claimed,
+            )?;
         }
     }
     Ok(batch)
@@ -223,8 +250,8 @@ fn apply_one(
     definition: &IndexDefinition,
     mutation: &Mutation,
     previous: Option<&[u8]>,
-    claimed: &mut BTreeSet<Vec<u8>>,
     analyzers: &BTreeMap<String, Analyzer>,
+    pending: &mut Pending,
 ) -> Result<WriteBatch> {
     let address = IndexAddress::new(
         definition.namespace,
@@ -235,8 +262,15 @@ fn apply_one(
 
     if definition.search {
         let analyzer = search_analyzer(definition, analyzers);
+        let counted = pending.moved.entry(address).or_default();
+        // The old side first, and both sides of the same change: a record whose
+        // text changed leaves the index at its former length and re-enters at
+        // its new one, so a statistic that only counted arrivals would drift
+        // upward by exactly the amount nobody ever looks at.
         if let Some(bytes) = previous {
-            for term in terms_of(definition, analyzer, &decode_payload(bytes)?) {
+            let analysed = terms_of(definition, analyzer, &decode_payload(bytes)?);
+            counted.removed(analysed.tokens);
+            for term in analysed.postings {
                 batch = batch.delete(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, mutation.id.clone()).encode(),
@@ -244,7 +278,9 @@ fn apply_one(
             }
         }
         if let RecordValue::Present(payload) = &mutation.value {
-            for term in terms_of(definition, analyzer, &decode_payload(payload)?) {
+            let analysed = terms_of(definition, analyzer, &decode_payload(payload)?);
+            counted.added(analysed.tokens);
+            for term in analysed.postings {
                 batch = batch.put(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, mutation.id.clone()).encode(),
@@ -274,7 +310,7 @@ fn apply_one(
                 &address,
                 &values,
                 &mutation.id,
-                claimed,
+                &mut pending.claimed,
             )?;
         }
     }
@@ -372,32 +408,126 @@ fn search_analyzer<'a>(
         .and_then(|path| analyzers.get(path.root()))
 }
 
+/// What one record contributes to a search index: its postings, and its length.
+///
+/// Both come out of a **single** analyzer pass. They could each be computed on
+/// their own, and then a change to the tokenizer would have to reach two places
+/// to keep the postings and the statistics describing the same text — which is
+/// the shape of drift that gets noticed as a ranking that is subtly wrong.
+#[derive(Debug, Default)]
+struct Analysed {
+    /// One entry per **distinct** term: a word twice in one document is one
+    /// posting, because the question a posting answers is membership and a
+    /// duplicate key would be written twice to say the same thing.
+    postings: Vec<IndexValues>,
+    /// How many tokens the text holds, **with** repeats — this is a length, and
+    /// a length that collapsed repeats would not be one.
+    tokens: u64,
+}
+
 /// The terms one record contributes to a search index.
 ///
 /// Empty when the field declares no analyzer, holds no text, or the record does
 /// not have it — the same "not in this index at all" answer an ordered index
 /// gives, and the same answer a scan gives for the same record.
-fn terms_of(
-    definition: &IndexDefinition,
-    analyzer: Option<&Analyzer>,
-    value: &Value,
-) -> Vec<IndexValues> {
+fn terms_of(definition: &IndexDefinition, analyzer: Option<&Analyzer>, value: &Value) -> Analysed {
     let (Some(analyzer), Some(path)) = (analyzer, definition.fields.first()) else {
-        return Vec::new();
+        return Analysed::default();
     };
     let Some(Value::String(text)) = path.resolve(value) else {
-        return Vec::new();
+        return Analysed::default();
     };
     let mut terms: Vec<String> = analyzer.terms(text);
-    // One posting per distinct term: a word twice in one document is one
-    // posting, because the question is membership and a duplicate key would be
-    // written twice to say the same thing.
+    let tokens = u64::try_from(terms.len()).unwrap_or(u64::MAX);
     terms.sort_unstable();
     terms.dedup();
-    terms
-        .into_iter()
-        .map(|term| IndexValues::of(&[Value::from(term.as_str())]))
-        .collect()
+    Analysed {
+        postings: terms
+            .into_iter()
+            .map(|term| IndexValues::of(&[Value::from(term.as_str())]))
+            .collect(),
+        tokens,
+    }
+}
+
+/// How one log record moves an index's collection statistics.
+///
+/// Signed, and accumulated rather than written per mutation: a batch touching
+/// one index a thousand times moves two counters a thousand times and writes
+/// them once.
+#[derive(Debug, Clone, Copy, Default)]
+struct Delta {
+    documents: i64,
+    tokens: i64,
+}
+
+impl Delta {
+    /// Record a document leaving the index at this length.
+    fn removed(&mut self, tokens: u64) {
+        if tokens == 0 {
+            return;
+        }
+        self.documents = self.documents.saturating_sub(1);
+        self.tokens = self
+            .tokens
+            .saturating_sub(i64::try_from(tokens).unwrap_or(i64::MAX));
+    }
+
+    /// Record a document entering the index at this length.
+    fn added(&mut self, tokens: u64) {
+        if tokens == 0 {
+            return;
+        }
+        self.documents = self.documents.saturating_add(1);
+        self.tokens = self
+            .tokens
+            .saturating_add(i64::try_from(tokens).unwrap_or(i64::MAX));
+    }
+
+    /// Whether anything moved.
+    const fn is_zero(self) -> bool {
+        self.documents == 0 && self.tokens == 0
+    }
+}
+
+/// Fold the accumulated deltas into the stored statistics, one write per index.
+///
+/// The current values are read from **committed** state, which is the state this
+/// log record is about to be applied on top of — the same state the previous
+/// record values above were read at, so the two cannot describe different
+/// moments. A store with one writer (ADR-0007) makes that read-modify-write safe
+/// without a counter primitive.
+fn settle(
+    store: &Store,
+    mut batch: WriteBatch,
+    moved: &BTreeMap<IndexAddress, Delta>,
+) -> Result<WriteBatch> {
+    let keyspace = SearchStatisticsKey::keyspace();
+    for (address, delta) in moved {
+        if delta.is_zero() {
+            continue;
+        }
+        let key = SearchStatisticsKey::new(*address).encode();
+        let held = match store.backend().get(keyspace, &key)? {
+            Some(bytes) => SearchStatistics::decode(bytes.as_slice())?,
+            None => SearchStatistics::default(),
+        };
+        let updated = SearchStatistics::new(
+            shift(held.documents, delta.documents),
+            shift(held.terms, delta.tokens),
+        );
+        batch = batch.put(keyspace, key, updated.encode());
+    }
+    Ok(batch)
+}
+
+/// A count moved by a signed amount, without wrapping below zero.
+fn shift(count: u64, delta: i64) -> u64 {
+    if delta.is_negative() {
+        count.saturating_sub(delta.unsigned_abs())
+    } else {
+        count.saturating_add(delta.unsigned_abs())
+    }
 }
 
 /// The indexed values of one record, or `None` when the record is not indexed.

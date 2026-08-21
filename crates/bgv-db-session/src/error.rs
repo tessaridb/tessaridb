@@ -260,6 +260,22 @@ pub enum Error {
     #[error("no user of that name and password")]
     SignInRefused,
 
+    /// A score was asked for where there is no collection to measure against.
+    ///
+    /// Not answered with zero, and not answered against whatever records
+    /// happened to be read: both produce an ordering that looks exactly like a
+    /// ranking and is not one. See `crate::rank` for the argument in full.
+    #[error(
+        "cannot rank by {field:?}: a score measures a record against its collection, \
+         and that needs a search index on the field (at {span})"
+    )]
+    NoSearchIndex {
+        /// The path as written.
+        field: String,
+        /// Where it was written.
+        span: Span,
+    },
+
     /// A role this language does not have.
     #[error("there is no role called {name:?} (at {span})")]
     NoSuchRole {

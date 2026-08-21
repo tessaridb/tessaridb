@@ -33,6 +33,8 @@ pub enum KeyKind {
     VectorNode,
     /// A graph edge between two records.
     Edge,
+    /// The collection statistics one search index is ranked against.
+    SearchStatistics,
     /// One entry in the ordered log.
     LogEntry,
     /// The store's own on-disk format version.
@@ -65,6 +67,7 @@ impl KeyKind {
         Self::Posting,
         Self::VectorNode,
         Self::Edge,
+        Self::SearchStatistics,
         Self::LogEntry,
         Self::FormatVersion,
         Self::AppliedPosition,
@@ -91,6 +94,7 @@ impl KeyKind {
             Self::Posting => 0x12,
             Self::VectorNode => 0x13,
             Self::Edge => 0x14,
+            Self::SearchStatistics => 0x15,
             Self::LogEntry => 0x20,
             Self::FormatVersion => 0x30,
             Self::AppliedPosition => 0x31,
@@ -112,7 +116,8 @@ impl KeyKind {
             | Self::UniqueIndex
             | Self::Posting
             | Self::VectorNode
-            | Self::Edge => Keyspace::INDEX,
+            | Self::Edge
+            | Self::SearchStatistics => Keyspace::INDEX,
             Self::LogEntry => Keyspace::LOG,
             Self::FormatVersion
             | Self::AppliedPosition
@@ -138,6 +143,7 @@ impl KeyKind {
             Self::Posting => "posting",
             Self::VectorNode => "vector-node",
             Self::Edge => "edge",
+            Self::SearchStatistics => "search-statistics",
             Self::LogEntry => "log-entry",
             Self::FormatVersion => "format-version",
             Self::AppliedPosition => "applied-position",
@@ -212,6 +218,7 @@ mod tests {
             (KeyKind::Posting, 0x12),
             (KeyKind::VectorNode, 0x13),
             (KeyKind::Edge, 0x14),
+            (KeyKind::SearchStatistics, 0x15),
             (KeyKind::LogEntry, 0x20),
             (KeyKind::FormatVersion, 0x30),
             (KeyKind::AppliedPosition, 0x31),
