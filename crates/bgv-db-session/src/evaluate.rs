@@ -14,7 +14,7 @@ use bgv_db_ql::{
     Source, Span, TableRef,
 };
 use bgv_db_storage::{Catalog, RecordAddress, Transaction};
-use bgv_db_types::{Number, Path, RecordId, RecordRef, TableId, Value, ValueRange};
+use bgv_db_types::{Analyzer, Number, Path, RecordId, RecordRef, TableId, Value, ValueRange};
 
 use crate::aggregate::folds;
 use crate::arithmetic::{arithmetic, negate};
@@ -22,12 +22,13 @@ use crate::call::call;
 use crate::condition::{apply, boolean, literal_prefix};
 use crate::error::{Error, Result};
 use crate::outcome::AccessPath;
+use crate::search::matches_terms;
 use crate::session::Session;
 
 impl Session<'_> {
     /// The value an expression denotes, with no record in scope.
     pub(crate) fn evaluate(&self, transaction: &mut Transaction<'_>, expr: &Expr) -> Result<Value> {
-        self.evaluate_in(transaction, expr, None)
+        self.evaluate_in(transaction, expr, Scope::default())
     }
 
     /// The value an expression denotes, against the record being tested.
@@ -40,11 +41,11 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         expr: &Expr,
-        record: Option<&Value>,
+        scope: Scope<'_>,
     ) -> Result<Value> {
         match &expr.kind {
             ExprKind::Path(field) => {
-                let Some(record) = record else {
+                let Some(record) = scope.record else {
                     return Err(Error::NoRecordInScope { span: field.span });
                 };
                 // A route that reaches nothing **is** `none`: the field is not
@@ -54,7 +55,7 @@ impl Session<'_> {
                 Ok(field.path.resolve(record).cloned().unwrap_or(Value::None))
             }
             ExprKind::Not(operand) => {
-                let held = self.evaluate_in(transaction, operand, record)?;
+                let held = self.evaluate_in(transaction, operand, scope)?;
                 Ok(Value::Bool(!boolean(&held, operand.span)?))
             }
             // Short-circuit: the right side is not evaluated when the left
@@ -62,23 +63,23 @@ impl Session<'_> {
             // `x = NONE OR x.y = 1` be written without the second half having to
             // be meaningful for every record.
             ExprKind::And(left, right) => {
-                let held = self.evaluate_in(transaction, left, record)?;
+                let held = self.evaluate_in(transaction, left, scope)?;
                 if !boolean(&held, left.span)? {
                     return Ok(Value::Bool(false));
                 }
-                let held = self.evaluate_in(transaction, right, record)?;
+                let held = self.evaluate_in(transaction, right, scope)?;
                 Ok(Value::Bool(boolean(&held, right.span)?))
             }
             ExprKind::Or(left, right) => {
-                let held = self.evaluate_in(transaction, left, record)?;
+                let held = self.evaluate_in(transaction, left, scope)?;
                 if boolean(&held, left.span)? {
                     return Ok(Value::Bool(true));
                 }
-                let held = self.evaluate_in(transaction, right, record)?;
+                let held = self.evaluate_in(transaction, right, scope)?;
                 Ok(Value::Bool(boolean(&held, right.span)?))
             }
             ExprKind::Negate(operand) => {
-                let held = self.evaluate_in(transaction, operand, record)?;
+                let held = self.evaluate_in(transaction, operand, scope)?;
                 negate(&held, operand.span)
             }
             ExprKind::Call {
@@ -86,17 +87,28 @@ impl Session<'_> {
                 arguments,
                 span,
             } => {
-                let arguments = self.values(transaction, arguments, record)?;
+                let arguments = self.values(transaction, arguments, scope)?;
                 call(*function, &arguments, *span)
             }
             ExprKind::Arithmetic { op, left, right } => {
-                let held = self.evaluate_in(transaction, left, record)?;
-                let other = self.evaluate_in(transaction, right, record)?;
+                let held = self.evaluate_in(transaction, left, scope)?;
+                let other = self.evaluate_in(transaction, right, scope)?;
                 arithmetic(*op, &held, &other, expr.span)
             }
             ExprKind::Binary { op, left, right } => {
-                let held = self.evaluate_in(transaction, left, record)?;
-                let other = self.evaluate_in(transaction, right, record)?;
+                let held = self.evaluate_in(transaction, left, scope)?;
+                let other = self.evaluate_in(transaction, right, scope)?;
+                // A term match is the one test that needs the *schema*: which
+                // analyzer turns this field's text into terms is a property of
+                // the field, so that both a scan and an index ask the same
+                // question of it.
+                if *op == BinaryOp::Matches {
+                    let analyzer = match &left.kind {
+                        ExprKind::Path(field) => scope.analyzer(&field.path),
+                        _ => None,
+                    };
+                    return Ok(Value::Bool(matches_terms(analyzer, &held, &other)));
+                }
                 Ok(Value::Bool(apply(*op, &held, &other)))
             }
             ExprKind::Literal(value) => Ok(value.clone()),
@@ -108,23 +120,23 @@ impl Session<'_> {
                 let (_, address) = self.address(transaction, target)?;
                 Ok(Value::Record(RecordRef::new(address.table, address.id)))
             }
-            ExprKind::Array(items) => Ok(Value::Array(self.values(transaction, items, record)?)),
+            ExprKind::Array(items) => Ok(Value::Array(self.values(transaction, items, scope)?)),
             ExprKind::Set(items) => Ok(Value::Set(
-                self.values(transaction, items, record)?
+                self.values(transaction, items, scope)?
                     .into_iter()
                     .collect(),
             )),
             ExprKind::Object(fields) => {
                 let mut object = BTreeMap::new();
                 for field in fields {
-                    let value = self.evaluate_in(transaction, &field.value, record)?;
+                    let value = self.evaluate_in(transaction, &field.value, scope)?;
                     object.insert(field.name.text.clone(), value);
                 }
                 Ok(Value::Object(object))
             }
             ExprKind::Range(range) => {
-                let start = self.evaluate_in(transaction, &range.start, record)?;
-                let end = self.evaluate_in(transaction, &range.end, record)?;
+                let start = self.evaluate_in(transaction, &range.start, scope)?;
+                let end = self.evaluate_in(transaction, &range.end, scope)?;
                 let end = if range.inclusive {
                     Bound::Included(end)
                 } else {
@@ -144,11 +156,11 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         items: &[Expr],
-        record: Option<&Value>,
+        scope: Scope<'_>,
     ) -> Result<Vec<Value>> {
         let mut values = Vec::with_capacity(items.len());
         for item in items {
-            values.push(self.evaluate_in(transaction, item, record)?);
+            values.push(self.evaluate_in(transaction, item, scope)?);
         }
         Ok(values)
     }
@@ -253,7 +265,7 @@ impl Session<'_> {
                 // become one.
                 continue;
             };
-            let held = self.evaluate_in(transaction, expr, Some(record))?;
+            let held = self.evaluate_in(transaction, expr, Scope::of(record))?;
             if held.is_present() {
                 projected.insert(value.name.text.clone(), held);
             }
@@ -290,6 +302,10 @@ impl Session<'_> {
             Source::Where { table, condition } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 let (candidates, path) = self.candidates(transaction, id, context, condition)?;
+                // Resolved once for the query rather than once per record: which
+                // analyzer a field carries is a property of the schema, and the
+                // schema does not change under a read.
+                let analyzers = self.analyzers_for(transaction, id, condition)?;
 
                 // The candidates are tested against the **whole** condition, not
                 // only the conjunct the index answered. That is what makes an
@@ -297,7 +313,11 @@ impl Session<'_> {
                 // adding one still cannot change what a query returns.
                 let mut matched = Vec::new();
                 for (id, record) in candidates {
-                    let held = self.evaluate_in(transaction, condition, Some(&record))?;
+                    let held = self.evaluate_in(
+                        transaction,
+                        condition,
+                        Scope::searching(&record, &analyzers),
+                    )?;
                     if boolean(&held, condition.span)? {
                         matched.push((id, record));
                     }
@@ -524,6 +544,42 @@ fn seekable(condition: &Expr) -> Vec<Seek<'_>> {
             }]
         }
         _ => Vec::new(),
+    }
+}
+
+/// What the evaluator can see besides the expression itself.
+///
+/// The record a condition is being tested against, and the analyzers the
+/// searched fields declare. Both are absent in a value position, where there is
+/// no record and nothing to search.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Scope<'a> {
+    /// The record being tested, when there is one.
+    pub(crate) record: Option<&'a Value>,
+    /// The analyzer each searched path carries.
+    analyzers: Option<&'a BTreeMap<Path, Analyzer>>,
+}
+
+impl<'a> Scope<'a> {
+    /// A record, with nothing searched.
+    pub(crate) const fn of(record: &'a Value) -> Self {
+        Self {
+            record: Some(record),
+            analyzers: None,
+        }
+    }
+
+    /// A record, and the analyzers its searched fields declare.
+    const fn searching(record: &'a Value, analyzers: &'a BTreeMap<Path, Analyzer>) -> Self {
+        Self {
+            record: Some(record),
+            analyzers: Some(analyzers),
+        }
+    }
+
+    /// The analyzer this path's field declares, if it declares one.
+    fn analyzer(self, path: &Path) -> Option<&'a Analyzer> {
+        self.analyzers.and_then(|named| named.get(path))
     }
 }
 

@@ -28,6 +28,7 @@ mod error;
 mod evaluate;
 mod execute;
 mod outcome;
+mod search;
 mod session;
 mod shape;
 

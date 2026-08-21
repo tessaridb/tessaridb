@@ -27,6 +27,7 @@ const FIELD_TABLE: &str = "table";
 const FIELD_KIND: &str = "kind";
 const FIELD_REQUIRED: &str = "required";
 const FIELD_DEFAULT: &str = "default";
+const FIELD_ANALYZER: &str = "analyzer";
 
 const ENTITY: &str = "field";
 
@@ -41,6 +42,11 @@ pub struct FieldShape {
     pub required: bool,
     /// The expression a write uses when it supplies none, as written.
     pub default: Option<String>,
+    /// The analyzer that turns this field's text into terms, by name.
+    ///
+    /// On the **field** and not on an index, which is the whole design: an
+    /// analyzer on an index would let adding one change what a search finds.
+    pub analyzer: Option<String>,
 }
 
 /// A declared field on a table.
@@ -74,6 +80,11 @@ pub struct FieldDefinition {
     /// before the record is written, so a replica applies a record that already
     /// carries it.
     pub default: Option<String>,
+    /// The analyzer this field's text is turned into terms by, if any.
+    ///
+    /// Held by **name** rather than by id, so a dump reads without a second
+    /// lookup and so the attachment survives an analyzer being redeclared.
+    pub analyzer: Option<String>,
 }
 
 impl FieldDefinition {
@@ -96,6 +107,10 @@ impl FieldDefinition {
             (
                 FIELD_DEFAULT.to_owned(),
                 self.default.as_deref().map_or(Value::None, Value::from),
+            ),
+            (
+                FIELD_ANALYZER.to_owned(),
+                self.analyzer.as_deref().map_or(Value::None, Value::from),
             ),
         ]))
     }
@@ -135,18 +150,22 @@ impl FieldDefinition {
             // A definition written before either existed reads as neither, so
             // nothing on disk has to be migrated.
             required: flag(fields, FIELD_REQUIRED, ENTITY)?,
-            default: match fields.get(FIELD_DEFAULT) {
-                Some(Value::String(written)) => Some(written.clone()),
-                None | Some(Value::None) => None,
-                Some(other) => {
-                    return Err(Error::CatalogMalformed {
-                        entity: ENTITY,
-                        field: FIELD_DEFAULT,
-                        found: other.type_name(),
-                    });
-                }
-            },
+            default: optional_text(fields, FIELD_DEFAULT)?,
+            analyzer: optional_text(fields, FIELD_ANALYZER)?,
         })
+    }
+}
+
+/// A field that may be absent, and is text when it is there.
+fn optional_text(fields: &BTreeMap<String, Value>, field: &'static str) -> Result<Option<String>> {
+    match fields.get(field) {
+        Some(Value::String(written)) => Ok(Some(written.clone())),
+        None | Some(Value::None) => Ok(None),
+        Some(other) => Err(Error::CatalogMalformed {
+            entity: ENTITY,
+            field,
+            found: other.type_name(),
+        }),
     }
 }
 
@@ -194,6 +213,7 @@ impl Catalog<'_, '_> {
             kind,
             required: shape.required,
             default: shape.default,
+            analyzer: shape.analyzer,
         };
         self.write(system::FIELDS, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
@@ -285,14 +305,16 @@ mod tests {
             kind,
             required: false,
             default: None,
+            analyzer: None,
         }
     }
 
     #[test]
-    fn a_declaration_round_trips_what_it_requires_and_what_it_fills_in() {
+    fn a_declaration_round_trips_everything_it_declares() {
         let mut original = definition(FieldKind::Datetime);
         original.required = true;
         original.default = Some("time::now()".to_owned());
+        original.analyzer = Some("simple".to_owned());
         assert_eq!(
             FieldDefinition::from_value(&original.to_value()).unwrap(),
             original

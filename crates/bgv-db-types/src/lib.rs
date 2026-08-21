@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+mod analyzer;
 mod field_kind;
 mod ids;
 mod number;
@@ -19,6 +20,7 @@ mod text;
 mod time;
 mod value;
 
+pub use analyzer::{Analyzer, Filter};
 pub use field_kind::FieldKind;
 pub use ids::{DatabaseId, FieldId, IndexId, NamespaceId, Sequence, TableId};
 pub use number::Number;

@@ -27,6 +27,7 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DefineSpace { .. } => "DEFINE SPACE",
         StatementKind::DefineIndex { .. } => "DEFINE INDEX",
         StatementKind::DefineField { .. } => "DEFINE FIELD",
+        StatementKind::DefineAnalyzer { .. } => "DEFINE ANALYZER",
         StatementKind::DropTable { .. } => "DROP TABLE",
         StatementKind::DropIndex { .. } => "DROP INDEX",
         StatementKind::DropField { .. } => "DROP FIELD",
@@ -57,6 +58,7 @@ pub const FORMS: &[&str] = &[
     "DEFINE SPACE",
     "DEFINE INDEX",
     "DEFINE FIELD",
+    "DEFINE ANALYZER",
     "DROP TABLE",
     "DROP INDEX",
     "DROP FIELD",
@@ -115,6 +117,7 @@ mod tests {
              DROP TABLE t;\
              DROP INDEX i ON t;\
              DROP FIELD f ON t;\
+             DEFINE ANALYZER a FILTERS lowercase;\
              RELATE t:1->e->t:2;\
              CREATE t:1 = 1;\
              SELECT * FROM t;\

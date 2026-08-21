@@ -7,7 +7,9 @@ use bgv_db_storage::{
 };
 use std::collections::BTreeMap;
 
-use bgv_db_types::{FieldId, FieldKind, IndexId, RecordId, RecordRef, TableId, Value};
+use bgv_db_types::{
+    Analyzer, FieldId, FieldKind, Filter, IndexId, RecordId, RecordRef, TableId, Value,
+};
 
 use crate::error::{Error, Result};
 use crate::evaluate::{key_bound, within};
@@ -63,6 +65,7 @@ impl Session<'_> {
                 kind,
                 required,
                 default,
+                analyzer,
                 if_not_exists,
             } => self.define_field(
                 transaction,
@@ -72,9 +75,15 @@ impl Session<'_> {
                 FieldShape {
                     required: *required,
                     default: default.as_ref().map(|written| written.text.clone()),
+                    analyzer: analyzer.as_ref().map(|named| named.text.clone()),
                 },
                 *if_not_exists,
             ),
+            StatementKind::DefineAnalyzer {
+                name,
+                filters,
+                if_not_exists,
+            } => self.define_analyzer(transaction, name, filters, *if_not_exists),
             StatementKind::DropField { name, table } => {
                 let (_, id) = self.resolve_table(transaction, table)?;
                 let field = self.field_named(transaction, id, name)?;
@@ -369,6 +378,24 @@ impl Session<'_> {
             }
         }
         Catalog::new(transaction).create_field(id, &name.text, kind, shape)?;
+        Ok(Outcome::Done)
+    }
+
+    fn define_analyzer(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        filters: &[Filter],
+        if_not_exists: bool,
+    ) -> Result<Outcome> {
+        let declared = Catalog::new(transaction)
+            .analyzers()?
+            .into_iter()
+            .any(|found| found.name == name.text);
+        if if_not_exists && declared {
+            return Ok(Outcome::Done);
+        }
+        Catalog::new(transaction).create_analyzer(&name.text, Analyzer::new(filters.to_vec()))?;
         Ok(Outcome::Done)
     }
 

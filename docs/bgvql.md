@@ -157,6 +157,9 @@ DEFINE FIELD balance ON accounts TYPE decimal;
 DEFINE FIELD opened_at ON accounts TYPE datetime DEFAULT time::now();
 DEFINE FIELD holder ON accounts TYPE string REQUIRED;
 
+DEFINE ANALYZER simple FILTERS lowercase, ascii;
+DEFINE FIELD body ON notes TYPE string ANALYZER simple;
+
 DROP FIELD opened_at ON accounts;
 DROP INDEX by_email ON users;
 DROP TABLE users;
@@ -276,6 +279,57 @@ Four things about it, each stated rather than discovered:
 
 `REQUIRED` and `DEFAULT` compose, and together they mean "this field always holds
 a value".
+
+### Searching text
+
+`MATCHES` asks whether text holds a **word**:
+
+```
+SELECT * FROM notes WHERE body MATCHES 'lovelace';
+SELECT * FROM notes WHERE body MATCHES 'ada program';
+```
+
+Three questions, three operators, and none a special case of another: `LIKE` is
+a pattern over the whole value, `CONTAINS` is membership in a collection, and
+`MATCHES` is a term in text. `body LIKE '%ovelace%'` finds `lovelacex`;
+`body MATCHES 'lovelace'` does not.
+
+**The analyzer belongs to the field.** `DEFINE ANALYZER` names one and a field
+declaration attaches it:
+
+```
+DEFINE ANALYZER simple FILTERS lowercase, ascii;
+DEFINE FIELD body ON notes TYPE string ANALYZER simple;
+```
+
+Every search engine puts the analyzer on the *index*. Here that would break the
+rule this store applies everywhere else — **which access path runs is decided by
+what exists; the answer is not.** An analyzer on an index would make
+`body MATCHES 'Lovelace'` find nothing before an index existed and something
+after, or different things under two indexes. On the field, an index can only
+make the same question faster.
+
+The query is analyzed by the same analyzer as the field, so searching for
+`Lovelace` finds a document that stored `lovelace` — which is the entire point
+of having one. **Several terms mean all of them**: "find me documents about X Y"
+means both.
+
+The tokenizer splits on anything that is not a letter or a digit, and is not
+named because there is one to choose from; a knob with one setting is a knob
+nobody should have to read about. The filters are the part that differs:
+
+| Filter | What it does |
+|---|---|
+| `lowercase` | folds case, so `Lovelace` and `lovelace` are one term |
+| `ascii` | folds the common accented Latin letters, so `café` and `cafe` are one term |
+
+A letter the fold does not know passes through rather than being dropped — a
+letter it has no opinion about is still a letter.
+
+**A field with no analyzer holds no terms**, so `MATCHES` over it finds nothing
+rather than failing. A schemaless table is allowed to hold text nobody has
+declared anything about, and refusing the query would make that a mistake. So
+does a value that is not text, the way `LIKE` already does.
 
 **A declaration names a top-level field, never a path.** `TYPE object` says the
 field holds an object and nothing about what is inside it, and `SCHEMAFULL`
@@ -805,9 +859,12 @@ Named here rather than merely missing, so each absence reads as a decision:
 | joins | no planner, and a join without one is a nested scan pretending otherwise |
 | traversals longer than one hop, and filters inside a traversal | `a->e->b` is one hop to the edge and one to its far side, which is the shape that makes traversal useful; `->{1..3}`, mid-traversal filters and shortest-path are a language surface to design once |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |
-| a text **index** | `LIKE` works today over a scan; the index that makes it fast, with its analyzer, is its own milestone. The statement will not change when it lands. |
+| a text **index** | `MATCHES` works today over a scan. The index that makes it fast is its own milestone, and the statement will not change when it lands — which is exactly why the analyzer is on the field and not on the index. |
+| stemming | a filter, and one could be added under the rule above; a correct stemmer is a language-specific artefact rather than a hundred lines, and a bad one is worse than none |
+| n-grams, so `MATCHES` never answers a substring question | index size proportional to text length × (max − min), paid on every write; Q-31 holds the measurement that would decide it |
+| phrase queries (`'"ada lovelace"'`) | they need positions in the postings and a second matching rule |
 | vector search | a reserved key kind, no engine yet |
-| ranking, highlighting, stemming, fuzzy matching | analyzer decisions; approximating them over a scan now would disagree with the index later |
+| ranking, highlighting, fuzzy matching | ranking needs a score that a projection can carry and an `ORDER BY` can name, which is a language surface rather than an index feature |
 | `[*]` in a path — "any element of this array" | it turns a path from a function into a relation: the filter becomes existential, a projection returns several values, and the index becomes a multikey one with entries per element and a reclamation rule of its own. Three features wearing one syntax. |
 | declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
 | `HAVING` | a filter over groups is a second filter position with its own scoping rule — it sees folds where `WHERE` does not — and is worth its own milestone rather than an afterthought |
@@ -842,6 +899,10 @@ Named here rather than merely missing, so each absence reads as a decision:
 | Ties are broken by record identity | **contract** — what keeps an added index from reordering equal rows |
 | `START` and `LIMIT` apply after ordering, always | **contract** |
 | `ORDER`, `BY`, `ASC`, `DESC`, `LIMIT`, `START` are contextual, not reserved | **contract** — reserving a word takes a name away from data that exists |
+| The analyzer belongs to the field, not to the index | **contract** — an analyzer on an index lets adding one change an answer |
+| `MATCHES` asks about words, `LIKE` about characters, `CONTAINS` about membership | **contract** |
+| Several terms mean all of them | **contract** |
+| A field with no analyzer holds no terms and matches nothing | **contract** |
 | `REQUIRED` means present and not null | **contract** |
 | A default fills only what a write leaves out, and never reaches backwards | **contract** |
 | A default is a value-position expression, checked when it is declared | **contract** |

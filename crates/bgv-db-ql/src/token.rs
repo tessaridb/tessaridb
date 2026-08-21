@@ -252,6 +252,12 @@ pub enum Keyword {
     As,
     /// `REQUIRED` — the field must hold a value.
     Required,
+    /// `ANALYZER` — names how a field's text becomes terms.
+    Analyzer,
+    /// `FILTERS` — the steps an analyzer applies to every token.
+    Filters,
+    /// `MATCHES` — the text holds this term.
+    Matches,
     /// `DEFAULT` — what a write with no value for the field uses instead.
     Default,
     /// `AND` — both.
@@ -333,6 +339,9 @@ impl Keyword {
             Self::Where => "WHERE",
             Self::As => "AS",
             Self::Required => "REQUIRED",
+            Self::Analyzer => "ANALYZER",
+            Self::Filters => "FILTERS",
+            Self::Matches => "MATCHES",
             Self::Default => "DEFAULT",
             Self::And => "AND",
             Self::Or => "OR",
@@ -387,6 +396,9 @@ impl Keyword {
         Self::Where,
         Self::As,
         Self::Required,
+        Self::Analyzer,
+        Self::Filters,
+        Self::Matches,
         Self::Default,
         Self::And,
         Self::Or,

@@ -1,0 +1,62 @@
+# Full-text search: the analyzer belongs to the field, so an index can make the
+# question fast without being able to change its answer.
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+--- expect: ok
+
+--- case: an analyzer is declared once and attached where it is needed
+DEFINE ANALYZER simple FILTERS lowercase, ascii;
+--- expect: ok
+
+--- case: a name is unique, like every other name
+DEFINE ANALYZER simple FILTERS lowercase;
+--- expect: error NameTaken
+
+--- case: and IF NOT EXISTS says so out loud
+DEFINE ANALYZER IF NOT EXISTS simple FILTERS lowercase;
+--- expect: ok
+
+--- case: a filter this language does not have is refused
+DEFINE ANALYZER stemmed FILTERS porter;
+--- expect: error UnexpectedToken
+
+--- case: an analyzer attaches to a field, not to an index
+DEFINE TABLE notes;
+DEFINE FIELD body ON notes TYPE string ANALYZER simple;
+--- expect: ok
+
+--- case: records to search
+CREATE notes:1 = { body: 'Ada Lovelace wrote the first program', title: 'Ada' };
+CREATE notes:2 = { body: 'A note about the café on the corner' };
+CREATE notes:3 = { body: 'lovelacex is not the same word' };
+CREATE notes:4 = { title: 'no body at all' };
+--- expect: ok
+
+--- case: a term is a whole word, which is what makes this not a pattern
+SELECT * FROM notes WHERE body MATCHES 'lovelace';
+--- expect: rows 1
+
+--- case: the filters are what make two spellings one term
+SELECT * FROM notes WHERE body MATCHES 'cafe';
+--- expect: rows 1
+
+--- case: several terms mean all of them
+SELECT * FROM notes WHERE body MATCHES 'ada program';
+--- expect: rows 1
+
+--- case: and a term the text does not hold finds nothing
+SELECT * FROM notes WHERE body MATCHES 'ada babbage';
+--- expect: rows 0
+
+--- case: a field with no analyzer holds no terms
+SELECT * FROM notes WHERE title MATCHES 'ada';
+--- expect: rows 0
+
+--- case: a search composes with everything else a condition can say
+SELECT * FROM notes WHERE body MATCHES 'lovelace' AND title = 'Ada';
+--- expect: rows 1

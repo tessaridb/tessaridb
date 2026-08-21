@@ -2328,3 +2328,195 @@ fn a_field_called_count_is_still_a_field() {
         &Value::Number(Number::Integer(7))
     );
 }
+
+/// Notes carrying text an analyzer has an opinion about, and text it does not.
+fn searchable(session: &mut Session<'_>) {
+    session
+        .run(
+            "DEFINE ANALYZER simple FILTERS lowercase, ascii;\n\
+             DEFINE TABLE notes;\n\
+             DEFINE FIELD body ON notes TYPE string ANALYZER simple;\n\
+             DEFINE FIELD note ON notes TYPE any ANALYZER simple;\n\
+             CREATE notes:1 = { body: 'Ada Lovelace wrote the first program', title: 'Ada' };\n\
+             CREATE notes:2 = { body: 'A note about the café on the corner' };\n\
+             CREATE notes:3 = { body: 'lovelacex is not the same word' };\n\
+             CREATE notes:4 = { title: 'no body at all' };\n\
+             CREATE notes:5 = { note: 42 };",
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_term_is_a_whole_word_which_is_what_makes_it_not_a_pattern() {
+    let store = store();
+    let mut session = ready(&store);
+    searchable(&mut session);
+
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES 'lovelace';"
+        ),
+        vec![RecordId::Int(1)]
+    );
+    // The same question asked of characters finds both — `lovelacex` holds
+    // those letters and is not that word. That difference is why `MATCHES` is
+    // its own operator rather than a spelling of `LIKE`. (And the pattern is
+    // written lower-case-free because `LIKE` matches characters exactly, where
+    // the analyzer has already folded case for `MATCHES` — a second difference
+    // in the same line.)
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body LIKE '%ovelace%';"
+        ),
+        vec![RecordId::Int(1), RecordId::Int(3)]
+    );
+}
+
+#[test]
+fn the_filters_are_what_make_two_spellings_one_term() {
+    let store = store();
+    let mut session = ready(&store);
+    searchable(&mut session);
+
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES 'cafe';"
+        ),
+        vec![RecordId::Int(2)]
+    );
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES 'LOVELACE';"
+        ),
+        vec![RecordId::Int(1)]
+    );
+}
+
+#[test]
+fn several_terms_mean_all_of_them() {
+    let store = store();
+    let mut session = ready(&store);
+    searchable(&mut session);
+
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES 'ada program';"
+        ),
+        vec![RecordId::Int(1)]
+    );
+    assert!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES 'ada babbage';"
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_field_with_no_analyzer_holds_no_terms_rather_than_failing() {
+    // A schemaless table is allowed to hold text nobody has declared anything
+    // about, so refusing the query would make that a mistake.
+    let store = store();
+    let mut session = ready(&store);
+    searchable(&mut session);
+
+    assert!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE title MATCHES 'ada';"
+        )
+        .is_empty()
+    );
+    // …and neither does a value that is not text, even on a field that does
+    // declare an analyzer: there is nothing to tokenise.
+    assert!(found_ids(&mut session, "SELECT * FROM notes WHERE note MATCHES '42';").is_empty());
+}
+
+#[test]
+fn an_analyzer_is_declared_once_and_attached_where_it_is_needed() {
+    let store = store();
+    let mut session = ready(&store);
+    searchable(&mut session);
+
+    // One declaration, two fields on two tables.
+    session
+        .run(
+            "DEFINE TABLE letters;\n\
+             DEFINE FIELD text ON letters TYPE string ANALYZER simple;\n\
+             CREATE letters:1 = { text: 'Dear Ada' };",
+        )
+        .unwrap();
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM letters WHERE text MATCHES 'ada';"
+        ),
+        vec![RecordId::Int(1)]
+    );
+
+    // The name is unique, like every other name.
+    assert!(
+        session
+            .run("DEFINE ANALYZER simple FILTERS lowercase;")
+            .is_err()
+    );
+    session
+        .run("DEFINE ANALYZER IF NOT EXISTS simple FILTERS lowercase;")
+        .unwrap();
+}
+
+#[test]
+fn a_search_composes_with_everything_else_a_condition_can_say() {
+    let store = store();
+    let mut session = ready(&store);
+    searchable(&mut session);
+
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES 'lovelace' AND title = 'Ada';"
+        ),
+        vec![RecordId::Int(1)]
+    );
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM notes WHERE NOT (body MATCHES 'lovelace') AND title = 'Ada';"
+        ),
+        Vec::new()
+    );
+}
+
+#[test]
+fn a_declared_analyzer_survives_a_replica_replaying_the_log() {
+    use bgv_db_storage::Store;
+
+    let store = store();
+    let mut session = ready(&store);
+    searchable(&mut session);
+
+    let replica_backend =
+        std::sync::Arc::new(bgv_db_kv::MemoryBackend::new()) as std::sync::Arc<dyn KvBackend>;
+    let replica = Store::open(std::sync::Arc::clone(&replica_backend)).unwrap();
+    for (sequence, record) in store
+        .log_records(bgv_db_types::Sequence::ZERO, 1024)
+        .unwrap()
+    {
+        replica.apply_record(sequence, &record).unwrap();
+    }
+
+    // The analyzer, the attachment and the records all arrived through one log,
+    // so the replica answers the same search.
+    let mut mirrored = Session::new(&replica);
+    mirrored.run("USE NAMESPACE prod DATABASE orders;").unwrap();
+    let found = mirrored
+        .run("SELECT * FROM notes WHERE body MATCHES 'lovelace';")
+        .unwrap();
+    assert_eq!(found[0].records().unwrap().len(), 1);
+}

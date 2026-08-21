@@ -169,6 +169,7 @@ impl Parser<'_> {
             (Keyword::Contains, BinaryOp::Contains),
             (Keyword::Like, BinaryOp::Like),
             (Keyword::Ilike, BinaryOp::Ilike),
+            (Keyword::Matches, BinaryOp::Matches),
         ] {
             if self.eat_keyword(keyword) {
                 return Some(op);

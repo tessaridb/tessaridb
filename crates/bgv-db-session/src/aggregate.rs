@@ -30,6 +30,7 @@ use bgv_db_types::{Number, RecordId, Value};
 use rust_decimal::Decimal;
 
 use crate::error::{Error, Result};
+use crate::evaluate::Scope;
 use crate::session::Session;
 
 /// Whether a projection folds many records into one.
@@ -77,9 +78,9 @@ impl Session<'_> {
                     Projectable::Aggregate { over: None, .. } => Value::Bool(true),
                     Projectable::Aggregate {
                         over: Some(expr), ..
-                    } => self.evaluate_in(transaction, expr, Some(&record))?,
+                    } => self.evaluate_in(transaction, expr, Scope::of(&record))?,
                     Projectable::Value(expr) => {
-                        self.evaluate_in(transaction, expr, Some(&record))?
+                        self.evaluate_in(transaction, expr, Scope::of(&record))?
                     }
                 };
                 if let Some(collected) = entry.1.get_mut(position) {

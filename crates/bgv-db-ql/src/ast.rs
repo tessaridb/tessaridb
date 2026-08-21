@@ -20,7 +20,7 @@
 //!
 //! [`TableId`]: bgv_db_types::TableId
 
-use bgv_db_types::{FieldKind, Path, RecordId, Value};
+use bgv_db_types::{FieldKind, Filter, Path, RecordId, Value};
 
 use crate::function::Function;
 use crate::token::Span;
@@ -111,6 +111,8 @@ pub enum StatementKind {
         kind: FieldKind,
         /// Whether the field must hold a value: present, and not `null`.
         required: bool,
+        /// The analyzer this field's text becomes terms by, when it has one.
+        analyzer: Option<Name>,
         /// What a write supplying no value uses instead.
         ///
         /// A **value-position** expression, so it cannot read the record it is
@@ -118,6 +120,15 @@ pub enum StatementKind {
         /// would guess.
         default: Option<Written>,
         /// Whether re-declaring an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DEFINE ANALYZER simple FILTERS lowercase, ascii`
+    DefineAnalyzer {
+        /// The name to create.
+        name: Name,
+        /// The filters it applies, in order.
+        filters: Vec<Filter>,
+        /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
     /// `DROP FIELD email ON users` — removes the declaration, not the data.
@@ -379,6 +390,12 @@ pub enum BinaryOp {
     Like,
     /// The same, ignoring case.
     Ilike,
+    /// `MATCHES` — the analyzed text holds every term of the query.
+    ///
+    /// A third question, not a special case of the other two: `LIKE` is a
+    /// pattern over the whole value and `CONTAINS` is membership in a
+    /// collection, and neither can ask whether text holds a *word*.
+    Matches,
 }
 
 impl BinaryOp {
@@ -396,6 +413,7 @@ impl BinaryOp {
             Self::Contains => "CONTAINS",
             Self::Like => "LIKE",
             Self::Ilike => "ILIKE",
+            Self::Matches => "MATCHES",
         }
     }
 }

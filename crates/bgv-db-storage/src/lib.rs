@@ -33,8 +33,9 @@ mod store;
 mod transaction;
 
 pub use catalog::{
-    Catalog, DatabaseDefinition, EDGE_IN, EDGE_OUT, FieldDefinition, FieldShape, IndexDefinition,
-    NamespaceDefinition, SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition, TableShape,
+    AnalyzerDefinition, Catalog, DatabaseDefinition, EDGE_IN, EDGE_OUT, FieldDefinition,
+    FieldShape, IndexDefinition, NamespaceDefinition, SYSTEM_DATABASE, SYSTEM_NAMESPACE,
+    TableDefinition, TableShape,
 };
 pub use error::{Error, Result};
 pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};

@@ -89,6 +89,12 @@ pub(crate) fn apply(op: BinaryOp, left: &Value, right: &Value) -> bool {
         BinaryOp::Contains => holds(left, right),
         BinaryOp::Like => like(left, right, false),
         BinaryOp::Ilike => like(left, right, true),
+        // A term match needs the field's analyzer, which is schema rather than
+        // value, so the evaluator answers it before reaching here. Left as a
+        // stated `false` rather than an `unreachable!()`: this project has none,
+        // and "no analyzer, no terms, no match" is the same answer a field with
+        // no analyzer gets anyway.
+        BinaryOp::Matches => false,
     }
 }
 

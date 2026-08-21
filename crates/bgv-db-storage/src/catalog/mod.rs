@@ -19,6 +19,7 @@
 //! [`system::NAMES`], and that shared key is what makes one of them lose. The
 //! read below it is an early, friendlier refusal — not the enforcement.
 
+mod analyzer;
 mod change;
 mod definition;
 mod field;
@@ -27,6 +28,7 @@ mod system;
 use bgv_db_encoding::{decode_payload, encode_payload};
 use bgv_db_types::{DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId, TableId, Value};
 
+pub use analyzer::AnalyzerDefinition;
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use definition::{
     DatabaseDefinition, IndexDefinition, NamespaceDefinition, TableDefinition, TableShape,

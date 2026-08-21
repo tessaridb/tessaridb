@@ -82,6 +82,7 @@ impl Fixture {
             FieldShape {
                 required: true,
                 default: None,
+                analyzer: None,
             },
         )?;
         transaction.commit()

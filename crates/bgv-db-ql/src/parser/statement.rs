@@ -1,7 +1,7 @@
 //! One statement at a time.
 
 use super::Parser;
-use bgv_db_types::FieldKind;
+use bgv_db_types::{FieldKind, Filter};
 
 use crate::ast::{
     Direction, ExprKind, RangeExpr, RecordTarget, Select, Source, Statement, StatementKind,
@@ -135,10 +135,10 @@ impl Parser<'_> {
             }
             Some(Keyword::Index) => self.define_index(),
             Some(Keyword::Field) => self.define_field(),
-            _ => {
-                Err(self
-                    .error_here("`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `INDEX` or `FIELD`"))
-            }
+            Some(Keyword::Analyzer) => self.define_analyzer(),
+            _ => Err(self.error_here(
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `INDEX`, `FIELD` or `ANALYZER`",
+            )),
         }
     }
 
@@ -165,6 +165,42 @@ impl Parser<'_> {
         })
     }
 
+    /// `DEFINE ANALYZER simple FILTERS lowercase, ascii`
+    ///
+    /// The tokenizer is not named because there is one: splitting on
+    /// non-alphanumeric boundaries is what every filter chain assumes
+    /// underneath it, and a knob with one setting is a knob nobody should have
+    /// to read about.
+    fn define_analyzer(&mut self) -> Result<StatementKind> {
+        self.advance();
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        let mut filters = Vec::new();
+        if self.eat_keyword(Keyword::Filters) {
+            filters.push(self.filter()?);
+            while self.eat_punct(Punct::Comma) {
+                filters.push(self.filter()?);
+            }
+        }
+        Ok(StatementKind::DefineAnalyzer {
+            name,
+            filters,
+            if_not_exists,
+        })
+    }
+
+    /// One named filter.
+    fn filter(&mut self) -> Result<Filter> {
+        let Some(Token::Ident(word)) = self.peek() else {
+            return Err(self.error_here("a filter name"));
+        };
+        let Some(filter) = Filter::parse(word) else {
+            return Err(self.error_here("a filter name"));
+        };
+        self.advance();
+        Ok(filter)
+    }
+
     /// `DEFINE FIELD email ON users TYPE string`
     fn define_field(&mut self) -> Result<StatementKind> {
         self.advance();
@@ -180,11 +216,14 @@ impl Parser<'_> {
         // that insisted would only be remembered wrong.
         let mut required = false;
         let mut default = None;
+        let mut analyzer = None;
         loop {
             if !required && self.eat_keyword(Keyword::Required) {
                 required = true;
             } else if default.is_none() && self.eat_keyword(Keyword::Default) {
                 default = Some(self.written_expression()?);
+            } else if analyzer.is_none() && self.eat_keyword(Keyword::Analyzer) {
+                analyzer = Some(self.name()?);
             } else {
                 break;
             }
@@ -195,6 +234,7 @@ impl Parser<'_> {
             kind,
             required,
             default,
+            analyzer,
             if_not_exists,
         })
     }
