@@ -1,0 +1,69 @@
+# Following a record reference. A reference is not a value that resembles a key —
+# it is the address of the other record — so following one is a point read and
+# not a search. Most of what is worth stating is what happens when there is
+# nothing at the far end, or when the thing named is not a reference at all.
+# A corpus file is one session against one store, so these run in order.
+# These cases assert that the language accepts the shape and answers; the values
+# a fetch produces are asserted record by record in `tests/fetch.rs`, where an
+# expectation may look inside the object.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+--- expect: ok
+
+--- case: two tables, one referring to the other
+DEFINE TABLE users;
+DEFINE TABLE posts;
+CREATE users:1 = { name: 'ada', city: 'london' };
+CREATE users:2 = { name: 'grace', city: 'york' };
+CREATE posts:1 = { title: 'first', author: users:1 };
+CREATE posts:2 = { title: 'second', author: users:2 };
+--- expect: ok
+
+--- case: without the clause a reference stays a reference
+SELECT author FROM posts:1;
+--- expect: rows 1
+
+--- case: with it, the field holds the record it names
+SELECT author.name AS by FROM posts:1 FETCH author;
+--- expect: rows 1
+
+--- case: a sort key may name a fetched value
+SELECT title FROM posts FETCH author ORDER BY author.name DESC;
+--- expect: rows 2
+
+--- case: several routes in one read
+CREATE posts:3 = { author: users:1, reviewer: users:2 };
+SELECT author.name AS by, reviewer.name AS checked FROM posts:3 FETCH author, reviewer;
+--- expect: rows 1
+
+--- case: a nested route reaches through an object
+CREATE posts:4 = { meta: { editor: users:2 } };
+SELECT meta.editor.name AS edited FROM posts:4 FETCH meta.editor;
+--- expect: rows 1
+
+--- case: an array of references is followed element by element
+CREATE posts:5 = { authors: [users:1, users:2] };
+SELECT * FROM posts:5 FETCH authors;
+--- expect: rows 1
+
+--- case: a route that reaches nothing is not an error
+SELECT title FROM posts:1 FETCH nowhere;
+--- expect: rows 1
+
+--- case: a field that is not a reference is left as it is
+SELECT title FROM posts:1 FETCH title;
+--- expect: rows 1
+
+--- case: a reference to a record that is gone stays a reference
+DELETE users:2;
+SELECT author FROM posts:2 FETCH author;
+--- expect: rows 1
+
+--- case: fetch is a contextual word, so a field may be called it
+CREATE posts:6 = { fetch: 'a field called fetch', author: users:1 };
+SELECT fetch FROM posts:6 FETCH author;
+--- expect: rows 1

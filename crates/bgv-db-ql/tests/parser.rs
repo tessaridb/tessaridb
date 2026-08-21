@@ -798,3 +798,42 @@ fn a_name_reads_as_a_route_in_a_condition_and_a_table_in_a_value() {
     };
     assert!(matches!(right.kind, ExprKind::Record(_)));
 }
+
+#[test]
+fn a_fetch_clause_is_read_where_it_is_applied() {
+    // The grammar keeps clause order and application order the same, so the
+    // routes are followed before anything groups, projects or sorts — and the
+    // statement is written that way round too.
+    let StatementKind::Select(select) =
+        one("SELECT * FROM posts FETCH author, meta.editor ORDER BY author.name LIMIT 3;")
+    else {
+        panic!("not a select");
+    };
+    assert_eq!(select.fetch.len(), 2);
+    assert_eq!(select.fetch[0].path.to_string(), "author");
+    assert_eq!(select.fetch[1].path.to_string(), "meta.editor");
+    assert_eq!(select.order.len(), 1);
+    assert_eq!(select.limit, Some(3));
+}
+
+#[test]
+fn a_read_without_the_clause_fetches_nothing() {
+    let StatementKind::Select(select) = one("SELECT * FROM posts;") else {
+        panic!("not a select");
+    };
+    assert!(select.fetch.is_empty());
+}
+
+#[test]
+fn fetch_is_contextual_so_it_is_still_a_name() {
+    // A field called `fetch`, projected and filtered on, in a statement that
+    // also carries the clause.
+    let StatementKind::Select(select) = one("SELECT fetch FROM posts FETCH author;") else {
+        panic!("not a select");
+    };
+    assert_eq!(select.fetch.len(), 1);
+    let Projection::Values(wanted) = &select.projection else {
+        panic!("not a named projection");
+    };
+    assert_eq!(wanted[0].name.text, "fetch");
+}

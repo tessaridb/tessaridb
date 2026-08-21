@@ -509,6 +509,48 @@ more than one could, is the planner's decision and is described below.
 | `FROM users:2<-follows<-users` | the index, on the edge table's `in` |
 | `FROM users` | every record of the table |
 
+### Following a reference
+
+A record reference is a value — `posts:1` may hold `author: users:1` — so a
+record already says where the other record is. `FETCH` reads it:
+
+```
+SELECT title, author.name AS by FROM posts FETCH author;
+SELECT * FROM posts FETCH author, reviewer ORDER BY author.name;
+SELECT * FROM posts FETCH meta.editor;
+```
+
+**It happens before the projection and before the ordering**, which is why
+`SELECT author.name` and `ORDER BY author.name` both see the record rather than
+the reference. The clause is written where it is applied, the same rule that puts
+`START` before `LIMIT`.
+
+**`fetch` is contextual, not reserved.** A field called `fetch` keeps working.
+
+Four rules, each of which is a decision rather than an omission:
+
+- **A reference to a record that is gone stays a reference.** The field still
+  holds the name — the one piece of information the caller has — and `NONE` would
+  throw it away and make "deleted" indistinguishable from "empty". It also gives
+  the answer an unambiguous reading: an object means the record was there, a
+  reference means it was not. A traversal answers a dangling endpoint the same
+  way, because that is a state of the data and not a failure of the query.
+- **An array of references is followed element by element**, since a list of
+  references is how a to-many relation is stored here. An element that is not a
+  reference is left alone, as is a field that is not one.
+- **One level.** The fetched record's own references stay references. That bounds
+  the work at one point read per reference and makes a cycle impossible rather
+  than handled. `FETCH author.manager` — a route *through* something fetched — is
+  not read; write two statements.
+- **A route that reaches nothing is not an error**, the missing-field rule one
+  level down.
+
+**What it costs, stated rather than measured later:** one point read per
+*distinct* reference across the whole read. Distinct, because a read resolves at
+one snapshot and two reads of one address at one snapshot must answer the same
+thing — so a hundred posts by three authors is three reads. Turning many point
+reads into one batched request is a planner decision and is not made here.
+
 ### Which index runs
 
 Where a condition offers several conjuncts an index could serve, the one that
@@ -1014,7 +1056,8 @@ Named here rather than merely missing, so each absence reads as a decision:
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
-| joins | a join needs the planner to choose a driving side and a join order; the planner now chooses *an index* (see below) and does not yet choose between tables |
+| a join between two tables on a predicate | a reference is followed with `FETCH` above, which is what a join on a *stored* relationship looks like. Matching two tables on a value needs four decisions this milestone does not take: a driving side and a join order (the planner chooses an index, not a table), a naming rule when both sides carry `name`, what an unmatched row means (adding `LEFT` later would change what an existing statement answers), and a bound on a nested loop over two unindexed tables |
+| `FETCH` through something already fetched, and cycles | one level, so the work is one point read per reference and a cycle is impossible rather than handled |
 | traversals longer than one hop, and filters inside a traversal | `a->e->b` is one hop to the edge and one to its far side, which is the shape that makes traversal useful; `->{1..3}`, mid-traversal filters and shortest-path are a language surface to design once |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |
 | a text **index** | `MATCHES` works today over a scan. The index that makes it fast is its own milestone, and the statement will not change when it lands — which is exactly why the analyzer is on the field and not on the index. |

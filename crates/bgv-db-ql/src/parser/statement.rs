@@ -369,6 +369,11 @@ impl Parser<'_> {
         } else {
             Source::Table(table)
         };
+        // Written in the order it is applied: references are followed before
+        // anything groups, projects or sorts, so the clause sits before them.
+        // The grammar keeps clause order and application order the same on
+        // purpose — see `START` before `LIMIT` below.
+        let fetch = self.fetch_paths()?;
         let group = self.group_by()?;
         let order = self.order_by()?;
         // `START` before `LIMIT`, because that is the order they are applied in
@@ -380,6 +385,7 @@ impl Parser<'_> {
         Ok(Select {
             projection,
             from,
+            fetch,
             group,
             order,
             start: skip,

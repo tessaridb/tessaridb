@@ -142,6 +142,34 @@ impl Path {
         }
         Some(current)
     }
+
+    /// The value this route reaches, so a caller can change it in place.
+    ///
+    /// The mirror of [`Path::resolve`], and it exists because there was until
+    /// now nothing in this store that *wrote* through a route — every walk read.
+    /// Following a reference has to put the record it found where the reference
+    /// was, and rebuilding the object around it by hand at each step is the same
+    /// walk written a second time, differently.
+    ///
+    /// `None` for exactly the routes `resolve` answers `None` for, so the two
+    /// cannot disagree about which routes exist.
+    #[must_use]
+    pub fn resolve_mut<'value>(&self, value: &'value mut Value) -> Option<&'value mut Value> {
+        let Value::Object(fields) = value else {
+            return None;
+        };
+        let mut current = fields.get_mut(&self.root)?;
+        for step in &self.steps {
+            current = match (step, current) {
+                (Step::Field(name), Value::Object(fields)) => fields.get_mut(name)?,
+                (Step::Index(at), Value::Array(items)) => {
+                    items.get_mut(usize::try_from(*at).ok()?)?
+                }
+                _ => return None,
+            };
+        }
+        Some(current)
+    }
 }
 
 impl fmt::Display for Path {

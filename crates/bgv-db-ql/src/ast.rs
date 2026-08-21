@@ -244,6 +244,15 @@ pub struct Select {
     pub projection: Projection,
     /// Which access path the statement resolves to.
     pub from: Source,
+    /// The routes whose record references are followed before anything else
+    /// looks at the record.
+    ///
+    /// Empty means the clause was not written. It is applied **before** the
+    /// projection and the ordering, so `SELECT author.name … FETCH author` and
+    /// `ORDER BY author.name` both see the record rather than the reference —
+    /// which is the only ordering that makes the clause useful for the
+    /// statements that want it.
+    pub fetch: Vec<FieldPath>,
     /// The keys the records are grouped by, when the read groups.
     ///
     /// Empty means no grouping — which is not the same as no aggregate:

@@ -224,7 +224,16 @@ impl Session<'_> {
         // The searched context travels with the records because a sort key is
         // an expression too, and one holding a `MATCHES` or a score must mean
         // the same thing there as it does in the `WHERE` that produced them.
-        let (records, path, searched) = self.read_source(transaction, select)?;
+        let (mut records, path, searched) = self.read_source(transaction, select)?;
+        // Before anything groups, projects or sorts, so a projection and a sort
+        // key both see the record rather than the reference that named it.
+        if !select.fetch.is_empty() {
+            // A reference carries a table and an id and not a tenancy, so it
+            // resolves in the read's own database — which is also why a fetch
+            // cannot reach across one (ADR-0008).
+            let context = self.context(transaction, None, select.span)?;
+            self.follow(transaction, &mut records, &select.fetch, context)?;
+        }
         let records = match &select.projection {
             Projection::All => records,
             Projection::Values(wanted) if folds(wanted) || !select.group.is_empty() => {

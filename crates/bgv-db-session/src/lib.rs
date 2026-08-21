@@ -31,6 +31,7 @@ mod identity;
 mod outcome;
 mod plan;
 mod rank;
+mod reference;
 mod search;
 mod session;
 mod shape;

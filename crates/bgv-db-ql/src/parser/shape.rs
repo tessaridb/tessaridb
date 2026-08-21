@@ -32,6 +32,23 @@ impl Parser<'_> {
         Ok(keys)
     }
 
+    /// `FETCH author, meta.editor`, when it is there.
+    ///
+    /// `fetch` is a **contextual** word and not a reserved one, the same
+    /// decision `ORDER`, `GROUP`, `START` and `LIMIT` took: a field called
+    /// `fetch` keeps working, and a language that takes a common noun away from
+    /// its users to buy a clause has made a poor trade.
+    pub(super) fn fetch_paths(&mut self) -> Result<Vec<FieldPath>> {
+        if !self.eat_word("fetch") {
+            return Ok(Vec::new());
+        }
+        let mut routes = vec![self.field_path()?];
+        while self.eat_punct(Punct::Comma) {
+            routes.push(self.field_path()?);
+        }
+        Ok(routes)
+    }
+
     /// `ORDER BY name, address.city DESC`, when it is there.
     ///
     /// Keys are read in the condition position, so a bare name is a route into
