@@ -299,6 +299,7 @@ SELECT * FROM users;
 SELECT * FROM users WHERE email = 'ada@example.com';
 SELECT name, address.city FROM users;
 SELECT address.city AS home, tags[0] AS first_tag FROM users;
+SELECT price * quantity AS total, string::upper(name) AS shout FROM users;
 
 UPDATE users:1 = { name: 'ada', email: 'ada2@example.com' };
 DELETE users:1;
@@ -328,9 +329,14 @@ field name carrying a delimiter is exactly what a path cannot address — so the
 default would produce answers the grammar that produced them could not read back.
 
 A path ending in a **position** therefore has no name, and `AS` is required:
-`SELECT tags[0]` is refused, `SELECT tags[0] AS first_tag` is not. Refused rather
-than invented, because every invented spelling — `tags_0`, `tags`, `_0` — is a
+`SELECT tags[0]` is refused, `SELECT tags[0] AS first_tag` is not. So does
+anything **computed** — `price * quantity`, `string::len(name)` — for the same
+reason: every invented spelling (`tags_0`, `price_times_quantity`) is a
 convention the author learns from a surprise.
+
+A projection is read in the same position a condition is, so a bare name is a
+route into the record and the whole operator and function surface below is
+available in it.
 
 **Two projections that answer under one name are refused**, when the statement is
 read rather than when it runs. `SELECT address.city, work.city` would write one
@@ -389,7 +395,10 @@ The operators, and how tightly they bind — loosest first:
 | loosest | `OR` |
 | | `AND` |
 | | `NOT` |
-| tightest | `=` `!=` `<` `<=` `>` `>=` `IN` `CONTAINS` `LIKE` `ILIKE` |
+| | `=` `!=` `<` `<=` `>` `>=` `IN` `CONTAINS` `LIKE` `ILIKE` |
+| | `+` `-` |
+| | `*` `/` `%` |
+| tightest | unary `-` |
 
 Parentheses override, and **two comparisons cannot be written in a row**:
 `1 < age < 100` means "between" to a person and `(1 < age) < 100` to a parser, so
@@ -435,6 +444,69 @@ CONTAINS 'urgent'` asks whether an array or a set holds that element, where
 because both are asked, and neither is a spelling of the other. `IN` is the same
 question from the other end — `'urgent' IN tags` — because both read naturally
 in different sentences.
+
+### Arithmetic
+
+`+ - * / %` and a unary `-`, over numbers only — concatenation is
+`string::concat`, so one operator never means two things.
+
+The three numeric kinds **promote**: `int` → `decimal` → `float`. The result is
+the wider of the two, where wider means "can hold what the other one holds", so
+`int + decimal` is exact and anything touching a float is a float and says so.
+
+**Division always produces at least a decimal.** `7 / 2` is `3.5`, not `3`.
+Truncating integer division is the classic silent wrong answer — the query looks
+right, the number is wrong, and nothing raises. The cost is stated rather than
+hidden: `1 / 3` is a decimal rounded to the type's precision, because no decimal
+holds a third.
+
+**Overflow and division by zero are failures, not values.** Integer arithmetic
+is checked, and a division by zero fails whatever the kinds — including for
+floats, where the hardware would happily produce an infinity. A wrapped integer
+or an infinity written into a record is a number nobody meant, and by the time
+anyone notices it is stored.
+
+### Functions
+
+Written `group::name(…)`, so a function name can never collide with a field
+name and the set stays groupable:
+
+```
+SELECT string::upper(address.city) AS shout FROM users;
+SELECT string::len(name) AS letters FROM users;
+SELECT array::last(tags) AS newest FROM users;
+SELECT * FROM users WHERE string::len(name) = 3;
+```
+
+| Group | Functions |
+|---|---|
+| `string` | `len` (characters, not bytes) · `lower` · `upper` · `trim` · `concat(a, b)` |
+| `array` | `len` · `first` · `last` |
+| `math` | `abs` · `floor` · `ceil` · `round` (half away from zero) |
+| `time` | `now()` |
+| `type` | `of(value)` — the type's name, as §3 spells it |
+
+**What earns a place: a function is here when it cannot be expressed by what the
+language already has.** That is why there is no `array::contains` (`CONTAINS`
+says it), no `string::contains` (`LIKE '%x%'` says it), and no `is_none`
+(`= NONE` says it). `array::last` is the clearest case *for* the rule: a path
+takes a literal position and there is no length to subtract from, so "the last
+element" is otherwise unsayable.
+
+**The number of arguments is checked when the statement is read**, because the
+set of functions is known then. What each argument holds is checked when it runs,
+and a wrong one names the function, the position, what was wanted and what was
+there.
+
+**An absent or null argument answers `none`**, without the function being run —
+so `array::len(tags)` over a table where some records have no `tags` narrows
+rather than failing. `type::of` is the exception, and it is the exception that
+shows the rule: it is the only function asking *about* a value rather than
+computing from one.
+
+`time::now()` is read once, in the session, so the instant that reaches the log
+is a value like any other — a replica applies what was written rather than
+asking its own clock and reaching a different answer.
 
 **A condition must be a boolean.** Every operator above answers with one, so this
 only bites when a bare path or literal stands where a question was meant:
@@ -606,12 +678,12 @@ Named here rather than merely missing, so each absence reads as a decision:
 | `[*]` in a path — "any element of this array" | it turns a path from a function into a relation: the filter becomes existential, a projection returns several values, and the index becomes a multikey one with entries per element and a reclamation rule of its own. Three features wearing one syntax. |
 | declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
 | aggregation and grouping | needs an execution layer this milestone has not built |
-| arithmetic | `WHERE` needs comparison and composition, not `+`; arithmetic's first real consumer is a computed projection, and what `int + decimal` produces, what division by zero does and what overflow does deserve a milestone with a consumer to test them against |
-| functions | a registry and an arity rule of their own |
+| user-defined functions | a stored function is a catalog entry with its own lifecycle, permissions and replication story |
+| `||` as a second spelling for concatenation | `string::concat` says it, and a second spelling for one thing is a decision to take once rather than by accident |
 | an ordered range read from `<` and `>` | the index can serve it; it needs a bounded scan on the storage layer and an equivalence test of its own. Reported as a scan until then, never served as a guess |
 | three-valued logic | §5 — comparison answers true or false, and `= NONE` / `= NULL` say what `IS NULL` would |
 | permissions in the language | there is no session identity yet |
-| a mandatory field, a default, an `ASSERT` | each needs the expression surface to grow functions first; `SCHEMAFULL` already catches the misspelling that motivated declarations |
+| a mandatory field, a default, an `ASSERT` | the expression surface they wait on now exists; this is next, not absent by design |
 | changing a declared type in place | `DROP FIELD` then `DEFINE FIELD` re-checks every row through the one path; a migration primitive is its own work |
 
 ## 9. What is fixed here, and what can still move
@@ -625,6 +697,12 @@ Named here rather than merely missing, so each absence reads as a decision:
 | An edge is a record, and traversal is an index read | **contract** — no separate graph keyspace, so edges get MVCC, transactions, replication and the schema check without any of them being built again |
 | An edge is identified by its endpoints | fixed for this milestone; an explicit-id form would be additive |
 | A filter is a condition, and a condition is a boolean | **contract** |
+| Numeric kinds promote int → decimal → float | **contract** |
+| Division produces at least a decimal | **contract** — truncating integer division is a wrong number that looks right |
+| Overflow and division by zero are failures | **contract** |
+| A function is added only when the language cannot already say it | **contract** — the rule that keeps the surface from growing by association |
+| An absent or null argument makes a call answer `none` | **contract** — except `type::of`, which asks about the value rather than computing from it |
+| Anything computed in a projection needs `AS` | **contract** |
 | Comparison is the value system's declared order, including across types | **contract** — a comparison disagreeing with the order its index is stored in is an answer that changes when an index appears |
 | An ordered comparison against `NONE` or `NULL` is false | **contract** — they are the absence of a value, not a small one |
 | `= NONE` and `= NULL` are the two questions `IS NULL` would blur together | **contract** |

@@ -22,6 +22,7 @@
 
 use bgv_db_types::{FieldKind, Path, RecordId, Value};
 
+use crate::function::Function;
 use crate::token::Span;
 
 /// A parsed script: statements in the order they were written.
@@ -221,8 +222,8 @@ pub enum Projection {
 /// One projected value, and the name it answers under.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Projected {
-    /// Where the value is read from.
-    pub path: FieldPath,
+    /// How the value is produced: a route, or anything computed from one.
+    pub value: Expr,
     /// The name it answers under.
     ///
     /// Resolved at parse rather than left for the executor: whether two
@@ -273,6 +274,43 @@ pub enum Source {
         /// What each record must satisfy.
         condition: Box<Expr>,
     },
+}
+
+/// An operator producing a number from two numbers.
+///
+/// Separate from [`BinaryOp`] for the same reason `AND` and `OR` are: these
+/// answer with a number and can fail on their operands, while a comparison
+/// answers with a boolean and is total in both arguments. One enum would leave
+/// each implementation with arms it can never reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArithmeticOp {
+    /// `+` — addition. Numbers only; concatenation is `string::concat`.
+    Add,
+    /// `-` — subtraction.
+    Subtract,
+    /// `*` — multiplication.
+    Multiply,
+    /// `/` — division, which always produces at least a decimal.
+    ///
+    /// `7 / 2` is `3.5` and not `3`: truncating integer division is the classic
+    /// silent wrong answer, where the query looks right and the number is not.
+    Divide,
+    /// `%` — remainder.
+    Remainder,
+}
+
+impl ArithmeticOp {
+    /// How the operator is written.
+    #[must_use]
+    pub const fn spelling(self) -> &'static str {
+        match self {
+            Self::Add => "+",
+            Self::Subtract => "-",
+            Self::Multiply => "*",
+            Self::Divide => "/",
+            Self::Remainder => "%",
+        }
+    }
 }
 
 /// An operator taking two values.
@@ -359,6 +397,21 @@ pub enum ExprKind {
     Path(FieldPath),
     /// `NOT <expr>` — the operand must be a boolean.
     Not(Box<Expr>),
+    /// `-<expr>` — the operand must be a number.
+    Negate(Box<Expr>),
+    /// `group::name(a, b)` — a call of one of the language's own functions.
+    ///
+    /// Arity is checked when the statement is read, because the set of
+    /// functions is known then; argument types are checked when it runs,
+    /// because until a record is in hand there is nothing to check.
+    Call {
+        /// Which function.
+        function: Function,
+        /// Its arguments, in order.
+        arguments: Vec<Expr>,
+        /// Where the name was written, for a failure to point at.
+        span: Span,
+    },
     /// `<expr> AND <expr>` — both must be booleans, and the right is evaluated
     /// only when the left holds.
     ///
@@ -371,6 +424,15 @@ pub enum ExprKind {
     /// `<expr> OR <expr>` — the right is evaluated only when the left does not
     /// hold.
     Or(Box<Expr>, Box<Expr>),
+    /// Two numbers and an operator.
+    Arithmetic {
+        /// Which operator.
+        op: ArithmeticOp,
+        /// The left operand.
+        left: Box<Expr>,
+        /// The right operand.
+        right: Box<Expr>,
+    },
     /// Two values and an operator.
     Binary {
         /// Which operator.

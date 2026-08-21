@@ -4,7 +4,7 @@
 //! failure that cannot point at the words that caused it makes its author read
 //! the whole thing again.
 
-use bgv_db_ql::Span;
+use bgv_db_ql::{Function, Span};
 
 /// Result alias for every fallible operation in this crate.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -144,6 +144,60 @@ pub enum Error {
         /// The type that stood there instead.
         found: &'static str,
         /// Where it was written.
+        span: Span,
+    },
+
+    /// An arithmetic operator applied to something that is not a number.
+    #[error("`{operator}` needs numbers, not {left} and {right} (at {span})")]
+    NotArithmetic {
+        /// The operator as written.
+        operator: &'static str,
+        /// The left operand's type.
+        left: &'static str,
+        /// The right operand's type.
+        right: &'static str,
+        /// Where the operator is.
+        span: Span,
+    },
+
+    /// Arithmetic that has no answer: an overflow, or a division by zero.
+    ///
+    /// A failure rather than a value, because a wrapped integer or an infinity
+    /// written into a record is a number nobody meant, and by the time anyone
+    /// notices it is stored.
+    #[error("`{operator}` has no answer here: {reason} (at {span})")]
+    ArithmeticFailed {
+        /// The operator as written.
+        operator: &'static str,
+        /// Why there is no answer.
+        reason: &'static str,
+        /// Where the operator is.
+        span: Span,
+    },
+
+    /// A function argument holding the wrong kind of value.
+    #[error("{function} wants {expected} as argument {at}, not {found} (at {span})")]
+    WrongArgument {
+        /// The function called.
+        function: Function,
+        /// Which argument, counting from one.
+        at: usize,
+        /// What it wanted.
+        expected: &'static str,
+        /// What it found.
+        found: &'static str,
+        /// Where the call is.
+        span: Span,
+    },
+
+    /// A function that could not answer for a reason of its own.
+    #[error("{function} has no answer here: {reason} (at {span})")]
+    CallFailed {
+        /// The function called.
+        function: Function,
+        /// Why there is no answer.
+        reason: &'static str,
+        /// Where the call is.
         span: Span,
     },
 

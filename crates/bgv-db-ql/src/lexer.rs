@@ -297,6 +297,10 @@ impl<'a> Lexer<'a> {
         let punct = match character {
             ';' => Punct::Semicolon,
             ',' => Punct::Comma,
+            ':' if self.peek() == Some(':') => {
+                self.advance(':');
+                Punct::ColonColon
+            }
             ':' => Punct::Colon,
             '=' => Punct::Equals,
             '*' => Punct::Star,
@@ -331,6 +335,13 @@ impl<'a> Lexer<'a> {
                 self.advance('=');
                 Punct::NotEquals
             }
+            '+' => Punct::Plus,
+            // `--` was consumed as a comment and `-<digit>` as a number before
+            // reaching here, and `->` is taken above, so what is left is
+            // subtraction or a negation of something that is not a literal.
+            '-' => Punct::Minus,
+            '/' => Punct::Slash,
+            '%' => Punct::Percent,
             '(' => Punct::ParenOpen,
             ')' => Punct::ParenClose,
             '.' => {

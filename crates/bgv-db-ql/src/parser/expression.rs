@@ -6,6 +6,7 @@ use rust_decimal::Decimal;
 use super::Parser;
 use crate::ast::{Expr, ExprKind, Field, Name, RangeExpr, RecordTarget, TableRef};
 use crate::error::{Error, Result};
+use crate::function::Function;
 use crate::token::{Keyword, Punct, Span, Spanned, Token};
 
 impl Parser<'_> {
@@ -43,6 +44,13 @@ impl Parser<'_> {
 
     fn primary(&mut self) -> Result<Expr> {
         let span = self.span_here();
+        // A call is recognised before a keyword is, so `type::of(x)` reads as
+        // the function it obviously is. A reserved word before `::` cannot be
+        // anything else, which is the same reasoning that lets one stand after
+        // `TYPE` and inside an object literal.
+        if self.call_follows() {
+            return self.call(span);
+        }
         if let Some(keyword) = self.peek_keyword() {
             return self.keyword_value(keyword, span);
         }
@@ -386,5 +394,59 @@ impl Parser<'_> {
             Token::Bytes(bytes) => Ok(RecordId::Bytes(bytes)),
             _ => Err(Error::InvalidRecordId { span: spanned.span }),
         }
+    }
+}
+
+impl Parser<'_> {
+    /// `group::name(a, b)`, once the shape is already recognised.
+    ///
+    /// Arity is checked here rather than at evaluation because the set of
+    /// functions is known when the statement is read, and a call with the wrong
+    /// number of arguments is a mistake that never needs a record to see.
+    fn call(&mut self, start: Span) -> Result<Expr> {
+        // Read from the source rather than from the token, so a reserved word
+        // used as a group keeps the case it was written in: `type::of` is a
+        // function and `TYPE::of` is not, the same as every other name here.
+        let group = self.span_here();
+        self.advance();
+        self.expect_punct(Punct::ColonColon, "`::` after a function's group")?;
+        let name = self.name()?;
+        let Some(group) = self.source.get(group.start..group.end) else {
+            return Err(self.error_here("a function's group"));
+        };
+        let spelling = format!("{group}::{}", name.text);
+        let span = start.to(name.span);
+        let Some(function) = Function::parse(&spelling) else {
+            return Err(Error::NoSuchFunction {
+                name: spelling,
+                span,
+            });
+        };
+        self.expect_punct(Punct::ParenOpen, "`(` after a function's name")?;
+        let mut arguments = Vec::new();
+        if !self.eat_punct(Punct::ParenClose) {
+            arguments.push(self.expression()?);
+            while self.eat_punct(Punct::Comma) {
+                arguments.push(self.expression()?);
+            }
+            self.expect_punct(Punct::ParenClose, "`)` after the arguments")?;
+        }
+        if arguments.len() != function.arity() {
+            return Err(Error::WrongArity {
+                function,
+                expected: function.arity(),
+                found: arguments.len(),
+                span,
+            });
+        }
+        let whole = start.to(self.span_behind());
+        Ok(Expr {
+            kind: ExprKind::Call {
+                function,
+                arguments,
+                span,
+            },
+            span: whole,
+        })
     }
 }

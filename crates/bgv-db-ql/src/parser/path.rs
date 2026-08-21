@@ -8,7 +8,7 @@
 use bgv_db_types::{Number, Path, Step};
 
 use super::Parser;
-use crate::ast::{FieldPath, Name, Projected, Projection};
+use crate::ast::{ExprKind, FieldPath, Name, Projected, Projection};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Spanned, Token};
 
@@ -78,29 +78,37 @@ impl Parser<'_> {
         Ok(Projection::Values(values))
     }
 
-    /// One projected route, and the name it answers under.
+    /// One projected value, and the name it answers under.
     ///
-    /// The default name is the **last step** of the route, so `address.city`
+    /// A projection is a **condition-position expression** — a bare name reads
+    /// as a route into the record, the same as in a `WHERE` — so
+    /// `price * quantity AS total` and `string::upper(address.city) AS shout`
+    /// are as writable as `name`.
+    ///
+    /// The default name is the **last step** of a route, so `address.city`
     /// answers under `city`. Naming it `address.city` would put a delimiter
     /// inside a field name — and a field name carrying a delimiter is precisely
     /// what a route cannot address, so the answer could not be read back by the
-    /// grammar that produced it.
+    /// grammar that produced it. Anything that is not a bare route has no name
+    /// of its own and needs `AS`, for the same reason a position does: every
+    /// invented spelling is a convention learned from a surprise.
     fn projected(&mut self) -> Result<Projected> {
-        let path = self.field_path()?;
+        let value = self.condition()?;
         if self.eat_keyword(Keyword::As) {
             let name = self.name()?;
-            return Ok(Projected { path, name });
+            return Ok(Projected { value, name });
         }
+        let ExprKind::Path(path) = &value.kind else {
+            return Err(Error::UnnamedProjection { span: value.span });
+        };
         let text = match path.path.steps().last() {
             None => path.path.root().to_owned(),
             Some(Step::Field(name)) => name.clone(),
-            // A position is not a name, and inventing one would be a convention
-            // learned from a surprise.
-            Some(Step::Index(_)) => return Err(Error::UnnamedProjection { span: path.span }),
+            Some(Step::Index(_)) => return Err(Error::UnnamedProjection { span: value.span }),
         };
-        let span = path.span;
+        let span = value.span;
         Ok(Projected {
-            path,
+            value,
             name: Name { text, span },
         })
     }

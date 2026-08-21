@@ -19,6 +19,8 @@
 
 #![forbid(unsafe_code)]
 
+mod arithmetic;
+mod call;
 mod condition;
 mod context;
 mod error;

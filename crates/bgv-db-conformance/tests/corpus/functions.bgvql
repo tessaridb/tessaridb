@@ -1,0 +1,80 @@
+# Arithmetic and functions, and the thing that makes either worth having:
+# something to compute for.
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+--- expect: ok
+
+--- case: rows carrying the three numeric kinds, and one missing a field
+DEFINE TABLE lines;
+CREATE lines:1 = { name: 'ada', price: dec 2.50, quantity: 3, weight: 1.5, tags: ['a', 'b'] };
+CREATE lines:2 = { name: 'grace', price: dec 1.00, quantity: 1 };
+--- expect: ok
+
+--- case: a computed projection
+SELECT price * quantity AS total FROM lines:1;
+--- expect: rows 1
+
+--- case: division does not truncate
+SELECT quantity / 2 AS half FROM lines:1;
+--- expect: rows 1
+
+--- case: a division by zero has no answer
+SELECT quantity / 0 AS bad FROM lines:1;
+--- expect: error ArithmeticFailed
+
+--- case: arithmetic on something that is not a number has no answer
+SELECT name + quantity AS bad FROM lines:1;
+--- expect: error NotArithmetic
+
+--- case: a function computes over the record it projects
+SELECT string::upper(name) AS shout, string::len(name) AS letters FROM lines:1;
+--- expect: rows 1
+
+--- case: the last element, which a path cannot reach
+SELECT array::last(tags) AS newest FROM lines:1;
+--- expect: rows 1
+
+--- case: an absent argument answers with an absence rather than failing the read
+SELECT array::len(tags) AS count FROM lines;
+--- expect: rows 2
+
+--- case: and that absence narrows a condition rather than breaking it
+SELECT * FROM lines WHERE array::len(tags) > 1;
+--- expect: rows 1
+
+--- case: a function composes inside a condition
+SELECT * FROM lines WHERE string::len(name) = 3;
+--- expect: rows 1
+
+--- case: the type of a value is the one question an absence answers
+SELECT type::of(tags) AS kind FROM lines;
+--- expect: rows 2
+
+--- case: the wrong number of arguments is refused when the statement is read
+SELECT string::len(name, name) AS n FROM lines;
+--- expect: error WrongArity
+
+--- case: a function this language does not have is refused by name
+SELECT string::nope(name) AS n FROM lines;
+--- expect: error NoSuchFunction
+
+--- case: a wrong argument type names the function and the position
+SELECT string::len(quantity) AS n FROM lines:1;
+--- expect: error WrongArgument
+
+--- case: anything computed needs a name of its own
+SELECT string::len(name) FROM lines;
+--- expect: error UnnamedProjection
+
+--- case: parentheses group arithmetic as they group conditions
+SELECT (quantity + 1) * 2 AS doubled FROM lines:1;
+--- expect: rows 1
+
+--- case: a negation of something that is not a literal
+SELECT -quantity AS owed FROM lines:1;
+--- expect: rows 1

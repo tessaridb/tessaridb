@@ -11,7 +11,7 @@ use std::sync::Arc;
 use bgv_db_kv::{KvBackend, MemoryBackend};
 use bgv_db_session::{Error, Session};
 use bgv_db_storage::Store;
-use bgv_db_types::{RecordId, Value};
+use bgv_db_types::{Number, RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
@@ -1628,4 +1628,146 @@ fn an_ordered_comparison_is_reported_as_a_scan_rather_than_served_as_a_guess() {
 
     let found = session.run("SELECT * FROM people WHERE age > 18;").unwrap();
     assert_eq!(found[0].path(), Some(AccessPath::Scan));
+}
+
+#[test]
+fn arithmetic_promotes_the_kinds_and_never_truncates_a_division() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE lines;\n\
+             CREATE lines:1 = { price: dec 2.50, quantity: 3, weight: 1.5 };",
+        )
+        .unwrap();
+
+    let found = session
+        .run(
+            "SELECT price * quantity AS total, quantity / 2 AS half, \
+             price + weight AS mixed FROM lines:1;",
+        )
+        .unwrap();
+    let record = &found[0].records().unwrap()[0].1;
+    // decimal × int is exact; int / int does not truncate; anything with a
+    // float is a float and says so.
+    assert_eq!(field(record, "total").type_name(), "number");
+    // Compared as numbers, not as spellings: a decimal carries a scale, so
+    // `1.50` and `1.5` are one value and the store says so.
+    assert_eq!(field(record, "total"), &Value::Number(Number::float(7.5)));
+    assert_eq!(field(record, "half"), &Value::Number(Number::float(1.5)));
+    assert_eq!(field(record, "mixed"), &Value::Number(Number::float(4.0)));
+}
+
+#[test]
+fn arithmetic_that_has_no_answer_fails_rather_than_producing_one() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE TABLE lines; CREATE lines:1 = { n: 1, name: 'ada' };")
+        .unwrap();
+
+    for script in [
+        "SELECT n / 0 AS bad FROM lines:1;",
+        "SELECT name + n AS bad FROM lines:1;",
+        "SELECT n + 9223372036854775807 + 9223372036854775807 AS bad FROM lines:1;",
+    ] {
+        assert!(session.run(script).is_err(), "{script} answered");
+    }
+}
+
+#[test]
+fn a_function_computes_over_the_record_it_is_projecting() {
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    let found = session
+        .run(
+            "SELECT string::upper(address.city) AS shout, string::len(name) AS letters \
+             FROM people:1;",
+        )
+        .unwrap();
+    let record = &found[0].records().unwrap()[0].1;
+    assert_eq!(field(record, "shout"), &Value::String("PARIS".to_owned()));
+    assert_eq!(field(record, "letters").to_string(), "3");
+}
+
+#[test]
+fn a_function_also_composes_inside_a_condition() {
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM people WHERE string::len(name) = 3;"
+        ),
+        vec![RecordId::Int(1)]
+    );
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM people WHERE array::len(tags) > 1;"
+        ),
+        vec![RecordId::Int(1)]
+    );
+}
+
+#[test]
+fn the_last_element_is_reachable_only_through_a_function() {
+    // A path takes a literal position and there is nothing to subtract a length
+    // from, which is why `array::last` earns a place under the inclusion rule.
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    let found = session
+        .run("SELECT array::last(tags) AS newest FROM people:1;")
+        .unwrap();
+    assert_eq!(
+        field(&found[0].records().unwrap()[0].1, "newest"),
+        &Value::String("old".to_owned())
+    );
+}
+
+#[test]
+fn a_call_is_checked_for_arity_when_the_statement_is_read() {
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    // Before anything runs, and before any record is in hand.
+    assert!(
+        session
+            .run("SELECT string::len(name, name) AS n FROM people;")
+            .is_err()
+    );
+    assert!(
+        session
+            .run("SELECT string::nope(name) AS n FROM people;")
+            .is_err()
+    );
+    // A wrong argument type is a different failure, and it names the position.
+    let error = session
+        .run("SELECT string::len(address) AS n FROM people:1;")
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("string::len"), "{message}");
+    assert!(message.contains("argument 1"), "{message}");
+}
+
+#[test]
+fn a_computed_projection_needs_a_name_of_its_own() {
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    // A bare route names itself; anything computed does not.
+    assert!(
+        session
+            .run("SELECT string::len(name) FROM people;")
+            .is_err()
+    );
+    assert!(session.run("SELECT name FROM people;").is_ok());
 }

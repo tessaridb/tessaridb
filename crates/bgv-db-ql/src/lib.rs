@@ -15,15 +15,18 @@
 
 mod ast;
 mod error;
+mod function;
 mod lexer;
 mod parser;
 mod token;
 
 pub use ast::{
-    BinaryOp, Direction, Expr, ExprKind, Field, FieldPath, Name, Projected, Projection, RangeExpr,
-    RecordTarget, Script, Select, Source, Statement, StatementKind, TableRef,
+    ArithmeticOp, BinaryOp, Direction, Expr, ExprKind, Field, FieldPath, Name, Projected,
+    Projection, RangeExpr, RecordTarget, Script, Select, Source, Statement, StatementKind,
+    TableRef,
 };
 pub use error::{Error, Result};
+pub use function::Function;
 pub use lexer::tokenize;
 pub use parser::parse;
 pub use token::{Keyword, Punct, Span, Spanned, Token};

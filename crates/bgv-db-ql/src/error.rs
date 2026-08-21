@@ -4,6 +4,7 @@
 //! offending characters leaves the author of a hand-written query re-reading it
 //! and guessing.
 
+use crate::function::Function;
 use crate::token::Span;
 
 /// Result alias for every fallible operation in this crate.
@@ -171,6 +172,32 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `group::name(…)` naming no function this language has.
+    #[error("there is no function called {name} (at {span})")]
+    NoSuchFunction {
+        /// The name as written.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A call with the wrong number of arguments.
+    ///
+    /// Refused when the statement is read rather than when it runs: the set of
+    /// functions is known then, so this is a mistake that never needs a record
+    /// to see.
+    #[error("{function} takes {expected} argument(s), not {found} (at {span})")]
+    WrongArity {
+        /// The function called.
+        function: Function,
+        /// How many it takes.
+        expected: usize,
+        /// How many were written.
+        found: usize,
+        /// Where the call is.
+        span: Span,
+    },
+
     /// A projected path ends in a position, so it has no name of its own.
     ///
     /// A projection is named by the last step of its path, and `[0]` is not a
@@ -203,6 +230,8 @@ impl Error {
             | Self::InvalidRecordId { span }
             | Self::NotARange { span }
             | Self::DuplicateField { span, .. }
+            | Self::NoSuchFunction { span, .. }
+            | Self::WrongArity { span, .. }
             | Self::DuplicateProjection { span, .. }
             | Self::UnnamedProjection { span } => *span,
         }

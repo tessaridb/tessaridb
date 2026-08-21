@@ -75,6 +75,23 @@ impl Parser<'_> {
         self.tokens.get(self.position).map(|spanned| &spanned.token)
     }
 
+    /// Whether what stands here is a call: a name, `::`, a name, then `(`.
+    ///
+    /// Three tokens of lookahead rather than one, which is the only place this
+    /// grammar needs more than two — and it is worth it, because the
+    /// alternative is a function namespace that a field could shadow.
+    fn call_follows(&self) -> bool {
+        let at = |offset: usize| {
+            self.tokens
+                .get(self.position.saturating_add(offset))
+                .map(|spanned| &spanned.token)
+        };
+        matches!(at(0), Some(Token::Ident(_) | Token::Keyword(_)))
+            && matches!(at(1), Some(Token::Punct(Punct::ColonColon)))
+            && matches!(at(2), Some(Token::Ident(_)))
+            && matches!(at(3), Some(Token::Punct(Punct::ParenOpen)))
+    }
+
     /// Whether what stands here is a record reference rather than a route.
     ///
     /// `users:1` is a record in either position; `users` and `users.name` are a

@@ -123,8 +123,18 @@ pub enum Punct {
     Greater,
     /// `>=` — above or equal.
     GreaterOrEqual,
-    /// `*` — every field.
+    /// `*` — every field, and multiplication.
     Star,
+    /// `+` — addition.
+    Plus,
+    /// `-` — subtraction, and negation.
+    Minus,
+    /// `/` — division.
+    Slash,
+    /// `%` — remainder.
+    Percent,
+    /// `::` — separates a function's group from its name.
+    ColonColon,
     /// `{`
     BraceOpen,
     /// `}`
@@ -161,6 +171,11 @@ impl Punct {
             Self::Greater => ">",
             Self::GreaterOrEqual => ">=",
             Self::Star => "*",
+            Self::Plus => "+",
+            Self::Minus => "-",
+            Self::Slash => "/",
+            Self::Percent => "%",
+            Self::ColonColon => "::",
             Self::BraceOpen => "{",
             Self::BraceClose => "}",
             Self::BracketOpen => "[",

@@ -5,11 +5,12 @@
 //! tests combine* — and because a grammar's precedence is the part a reader
 //! comes looking for.
 //!
-//! Loosest to tightest: `OR`, `AND`, `NOT`, then the comparisons, then a range,
-//! then a primary. Parentheses override, as everywhere.
+//! Loosest to tightest: `OR`, `AND`, `NOT`, the comparisons, `+` and `-`, then
+//! `*` `/` `%`, then a unary minus, then a range, then a primary. Parentheses
+//! override, as everywhere.
 
 use super::Parser;
-use crate::ast::{BinaryOp, Expr, ExprKind};
+use crate::ast::{ArithmeticOp, BinaryOp, Expr, ExprKind};
 use crate::error::Result;
 use crate::token::{Keyword, Punct};
 
@@ -74,15 +75,63 @@ impl Parser<'_> {
     /// between a and c" — are things somebody means, and a grammar that silently
     /// picks one answers a question that was not asked.
     fn comparison(&mut self) -> Result<Expr> {
-        let left = self.spanned_range()?;
+        let left = self.additive()?;
         let Some(op) = self.comparison_operator() else {
             return Ok(left);
         };
-        let right = self.spanned_range()?;
+        let right = self.additive()?;
         if self.comparison_operator().is_some() {
             return Err(self.error_here("`AND`, `OR` or the end of the condition"));
         }
         Ok(binary(op, left, right))
+    }
+
+    fn additive(&mut self) -> Result<Expr> {
+        let mut left = self.multiplicative()?;
+        loop {
+            let op = if self.eat_punct(Punct::Plus) {
+                ArithmeticOp::Add
+            } else if self.eat_punct(Punct::Minus) {
+                ArithmeticOp::Subtract
+            } else {
+                return Ok(left);
+            };
+            left = arithmetic(op, left, self.multiplicative()?);
+        }
+    }
+
+    fn multiplicative(&mut self) -> Result<Expr> {
+        let mut left = self.negative()?;
+        loop {
+            let op = if self.eat_punct(Punct::Star) {
+                ArithmeticOp::Multiply
+            } else if self.eat_punct(Punct::Slash) {
+                ArithmeticOp::Divide
+            } else if self.eat_punct(Punct::Percent) {
+                ArithmeticOp::Remainder
+            } else {
+                return Ok(left);
+            };
+            left = arithmetic(op, left, self.negative()?);
+        }
+    }
+
+    /// A negation of something that is not a literal.
+    ///
+    /// `-7` never reaches here: the lexer reads a minus touching digits as part
+    /// of the number, so a negative literal is one token. What this handles is
+    /// `-price` and `-(a + b)`.
+    fn negative(&mut self) -> Result<Expr> {
+        let start = self.span_here();
+        if !self.eat_punct(Punct::Minus) {
+            return self.spanned_range();
+        }
+        let operand = self.negative()?;
+        let span = start.to(operand.span);
+        Ok(Expr {
+            kind: ExprKind::Negate(Box::new(operand)),
+            span,
+        })
     }
 
     fn comparison_operator(&mut self) -> Option<BinaryOp> {
@@ -117,6 +166,19 @@ fn binary(op: BinaryOp, left: Expr, right: Expr) -> Expr {
     let span = left.span.to(right.span);
     Expr {
         kind: ExprKind::Binary {
+            op,
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+        span,
+    }
+}
+
+/// Two numbers joined, spanning both.
+fn arithmetic(op: ArithmeticOp, left: Expr, right: Expr) -> Expr {
+    let span = left.span.to(right.span);
+    Expr {
+        kind: ExprKind::Arithmetic {
             op,
             left: Box::new(left),
             right: Box::new(right),

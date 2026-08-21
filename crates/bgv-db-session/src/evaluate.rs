@@ -16,6 +16,8 @@ use bgv_db_ql::{
 use bgv_db_storage::{Catalog, RecordAddress, Transaction};
 use bgv_db_types::{Number, Path, RecordId, RecordRef, TableId, Value, ValueRange};
 
+use crate::arithmetic::{arithmetic, negate};
+use crate::call::call;
 use crate::condition::{apply, boolean, literal_prefix};
 use crate::error::{Error, Result};
 use crate::outcome::AccessPath;
@@ -74,10 +76,27 @@ impl Session<'_> {
                 let held = self.evaluate_in(transaction, right, record)?;
                 Ok(Value::Bool(boolean(&held, right.span)?))
             }
+            ExprKind::Negate(operand) => {
+                let held = self.evaluate_in(transaction, operand, record)?;
+                negate(&held, operand.span)
+            }
+            ExprKind::Call {
+                function,
+                arguments,
+                span,
+            } => {
+                let arguments = self.values(transaction, arguments, record)?;
+                call(*function, &arguments, *span)
+            }
+            ExprKind::Arithmetic { op, left, right } => {
+                let held = self.evaluate_in(transaction, left, record)?;
+                let other = self.evaluate_in(transaction, right, record)?;
+                arithmetic(*op, &held, &other, expr.span)
+            }
             ExprKind::Binary { op, left, right } => {
-                let left = self.evaluate_in(transaction, left, record)?;
-                let right = self.evaluate_in(transaction, right, record)?;
-                Ok(Value::Bool(apply(*op, &left, &right)))
+                let held = self.evaluate_in(transaction, left, record)?;
+                let other = self.evaluate_in(transaction, right, record)?;
+                Ok(Value::Bool(apply(*op, &held, &other)))
             }
             ExprKind::Literal(value) => Ok(value.clone()),
             ExprKind::Table(table) => {
@@ -184,11 +203,39 @@ impl Session<'_> {
         let Projection::Values(wanted) = &select.projection else {
             return Ok((records, path));
         };
-        let projected = records
-            .into_iter()
-            .map(|(id, record)| (id, project(&record, wanted)))
-            .collect();
+        let mut projected = Vec::with_capacity(records.len());
+        for (id, record) in records {
+            projected.push((id, self.project(transaction, &record, wanted)?));
+        }
         Ok((projected, path))
+    }
+
+    /// One record, reduced to the values a read asked for.
+    ///
+    /// **A projection that reaches nothing omits its field** rather than
+    /// answering `none`. `Value::None` means the field is not there, so writing
+    /// it into an object would say the field is there and holds
+    /// not-being-there — the contradiction the value system spends its own rules
+    /// avoiding. The consequence is that projected records keep differing
+    /// shapes, which is the same property that makes a table able to hold
+    /// documents at all.
+    ///
+    /// A computed projection is evaluated against this record, so it is the
+    /// same evaluator a `WHERE` uses and cannot disagree with it.
+    fn project(
+        &self,
+        transaction: &mut Transaction<'_>,
+        record: &Value,
+        wanted: &[Projected],
+    ) -> Result<Value> {
+        let mut projected = BTreeMap::new();
+        for value in wanted {
+            let held = self.evaluate_in(transaction, &value.value, Some(record))?;
+            if held.is_present() {
+                projected.insert(value.name.text.clone(), held);
+            }
+        }
+        Ok(Value::Object(projected))
     }
 
     /// The records a source produces, as they are stored.
@@ -369,24 +416,6 @@ impl Session<'_> {
     }
 }
 
-/// One record, reduced to the values a read asked for.
-///
-/// **A route that reaches nothing omits its field** rather than answering
-/// `none`. `Value::None` means the field is not there, so writing it into an
-/// object would say the field is there and holds not-being-there — the
-/// contradiction the value system spends its own rules avoiding. The consequence
-/// is that projected records keep differing shapes, which is the same property
-/// that makes a table able to hold documents at all.
-fn project(record: &Value, wanted: &[Projected]) -> Value {
-    let mut projected = BTreeMap::new();
-    for value in wanted {
-        if let Some(found) = value.path.path.resolve(record) {
-            projected.insert(value.name.text.clone(), found.clone());
-        }
-    }
-    Value::Object(projected)
-}
-
 fn decode_all(found: Vec<(RecordId, Vec<u8>)>) -> Result<Vec<(RecordId, Value)>> {
     let mut records = Vec::with_capacity(found.len());
     for (id, payload) in found {
@@ -479,11 +508,14 @@ fn seekable(condition: &Expr) -> Vec<Seek<'_>> {
 fn reads_a_record(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Path(_) => true,
-        ExprKind::Not(inner) => reads_a_record(inner),
+        ExprKind::Not(inner) | ExprKind::Negate(inner) => reads_a_record(inner),
         ExprKind::And(left, right) | ExprKind::Or(left, right) => {
             reads_a_record(left) || reads_a_record(right)
         }
-        ExprKind::Binary { left, right, .. } => reads_a_record(left) || reads_a_record(right),
+        ExprKind::Arithmetic { left, right, .. } | ExprKind::Binary { left, right, .. } => {
+            reads_a_record(left) || reads_a_record(right)
+        }
+        ExprKind::Call { arguments, .. } => arguments.iter().any(reads_a_record),
         ExprKind::Array(items) | ExprKind::Set(items) => items.iter().any(reads_a_record),
         ExprKind::Object(fields) => fields.iter().any(|field| reads_a_record(&field.value)),
         ExprKind::Range(range) => reads_a_record(&range.start) || reads_a_record(&range.end),

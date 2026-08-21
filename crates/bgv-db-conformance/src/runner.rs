@@ -158,6 +158,10 @@ fn value_of(expr: &Expr) -> Option<Value> {
         // neither can stand where a corpus says what it expects.
         ExprKind::Path(_) | ExprKind::Not(_) => None,
         ExprKind::And(_, _) | ExprKind::Or(_, _) | ExprKind::Binary { .. } => None,
+        // Arithmetic and a call could be folded here, and are not: an
+        // expectation that computes is one that can be wrong in the same way
+        // the thing it checks is wrong.
+        ExprKind::Negate(_) | ExprKind::Arithmetic { .. } | ExprKind::Call { .. } => None,
     }
 }
 
@@ -183,6 +187,10 @@ fn kind_name(error: &Error) -> &'static str {
         Error::EdgePropertiesNotAnObject { .. } => "EdgePropertiesNotAnObject",
         Error::ConditionNotBoolean { .. } => "ConditionNotBoolean",
         Error::NoRecordInScope { .. } => "NoRecordInScope",
+        Error::NotArithmetic { .. } => "NotArithmetic",
+        Error::ArithmeticFailed { .. } => "ArithmeticFailed",
+        Error::WrongArgument { .. } => "WrongArgument",
+        Error::CallFailed { .. } => "CallFailed",
         _ => "Unnamed",
     }
 }
@@ -206,6 +214,8 @@ fn script_kind(error: &bgv_db_ql::Error) -> &'static str {
         bgv_db_ql::Error::DuplicateField { .. } => "DuplicateField",
         bgv_db_ql::Error::DuplicateProjection { .. } => "DuplicateProjection",
         bgv_db_ql::Error::UnnamedProjection { .. } => "UnnamedProjection",
+        bgv_db_ql::Error::NoSuchFunction { .. } => "NoSuchFunction",
+        bgv_db_ql::Error::WrongArity { .. } => "WrongArity",
         _ => "Unnamed",
     }
 }
