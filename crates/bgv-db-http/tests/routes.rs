@@ -190,3 +190,75 @@ fn absent_and_null_are_told_apart_over_the_wire() {
     assert!(body.contains(r#"{"kind":"value","value":null}"#), "{body}");
     assert!(body.contains(r#"{"kind":"value"}"#), "{body}");
 }
+
+#[test]
+fn concurrent_requests_do_not_interfere() {
+    // A session per request over one store is what the store already supports;
+    // this asserts the server does not undo that. Writers race each other for
+    // the committed tail, so some may lose and retry — what must not happen is
+    // a lost write or a wrong read.
+    let (_node, address) = node();
+    request(&address, "POST", "/script", READY);
+
+    let writers: Vec<_> = (0..8_u8)
+        .map(|n| {
+            let address = address.clone();
+            std::thread::spawn(move || {
+                request(
+                    &address,
+                    "POST",
+                    "/script",
+                    &format!(
+                        "USE NAMESPACE prod DATABASE orders; \
+                         CREATE users:{n} = {{ name: 'writer{n}' }};"
+                    ),
+                )
+            })
+        })
+        .collect();
+
+    let readers: Vec<_> = (0..4_u8)
+        .map(|_| {
+            let address = address.clone();
+            std::thread::spawn(move || {
+                request(
+                    &address,
+                    "POST",
+                    "/script",
+                    "USE NAMESPACE prod DATABASE orders; SELECT * FROM users;",
+                )
+            })
+        })
+        .collect();
+
+    let mut written = 0_usize;
+    for writer in writers {
+        let (status, body) = writer.join().unwrap();
+        // 200 for a write that landed; 409 for one that lost the race for the
+        // committed tail, which is contention rather than corruption.
+        assert!(status == 200 || status == 409, "{status} {body}");
+        if status == 200 {
+            written = written.saturating_add(1);
+        }
+    }
+    for reader in readers {
+        let (status, body) = reader.join().unwrap();
+        assert_eq!(
+            status, 200,
+            "a read failed while writes were in flight: {body}"
+        );
+    }
+
+    // Every write that answered 200 is there, and nothing else is.
+    let (status, body) = request(
+        &address,
+        "POST",
+        "/script",
+        "USE NAMESPACE prod DATABASE orders; SELECT count(*) AS n FROM users;",
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains(&format!(r#""n":{written}"#)),
+        "expected {written} records, got {body}"
+    );
+}
