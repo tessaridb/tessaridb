@@ -71,6 +71,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bgv-db-bench"
+version = "0.0.0"
+dependencies = [
+ "bgv-db",
+ "bgv-db-types",
+]
+
+[[package]]
 name = "bgv-db-conformance"
 version = "0.0.0"
 dependencies = [

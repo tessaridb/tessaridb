@@ -1,0 +1,17 @@
+[package]
+name = "bgv-db-bench"
+description = "Workload harness for bgv-db: throughput, exact per-phase percentiles, recorded baselines"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+bgv-db.workspace = true
+bgv-db-types.workspace = true
+
+[lints]
+workspace = true
