@@ -289,3 +289,168 @@ fn a_window_composes_with_a_filter_and_an_ordering() {
     assert_eq!(count_of(&records[0].1), 2);
     assert_eq!(count_of(&records[1].1), 1);
 }
+
+#[test]
+fn a_retention_statement_removes_a_range_and_says_how_much() {
+    // How a retention policy is *said*. There is no declared TTL and no
+    // background job: a policy is a statement an operator or a schedule runs,
+    // which keeps the decision about when it runs where somebody can see it.
+    let store = store();
+    let mut session = ready(&store);
+    populate(&mut session);
+
+    let outcomes = session
+        .run("DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z';")
+        .unwrap();
+    match outcomes[0] {
+        bgv_db_session::Outcome::Removed { count } => assert_eq!(count, 3),
+        ref other => panic!("not a removal: {other:?}"),
+    }
+
+    let left = session.run("SELECT * FROM readings;").unwrap();
+    assert_eq!(left[0].records().unwrap().len(), 3);
+}
+
+#[test]
+fn a_retention_statement_is_served_by_an_index_like_any_other_read() {
+    // It finds its records the same way a `SELECT … WHERE` does, so a policy
+    // over an indexed timestamp is a bounded scan rather than a walk of the
+    // table. Building a second way to find records would be a second place for
+    // the answer to differ.
+    let store = store();
+    let mut session = ready(&store);
+    populate(&mut session);
+    session
+        .run("DEFINE INDEX by_at ON readings FIELDS at;")
+        .unwrap();
+
+    let outcomes = session
+        .run("DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z';")
+        .unwrap();
+    match outcomes[0] {
+        bgv_db_session::Outcome::Removed { count } => assert_eq!(count, 3),
+        ref other => panic!("not a removal: {other:?}"),
+    }
+    // And the index no longer answers for what is gone.
+    let left = session
+        .run("SELECT * FROM readings WHERE at < datetime '2026-03-01T01:00:00Z';")
+        .unwrap();
+    assert!(left[0].records().unwrap().is_empty());
+}
+
+#[test]
+fn a_condition_nothing_satisfies_removes_nothing_and_is_not_an_error() {
+    let store = store();
+    let mut session = ready(&store);
+    populate(&mut session);
+
+    let outcomes = session
+        .run("DELETE FROM readings WHERE at < datetime '2020-01-01T00:00:00Z';")
+        .unwrap();
+    match outcomes[0] {
+        bgv_db_session::Outcome::Removed { count } => assert_eq!(count, 0),
+        ref other => panic!("not a removal: {other:?}"),
+    }
+    assert_eq!(
+        session.run("SELECT * FROM readings;").unwrap()[0]
+            .records()
+            .unwrap()
+            .len(),
+        6
+    );
+}
+
+#[test]
+fn a_retention_run_is_one_commit() {
+    // All of it or none. A statement that deleted in batches would leave a
+    // window in which half a policy had been applied and nothing would say
+    // which half — so this is inside a transaction that is then cancelled, and
+    // the table is untouched.
+    let store = store();
+    let mut session = ready(&store);
+    populate(&mut session);
+
+    session
+        .run(
+            "BEGIN;\n\
+             DELETE FROM readings WHERE at < datetime '2026-03-01T02:00:00Z';\n\
+             CANCEL;",
+        )
+        .unwrap();
+    assert_eq!(
+        session.run("SELECT * FROM readings;").unwrap()[0]
+            .records()
+            .unwrap()
+            .len(),
+        6,
+        "a cancelled retention run removed something"
+    );
+}
+
+#[test]
+fn what_retention_removes_is_reclaimed_rather_than_left_behind() {
+    // The other half of the node's name. A delete writes a tombstone, and the
+    // space comes back when reclamation passes it — which it can only do once no
+    // reader still needs the version. Asserted end to end rather than assumed:
+    // the versions are counted on disk before and after.
+    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let store = Store::open(Arc::clone(&backend)).unwrap();
+    {
+        let mut session = ready(&store);
+        populate(&mut session);
+        session
+            .run("DELETE FROM readings WHERE at < datetime '2026-03-01T02:00:00Z';")
+            .unwrap();
+    }
+
+    let (namespace, database, table) = tenancy(&store);
+    let before = versions(&backend, namespace, database, table);
+    let reclaimed = store.reclaim_table(namespace, database, table).unwrap();
+    let after = versions(&backend, namespace, database, table);
+
+    assert!(
+        reclaimed.versions > 0,
+        "reclamation removed nothing after a retention run"
+    );
+    assert!(after < before, "{before} versions before, {after} after");
+}
+
+/// The tenancy the fixture built, and its table.
+fn tenancy(
+    store: &Store,
+) -> (
+    bgv_db_types::NamespaceId,
+    bgv_db_types::DatabaseId,
+    bgv_db_types::TableId,
+) {
+    let mut transaction = store.begin().unwrap();
+    let catalog = bgv_db_storage::Catalog::new(&mut transaction);
+    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
+    let database = catalog.database_id(namespace, "orders").unwrap().unwrap();
+    let table = catalog
+        .table_id(namespace, database, "readings")
+        .unwrap()
+        .unwrap();
+    (namespace, database, table)
+}
+
+/// How many record versions the table holds on disk, live and tombstoned alike.
+///
+/// Read from the backend the test opened the store over, because a version is a
+/// key and only the key layer can count them — a `SELECT` sees the live ones,
+/// which is exactly what this has to look past.
+fn versions(
+    backend: &Arc<dyn KvBackend>,
+    namespace: bgv_db_types::NamespaceId,
+    database: bgv_db_types::DatabaseId,
+    table: bgv_db_types::TableId,
+) -> usize {
+    let prefix = bgv_db_encoding::RecordKey::table_prefix(namespace, database, table);
+    let request = bgv_db_kv::ScanRequest {
+        keyspace: bgv_db_kv::Keyspace::DATA,
+        range: bgv_db_kv::KeyRange::prefix(&prefix),
+        direction: bgv_db_kv::ScanDirection::Forward,
+        limit: None,
+    };
+    backend.scan(&request).unwrap().len()
+}

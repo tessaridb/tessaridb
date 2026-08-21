@@ -212,6 +212,20 @@ pub enum StatementKind {
         /// The record to remove.
         target: RecordTarget,
     },
+    /// `DELETE FROM readings WHERE at < datetime '…'` — every record a
+    /// condition holds for.
+    ///
+    /// Separate from the single-record form rather than folded into it, because
+    /// the two answer different questions and one of them can remove a table.
+    /// `DELETE readings:1` says which record; this says which *kind*, and a
+    /// statement that could mean either depending on a token is one a reader has
+    /// to parse before they can review it.
+    DeleteWhere {
+        /// The table being cleared out.
+        table: TableRef,
+        /// What a record must satisfy to be removed.
+        condition: Box<Expr>,
+    },
     /// `GET sessions:'abc'` as a statement of its own.
     Get {
         /// The key to read.

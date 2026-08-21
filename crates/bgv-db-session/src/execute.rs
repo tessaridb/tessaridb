@@ -199,6 +199,9 @@ impl Session<'_> {
                 transaction.delete(address);
                 Ok(Outcome::Done)
             }
+            StatementKind::DeleteWhere { table, condition } => {
+                self.delete_where(transaction, table, condition)
+            }
             StatementKind::Get { target } => {
                 Ok(Outcome::Value(self.read_key(transaction, target)?))
             }

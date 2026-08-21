@@ -259,3 +259,28 @@ SELECT time::bucket(at, 0s) AS window FROM readings;
 --- case: bucketing something that is not an instant names what it wanted
 SELECT time::bucket(level, 1h) AS window FROM readings;
 --- expect: error WrongArgument
+
+# Retention: a conditional delete, which is how a policy is said. The space comes
+# back through the reclamation the store already has, once no reader still needs
+# the versions.
+
+--- case: a conditional delete removes what the condition holds for and says how many
+DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z';
+--- expect: ok
+
+--- case: what it removed is gone
+SELECT * FROM readings;
+--- expect: rows 2
+
+--- case: a condition nothing satisfies removes nothing and is not an error
+DELETE FROM readings WHERE at < datetime '2020-01-01T00:00:00Z';
+--- expect: ok
+
+--- case: the single-record form still means what it always did
+DELETE readings:4;
+SELECT * FROM readings;
+--- expect: rows 1
+
+--- case: a delete without `FROM` reads its argument as an identity
+DELETE FROM readings;
+--- expect: error UnexpectedToken

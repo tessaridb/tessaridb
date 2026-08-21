@@ -31,6 +31,16 @@ pub enum Outcome {
     Value(Value),
     /// Keys, in order.
     Keys(Vec<RecordId>),
+    /// How many records a conditional delete removed.
+    ///
+    /// A count rather than [`Outcome::Done`], because the whole point of a
+    /// retention statement is how much it took: "removed 12 043 readings" is an
+    /// operator checking their policy did what they meant, and `done` is that
+    /// operator running a `SELECT count(*)` before and after to find out.
+    Removed {
+        /// How many.
+        count: u64,
+    },
 }
 
 /// How a read reached its records.

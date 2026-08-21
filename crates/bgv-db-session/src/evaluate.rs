@@ -205,6 +205,59 @@ impl Session<'_> {
         }
     }
 
+    /// Remove every record a condition holds for.
+    ///
+    /// # It is a read and then a write, and the read is the ordinary one
+    ///
+    /// The records are found by the same path a `SELECT … WHERE` uses, so an
+    /// index serves the condition when one exists — a retention statement over
+    /// an indexed timestamp is a bounded scan rather than a walk of the table.
+    /// Building a second way to find records would be a second place for the
+    /// answer to differ.
+    ///
+    /// # Everything it removes is in one transaction
+    ///
+    /// The deletes join whatever transaction the statement is running in, so a
+    /// retention run is one commit: it removes all of it or none, and a reader
+    /// at a snapshot either sees the table before or after. A statement that
+    /// deleted in batches would leave a window in which half a policy had been
+    /// applied, and nothing would say which half.
+    ///
+    /// **What that costs is worth stating**: the whole matched set is held and
+    /// committed at once, so a retention statement that matches a very large
+    /// table is a very large commit. Bounding it is `LIMIT` on a delete, which
+    /// is a different statement and is not built.
+    pub(crate) fn delete_where(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: &TableRef,
+        condition: &Expr,
+    ) -> Result<crate::outcome::Outcome> {
+        let (context, id) = self.resolve_table(transaction, table)?;
+        let searched = self.searched_for(transaction, id, &[condition])?;
+        let (candidates, _) = self.candidates(transaction, id, context, condition, &searched)?;
+
+        let mut removed = 0_u64;
+        for (record_id, record) in candidates {
+            // Tested against the whole condition, exactly as a read is: the
+            // index narrowed, and the condition decides. A delete that trusted
+            // the narrowing would remove records the statement did not name.
+            let held =
+                self.evaluate_in(transaction, condition, Scope::searching(&record, &searched))?;
+            if !boolean(&held, condition.span)? {
+                continue;
+            }
+            transaction.delete(RecordAddress::new(
+                context.namespace,
+                context.database,
+                id,
+                record_id,
+            ));
+            removed = removed.saturating_add(1);
+        }
+        Ok(crate::outcome::Outcome::Removed { count: removed })
+    }
+
     /// A read, as the records it found, shaped by what it asked for.
     ///
     /// The projection is applied here — once, above the four sources — so a

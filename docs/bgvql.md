@@ -698,6 +698,41 @@ Parentheses override, and **two comparisons cannot be written in a row**:
 `1 < age < 100` means "between" to a person and `(1 < age) < 100` to a parser, so
 a grammar that picked one would answer a question nobody asked.
 
+### Removing a range
+
+`DELETE` takes an identity; `DELETE FROM … WHERE` takes a condition:
+
+```
+DELETE readings:1;
+DELETE FROM readings WHERE at < datetime '2026-01-01T00:00:00Z';
+```
+
+**`FROM` is what tells the two apart, and it is required.** `DELETE readings
+WHERE …` would read as a table name where an identity belongs, and a statement
+that removes rows should not be one word away from a typo.
+
+It answers with **how many it removed**, because that is the whole point of a
+retention statement: "removed 12 043 readings" is an operator checking their
+policy did what they meant, and `done` is that operator running a `count(*)`
+before and after to find out.
+
+**It finds its records the way a read does**, so an index serves the condition
+when one exists — a policy over an indexed timestamp is a bounded scan rather
+than a walk of the table. And the candidates an index offers are still tested
+against the whole condition, so a delete cannot remove a record the statement did
+not name.
+
+**Everything it removes is in one transaction.** A retention run removes all of it
+or none, and a reader at a snapshot sees the table either before or after. What
+that costs is worth knowing: the whole matched set is committed at once, so a
+statement matching a very large table is a very large commit.
+
+**There is no declared retention policy and no background job.** A policy is this
+statement, run by an operator or a schedule — which keeps the decision about when
+it runs somewhere a person can see it, rather than in a table nobody reads. The
+space comes back through the store's ordinary reclamation once no reader still
+needs the versions.
+
 ### Counting per window
 
 `GROUP BY` takes an **expression**, so a window is a key like any other:
@@ -1192,6 +1227,8 @@ Named here rather than merely missing, so each absence reads as a decision:
 | declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
 | `HAVING` | a filter over groups is a second filter position with its own scoping rule — it sees folds where `WHERE` does not — and is worth its own milestone rather than an afterthought |
 | `DISTINCT` | it is `GROUP BY` over the projection with no fold, and one spelling for one thing |
+| a declared retention policy, enforced in the background | a policy is `DELETE FROM … WHERE`, run by an operator or a schedule; a declared one needs a job runner and a decision about when it runs, and hiding that in a table is how a store deletes something at three in the morning that nobody expected |
+| `LIMIT` on a delete | a retention run is one commit, so bounding one means deciding what a half-applied policy means |
 | an expression over a fold (`mean(age) * 3`) | folds answer after the per-record evaluator has finished, so composing over one needs a second evaluation pass |
 | filling a window that has no records | grouping answers with the groups the data has; filling a gap means knowing the range the caller meant, which the statement does not say |
 | a sub-second window | `time::bucket` takes a whole number of seconds; the nanosecond remainder is a different arithmetic and is refused rather than rounded |

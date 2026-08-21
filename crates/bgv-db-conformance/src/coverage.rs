@@ -38,6 +38,7 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::Select(_) => "SELECT",
         StatementKind::Update { .. } => "UPDATE",
         StatementKind::Delete { .. } => "DELETE",
+        StatementKind::DeleteWhere { .. } => "DELETE FROM",
         StatementKind::Get { .. } => "GET",
         StatementKind::Set { .. } => "SET",
         StatementKind::Del { .. } => "DEL",
@@ -71,6 +72,7 @@ pub const FORMS: &[&str] = &[
     "SELECT",
     "UPDATE",
     "DELETE",
+    "DELETE FROM",
     "GET",
     "SET",
     "DEL",
@@ -129,6 +131,7 @@ mod tests {
              SELECT * FROM t;\
              UPDATE t:1 = 1;\
              DELETE t:1;\
+             DELETE FROM t WHERE a = 1;\
              GET s:1;\
              SET s:1 = 1;\
              DEL s:1;\

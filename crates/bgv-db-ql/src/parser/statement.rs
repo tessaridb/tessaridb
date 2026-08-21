@@ -22,8 +22,21 @@ impl Parser<'_> {
             Some(Keyword::Select) => StatementKind::Select(self.select_statement()?),
             Some(Keyword::Delete) => {
                 self.advance();
-                StatementKind::Delete {
-                    target: self.record_target()?,
+                // `FROM` is what tells the two forms apart, and it is required
+                // for the conditional one: `DELETE readings WHERE …` would read
+                // as a table name where an identity belongs, and a statement
+                // that removes rows should not be one word away from a typo.
+                if self.eat_keyword(Keyword::From) {
+                    let table = self.table_ref()?;
+                    self.expect_keyword(Keyword::Where, "`WHERE` and what to remove")?;
+                    StatementKind::DeleteWhere {
+                        table,
+                        condition: Box::new(self.condition()?),
+                    }
+                } else {
+                    StatementKind::Delete {
+                        target: self.record_target()?,
+                    }
                 }
             }
             Some(Keyword::Get) => {
