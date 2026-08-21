@@ -17,6 +17,7 @@ bgv-db-constants = { path = "crates/bgv-db-constants" }
 bgv-db-kv = { path = "crates/bgv-db-kv" }
 bgv-db-encoding = { path = "crates/bgv-db-encoding" }
 bgv-db-storage = { path = "crates/bgv-db-storage" }
+bgv-db-lsm = { path = "crates/bgv-db-lsm" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

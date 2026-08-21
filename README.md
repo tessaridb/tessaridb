@@ -55,7 +55,8 @@ outward.
 crates/
   bgv-db-types        leaf   value types, record ids, newtypes
   bgv-db-constants    leaf   tunables, each with unit and rationale
-  bgv-db-kv                  key-value abstraction; memory and RocksDB backends
+  bgv-db-kv                  key-value contract, conformance suite, in-memory backend
+  bgv-db-lsm                 persistent backend, durability levels, engine options
   bgv-db-encoding            key grammar and value codec over the KV layer
   bgv-db-storage             records and transactions (snapshot isolation)
   bgv-db-ql                  bgvQL: lexer, parser, AST

@@ -40,8 +40,53 @@ prove it, so nothing on this list stays an intention.
 | **Uniqueness.** No constraint exists | the engine, via an `Absent` precondition in the same batch | `absent-precondition-guards-uniqueness` | **proven at this layer** |
 | **Retention or garbage collection.** Delete exists; deciding what and when does not | the engine's GC, over log and MVCC versions | space-reclamation test | not built |
 | **Exactly-once retry.** A timeout is ambiguous, as in every store | the engine, via idempotent request identity | retry-idempotency test | not built |
-| **Durability.** The in-memory backend has none, by construction | the persistent backend's write path | crash-recovery test | not built |
-| **Cross-process access.** One process owns the store | out of scope until the cluster milestone | — | out of scope |
+| **Durability.** The in-memory backend has none, by construction | the persistent backend's write path | kill-the-writer-and-reopen test | **built** — `bgv-db-lsm` |
+| **Cross-process access.** One process owns the store | out of scope until the cluster milestone | second-open test, which asserts the refusal | **enforced** — the second open is refused by name |
+
+## Durability
+
+The in-memory backend promises nothing and says so. The persistent backend
+names a level per store, chosen when it is opened, because "durable" on its own
+tells a caller nothing.
+
+| Level | An acknowledged write survives | Cost |
+|---|---|---|
+| `power-loss-safe` | loss of power to the machine | one device sync per commit; throughput is bounded by the device's sync rate |
+| `process-crash-safe` | the process being killed — **lost on power loss** | none beyond the write itself |
+
+`power-loss-safe` is the default, because this store is a system of record.
+There is deliberately no third level below these: a store that buffers
+acknowledged writes inside the process is not something a caller can reason
+about, and no caller has asked for one.
+
+Two limits belong in the same breath as the promise, because neither is
+discharged by the test suite passing:
+
+- The power-loss half of `power-loss-safe` is only as strong as the platform
+  underneath it. A sync that a drive acknowledges out of its own cache is not
+  durability, and no software test can tell the difference — confirming it is
+  part of taking a store into production on particular hardware.
+- The engine setting that keeps a cross-keyspace batch whole across a *flush* is
+  in effect and is asserted against the option set the engine itself writes.
+  That it holds under a *divergent* flush — one keyspace flushed, another not —
+  needs a crash placed inside the flush, and is not yet proven.
+
+## What a write conflict means at this layer
+
+A batch may carry preconditions, and the substrate guarantees they are evaluated
+against the same state the batch is applied to. Both backends deliver that by
+serialising batches: one writer, one lock, for the whole check-and-write.
+
+That is a deliberate choice over a transaction database. Conflict detection that
+validates at commit and retries would contend on every commit, because the layer
+above commits through one shared position key — the retry loop would become the
+workload rather than protect against it. Locking transactions would buy a lock
+manager, lock timeouts and deadlock detection to protect a store that already
+has exactly one writer process, which the engine enforces by holding the store
+directory.
+
+The cost is that commits serialise. When that becomes the limit, the answer is
+one writer draining a queue and batching what it finds — not a weaker guarantee.
 
 ## Why the keyspace set is fixed
 

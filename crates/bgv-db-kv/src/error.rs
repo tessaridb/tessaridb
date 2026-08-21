@@ -125,6 +125,19 @@ pub enum Error {
         reason: String,
     },
 
+    /// Something the backend needs is not reachable right now.
+    ///
+    /// Distinct from [`Busy`](Self::Busy): busy means the backend is working and
+    /// cannot take more, unavailable means it could not start — a store
+    /// directory already held by another process, a device that went away.
+    #[error("backend {backend} is unavailable: {reason}")]
+    Unavailable {
+        /// Which backend reported it.
+        backend: &'static str,
+        /// What was not reachable.
+        reason: String,
+    },
+
     /// Stored data failed an integrity check.
     #[error("backend {backend} reported corruption: {reason}")]
     Corruption {
@@ -164,6 +177,7 @@ impl Error {
             Self::Conflict { .. } => ErrorCategory::Conflict,
             Self::Validation { .. } | Self::UnknownKeyspace { .. } => ErrorCategory::Validation,
             Self::Busy { .. } => ErrorCategory::Busy,
+            Self::Unavailable { .. } => ErrorCategory::Unavailable,
             Self::Corruption { .. } => ErrorCategory::Corruption,
             Self::Lifecycle { .. } => ErrorCategory::Lifecycle,
             Self::Backend { .. } => ErrorCategory::Internal,
@@ -222,6 +236,13 @@ mod tests {
                     reason: "write stall".to_owned(),
                 },
                 ErrorCategory::Busy,
+            ),
+            (
+                Error::Unavailable {
+                    backend: "memory",
+                    reason: "the store directory is held by another process".to_owned(),
+                },
+                ErrorCategory::Unavailable,
             ),
             (
                 Error::Corruption {
