@@ -28,10 +28,14 @@ use std::collections::BTreeMap;
 use std::ops::Bound;
 
 use bgv_db_constants::MAX_COMMIT_ATTEMPTS;
-use bgv_db_encoding::{LogRecord, Mutation, RecordKey, RecordValue, StoreKey, StoreValue};
+use bgv_db_encoding::{
+    IndexAddress, IndexTarget, IndexValues, LogRecord, Mutation, RecordKey, RecordValue,
+    SecondaryIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
+};
 use bgv_db_kv::{KeyRange, ScanDirection, ScanRequest};
-use bgv_db_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
+use bgv_db_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId, Value};
 
+use crate::catalog::IndexDefinition;
 use crate::error::{Error, Result};
 use crate::store::Store;
 
@@ -190,6 +194,117 @@ impl<'a> Transaction<'a> {
                 RecordValue::Tombstone => None,
             })
             .collect())
+    }
+
+    /// The records an index says hold `values`, as of this transaction's
+    /// snapshot.
+    ///
+    /// # Sound, and not complete, at an older snapshot
+    ///
+    /// Index entries hold the **current** state — they carry no version, and an
+    /// update removes the entry for the value it replaced. This method therefore
+    /// treats them as candidates and confirms each one by re-deriving the
+    /// record's indexed values at the reader's own snapshot, so a stale entry
+    /// can never produce a row that does not match.
+    ///
+    /// What it cannot do is find a record that held `values` at the snapshot and
+    /// has since changed: its entry is gone, so there is no candidate to
+    /// confirm. A reader at the latest committed state is exact; an older one
+    /// gets no wrong rows and may get fewer.
+    ///
+    /// Uncommitted writes of this transaction participate, because entries are
+    /// derived at commit and a writer would otherwise be unable to find what it
+    /// just wrote.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or stored bytes cannot be
+    /// decoded.
+    pub fn records_by_index(
+        &self,
+        index: &IndexDefinition,
+        values: &[Value],
+    ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let wanted = IndexValues::of(values);
+
+        let mut found: BTreeMap<RecordId, Vec<u8>> = BTreeMap::new();
+        for id in self.candidates(index, &address, &wanted)? {
+            let record = RecordAddress::new(index.namespace, index.database, index.table, id);
+            if let Some(payload) = self.confirm(index, &record, &wanted)? {
+                found.insert(record.id, payload);
+            }
+        }
+
+        // A record this transaction wrote has no entry yet, and one it changed
+        // still has the entry for its former value. Both are settled by asking
+        // the pending write itself.
+        for pending in self.writes.keys() {
+            if pending.namespace != index.namespace
+                || pending.database != index.database
+                || pending.table != index.table
+            {
+                continue;
+            }
+            match self.confirm(index, pending, &wanted)? {
+                Some(payload) => {
+                    found.insert(pending.id.clone(), payload);
+                }
+                None => {
+                    found.remove(&pending.id);
+                }
+            }
+        }
+        Ok(found.into_iter().collect())
+    }
+
+    /// The record ids the index entries point at, unconfirmed.
+    fn candidates(
+        &self,
+        index: &IndexDefinition,
+        address: &IndexAddress,
+        wanted: &IndexValues,
+    ) -> Result<Vec<RecordId>> {
+        if index.unique {
+            let key = UniqueIndexKey::new(*address, wanted.clone()).encode();
+            let found = self.store.backend().get(UniqueIndexKey::keyspace(), &key)?;
+            return found
+                .map(|bytes| Ok(IndexTarget::decode(bytes.as_slice())?.id))
+                .transpose()
+                .map(Vec::from_iter);
+        }
+
+        let prefix = SecondaryIndexKey::values_prefix(address, wanted);
+        let request = ScanRequest {
+            keyspace: SecondaryIndexKey::keyspace(),
+            range: KeyRange::prefix(&prefix),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+        self.store
+            .backend()
+            .scan(&request)?
+            .into_iter()
+            .map(|(key, _)| Ok(SecondaryIndexKey::decode(key.as_slice())?.id))
+            .collect()
+    }
+
+    /// The record's payload, if it exists at the snapshot and still projects to
+    /// `wanted`.
+    fn confirm(
+        &self,
+        index: &IndexDefinition,
+        address: &RecordAddress,
+        wanted: &IndexValues,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(payload) = self.get(address)? else {
+            return Ok(None);
+        };
+        let value = decode_payload(&payload)?;
+        if crate::index::project(index, &value).as_ref() == Some(wanted) {
+            return Ok(Some(payload));
+        }
+        Ok(None)
     }
 
     /// Buffer a write. Nothing reaches the store until commit.

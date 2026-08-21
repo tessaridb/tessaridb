@@ -284,3 +284,249 @@ fn a_replica_derives_the_same_entries_from_the_same_log() {
     assert_eq!(mirrored.entries(), source.entries());
     assert_eq!(source.entries().len(), 2);
 }
+
+#[test]
+fn a_unique_lookup_returns_the_record_that_holds_the_value() {
+    let fixture = Fixture::new(true);
+    fixture
+        .write("u1", Some(Value::from("ada@example.com")))
+        .unwrap();
+    fixture
+        .write("u2", Some(Value::from("grace@example.com")))
+        .unwrap();
+
+    let transaction = fixture.store.begin().unwrap();
+    let found = transaction
+        .records_by_index(&fixture.index, &[Value::from("ada@example.com")])
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].0, RecordId::from("u1"));
+
+    assert!(
+        transaction
+            .records_by_index(&fixture.index, &[Value::from("nobody@example.com")])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_non_unique_lookup_returns_every_record_holding_the_value() {
+    let fixture = Fixture::new(false);
+    fixture
+        .write("u1", Some(Value::from("shared@example.com")))
+        .unwrap();
+    fixture
+        .write("u2", Some(Value::from("shared@example.com")))
+        .unwrap();
+    fixture
+        .write("u3", Some(Value::from("other@example.com")))
+        .unwrap();
+
+    let transaction = fixture.store.begin().unwrap();
+    let found = transaction
+        .records_by_index(&fixture.index, &[Value::from("shared@example.com")])
+        .unwrap();
+    let ids: Vec<String> = found.iter().map(|(id, _)| id.to_string()).collect();
+    assert_eq!(ids, vec!["u1".to_owned(), "u2".to_owned()]);
+}
+
+#[test]
+fn a_lookup_never_returns_a_record_that_no_longer_holds_the_value() {
+    // The reader began before the change, so the entry it finds is the *new*
+    // one. Confirming the candidate at the reader's own snapshot is what keeps
+    // that entry from producing a row that does not match.
+    let fixture = Fixture::new(false);
+    fixture
+        .write("u1", Some(Value::from("old@example.com")))
+        .unwrap();
+
+    let reader = fixture.store.begin().unwrap();
+    fixture
+        .write("u1", Some(Value::from("new@example.com")))
+        .unwrap();
+
+    let wrong = reader
+        .records_by_index(&fixture.index, &[Value::from("new@example.com")])
+        .unwrap();
+    assert!(
+        wrong.is_empty(),
+        "at this snapshot the record still holds the old value"
+    );
+
+    // And the honest limitation: the old entry is gone, so the old value finds
+    // nothing either. Sound, not complete.
+    let missed = reader
+        .records_by_index(&fixture.index, &[Value::from("old@example.com")])
+        .unwrap();
+    assert!(missed.is_empty(), "the entry for the old value was removed");
+
+    // A reader at the latest committed state is exact.
+    let current = fixture.store.begin().unwrap();
+    let found = current
+        .records_by_index(&fixture.index, &[Value::from("new@example.com")])
+        .unwrap();
+    assert_eq!(found.len(), 1);
+}
+
+#[test]
+fn a_lookup_sees_this_transactions_own_uncommitted_writes() {
+    // Entries are derived at commit, so without this the writer could not find
+    // what it had just written through the index it declared.
+    let fixture = Fixture::new(false);
+    fixture
+        .write("u1", Some(Value::from("shared@example.com")))
+        .unwrap();
+
+    let mut transaction = fixture.store.begin().unwrap();
+    transaction.put(
+        fixture.at("u2"),
+        encode_payload(&Fixture::record(Some(Value::from("shared@example.com")))).into_bytes(),
+    );
+    // And one that moves away from the value must stop matching.
+    transaction.put(
+        fixture.at("u1"),
+        encode_payload(&Fixture::record(Some(Value::from("moved@example.com")))).into_bytes(),
+    );
+
+    let found = transaction
+        .records_by_index(&fixture.index, &[Value::from("shared@example.com")])
+        .unwrap();
+    let ids: Vec<String> = found.iter().map(|(id, _)| id.to_string()).collect();
+    assert_eq!(ids, vec!["u2".to_owned()]);
+}
+
+#[test]
+fn a_deleted_record_is_not_returned_by_a_lookup() {
+    let fixture = Fixture::new(false);
+    fixture
+        .write("u1", Some(Value::from("ada@example.com")))
+        .unwrap();
+
+    let mut transaction = fixture.store.begin().unwrap();
+    transaction.delete(fixture.at("u1"));
+    assert!(
+        transaction
+            .records_by_index(&fixture.index, &[Value::from("ada@example.com")])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// A table with rows, and an index declared on it *afterwards*.
+fn indexed_after_the_fact(unique: bool) -> Fixture {
+    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let store = Store::open(Arc::clone(&backend)).unwrap();
+
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").unwrap();
+    let database = catalog.create_database(namespace.id, "orders").unwrap();
+    let table = catalog
+        .create_table(namespace.id, database.id, "users")
+        .unwrap();
+    transaction.commit().unwrap();
+
+    let bare = Fixture {
+        backend: Arc::clone(&backend),
+        store,
+        namespace: namespace.id,
+        database: database.id,
+        table: table.id,
+        // Placeholder; the real definition is created below, after the rows.
+        index: IndexDefinition {
+            id: bgv_db_types::IndexId::new(0),
+            namespace: namespace.id,
+            database: database.id,
+            table: table.id,
+            name: "placeholder".to_owned(),
+            fields: vec!["email".to_owned()],
+            unique,
+        },
+    };
+    bare.write("u1", Some(Value::from("ada@example.com")))
+        .unwrap();
+    bare.write("u2", Some(Value::from("grace@example.com")))
+        .unwrap();
+    bare.write("u3", None).unwrap();
+
+    let mut transaction = bare.store.begin().unwrap();
+    let index = Catalog::new(&mut transaction)
+        .create_index(bare.table, "by_email", vec!["email".to_owned()], unique)
+        .unwrap();
+    transaction.commit().unwrap();
+
+    Fixture { index, ..bare }
+}
+
+#[test]
+fn an_index_declared_after_the_rows_holds_nothing_until_it_is_backfilled() {
+    let fixture = indexed_after_the_fact(false);
+    assert!(
+        fixture.entries().is_empty(),
+        "maintenance only sees mutations"
+    );
+
+    let indexed = fixture.store.backfill_index(&fixture.index).unwrap();
+    assert_eq!(indexed, 2, "the record with no email is not in the index");
+    assert_eq!(fixture.entries().len(), 2);
+
+    let transaction = fixture.store.begin().unwrap();
+    let found = transaction
+        .records_by_index(&fixture.index, &[Value::from("ada@example.com")])
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].0, RecordId::from("u1"));
+}
+
+#[test]
+fn a_backfill_is_idempotent_and_composes_with_maintenance() {
+    let fixture = indexed_after_the_fact(false);
+    assert_eq!(fixture.store.backfill_index(&fixture.index).unwrap(), 2);
+    assert_eq!(fixture.store.backfill_index(&fixture.index).unwrap(), 2);
+    assert_eq!(fixture.entries().len(), 2);
+
+    // A write after the backfill is maintained normally, and one that changes a
+    // value leaves no entry behind.
+    fixture
+        .write("u4", Some(Value::from("new@example.com")))
+        .unwrap();
+    fixture
+        .write("u1", Some(Value::from("moved@example.com")))
+        .unwrap();
+    assert_eq!(fixture.entries().len(), 3);
+}
+
+#[test]
+fn a_backfill_refuses_a_unique_index_two_existing_rows_already_violate() {
+    let fixture = indexed_after_the_fact(true);
+    // `u1` already holds this address, so the index cannot become unique.
+    fixture
+        .write("u4", Some(Value::from("ada@example.com")))
+        .unwrap();
+    let before = fixture.entries();
+
+    let error = fixture.store.backfill_index(&fixture.index).unwrap_err();
+    assert!(matches!(error, Error::UniqueViolation { .. }), "{error}");
+    assert_eq!(
+        fixture.entries(),
+        before,
+        "a refused backfill writes nothing at all"
+    );
+}
+
+#[test]
+fn a_unique_index_does_not_constrain_rows_it_has_not_been_backfilled_over() {
+    // The hazard worth naming: until the backfill runs, the rows that predate
+    // the index have no entries, so maintenance has nothing to collide with and
+    // accepts a duplicate of one of them. The constraint begins to hold when the
+    // backfill succeeds — and the backfill is what refuses to let it "begin"
+    // over data that already violates it.
+    let fixture = indexed_after_the_fact(true);
+    fixture
+        .write("u4", Some(Value::from("ada@example.com")))
+        .expect("accepted, because u1's entry does not exist yet");
+
+    assert_eq!(fixture.entries().len(), 1, "only the new row is indexed");
+    assert!(fixture.store.backfill_index(&fixture.index).is_err());
+}

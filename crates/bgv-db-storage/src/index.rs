@@ -36,16 +36,31 @@
 //! entries and reclaiming old ones in the background, which is a larger piece of
 //! work than this one and is not started.
 //!
-//! # What is not built here
+//! # The backfill, and what it does not do
 //!
-//! An index created on a table that already has rows indexes **none of them**.
-//! Maintenance only sees mutations, so existing records need a backfill, and a
-//! backfill needs a resumable watermark — the key kind is reserved (`0x37`) and
-//! the work is not done. Until it is, an index is trustworthy only on a table it
-//! was created on before the first write.
+//! Maintenance only sees mutations, so an index created on a table that already
+//! holds rows indexes none of them until [`backfill`] is run. The backfill reads
+//! the table at one snapshot and writes every entry in **one batch**, guarded on
+//! the committed position not having moved — so a write that lands mid-backfill
+//! refuses the batch rather than letting it write a stale entry, and the whole
+//! pass is retried.
+//!
+//! That guard is also its limit: on a table large enough that a pass takes
+//! longer than the gap between writes, it never converges. The answer is a
+//! resumable watermark, whose key kind is reserved (`0x37`) and whose work is
+//! not started.
+//!
+//! **A unique index does not constrain rows it has not been backfilled over.**
+//! Those rows have no entries, so maintenance has nothing to collide with and
+//! will accept a duplicate of one of them. The constraint begins to hold when
+//! the backfill succeeds — which is also what refuses to let it begin over data
+//! that already violates it. Declaring a unique index on a populated table and
+//! not backfilling it leaves a constraint that is declared and not enforced.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use bgv_db_constants::MAX_COMMIT_ATTEMPTS;
+use bgv_db_encoding::AppliedPositionKey;
 use bgv_db_encoding::{
     IndexAddress, IndexTarget, IndexValues, LogRecord, Mutation, NoPayload, RecordValue,
     SecondaryIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
@@ -215,7 +230,7 @@ fn remove(
 /// A record that is not an object has no fields to project, and a record missing
 /// one of the indexed fields has no value to place — both mean "not in this
 /// index" rather than "indexed under nothing".
-fn project(definition: &IndexDefinition, value: &Value) -> Option<IndexValues> {
+pub(crate) fn project(definition: &IndexDefinition, value: &Value) -> Option<IndexValues> {
     let Value::Object(fields) = value else {
         return None;
     };
@@ -227,4 +242,51 @@ fn project(definition: &IndexDefinition, value: &Value) -> Option<IndexValues> {
         }
     }
     Some(IndexValues::of(&projected))
+}
+
+/// Index every record already in the table an index is declared on.
+///
+/// Returns how many records were indexed — records missing an indexed field are
+/// counted out, because they are not in the index.
+///
+/// # Errors
+///
+/// Returns [`Error::UniqueViolation`] when two existing records already hold one
+/// value of a unique index, and [`Error::CommitContention`] when a concurrent
+/// write refused every attempt.
+pub(crate) fn backfill(store: &Store, index: &IndexDefinition) -> Result<usize> {
+    let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+    for _ in 0..MAX_COMMIT_ATTEMPTS {
+        let tail = store.committed_tail()?;
+        let view = store.begin()?;
+        let records = view.scan_table(index.namespace, index.database, index.table)?;
+
+        // The precondition is the whole correctness argument: the records were
+        // read at `tail`, so the entries derived from them are only valid while
+        // the store is still at `tail`. A write that lands meanwhile refuses the
+        // batch instead of leaving an entry describing a value that is no longer
+        // there.
+        let mut batch = WriteBatch::new().expect_value(
+            AppliedPositionKey::keyspace(),
+            AppliedPositionKey.encode(),
+            tail.encode(),
+        );
+        let mut claimed: BTreeSet<Vec<u8>> = BTreeSet::new();
+        let mut indexed = 0_usize;
+        for (id, payload) in &records {
+            if let Some(values) = project(index, &decode_payload(payload)?) {
+                batch = insert(store, batch, index, &address, &values, id, &mut claimed)?;
+                indexed = indexed.saturating_add(1);
+            }
+        }
+
+        match store.backend().apply(batch) {
+            Ok(()) => return Ok(indexed),
+            Err(bgv_db_kv::Error::Conflict { .. }) => continue,
+            Err(other) => return Err(other.into()),
+        }
+    }
+    Err(Error::CommitContention {
+        attempts: MAX_COMMIT_ATTEMPTS,
+    })
 }
