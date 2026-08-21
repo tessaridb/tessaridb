@@ -7,7 +7,14 @@ yanked = "deny"
 
 [bans]
 multiple-versions = "warn"
+# A dependency without a version range floats, and a floating dependency is a
+# build that changes without anyone changing it.
 wildcards = "deny"
+# …except the crates of this workspace, which are path dependencies and have
+# nothing to float to: they are this repository. Without this, the rule fires on
+# every internal edge and says nothing about the third-party surface it exists to
+# guard.
+allow-wildcard-paths = true
 
 [licenses]
 version = 2
