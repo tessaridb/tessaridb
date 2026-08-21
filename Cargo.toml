@@ -22,6 +22,7 @@ bgv-db-ql = { path = "crates/bgv-db-ql" }
 bgv-db-session = { path = "crates/bgv-db-session" }
 bgv-db-conformance = { path = "crates/bgv-db-conformance" }
 bgv-db = { path = "crates/bgv-db" }
+bgv-db-http = { path = "crates/bgv-db-http" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

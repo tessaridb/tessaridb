@@ -41,6 +41,37 @@ let found = session.run(
 
 The two ways of opening differ in where the bytes live and in nothing else.
 
+## Talking to one over HTTP
+
+```rust
+use std::sync::Arc;
+use bgv_db::Db;
+use bgv_db_http::Node;
+
+let db = Arc::new(Db::open("./data")?);
+let node = Node::bind(db, "127.0.0.1:8080")?;
+node.serve();
+```
+
+```sh
+curl -s localhost:8080/health
+# {"status":"ok","committed":12}
+
+curl -s localhost:8080/script --data-binary '
+  USE NAMESPACE prod DATABASE orders;
+  SELECT email FROM users WHERE city = "Paris" LIMIT 2;'
+# {"results":[{"kind":"done"},{"kind":"records","path":"index","records":[…]}]}
+```
+
+Two routes, and no REST resource tree over tables: that would be a second query
+language expressed in URLs, and it could say less than the one above. **The
+language is the API.** Each request is its own session and each answer carries
+the access path that served it, so a scan is visible rather than folklore.
+
+> **There is no authentication yet, so every request can do everything.** Bind it
+> to a loopback address or put something in front of it until there is.
+
+
 Following what changes is a cursor over the same log that carries replication,
 so it needs no setup and loses nothing by being slow:
 
