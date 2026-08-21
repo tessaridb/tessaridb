@@ -12,6 +12,8 @@ use std::sync::Arc;
 
 use bgv_db::Db;
 use bgv_db_http::Node;
+use bgv_db_kv::{KvBackend, MemoryBackend};
+use bgv_db_storage::Store;
 
 /// A node on a loopback port the operating system picked, plus its address.
 fn node() -> (Arc<Node>, String) {
@@ -384,4 +386,78 @@ fn health_needs_no_credential_even_when_the_store_is_closed() {
     let (_node, address) = closed();
     let (status, _) = request(&address, "GET", "/health", "");
     assert_eq!(status, 200);
+}
+
+/// A backend that says a background failure has happened.
+///
+/// Everything is delegated to a real one, so the store under test behaves
+/// exactly as it always does — the only difference is the number the health
+/// check asks for. Written here rather than as a production seam, because a
+/// store that can be *told* it is unwell is a store with a way to lie.
+#[derive(Debug)]
+struct Ailing {
+    held: MemoryBackend,
+}
+
+impl KvBackend for Ailing {
+    fn name(&self) -> &'static str {
+        "ailing"
+    }
+
+    fn background_errors(&self) -> bgv_db_kv::Result<u64> {
+        Ok(3)
+    }
+
+    fn get(
+        &self,
+        keyspace: bgv_db_kv::Keyspace,
+        key: &bgv_db_kv::Key,
+    ) -> bgv_db_kv::Result<Option<bgv_db_kv::Value>> {
+        self.held.get(keyspace, key)
+    }
+
+    fn scan(
+        &self,
+        request: &bgv_db_kv::ScanRequest,
+    ) -> bgv_db_kv::Result<Vec<(bgv_db_kv::Key, bgv_db_kv::Value)>> {
+        self.held.scan(request)
+    }
+
+    fn apply(&self, batch: bgv_db_kv::WriteBatch) -> bgv_db_kv::Result<()> {
+        self.held.apply(batch)
+    }
+}
+
+#[test]
+fn a_healthy_store_answers_health_with_two_hundred() {
+    let (_node, address) = node();
+    let (status, _, body) = send(&address, "GET", "/health", "", None);
+    assert_eq!(status, 200);
+    assert!(body.contains(r#""status":"ok""#), "{body}");
+    assert!(body.contains(r#""committed""#), "{body}");
+}
+
+#[test]
+fn a_store_with_a_background_failure_is_taken_out_of_rotation() {
+    // The whole of the alerting design: an engine's compaction and flushing run
+    // on their own threads, so a failure there surfaces at no call a caller
+    // makes — the store answers reads while it has stopped keeping them. A 503
+    // is what every load balancer and every monitor already act on, so the
+    // alert is the one that exists rather than one written here and run never.
+    let backend = Arc::new(Ailing {
+        held: MemoryBackend::new(),
+    }) as Arc<dyn KvBackend>;
+    let db = Arc::new(Db::from_store(Store::open(backend).unwrap()));
+    let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
+    let address = node.address();
+    let serving = Arc::clone(&node);
+    std::thread::spawn(move || serving.serve());
+
+    let (status, _, body) = send(&address, "GET", "/health", "", None);
+    assert_eq!(status, 503, "{body}");
+    assert!(body.contains(r#""status":"unwell""#), "{body}");
+    assert!(body.contains(r#""background_errors":3"#), "{body}");
+    // And it says what is wrong, because a page reading only "unhealthy" sends
+    // somebody to read code at three in the morning.
+    assert!(body.contains("flush or compaction"), "{body}");
 }

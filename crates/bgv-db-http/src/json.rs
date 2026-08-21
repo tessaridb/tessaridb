@@ -138,6 +138,13 @@ fn spelled(value: &Value) -> String {
     }
 }
 
+/// A JSON string, escaped, as a value rather than appended.
+pub(crate) fn string_literal(text: &str) -> String {
+    let mut out = String::new();
+    string(&mut out, text);
+    out
+}
+
 /// A JSON string, escaped.
 pub(crate) fn string(out: &mut String, text: &str) {
     out.push('"');

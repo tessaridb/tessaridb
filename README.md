@@ -136,6 +136,23 @@ so `.help` says so rather than leaving it to be found by pressing up. And it
 opens the store **in this process**: a client that talks to a running node over
 HTTP is the other half of this and is not built yet.
 
+## Is it well
+
+```
+bgv ./data --health          # exits non-zero when it is not
+curl -s localhost:8000/health
+```
+
+An engine does its compaction, its flushing and its write-ahead work on its own
+threads, and a failure there surfaces at **no call a caller makes**: the store
+keeps answering reads while the thing that keeps them has stopped. It is the one
+failure this store cannot notice by being used, so something has to ask.
+
+An unwell store answers `GET /health` with **503** and the complaint. That is
+deliberately not a new alerting system — a 503 is taken out of rotation by every
+load balancer and paged on by every monitor, so the alert is the one that already
+exists rather than a second one written here and exercised never.
+
 ## Backing up
 
 A backup of this store is its **log**, because the records, the indexes, the

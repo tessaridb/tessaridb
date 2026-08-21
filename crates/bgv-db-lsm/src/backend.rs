@@ -178,6 +178,10 @@ impl LsmBackend {
 }
 
 impl KvBackend for LsmBackend {
+    fn background_errors(&self) -> bgv_db_kv::Result<u64> {
+        Self::background_errors(self)
+    }
+
     fn name(&self) -> &'static str {
         BACKEND_NAME
     }

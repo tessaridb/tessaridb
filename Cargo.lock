@@ -135,6 +135,8 @@ name = "bgv-db-http"
 version = "0.0.0"
 dependencies = [
  "bgv-db",
+ "bgv-db-kv",
+ "bgv-db-storage",
  "bgv-db-types",
  "thiserror",
  "tiny_http",

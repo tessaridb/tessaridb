@@ -127,6 +127,26 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
     /// does not hold.
     fn apply(&self, batch: WriteBatch) -> Result<()>;
 
+    /// How many background failures this backend has recorded.
+    ///
+    /// An engine that compacts, flushes and writes ahead does that work on its
+    /// own threads, and a failure there does not surface at any call a caller
+    /// makes — the store keeps answering reads while the thing that keeps it
+    /// durable has stopped. It is the failure mode that is silent by
+    /// construction, which is why the number exists and why something has to
+    /// look at it.
+    ///
+    /// **Defaulted to zero**, because a backend with no background work has
+    /// genuinely had no background failure — that is an answer rather than a
+    /// stand-in for one. A backend that does such work overrides this.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's own failure when the count cannot be read.
+    fn background_errors(&self) -> Result<u64> {
+        Ok(0)
+    }
+
     /// Whether a key exists.
     ///
     /// Defaulted in terms of [`Self::get`]; a backend that can answer without

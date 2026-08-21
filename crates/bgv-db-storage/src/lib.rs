@@ -42,5 +42,5 @@ pub use error::{Error, Result};
 pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use graph::vector_of;
 pub use reclaim::Reclaimed;
-pub use store::Store;
+pub use store::{Health, Store};
 pub use transaction::{RecordAddress, Transaction};

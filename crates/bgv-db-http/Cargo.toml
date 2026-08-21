@@ -15,5 +15,9 @@ bgv-db-types.workspace = true
 thiserror.workspace = true
 tiny_http = "0.12"
 
+[dev-dependencies]
+bgv-db-kv.workspace = true
+bgv-db-storage.workspace = true
+
 [lints]
 workspace = true

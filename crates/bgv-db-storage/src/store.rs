@@ -19,6 +19,48 @@ use crate::feed::Changes;
 use crate::snapshots::Registry;
 use crate::transaction::Transaction;
 
+/// What a store says about itself when asked.
+///
+/// Deliberately small. A store that reports everything it knows is a metrics
+/// endpoint, which is a different thing with a different audience; this answers
+/// the one question a load balancer and a pager both ask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Health {
+    /// Background failures the engine has recorded.
+    ///
+    /// Any at all is unwell. There is no threshold to tune, because a single
+    /// background error means some flush or compaction did not happen, and a
+    /// store that has stopped keeping its own promises is not less unwell for
+    /// having stopped only once.
+    pub background_errors: u64,
+    /// The log position every committed write is at or below.
+    ///
+    /// Carried because "the process is up" and "the store is readable" are
+    /// different claims and only the second one is useful.
+    pub committed: Sequence,
+}
+
+impl Health {
+    /// Whether anything is wrong.
+    #[must_use]
+    pub const fn is_well(&self) -> bool {
+        self.background_errors == 0
+    }
+
+    /// What is wrong, for somebody reading it at three in the morning.
+    #[must_use]
+    pub fn complaint(&self) -> Option<String> {
+        if self.is_well() {
+            return None;
+        }
+        Some(format!(
+            "{} background error(s): a flush or compaction has failed, so this store \
+             is answering reads while it has stopped keeping them",
+            self.background_errors
+        ))
+    }
+}
+
 /// A record store over a key-value backend.
 ///
 /// Cloning a store shares one backend **and one snapshot registry**: two handles
@@ -99,6 +141,35 @@ impl Store {
     /// The registry a transaction registers itself with.
     pub(crate) fn snapshot_registry(&self) -> &Arc<Registry> {
         &self.snapshots
+    }
+
+    /// Whether this store is well, and what is wrong when it is not.
+    ///
+    /// # Why this exists rather than a metric
+    ///
+    /// An engine does its compaction, its flushing and its write-ahead work on
+    /// its own threads, and a failure there surfaces at **no call a caller
+    /// makes**. The store keeps answering reads while the thing that keeps it
+    /// durable has stopped. That is the one failure this store cannot detect by
+    /// being used, so something has to ask.
+    ///
+    /// # Where the alert lives, and why it is not here
+    ///
+    /// Not here. This answers *what is true*; deciding it is worth waking
+    /// somebody for belongs to whatever already wakes people. The HTTP surface
+    /// turns an unwell store into a failing `GET /health`, which every load
+    /// balancer takes out of rotation and every monitor pages on — so the alert
+    /// is the one that already exists rather than a second one written here and
+    /// tested never.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's failure when the counts cannot be read.
+    pub fn health(&self) -> Result<Health> {
+        Ok(Health {
+            background_errors: self.backend.background_errors()?,
+            committed: self.committed_tail()?,
+        })
     }
 
     /// The highest sequence that has been committed.

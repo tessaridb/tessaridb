@@ -136,6 +136,17 @@ impl Db {
         Ok(self.store.changes_since(from, limit)?)
     }
 
+    /// A database over a store somebody else opened.
+    ///
+    /// The inverse of [`Db::store`], and it names nothing this type does not
+    /// already name. Two callers want it: a test that needs a backend behaving
+    /// in a way no ordinary one does, and an embedder who assembled the store
+    /// themselves and wants the front door over it anyway.
+    #[must_use]
+    pub const fn from_store(store: Store) -> Self {
+        Self { store }
+    }
+
     /// The store underneath.
     ///
     /// Exposed for the operations that are not statements. A backup is a read of

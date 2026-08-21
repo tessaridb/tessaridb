@@ -44,6 +44,7 @@ usage: bgv [<path>] [-e <script> | -f <file>]
   -f <file>       run this file and exit
   --backup <file> write the store's log to <file> and exit
   --restore <file> replay <file> into an empty store and exit
+  --health        say whether the store is well, and exit non-zero if not
   --help          this
 
 with neither -e nor -f, statements are read from standard input: a prompt when
@@ -69,6 +70,8 @@ enum Source {
     Backup(PathBuf),
     /// Replay a file into this store.
     Restore(PathBuf),
+    /// Say whether the store is well.
+    Health,
 }
 
 fn main() -> ExitCode {
@@ -120,6 +123,7 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                     .ok_or_else(|| "--backup wants a path".to_owned())?;
                 source = Source::Backup(PathBuf::from(path));
             }
+            "--health" => source = Source::Health,
             "--restore" => {
                 let path = arguments
                     .next()
@@ -165,6 +169,7 @@ fn run(asked: Asked) -> Result<Ended, String> {
         // a command, which is what "rehearsed" in the readiness checklist means.
         Source::Backup(path) => return backup(&db, &path).map(|()| Ended::Fine),
         Source::Restore(path) => return restore(&db, &path).map(|()| Ended::Fine),
+        Source::Health => return health(&db),
         Source::Standard => {
             let stdin = io::stdin();
             // A prompt is for a person. Piped input gets none, so the output is
@@ -228,6 +233,26 @@ fn restore(db: &Db, path: &std::path::Path) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// Say whether the store is well.
+///
+/// The same question `GET /health` answers, for an operator holding a store and
+/// no server — which is exactly the situation somebody is in when they are
+/// wondering whether it is still keeping their data. Exits non-zero when it is
+/// not, so a cron line needs no parsing.
+fn health(db: &Db) -> Result<Ended, String> {
+    let held = db.store().health().map_err(|failure| failure.to_string())?;
+    match held.complaint() {
+        None => {
+            println!("well — committed to sequence {}", held.committed);
+            Ok(Ended::Fine)
+        }
+        Some(said) => {
+            println!("unwell — {said}");
+            Ok(Ended::Refused)
+        }
+    }
 }
 
 /// One line saying what was opened, because "which store am I in" is the first

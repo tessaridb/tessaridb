@@ -63,13 +63,41 @@ impl Answer {
 ///
 /// Carries the committed tail, because "the process is up" and "the store is
 /// readable" are different claims and only the second one is useful.
+///
+/// # Why an unwell store fails this rather than raising an alert somewhere
+///
+/// An engine's compaction, flushing and write-ahead work happens on its own
+/// threads, and a failure there surfaces at no call a caller makes: the store
+/// keeps answering reads while the thing that keeps them has stopped. Something
+/// has to ask, and something has to be told.
+///
+/// **This is the something.** A `503` here is taken out of rotation by every
+/// load balancer and paged on by every monitor, so the alert is the one that
+/// already exists rather than a second one written into this repository and
+/// exercised never. The store reports what is true; this decides that an unwell
+/// store should stop being sent traffic.
+///
+/// The body names the complaint, because a page that says only "unhealthy"
+/// sends somebody to read code at three in the morning.
 pub(crate) fn health(db: &Db) -> Answer {
-    match db.committed_tail() {
-        Ok(tail) => Answer::new(
+    let held = match db.store().health() {
+        Ok(held) => held,
+        Err(error) => return failure(&bgv_db::Error::from(error)),
+    };
+    match held.complaint() {
+        None => Answer::new(
             200,
-            format!(r#"{{"status":"ok","committed":{}}}"#, tail.get()),
+            format!(r#"{{"status":"ok","committed":{}}}"#, held.committed.get()),
         ),
-        Err(error) => failure(&error),
+        Some(said) => Answer::new(
+            503,
+            format!(
+                r#"{{"status":"unwell","committed":{},"background_errors":{},"complaint":{}}}"#,
+                held.committed.get(),
+                held.background_errors,
+                crate::json::string_literal(&said),
+            ),
+        ),
     }
 }
 
