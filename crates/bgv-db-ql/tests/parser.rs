@@ -514,8 +514,6 @@ fn what_the_specification_leaves_out_is_refused_by_name() {
             "SELECT * FROM users GROUP BY email;",
             "aggregation and grouping",
         ),
-        ("SELECT * FROM users ORDER BY email;", "ordering a result"),
-        ("SELECT * FROM users LIMIT 10;", "limiting a result"),
     ] {
         let error = parse(source).unwrap_err();
         let Error::Unsupported { feature: named, .. } = &error else {

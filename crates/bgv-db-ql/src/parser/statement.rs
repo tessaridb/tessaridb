@@ -1,10 +1,11 @@
 //! One statement at a time.
 
 use super::Parser;
-use bgv_db_types::FieldKind;
+use bgv_db_types::{FieldKind, Number};
 
 use crate::ast::{
-    Direction, ExprKind, RangeExpr, RecordTarget, Select, Source, Statement, StatementKind,
+    Direction, ExprKind, Ordering, RangeExpr, RecordTarget, Select, Source, Statement,
+    StatementKind,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -285,11 +286,66 @@ impl Parser<'_> {
         } else {
             Source::Table(table)
         };
+        let order = self.order_by()?;
+        // `START` before `LIMIT`, because that is the order they are applied in
+        // and a grammar that let them be written either way would suggest they
+        // commute.
+        let skip = self.bound("start")?;
+        let limit = self.bound("limit")?;
         Ok(Select {
             projection,
             from,
+            order,
+            start: skip,
+            limit,
             span: start.to(self.span_behind()),
         })
+    }
+
+    /// `ORDER BY name, address.city DESC`, when it is there.
+    ///
+    /// Keys are read in the condition position, so a bare name is a route into
+    /// the record — the same reading a `WHERE` gives it, and the same one a
+    /// projection gives it.
+    fn order_by(&mut self) -> Result<Vec<Ordering>> {
+        if !self.eat_word("order") {
+            return Ok(Vec::new());
+        }
+        if !self.eat_word("by") {
+            return Err(self.error_here("`BY` after `ORDER`"));
+        }
+        let mut keys = vec![self.ordering()?];
+        while self.eat_punct(Punct::Comma) {
+            keys.push(self.ordering()?);
+        }
+        Ok(keys)
+    }
+
+    fn ordering(&mut self) -> Result<Ordering> {
+        let key = self.field_path()?;
+        // `ASC` is accepted and means nothing, because a reader who writes it is
+        // saying what they mean and a grammar that refused would be pedantry.
+        let descending = if self.eat_word("desc") {
+            true
+        } else {
+            self.eat_word("asc");
+            false
+        };
+        Ok(Ordering { key, descending })
+    }
+
+    /// `LIMIT 10` or `START 20`, when it is there.
+    fn bound(&mut self, word: &str) -> Result<Option<u64>> {
+        if !self.eat_word(word) {
+            return Ok(None);
+        }
+        let expected = "a whole number";
+        let Some(Token::Number(Number::Integer(count))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let count = u64::try_from(*count).map_err(|_| self.error_here(expected))?;
+        self.advance();
+        Ok(Some(count))
     }
 
     /// The rest of `users:1->follows` or `users:1->follows->users`.

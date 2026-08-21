@@ -89,3 +89,29 @@ SELECT * FROM people WHERE name;
 --- case: two comparisons in a row are refused
 SELECT * FROM people WHERE 1 < age < 100;
 --- expect: error UnexpectedToken
+
+--- case: a read may say what order it wants
+SELECT * FROM people ORDER BY name;
+--- expect: rows 5
+
+--- case: several keys, and a reversed one
+SELECT * FROM people ORDER BY city, name DESC;
+--- expect: rows 5
+
+--- case: a bound takes a window after the order
+SELECT * FROM people ORDER BY name START 1 LIMIT 2;
+--- expect: rows 2
+
+--- case: a start past the end is a state rather than a mistake
+SELECT * FROM people ORDER BY name START 99;
+--- expect: rows 0
+
+--- case: a bound with no order still applies
+SELECT * FROM people LIMIT 1;
+--- expect: rows 1
+
+--- case: the words that shape a read are not reserved names
+DEFINE TABLE order;
+CREATE order:1 = { limit: 10, by: 'ada', start: 1 };
+SELECT * FROM order ORDER BY by LIMIT 1;
+--- expect: rows 1

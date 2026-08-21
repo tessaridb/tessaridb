@@ -210,8 +210,23 @@ pub struct Select {
     pub projection: Projection,
     /// Which access path the statement resolves to.
     pub from: Source,
+    /// The keys the answer is sorted by, in order of significance.
+    pub order: Vec<Ordering>,
+    /// How many records to pass over before answering.
+    pub start: Option<u64>,
+    /// How many to answer with at most.
+    pub limit: Option<u64>,
     /// Where the statement sits in the source.
     pub span: Span,
+}
+
+/// One sort key, and which way it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ordering {
+    /// What to sort by: a route into the record, or a projected name.
+    pub key: FieldPath,
+    /// Whether the order is reversed.
+    pub descending: bool,
 }
 
 /// Which values a read answers with.

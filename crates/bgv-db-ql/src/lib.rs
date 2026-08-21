@@ -21,9 +21,9 @@ mod parser;
 mod token;
 
 pub use ast::{
-    ArithmeticOp, BinaryOp, Direction, Expr, ExprKind, Field, FieldPath, Name, Projected,
+    ArithmeticOp, BinaryOp, Direction, Expr, ExprKind, Field, FieldPath, Name, Ordering, Projected,
     Projection, RangeExpr, RecordTarget, Script, Select, Source, Statement, StatementKind,
-    TableRef,
+    TableRef, Written,
 };
 pub use error::{Error, Result};
 pub use function::Function;

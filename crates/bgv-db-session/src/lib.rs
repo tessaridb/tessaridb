@@ -28,6 +28,7 @@ mod evaluate;
 mod execute;
 mod outcome;
 mod session;
+mod shape;
 
 pub use error::{Error, Result};
 pub use outcome::{AccessPath, Outcome};

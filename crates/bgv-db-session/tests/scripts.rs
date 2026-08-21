@@ -1930,3 +1930,190 @@ fn a_default_is_checked_when_it_is_declared_and_not_when_it_first_bites() {
         .run("DEFINE FIELD seen ON notes TYPE int DEFAULT 0;")
         .unwrap();
 }
+
+/// A table whose sort key is present, null and absent across its rows, so an
+/// order has to say where each goes rather than leaving it to the scan.
+fn sortable(session: &mut Session<'_>) {
+    session
+        .run(
+            "DEFINE TABLE people;\n\
+             CREATE people:1 = { name: 'ada', age: 45, city: 'Paris' };\n\
+             CREATE people:2 = { name: 'grace', age: 17, city: 'Lyon' };\n\
+             CREATE people:3 = { name: 'alan', age: NULL, city: 'Paris' };\n\
+             CREATE people:4 = { name: 'edsger', city: 'Lyon' };\n\
+             CREATE people:5 = { name: 'barbara', age: 45, city: 'Paris' };",
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_read_may_say_what_order_it_wants() {
+    let store = store();
+    let mut session = ready(&store);
+    sortable(&mut session);
+
+    assert_eq!(
+        found_ids(&mut session, "SELECT * FROM people ORDER BY name;"),
+        vec![
+            RecordId::Int(1), // ada
+            RecordId::Int(3), // alan
+            RecordId::Int(5), // barbara
+            RecordId::Int(4), // edsger
+            RecordId::Int(2), // grace
+        ]
+    );
+    assert_eq!(
+        found_ids(&mut session, "SELECT * FROM people ORDER BY name DESC;")
+            .first()
+            .cloned(),
+        Some(RecordId::Int(2))
+    );
+}
+
+#[test]
+fn absent_sorts_below_null_sorts_below_every_value() {
+    // The opposite of what a comparison does with them, and deliberately: a
+    // comparison against a non-value has no answer, while a sort has to put
+    // every row somewhere and that somewhere is better stated than left to
+    // whichever row the scan reached first.
+    let store = store();
+    let mut session = ready(&store);
+    sortable(&mut session);
+
+    let ordered = found_ids(&mut session, "SELECT * FROM people ORDER BY age;");
+    assert_eq!(ordered[0], RecordId::Int(4), "no age at all sorts first");
+    assert_eq!(ordered[1], RecordId::Int(3), "then the null");
+    assert_eq!(ordered[2], RecordId::Int(2), "then seventeen");
+}
+
+#[test]
+fn several_keys_sort_by_the_first_then_the_next() {
+    let store = store();
+    let mut session = ready(&store);
+    sortable(&mut session);
+
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM people ORDER BY city, name DESC;"
+        ),
+        vec![
+            RecordId::Int(2), // Lyon, grace — reversed within the city
+            RecordId::Int(4), // Lyon, edsger
+            RecordId::Int(5), // Paris, barbara
+            RecordId::Int(3), // Paris, alan
+            RecordId::Int(1), // Paris, ada
+        ]
+    );
+}
+
+#[test]
+fn equal_keys_are_broken_by_identity_so_the_answer_never_moves() {
+    use bgv_db_session::AccessPath;
+
+    // Without the tiebreak, adding an index would reorder equal rows — an answer
+    // that changes when an index appears, which is the shape this store refuses.
+    let store = store();
+    let mut session = ready(&store);
+    sortable(&mut session);
+
+    let script = "SELECT * FROM people WHERE city = 'Paris' ORDER BY age;";
+    let by_scan = session.run(script).unwrap();
+    assert_eq!(by_scan[0].path(), Some(AccessPath::Scan));
+    let scanned: Vec<_> = by_scan[0].records().unwrap().to_vec();
+
+    session
+        .run("DEFINE INDEX by_city ON people FIELDS city;")
+        .unwrap();
+    let by_index = session.run(script).unwrap();
+    assert_eq!(by_index[0].path(), Some(AccessPath::Index));
+    assert_eq!(by_index[0].records().unwrap(), scanned.as_slice());
+    // people:1 and people:5 both hold 45, and identity decides.
+    assert_eq!(scanned[1].0, RecordId::Int(1));
+    assert_eq!(scanned[2].0, RecordId::Int(5));
+}
+
+#[test]
+fn a_bound_takes_a_window_after_the_order_and_not_before() {
+    let store = store();
+    let mut session = ready(&store);
+    sortable(&mut session);
+
+    assert_eq!(
+        found_ids(&mut session, "SELECT * FROM people ORDER BY name LIMIT 2;"),
+        vec![RecordId::Int(1), RecordId::Int(3)]
+    );
+    assert_eq!(
+        found_ids(
+            &mut session,
+            "SELECT * FROM people ORDER BY name START 2 LIMIT 2;"
+        ),
+        vec![RecordId::Int(5), RecordId::Int(4)]
+    );
+    // Past the end is a state, not a mistake.
+    assert!(found_ids(&mut session, "SELECT * FROM people ORDER BY name START 99;").is_empty());
+    // And a bound with no order still applies, over the order the store has.
+    assert_eq!(
+        found_ids(&mut session, "SELECT * FROM people LIMIT 1;").len(),
+        1
+    );
+}
+
+#[test]
+fn a_sort_key_may_be_a_route_or_a_projected_name() {
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    // A route into the record. `people:3` holds `address` as text, so the route
+    // reaches nothing and it sorts with the ones that have no address at all —
+    // last, under `DESC`.
+    let by_route = session
+        .run("SELECT * FROM people ORDER BY address.city DESC;")
+        .unwrap();
+    let routed: Vec<_> = by_route[0]
+        .records()
+        .unwrap()
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect();
+    assert_eq!(routed[0], RecordId::Int(1), "Paris is the highest city");
+    assert_eq!(routed[1], RecordId::Int(2), "then Lyon");
+
+    // …and the name the projection gave it answers the same way, which is the
+    // point: one order, whichever way the key is named.
+    let by_name = session
+        .run("SELECT address.city AS home FROM people ORDER BY home DESC;")
+        .unwrap();
+    let named: Vec<_> = by_name[0]
+        .records()
+        .unwrap()
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect();
+    assert_eq!(named, routed);
+}
+
+#[test]
+fn the_words_that_shape_a_read_are_not_reserved_names() {
+    // `ORDER`, `BY`, `LIMIT` and `START` are contextual: reserving them would
+    // take four perfectly good names away from data that already exists, and
+    // this language has a rule about that.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE order;\n\
+             CREATE order:1 = { limit: 10, by: 'ada', start: 1 };",
+        )
+        .unwrap();
+
+    assert_eq!(
+        found_ids(&mut session, "SELECT * FROM order WHERE limit = 10;"),
+        vec![RecordId::Int(1)]
+    );
+    assert_eq!(
+        found_ids(&mut session, "SELECT * FROM order ORDER BY by LIMIT 1;"),
+        vec![RecordId::Int(1)]
+    );
+}

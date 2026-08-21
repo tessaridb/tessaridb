@@ -17,14 +17,6 @@ SELECT * FROM users JOIN orders;
 SELECT * FROM users GROUP BY email;
 --- expect: error Unsupported
 
---- case: ordering a result
-SELECT * FROM users ORDER BY email;
---- expect: error Unsupported
-
---- case: limiting a result
-SELECT * FROM users LIMIT 10;
---- expect: error Unsupported
-
 --- case: a character the grammar never uses
 SELECT * FROM users WHERE email @ 'ada';
 --- expect: error UnexpectedCharacter

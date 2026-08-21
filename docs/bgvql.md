@@ -334,6 +334,8 @@ SELECT * FROM users WHERE email = 'ada@example.com';
 SELECT name, address.city FROM users;
 SELECT address.city AS home, tags[0] AS first_tag FROM users;
 SELECT price * quantity AS total, string::upper(name) AS shout FROM users;
+SELECT * FROM users ORDER BY name;
+SELECT * FROM users ORDER BY city, joined DESC START 20 LIMIT 10;
 
 UPDATE users:1 = { name: 'ada', email: 'ada2@example.com' };
 DELETE users:1;
@@ -437,6 +439,48 @@ The operators, and how tightly they bind — loosest first:
 Parentheses override, and **two comparisons cannot be written in a row**:
 `1 < age < 100` means "between" to a person and `(1 < age) < 100` to a parser, so
 a grammar that picked one would answer a question nobody asked.
+
+### Order, and how much of it
+
+```
+SELECT * FROM users ORDER BY name;
+SELECT * FROM users ORDER BY city, joined DESC;
+SELECT * FROM users ORDER BY address.city LIMIT 10;
+SELECT * FROM users ORDER BY name START 20 LIMIT 10;
+```
+
+A sort key is read the way a `WHERE` reads one — a bare name is a route into the
+record — and it may also name a **projected** name, so
+`SELECT address.city AS home … ORDER BY home` works and answers the same as
+ordering by the route.
+
+**The order is the value system's** (`docs/value-system.md` §3), the same one an
+index is stored in, including across types. With one addition that comparison
+does not make: **`NONE` sorts below `NULL` sorts below every present value.** A
+comparison against a non-value has no answer, so `age < 18` is false for a
+record with no age; a *sort* has to put every row somewhere, and where is better
+stated than left to whichever row the scan happened to reach first.
+
+**Ties are broken by the record's identity**, which is unique — so the same query
+over the same data answers in the same order every time, whatever access path
+ran. Without that, adding an index would reorder equal rows, which is an answer
+changing when an index appears.
+
+`START` passes over that many records and `LIMIT` keeps at most that many, and
+**both are applied after ordering** — including when no `ORDER BY` was written,
+because otherwise `LIMIT 10` would mean "the first ten the read happened to
+reach", which is a different answer on another node. A `START` past the end
+answers with nothing rather than failing: asking for page nine of an eight-page
+result is a state, not a mistake.
+
+Ordering does not become an index read. An ordered index could serve
+`ORDER BY email LIMIT 10` without sorting anything, and that is not built — the
+same deferral `<` and `>` already carry. The path reported is the one that ran.
+
+`ORDER`, `BY`, `ASC`, `DESC`, `LIMIT` and `START` are **not reserved words**.
+They shape a clause where nothing else can stand, so nothing is ambiguous, and
+reserving them would take six perfectly good names away from data that already
+exists — `SELECT * FROM order ORDER BY by LIMIT 1` is a legal statement.
 
 ### What a comparison means
 
@@ -703,6 +747,7 @@ Named here rather than merely missing, so each absence reads as a decision:
 
 | Absent | Why |
 |---|---|
+| `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | joins | no planner, and a join without one is a nested scan pretending otherwise |
 | traversals longer than one hop, and filters inside a traversal | `a->e->b` is one hop to the edge and one to its far side, which is the shape that makes traversal useful; `->{1..3}`, mid-traversal filters and shortest-path are a language surface to design once |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |
@@ -732,6 +777,10 @@ Named here rather than merely missing, so each absence reads as a decision:
 | `NONE` and `NULL` are distinct literals | **contract** — the storage layer keeps them apart |
 | An edge is a record, and traversal is an index read | **contract** — no separate graph keyspace, so edges get MVCC, transactions, replication and the schema check without any of them being built again |
 | An edge is identified by its endpoints | fixed for this milestone; an explicit-id form would be additive |
+| A sort is the value system's order, with `NONE` below `NULL` below every value | **contract** — a sort must place every row, where a comparison may decline to |
+| Ties are broken by record identity | **contract** — what keeps an added index from reordering equal rows |
+| `START` and `LIMIT` apply after ordering, always | **contract** |
+| `ORDER`, `BY`, `ASC`, `DESC`, `LIMIT`, `START` are contextual, not reserved | **contract** — reserving a word takes a name away from data that exists |
 | `REQUIRED` means present and not null | **contract** |
 | A default fills only what a write leaves out, and never reaches backwards | **contract** |
 | A default is a value-position expression, checked when it is declared | **contract** |

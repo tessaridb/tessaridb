@@ -102,6 +102,29 @@ impl Parser<'_> {
         self.tokens.get(self.position).map(|spanned| &spanned.token)
     }
 
+    /// Consume a **contextual** word: one that shapes a clause without being
+    /// reserved.
+    ///
+    /// `ORDER`, `BY`, `LIMIT`, `START`, `ASC` and `DESC` are read this way
+    /// rather than added to [`Keyword`], because reserving them would take four
+    /// perfectly good field and table names away from data that already exists —
+    /// and this language has a rule about that: an absent feature is *looked up*
+    /// to give a better error, never reserved. Nothing else can stand in the
+    /// positions these appear in, so nothing is ambiguous.
+    ///
+    /// Matched case-insensitively, like a keyword, because that is what it is
+    /// everywhere except in the token table.
+    fn eat_word(&mut self, word: &str) -> bool {
+        let matched = matches!(
+            self.peek(),
+            Some(Token::Ident(found)) if found.eq_ignore_ascii_case(word)
+        );
+        if matched {
+            self.position = self.position.saturating_add(1);
+        }
+        matched
+    }
+
     /// Whether what stands here is a call: a name, `::`, a name, then `(`.
     ///
     /// Three tokens of lookahead rather than one, which is the only place this
@@ -245,8 +268,6 @@ fn absent_feature(word: &str) -> Option<&'static str> {
         ("group", "aggregation and grouping"),
         ("having", "aggregation and grouping"),
         ("count", "aggregation and grouping"),
-        ("order", "ordering a result"),
-        ("limit", "limiting a result"),
         ("offset", "limiting a result"),
         ("match", "full-text search"),
         ("search", "full-text search"),

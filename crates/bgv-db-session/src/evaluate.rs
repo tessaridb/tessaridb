@@ -200,14 +200,27 @@ impl Session<'_> {
         select: &Select,
     ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
         let (records, path) = self.read_source(transaction, &select.from)?;
-        let Projection::Values(wanted) = &select.projection else {
-            return Ok((records, path));
+        let records = match &select.projection {
+            Projection::All => records,
+            Projection::Values(wanted) => {
+                let mut projected = Vec::with_capacity(records.len());
+                for (id, record) in records {
+                    projected.push((id, self.project(transaction, &record, wanted)?));
+                }
+                projected
+            }
         };
-        let mut projected = Vec::with_capacity(records.len());
-        for (id, record) in records {
-            projected.push((id, self.project(transaction, &record, wanted)?));
-        }
-        Ok((projected, path))
+        // Ordering comes after projection so that a key may name what the caller
+        // can see: `SELECT address.city AS home … ORDER BY home` reads the name
+        // the answer carries rather than the route it came from. A route still
+        // works, because a projected record keeps the shape it was given only
+        // where the projection preserved it — which is why the sort falls back
+        // to the route when the name is not there.
+        let records = crate::shape::sorted(records, &select.order);
+        Ok((
+            crate::shape::bounded(records, select.start, select.limit),
+            path,
+        ))
     }
 
     /// One record, reduced to the values a read asked for.
