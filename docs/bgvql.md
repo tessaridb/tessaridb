@@ -93,6 +93,42 @@ float `1.` beside `.10`. And digits touching a letter are a duration, whatever
 the letter is — `5y` is a duration with an unknown unit and is refused, rather
 than the number five beside a name that fails somewhere else.
 
+### Naming a value inside a record
+
+A record payload is a tree: an object may hold objects and arrays, and those may
+hold more, with no depth limit. A **path** is how something inside it is named.
+
+Every fenced example in this document is executable bgvQL, so a path is shown in
+one of the two positions it is read in:
+
+```
+SELECT * FROM people WHERE address.city = 'Paris';
+SELECT * FROM people WHERE tags[0] = 'urgent';
+SELECT * FROM people WHERE history[2].by.name = 'ada';
+DEFINE INDEX by_home_city ON people FIELDS address.city;
+```
+
+A path is a field name followed by any number of steps: `.name` goes into an
+object, `[n]` goes to a position in an array, counting from zero. Paths are read
+in exactly two places — the left side of a `WHERE` (§5) and the projection of a
+`DEFINE INDEX` (§4) — because those are where a *value inside a record* is meant.
+They are not read where a table may stand, so `orders.users` keeps meaning the
+table `users` in the database `orders`.
+
+**A path that reaches nothing is not an error.** A missing field, a missing
+field below one that exists, an object addressed by position, an array addressed
+by name, a position past the end: every one of them means the filter does not
+match and the index does not index. That is the rule a missing top-level field
+has always followed, carried one level down, and it is what lets records of
+different shapes share a table — which is the reason to hold documents at all.
+
+A position is a whole number. Counting from the end would need a sign whose
+meaning depends on the array's length, which is a decision about what a path
+*means* rather than how one is written.
+
+A field whose real name contains `.`, `[` or `]` cannot be addressed by a path.
+Those three characters are what separates one step from the next.
+
 `SET` serves both the key-value verb and the set literal. Which one is meant is
 decided by whether a `[` follows, and nothing else in the grammar makes that
 ambiguous.
@@ -113,6 +149,7 @@ DEFINE TABLE users;
 DEFINE SPACE sessions;
 DEFINE INDEX by_email ON users FIELDS email UNIQUE;
 DEFINE INDEX by_name ON users FIELDS last, first;
+DEFINE INDEX by_home_city ON users FIELDS address.city;
 
 DEFINE TABLE accounts SCHEMAFULL;
 DEFINE TABLE follows EDGE;
@@ -125,8 +162,11 @@ DROP TABLE users;
 DROP SPACE sessions;
 ```
 
-An index names one field or several, in order; without `UNIQUE` two records may
-share an entry. `DROP SPACE` and `DROP TABLE` do the same thing — a space is a
+An index projects one value or several, in order; without `UNIQUE` two records
+may share an entry. Each is a path (§3), so an index may project a value nested
+inside the record — `address.city` is as indexable as `email`, and a record the
+path does not reach is in that index no more than a record missing a top-level
+field is. `DROP SPACE` and `DROP TABLE` do the same thing — a space is a
 table (ADR-0010) — and both spellings exist so that a script reads the way its
 author thinks about what it removes.
 
@@ -203,6 +243,14 @@ way: the statement reads the whole table inside the commit.
 `DROP FIELD` removes the rule and not the data. The rows keep the field; the
 store simply stops having an opinion about it.
 
+**A declaration names a top-level field, never a path.** `TYPE object` says the
+field holds an object and nothing about what is inside it, and `SCHEMAFULL`
+refuses an undeclared *field* rather than an undeclared path. Indexing goes
+deeper than declaring, which is deliberate: an index is a statement about how a
+value is found, and a declaration is a statement about what a record may be.
+Making declarations reach into a path needs a rule for what declaring a leaf says
+about its parents, and §8 keeps that as its own row.
+
 ### Edge tables
 
 `DEFINE TABLE follows EDGE` declares a table that holds **edges**: ordinary
@@ -263,22 +311,25 @@ caller who means "whatever is there, replace it".
 `SELECT` resolves to exactly one of the three access paths, and which one is
 decided by the target rather than by a cost model:
 
-| Form | Path |
+| Form | Access path |
 |---|---|
 | `FROM users:1` | the record by its identity |
-| `FROM users WHERE <indexed field> = <value>` | the index |
-| `FROM users WHERE <indexed field> LIKE '<literal>%'` | the index, as a range |
-| `FROM users WHERE <field> = <value>` (no index) | the table, testing each record |
-| `FROM users WHERE <field> LIKE <any other pattern>` | the table, testing each record |
+| `FROM users WHERE <indexed path> = <value>` | the index |
+| `FROM users WHERE <indexed path> LIKE '<literal>%'` | the index, as a range |
+| `FROM users WHERE <path> = <value>` (no index) | the table, testing each record |
+| `FROM users WHERE <path> LIKE <any other pattern>` | the table, testing each record |
 | `FROM users:1->follows` | the index, on the edge table's `out` |
 | `FROM users:1->follows->users` | the same index, then each far endpoint by its identity |
 | `FROM users:2<-follows<-users` | the index, on the edge table's `in` |
 | `FROM users` | every record of the table |
 
-A `WHERE` names a field and a test:
+A `WHERE` names a path (§3) and a test. A plain field name is a path of one
+step, so every filter that could be written before still reads the same:
 
 ```
 SELECT * FROM users WHERE email = 'ada@example.com';
+SELECT * FROM users WHERE address.city = 'Paris';
+SELECT * FROM users WHERE tags[0] = 'urgent';
 SELECT * FROM notes WHERE body LIKE '%lovelace%';
 SELECT * FROM notes WHERE body ILIKE 'ada%';
 SELECT * FROM notes WHERE tags CONTAINS 'urgent';
@@ -316,13 +367,18 @@ way, so adding an index later makes existing queries faster without rewriting an
 of them. The path taken is reported with the result, so a scan is visible rather
 than folklore.
 
-| Filter | With an index on the field |
+| Filter | With an index on that exact path |
 |---|---|
-| `field = 'ada'` | index read |
-| `field LIKE 'ada%'` | index read — a range over the values beginning with `ada` |
-| `field LIKE '%ada'`, `'%ada%'`, `'a_a%'`, `'ada%lace'` | scan |
-| `field ILIKE 'ada%'` | scan |
-| `field CONTAINS 'ada'` | scan |
+| `path = 'ada'` | index read |
+| `path LIKE 'ada%'` | index read — a range over the values beginning with `ada` |
+| `path LIKE '%ada'`, `'%ada%'`, `'a_a%'`, `'ada%lace'` | scan |
+| `path ILIKE 'ada%'` | scan |
+| `path CONTAINS 'ada'` | scan |
+
+**On that exact path**, and no other. An index on `address.city` serves a filter
+on `address.city` and not one on `address`, for the same reason an index on
+`(a, b)` does not serve a question about `a` alone: an index answers what it
+projects.
 
 `ILIKE` keeps the scan in every shape, because the index holds one case and
 folding at read time is not what it stores. An infix or suffix pattern keeps it
@@ -429,11 +485,13 @@ Named here rather than merely missing, so each absence reads as a decision:
 | Absent | Why |
 |---|---|
 | joins | no planner, and a join without one is a nested scan pretending otherwise |
-| paths longer than one hop, and filters inside a path | `a->e->b` is one hop to the edge and one to its far side, which is the shape that makes traversal useful; `->{1..3}`, mid-path filters and shortest-path are a language surface to design once |
+| traversals longer than one hop, and filters inside a traversal | `a->e->b` is one hop to the edge and one to its far side, which is the shape that makes traversal useful; `->{1..3}`, mid-traversal filters and shortest-path are a language surface to design once |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |
 | a text **index** | `LIKE` works today over a scan; the index that makes it fast, with its analyzer, is its own milestone. The statement will not change when it lands. |
 | vector search | a reserved key kind, no engine yet |
 | ranking, highlighting, stemming, fuzzy matching | analyzer decisions; approximating them over a scan now would disagree with the index later |
+| `[*]` in a path — "any element of this array" | it turns a path from a function into a relation: the filter becomes existential, a projection returns several values, and the index becomes a multikey one with entries per element and a reclamation rule of its own. Three features wearing one syntax. |
+| declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
 | aggregation and grouping | needs an execution layer this milestone has not built |
 | functions and expressions beyond literals and reads | a language surface to design once, not accrete |
 | permissions in the language | there is no session identity yet |
@@ -450,6 +508,8 @@ Named here rather than merely missing, so each absence reads as a decision:
 | `NONE` and `NULL` are distinct literals | **contract** — the storage layer keeps them apart |
 | An edge is a record, and traversal is an index read | **contract** — no separate graph keyspace, so edges get MVCC, transactions, replication and the schema check without any of them being built again |
 | An edge is identified by its endpoints | fixed for this milestone; an explicit-id form would be additive |
+| A path names a value inside a record, and one that reaches nothing matches nothing | **contract** — the same answer a missing top-level field has always given, so records of differing shapes share a table without the index or the filter having an opinion about it |
+| An index answers the exact path it projects | **contract** — an index on `address.city` is not one on `address`, for the same reason an index on `(a, b)` is not one on `a` |
 | A declared type constrains a present, non-null value | **contract** — absent is unconstrained, null is allowed, and neither is a hole to be closed later without changing what existing scripts mean |
 | A schema is enforced by the store, not by the session | **contract** — a check the session owned would be one every other writer bypasses |
 | A declaration constrains the rows that predate it, in its own commit | **contract** — the alternative is a constraint that can be declared and not hold |

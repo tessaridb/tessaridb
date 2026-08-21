@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use bgv_db_types::{DatabaseId, IndexId, NamespaceId, Number, TableId, Value};
+use bgv_db_types::{DatabaseId, IndexId, NamespaceId, Number, Path, TableId, Value};
 
 use crate::error::{Error, Result};
 
@@ -191,11 +191,14 @@ pub struct IndexDefinition {
     pub table: TableId,
     /// Its name, unique within that table.
     pub name: String,
-    /// The fields it indexes, in the order their values are encoded.
+    /// The values it indexes, in the order they are encoded.
+    ///
+    /// A path rather than a name, because an index may project a value nested
+    /// inside the record: `address.city` is as indexable as `email`.
     ///
     /// Order is part of the index's identity: an index on `(a, b)` answers a
     /// query about `a` and one on `(b, a)` does not.
-    pub fields: Vec<String>,
+    pub fields: Vec<Path>,
     /// Whether a value may appear more than once.
     ///
     /// A unique index enforces it through the key layout — its entries carry no
@@ -218,7 +221,7 @@ impl IndexDefinition {
                 Value::Array(
                     self.fields
                         .iter()
-                        .map(|field| Value::from(field.as_str()))
+                        .map(|field| Value::from(field.to_string().as_str()))
                         .collect(),
                 ),
             ),
@@ -248,10 +251,17 @@ impl IndexDefinition {
         let indexed = names
             .iter()
             .map(|name| match name {
-                Value::String(text) => Ok(text.clone()),
+                // Stored as the text it was written as, so a definition made
+                // before paths existed reads back as a one-step path and a dump
+                // stays legible. Text that is not a path is corruption rather
+                // than a bad request: nothing that reached the catalog could
+                // have been one.
+                Value::String(text) => {
+                    Path::parse(text).ok_or_else(|| malformed(FIELD_FIELDS, "an unreadable path"))
+                }
                 other => Err(malformed(FIELD_FIELDS, other.type_name())),
             })
-            .collect::<Result<Vec<String>>>()?;
+            .collect::<Result<Vec<Path>>>()?;
         let Some(Value::Bool(unique)) = fields.get(FIELD_UNIQUE) else {
             return Err(malformed(
                 FIELD_UNIQUE,
@@ -428,6 +438,72 @@ mod tests {
         let error = TableDefinition::from_value(&Value::Object(fields)).unwrap_err();
         let text = error.to_string();
         assert!(text.contains("namespace"), "{text}");
+    }
+
+    #[test]
+    fn an_index_definition_round_trips_a_route_through_the_text_it_is_stored_as() {
+        // The catalog stores a path as its spelling, so a path that read back as
+        // a different route would index one value and filter another — and both
+        // sides would look right in isolation.
+        let index = IndexDefinition {
+            id: IndexId::new(2),
+            namespace: NamespaceId::new(7),
+            database: DatabaseId::new(3),
+            table: TableId::new(11),
+            name: "by_home_city".to_owned(),
+            fields: vec![
+                Path::parse("address.city").expect("a path"),
+                Path::parse("tags[0].name").expect("a path"),
+                Path::field("email"),
+            ],
+            unique: false,
+        };
+        assert_eq!(
+            IndexDefinition::from_value(&index.to_value()).unwrap(),
+            index
+        );
+    }
+
+    #[test]
+    fn an_index_entry_written_before_paths_existed_reads_as_a_single_field() {
+        // Every definition on disk today spells one plain field name, and a plain
+        // field name is a path of one step. Nothing has to be migrated.
+        let fields = BTreeMap::from([
+            (FIELD_ID.to_owned(), number(2)),
+            (FIELD_NAMESPACE.to_owned(), number(7)),
+            (FIELD_DATABASE.to_owned(), number(3)),
+            (FIELD_TABLE.to_owned(), number(11)),
+            (FIELD_NAME.to_owned(), Value::from("by_email")),
+            (
+                FIELD_FIELDS.to_owned(),
+                Value::Array(vec![Value::from("email")]),
+            ),
+            (FIELD_UNIQUE.to_owned(), Value::Bool(true)),
+        ]);
+        let read = IndexDefinition::from_value(&Value::Object(fields)).unwrap();
+        assert_eq!(read.fields, vec![Path::field("email")]);
+    }
+
+    #[test]
+    fn a_stored_route_that_is_not_a_route_is_corruption_rather_than_a_bad_request() {
+        // Nothing that reached the catalog could have been an unreadable path:
+        // the parser produced it, and the parser cannot spell one. So finding one
+        // means the bytes changed underneath, which is a different failure from a
+        // caller asking for something impossible.
+        let fields = BTreeMap::from([
+            (FIELD_ID.to_owned(), number(2)),
+            (FIELD_NAMESPACE.to_owned(), number(7)),
+            (FIELD_DATABASE.to_owned(), number(3)),
+            (FIELD_TABLE.to_owned(), number(11)),
+            (FIELD_NAME.to_owned(), Value::from("by_broken")),
+            (
+                FIELD_FIELDS.to_owned(),
+                Value::Array(vec![Value::from("address..city")]),
+            ),
+            (FIELD_UNIQUE.to_owned(), Value::Bool(false)),
+        ]);
+        let error = IndexDefinition::from_value(&Value::Object(fields)).unwrap_err();
+        assert_eq!(error.code(), "corruption");
     }
 
     #[test]

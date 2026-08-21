@@ -10,10 +10,10 @@ use std::collections::BTreeMap;
 
 use bgv_db_encoding::decode_payload;
 use bgv_db_ql::{
-    Direction, Expr, ExprKind, Name, RecordTarget, Select, Source, Span, TableRef, Test,
+    Direction, Expr, ExprKind, FieldPath, RecordTarget, Select, Source, Span, TableRef, Test,
 };
 use bgv_db_storage::{Catalog, RecordAddress, Transaction};
-use bgv_db_types::{Number, RecordId, RecordRef, Value, ValueRange};
+use bgv_db_types::{Number, Path, RecordId, RecordRef, Value, ValueRange};
 
 use crate::error::{Error, Result};
 use crate::outcome::AccessPath;
@@ -138,7 +138,7 @@ impl Session<'_> {
 
                 // An index serves an equality on a named field.
                 if *test == Test::Equals {
-                    if let Some(index) = self.index_on_field(transaction, id, &field.text)? {
+                    if let Some(index) = self.index_on_path(transaction, id, &field.path)? {
                         let found = transaction.records_by_index(&index, &[wanted])?;
                         return Ok((decode_all(found)?, AccessPath::Index));
                     }
@@ -156,9 +156,7 @@ impl Session<'_> {
                 if *test == Test::Like {
                     if let Value::String(pattern) = &wanted {
                         if let Some(prefix) = literal_prefix(pattern) {
-                            if let Some(index) =
-                                self.index_on_field(transaction, id, &field.text)?
-                            {
+                            if let Some(index) = self.index_on_path(transaction, id, &field.path)? {
                                 let found =
                                     transaction.records_with_string_prefix(&index, &prefix)?;
                                 return Ok((decode_all(found)?, AccessPath::Index));
@@ -207,7 +205,11 @@ impl Session<'_> {
                 span: edges.span,
             });
         }
-        let Some(index) = self.index_on_field(transaction, edge_table, direction.from_field())?
+        let Some(index) = self.index_on_path(
+            transaction,
+            edge_table,
+            &Path::field(direction.from_field()),
+        )?
         else {
             // An edge table always has both, so reaching here means the catalog
             // and the flag disagree — which is corruption, not a slow path.
@@ -301,15 +303,16 @@ pub(crate) fn within(id: &RecordId, start: &RecordId, end: &RecordId, inclusive:
 
 /// Whether one record satisfies a filter.
 ///
-/// A record that is not an object has no fields, so it matches nothing — a space
-/// holds single values, and searching one by field is a question with no answer
-/// rather than an error.
-fn matches_filter(record: &Value, field: &Name, test: Test, wanted: &Value) -> bool {
-    let Value::Object(object) = record else {
-        return false;
-    };
-    object
-        .get(&field.text)
+/// A route that reaches nothing matches nothing. That covers a record which is
+/// not an object at all — a space holds single values, and searching one by
+/// field is a question with no answer rather than an error — and it covers every
+/// way a nested route can end early, which is the same answer the index gives
+/// for the same record. The two agreeing is not a coincidence: both ask
+/// [`Path::resolve`].
+fn matches_filter(record: &Value, field: &FieldPath, test: Test, wanted: &Value) -> bool {
+    field
+        .path
+        .resolve(record)
         .is_some_and(|held| satisfies(held, test, wanted))
 }
 

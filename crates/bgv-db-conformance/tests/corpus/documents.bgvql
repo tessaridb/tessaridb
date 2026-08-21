@@ -1,0 +1,75 @@
+# Documents: a record payload is a tree, and a path is how something inside it
+# is named. Nothing here is a new storage feature — `Value::Object` and
+# `Value::Array` have always nested. What is new is being able to say where.
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+--- expect: ok
+
+--- case: records whose shapes differ, which is the point of holding documents
+DEFINE TABLE people;
+CREATE people:1 = { name: 'ada', address: { city: 'Paris', zip: '75001' }, tags: ['urgent', 'old'] };
+CREATE people:2 = { name: 'grace', address: { city: 'Lyon' }, tags: ['old'] };
+CREATE people:3 = { name: 'alan', address: 'Paris' };
+CREATE people:4 = { name: 'edsger' };
+--- expect: ok
+
+--- case: a route reaches a value nested one level down
+SELECT * FROM people WHERE address.city = 'Paris';
+--- expect: rows 1
+
+--- case: a route reaches an element of an array by its position
+SELECT * FROM people WHERE tags[0] = 'urgent';
+--- expect: rows 1
+
+--- case: a position is a position and not a membership test
+SELECT * FROM people WHERE tags[1] = 'old';
+--- expect: rows 1
+
+--- case: a route with no such root reaches nothing
+SELECT * FROM people WHERE postcode = 'x';
+--- expect: rows 0
+
+--- case: a route through a value that is not an object reaches nothing
+SELECT * FROM people WHERE address.city.first = 'x';
+--- expect: rows 0
+
+--- case: an object addressed by position reaches nothing
+SELECT * FROM people WHERE address[0] = 'x';
+--- expect: rows 0
+
+--- case: a position past the end reaches nothing
+SELECT * FROM people WHERE tags[9] = 'old';
+--- expect: rows 0
+
+--- case: a route may be indexed, and the index is built over the rows already there
+DEFINE INDEX by_home_city ON people FIELDS address.city;
+--- expect: ok
+
+--- case: the indexed route answers the same records it answered by scan
+SELECT * FROM people WHERE address.city = 'Paris';
+--- expect: rows 1
+
+--- case: a prefix pattern on a route is a range over the same index
+SELECT * FROM people WHERE address.city LIKE 'Par%';
+--- expect: rows 1
+
+--- case: an index on a route is not an index on what the route starts from
+SELECT * FROM people WHERE address = 'Paris';
+--- expect: rows 1
+
+--- case: a composite index may mix a route and a plain field
+DEFINE INDEX by_city_and_name ON people FIELDS address.city, name;
+--- expect: ok
+
+--- case: a route is not read where a table may stand
+SELECT * FROM orders.people;
+--- expect: rows 4
+
+--- case: a position is a whole number
+SELECT * FROM people WHERE tags[-1] = 'old';
+--- expect: error UnexpectedToken

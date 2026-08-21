@@ -265,7 +265,7 @@ fn every_definition_form_parses() {
     assert_eq!(name.text, "by_email");
     assert_eq!(table.name.text, "users");
     assert_eq!(fields.len(), 1);
-    assert_eq!(fields[0].text, "email");
+    assert_eq!(fields[0].path.to_string(), "email");
     assert!(unique);
     assert!(!if_not_exists);
 
@@ -322,7 +322,7 @@ fn the_three_select_forms_are_the_three_access_paths() {
         panic!("expected a filtered read");
     };
     assert_eq!(test, Test::Equals);
-    assert_eq!(field.text, "email");
+    assert_eq!(field.path.to_string(), "email");
     assert!(matches!(value.kind, ExprKind::Literal(Value::String(_))));
 }
 
@@ -337,7 +337,7 @@ fn a_pattern_match_is_its_own_test_rather_than_an_equality() {
     let Source::Filter { field, test, .. } = select.from else {
         panic!("expected a filtered read");
     };
-    assert_eq!(field.text, "body");
+    assert_eq!(field.path.to_string(), "body");
     assert_eq!(test, Test::Like);
 }
 
@@ -352,7 +352,7 @@ fn membership_and_pattern_matching_are_different_tests() {
     let Source::Filter { field, test, .. } = select.from else {
         panic!("expected a filtered read");
     };
-    assert_eq!(field.text, "tags");
+    assert_eq!(field.path.to_string(), "tags");
     assert_eq!(test, Test::Contains);
 }
 
@@ -571,4 +571,75 @@ fn the_whole_specification_script_parses() {
     );
     assert_eq!(parsed.statements.len(), 10);
     assert_eq!(parsed.span.end, parsed.span.end.max(1));
+}
+
+/// The route a filter tests, as it was written.
+fn filtered_on(source: &str) -> String {
+    match one(source) {
+        StatementKind::Select(select) => match select.from {
+            Source::Filter { field, .. } => field.path.to_string(),
+            other => panic!("{source} parsed as {other:?}"),
+        },
+        other => panic!("{source} parsed as {other:?}"),
+    }
+}
+
+#[test]
+fn a_filter_reads_a_route_into_a_record() {
+    assert_eq!(
+        filtered_on("SELECT * FROM users WHERE email = 'a';"),
+        "email"
+    );
+    assert_eq!(
+        filtered_on("SELECT * FROM users WHERE address.city = 'Paris';"),
+        "address.city"
+    );
+    assert_eq!(
+        filtered_on("SELECT * FROM users WHERE tags[0] = 'urgent';"),
+        "tags[0]"
+    );
+    assert_eq!(
+        filtered_on("SELECT * FROM users WHERE history[2].by.name = 'ada';"),
+        "history[2].by.name"
+    );
+}
+
+#[test]
+fn an_index_projects_routes_as_readily_as_names() {
+    let StatementKind::DefineIndex { fields, .. } =
+        one("DEFINE INDEX by_home ON users FIELDS address.city, name;")
+    else {
+        panic!("not an index definition");
+    };
+    let spelled: Vec<String> = fields.iter().map(|f| f.path.to_string()).collect();
+    assert_eq!(spelled, vec!["address.city", "name"]);
+}
+
+#[test]
+fn a_qualified_table_is_still_a_table_and_not_a_route() {
+    // The one place the two rules could collide. `.` qualifies a table by its
+    // database in the `FROM` and `ON` positions, and only a filter's left side
+    // and an index's projection read a route — so `orders.users` keeps meaning
+    // what it has always meant.
+    let StatementKind::Select(select) = one("SELECT * FROM orders.users;") else {
+        panic!("not a select");
+    };
+    let Source::Table(table) = select.from else {
+        panic!("not a table read");
+    };
+    assert_eq!(table.database.map(|d| d.text), Some("orders".to_owned()));
+    assert_eq!(table.name.text, "users");
+}
+
+#[test]
+fn a_position_in_a_route_is_a_whole_number_or_the_statement_is_refused() {
+    for source in [
+        "SELECT * FROM users WHERE tags[-1] = 'a';",
+        "SELECT * FROM users WHERE tags['x'] = 'a';",
+        "SELECT * FROM users WHERE tags[] = 'a';",
+        "SELECT * FROM users WHERE tags[0 = 'a';",
+        "DEFINE INDEX by_tag ON users FIELDS tags[a];",
+    ] {
+        assert!(parse(source).is_err(), "{source} was accepted");
+    }
 }

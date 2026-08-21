@@ -13,7 +13,7 @@ use std::sync::Arc;
 use bgv_db_encoding::{decode_payload, encode_payload};
 use bgv_db_kv::{KvBackend, MemoryBackend};
 use bgv_db_storage::{Catalog, Error, RecordAddress, Store, TableShape};
-use bgv_db_types::{RecordId, Sequence, Value};
+use bgv_db_types::{Path, RecordId, Sequence, Value};
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
@@ -273,13 +273,13 @@ fn an_index_is_created_on_a_table_and_found_by_it() {
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let by_email = catalog
-        .create_index(table, "by_email", vec!["email".to_owned()], true)
+        .create_index(table, "by_email", vec![Path::field("email")], true)
         .unwrap();
     let by_name = catalog
         .create_index(
             table,
             "by_name",
-            vec!["last".to_owned(), "first".to_owned()],
+            vec![Path::field("last"), Path::field("first")],
             false,
         )
         .unwrap();
@@ -330,16 +330,16 @@ fn two_indexes_on_one_table_cannot_share_a_name_but_two_tables_can() {
         .unwrap();
 
     catalog
-        .create_index(users.id, "by_id", vec!["id".to_owned()], true)
+        .create_index(users.id, "by_id", vec![Path::field("id")], true)
         .unwrap();
     let error = catalog
-        .create_index(users.id, "by_id", vec!["other".to_owned()], false)
+        .create_index(users.id, "by_id", vec![Path::field("other")], false)
         .unwrap_err();
     assert!(matches!(error, Error::NameTaken { .. }), "{error}");
 
     // The same name on another table is a different index.
     catalog
-        .create_index(carts.id, "by_id", vec!["id".to_owned()], true)
+        .create_index(carts.id, "by_id", vec![Path::field("id")], true)
         .unwrap();
     transaction.commit().unwrap();
 }
@@ -433,7 +433,7 @@ fn an_edge_table_carries_an_index_on_each_endpoint_from_the_moment_it_exists() {
 
     let mut transaction = store.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    let mut indexed: Vec<Vec<String>> = catalog
+    let mut indexed: Vec<Vec<Path>> = catalog
         .indexes_on(follows.id)
         .unwrap()
         .into_iter()
@@ -442,7 +442,7 @@ fn an_edge_table_carries_an_index_on_each_endpoint_from_the_moment_it_exists() {
     indexed.sort();
     assert_eq!(
         indexed,
-        vec![vec!["in".to_owned()], vec!["out".to_owned()]],
+        vec![vec![Path::field("in")], vec![Path::field("out")]],
         "an edge table needs both directions"
     );
     assert!(catalog.table(follows.id).unwrap().unwrap().edge);
@@ -559,7 +559,7 @@ fn a_replica_rebuilds_an_edge_table_with_its_indexes_and_its_declarations() {
         .indexes_on(follows.id)
         .unwrap()
         .into_iter()
-        .find(|index| index.fields == vec!["out".to_owned()])
+        .find(|index| index.fields == vec![Path::field("out")])
         .expect("an edge table has an index on out");
     let anchor = Value::Record(bgv_db_types::RecordRef::new(users.id, RecordId::Int(1)));
     assert_eq!(

@@ -176,6 +176,43 @@ the number one compare equal there and could not possibly encode to the same
 bytes here. Making the payload bytes sort as well would be a second ordering
 authority disagreeing with the first.
 
+## 5a. Reaching inside a value
+
+A payload nests without limit: an object holds objects and arrays, and those hold
+more. A **path** is how a value inside one is named — `address.city`, `tags[0]`,
+`history[2].by`. The grammar is in `docs/bgvql.md` §3; what a step *means* over
+each container is decided here, because it is a property of the value system and
+not of the language that spells it.
+
+| Step | Over | Reaches |
+|---|---|---|
+| `.name` | `object` | the value under that field, if the object has it |
+| `.name` | anything else | nothing |
+| `[n]` | `array` | the value at position `n`, counting from zero, if the array is long enough |
+| `[n]` | `set` | nothing — a set has no significant order, so a position in one would name a different value as the set changed |
+| `[n]` | anything else | nothing |
+
+A path starts at a field of the record, so a payload that is not an object — a
+space holds single values (ADR-0010) — has no paths into it at all.
+
+**Reaching nothing is an answer, not a failure.** Every row above that says
+"nothing" means the same thing as a missing top-level field has always meant: the
+filter does not match, and the index does not index. Two consequences follow and
+both are deliberate. Records of different shapes share a table without the store
+having an opinion about it, which is the reason to hold documents. And a path is
+a **function** — one route, one value or none — which is what lets an index over
+a path have exactly one entry per record, the same as an index over a field.
+
+`[*]`, "any element", would break that: it makes a path a relation, and an index
+over one a multikey index with an entry per element. It is named in
+`docs/bgvql.md` §8 as its own decision rather than left as a gap.
+
+A path reaching `none` is distinct from a path reaching nothing, and the walk
+keeps them apart for the same reason §2 keeps absent and null apart. Callers
+above collapse the two where the rule they apply is the same — an index treats
+both as "not indexed" — but that is their choice to make, not one the walk makes
+for them.
+
 ## 6. What is fixed, and what can still move
 
 | Decision | Status |
@@ -188,4 +225,7 @@ authority disagreeing with the first.
 | Time as seconds plus a normalised remainder | fixed |
 | No time zone on a stored instant | fixed |
 | The three absent types | additive — each can arrive later with a new tag |
+| A path is a function: one route reaches one value or none | **contract** — what makes an index over a path have one entry per record |
+| A step that cannot be taken reaches nothing rather than failing | **contract** — the rule a missing field has always followed |
+| A position addresses an array and never a set | fixed — a set has no order for a position to mean anything against |
 | Whether the store's own API takes a value instead of bytes | **open** — the engines above will decide that surface |

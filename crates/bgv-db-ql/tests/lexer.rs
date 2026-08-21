@@ -256,3 +256,22 @@ fn the_set_keyword_serves_both_the_verb_and_the_set_literal() {
     // does not decide that; it must only be consistent about the token.
     assert_eq!(tokens("SET [1, 2]").first(), tokens("SET x = 1").first(),);
 }
+
+#[test]
+fn an_identifier_never_carries_a_path_delimiter() {
+    // `Path::new` trusts its caller not to hand it a name containing `.`, `[` or
+    // `]`, and the parser is one of two callers. This is that claim: the lexer
+    // splits every delimiter out into its own token, so an `Ident` cannot hold
+    // one, and a path built from idents round-trips through its spelling.
+    assert_eq!(
+        tokens("address.city[0]"),
+        vec![
+            Token::Ident("address".to_owned()),
+            Token::Punct(Punct::Dot),
+            Token::Ident("city".to_owned()),
+            Token::Punct(Punct::BracketOpen),
+            Token::Number(Number::Integer(0)),
+            Token::Punct(Punct::BracketClose),
+        ]
+    );
+}

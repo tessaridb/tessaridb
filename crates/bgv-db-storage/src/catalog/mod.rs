@@ -25,7 +25,7 @@ mod field;
 mod system;
 
 use bgv_db_encoding::{decode_payload, encode_payload};
-use bgv_db_types::{DatabaseId, FieldKind, IndexId, NamespaceId, RecordId, TableId, Value};
+use bgv_db_types::{DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId, TableId, Value};
 
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use definition::{
@@ -157,7 +157,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 self.create_index(
                     id,
                     &format!("{endpoint}_edges"),
-                    vec![endpoint.to_owned()],
+                    vec![Path::field(endpoint)],
                     false,
                 )?;
                 self.create_field(id, endpoint, FieldKind::Record)?;
@@ -168,9 +168,10 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
 
     /// Create an index on an existing table.
     ///
-    /// The field list is the index's identity as much as its name is: an index
-    /// on `(a, b)` answers a query about `a` and one on `(b, a)` does not, so
-    /// the order given here is the order values are encoded in.
+    /// The projection list is the index's identity as much as its name is: an
+    /// index on `(a, b)` answers a query about `a` and one on `(b, a)` does not,
+    /// so the order given here is the order values are encoded in. Each entry is
+    /// a path, so an index may project a value nested inside the record.
     ///
     /// # Errors
     ///
@@ -181,7 +182,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         &mut self,
         table: TableId,
         name: &str,
-        fields: Vec<String>,
+        fields: Vec<Path>,
         unique: bool,
     ) -> Result<IndexDefinition> {
         if fields.is_empty() {

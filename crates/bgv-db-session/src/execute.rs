@@ -1,7 +1,7 @@
 //! Running one statement against the store.
 
 use bgv_db_encoding::encode_payload;
-use bgv_db_ql::{Name, RecordTarget, Span, StatementKind, TableRef};
+use bgv_db_ql::{FieldPath, Name, RecordTarget, Span, StatementKind, TableRef};
 use bgv_db_storage::{Catalog, EDGE_IN, EDGE_OUT, RecordAddress, TableShape, Transaction};
 use std::collections::BTreeMap;
 
@@ -290,7 +290,7 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         name: &Name,
         table: &TableRef,
-        fields: &[Name],
+        fields: &[FieldPath],
         unique: bool,
         if_not_exists: bool,
     ) -> Result<Outcome> {
@@ -298,7 +298,7 @@ impl Session<'_> {
         if if_not_exists && self.index_named(transaction, id, name).is_ok() {
             return Ok(Outcome::Done);
         }
-        let fields = fields.iter().map(|field| field.text.clone()).collect();
+        let fields = fields.iter().map(|field| field.path.clone()).collect();
         Catalog::new(transaction).create_index(id, &name.text, fields, unique)?;
         Ok(Outcome::Done)
     }

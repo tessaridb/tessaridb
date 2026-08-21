@@ -7,7 +7,7 @@
 
 use bgv_db_ql::{Span, TableRef};
 use bgv_db_storage::{Catalog, IndexDefinition, Transaction};
-use bgv_db_types::{DatabaseId, NamespaceId, TableId};
+use bgv_db_types::{DatabaseId, NamespaceId, Path, TableId};
 
 use crate::error::{Error, Result};
 use crate::session::Session;
@@ -86,22 +86,25 @@ impl Session<'_> {
         Ok((context, id))
     }
 
-    /// The index that answers an equality on exactly this field, if one exists.
+    /// The index that answers an equality on exactly this value, if one exists.
     ///
     /// Absence is not an error. Which access path a filter takes is decided by
     /// what exists, not by how the query was written — that is what lets an index
     /// be added later without rewriting a single query.
-    pub(crate) fn index_on_field(
+    ///
+    /// The match is on the whole path, so an index on `address.city` serves a
+    /// filter on `address.city` and one on `address` does not. That is the same
+    /// rule composite indexes already follow: an index answers the question it
+    /// projects, and no other.
+    pub(crate) fn index_on_path(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
-        field: &str,
+        path: &Path,
     ) -> Result<Option<IndexDefinition>> {
         Ok(Catalog::new(transaction)
             .indexes_on(table)?
             .into_iter()
-            .find(|index| {
-                index.fields.len() == 1 && index.fields.first().is_some_and(|f| f == field)
-            }))
+            .find(|index| index.fields.as_slice() == [path.clone()]))
     }
 }

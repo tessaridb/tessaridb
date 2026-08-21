@@ -14,7 +14,7 @@ use bgv_db_encoding::{
 };
 use bgv_db_kv::{KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
 use bgv_db_storage::{Catalog, Error, IndexDefinition, RecordAddress, Store, TableShape};
-use bgv_db_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId, Value};
+use bgv_db_types::{DatabaseId, NamespaceId, Path, RecordId, Sequence, TableId, Value};
 
 struct Fixture {
     backend: Arc<dyn KvBackend>,
@@ -43,7 +43,7 @@ impl Fixture {
             .create_table(namespace.id, database.id, "users", TableShape::default())
             .unwrap();
         let index = catalog
-            .create_index(table.id, "by_email", vec!["email".to_owned()], unique)
+            .create_index(table.id, "by_email", vec![Path::field("email")], unique)
             .unwrap();
         transaction.commit().unwrap();
 
@@ -469,7 +469,7 @@ fn table_with_rows(unique: bool) -> Fixture {
             database: database.id,
             table: table.id,
             name: "placeholder".to_owned(),
-            fields: vec!["email".to_owned()],
+            fields: vec![Path::field("email")],
             unique,
         },
     };
@@ -490,7 +490,7 @@ fn indexed_after_the_fact(unique: bool) -> Fixture {
         .create_index(
             populated.table,
             "by_email",
-            vec!["email".to_owned()],
+            vec![Path::field("email")],
             unique,
         )
         .unwrap();
@@ -542,7 +542,7 @@ fn rows_written_in_the_transaction_that_defines_the_index_are_indexed_too() {
 
     let mut transaction = fixture.store.begin().unwrap();
     let index = Catalog::new(&mut transaction)
-        .create_index(fixture.table, "by_email", vec!["email".to_owned()], false)
+        .create_index(fixture.table, "by_email", vec![Path::field("email")], false)
         .unwrap();
     transaction.put(
         RecordAddress::new(
@@ -574,7 +574,7 @@ fn defining_a_unique_index_over_rows_that_already_violate_it_is_refused() {
 
     let mut transaction = fixture.store.begin().unwrap();
     let index = Catalog::new(&mut transaction)
-        .create_index(fixture.table, "by_email", vec!["email".to_owned()], true)
+        .create_index(fixture.table, "by_email", vec![Path::field("email")], true)
         .unwrap();
     let error = transaction.commit().unwrap_err();
     assert!(matches!(error, Error::UniqueViolation { .. }), "{error}");
@@ -604,4 +604,85 @@ fn a_unique_index_constrains_the_rows_that_predate_it() {
         .write("u4", Some(Value::from("ada@example.com")))
         .unwrap_err();
     assert!(matches!(error, Error::UniqueViolation { .. }), "{error}");
+}
+
+#[test]
+fn a_replica_builds_the_same_entries_for_an_index_on_a_nested_value() {
+    // A path index is derived the same way every other one is — from the log
+    // record and the catalog — so a replica reaches it without anything about
+    // paths being transmitted. The reason to assert it anyway is that the walk
+    // is new code on the apply path, and apply is where a wrong answer becomes
+    // permanent rather than merely slow.
+    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let store = Store::open(Arc::clone(&backend)).unwrap();
+
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").unwrap();
+    let database = catalog.create_database(namespace.id, "orders").unwrap();
+    let table = catalog
+        .create_table(namespace.id, database.id, "people", TableShape::default())
+        .unwrap();
+    transaction.commit().unwrap();
+
+    let address =
+        |id: &str| RecordAddress::new(namespace.id, database.id, table.id, RecordId::from(id));
+    let nested = |city: &str| {
+        Value::Object(BTreeMap::from([(
+            "address".to_owned(),
+            Value::Object(BTreeMap::from([("city".to_owned(), Value::from(city))])),
+        )]))
+    };
+
+    // One row the path reaches, one it does not, written before the index
+    // exists — so the define-time build has to walk both.
+    let mut transaction = store.begin().unwrap();
+    transaction.put(address("p1"), encode_payload(&nested("Paris")).into_bytes());
+    transaction.put(
+        address("p2"),
+        encode_payload(&Value::Object(BTreeMap::from([(
+            "address".to_owned(),
+            Value::from("elsewhere"),
+        )])))
+        .into_bytes(),
+    );
+    transaction.commit().unwrap();
+
+    let mut transaction = store.begin().unwrap();
+    let index = Catalog::new(&mut transaction)
+        .create_index(
+            table.id,
+            "by_home_city",
+            vec![Path::parse("address.city").unwrap()],
+            false,
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+
+    let source = Fixture {
+        backend,
+        store,
+        namespace: namespace.id,
+        database: database.id,
+        table: table.id,
+        index: index.clone(),
+    };
+    // Exactly one: the row whose route ends early is in no index at all.
+    assert_eq!(source.entries().len(), 1);
+
+    let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    for (sequence, record) in source.store.log_records(Sequence::ZERO, 1024).unwrap() {
+        replica.apply_record(sequence, &record).unwrap();
+    }
+
+    let mirrored = Fixture {
+        backend: replica_backend,
+        store: replica,
+        namespace: source.namespace,
+        database: source.database,
+        table: source.table,
+        index,
+    };
+    assert_eq!(mirrored.entries(), source.entries());
 }

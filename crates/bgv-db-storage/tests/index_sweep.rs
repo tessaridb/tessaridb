@@ -36,7 +36,7 @@ use bgv_db_encoding::{
 };
 use bgv_db_kv::{KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
 use bgv_db_storage::{Catalog, Error, IndexDefinition, RecordAddress, Store, TableShape};
-use bgv_db_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
+use bgv_db_types::{DatabaseId, NamespaceId, Path, RecordId, Step, TableId, Value};
 
 /// The seed the workload runs from. Printed by every failing assertion.
 const SEED: u64 = 0x0de5_eed1_5bad_c0de;
@@ -79,9 +79,9 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// A table with three indexes: one unique on a single field, one not, and one
-    /// over a pair — so the sweep covers single and composite projection and both
-    /// key layouts.
+    /// A table with four indexes: one unique on a single field, one not, one over
+    /// a pair, and one over a **nested** value — so the sweep covers single,
+    /// composite and path projection, and both key layouts.
     fn new() -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(Arc::clone(&backend)).unwrap();
@@ -95,16 +95,24 @@ impl Fixture {
             .unwrap();
         let indexes = vec![
             catalog
-                .create_index(table.id, "by_email", vec!["email".to_owned()], true)
+                .create_index(table.id, "by_email", vec![Path::field("email")], true)
                 .unwrap(),
             catalog
-                .create_index(table.id, "by_city", vec!["city".to_owned()], false)
+                .create_index(table.id, "by_city", vec![Path::field("city")], false)
                 .unwrap(),
             catalog
                 .create_index(
                     table.id,
                     "by_city_and_name",
-                    vec!["city".to_owned(), "name".to_owned()],
+                    vec![Path::field("city"), Path::field("name")],
+                    false,
+                )
+                .unwrap(),
+            catalog
+                .create_index(
+                    table.id,
+                    "by_home_city",
+                    vec![Path::parse("address.city").unwrap()],
                     false,
                 )
                 .unwrap(),
@@ -130,7 +138,7 @@ impl Fixture {
         )
     }
 
-    /// Every entry key currently in the substrate, across all three indexes.
+    /// Every entry key currently in the substrate, across all four indexes.
     fn entries(&self) -> BTreeSet<Vec<u8>> {
         let mut found = BTreeSet::new();
         for index in &self.indexes {
@@ -166,15 +174,17 @@ impl Fixture {
 
         let mut expected = BTreeSet::new();
         for (id, payload) in &records {
-            let Value::Object(fields) = decode_payload(payload).unwrap() else {
-                panic!("the workload only writes objects");
-            };
+            let record = decode_payload(payload).unwrap();
+            assert!(
+                matches!(record, Value::Object(_)),
+                "the workload only writes objects"
+            );
             for index in &self.indexes {
                 let mut values = Vec::with_capacity(index.fields.len());
-                for name in &index.fields {
+                for path in &index.fields {
                     // Absent and `none` are the same answer: there is no value to
                     // place, so the record is not in this index at all.
-                    match fields.get(name) {
+                    match walk(&record, path) {
                         Some(Value::None) | None => {
                             values.clear();
                             break;
@@ -198,6 +208,29 @@ impl Fixture {
         }
         expected
     }
+}
+
+/// The value a path reaches, written out here rather than borrowed.
+///
+/// `Path::resolve` would answer the same question, and that is exactly why it is
+/// not called: the store projects entries with it, so a sweep that also used it
+/// would compare a function against itself — the thing the module documentation
+/// says this test exists not to do.
+fn walk<'v>(record: &'v Value, path: &Path) -> Option<&'v Value> {
+    let Value::Object(fields) = record else {
+        return None;
+    };
+    let mut at = fields.get(path.root())?;
+    for step in path.steps() {
+        at = match (step, at) {
+            (Step::Field(name), Value::Object(fields)) => fields.get(name)?,
+            (Step::Index(position), Value::Array(items)) => {
+                items.get(usize::try_from(*position).ok()?)?
+            }
+            _ => return None,
+        };
+    }
+    Some(at)
 }
 
 /// The address a record claims in the unique index.
@@ -245,7 +278,7 @@ fn step(fixture: &Fixture, rolls: &mut Rolls) {
             transaction.put(address, encode_payload(&Value::Object(fields)).into_bytes());
         }
         _ => {
-            let fields = BTreeMap::from([
+            let mut fields = BTreeMap::from([
                 (
                     "name".to_owned(),
                     Value::from(format!("n{}", rolls.below(VALUES))),
@@ -256,6 +289,24 @@ fn step(fixture: &Fixture, rolls: &mut Rolls) {
                 ),
                 ("email".to_owned(), email(n, rolls)),
             ]);
+            // Sometimes nested, sometimes not, and sometimes nested but shaped
+            // wrong — so the path index sees a value, an absence, and a route
+            // that ends early, which are its three answers.
+            match rolls.below(4) {
+                0 => {}
+                1 => {
+                    fields.insert("address".to_owned(), Value::from("elsewhere"));
+                }
+                _ => {
+                    fields.insert(
+                        "address".to_owned(),
+                        Value::Object(BTreeMap::from([(
+                            "city".to_owned(),
+                            Value::from(format!("h{}", rolls.below(VALUES))),
+                        )])),
+                    );
+                }
+            }
             transaction.put(address, encode_payload(&Value::Object(fields)).into_bytes());
         }
     }

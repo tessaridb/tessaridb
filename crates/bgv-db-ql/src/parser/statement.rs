@@ -4,11 +4,10 @@ use super::Parser;
 use bgv_db_types::FieldKind;
 
 use crate::ast::{
-    Direction, ExprKind, Name, RangeExpr, RecordTarget, Select, Source, Statement, StatementKind,
-    Test,
+    Direction, ExprKind, RangeExpr, RecordTarget, Select, Source, Statement, StatementKind, Test,
 };
 use crate::error::{Error, Result};
-use crate::token::{Keyword, Punct, Spanned, Token};
+use crate::token::{Keyword, Punct, Token};
 
 impl Parser<'_> {
     pub(super) fn statement(&mut self) -> Result<Statement> {
@@ -152,9 +151,9 @@ impl Parser<'_> {
         let table = self.table_ref()?;
         self.expect_keyword(Keyword::Fields, "`FIELDS` and the fields to index")?;
 
-        let mut fields = vec![self.name()?];
+        let mut fields = vec![self.field_path()?];
         while self.eat_punct(Punct::Comma) {
-            fields.push(self.name()?);
+            fields.push(self.field_path()?);
         }
         let unique = self.eat_keyword(Keyword::Unique);
         Ok(StatementKind::DefineIndex {
@@ -268,7 +267,7 @@ impl Parser<'_> {
                 None => Source::Record(record),
             }
         } else if self.eat_keyword(Keyword::Where) {
-            let field = self.name()?;
+            let field = self.field_path()?;
             let test = if self.eat_keyword(Keyword::Like) {
                 Test::Like
             } else if self.eat_keyword(Keyword::Ilike) {
@@ -374,20 +373,5 @@ impl Parser<'_> {
                 span: start.to(self.span_behind()),
             }),
         }
-    }
-
-    /// A bare name, which is never a keyword.
-    pub(super) fn name(&mut self) -> Result<Name> {
-        if !matches!(self.peek(), Some(Token::Ident(_))) {
-            return Err(self.error_here("a name"));
-        }
-        let Some(Spanned {
-            token: Token::Ident(text),
-            span,
-        }) = self.advance()
-        else {
-            return Err(self.error_here("a name"));
-        };
-        Ok(Name { text, span })
     }
 }

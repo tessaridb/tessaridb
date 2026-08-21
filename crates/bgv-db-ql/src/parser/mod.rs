@@ -13,6 +13,7 @@
 //! read from the characters the author wrote.
 
 mod expression;
+mod path;
 mod statement;
 
 use crate::ast::Script;

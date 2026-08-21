@@ -20,7 +20,7 @@
 //!
 //! [`TableId`]: bgv_db_types::TableId
 
-use bgv_db_types::{FieldKind, RecordId, Value};
+use bgv_db_types::{FieldKind, Path, RecordId, Value};
 
 use crate::token::Span;
 
@@ -93,8 +93,8 @@ pub enum StatementKind {
         name: Name,
         /// The table it indexes.
         table: TableRef,
-        /// The fields it projects, in order.
-        fields: Vec<Name>,
+        /// The values it projects, in order. A path indexes a nested value.
+        fields: Vec<FieldPath>,
         /// Whether two records may share one entry.
         unique: bool,
         /// Whether re-defining an existing name is accepted.
@@ -242,8 +242,8 @@ pub enum Source {
     Filter {
         /// The table being read.
         table: TableRef,
-        /// The field the test applies to.
-        field: Name,
+        /// The value the test applies to, named by where it sits in the record.
+        field: FieldPath,
         /// What the test is.
         test: Test,
         /// The value tested against.
@@ -328,6 +328,20 @@ pub struct RangeExpr {
     pub end: Box<Expr>,
     /// Whether the upper bound is included: `..=` rather than `..`.
     pub inclusive: bool,
+}
+
+/// A route to a value inside a record, as written.
+///
+/// Separate from [`Name`] rather than replacing it, because the two are asked
+/// for in different positions and only one of them may be nested: a table is
+/// named, an index is named, a field *declaration* names a top-level field, and
+/// only a filter and an index's projection address a value that may sit deeper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldPath {
+    /// The route itself.
+    pub path: Path,
+    /// Where it sits in the source.
+    pub span: Span,
 }
 
 /// A name as written, with where it was written.

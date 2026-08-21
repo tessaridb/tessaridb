@@ -288,18 +288,21 @@ fn remove(
     }
 }
 
-/// The indexed fields of one record, or `None` when the record is not indexed.
+/// The indexed values of one record, or `None` when the record is not indexed.
 ///
-/// A record that is not an object has no fields to project, and a record missing
-/// one of the indexed fields has no value to place — both mean "not in this
-/// index" rather than "indexed under nothing".
+/// A record that is not an object has nothing to project, and a record where one
+/// of the indexed paths reaches nothing has no value to place — both mean "not
+/// in this index" rather than "indexed under nothing".
+///
+/// A path reaching nothing covers more ground than a missing field did: a
+/// missing intermediate, an object addressed by position, an array addressed by
+/// name. All of them are the same answer, and it is the same answer a missing
+/// top-level field has always given, which is what lets documents of differing
+/// shapes share a table without the index having an opinion about it.
 pub(crate) fn project(definition: &IndexDefinition, value: &Value) -> Option<IndexValues> {
-    let Value::Object(fields) = value else {
-        return None;
-    };
     let mut projected = Vec::with_capacity(definition.fields.len());
-    for name in &definition.fields {
-        match fields.get(name) {
+    for path in &definition.fields {
+        match path.resolve(value) {
             Some(Value::None) | None => return None,
             Some(found) => projected.push(found.clone()),
         }

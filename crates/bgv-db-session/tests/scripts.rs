@@ -1048,3 +1048,203 @@ fn a_schemafull_edge_table_still_accepts_the_endpoints_the_store_writes() {
     let found = session.run("SELECT * FROM users:1->knows;").unwrap();
     assert_eq!(found[0].records().unwrap().len(), 1);
 }
+
+/// Four people whose `address` differs in shape, so a path reaches a value in
+/// some records and nothing at all in others.
+fn people_with_addresses(session: &mut Session<'_>) {
+    session
+        .run(
+            "DEFINE TABLE people;\n\
+             CREATE people:1 = { name: 'ada', address: { city: 'Paris', zip: '75001' }, tags: ['urgent', 'old'] };\n\
+             CREATE people:2 = { name: 'grace', address: { city: 'Lyon' }, tags: ['old'] };\n\
+             CREATE people:3 = { name: 'alan', address: 'Paris' };\n\
+             CREATE people:4 = { name: 'edsger' };",
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_filter_reads_a_value_nested_inside_a_record() {
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    let found = session
+        .run("SELECT * FROM people WHERE address.city = 'Paris';")
+        .unwrap();
+    let records = found[0].records().unwrap();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].0, RecordId::Int(1));
+}
+
+#[test]
+fn a_filter_reads_an_element_of_an_array() {
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    let first = session
+        .run("SELECT * FROM people WHERE tags[0] = 'urgent';")
+        .unwrap();
+    assert_eq!(first[0].records().unwrap().len(), 1);
+
+    // Position, not membership. `people:2` holds `'old'` too, at position 0.
+    let second = session
+        .run("SELECT * FROM people WHERE tags[1] = 'old';")
+        .unwrap();
+    let records = second[0].records().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].0, RecordId::Int(1));
+}
+
+#[test]
+fn every_way_a_route_ends_early_matches_nothing_rather_than_failing() {
+    // A document store whose filter refused documents of a different shape would
+    // be refusing the thing it exists to hold. Each of these reaches nothing for
+    // a different reason, and all of them answer the same way.
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    for filter in [
+        // No such root.
+        "postcode = 'x'",
+        // No such field below one that exists.
+        "address.street = 'x'",
+        // A route through a string: `people:3` holds `address` as text.
+        "address.city.first = 'x'",
+        // An object addressed by position.
+        "address[0] = 'x'",
+        // Past the end of an array.
+        "tags[9] = 'old'",
+        // An array addressed by name.
+        "tags.first = 'old'",
+    ] {
+        let found = session
+            .run(&format!("SELECT * FROM people WHERE {filter};"))
+            .unwrap();
+        assert!(
+            found[0].records().unwrap().is_empty(),
+            "{filter} found records"
+        );
+    }
+}
+
+#[test]
+fn an_index_on_a_path_answers_the_filter_it_projects() {
+    use bgv_db_session::AccessPath;
+
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    let scanned = session
+        .run("SELECT * FROM people WHERE address.city = 'Paris';")
+        .unwrap();
+    assert_eq!(scanned[0].path(), Some(AccessPath::Scan));
+    let by_scan: Vec<_> = scanned[0].records().unwrap().to_vec();
+
+    // The index is declared over rows that already exist, so it has to build
+    // entries for them — including for the two records the path does not reach.
+    session
+        .run("DEFINE INDEX by_home_city ON people FIELDS address.city;")
+        .unwrap();
+
+    let indexed = session
+        .run("SELECT * FROM people WHERE address.city = 'Paris';")
+        .unwrap();
+    assert_eq!(indexed[0].path(), Some(AccessPath::Index));
+
+    // Record for record, not by count: a plan returning the right number of the
+    // wrong rows is exactly what a count would miss.
+    assert_eq!(indexed[0].records().unwrap(), by_scan.as_slice());
+}
+
+#[test]
+fn an_index_on_a_path_serves_a_prefix_pattern_as_a_range() {
+    use bgv_db_session::AccessPath;
+
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+    session
+        .run("DEFINE INDEX by_home_city ON people FIELDS address.city;")
+        .unwrap();
+
+    // Nothing about the prefix rule depended on the value being top-level: the
+    // index stores order-encoded values whatever route produced them.
+    let found = session
+        .run("SELECT * FROM people WHERE address.city LIKE 'Par%';")
+        .unwrap();
+    assert_eq!(found[0].path(), Some(AccessPath::Index));
+    let records = found[0].records().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].0, RecordId::Int(1));
+}
+
+#[test]
+fn an_index_answers_the_route_it_projects_and_no_other() {
+    use bgv_db_session::AccessPath;
+
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+    session
+        .run("DEFINE INDEX by_home_city ON people FIELDS address.city;")
+        .unwrap();
+
+    // An index on `address.city` is not an index on `address`, for the same
+    // reason an index on `(a, b)` is not one on `a`.
+    let whole = session
+        .run("SELECT * FROM people WHERE address = 'Paris';")
+        .unwrap();
+    assert_eq!(whole[0].path(), Some(AccessPath::Scan));
+    assert_eq!(whole[0].records().unwrap().len(), 1);
+    assert_eq!(whole[0].records().unwrap()[0].0, RecordId::Int(3));
+}
+
+#[test]
+fn a_composite_index_may_mix_a_route_and_a_plain_field() {
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+    session
+        .run("DEFINE INDEX by_city_and_name ON people FIELDS address.city, name;")
+        .unwrap();
+
+    // A composite serves neither half alone, so this stays a scan — the
+    // assertion is that defining it over existing rows succeeded and the read
+    // still answers correctly.
+    let found = session
+        .run("SELECT * FROM people WHERE address.city = 'Lyon';")
+        .unwrap();
+    let records = found[0].records().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].0, RecordId::Int(2));
+}
+
+#[test]
+fn a_route_is_not_read_where_a_table_may_stand() {
+    // `.` already qualifies a table by its database. If the path rule were read
+    // in the `FROM` position, `orders.people` would start meaning "the field
+    // `people` inside `orders`" and every qualified read in every script would
+    // change meaning at once.
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    let found = session.run("SELECT * FROM orders.people;").unwrap();
+    assert_eq!(found[0].records().unwrap().len(), 4);
+}
+
+#[test]
+fn a_position_in_a_route_is_a_whole_number() {
+    let store = store();
+    let mut session = ready(&store);
+    people_with_addresses(&mut session);
+
+    for filter in ["tags[-1] = 'old'", "tags['a'] = 'old'", "tags[] = 'old'"] {
+        let refused = session.run(&format!("SELECT * FROM people WHERE {filter};"));
+        assert!(refused.is_err(), "{filter} was accepted");
+    }
+}
