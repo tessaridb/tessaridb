@@ -129,6 +129,69 @@ impl<'a> Transaction<'a> {
         })
     }
 
+    /// Every live record of one table, as of this transaction's snapshot.
+    ///
+    /// Records come back in key order, with this transaction's own uncommitted
+    /// writes folded in, and deleted records left out — a tombstone is a version
+    /// like any other on disk, and a caller asking what is in a table does not
+    /// want to hear about the rows that are not.
+    ///
+    /// **This reads the whole table.** It exists because the catalog is a table
+    /// and the catalog is small; a scan that pages, and that a query plan can
+    /// stop early, is a different piece of work and is not this one. Calling it
+    /// on a table of unbounded size is a mistake this signature cannot prevent
+    /// and this sentence is the warning.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or stored bytes cannot be
+    /// decoded.
+    pub fn scan_table(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+    ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        let prefix = RecordKey::table_prefix(namespace, database, table);
+        let request = ScanRequest {
+            keyspace: RecordKey::keyspace(),
+            range: KeyRange::prefix(&prefix),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+
+        // Versions of one record are adjacent and sort newest-first, so the
+        // first version at or before the snapshot is the visible one and every
+        // later entry for that record is an older version to walk past.
+        let mut live: BTreeMap<RecordId, RecordValue> = BTreeMap::new();
+        let mut resolved: Option<RecordId> = None;
+        for (key, value) in self.store.backend().scan(&request)? {
+            let decoded = RecordKey::decode(key.as_slice())?;
+            if decoded.version > self.snapshot || resolved.as_ref() == Some(&decoded.id) {
+                continue;
+            }
+            resolved = Some(decoded.id.clone());
+            live.insert(decoded.id, RecordValue::decode(value.as_slice())?);
+        }
+
+        for (address, value) in &self.writes {
+            if address.namespace == namespace
+                && address.database == database
+                && address.table == table
+            {
+                live.insert(address.id.clone(), value.clone());
+            }
+        }
+
+        Ok(live
+            .into_iter()
+            .filter_map(|(id, value)| match value {
+                RecordValue::Present(payload) => Some((id, payload)),
+                RecordValue::Tombstone => None,
+            })
+            .collect())
+    }
+
     /// Buffer a write. Nothing reaches the store until commit.
     pub fn put(&mut self, address: RecordAddress, payload: Vec<u8>) {
         self.writes.insert(address, RecordValue::Present(payload));
@@ -179,11 +242,15 @@ impl<'a> Transaction<'a> {
             // that a replica's apply does not. Everything after this line is the
             // shared path.
             let commit_at = Sequence::new(tail.get().saturating_add(1));
-            match self
-                .store
-                .backend()
-                .apply(crate::log::apply_batch(commit_at, &record))
-            {
+            // Index entries are derived here rather than carried in the record,
+            // and they are derived inside the loop because they depend on the
+            // committed state this attempt is building on (see `crate::index`).
+            let batch = crate::index::maintain(
+                self.store,
+                &record,
+                crate::log::apply_batch(commit_at, &record),
+            )?;
+            match self.store.backend().apply(batch) {
                 Ok(()) => return Ok(commit_at),
                 // The position moved between reading it and applying, so the
                 // conflict check above was made against a stale state and the

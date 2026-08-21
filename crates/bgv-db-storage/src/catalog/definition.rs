@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use bgv_db_types::{DatabaseId, NamespaceId, Number, TableId, Value};
+use bgv_db_types::{DatabaseId, IndexId, NamespaceId, Number, TableId, Value};
 
 use crate::error::{Error, Result};
 
@@ -20,6 +20,9 @@ const FIELD_ID: &str = "id";
 const FIELD_NAME: &str = "name";
 const FIELD_NAMESPACE: &str = "namespace";
 const FIELD_DATABASE: &str = "database";
+const FIELD_TABLE: &str = "table";
+const FIELD_FIELDS: &str = "fields";
+const FIELD_UNIQUE: &str = "unique";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +134,98 @@ impl TableDefinition {
             namespace: NamespaceId::new(field_id(fields, FIELD_NAMESPACE, "table")?),
             database: DatabaseId::new(field_id(fields, FIELD_DATABASE, "table")?),
             name: field_name(fields, "table")?,
+        })
+    }
+}
+
+/// An index on a table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexDefinition {
+    /// The index's id, which every entry's key carries.
+    pub id: IndexId,
+    /// The namespace it belongs to.
+    pub namespace: NamespaceId,
+    /// The database it belongs to.
+    pub database: DatabaseId,
+    /// The table it is on.
+    pub table: TableId,
+    /// Its name, unique within that table.
+    pub name: String,
+    /// The fields it indexes, in the order their values are encoded.
+    ///
+    /// Order is part of the index's identity: an index on `(a, b)` answers a
+    /// query about `a` and one on `(b, a)` does not.
+    pub fields: Vec<String>,
+    /// Whether a value may appear more than once.
+    ///
+    /// A unique index enforces it through the key layout — its entries carry no
+    /// record id, so a second record with the same value writes the same key.
+    pub unique: bool,
+}
+
+impl IndexDefinition {
+    /// The value written to the catalog.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        Value::Object(BTreeMap::from([
+            (FIELD_ID.to_owned(), number(self.id.get())),
+            (FIELD_NAMESPACE.to_owned(), number(self.namespace.get())),
+            (FIELD_DATABASE.to_owned(), number(self.database.get())),
+            (FIELD_TABLE.to_owned(), number(self.table.get())),
+            (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
+            (
+                FIELD_FIELDS.to_owned(),
+                Value::Array(
+                    self.fields
+                        .iter()
+                        .map(|field| Value::from(field.as_str()))
+                        .collect(),
+                ),
+            ),
+            (FIELD_UNIQUE.to_owned(), Value::Bool(self.unique)),
+        ]))
+    }
+
+    /// Read a definition back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when a field is missing or holds the
+    /// wrong type.
+    pub fn from_value(value: &Value) -> Result<Self> {
+        let fields = object(value, "index")?;
+        let malformed = |field: &'static str, found: &'static str| Error::CatalogMalformed {
+            entity: "index",
+            field,
+            found,
+        };
+        let Some(Value::Array(names)) = fields.get(FIELD_FIELDS) else {
+            return Err(malformed(
+                FIELD_FIELDS,
+                fields.get(FIELD_FIELDS).map_or("none", Value::type_name),
+            ));
+        };
+        let indexed = names
+            .iter()
+            .map(|name| match name {
+                Value::String(text) => Ok(text.clone()),
+                other => Err(malformed(FIELD_FIELDS, other.type_name())),
+            })
+            .collect::<Result<Vec<String>>>()?;
+        let Some(Value::Bool(unique)) = fields.get(FIELD_UNIQUE) else {
+            return Err(malformed(
+                FIELD_UNIQUE,
+                fields.get(FIELD_UNIQUE).map_or("none", Value::type_name),
+            ));
+        };
+        Ok(Self {
+            id: IndexId::new(field_id(fields, FIELD_ID, "index")?),
+            namespace: NamespaceId::new(field_id(fields, FIELD_NAMESPACE, "index")?),
+            database: DatabaseId::new(field_id(fields, FIELD_DATABASE, "index")?),
+            table: TableId::new(field_id(fields, FIELD_TABLE, "index")?),
+            name: field_name(fields, "index")?,
+            fields: indexed,
+            unique: *unique,
         })
     }
 }

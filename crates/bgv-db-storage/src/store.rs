@@ -130,7 +130,8 @@ impl Store {
                 found: at,
             });
         }
-        self.backend.apply(crate::log::apply_batch(at, record))?;
+        let batch = crate::index::maintain(self, record, crate::log::apply_batch(at, record))?;
+        self.backend.apply(batch)?;
         Ok(())
     }
 

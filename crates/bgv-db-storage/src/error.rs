@@ -71,6 +71,31 @@ pub enum Error {
         qualified: String,
     },
 
+    /// An index was declared over no fields.
+    ///
+    /// Refused rather than stored, because an index keyed by nothing is not a
+    /// degenerate index — it is one entry for the whole table, and a unique one
+    /// would admit a single record and refuse every other with a conflict that
+    /// names no field.
+    #[error("index {name} declares no fields")]
+    EmptyIndex {
+        /// The name the index was to be created under.
+        name: String,
+    },
+
+    /// A unique index already holds this value for a different record.
+    ///
+    /// Not a write conflict: no concurrent transaction is involved, and retrying
+    /// the same write cannot succeed. The caller's data violates a constraint it
+    /// declared.
+    #[error("unique index {index} already holds that value; record {id} was refused")]
+    UniqueViolation {
+        /// The index that refused the write.
+        index: String,
+        /// The record that was being written.
+        id: RecordId,
+    },
+
     /// The parent a catalog entry was to be created under does not exist.
     #[error("no such {entity}: {id}")]
     NoSuchParent {
@@ -125,6 +150,8 @@ impl Error {
             Self::LogGap { .. }
             | Self::NameTaken { .. }
             | Self::NoSuchParent { .. }
+            | Self::EmptyIndex { .. }
+            | Self::UniqueViolation { .. }
             | Self::IdSpaceExhausted { .. } => ErrorCategory::Validation,
             Self::CatalogMalformed { .. } => ErrorCategory::Corruption,
             Self::Kv(inner) => inner.category(),

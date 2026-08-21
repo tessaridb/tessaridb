@@ -23,13 +23,14 @@
 
 mod catalog;
 mod error;
+mod index;
 mod log;
 mod store;
 mod transaction;
 
 pub use catalog::{
-    Catalog, DatabaseDefinition, NamespaceDefinition, SYSTEM_DATABASE, SYSTEM_NAMESPACE,
-    TableDefinition,
+    Catalog, DatabaseDefinition, IndexDefinition, NamespaceDefinition, SYSTEM_DATABASE,
+    SYSTEM_NAMESPACE, TableDefinition,
 };
 pub use error::{Error, Result};
 pub use store::Store;

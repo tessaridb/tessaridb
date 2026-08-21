@@ -38,6 +38,9 @@ pub const NAMES: TableId = TableId::new(4);
 /// The id counters, keyed by the level they hand out ids for.
 pub const ALLOCATORS: TableId = TableId::new(5);
 
+/// Index definitions, keyed by index id.
+pub const INDEXES: TableId = TableId::new(6);
+
 /// The first id handed out at any level. Zero belongs to the system.
 pub const FIRST_ID: u32 = 1;
 
@@ -56,6 +59,8 @@ pub enum Level {
     Database,
     /// Tables.
     Table,
+    /// Indexes.
+    Index,
 }
 
 impl Level {
@@ -66,6 +71,7 @@ impl Level {
             Self::Namespace => "namespace",
             Self::Database => "database",
             Self::Table => "table",
+            Self::Index => "index",
         }
     }
 
@@ -80,6 +86,7 @@ impl Level {
             Self::Namespace => "ns",
             Self::Database => "db",
             Self::Table => "tb",
+            Self::Index => "ix",
         }
     }
 }
@@ -97,7 +104,7 @@ mod tests {
 
     #[test]
     fn every_system_table_has_a_distinct_id() {
-        let ids = [NAMESPACES, DATABASES, TABLES, NAMES, ALLOCATORS];
+        let ids = [NAMESPACES, DATABASES, TABLES, NAMES, ALLOCATORS, INDEXES];
         for (index, table) in ids.iter().enumerate() {
             assert!(
                 !ids[index.saturating_add(1)..].contains(table),
@@ -108,7 +115,12 @@ mod tests {
 
     #[test]
     fn levels_have_distinct_counters_and_tags() {
-        let levels = [Level::Namespace, Level::Database, Level::Table];
+        let levels = [
+            Level::Namespace,
+            Level::Database,
+            Level::Table,
+            Level::Index,
+        ];
         for (index, level) in levels.iter().enumerate() {
             for other in &levels[index.saturating_add(1)..] {
                 assert_ne!(level.counter(), other.counter());

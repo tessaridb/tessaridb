@@ -262,3 +262,147 @@ fn a_reader_at_an_older_snapshot_does_not_see_a_table_defined_after_it_began() {
         "the definition was written after this snapshot"
     );
 }
+
+#[test]
+fn an_index_is_created_on_a_table_and_found_by_it() {
+    let (_backend, store) = store();
+    let (_, _, table) = create_tree(&store, ("prod", "orders", "users"));
+    let table = bgv_db_types::TableId::new(table);
+
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let by_email = catalog
+        .create_index(table, "by_email", vec!["email".to_owned()], true)
+        .unwrap();
+    let by_name = catalog
+        .create_index(
+            table,
+            "by_name",
+            vec!["last".to_owned(), "first".to_owned()],
+            false,
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+
+    let mut transaction = store.begin().unwrap();
+    let catalog = Catalog::new(&mut transaction);
+    assert_eq!(catalog.index(by_email.id).unwrap(), Some(by_email.clone()));
+
+    let mut found = catalog.indexes_on(table).unwrap();
+    found.sort_by(|left, right| left.name.cmp(&right.name));
+    assert_eq!(found, vec![by_email, by_name]);
+    assert!(
+        catalog
+            .indexes_on(bgv_db_types::TableId::new(999))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn an_index_over_no_fields_is_refused() {
+    // One entry for the whole table is not a degenerate index; a unique one
+    // would admit a single record and refuse every other.
+    let (_backend, store) = store();
+    let (_, _, table) = create_tree(&store, ("prod", "orders", "users"));
+
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let error = catalog
+        .create_index(bgv_db_types::TableId::new(table), "empty", vec![], false)
+        .unwrap_err();
+    assert!(matches!(error, Error::EmptyIndex { .. }), "{error}");
+}
+
+#[test]
+fn two_indexes_on_one_table_cannot_share_a_name_but_two_tables_can() {
+    let (_backend, store) = store();
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").unwrap();
+    let database = catalog.create_database(namespace.id, "orders").unwrap();
+    let users = catalog
+        .create_table(namespace.id, database.id, "users")
+        .unwrap();
+    let carts = catalog
+        .create_table(namespace.id, database.id, "carts")
+        .unwrap();
+
+    catalog
+        .create_index(users.id, "by_id", vec!["id".to_owned()], true)
+        .unwrap();
+    let error = catalog
+        .create_index(users.id, "by_id", vec!["other".to_owned()], false)
+        .unwrap_err();
+    assert!(matches!(error, Error::NameTaken { .. }), "{error}");
+
+    // The same name on another table is a different index.
+    catalog
+        .create_index(carts.id, "by_id", vec!["id".to_owned()], true)
+        .unwrap();
+    transaction.commit().unwrap();
+}
+
+#[test]
+fn a_scan_returns_live_records_including_this_transactions_own_writes() {
+    let (_backend, store) = store();
+    let (namespace, database, table) = create_tree(&store, ("prod", "orders", "users"));
+    let namespace = bgv_db_types::NamespaceId::new(namespace);
+    let database = bgv_db_types::DatabaseId::new(database);
+    let table = bgv_db_types::TableId::new(table);
+    let at = |id: &str| RecordAddress::new(namespace, database, table, RecordId::from(id));
+
+    let mut transaction = store.begin().unwrap();
+    transaction.put(at("a"), encode_payload(&Value::from(1_i64)).into_bytes());
+    transaction.put(at("b"), encode_payload(&Value::from(2_i64)).into_bytes());
+    transaction.commit().unwrap();
+
+    let mut transaction = store.begin().unwrap();
+    // A newer version replaces the older one, a delete removes the record from
+    // the answer, and an uncommitted write is visible to its own transaction.
+    transaction.put(at("a"), encode_payload(&Value::from(11_i64)).into_bytes());
+    transaction.delete(at("b"));
+    transaction.put(at("c"), encode_payload(&Value::from(3_i64)).into_bytes());
+
+    let live = transaction.scan_table(namespace, database, table).unwrap();
+    let seen: Vec<(String, Value)> = live
+        .into_iter()
+        .map(|(id, payload)| (id.to_string(), decode_payload(&payload).unwrap()))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("a".to_owned(), Value::from(11_i64)),
+            ("c".to_owned(), Value::from(3_i64)),
+        ]
+    );
+}
+
+#[test]
+fn a_scan_at_an_older_snapshot_does_not_see_later_writes() {
+    let (_backend, store) = store();
+    let (namespace, database, table) = create_tree(&store, ("prod", "orders", "users"));
+    let namespace = bgv_db_types::NamespaceId::new(namespace);
+    let database = bgv_db_types::DatabaseId::new(database);
+    let table = bgv_db_types::TableId::new(table);
+    let at = |id: &str| RecordAddress::new(namespace, database, table, RecordId::from(id));
+
+    let mut first = store.begin().unwrap();
+    first.put(at("a"), encode_payload(&Value::from(1_i64)).into_bytes());
+    first.commit().unwrap();
+
+    let reader = store.begin().unwrap();
+
+    let mut later = store.begin().unwrap();
+    later.put(at("a"), encode_payload(&Value::from(2_i64)).into_bytes());
+    later.put(at("b"), encode_payload(&Value::from(9_i64)).into_bytes());
+    later.commit().unwrap();
+
+    let live = reader.scan_table(namespace, database, table).unwrap();
+    assert_eq!(live.len(), 1, "the reader began before the second commit");
+    assert_eq!(
+        decode_payload(&live[0].1).unwrap(),
+        Value::from(1_i64),
+        "and sees the version that was current then"
+    );
+}
