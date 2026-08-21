@@ -160,11 +160,40 @@ DEFINE FIELD holder ON accounts TYPE string REQUIRED;
 DEFINE ANALYZER simple FILTERS lowercase, ascii;
 DEFINE FIELD body ON notes TYPE string ANALYZER simple;
 
+DEFINE USER root ROLE owner PASSWORD 'a long one';
+DEFINE USER ada ON prod.orders ROLE editor PASSWORD 'another';
+DEFINE USER grace ON prod.orders ROLE viewer PASSWORD 'a third';
+
+DROP USER ada;
 DROP FIELD opened_at ON accounts;
 DROP INDEX by_email ON users;
 DROP TABLE users;
 DROP SPACE sessions;
 ```
+
+**A store with no users is open**, and declaring the first one closes it —
+requiring a signin against an empty store locks everybody out of it with no way
+in to fix that. Once closed it stays closed: `DEFINE USER` is not an exception an
+anonymous session keeps, or it would be a back door anyone could walk through by
+declaring themselves an owner, and `DROP USER` is refused for the same reason. A
+lost owner password is therefore a restore from backup rather than a recovery.
+
+There are three roles and no grant matrix. A `viewer` reads; an `editor` also
+writes records and defines structure; an `owner` also declares users. `USE` and
+the transaction verbs count as reading, because a viewer that cannot say which
+database it is reading cannot read.
+
+`ON prod.orders` scopes a user to one namespace and database, and a scoped user
+cannot reach another — not through `USE`, and not by naming a database directly
+in a statement. The refusal names the tenancy and never says whether the table or
+the record exists, because a refusal that leaks that has answered the question it
+declined. A user declared without `ON` belongs to the store.
+
+**Signing in is not a statement.** A script is text a caller composes, logs,
+pastes into an issue and sends through a proxy, and a password in one is a
+password in all of those. It is a method on a session, and over HTTP an
+`Authorization: Basic` header. What reaches the catalog — and therefore the log,
+and therefore every replica and every backup — is an Argon2 hash.
 
 An index projects one value or several, in order; without `UNIQUE` two records
 may share an entry. Each is a path (§3), so an index may project a value nested
@@ -929,7 +958,10 @@ Named here rather than merely missing, so each absence reads as a decision:
 | `||` as a second spelling for concatenation | `string::concat` says it, and a second spelling for one thing is a decision to take once rather than by accident |
 | an ordered range read from `<` and `>` | the index can serve it; it needs a bounded scan on the storage layer and an equivalence test of its own. Reported as a scan until then, never served as a guess |
 | three-valued logic | §5 — comparison answers true or false, and `= NONE` / `= NULL` say what `IS NULL` would |
-| permissions in the language | there is no session identity yet |
+| a grant matrix, per-table permissions, row-level security | the three roles cover who may read, who may write, and who may declare users. A matrix over verbs and tables needs a `GRANT` statement, a revocation story and a place to put a per-object list — a real feature, and a different one |
+| tokens, or a session that outlives a request | a token is a second credential with its own lifetime, revocation and storage |
+| `SIGNIN` as a statement | deliberate, and stated above rather than missing |
+| rate-limiting a signin | Argon2 is slow on purpose, which is most of the defence; a lockout policy has its own decisions about who it locks out |
 | `ASSERT` | it needs an expression **evaluated where validation lives**, and validation lives on the store's apply path so that a replica reaches the same verdict without anything being sent. The store sits below the language and cannot parse or evaluate bgvQL. The fix has a shape — a guard the store calls and the session implements — and inverting the layering is not it. |
 | changing a declared type in place | `DROP FIELD` then `DEFINE FIELD` re-checks every row through the one path; a migration primitive is its own work |
 

@@ -2790,3 +2790,225 @@ fn ordering_by_an_expression_works_for_anything_computed() {
         vec![RecordId::Int(1)]
     );
 }
+
+// ------------------------------------------------------------------ identity
+
+/// A store with one user of each role, and a table to try them on.
+///
+/// The bootstrap is the real one: the **first** user is declared while the store
+/// is still open, and every user after it is declared by signing in as that
+/// first one. There is no other way in, which is the point of the rule.
+fn guarded(session: &mut Session<'_>) {
+    session
+        .run(
+            "DEFINE TABLE notes;\n\
+             CREATE notes:1 = { body: 'written while open' };\n\
+             DEFINE USER root ROLE owner PASSWORD 'root secret';",
+        )
+        .unwrap();
+    session.sign_in("root", "root secret").unwrap();
+    session
+        .run(
+            "DEFINE USER ada ON prod.orders ROLE editor PASSWORD 'correct horse';\n\
+             DEFINE USER grace ON prod.orders ROLE viewer PASSWORD 'watch only';",
+        )
+        .unwrap();
+    session.sign_out();
+}
+
+#[test]
+fn a_store_with_no_users_is_open_and_the_first_one_closes_it() {
+    // Requiring a signin against an empty store locks everybody out of it with
+    // no way in to fix that.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE TABLE notes; CREATE notes:1 = { body: 'anyone' };")
+        .unwrap();
+
+    session
+        .run("DEFINE USER root ROLE owner PASSWORD 'root secret';")
+        .unwrap();
+
+    let error = session.run("SELECT * FROM notes;").unwrap_err();
+    assert!(matches!(error, Error::NotSignedIn { .. }), "{error}");
+}
+
+#[test]
+fn a_signin_matches_the_password_and_says_nothing_about_which_half_was_wrong() {
+    let store = store();
+    let mut session = ready(&store);
+    guarded(&mut session);
+
+    // One message for a wrong name and a wrong password alike: telling them
+    // apart tells an attacker which half to keep guessing at.
+    let wrong_password = session.sign_in("ada", "incorrect horse").unwrap_err();
+    let wrong_name = session.sign_in("nobody", "correct horse").unwrap_err();
+    assert_eq!(wrong_password.to_string(), wrong_name.to_string());
+    assert!(matches!(wrong_password, Error::SignInRefused));
+
+    session.sign_in("ada", "correct horse").unwrap();
+    session.run("SELECT * FROM notes;").unwrap();
+}
+
+#[test]
+fn a_role_decides_what_a_signed_in_session_may_do() {
+    let store = store();
+    let mut session = ready(&store);
+    guarded(&mut session);
+
+    // A viewer reads and does nothing else.
+    session.sign_in("grace", "watch only").unwrap();
+    session.run("SELECT * FROM notes;").unwrap();
+    for refused in [
+        "CREATE notes:2 = { body: 'no' };",
+        "UPDATE notes:1 = { body: 'no' };",
+        "DELETE notes:1;",
+        "DEFINE TABLE more;",
+        "DROP TABLE notes;",
+    ] {
+        let error = session.run(refused).unwrap_err();
+        assert!(
+            matches!(error, Error::RoleForbids { role: "viewer", .. }),
+            "{refused} gave {error}"
+        );
+    }
+
+    // An editor writes and defines structure, and may not declare users.
+    session.sign_in("ada", "correct horse").unwrap();
+    session.run("CREATE notes:2 = { body: 'yes' };").unwrap();
+    session.run("DEFINE TABLE more;").unwrap();
+    let error = session
+        .run("DEFINE USER intruder ROLE owner PASSWORD 'x';")
+        .unwrap_err();
+    assert!(
+        matches!(error, Error::RoleForbids { role: "editor", .. }),
+        "{error}"
+    );
+
+    // An owner does all of it.
+    session.sign_in("root", "root secret").unwrap();
+    session
+        .run("DEFINE USER another ROLE viewer PASSWORD 'y';")
+        .unwrap();
+}
+
+#[test]
+fn signing_in_again_replaces_the_identity_rather_than_adding_to_it() {
+    let store = store();
+    let mut session = ready(&store);
+    guarded(&mut session);
+
+    session.sign_in("root", "root secret").unwrap();
+    session.sign_in("grace", "watch only").unwrap();
+    // A session is one conversation with one user at a time, so the owner's
+    // rights do not survive becoming a viewer.
+    assert!(session.run("DEFINE TABLE more;").is_err());
+
+    session.sign_out();
+    assert!(matches!(
+        session.run("SELECT * FROM notes;").unwrap_err(),
+        Error::NotSignedIn { .. }
+    ));
+}
+
+#[test]
+fn a_scoped_user_cannot_reach_another_tenancy() {
+    let store = store();
+    let mut session = ready(&store);
+    guarded(&mut session);
+    session.sign_in("root", "root secret").unwrap();
+    session.run("DEFINE NAMESPACE other;").unwrap();
+
+    session.sign_in("ada", "correct horse").unwrap();
+    let error = session.run("USE NAMESPACE other;").unwrap_err();
+    // The refusal names the tenancy and not a record: one that says whether a
+    // record exists has answered the question it declined.
+    assert!(matches!(error, Error::OutsideTenancy { .. }), "{error}");
+}
+
+#[test]
+fn what_is_stored_is_a_hash_and_no_plaintext_reaches_the_log() {
+    use bgv_db_types::Sequence;
+
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE USER ada ROLE owner PASSWORD 'correct horse';")
+        .unwrap();
+
+    // The log is what a replica and a backup receive, so a plaintext there is a
+    // plaintext everywhere.
+    for (_, record) in store.log_records(Sequence::ZERO, 4096).unwrap() {
+        let bytes = format!("{record:?}");
+        assert!(
+            !bytes.contains("correct horse"),
+            "the log carries the password"
+        );
+    }
+}
+
+#[test]
+fn a_scoped_user_cannot_reach_another_database_by_naming_it() {
+    let store = store();
+    let mut session = ready(&store);
+    guarded(&mut session);
+    session.sign_in("root", "root secret").unwrap();
+    session
+        .run(
+            "DEFINE DATABASE archive;\n\
+             USE DATABASE archive;\n\
+             DEFINE TABLE notes;\n\
+             CREATE notes:1 = { body: 'another tenancy' };",
+        )
+        .unwrap();
+
+    session.sign_in("ada", "correct horse").unwrap();
+    session
+        .run("USE NAMESPACE prod; USE DATABASE orders;")
+        .unwrap();
+    // Naming the database directly never touches `USE`, so a check that only
+    // guarded `USE` would have guarded the front door of a room with two.
+    let error = session.run("SELECT * FROM archive.notes;").unwrap_err();
+    assert!(matches!(error, Error::OutsideTenancy { .. }), "{error}");
+    // It names the tenancy the author wrote, which leaks nothing they did not
+    // already type — and says nothing about whether that table or record exists.
+    let said = error.to_string();
+    assert!(said.contains("archive"), "{said}");
+    assert!(!said.contains("notes"), "{said}");
+}
+
+#[test]
+fn the_system_namespace_has_no_name_and_so_no_statement_can_reach_it() {
+    // Q-18 and Q-26 asked what stops a caller writing into the catalog's own
+    // tenancy. The answer is not a guard: namespace zero never claims a name and
+    // ids are handed out from one, so no name resolves to it. That is a property
+    // of the allocator, which is why it is asserted rather than assumed — a
+    // future change to `create_namespace` could take it away silently.
+    let store = store();
+    let mut session = ready(&store);
+    for attempt in ["USE NAMESPACE system;", "USE NAMESPACE catalog;"] {
+        session.run(attempt).unwrap();
+        let error = session.run("DEFINE TABLE intrusion;").unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Unknown {
+                    entity: "namespace",
+                    ..
+                }
+            ),
+            "{attempt} gave {error}"
+        );
+    }
+
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = bgv_db_storage::Catalog::new(&mut transaction);
+    let first = catalog.create_namespace("the very first").unwrap();
+    assert_ne!(
+        first.id.get(),
+        0,
+        "the first namespace took the catalog's own id"
+    );
+    transaction.rollback();
+}

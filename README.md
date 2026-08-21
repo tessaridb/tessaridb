@@ -68,8 +68,26 @@ language expressed in URLs, and it could say less than the one above. **The
 language is the API.** Each request is its own session and each answer carries
 the access path that served it, so a scan is visible rather than folklore.
 
-> **There is no authentication yet, so every request can do everything.** Bind it
-> to a loopback address or put something in front of it until there is.
+A store with **no users declared is open** and runs anything, which is what keeps
+an empty one usable. The first `DEFINE USER` closes it, and from then on a
+request signs in with `Authorization: Basic`:
+
+```bash
+curl -s localhost:8080/script -u root:'a long one' --data-binary '
+  USE NAMESPACE prod DATABASE orders;
+  SELECT email FROM users LIMIT 2;'
+```
+
+A closed store answers `401` to a request it cannot place and `403` to one whose
+role forbids the statement — "I do not know you" and "I know you and no" are
+different answers, and a client that cannot tell them apart retries a signin that
+will never help.
+
+> **Basic over plaintext is plaintext.** The password is in a header anything on
+> the path can read, and this node terminates no TLS. Bind it to a loopback
+> address or put a reverse proxy in front of it. Note too that a store cannot be
+> re-opened from outside by dropping its last user — a lost owner password is a
+> restore from backup, not a recovery.
 
 
 Following what changes is a cursor over the same log that carries replication,

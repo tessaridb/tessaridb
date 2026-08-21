@@ -27,6 +27,7 @@ bgv-db-http = { path = "crates/bgv-db-http" }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 rust_decimal = { version = "1", default-features = false, features = ["std"] }
+argon2 = { version = "0.5", features = ["std"] }
 
 proptest = "1"
 

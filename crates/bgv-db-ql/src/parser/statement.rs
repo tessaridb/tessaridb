@@ -136,8 +136,9 @@ impl Parser<'_> {
             Some(Keyword::Index) => self.define_index(),
             Some(Keyword::Field) => self.define_field(),
             Some(Keyword::Analyzer) => self.define_analyzer(),
+            Some(Keyword::User) => self.define_user(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `INDEX`, `FIELD` or `ANALYZER`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `INDEX`, `FIELD`, `ANALYZER` or `USER`",
             )),
         }
     }
@@ -174,6 +175,32 @@ impl Parser<'_> {
             fields,
             unique,
             search,
+            if_not_exists,
+        })
+    }
+
+    /// `DEFINE USER ada ON prod.orders ROLE editor PASSWORD '…'`
+    ///
+    /// `ON` names a tenancy the way `orders.users` names a table; without it the
+    /// user belongs to the store and is its root.
+    fn define_user(&mut self) -> Result<StatementKind> {
+        self.advance();
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        let scope = if self.eat_keyword(Keyword::On) {
+            Some(self.table_ref()?)
+        } else {
+            None
+        };
+        self.expect_keyword(Keyword::Role, "`ROLE` and what the user may do")?;
+        let role = self.name()?;
+        self.expect_keyword(Keyword::Password, "`PASSWORD` and the credential")?;
+        let (password, _) = self.text("the password, as text")?;
+        Ok(StatementKind::DefineUser {
+            name,
+            scope,
+            role,
+            password,
             if_not_exists,
         })
     }
@@ -280,6 +307,10 @@ impl Parser<'_> {
                 Ok(StatementKind::DropTable {
                     table: self.table_ref()?,
                 })
+            }
+            Some(Keyword::User) => {
+                self.advance();
+                Ok(StatementKind::DropUser { name: self.name()? })
             }
             Some(Keyword::Index) => {
                 self.advance();

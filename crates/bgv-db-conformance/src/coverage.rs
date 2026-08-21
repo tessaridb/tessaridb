@@ -28,6 +28,8 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DefineIndex { .. } => "DEFINE INDEX",
         StatementKind::DefineField { .. } => "DEFINE FIELD",
         StatementKind::DefineAnalyzer { .. } => "DEFINE ANALYZER",
+        StatementKind::DefineUser { .. } => "DEFINE USER",
+        StatementKind::DropUser { .. } => "DROP USER",
         StatementKind::DropTable { .. } => "DROP TABLE",
         StatementKind::DropIndex { .. } => "DROP INDEX",
         StatementKind::DropField { .. } => "DROP FIELD",
@@ -59,6 +61,8 @@ pub const FORMS: &[&str] = &[
     "DEFINE INDEX",
     "DEFINE FIELD",
     "DEFINE ANALYZER",
+    "DEFINE USER",
+    "DROP USER",
     "DROP TABLE",
     "DROP INDEX",
     "DROP FIELD",
@@ -118,6 +122,8 @@ mod tests {
              DROP INDEX i ON t;\
              DROP FIELD f ON t;\
              DEFINE ANALYZER a FILTERS lowercase;\
+             DEFINE USER u ROLE owner PASSWORD 'x';\
+             DROP USER u;\
              RELATE t:1->e->t:2;\
              CREATE t:1 = 1;\
              SELECT * FROM t;\

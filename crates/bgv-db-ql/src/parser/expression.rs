@@ -170,7 +170,14 @@ impl Parser<'_> {
 
     /// The string a marker keyword applies to.
     fn marked_string(&mut self, expected: &'static str) -> Result<(String, Span)> {
+        // Past the marker — `datetime`, `uuid` — which the caller has peeked at
+        // and not consumed.
         self.advance();
+        self.text(expected)
+    }
+
+    /// A string literal standing where one is required.
+    pub(super) fn text(&mut self, expected: &'static str) -> Result<(String, Span)> {
         if !matches!(self.peek(), Some(Token::Str(_))) {
             return Err(self.error_here(expected));
         }

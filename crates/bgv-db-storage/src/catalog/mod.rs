@@ -24,6 +24,7 @@ mod change;
 mod definition;
 mod field;
 mod system;
+mod user;
 
 use bgv_db_encoding::{decode_payload, encode_payload};
 use bgv_db_types::{DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId, TableId, Value};
@@ -36,6 +37,7 @@ pub use definition::{
 };
 pub use field::{FieldDefinition, FieldShape};
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
+pub use user::{Role, UserDefinition};
 
 use crate::error::{Error, Result};
 use crate::transaction::{RecordAddress, Transaction};

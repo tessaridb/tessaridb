@@ -14,14 +14,23 @@
 //! - **`409`** — the store refused: a name taken, a unique value claimed twice,
 //!   a schema violated, a required field left empty. The caller wrote it right
 //!   and the data says no.
+//! - **`401`** — this node does not know who is asking. Either no credential
+//!   arrived against a closed store, or the one that did was refused.
+//! - **`403`** — this node knows who is asking and the answer is still no: the
+//!   role forbids the statement, or it reached outside its tenancy.
 //! - **`500`** — a substrate or decoding failure. Nothing else reaches it, and
 //!   anything that does is a bug rather than a user's mistake.
 //!
 //! That distinction is worth the mapping: a client can retry a `409` after
 //! changing its data and can never fix a `400` that way.
+//!
+//! `401` and `403` are the same distinction one step earlier — "I do not know
+//! you" against "I know you and no". A client that cannot tell them apart
+//! retries a signin that will never help, or gives up on one that would.
 
 use bgv_db::{AccessPath, Db, Error, Outcome};
 
+use crate::basic::Credentials;
 use crate::json;
 
 /// One answer: a status and a JSON body.
@@ -65,8 +74,18 @@ pub(crate) fn health(db: &Db) -> Answer {
 }
 
 /// `POST /script` — run it, and answer with one object per statement.
-pub(crate) fn script(db: &Db, source: &str) -> Answer {
+///
+/// The credential, when there is one, is presented **before** the script runs.
+/// A request against an open store may carry none, which is what keeps an empty
+/// store usable; a request against a closed one that carries none is answered
+/// `401` by the session's own refusal, not by a second rule here.
+pub(crate) fn script(db: &Db, source: &str, credentials: Option<&Credentials>) -> Answer {
     let mut session = db.session();
+    if let Some(presented) = credentials
+        && let Err(error) = session.sign_in(&presented.name, &presented.password)
+    {
+        return failure(&error);
+    }
     match session.run(source) {
         Ok(outcomes) => {
             let mut body = String::from(r#"{"results":["#);
@@ -140,6 +159,13 @@ const fn name_of(path: AccessPath) -> &'static str {
 /// A failure, as the status that says what kind it was.
 fn failure(error: &Error) -> Answer {
     let status = match error {
+        // This node does not know who is asking: no credential against a closed
+        // store, or one it refused. Both are answered the same way, because
+        // telling them apart tells an attacker which half to keep guessing at.
+        Error::NotSignedIn { .. } | Error::SignInRefused => 401,
+        // It knows, and the answer is still no. A different thing entirely, and
+        // a client that cannot tell retries a signin that will never help.
+        Error::RoleForbids { .. } | Error::OutsideTenancy { .. } => 403,
         // The caller wrote it wrong, and no amount of changing the data helps.
         Error::Script(_) => 400,
         // The caller wrote it right and the data says no. Retriable after a

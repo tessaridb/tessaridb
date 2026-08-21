@@ -19,15 +19,21 @@
 //! connections. When that is the problem it belongs to the wire protocol, which
 //! will take the async decision deliberately because it will need to.
 //!
-//! # Not authenticated
+//! # How a request says who it is
 //!
-//! There is no identity layer yet, so **every request can do everything**. Said
-//! here in as many words, because an endpoint that looks protected and is not is
-//! worse than one that is obviously open. Bind it to a loopback address, or put
-//! something in front of it, until that changes.
+//! `Authorization: Basic`, and nothing else. A store with no users declared is
+//! **open** and runs anything, which is what keeps an empty one usable; the
+//! first `DEFINE USER` closes it, and from then on a request without a
+//! credential is answered `401`.
+//!
+//! Basic over plaintext is plaintext: the password is in a header anything on
+//! the path can read. This is a credential for a connection an operator already
+//! protects — a loopback bind, or a reverse proxy terminating TLS — and the
+//! README says so rather than leaving it to be discovered.
 
 #![forbid(unsafe_code)]
 
+mod basic;
 mod json;
 mod respond;
 
@@ -102,12 +108,22 @@ impl Node {
 /// Route one request and write its answer.
 fn answer(db: &Db, mut request: Request) {
     let route = (request.method().clone(), request.url().to_owned());
+    // Read before the body, because `as_reader` borrows the request mutably and
+    // the headers are wanted either way.
+    let credentials = request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv("Authorization"))
+        .and_then(|header| basic::read(header.value.as_str()));
     let reply = match (&route.0, route.1.as_str()) {
+        // Health carries no data, so it answers a listening socket the same way
+        // for everyone: a load balancer must not need a credential to tell a
+        // live node from a dead one.
         (Method::Get, "/health") => respond::health(db),
         (Method::Post, "/script") => {
             let mut script = String::new();
             match request.as_reader().read_to_string(&mut script) {
-                Ok(_) => respond::script(db, &script),
+                Ok(_) => respond::script(db, &script, credentials.as_ref()),
                 Err(_) => Answer::bad_request("the request body is not text"),
             }
         }
@@ -121,6 +137,14 @@ fn answer(db: &Db, mut request: Request) {
     };
 
     let mut response = Response::from_string(reply.body).with_status_code(reply.status);
+    // A `401` without a challenge is not a `401` a client can act on — RFC 9110
+    // requires the header, so it follows from the status rather than from a
+    // separate decision at each place that produces one.
+    if reply.status == 401
+        && let Ok(header) = r#"WWW-Authenticate: Basic realm="bgv-db""#.parse::<tiny_http::Header>()
+    {
+        response = response.with_header(header);
+    }
     // Every body here is JSON, so the header is a constant that parses — and if
     // it somehow did not, an answer without a content type still beats no answer.
     if let Ok(header) = "Content-Type: application/json".parse::<tiny_http::Header>() {

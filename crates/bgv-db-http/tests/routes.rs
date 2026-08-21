@@ -25,9 +25,25 @@ fn node() -> (Arc<Node>, String) {
 
 /// One request, and the status and body it answers with.
 fn request(address: &str, method: &str, path: &str, body: &str) -> (u16, String) {
+    let (status, _, answered) = send(address, method, path, body, None);
+    (status, answered)
+}
+
+/// One request carrying an `Authorization` value, and everything it answers
+/// with — the headers included, because a `401` that omits its challenge is not
+/// a `401` a client can act on.
+fn send(
+    address: &str,
+    method: &str,
+    path: &str,
+    body: &str,
+    credential: Option<&str>,
+) -> (u16, Vec<String>, String) {
     let mut stream = TcpStream::connect(address).unwrap();
+    let authorization =
+        credential.map_or_else(String::new, |value| format!("Authorization: {value}\r\n"));
     let head = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\n{authorization}Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(head.as_bytes()).unwrap();
@@ -44,17 +60,18 @@ fn request(address: &str, method: &str, path: &str, body: &str) -> (u16, String)
         .parse()
         .unwrap();
 
-    // Past the headers, then everything else is the body.
+    let mut headers = Vec::new();
     loop {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         if line.trim().is_empty() {
             break;
         }
+        headers.push(line.trim().to_owned());
     }
     let mut answered = String::new();
     reader.read_to_string(&mut answered).unwrap();
-    (status, answered)
+    (status, headers, answered)
 }
 
 const READY: &str = "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
@@ -261,4 +278,110 @@ fn concurrent_requests_do_not_interfere() {
         body.contains(&format!(r#""n":{written}"#)),
         "expected {written} records, got {body}"
     );
+}
+
+// ------------------------------------------------------------------ identity
+
+/// Credentials as a client sends them. Written out rather than computed, so a
+/// change to the decoder cannot quietly agree with itself in both directions.
+const ROOT: &str = "Basic cm9vdDpyb290IHNlY3JldA=="; // root:root secret
+const GRACE: &str = "Basic Z3JhY2U6d2F0Y2ggb25seQ=="; // grace:watch only
+const WRONG: &str = "Basic cm9vdDp3cm9uZw=="; // root:wrong
+
+/// Every request is its own session, so every script says where it runs.
+const IN_PROD: &str = "USE NAMESPACE prod; USE DATABASE orders; ";
+
+/// A node whose store is closed, with an owner and a viewer.
+fn closed() -> (Arc<Node>, String) {
+    let (node, address) = node();
+    let (status, _, body) = send(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
+         DEFINE DATABASE orders; USE DATABASE orders; \
+         DEFINE TABLE notes; CREATE notes:1 = { body: 'x' }; \
+         DEFINE USER root ROLE owner PASSWORD 'root secret';",
+        None,
+    );
+    assert_eq!(status, 200, "{body}");
+    let (status, _, body) = send(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE USER grace ROLE viewer PASSWORD 'watch only';",
+        Some(ROOT),
+    );
+    assert_eq!(status, 200, "{body}");
+    (node, address)
+}
+
+#[test]
+fn an_open_store_answers_a_request_that_carries_no_credential() {
+    // Which is what keeps an empty store usable at all: requiring a signin
+    // against one locks everybody out with no way in to fix it.
+    let (_node, address) = node();
+    let (status, body) = request(&address, "POST", "/script", READY);
+    assert_eq!(status, 200, "{body}");
+}
+
+#[test]
+fn a_closed_store_answers_401_with_a_challenge_and_403_when_the_role_forbids() {
+    let (_node, address) = closed();
+
+    // "I do not know you" — and a 401 without its challenge is not one a client
+    // can act on, so the header is asserted rather than assumed.
+    let (status, headers, body) = send(
+        &address,
+        "POST",
+        "/script",
+        &format!("{IN_PROD}SELECT * FROM notes;"),
+        None,
+    );
+    assert_eq!(status, 401, "{body}");
+    assert!(
+        headers
+            .iter()
+            .any(|header| header.to_ascii_lowercase().starts_with("www-authenticate:")),
+        "{headers:?}"
+    );
+
+    // A refused credential is the same answer as none: telling them apart tells
+    // an attacker which half to keep guessing at.
+    let (status, _, _) = send(
+        &address,
+        "POST",
+        "/script",
+        &format!("{IN_PROD}SELECT * FROM notes;"),
+        Some(WRONG),
+    );
+    assert_eq!(status, 401);
+
+    // "I know you, and no" — a different thing, and a client that cannot tell
+    // retries a signin that will never help.
+    let (status, _, body) = send(
+        &address,
+        "POST",
+        "/script",
+        &format!("{IN_PROD}SELECT * FROM notes;"),
+        Some(GRACE),
+    );
+    assert_eq!(status, 200, "a viewer may read: {body}");
+    let (status, _, body) = send(
+        &address,
+        "POST",
+        "/script",
+        &format!("{IN_PROD}CREATE notes:2 = {{ body: 'no' }};"),
+        Some(GRACE),
+    );
+    assert_eq!(status, 403, "{body}");
+}
+
+#[test]
+fn health_needs_no_credential_even_when_the_store_is_closed() {
+    // A load balancer must not need one to tell a live node from a dead socket,
+    // and the answer carries no data of anybody's.
+    let (_node, address) = closed();
+    let (status, _) = request(&address, "GET", "/health", "");
+    assert_eq!(status, 200);
 }

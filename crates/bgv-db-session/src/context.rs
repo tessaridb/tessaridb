@@ -4,6 +4,11 @@
 //! what makes a script able to define a table and write to it in one unit: the
 //! definition is visible to the transaction that wrote it before anyone else can
 //! see it at all.
+//!
+//! It is also where a scoped user's tenancy is enforced, and that placement is
+//! the point: a statement may name a database directly rather than through
+//! `USE`, so the only check that covers every path is the one at the resolution
+//! every path performs.
 
 use bgv_db_ql::{Span, TableRef};
 use bgv_db_storage::{Catalog, IndexDefinition, Transaction};
@@ -57,13 +62,51 @@ impl Session<'_> {
         };
         let database = Catalog::new(transaction)
             .database_id(namespace, &name)?
-            .ok_or(Error::Unknown {
+            .ok_or_else(|| Error::Unknown {
                 entity: "database",
-                name,
+                name: name.clone(),
                 span,
             })?;
+        self.permits(namespace, database, &name, span)?;
         Ok(Context {
             namespace,
+            database,
+        })
+    }
+
+    /// The tenancy a `namespace.database` reference names.
+    ///
+    /// `prod.orders` names a tenancy the way it names a table elsewhere: the
+    /// qualifier is the namespace and the name the database. Written once here
+    /// so `DEFINE USER … ON prod.orders` resolves through the same catalog reads
+    /// every other reference does, and cannot name a database that is not there.
+    pub(crate) fn tenancy_of(
+        &self,
+        transaction: &mut Transaction<'_>,
+        named: &TableRef,
+    ) -> Result<Context> {
+        let Some(namespace) = named.database.as_ref() else {
+            // Unqualified: the name is the database, inside the session's
+            // namespace.
+            return self.context(transaction, Some(&named.name.text), named.span);
+        };
+        let namespace_id = Catalog::new(transaction)
+            .namespace_id(&namespace.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "namespace",
+                name: namespace.text.clone(),
+                span: named.span,
+            })?;
+        let database = Catalog::new(transaction)
+            .database_id(namespace_id, &named.name.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "database",
+                name: named.name.text.clone(),
+                span: named.span,
+            })?;
+        self.permits(namespace_id, database, &named.name.text, named.span)?;
+        Ok(Context {
+            namespace: namespace_id,
             database,
         })
     }

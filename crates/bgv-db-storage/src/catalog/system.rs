@@ -47,6 +47,9 @@ pub const FIELDS: TableId = TableId::new(7);
 /// Declared analyzers.
 pub const ANALYZERS: TableId = TableId::new(8);
 
+/// Declared users.
+pub const USERS: TableId = TableId::new(9);
+
 /// The first id handed out at any level. Zero belongs to the system.
 pub const FIRST_ID: u32 = 1;
 
@@ -71,6 +74,8 @@ pub enum Level {
     Field,
     /// Declared analyzers.
     Analyzer,
+    /// Declared users.
+    User,
 }
 
 impl Level {
@@ -84,6 +89,7 @@ impl Level {
             Self::Index => "index",
             Self::Field => "field",
             Self::Analyzer => "analyzer",
+            Self::User => "user",
         }
     }
 
@@ -101,6 +107,7 @@ impl Level {
             Self::Index => "ix",
             Self::Field => "fd",
             Self::Analyzer => "an",
+            Self::User => "us",
         }
     }
 }
@@ -119,7 +126,7 @@ mod tests {
     #[test]
     fn every_system_table_has_a_distinct_id() {
         let ids = [
-            NAMESPACES, DATABASES, TABLES, NAMES, ALLOCATORS, INDEXES, FIELDS, ANALYZERS,
+            NAMESPACES, DATABASES, TABLES, NAMES, ALLOCATORS, INDEXES, FIELDS, ANALYZERS, USERS,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(

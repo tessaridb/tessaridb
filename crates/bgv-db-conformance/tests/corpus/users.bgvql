@@ -1,0 +1,48 @@
+# Users: who may talk to this store, and what that lets them do.
+#
+# A store with no user is open, because requiring a signin against an empty one
+# locks everybody out of it with no way in to fix that. Declaring the first user
+# is what closes it — which is why every case below that needs an open store
+# comes before the first `DEFINE USER`.
+#
+# A corpus file is one session against one store, so these run in order. The
+# runner does not sign in, so it is anonymous throughout: what these cases pin
+# is the open-store rule and the shape of the statements, and the per-role
+# checks are asserted where a session can actually sign in.
+#
+# One consequence is worth naming: once the store is closed, an anonymous
+# session cannot re-open it by dropping the last user. There is no back door,
+# which is the point — but it also means a lost owner password is a restore from
+# backup rather than a recovery, and that belongs in the operations notes.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+DEFINE TABLE notes;
+--- expect: ok
+
+--- case: an open store runs anything, which is what makes an empty one usable
+CREATE notes:1 = { body: 'before there were users' };
+--- expect: ok
+
+--- case: a user is declared like anything else, and its tenancy is resolved
+DEFINE USER ada ON prod.orders ROLE editor PASSWORD 'correct horse';
+--- expect: ok
+
+--- case: the store is closed now, so an anonymous read is refused
+SELECT * FROM notes;
+--- expect: error NotSignedIn
+
+--- case: and so is an anonymous write
+CREATE notes:2 = { body: 'after' };
+--- expect: error NotSignedIn
+
+--- case: an anonymous DEFINE USER is refused too, once there is a user to ask
+DEFINE USER grace ROLE viewer PASSWORD 'x';
+--- expect: error NotSignedIn
+
+--- case: and so is dropping one, so a store cannot be re-opened from outside
+DROP USER ada;
+--- expect: error NotSignedIn

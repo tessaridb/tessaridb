@@ -232,6 +232,62 @@ pub enum Error {
         span: Span,
     },
 
+    /// A statement was run against a closed store with nobody signed in.
+    ///
+    /// "I do not know you" — a different answer from "I know you and no", and a
+    /// client needs to tell them apart to know whether signing in would help.
+    #[error("this store requires a signed-in user (at {span})")]
+    NotSignedIn {
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// The signed-in user's role does not allow the statement.
+    #[error("a {role} may not {needs} (at {span})")]
+    RoleForbids {
+        /// The role the user holds.
+        role: &'static str,
+        /// What the statement needed.
+        needs: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A signin that did not match.
+    ///
+    /// One message for a wrong name and a wrong password alike: telling them
+    /// apart tells an attacker which half to keep guessing at.
+    #[error("no user of that name and password")]
+    SignInRefused,
+
+    /// A role this language does not have.
+    #[error("there is no role called {name:?} (at {span})")]
+    NoSuchRole {
+        /// The name as written.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A password the hasher will not take.
+    #[error("that password cannot be stored (at {span})")]
+    PasswordUnusable {
+        /// Where the declaration is.
+        span: Span,
+    },
+
+    /// A statement reaching outside the tenancy its user belongs to.
+    ///
+    /// The refusal names the tenancy and not the record: one that says whether
+    /// a record exists has answered the question it declined.
+    #[error("{name} is outside this user's namespace and database (at {span})")]
+    OutsideTenancy {
+        /// The tenancy or object as written.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
     /// A route into a record, written where there is no record.
     ///
     /// **Unreachable through the language today**, and kept anyway. Two separate

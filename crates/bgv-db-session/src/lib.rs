@@ -27,6 +27,7 @@ mod context;
 mod error;
 mod evaluate;
 mod execute;
+mod identity;
 mod outcome;
 mod search;
 mod session;

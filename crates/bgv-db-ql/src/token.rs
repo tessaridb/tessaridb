@@ -260,6 +260,12 @@ pub enum Keyword {
     Matches,
     /// `SEARCH` — the index holds terms rather than whole values.
     Search,
+    /// `USER` — declares who may talk to the store.
+    User,
+    /// `ROLE` — what a user may do.
+    Role,
+    /// `PASSWORD` — the credential a user signs in with.
+    Password,
     /// `DEFAULT` — what a write with no value for the field uses instead.
     Default,
     /// `AND` — both.
@@ -345,6 +351,9 @@ impl Keyword {
             Self::Filters => "FILTERS",
             Self::Matches => "MATCHES",
             Self::Search => "SEARCH",
+            Self::User => "USER",
+            Self::Role => "ROLE",
+            Self::Password => "PASSWORD",
             Self::Default => "DEFAULT",
             Self::And => "AND",
             Self::Or => "OR",
@@ -403,6 +412,9 @@ impl Keyword {
         Self::Filters,
         Self::Matches,
         Self::Search,
+        Self::User,
+        Self::Role,
+        Self::Password,
         Self::Default,
         Self::And,
         Self::Or,

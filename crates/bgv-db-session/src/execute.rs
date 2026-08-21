@@ -84,6 +84,22 @@ impl Session<'_> {
                 filters,
                 if_not_exists,
             } => self.define_analyzer(transaction, name, filters, *if_not_exists),
+            StatementKind::DefineUser {
+                name,
+                scope,
+                role,
+                password,
+                if_not_exists,
+            } => self.define_user(
+                transaction,
+                name,
+                scope.as_ref(),
+                role,
+                password,
+                *if_not_exists,
+                span,
+            ),
+            StatementKind::DropUser { name } => self.drop_user(transaction, name),
             StatementKind::DropField { name, table } => {
                 let (_, id) = self.resolve_table(transaction, table)?;
                 let field = self.field_named(transaction, id, name)?;

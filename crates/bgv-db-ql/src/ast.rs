@@ -133,6 +133,27 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `DEFINE USER ada ON prod.orders ROLE editor PASSWORD '…'`
+    ///
+    /// The password reaches this tree and goes no further: what is stored is a
+    /// hash, so no plaintext reaches the log or any replica.
+    DefineUser {
+        /// The name signed in with.
+        name: Name,
+        /// The tenancy the user belongs to, or the store when absent.
+        scope: Option<TableRef>,
+        /// What the user may do.
+        role: Name,
+        /// The password, as written.
+        password: String,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DROP USER ada`
+    DropUser {
+        /// The name to remove.
+        name: Name,
+    },
     /// `DROP FIELD email ON users` — removes the declaration, not the data.
     DropField {
         /// The field's name.
