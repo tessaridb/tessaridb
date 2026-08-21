@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod log;
 mod store;
 mod transaction;
 

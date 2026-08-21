@@ -5,13 +5,16 @@
 //! speaks in records and sequences; nothing above it sees a key, a keyspace or
 //! a batch.
 
+use std::ops::Bound;
 use std::sync::Arc;
 
-use bgv_db_encoding::{AppliedPositionKey, FormatVersion, FormatVersionKey, StoreKey, StoreValue};
-use bgv_db_kv::{KvBackend, WriteBatch};
+use bgv_db_encoding::{
+    AppliedPositionKey, FormatVersion, FormatVersionKey, LogKey, LogRecord, StoreKey, StoreValue,
+};
+use bgv_db_kv::{KeyRange, KvBackend, ScanDirection, ScanRequest, WriteBatch};
 use bgv_db_types::Sequence;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::transaction::Transaction;
 
 /// A record store over a key-value backend.
@@ -65,6 +68,70 @@ impl Store {
             Some(value) => Ok(Sequence::decode(value.as_slice())?),
             None => Ok(Sequence::ZERO),
         }
+    }
+
+    /// Read log records from `from` onward, oldest first.
+    ///
+    /// `limit` bounds the read because a log is unbounded by nature and a caller
+    /// that asks for "the rest of it" is asking for however much has accumulated
+    /// since it last looked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a stored record cannot be
+    /// decoded.
+    pub fn log_records(&self, from: Sequence, limit: usize) -> Result<Vec<(Sequence, LogRecord)>> {
+        let prefix = LogKey::prefix();
+        let bounds = KeyRange::prefix(&prefix);
+        let request = ScanRequest {
+            keyspace: LogKey::keyspace(),
+            range: KeyRange::from_bounds(
+                Bound::Included(LogKey::new(from).encode()),
+                bounds.end().clone(),
+            ),
+            direction: ScanDirection::Forward,
+            limit: Some(limit),
+        };
+        self.backend
+            .scan(&request)?
+            .into_iter()
+            .map(|(key, value)| {
+                let sequence = LogKey::decode(key.as_slice())?.sequence;
+                let record = LogRecord::decode(value.as_slice())?;
+                Ok((sequence, record))
+            })
+            .collect()
+    }
+
+    /// Apply one log record, at the sequence it carries.
+    ///
+    /// This is what a replica runs, and it is the same function a commit runs
+    /// once it has decided its sequence locally.
+    ///
+    /// Re-applying a record the store already holds is a **no-op**, not an
+    /// error: a replica that is re-sent a record it already has has not been
+    /// told anything wrong, and refusing would turn an ordinary retry into an
+    /// incident. Skipping *forward* is refused, because a gap means the state
+    /// would no longer be explained by any log.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::LogGap`] when the record is not the next one, and the
+    /// mapped backend or decoding failure otherwise.
+    pub fn apply_record(&self, at: Sequence, record: &LogRecord) -> Result<()> {
+        let applied = self.committed_tail()?;
+        if at.get() <= applied.get() {
+            return Ok(());
+        }
+        let expected = Sequence::new(applied.get().saturating_add(1));
+        if at != expected {
+            return Err(Error::LogGap {
+                expected,
+                found: at,
+            });
+        }
+        self.backend.apply(crate::log::apply_batch(at, record))?;
+        Ok(())
     }
 
     /// The backend, for the transaction's read and commit paths.

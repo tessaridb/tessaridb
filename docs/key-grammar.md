@@ -54,7 +54,7 @@ because renumbering after data exists is a full rebuild.
 | `0x12` | `Posting` (full-text) | `index` | reserved — SG4 |
 | `0x13` | `VectorNode` | `index` | reserved — SG4 |
 | `0x14` | `Edge` (graph) | `index` | reserved — SG4 |
-| `0x20` | `LogEntry` | `log` | reserved — SG2.T7 |
+| `0x20` | `LogEntry` | `log` | implemented |
 | `0x30` | `FormatVersion` | `meta` | implemented |
 | `0x31` | `AppliedPosition` | `meta` | implemented |
 | `0x32` | `NamespaceCatalog` | `meta` | reserved — SG2.T4 |
@@ -175,12 +175,36 @@ anywhere.
    1        8
 ```
 
-Specified now, encoded in SG2.T7 alongside the log entry it addresses — a key
-type declares the value type it addresses, and that value does not exist yet.
-
 Ascending, so replay is a forward scan from a position. The same sequence is
 encoded **ascending here and descending in a record key** — two access patterns,
 two encodings, one number. Confusing the two silently reverses replay order.
+
+The value is a `LogRecord`: everything one commit changed.
+
+```
+<codec-version:1> <flags:1> then, repeated until the value ends:
+  <namespace:u32> <database:u32> <table:u32> <record-id, terminated>
+  <value-len:u32> <RecordValue bytes>
+```
+
+Three properties of that layout are load-bearing.
+
+**A mutation carries the record's address, not its encoded key.** An encoded key
+has the version baked into it, so a record whose embedded version disagreed with
+its own log sequence would create a second ordering authority — the thing the
+log exists to prevent. Applying derives the version from the entry's own
+sequence, which makes the disagreement unrepresentable rather than merely
+forbidden.
+
+**There is no mutation count.** Every mutation is self-delimiting: the record id
+is terminated and the value is length-prefixed, so the decoder reads until the
+value ends. A count would be a second statement of the same fact, and two
+statements of one fact can disagree. It would also need a width, and a width
+needs a policy for a commit that exceeds it.
+
+**Mutations are stored in address order.** Byte-identical replay depends on the
+*encoder* being deterministic, not only on the apply path, so the record type
+orders them at construction rather than trusting its caller to.
 
 ### 6.3 `FormatVersion` — keyspace `meta`
 

@@ -34,7 +34,9 @@ mod record_id;
 mod value;
 
 pub use error::{Error, Result};
-pub use keys::{AppliedPositionKey, FormatVersionKey, RecordKey, StoreKey, TABLE_PREFIX_LEN};
+pub use keys::{
+    AppliedPositionKey, FormatVersionKey, LogKey, RecordKey, StoreKey, TABLE_PREFIX_LEN,
+};
 pub use kind::KeyKind;
 pub use order::{KeyReader, KeyWriter};
-pub use value::{CODEC_VERSION, FormatVersion, RecordValue, StoreValue};
+pub use value::{CODEC_VERSION, FormatVersion, LogRecord, Mutation, RecordValue, StoreValue};

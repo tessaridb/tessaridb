@@ -28,8 +28,8 @@ use std::collections::BTreeMap;
 use std::ops::Bound;
 
 use bgv_db_constants::MAX_COMMIT_ATTEMPTS;
-use bgv_db_encoding::{AppliedPositionKey, RecordKey, RecordValue, StoreKey, StoreValue};
-use bgv_db_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
+use bgv_db_encoding::{LogRecord, Mutation, RecordKey, RecordValue, StoreKey, StoreValue};
+use bgv_db_kv::{KeyRange, ScanDirection, ScanRequest};
 use bgv_db_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
 use crate::error::{Error, Result};
@@ -161,6 +161,7 @@ impl<'a> Transaction<'a> {
         if self.writes.is_empty() {
             return Ok(self.snapshot);
         }
+        let record = self.log_record();
 
         let mut attempt = 0_u32;
         loop {
@@ -174,20 +175,43 @@ impl<'a> Transaction<'a> {
             let tail = self.store.committed_tail()?;
             self.check_for_conflicts()?;
 
+            // Deciding the sequence locally is the *only* thing a commit does
+            // that a replica's apply does not. Everything after this line is the
+            // shared path.
             let commit_at = Sequence::new(tail.get().saturating_add(1));
             match self
                 .store
                 .backend()
-                .apply(self.commit_batch(tail, commit_at))
+                .apply(crate::log::apply_batch(commit_at, &record))
             {
                 Ok(()) => return Ok(commit_at),
-                // The tail moved between reading it and applying, so the
+                // The position moved between reading it and applying, so the
                 // conflict check above was made against a stale state and the
                 // whole attempt is repeated rather than patched up.
                 Err(bgv_db_kv::Error::Conflict { .. }) => continue,
                 Err(other) => return Err(other.into()),
             }
         }
+    }
+
+    /// Everything this transaction changed, as the log will carry it.
+    ///
+    /// Built once, before the retry loop: the mutations do not depend on which
+    /// sequence the commit eventually wins, so rebuilding them per attempt would
+    /// be work that also invites the two attempts to differ.
+    fn log_record(&self) -> LogRecord {
+        LogRecord::new(
+            self.writes
+                .iter()
+                .map(|(address, value)| Mutation {
+                    namespace: address.namespace,
+                    database: address.database,
+                    table: address.table,
+                    id: address.id.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
+        )
     }
 
     /// Refuse the commit if any written record has moved since the snapshot.
@@ -209,29 +233,6 @@ impl<'a> Transaction<'a> {
             }
         }
         Ok(())
-    }
-
-    fn commit_batch(&self, expected_tail: Sequence, commit_at: Sequence) -> WriteBatch {
-        let applied_key = AppliedPositionKey.encode();
-        let mut batch = WriteBatch::new()
-            .expect_value(
-                AppliedPositionKey::keyspace(),
-                applied_key.clone(),
-                expected_tail.encode(),
-            )
-            .put(
-                AppliedPositionKey::keyspace(),
-                applied_key,
-                commit_at.encode(),
-            );
-        for (address, value) in &self.writes {
-            batch = batch.put(
-                RecordKey::keyspace(),
-                address.key_at(commit_at).encode(),
-                value.encode(),
-            );
-        }
-        batch
     }
 
     /// The newest version of a record, whatever its sequence.

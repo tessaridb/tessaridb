@@ -46,6 +46,19 @@ pub enum Error {
         attempts: u32,
     },
 
+    /// A log record was offered out of order.
+    ///
+    /// State is a deterministic function of the log, so a gap is not something
+    /// to skip past: applying the record anyway would leave a state that no log
+    /// explains, and nothing downstream could ever detect that it had.
+    #[error("log gap: the next record must be {expected}, but {found} was offered")]
+    LogGap {
+        /// The sequence the store is ready to apply.
+        expected: Sequence,
+        /// The sequence that was offered instead.
+        found: Sequence,
+    },
+
     /// A failure from the key-value substrate.
     #[error(transparent)]
     Kv(#[from] bgv_db_kv::Error),
@@ -62,6 +75,7 @@ impl Error {
         match self {
             Self::Conflict { .. } => ErrorCategory::Conflict,
             Self::CommitContention { .. } => ErrorCategory::Busy,
+            Self::LogGap { .. } => ErrorCategory::Validation,
             Self::Kv(inner) => inner.category(),
             Self::Encoding(inner) => inner.category(),
         }

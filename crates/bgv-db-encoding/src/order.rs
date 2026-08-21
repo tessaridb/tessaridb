@@ -224,6 +224,25 @@ impl<'a> KeyReader<'a> {
         Ok(out)
     }
 
+    /// Read exactly `len` bytes, where the length came from the data itself.
+    ///
+    /// Distinct from [`Self::take_fixed`], whose length is a compile-time
+    /// constant. A length read out of the input is not trusted: a truncated or
+    /// tampered payload can name more bytes than are there, and this is the
+    /// bounds check that turns that into a typed error instead of a panic.
+    pub fn take_exact(&mut self, len: usize) -> Result<Vec<u8>> {
+        let end = self.position.saturating_add(len);
+        let slice = self.input.get(self.position..end).ok_or(Error::Truncated {
+            kind: self.kind,
+            offset: self.position,
+            needed: len,
+            available: self.remaining(),
+        })?;
+        let out = slice.to_vec();
+        self.position = end;
+        Ok(out)
+    }
+
     /// Read a component written by [`KeyWriter::put_variable`].
     pub fn take_variable(&mut self) -> Result<Vec<u8>> {
         let start = self.position;

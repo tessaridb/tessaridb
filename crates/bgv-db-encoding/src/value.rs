@@ -17,9 +17,10 @@
 //! is an error rather than something to ignore.
 
 use bgv_db_kv::Value;
-use bgv_db_types::Sequence;
+use bgv_db_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
 use crate::error::{Error, Result};
+use crate::order::{KeyReader, KeyWriter};
 
 /// The codec version this build writes and reads.
 pub const CODEC_VERSION: u8 = 1;
@@ -127,6 +128,130 @@ impl StoreValue for RecordValue {
         }
         Err(Error::TombstoneWithPayload { len: payload.len() })
     }
+}
+
+/// One mutation inside a log record: which record, and what it becomes.
+///
+/// It carries the record's **address**, not its encoded key. An encoded key has
+/// the version baked into it, so a record whose embedded version disagreed with
+/// its own log sequence would create a second ordering authority — the thing
+/// ADR-0001 exists to prevent. Carrying the address and deriving the version
+/// from the log entry's own sequence makes that disagreement unrepresentable
+/// rather than merely forbidden.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mutation {
+    /// The namespace the record belongs to.
+    pub namespace: NamespaceId,
+    /// The database within that namespace.
+    pub database: DatabaseId,
+    /// The table within that database.
+    pub table: TableId,
+    /// The record's identity within the table.
+    pub id: RecordId,
+    /// What the record becomes at this sequence.
+    pub value: RecordValue,
+}
+
+/// Everything one commit changed, as the log carries it.
+///
+/// Mutations are stored in address order. That is not tidiness: a deterministic
+/// apply has to be fed a deterministic record, so the *encoder* is bound by the
+/// same no-unordered-iteration rule the apply path is.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LogRecord {
+    mutations: Vec<Mutation>,
+}
+
+impl LogRecord {
+    /// Build a record from mutations that are already in address order.
+    ///
+    /// Sorting happens here rather than being assumed, because a caller that
+    /// hands over an unordered collection would produce a record that replays to
+    /// the same state but not to the same bytes — and byte-identical replay is
+    /// the property being protected.
+    #[must_use]
+    pub fn new(mut mutations: Vec<Mutation>) -> Self {
+        mutations.sort_by(|left, right| {
+            (left.namespace, left.database, left.table, &left.id).cmp(&(
+                right.namespace,
+                right.database,
+                right.table,
+                &right.id,
+            ))
+        });
+        Self { mutations }
+    }
+
+    /// The mutations this record applies, in address order.
+    #[must_use]
+    pub fn mutations(&self) -> &[Mutation] {
+        &self.mutations
+    }
+}
+
+impl StoreValue for LogRecord {
+    /// There is deliberately no mutation count in front of the mutations.
+    ///
+    /// Every mutation is self-delimiting — the record id is terminated and the
+    /// value is length-prefixed — so a count would be a second statement of the
+    /// same fact, which is a thing that can disagree with itself. It would also
+    /// need a width, and a width needs a policy for what happens when a commit
+    /// exceeds it. Neither question has to be answered if the field does not
+    /// exist.
+    fn encode(&self) -> Value {
+        let mut writer = KeyWriter::with_capacity(self.mutations.len().saturating_mul(32));
+        for mutation in &self.mutations {
+            writer
+                .put_u32(mutation.namespace.get())
+                .put_u32(mutation.database.get())
+                .put_u32(mutation.table.get());
+            crate::record_id::put(&mut writer, &mutation.id);
+            let encoded = mutation.value.encode();
+            writer
+                .put_u32(length_of(encoded.as_slice()))
+                .put_fixed(encoded.as_slice());
+        }
+        let payload = writer.finish();
+        let mut buffer = with_header(0, payload.len());
+        buffer.extend_from_slice(&payload);
+        Value::from(buffer)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let (_, payload) = split_header(bytes, 0)?;
+        // The reader is the crate's bounds-checked byte cursor. The kind it is
+        // built with only names the entity in a truncation error, and no kind
+        // tag is consumed here — this is a value payload, not a key.
+        let mut reader = KeyReader::new(crate::kind::KeyKind::LogEntry, payload);
+        let mut mutations = Vec::new();
+        while reader.remaining() > 0 {
+            let namespace = NamespaceId::new(reader.take_u32()?);
+            let database = DatabaseId::new(reader.take_u32()?);
+            let table = TableId::new(reader.take_u32()?);
+            let id = crate::record_id::take(&mut reader)?;
+            let len = reader.take_u32()?;
+            let encoded = reader.take_exact(usize::try_from(len).unwrap_or(usize::MAX))?;
+            mutations.push(Mutation {
+                namespace,
+                database,
+                table,
+                id,
+                value: RecordValue::decode(&encoded)?,
+            });
+        }
+        Ok(Self { mutations })
+    }
+}
+
+/// A byte length as it is written into a log record.
+///
+/// A value longer than a `u32` can express is not something this store can
+/// produce — a single record that large would have failed on memory long before
+/// reaching the codec — and saturating here keeps the encoder total rather than
+/// making every caller of `encode` handle a case that cannot arise. The decoder
+/// would reject the result as truncated, so the failure is loud either way.
+fn length_of(bytes: &[u8]) -> u32 {
+    u32::try_from(bytes.len()).unwrap_or(u32::MAX)
 }
 
 /// The store's own on-disk format version.
@@ -298,5 +423,116 @@ mod tests {
         let sequence = Sequence::new(1_234_567);
         let encoded = sequence.encode();
         assert_eq!(Sequence::decode(encoded.as_slice()).unwrap(), sequence);
+    }
+
+    fn mutation(id: RecordId, value: RecordValue) -> Mutation {
+        Mutation {
+            namespace: NamespaceId::new(1),
+            database: DatabaseId::new(2),
+            table: TableId::new(3),
+            id,
+            value,
+        }
+    }
+
+    #[test]
+    fn a_log_record_round_trips_every_mutation_shape() {
+        let record = LogRecord::new(vec![
+            mutation(RecordId::Int(-42), RecordValue::Present(b"a".to_vec())),
+            mutation(RecordId::from("text"), RecordValue::Tombstone),
+            mutation(RecordId::Uuid([0x5a; 16]), RecordValue::Present(Vec::new())),
+            mutation(
+                RecordId::Bytes(vec![0x00, 0xff, 0x00]),
+                RecordValue::Present(vec![0x00; 300]),
+            ),
+        ]);
+        let encoded = record.encode();
+        assert_eq!(encoded.as_slice()[0], CODEC_VERSION);
+        assert_eq!(LogRecord::decode(encoded.as_slice()).unwrap(), record);
+    }
+
+    #[test]
+    fn an_empty_log_record_round_trips_as_the_header_alone() {
+        let record = LogRecord::new(Vec::new());
+        assert!(record.mutations().is_empty());
+        let encoded = record.encode();
+        assert_eq!(encoded.as_slice(), &[CODEC_VERSION, 0]);
+        assert_eq!(LogRecord::decode(encoded.as_slice()).unwrap(), record);
+    }
+
+    #[test]
+    fn mutations_are_stored_in_address_order_whatever_order_they_arrive_in() {
+        // Byte-identical replay depends on the encoder being deterministic, not
+        // only on the apply path being deterministic. A caller that hands over
+        // an unordered collection must not be able to change the bytes.
+        let ordered = LogRecord::new(vec![
+            mutation(RecordId::from("a"), RecordValue::Tombstone),
+            mutation(RecordId::from("b"), RecordValue::Tombstone),
+            mutation(RecordId::from("c"), RecordValue::Tombstone),
+        ]);
+        let shuffled = LogRecord::new(vec![
+            mutation(RecordId::from("c"), RecordValue::Tombstone),
+            mutation(RecordId::from("a"), RecordValue::Tombstone),
+            mutation(RecordId::from("b"), RecordValue::Tombstone),
+        ]);
+        assert_eq!(ordered, shuffled);
+        assert_eq!(
+            ordered.encode().as_slice(),
+            shuffled.encode().as_slice(),
+            "the same mutation set must encode to the same bytes"
+        );
+    }
+
+    #[test]
+    fn mutations_sort_by_the_whole_address_and_not_only_by_record_id() {
+        let record = LogRecord::new(vec![
+            Mutation {
+                namespace: NamespaceId::new(2),
+                database: DatabaseId::new(1),
+                table: TableId::new(1),
+                id: RecordId::from("a"),
+                value: RecordValue::Tombstone,
+            },
+            Mutation {
+                namespace: NamespaceId::new(1),
+                database: DatabaseId::new(1),
+                table: TableId::new(1),
+                id: RecordId::from("z"),
+                value: RecordValue::Tombstone,
+            },
+        ]);
+        assert_eq!(record.mutations()[0].namespace, NamespaceId::new(1));
+    }
+
+    #[test]
+    fn a_log_record_truncated_mid_mutation_is_refused_rather_than_half_decoded() {
+        let record = LogRecord::new(vec![mutation(
+            RecordId::from("r"),
+            RecordValue::Present(b"payload".to_vec()),
+        )]);
+        let full = record.encode();
+        let bytes = full.as_slice();
+        // From one byte past the header: a cut exactly at the header is not a
+        // truncated record, it is an empty one, and that is legitimate.
+        for cut in HEADER_LEN.saturating_add(1)..bytes.len() {
+            assert!(
+                LogRecord::decode(&bytes[..cut]).is_err(),
+                "a record cut at {cut} decoded anyway"
+            );
+        }
+    }
+
+    #[test]
+    fn a_value_length_naming_more_bytes_than_exist_is_refused() {
+        // The length comes out of the payload, so it is not trusted.
+        let mut bytes = LogRecord::new(vec![mutation(
+            RecordId::from("r"),
+            RecordValue::Present(b"x".to_vec()),
+        )])
+        .encode()
+        .into_bytes();
+        let last = bytes.len().saturating_sub(3);
+        bytes[last] = 0xff;
+        assert!(LogRecord::decode(&bytes).is_err());
     }
 }

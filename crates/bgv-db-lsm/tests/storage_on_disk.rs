@@ -120,6 +120,51 @@ fn versions_and_the_committed_position_come_back_together_after_a_reopen() {
 }
 
 #[test]
+fn a_log_replayed_between_two_stores_on_disk_reproduces_them_byte_for_byte() {
+    // The log lives above the substrate, not inside a backend. This is what
+    // that claim costs to verify: the same replay, on the durable engine.
+    use bgv_db_kv::{KeyRange, Keyspace, ScanRequest};
+    use bgv_db_types::Sequence;
+
+    let root = tempfile::tempdir().unwrap();
+    let source_backend = LsmBackend::open(
+        root.path().join("source"),
+        StoreConfig::new(Durability::ProcessCrashSafe),
+    )
+    .unwrap();
+    let source_backend = Arc::new(source_backend) as Arc<dyn KvBackend>;
+    let source = Store::open(Arc::clone(&source_backend)).unwrap();
+
+    write(&source, "alpha", b"one");
+    write(&source, "beta", b"two");
+    write(&source, "alpha", b"one-again");
+    let mut remover = source.begin().unwrap();
+    remover.delete(at("beta"));
+    remover.commit().unwrap();
+
+    let replica_backend = LsmBackend::open(
+        root.path().join("replica"),
+        StoreConfig::new(Durability::ProcessCrashSafe),
+    )
+    .unwrap();
+    let replica_backend = Arc::new(replica_backend) as Arc<dyn KvBackend>;
+    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+
+    for (sequence, record) in source.log_records(Sequence::ZERO, 1024).unwrap() {
+        replica.apply_record(sequence, &record).unwrap();
+    }
+
+    for keyspace in Keyspace::ALL {
+        let request = ScanRequest::new(*keyspace, KeyRange::all());
+        assert_eq!(
+            source_backend.scan(&request).unwrap(),
+            replica_backend.scan(&request).unwrap(),
+            "keyspace {keyspace} differs after replay onto disk"
+        );
+    }
+}
+
+#[test]
 fn a_commit_after_a_reopen_continues_the_sequence_instead_of_restarting_it() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("store");

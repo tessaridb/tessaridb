@@ -160,6 +160,59 @@ impl StoreKey for RecordKey {
     }
 }
 
+/// Addresses one entry in the ordered log.
+///
+/// ```text
+/// <0x20> <sequence:u64>
+/// ```
+///
+/// The sequence is written **ascending**, which is the opposite of the version
+/// suffix on a record key. That asymmetry is deliberate and both halves of it are
+/// correct for their reader: a snapshot read wants the newest version at or
+/// before a point, so record versions sort newest-first; a log reader resumes at
+/// a position and walks forward, so log entries sort oldest-first. Writing them
+/// the same way would make one of the two scans run backwards through its own
+/// data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LogKey {
+    /// The position of this entry in the log.
+    pub sequence: Sequence,
+}
+
+impl LogKey {
+    /// Address a log entry.
+    #[must_use]
+    pub const fn new(sequence: Sequence) -> Self {
+        Self { sequence }
+    }
+
+    /// The prefix shared by every log entry.
+    #[must_use]
+    pub fn prefix() -> Vec<u8> {
+        vec![KeyKind::LogEntry.tag()]
+    }
+}
+
+impl StoreKey for LogKey {
+    type Value = crate::value::LogRecord;
+
+    const KIND: KeyKind = KeyKind::LogEntry;
+
+    fn encode(&self) -> Key {
+        let mut writer = KeyWriter::with_capacity(9);
+        writer.put_u8(Self::KIND.tag()).put_u64(self.sequence.get());
+        Key::from(writer.finish())
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let sequence = Sequence::new(reader.take_u64()?);
+        reader.finish()?;
+        Ok(Self { sequence })
+    }
+}
+
 /// Addresses the store's own on-disk format version.
 ///
 /// A singleton, written at creation and read at open.
@@ -322,5 +375,50 @@ mod tests {
         assert_eq!(RecordKey::keyspace(), Keyspace::DATA);
         assert_eq!(FormatVersionKey::keyspace(), Keyspace::META);
         assert_eq!(AppliedPositionKey::keyspace(), Keyspace::META);
+        assert_eq!(LogKey::keyspace(), Keyspace::LOG);
+    }
+
+    #[test]
+    fn log_entries_sort_oldest_first_which_is_the_opposite_of_record_versions() {
+        let older = LogKey::new(Sequence::new(5)).encode();
+        let newer = LogKey::new(Sequence::new(9)).encode();
+        assert!(
+            older.as_slice() < newer.as_slice(),
+            "a log reader resumes at a position and walks forward"
+        );
+
+        // The same two sequences, as versions of one record, sort the other way.
+        let older_version = key(RecordId::from("r"), 5).encode();
+        let newer_version = key(RecordId::from("r"), 9).encode();
+        assert!(newer_version.as_slice() < older_version.as_slice());
+    }
+
+    #[test]
+    fn a_log_key_round_trips_and_is_fixed_width() {
+        for sequence in [0, 1, u64::MAX] {
+            let original = LogKey::new(Sequence::new(sequence));
+            let encoded = original.encode();
+            assert_eq!(encoded.len(), 9);
+            assert_eq!(LogKey::decode(encoded.as_slice()).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn every_log_key_carries_the_log_prefix() {
+        let prefix = LogKey::prefix();
+        assert_eq!(prefix.len(), 1);
+        for sequence in [0, 42, u64::MAX] {
+            let encoded = LogKey::new(Sequence::new(sequence)).encode();
+            assert!(encoded.as_slice().starts_with(&prefix));
+        }
+    }
+
+    #[test]
+    fn a_record_key_is_never_decodable_as_a_log_key() {
+        let encoded = key(RecordId::Int(1), 1).encode();
+        assert!(matches!(
+            LogKey::decode(encoded.as_slice()).unwrap_err(),
+            Error::UnexpectedKind { .. }
+        ));
     }
 }
