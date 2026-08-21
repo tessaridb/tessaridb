@@ -105,18 +105,26 @@ DEFINE DATABASE orders;
 DEFINE TABLE users;
 DEFINE SPACE sessions;
 DEFINE INDEX by_email ON users FIELDS email UNIQUE;
+DEFINE INDEX by_name ON users FIELDS last, first;
 
 DROP INDEX by_email ON users;
 DROP TABLE users;
+DROP SPACE sessions;
 ```
+
+An index names one field or several, in order; without `UNIQUE` two records may
+share an entry. `DROP SPACE` and `DROP TABLE` do the same thing — a space is a
+table (ADR-0010) — and both spellings exist so that a script reads the way its
+author thinks about what it removes.
 
 Each writes one catalog entry, and the catalog is records (`docs/key-grammar.md`
 §9), so a definition takes part in the transaction that issued it: a script may
 define a table and write to it, and either both land or neither does.
 
-`DEFINE ... IF NOT EXISTS` is accepted and is not the same as re-running the
-statement: a name is unique within its parent, and a plain `DEFINE` over an
-existing name is refused.
+`IF NOT EXISTS` is written **before the name** — `DEFINE TABLE IF NOT EXISTS
+users` — which is where the same clause sits in SQL and therefore where it will
+be typed. It is not the same as re-running the statement: a name is unique
+within its parent, and a plain `DEFINE` over an existing name is refused.
 
 Two behaviours of `DEFINE INDEX` are stated here because they are surprising and
 because neither raises an error:
@@ -155,7 +163,9 @@ decided by the target rather than by a cost model:
 
 A `WHERE` over a field with no index is refused at this milestone rather than
 silently executed as a scan-and-filter. A statement whose cost is a table scan
-should say so, and `FROM users` already does.
+should say so, and `FROM users` already does. The refusal comes from the
+catalog when the statement runs, not from the grammar: whether a field carries
+an index is not a property of the text.
 
 **An index read is confirmed, not trusted.** Every candidate the index offers is
 re-checked against the reading transaction's own snapshot, so a stale entry can

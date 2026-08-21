@@ -40,6 +40,15 @@ impl Span {
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// The span reaching from this one's start to `end`'s end.
+    ///
+    /// What a parser needs to give a node built from several tokens a span
+    /// covering all of them.
+    #[must_use]
+    pub const fn to(self, end: Self) -> Self {
+        Self::new(self.start, end.end)
+    }
 }
 
 impl fmt::Display for Span {

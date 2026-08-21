@@ -6,15 +6,24 @@
 //! milestone-1 subset, bounded by one rule: it is exactly what the store
 //! underneath can execute today.
 //!
-//! This crate holds the lexer today. The parser and the abstract syntax follow,
-//! against the same specification.
+//! This crate reads a script: the lexer turns text into tokens, the parser
+//! turns tokens into the abstract syntax. Nothing here executes anything, and
+//! nothing here is resolved — a table is a name until a transaction reads the
+//! catalog and learns its id.
 
 #![forbid(unsafe_code)]
 
+mod ast;
 mod error;
 mod lexer;
+mod parser;
 mod token;
 
+pub use ast::{
+    Expr, ExprKind, Field, Name, RangeExpr, RecordTarget, Script, Select, Source, Statement,
+    StatementKind, TableRef,
+};
 pub use error::{Error, Result};
 pub use lexer::tokenize;
+pub use parser::parse;
 pub use token::{Keyword, Punct, Span, Spanned, Token};

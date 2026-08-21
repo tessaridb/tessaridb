@@ -11,6 +11,7 @@ publish.workspace = true
 
 [dependencies]
 bgv-db-types.workspace = true
+rust_decimal.workspace = true
 thiserror.workspace = true
 
 [lints]

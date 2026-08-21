@@ -68,6 +68,94 @@ pub enum Error {
         /// Where it is.
         span: Span,
     },
+
+    /// A token the grammar does not allow where it stands.
+    #[error("expected {expected} at {span}, found {found}")]
+    UnexpectedToken {
+        /// What was there, as the language spells it.
+        found: String,
+        /// What would have been accepted.
+        expected: &'static str,
+        /// Where it is.
+        span: Span,
+    },
+
+    /// The script ended in the middle of a statement.
+    #[error("expected {expected}, but the script ended at {span}")]
+    UnexpectedEnd {
+        /// What would have been accepted.
+        expected: &'static str,
+        /// The end of the source.
+        span: Span,
+    },
+
+    /// Something the language will have and this milestone does not.
+    ///
+    /// Separate from [`Error::UnexpectedToken`] because the two say different
+    /// things to whoever reads them: one is a typo, the other is a feature that
+    /// is absent on purpose, and telling an author to check their spelling when
+    /// the answer is "not yet" wastes their afternoon.
+    #[error("{feature} is not in this milestone (at {span})")]
+    Unsupported {
+        /// The absent feature, named as `docs/bgvql.md` §8 names it.
+        feature: &'static str,
+        /// Where it was asked for.
+        span: Span,
+    },
+
+    /// Text after `datetime` that is not an instant.
+    #[error("{text:?} at {span} is not an instant: expected RFC 3339, as in 1970-01-01T00:00:00Z")]
+    InvalidDatetime {
+        /// The text as written.
+        text: String,
+        /// Where it is.
+        span: Span,
+    },
+
+    /// Text after `uuid` that is not sixteen bytes.
+    #[error("{text:?} at {span} is not a uuid")]
+    InvalidUuid {
+        /// The text as written.
+        text: String,
+        /// Where it is.
+        span: Span,
+    },
+
+    /// A number after `dec` that no exact decimal can hold.
+    #[error("{text:?} at {span} is not a decimal this store can hold exactly")]
+    InvalidDecimal {
+        /// The text as written.
+        text: String,
+        /// Where it is.
+        span: Span,
+    },
+
+    /// A record identity that is not one of the four kinds a record id has.
+    #[error("a record id is an integer, text, a uuid or bytes (at {span})")]
+    InvalidRecordId {
+        /// Where the identity was written.
+        span: Span,
+    },
+
+    /// `RANGE` followed by something that is not a range.
+    #[error("expected a range such as 'a'..'m' at {span}")]
+    NotARange {
+        /// Where the expression was written.
+        span: Span,
+    },
+
+    /// An object literal that names one field twice.
+    ///
+    /// Refused rather than resolved: keeping either occurrence stores a value
+    /// the author did not write, and nothing downstream can tell which one was
+    /// meant.
+    #[error("field {name:?} is written twice in one object (at {span})")]
+    DuplicateField {
+        /// The field's name.
+        name: String,
+        /// Where the second occurrence is.
+        span: Span,
+    },
 }
 
 impl Error {
@@ -80,7 +168,16 @@ impl Error {
             | Self::InvalidEscape { span, .. }
             | Self::InvalidNumber { span, .. }
             | Self::InvalidBytes { span, .. }
-            | Self::InvalidDuration { span, .. } => *span,
+            | Self::InvalidDuration { span, .. }
+            | Self::UnexpectedToken { span, .. }
+            | Self::UnexpectedEnd { span, .. }
+            | Self::Unsupported { span, .. }
+            | Self::InvalidDatetime { span, .. }
+            | Self::InvalidUuid { span, .. }
+            | Self::InvalidDecimal { span, .. }
+            | Self::InvalidRecordId { span }
+            | Self::NotARange { span }
+            | Self::DuplicateField { span, .. } => *span,
         }
     }
 }
