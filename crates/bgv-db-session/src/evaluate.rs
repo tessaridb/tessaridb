@@ -219,6 +219,22 @@ fn satisfies(held: &Value, test: Test, wanted: &Value) -> bool {
         Test::Equals => held == wanted,
         Test::Like => like(held, wanted, false),
         Test::Ilike => like(held, wanted, true),
+        Test::Contains => holds(held, wanted),
+    }
+}
+
+/// Membership: does this collection hold that value.
+///
+/// A different question from [`Test::Like`], which is why the language has both.
+/// Only a collection answers it — a field holding a single value is not a
+/// one-element collection, because treating it as one would make
+/// `name CONTAINS 'ada'` quietly mean `name = 'ada'` and hide a mistake in the
+/// query rather than showing it as no match.
+fn holds(held: &Value, wanted: &Value) -> bool {
+    match held {
+        Value::Array(items) => items.contains(wanted),
+        Value::Set(items) => items.contains(wanted),
+        _ => false,
     }
 }
 

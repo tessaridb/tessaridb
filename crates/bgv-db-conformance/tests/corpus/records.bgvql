@@ -118,3 +118,21 @@ SELECT * FROM users WHERE name LIKE '%babbage%';
 --- case: an indexed equality still goes through the index
 SELECT * FROM users WHERE email = 'ada@example.com';
 --- expect: rows 1
+
+--- case: a collection field answers membership
+CREATE users:'tagged' = { name: 'grace hopper', tags: ['urgent', 'review'] };
+SELECT * FROM users WHERE tags CONTAINS 'urgent';
+--- expect: rows 1
+
+--- case: a set answers it too
+CREATE users:'setty' = { name: 'katherine', tags: set ['alpha', 'beta'] };
+SELECT * FROM users WHERE tags CONTAINS 'beta';
+--- expect: rows 1
+
+--- case: membership is not substring
+SELECT * FROM users WHERE tags CONTAINS 'urg';
+--- expect: rows 0
+
+--- case: a single value is not a one-element collection
+SELECT * FROM users WHERE name CONTAINS 'grace hopper';
+--- expect: rows 0

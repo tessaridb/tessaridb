@@ -323,6 +323,42 @@ fn a_key_value_space_holds_whole_values_and_replaces_them() {
 }
 
 #[test]
+fn membership_asks_a_different_question_from_a_pattern() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE notes;\n\
+             CREATE notes:1 = { body: 'urgent review', tags: ['urgent', 'review'] };",
+        )
+        .unwrap();
+
+    let member = session
+        .run("SELECT * FROM notes WHERE tags CONTAINS 'urgent';")
+        .unwrap();
+    assert_eq!(member[0].records().unwrap().len(), 1);
+
+    // Membership is exact on the element — not a substring of it.
+    let partial = session
+        .run("SELECT * FROM notes WHERE tags CONTAINS 'urg';")
+        .unwrap();
+    assert!(partial[0].records().unwrap().is_empty());
+
+    // And a single value is not a one-element collection, so a query that
+    // confuses the two finds nothing rather than looking right.
+    let scalar = session
+        .run("SELECT * FROM notes WHERE body CONTAINS 'urgent review';")
+        .unwrap();
+    assert!(scalar[0].records().unwrap().is_empty());
+
+    // The text question is still answered by the text test.
+    let text = session
+        .run("SELECT * FROM notes WHERE body LIKE '%urgent%';")
+        .unwrap();
+    assert_eq!(text[0].records().unwrap().len(), 1);
+}
+
+#[test]
 fn a_missing_key_and_a_stored_null_are_different_answers() {
     // The whole reason the value system carries both.
     let store = store();

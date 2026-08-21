@@ -202,6 +202,8 @@ pub enum Keyword {
     From,
     /// `WHERE`
     Where,
+    /// `CONTAINS` — membership: does this collection hold that value.
+    Contains,
     /// `LIKE` — a pattern over the whole value, as SQL spells it.
     Like,
     /// `ILIKE` — the same, ignoring case.
@@ -266,6 +268,7 @@ impl Keyword {
             Self::Select => "SELECT",
             Self::From => "FROM",
             Self::Where => "WHERE",
+            Self::Contains => "CONTAINS",
             Self::Like => "LIKE",
             Self::Ilike => "ILIKE",
             Self::Update => "UPDATE",
@@ -308,6 +311,7 @@ impl Keyword {
         Self::Select,
         Self::From,
         Self::Where,
+        Self::Contains,
         Self::Like,
         Self::Ilike,
         Self::Update,

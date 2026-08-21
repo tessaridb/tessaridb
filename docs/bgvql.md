@@ -182,6 +182,7 @@ A `WHERE` names a field and a test:
 SELECT * FROM users WHERE email = 'ada@example.com';
 SELECT * FROM notes WHERE body LIKE '%lovelace%';
 SELECT * FROM notes WHERE body ILIKE 'ada%';
+SELECT * FROM notes WHERE tags CONTAINS 'urgent';
 ```
 
 `=` is exact equality on the whole value. `LIKE` is SQL's pattern match, and it
@@ -191,8 +192,16 @@ of characters, `_` for exactly one, and `\` escapes either. That whole-value
 anchoring is why a substring search is written `'%text%'`. `ILIKE` is the same
 test ignoring case.
 
-Only text satisfies a text pattern — a number in that field is not an error, the
-record simply does not match.
+`CONTAINS` is a different question again: **membership**, not text. `tags
+CONTAINS 'urgent'` asks whether an array or a set holds that element, where
+`body LIKE '%urgent%'` asks whether text holds those characters. Both exist
+because both are asked, and neither is a spelling of the other.
+
+Only text satisfies a text pattern, and only a collection satisfies membership —
+a number in that field is not an error, the record simply does not match. A field
+holding a single value is **not** a one-element collection, so `name CONTAINS
+'ada'` finds nothing rather than quietly meaning `name = 'ada'`: a mistake in the
+query should show as no match, not as a right-looking answer.
 
 Deliberately nothing cleverer: no tokenising, no stemming, no ranking. Those
 belong to an analyzer, and a scan-shaped approximation of one now would give

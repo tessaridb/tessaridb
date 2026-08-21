@@ -342,6 +342,21 @@ fn a_pattern_match_is_its_own_test_rather_than_an_equality() {
 }
 
 #[test]
+fn membership_and_pattern_matching_are_different_tests() {
+    // `CONTAINS` asks whether a collection holds a value; `LIKE` asks whether
+    // text holds characters. Neither is a spelling of the other.
+    let StatementKind::Select(select) = one("SELECT * FROM notes WHERE tags CONTAINS 'urgent';")
+    else {
+        panic!("expected a read");
+    };
+    let Source::Filter { field, test, .. } = select.from else {
+        panic!("expected a filtered read");
+    };
+    assert_eq!(field.text, "tags");
+    assert_eq!(test, Test::Contains);
+}
+
+#[test]
 fn a_qualified_name_wins_over_the_session() {
     let StatementKind::Select(select) = one("SELECT * FROM orders.users;") else {
         panic!("expected a read");

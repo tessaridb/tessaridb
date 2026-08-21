@@ -196,8 +196,10 @@ impl Parser<'_> {
                 Test::Like
             } else if self.eat_keyword(Keyword::Ilike) {
                 Test::Ilike
+            } else if self.eat_keyword(Keyword::Contains) {
+                Test::Contains
             } else {
-                self.expect_punct(Punct::Equals, "`=`, `LIKE` or `ILIKE`")?;
+                self.expect_punct(Punct::Equals, "`=`, `LIKE`, `ILIKE` or `CONTAINS`")?;
                 Test::Equals
             };
             Source::Filter {

@@ -215,6 +215,13 @@ pub enum Test {
     Like,
     /// The same, ignoring case.
     Ilike,
+    /// The field is a collection, and it holds this value.
+    ///
+    /// Membership, not substring — a different question from [`Test::Like`],
+    /// which is why both exist. `tags CONTAINS 'urgent'` asks whether an array
+    /// or a set holds that element; `body LIKE '%urgent%'` asks whether text
+    /// contains those characters.
+    Contains,
 }
 
 /// A value written in the source.
