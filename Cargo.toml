@@ -21,6 +21,7 @@ bgv-db-lsm = { path = "crates/bgv-db-lsm" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
+rust_decimal = { version = "1", default-features = false, features = ["std"] }
 
 proptest = "1"
 

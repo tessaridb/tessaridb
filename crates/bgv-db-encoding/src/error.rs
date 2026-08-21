@@ -133,6 +133,33 @@ pub enum Error {
         len: usize,
     },
 
+    /// A payload carried a value type this build does not know.
+    ///
+    /// Not corruption: the bytes are well-formed and a newer build would read
+    /// them. Guessing a type from the bytes that follow would silently produce
+    /// a wrong value, which is worse than refusing.
+    #[error("stored value carries unknown type tag 0x{tag:02x}")]
+    UnknownValueTag {
+        /// The tag that was found.
+        tag: u8,
+    },
+
+    /// A decimal's mantissa and scale do not describe a representable number.
+    #[error("stored decimal has mantissa {mantissa} and scale {scale}, which is out of range")]
+    InvalidDecimal {
+        /// The unscaled value read.
+        mantissa: i128,
+        /// The number of fractional digits read.
+        scale: u32,
+    },
+
+    /// A sub-second remainder was a whole second or more.
+    #[error("stored time has a sub-second remainder of {nanos}, which is a whole second or more")]
+    InvalidSubSecond {
+        /// The remainder read.
+        nanos: u32,
+    },
+
     /// The store's on-disk format version is newer than this build supports.
     #[error("store on-disk format version is {found}, this build supports up to {supported}")]
     UnsupportedFormatVersion {
@@ -160,9 +187,12 @@ impl Error {
             | Self::UnknownRecordIdKind { .. }
             | Self::InvalidUtf8 { .. }
             | Self::ValueTruncated { .. }
-            | Self::TombstoneWithPayload { .. } => ErrorCategory::Corruption,
+            | Self::TombstoneWithPayload { .. }
+            | Self::InvalidDecimal { .. }
+            | Self::InvalidSubSecond { .. } => ErrorCategory::Corruption,
             Self::UnsupportedCodecVersion { .. }
             | Self::ReservedFlags { .. }
+            | Self::UnknownValueTag { .. }
             | Self::UnsupportedFormatVersion { .. } => ErrorCategory::Incompatible,
         }
     }

@@ -32,7 +32,7 @@ it is a general-purpose database that happens to have a demanding first user.
 |---|---|
 | **Multi-model** | Documents, graph edges, relational tables and columns, vectors, full-text, time-series — over one record store, not bolted together |
 | **One query language** | **bgvQL** — a single surface for every model, including graph traversal and vector search |
-| **Pluggable storage** | Everything above the key–value layer is written against a trait. In-memory and RocksDB first |
+| **Pluggable storage** | Everything above the key–value layer is written against one trait, and two backends prove it: in-memory, and durable on a log-structured merge-tree engine |
 | **Transactional** | Real transactions with a declared isolation level, not best-effort batching |
 | **Real-time** | Change subscriptions as a first-class feature, not polling |
 | **Deployable three ways** | Embedded library · single self-hosted node · multi-node cluster with sharding and replication |
@@ -53,7 +53,7 @@ outward.
 
 ```
 crates/
-  bgv-db-types        leaf   value types, record ids, newtypes
+  bgv-db-types        leaf   the value system, record ids, newtypes
   bgv-db-constants    leaf   tunables, each with unit and rationale
   bgv-db-kv                  key-value contract, conformance suite, in-memory backend
   bgv-db-lsm                 persistent backend, durability levels, engine options

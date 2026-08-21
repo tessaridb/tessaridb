@@ -12,6 +12,10 @@ publish.workspace = true
 [dependencies]
 thiserror.workspace = true
 serde.workspace = true
+rust_decimal.workspace = true
+
+[dev-dependencies]
+rust_decimal.workspace = true
 
 [lints]
 workspace = true

@@ -30,6 +30,7 @@ mod error;
 mod keys;
 mod kind;
 mod order;
+mod payload;
 mod record_id;
 mod value;
 
@@ -39,4 +40,5 @@ pub use keys::{
 };
 pub use kind::KeyKind;
 pub use order::{KeyReader, KeyWriter};
+pub use payload::{decode as decode_payload, encode as encode_payload};
 pub use value::{CODEC_VERSION, FormatVersion, LogRecord, Mutation, RecordValue, StoreValue};
