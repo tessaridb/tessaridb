@@ -166,6 +166,17 @@ impl LsmBackend {
     /// readiness checklist asks to see asserted rather than assumed, because a
     /// compaction that dropped a live record would do it silently.
     ///
+    /// **It triggers a flush, and that is safe here for a reason worth naming.**
+    /// A manual compaction flushes the memtable first, and a per-region flush is
+    /// exactly what `atomic_flush` was set to prevent — a crash between two
+    /// regions' flushes could restore one past the other. Checked at the code
+    /// path rather than assumed: RocksDB 11.8.1
+    /// `db/db_impl/db_impl_compaction_flush.cc:1341` routes
+    /// `CompactRangeInternal` to `AtomicFlushMemTables` when `atomic_flush` is
+    /// set, so the flush a compaction triggers covers every region even though
+    /// this call names one. KB `invariant-wal-protects-regions` carries the
+    /// argument, and this method is why that entry had to be revisited.
+    ///
     /// Expensive by construction: it rewrites every level of every region. Not
     /// something to put on a timer.
     ///
