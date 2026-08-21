@@ -179,3 +179,44 @@ SELECT * FROM staff WHERE handle LIKE '%smith';
 --- case: ILIKE answers the folded question over a scan
 SELECT * FROM staff WHERE handle ILIKE 'ADA%';
 --- expect: rows 2
+
+--- case: a declared field constrains what a record may hold there
+DEFINE TABLE people;
+DEFINE FIELD age ON people TYPE int;
+CREATE people:1 = { age: 34 };
+--- expect: ok
+
+--- case: the wrong type in a declared field is refused
+CREATE people:2 = { age: 'thirty four' };
+--- expect: error SchemaViolation
+
+--- case: absent and null both satisfy a declaration
+CREATE people:3 = { name: 'grace' };
+CREATE people:4 = { age: NULL };
+--- expect: ok
+
+--- case: a declaration made after the rows constrains the rows that predate it
+DEFINE TABLE guests2;
+CREATE guests2:1 = { handle: 'ada' };
+DEFINE FIELD handle ON guests2 TYPE string;
+CREATE guests2:2 = { handle: 3 };
+--- expect: error SchemaViolation
+
+--- case: declaring a field over rows that already violate it is refused
+DEFINE TABLE visitors;
+CREATE visitors:1 = { handle: 7 };
+DEFINE FIELD handle ON visitors TYPE string;
+--- expect: error SchemaViolation
+
+--- case: a schemafull table refuses a field it does not declare
+DEFINE TABLE ledger SCHEMAFULL;
+DEFINE FIELD amount ON ledger TYPE decimal;
+CREATE ledger:1 = { amount: dec 12.34 };
+CREATE ledger:2 = { amuont: dec 12.34 };
+--- expect: error UndeclaredField
+
+--- case: a schemaless table accepts the same misspelling in silence
+DEFINE TABLE notes;
+DEFINE FIELD amount ON notes TYPE decimal;
+CREATE notes:1 = { amuont: dec 12.34 };
+--- expect: ok

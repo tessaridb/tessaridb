@@ -26,8 +26,10 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DefineTable { .. } => "DEFINE TABLE",
         StatementKind::DefineSpace { .. } => "DEFINE SPACE",
         StatementKind::DefineIndex { .. } => "DEFINE INDEX",
+        StatementKind::DefineField { .. } => "DEFINE FIELD",
         StatementKind::DropTable { .. } => "DROP TABLE",
         StatementKind::DropIndex { .. } => "DROP INDEX",
+        StatementKind::DropField { .. } => "DROP FIELD",
         StatementKind::Create { .. } => "CREATE",
         StatementKind::Select(_) => "SELECT",
         StatementKind::Update { .. } => "UPDATE",
@@ -53,8 +55,10 @@ pub const FORMS: &[&str] = &[
     "DEFINE TABLE",
     "DEFINE SPACE",
     "DEFINE INDEX",
+    "DEFINE FIELD",
     "DROP TABLE",
     "DROP INDEX",
+    "DROP FIELD",
     "CREATE",
     "SELECT",
     "UPDATE",
@@ -105,8 +109,10 @@ mod tests {
              DEFINE TABLE t;\
              DEFINE SPACE s;\
              DEFINE INDEX i ON t FIELDS f;\
+             DEFINE FIELD f ON t TYPE string;\
              DROP TABLE t;\
              DROP INDEX i ON t;\
+             DROP FIELD f ON t;\
              CREATE t:1 = 1;\
              SELECT * FROM t;\
              UPDATE t:1 = 1;\

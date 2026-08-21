@@ -23,6 +23,7 @@ const FIELD_DATABASE: &str = "database";
 const FIELD_TABLE: &str = "table";
 const FIELD_FIELDS: &str = "fields";
 const FIELD_UNIQUE: &str = "unique";
+const FIELD_SCHEMAFULL: &str = "schemafull";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +56,13 @@ pub struct TableDefinition {
     pub database: DatabaseId,
     /// Its name, unique within that database.
     pub name: String,
+    /// Whether the table refuses a field it has no definition for.
+    ///
+    /// False is the schemaless default: declared fields are constrained and
+    /// anything else passes. True is what turns a set of field declarations into
+    /// a schema, because the mistake worth catching — a misspelled field name —
+    /// writes a field nobody declared.
+    pub schemafull: bool,
 }
 
 impl NamespaceDefinition {
@@ -118,10 +126,15 @@ impl TableDefinition {
             (FIELD_NAMESPACE.to_owned(), number(self.namespace.get())),
             (FIELD_DATABASE.to_owned(), number(self.database.get())),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
+            (FIELD_SCHEMAFULL.to_owned(), Value::Bool(self.schemafull)),
         ]))
     }
 
     /// Read a definition back.
+    ///
+    /// An entry written before tables could carry a schema has no `schemafull`
+    /// field, and reads as schemaless — which is what such a table is. Refusing
+    /// it instead would make an added constraint unreadable rather than absent.
     ///
     /// # Errors
     ///
@@ -129,11 +142,23 @@ impl TableDefinition {
     /// wrong type.
     pub fn from_value(value: &Value) -> Result<Self> {
         let fields = object(value, "table")?;
+        let schemafull = match fields.get(FIELD_SCHEMAFULL) {
+            Some(Value::Bool(declared)) => *declared,
+            None => false,
+            Some(other) => {
+                return Err(Error::CatalogMalformed {
+                    entity: "table",
+                    field: FIELD_SCHEMAFULL,
+                    found: other.type_name(),
+                });
+            }
+        };
         Ok(Self {
             id: TableId::new(field_id(fields, FIELD_ID, "table")?),
             namespace: NamespaceId::new(field_id(fields, FIELD_NAMESPACE, "table")?),
             database: DatabaseId::new(field_id(fields, FIELD_DATABASE, "table")?),
             name: field_name(fields, "table")?,
+            schemafull,
         })
     }
 }
@@ -235,7 +260,10 @@ pub(crate) fn number(id: u32) -> Value {
     Value::Number(Number::Integer(i64::from(id)))
 }
 
-fn object<'a>(value: &'a Value, entity: &'static str) -> Result<&'a BTreeMap<String, Value>> {
+pub(crate) fn object<'a>(
+    value: &'a Value,
+    entity: &'static str,
+) -> Result<&'a BTreeMap<String, Value>> {
     match value {
         Value::Object(fields) => Ok(fields),
         other => Err(Error::CatalogMalformed {
@@ -277,7 +305,7 @@ pub(crate) fn field_id(
     }
 }
 
-fn field_name(fields: &BTreeMap<String, Value>, entity: &'static str) -> Result<String> {
+pub(crate) fn field_name(fields: &BTreeMap<String, Value>, entity: &'static str) -> Result<String> {
     match fields.get(FIELD_NAME) {
         Some(Value::String(name)) => Ok(name.clone()),
         other => Err(Error::CatalogMalformed {
@@ -320,11 +348,37 @@ mod tests {
             namespace: NamespaceId::new(7),
             database: DatabaseId::new(3),
             name: "line_items".to_owned(),
+            schemafull: true,
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),
             table
         );
+    }
+
+    #[test]
+    fn a_table_entry_written_before_schemas_existed_reads_as_schemaless() {
+        let fields = BTreeMap::from([
+            (FIELD_ID.to_owned(), number(11)),
+            (FIELD_NAMESPACE.to_owned(), number(7)),
+            (FIELD_DATABASE.to_owned(), number(3)),
+            (FIELD_NAME.to_owned(), Value::from("line_items")),
+        ]);
+        let read = TableDefinition::from_value(&Value::Object(fields)).unwrap();
+        assert!(!read.schemafull);
+    }
+
+    #[test]
+    fn a_schemafull_flag_that_is_not_a_boolean_is_refused_rather_than_read_as_false() {
+        let fields = BTreeMap::from([
+            (FIELD_ID.to_owned(), number(11)),
+            (FIELD_NAMESPACE.to_owned(), number(7)),
+            (FIELD_DATABASE.to_owned(), number(3)),
+            (FIELD_NAME.to_owned(), Value::from("line_items")),
+            (FIELD_SCHEMAFULL.to_owned(), Value::from("yes")),
+        ]);
+        let error = TableDefinition::from_value(&Value::Object(fields)).unwrap_err();
+        assert_eq!(error.code(), "corruption");
     }
 
     #[test]

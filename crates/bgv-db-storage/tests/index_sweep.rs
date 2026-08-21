@@ -91,7 +91,7 @@ impl Fixture {
         let namespace = catalog.create_namespace("prod").unwrap();
         let database = catalog.create_database(namespace.id, "orders").unwrap();
         let table = catalog
-            .create_table(namespace.id, database.id, "people")
+            .create_table(namespace.id, database.id, "people", false)
             .unwrap();
         let indexes = vec![
             catalog

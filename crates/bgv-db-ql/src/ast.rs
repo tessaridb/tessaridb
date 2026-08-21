@@ -20,7 +20,7 @@
 //!
 //! [`TableId`]: bgv_db_types::TableId
 
-use bgv_db_types::{RecordId, Value};
+use bgv_db_types::{FieldKind, RecordId, Value};
 
 use crate::token::Span;
 
@@ -69,10 +69,12 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
-    /// `DEFINE TABLE users`
+    /// `DEFINE TABLE users SCHEMAFULL`
     DefineTable {
         /// The name to create.
         name: Name,
+        /// Whether the table refuses a field it does not declare.
+        schemafull: bool,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -95,6 +97,24 @@ pub enum StatementKind {
         unique: bool,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
+    },
+    /// `DEFINE FIELD email ON users TYPE string`
+    DefineField {
+        /// The field's name, unique within its table.
+        name: Name,
+        /// The table it is declared on.
+        table: TableRef,
+        /// What the field is allowed to hold.
+        kind: FieldKind,
+        /// Whether re-declaring an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DROP FIELD email ON users` — removes the declaration, not the data.
+    DropField {
+        /// The field's name.
+        name: Name,
+        /// The table it was declared on.
+        table: TableRef,
     },
     /// `DROP TABLE users` — removes the definition, not the records.
     DropTable {

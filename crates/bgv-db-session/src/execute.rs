@@ -3,7 +3,7 @@
 use bgv_db_encoding::encode_payload;
 use bgv_db_ql::{Name, Span, StatementKind, TableRef};
 use bgv_db_storage::{Catalog, Transaction};
-use bgv_db_types::{IndexId, RecordId, TableId};
+use bgv_db_types::{FieldId, FieldKind, IndexId, RecordId, TableId};
 
 use crate::error::{Error, Result};
 use crate::evaluate::{key_bound, within};
@@ -28,12 +28,27 @@ impl Session<'_> {
             } => self.define_database(transaction, name, *if_not_exists, span),
             StatementKind::DefineTable {
                 name,
+                schemafull,
                 if_not_exists,
-            }
-            | StatementKind::DefineSpace {
+            } => self.define_table(transaction, name, *schemafull, *if_not_exists, span),
+            // A space holds single values rather than named fields (ADR-0010),
+            // so there is nothing for a schema to declare about one.
+            StatementKind::DefineSpace {
                 name,
                 if_not_exists,
-            } => self.define_table(transaction, name, *if_not_exists, span),
+            } => self.define_table(transaction, name, false, *if_not_exists, span),
+            StatementKind::DefineField {
+                name,
+                table,
+                kind,
+                if_not_exists,
+            } => self.define_field(transaction, name, table, *kind, *if_not_exists),
+            StatementKind::DropField { name, table } => {
+                let (_, id) = self.resolve_table(transaction, table)?;
+                let field = self.field_named(transaction, id, name)?;
+                Catalog::new(transaction).drop_field(field)?;
+                Ok(Outcome::Done)
+            }
             StatementKind::DefineIndex {
                 name,
                 table,
@@ -151,6 +166,7 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
+        schemafull: bool,
         if_not_exists: bool,
         span: Span,
     ) -> Result<Outcome> {
@@ -162,7 +178,12 @@ impl Session<'_> {
         {
             return Ok(Outcome::Done);
         }
-        Catalog::new(transaction).create_table(context.namespace, context.database, &name.text)?;
+        Catalog::new(transaction).create_table(
+            context.namespace,
+            context.database,
+            &name.text,
+            schemafull,
+        )?;
         Ok(Outcome::Done)
     }
 
@@ -189,6 +210,48 @@ impl Session<'_> {
         let fields = fields.iter().map(|field| field.text.clone()).collect();
         Catalog::new(transaction).create_index(id, &name.text, fields, unique)?;
         Ok(Outcome::Done)
+    }
+
+    /// The declaration is written here; the rows answer for it in the commit.
+    ///
+    /// Nothing more is needed at this layer, for the reason `define_index` needs
+    /// nothing more: a catalog entry is an ordinary record, so the store's schema
+    /// check sees the declaration in the same log record and holds every row of
+    /// the table to it — the ones already there and the ones this transaction
+    /// writes. The declaration and the rows it constrains land together or
+    /// neither does.
+    fn define_field(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        table: &TableRef,
+        kind: FieldKind,
+        if_not_exists: bool,
+    ) -> Result<Outcome> {
+        let (_, id) = self.resolve_table(transaction, table)?;
+        if if_not_exists && self.field_named(transaction, id, name).is_ok() {
+            return Ok(Outcome::Done);
+        }
+        Catalog::new(transaction).create_field(id, &name.text, kind)?;
+        Ok(Outcome::Done)
+    }
+
+    fn field_named(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: TableId,
+        name: &Name,
+    ) -> Result<FieldId> {
+        Catalog::new(transaction)
+            .fields_on(table)?
+            .into_iter()
+            .find(|field| field.name == name.text)
+            .map(|field| field.id)
+            .ok_or_else(|| Error::Unknown {
+                entity: "field",
+                name: name.text.clone(),
+                span: name.span,
+            })
     }
 
     fn index_named(

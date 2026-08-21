@@ -1,0 +1,279 @@
+//! Refusing records that disagree with what their table declares.
+//!
+//! # Why the store and not the layer above it
+//!
+//! A schema the session checks is a schema every other writer bypasses, and the
+//! store is the thing that must never hold data contradicting its own catalog.
+//! So the check lives on the apply path, beside index maintenance, and for the
+//! same three reasons that put index entries there:
+//!
+//! - it is a pure function of the log record and the catalog, so a replica
+//!   reaches the same verdict as the leader without anything being sent;
+//! - the catalog is itself in the log, so a declaration and the rows it
+//!   constrains are decided against one another at one position;
+//! - a refusal fails the whole commit, so a transaction never lands half
+//!   constrained.
+//!
+//! # What a declaration constrains
+//!
+//! A [`FieldKind`] constrains a **present, non-null** value. `none` passes,
+//! because the field is not there — the rule an index already applies to a
+//! record missing an indexed field — and `null` passes, because that is SQL's
+//! rule for a typed column. So `TYPE string` does not make a field mandatory;
+//! requiring a value is a separate constraint this milestone does not have.
+//!
+//! A `SCHEMAFULL` table additionally refuses a field it has no declaration for.
+//! That is what turns a set of declarations into a schema, because the mistake
+//! worth catching writes a field nobody declared: `stauts` for `status` creates
+//! a field, raises nothing, and quietly drops the record out of every query
+//! filtering on the name that was meant.
+//!
+//! # Two passes, for the reason index maintenance needs two
+//!
+//! The first checks each record this log record writes. The second exists
+//! because a declaration made *by this record* is invisible to a catalog read
+//! taken below it: a `DEFINE FIELD`, or a `DEFINE TABLE … SCHEMAFULL`, must
+//! constrain the rows already there — otherwise a constraint could be declared
+//! over data that violates it, and every reader afterwards would believe it
+//! held. So the second pass re-checks every row of any table whose schema this
+//! record tightens: the committed rows overlaid with this record's own writes.
+//!
+//! Both passes check against the schema **as it will stand after the commit**,
+//! which is what lets a row and the declaration constraining it arrive in either
+//! order within one transaction.
+//!
+//! # What it costs
+//!
+//! Declaring a field reads the whole table inside the commit, exactly as
+//! defining an index does, and fails with [`Error::CommitContention`] rather
+//! than half-applying when the pass outlasts the gap between concurrent writes.
+//!
+//! Writing an ordinary record costs a snapshot plus, per table the record
+//! touches, one point read of the table definition and one scan of the field
+//! catalog — built once per commit and cached across the record's mutations.
+//! **A table that declares nothing pays this too**, because finding out that it
+//! declares nothing is the scan. That is the same cost [`crate::index`] already
+//! pays through `indexes_on`, and it is honest at catalog scale rather than at
+//! table scale; when it stops being honest the answer is a cache keyed by the
+//! catalog's own version, shared by both, not a cleverer scan in each.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use bgv_db_encoding::{LogRecord, RecordValue, decode_payload};
+use bgv_db_types::{DatabaseId, FieldKind, NamespaceId, RecordId, TableId, Value};
+
+use crate::catalog::{Catalog, CatalogChange, catalog_change};
+use crate::error::{Error, Result};
+use crate::store::Store;
+use crate::transaction::Transaction;
+
+/// Where a table lives, and what it declares, once this record is applied.
+#[derive(Debug, Default)]
+struct TableSchema {
+    /// Declared fields, by name.
+    fields: BTreeMap<String, FieldKind>,
+    /// Whether an undeclared field is refused.
+    schemafull: bool,
+}
+
+impl TableSchema {
+    /// Whether this schema can refuse anything at all.
+    ///
+    /// A schemaless table with no declarations constrains nothing, and skipping
+    /// it is what keeps the check off the path of every table that has no
+    /// schema — which, until someone declares one, is every table.
+    fn constrains_nothing(&self) -> bool {
+        self.fields.is_empty() && !self.schemafull
+    }
+}
+
+/// A table addressed the way a scan needs it.
+type TableAddress = (NamespaceId, DatabaseId, TableId);
+
+/// Refuse the record if any of its writes disagrees with its table's schema.
+///
+/// # Errors
+///
+/// Returns [`Error::SchemaViolation`] when a declared field holds the wrong
+/// type, [`Error::UndeclaredField`] when a `SCHEMAFULL` table is written a field
+/// it does not declare, and a substrate or decoding failure otherwise.
+pub(crate) fn validate(store: &Store, record: &LogRecord) -> Result<()> {
+    let tightened = tightened_tables(record)?;
+    let touched: BTreeSet<TableAddress> = record
+        .mutations()
+        .iter()
+        .filter(|mutation| matches!(mutation.value, RecordValue::Present(_)))
+        .map(|mutation| (mutation.namespace, mutation.database, mutation.table))
+        .filter(|address| !is_system(address))
+        .collect();
+    if tightened.is_empty() && touched.is_empty() {
+        return Ok(());
+    }
+
+    let mut view = store.begin()?;
+    let mut schemas: BTreeMap<TableId, TableSchema> = BTreeMap::new();
+    for address in touched.iter().chain(tightened.iter()) {
+        let schema = build_schema(&mut view, record, address.2)?;
+        schemas.insert(address.2, schema);
+    }
+
+    for mutation in record.mutations() {
+        let address = (mutation.namespace, mutation.database, mutation.table);
+        if is_system(&address) {
+            continue;
+        }
+        let RecordValue::Present(payload) = &mutation.value else {
+            continue;
+        };
+        let Some(schema) = schemas.get(&mutation.table) else {
+            continue;
+        };
+        if schema.constrains_nothing() {
+            continue;
+        }
+        check(
+            schema,
+            &decode_payload(payload)?,
+            mutation.table,
+            &mutation.id,
+        )?;
+    }
+
+    for address in &tightened {
+        let Some(schema) = schemas.get(&address.2) else {
+            continue;
+        };
+        if schema.constrains_nothing() {
+            continue;
+        }
+        for (id, payload) in rows_after(&view, record, address)? {
+            check(schema, &decode_payload(&payload)?, address.2, &id)?;
+        }
+    }
+    Ok(())
+}
+
+/// One record's fields, against the table's declarations.
+fn check(schema: &TableSchema, value: &Value, table: TableId, id: &RecordId) -> Result<()> {
+    // A record that is not an object has no named fields to constrain. The
+    // key-value model stores single values that way (ADR-0010), and a field
+    // declaration on such a table describes something that is not there.
+    let Value::Object(fields) = value else {
+        return Ok(());
+    };
+    for (name, held) in fields {
+        match schema.fields.get(name.as_str()) {
+            Some(kind) if !kind.accepts(held) => {
+                return Err(Error::SchemaViolation {
+                    table: table.get(),
+                    record: id.to_string(),
+                    field: name.clone(),
+                    declared: kind.name(),
+                    found: held.type_name(),
+                });
+            }
+            Some(_) => {}
+            None if schema.schemafull => {
+                return Err(Error::UndeclaredField {
+                    table: table.get(),
+                    record: id.to_string(),
+                    field: name.clone(),
+                });
+            }
+            None => {}
+        }
+    }
+    Ok(())
+}
+
+/// The schema a table will have once this record is applied.
+fn build_schema(
+    view: &mut Transaction<'_>,
+    record: &LogRecord,
+    table: TableId,
+) -> Result<TableSchema> {
+    let mut schemafull = Catalog::new(view)
+        .table(table)?
+        .is_some_and(|found| found.schemafull);
+    let mut fields: BTreeMap<String, FieldKind> = Catalog::new(view)
+        .fields_on(table)?
+        .into_iter()
+        .map(|declared| (declared.name, declared.kind))
+        .collect();
+
+    for mutation in record.mutations() {
+        match catalog_change(mutation)? {
+            Some(CatalogChange::TableDefined(declared)) if declared.id == table => {
+                schemafull = declared.schemafull;
+            }
+            Some(CatalogChange::FieldDefined(declared)) if declared.table == table => {
+                fields.insert(declared.name, declared.kind);
+            }
+            // A tombstone carries only the field's id, so what it removed has to
+            // be read back from the state this record is applied on top of.
+            Some(CatalogChange::FieldDropped(address)) => {
+                if let Some(payload) = view.get(&address)? {
+                    let dropped =
+                        crate::catalog::FieldDefinition::from_value(&decode_payload(&payload)?)?;
+                    if dropped.table == table {
+                        fields.remove(&dropped.name);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(TableSchema { fields, schemafull })
+}
+
+/// Tables whose schema this record **tightens**, whose existing rows therefore
+/// have to be re-checked.
+///
+/// Loosening never needs a re-check: a dropped declaration only widens what is
+/// allowed, and a table redefined schemaless refuses less than it did.
+fn tightened_tables(record: &LogRecord) -> Result<BTreeSet<TableAddress>> {
+    let mut tables = BTreeSet::new();
+    for mutation in record.mutations() {
+        // Only a field declaration is here. A table being *declared* schemafull
+        // is deliberately not: the flag is fixed at creation, and a table being
+        // created has no rows to re-check — the rows a transaction writes
+        // alongside the creation are caught by the first pass, against a schema
+        // this record's own declaration is folded into. If `SCHEMAFULL` ever
+        // becomes something a populated table can be given, this is where the
+        // existing rows are made to answer for it.
+        if let Some(CatalogChange::FieldDefined(declared)) = catalog_change(mutation)? {
+            tables.insert((declared.namespace, declared.database, declared.table));
+        }
+    }
+    Ok(tables)
+}
+
+/// Every row a table holds once this record is applied.
+fn rows_after(
+    view: &Transaction<'_>,
+    record: &LogRecord,
+    address: &TableAddress,
+) -> Result<Vec<(RecordId, Vec<u8>)>> {
+    let mut rows: BTreeMap<RecordId, Vec<u8>> = view
+        .scan_table(address.0, address.1, address.2)?
+        .into_iter()
+        .collect();
+    for mutation in record.mutations() {
+        if (mutation.namespace, mutation.database, mutation.table) != *address {
+            continue;
+        }
+        match &mutation.value {
+            RecordValue::Present(payload) => rows.insert(mutation.id.clone(), payload.clone()),
+            RecordValue::Tombstone => rows.remove(&mutation.id),
+        };
+    }
+    Ok(rows.into_iter().collect())
+}
+
+/// Whether an address is in the reserved tenancy the catalog lives in.
+///
+/// Definitions are the schema; constraining them by one would be circular.
+fn is_system(address: &TableAddress) -> bool {
+    address.0 == crate::catalog::SYSTEM_NAMESPACE && address.1 == crate::catalog::SYSTEM_DATABASE
+}

@@ -19,13 +19,17 @@
 //! [`system::NAMES`], and that shared key is what makes one of them lose. The
 //! read below it is an early, friendlier refusal — not the enforcement.
 
+mod change;
 mod definition;
+mod field;
 mod system;
 
-use bgv_db_encoding::{Mutation, RecordValue, decode_payload, encode_payload};
+use bgv_db_encoding::{decode_payload, encode_payload};
 use bgv_db_types::{DatabaseId, IndexId, NamespaceId, RecordId, TableId, Value};
 
+pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use definition::{DatabaseDefinition, IndexDefinition, NamespaceDefinition, TableDefinition};
+pub use field::FieldDefinition;
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 
 use crate::error::{Error, Result};
@@ -95,6 +99,11 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
 
     /// Create a table inside an existing database.
     ///
+    /// `schemafull` decides whether the table refuses a field it has no
+    /// declaration for. It is fixed at creation: changing it on a populated
+    /// table is a migration, and the honest spelling of one is a drop and a
+    /// redefinition, which re-checks every row through the same path.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::NoSuchParent`] when the database does not exist or does
@@ -105,6 +114,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         namespace: NamespaceId,
         database: DatabaseId,
         name: &str,
+        schemafull: bool,
     ) -> Result<TableDefinition> {
         let parent = self.database(database)?;
         if parent.is_none_or(|found| found.namespace != namespace) {
@@ -121,6 +131,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             namespace,
             database,
             name: name.to_owned(),
+            schemafull,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
@@ -419,34 +430,6 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         };
         Ok(Some(decode_payload(&bytes)?))
     }
-}
-
-/// The index this mutation defines, if it defines one.
-///
-/// A catalog entry is an ordinary record (ADR-0009), so `DEFINE INDEX` reaches
-/// the log as a write into the system index table. Index maintenance asks this
-/// so that it can build a new index's entries in the same commit that defines
-/// it, rather than leaving an index that knows nothing about the rows already
-/// in its table.
-///
-/// # Errors
-///
-/// Returns [`Error::CatalogMalformed`] when the record in the index table is not
-/// a definition, and a decoding failure otherwise.
-pub(crate) fn defined_index(mutation: &Mutation) -> Result<Option<IndexDefinition>> {
-    if mutation.namespace != SYSTEM_NAMESPACE
-        || mutation.database != SYSTEM_DATABASE
-        || mutation.table != system::INDEXES
-    {
-        return Ok(None);
-    }
-    // A dropped index has nothing to build. Its existing entries are left where
-    // they are — unreachable, because index ids are never reused — and reclaiming
-    // them is its own piece of work (Q-33), not this one's.
-    let RecordValue::Present(payload) = &mutation.value else {
-        return Ok(None);
-    };
-    IndexDefinition::from_value(&decode_payload(payload)?).map(Some)
 }
 
 /// An identifier as a record id: widened, never cast.

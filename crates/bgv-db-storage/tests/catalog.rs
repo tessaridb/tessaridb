@@ -28,7 +28,7 @@ fn create_tree(store: &Store, names: (&str, &str, &str)) -> (u32, u32, u32) {
     let namespace = catalog.create_namespace(names.0).unwrap();
     let database = catalog.create_database(namespace.id, names.1).unwrap();
     let table = catalog
-        .create_table(namespace.id, database.id, names.2)
+        .create_table(namespace.id, database.id, names.2, false)
         .unwrap();
     let ids = (namespace.id.get(), database.id.get(), table.id.get());
     transaction.commit().unwrap();
@@ -111,10 +111,10 @@ fn the_same_name_in_two_databases_is_two_different_tables() {
     let first = catalog.create_database(namespace.id, "a").unwrap();
     let second = catalog.create_database(namespace.id, "b").unwrap();
     let left = catalog
-        .create_table(namespace.id, first.id, "users")
+        .create_table(namespace.id, first.id, "users", false)
         .unwrap();
     let right = catalog
-        .create_table(namespace.id, second.id, "users")
+        .create_table(namespace.id, second.id, "users", false)
         .unwrap();
     assert_ne!(left.id, right.id);
     transaction.commit().unwrap();
@@ -164,6 +164,7 @@ fn an_id_is_never_handed_out_again_after_a_drop() {
             bgv_db_types::NamespaceId::new(namespace),
             bgv_db_types::DatabaseId::new(database),
             "gone",
+            false,
         )
         .unwrap();
     // ...but the id is not. A reused id would let a stale key resolve against a
@@ -194,7 +195,7 @@ fn a_table_cannot_be_created_under_a_database_from_another_namespace() {
     let database = catalog.create_database(first.id, "orders").unwrap();
 
     let error = catalog
-        .create_table(second.id, database.id, "users")
+        .create_table(second.id, database.id, "users", false)
         .unwrap_err();
     assert!(matches!(error, Error::NoSuchParent { .. }), "{error}");
 }
@@ -207,7 +208,7 @@ fn defining_a_table_and_writing_to_it_is_one_transaction() {
     let namespace = catalog.create_namespace("prod").unwrap();
     let database = catalog.create_database(namespace.id, "orders").unwrap();
     let table = catalog
-        .create_table(namespace.id, database.id, "users")
+        .create_table(namespace.id, database.id, "users", false)
         .unwrap();
     let address = RecordAddress::new(namespace.id, database.id, table.id, RecordId::from("u1"));
     transaction.put(
@@ -322,10 +323,10 @@ fn two_indexes_on_one_table_cannot_share_a_name_but_two_tables_can() {
     let namespace = catalog.create_namespace("prod").unwrap();
     let database = catalog.create_database(namespace.id, "orders").unwrap();
     let users = catalog
-        .create_table(namespace.id, database.id, "users")
+        .create_table(namespace.id, database.id, "users", false)
         .unwrap();
     let carts = catalog
-        .create_table(namespace.id, database.id, "carts")
+        .create_table(namespace.id, database.id, "carts", false)
         .unwrap();
 
     catalog

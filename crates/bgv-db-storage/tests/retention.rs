@@ -21,7 +21,7 @@ fn tree(store: &Store) -> (u32, u32, u32) {
     let namespace = catalog.create_namespace("prod").unwrap();
     let database = catalog.create_database(namespace.id, "orders").unwrap();
     let table = catalog
-        .create_table(namespace.id, database.id, "users")
+        .create_table(namespace.id, database.id, "users", false)
         .unwrap();
     let ids = (namespace.id.get(), database.id.get(), table.id.get());
     transaction.commit().unwrap();

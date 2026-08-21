@@ -72,6 +72,15 @@ define_id! {
     IndexId(u32)
 }
 
+define_id! {
+    /// Identifies a declared field on a table.
+    ///
+    /// A field carries an id even though nothing keys on it, because the catalog
+    /// keys every definition by its own id and a field is a definition like any
+    /// other. It also means renaming a field rewrites one entry.
+    FieldId(u32)
+}
+
 /// A position in the store's ordered log.
 ///
 /// One number serves two roles, deliberately: it is the log position and it is

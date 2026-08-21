@@ -40,7 +40,7 @@ impl Fixture {
         let namespace = catalog.create_namespace("prod").unwrap();
         let database = catalog.create_database(namespace.id, "orders").unwrap();
         let table = catalog
-            .create_table(namespace.id, database.id, "users")
+            .create_table(namespace.id, database.id, "users", false)
             .unwrap();
         let index = catalog
             .create_index(table.id, "by_email", vec!["email".to_owned()], unique)
@@ -452,7 +452,7 @@ fn table_with_rows(unique: bool) -> Fixture {
     let namespace = catalog.create_namespace("prod").unwrap();
     let database = catalog.create_database(namespace.id, "orders").unwrap();
     let table = catalog
-        .create_table(namespace.id, database.id, "users")
+        .create_table(namespace.id, database.id, "users", false)
         .unwrap();
     transaction.commit().unwrap();
 

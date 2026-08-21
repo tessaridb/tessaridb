@@ -26,13 +26,14 @@ mod error;
 mod index;
 mod log;
 mod reclaim;
+mod schema;
 mod snapshots;
 mod store;
 mod transaction;
 
 pub use catalog::{
-    Catalog, DatabaseDefinition, IndexDefinition, NamespaceDefinition, SYSTEM_DATABASE,
-    SYSTEM_NAMESPACE, TableDefinition,
+    Catalog, DatabaseDefinition, FieldDefinition, IndexDefinition, NamespaceDefinition,
+    SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition,
 };
 pub use error::{Error, Result};
 pub use reclaim::Reclaimed;

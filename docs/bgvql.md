@@ -114,6 +114,11 @@ DEFINE SPACE sessions;
 DEFINE INDEX by_email ON users FIELDS email UNIQUE;
 DEFINE INDEX by_name ON users FIELDS last, first;
 
+DEFINE TABLE accounts SCHEMAFULL;
+DEFINE FIELD balance ON accounts TYPE decimal;
+DEFINE FIELD opened_at ON accounts TYPE datetime;
+
+DROP FIELD opened_at ON accounts;
 DROP INDEX by_email ON users;
 DROP TABLE users;
 DROP SPACE sessions;
@@ -149,6 +154,53 @@ half-building the index.
 
 `DROP TABLE` removes the definition. It does not delete the table's records,
 because that is bulk work whose cost belongs where a caller can see it.
+
+### What a table declares about its fields
+
+A table is schemaless until something is declared on it, and stays schemaless
+about everything nobody declared. `DEFINE FIELD` names one field and what it may
+hold:
+
+| Written | Meaning |
+|---|---|
+| `TYPE string` | a present, non-null value in that field must be text |
+| `TYPE int` / `float` / `decimal` | one numeric form, kept apart |
+| `TYPE number` | any of the three |
+| `TYPE any` | anything — a declaration that constrains nothing, so that a field can be *declared* without being narrowed |
+
+Every one of the fifteen literal types of §3 is a spelling, plus `any` and
+`number`. Five of them — `table`, `set`, `range`, `datetime`, `uuid` — are
+reserved words elsewhere, and are read as type names here for the same reason a
+field name inside an object literal may be reserved: after `TYPE`, nothing but a
+type name can appear.
+
+**Two values satisfy every declaration**, and both are deliberate:
+
+- `none` — the field is not there, so there is nothing to check. This is the rule
+  an index already applies to a record missing an indexed field. A declared type
+  therefore does **not** make a field mandatory.
+- `null` — the field is there and holds nothing, which is what SQL lets a typed
+  column hold. Requiring a value is a separate constraint, and this milestone
+  does not have one.
+
+**`SCHEMAFULL` is what turns declarations into a schema.** Without it a table
+still accepts a field nobody declared — which is the mistake worth catching,
+because writing `stauts` where `status` was meant creates a field, raises
+nothing, and quietly drops the record out of every query that filters on the name
+that was meant. A `SCHEMAFULL` table refuses it instead. The flag is fixed when
+the table is defined; changing it on a populated table is a migration, and the
+honest spelling of one is a drop and a redefinition, which re-checks every row.
+
+**A declaration constrains the rows that predate it.** `DEFINE FIELD` holds every
+row already in the table to what it declares, in the same commit — and declaring
+one over data that already violates it is refused, writing nothing at all, not
+even the declaration. A constraint that could be declared over data violating it
+is a constraint the store does not have, and every reader afterwards would
+believe it did. The cost is the same as `DEFINE INDEX`'s and is stated the same
+way: the statement reads the whole table inside the commit.
+
+`DROP FIELD` removes the rule and not the data. The rows keep the field; the
+store simply stops having an opinion about it.
 
 ## 5. Record statements
 
@@ -342,7 +394,8 @@ Named here rather than merely missing, so each absence reads as a decision:
 | aggregation and grouping | needs an execution layer this milestone has not built |
 | functions and expressions beyond literals and reads | a language surface to design once, not accrete |
 | permissions in the language | there is no session identity yet |
-| schema on a table | tables are schemaless at this milestone; `DEFINE INDEX` is the only per-field statement |
+| a mandatory field, a default, an `ASSERT` | each needs an expression surface, which is the row above this one; `SCHEMAFULL` already catches the misspelling that motivated declarations |
+| changing a declared type in place | `DROP FIELD` then `DEFINE FIELD` re-checks every row through the one path; a migration primitive is its own work |
 
 ## 9. What is fixed here, and what can still move
 
@@ -352,6 +405,9 @@ Named here rather than merely missing, so each absence reads as a decision:
 | A space is a table of single values; workspace = database | **contract** (ADR-0010) |
 | Key-value verbs are expressions, and compose at one snapshot | **contract** |
 | `NONE` and `NULL` are distinct literals | **contract** — the storage layer keeps them apart |
+| A declared type constrains a present, non-null value | **contract** — absent is unconstrained, null is allowed, and neither is a hole to be closed later without changing what existing scripts mean |
+| A schema is enforced by the store, not by the session | **contract** — a check the session owned would be one every other writer bypasses |
+| A declaration constrains the rows that predate it, in its own commit | **contract** — the alternative is a constraint that can be declared and not hold |
 | The decimal marker | fixed; dropping it would silently make money a float |
 | The three access paths | fixed for this milestone; a planner changes how one is chosen, not what exists |
 | Verb spellings and clause names | movable while the language is unimplemented |

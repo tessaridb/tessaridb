@@ -407,7 +407,7 @@ the reservation is not withdrawn — withdrawing it would let a future kind reus
 those bytes, and tags are permanent.
 
 The catalog is instead ordinary records in a reserved tenancy: namespace `0`,
-database `0`, and five well-known table ids inside it. Two properties are what
+database `0`, and seven well-known table ids inside it. Two properties are what
 decided it, and neither is available to a `meta` key kind:
 
 - **It rides the log.** State is a deterministic function of the log, so a

@@ -50,3 +50,30 @@ CREATE users:1 = { name: 'grace' };
 USE DATABASE orders;
 SELECT * FROM archive.users;
 --- expect: rows 1
+
+--- case: a field is declared with a type
+DEFINE FIELD email ON users TYPE string;
+--- expect: ok
+
+--- case: a type name may be a reserved word, because after TYPE nothing else can appear
+DEFINE FIELD seen_at ON users TYPE datetime;
+DEFINE FIELD owner ON users TYPE record;
+DEFINE FIELD tags ON users TYPE set;
+--- expect: ok
+
+--- case: a field name is unique within its table
+DEFINE FIELD email ON users TYPE string;
+--- expect: error NameTaken
+
+--- case: IF NOT EXISTS makes the re-declaration a no-op
+DEFINE FIELD IF NOT EXISTS email ON users TYPE string;
+--- expect: ok
+
+--- case: a declaration is dropped without touching the data
+DROP FIELD seen_at ON users;
+--- expect: ok
+
+--- case: a table may be declared schemafull
+DEFINE TABLE accounts SCHEMAFULL;
+DEFINE FIELD balance ON accounts TYPE decimal;
+--- expect: ok

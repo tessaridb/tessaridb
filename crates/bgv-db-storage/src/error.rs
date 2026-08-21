@@ -96,6 +96,44 @@ pub enum Error {
         id: RecordId,
     },
 
+    /// A field holds a value of a type its table does not declare for it.
+    ///
+    /// Like [`UniqueViolation`](Self::UniqueViolation) this is the caller's data
+    /// against a constraint the caller declared, not a race — retrying the same
+    /// write cannot succeed. The message names all three of the field, what was
+    /// declared and what was found, because a message carrying only the first is
+    /// a message the reader has to go and look two things up to act on.
+    #[error(
+        "table {table} declares {field} as {declared}, but record {record} holds {found} there"
+    )]
+    SchemaViolation {
+        /// The table whose declaration was violated.
+        table: u32,
+        /// The record that was being written.
+        record: String,
+        /// The field that disagreed.
+        field: String,
+        /// The type the table declares for it.
+        declared: &'static str,
+        /// The type the record held instead.
+        found: &'static str,
+    },
+
+    /// A record carries a field a `SCHEMAFULL` table does not declare.
+    ///
+    /// This is the misspelling that a schemaless table accepts in silence: the
+    /// record lands, nothing is raised, and every query filtering on the name
+    /// that was meant is quietly missing it.
+    #[error("table {table} declares no field {field}, and record {record} carries one")]
+    UndeclaredField {
+        /// The table that refused the write.
+        table: u32,
+        /// The record that was being written.
+        record: String,
+        /// The field it carried.
+        field: String,
+    },
+
     /// The parent a catalog entry was to be created under does not exist.
     #[error("no such {entity}: {id}")]
     NoSuchParent {
@@ -152,6 +190,8 @@ impl Error {
             | Self::NoSuchParent { .. }
             | Self::EmptyIndex { .. }
             | Self::UniqueViolation { .. }
+            | Self::SchemaViolation { .. }
+            | Self::UndeclaredField { .. }
             | Self::IdSpaceExhausted { .. } => ErrorCategory::Validation,
             Self::CatalogMalformed { .. } => ErrorCategory::Corruption,
             Self::Kv(inner) => inner.category(),

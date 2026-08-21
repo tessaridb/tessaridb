@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+mod field_kind;
 mod ids;
 mod number;
 mod record_id;
@@ -17,7 +18,8 @@ mod text;
 mod time;
 mod value;
 
-pub use ids::{DatabaseId, IndexId, NamespaceId, Sequence, TableId};
+pub use field_kind::FieldKind;
+pub use ids::{DatabaseId, FieldId, IndexId, NamespaceId, Sequence, TableId};
 pub use number::Number;
 pub use record_id::RecordId;
 pub use text::parse_uuid;

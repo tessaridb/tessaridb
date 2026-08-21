@@ -742,3 +742,164 @@ fn a_prefix_read_sees_this_transactions_own_writes_and_not_its_stale_entries() {
     assert_eq!(records.len(), 1, "the new record, and not the moved one");
     assert_eq!(records[0].0.to_string(), "2");
 }
+
+#[test]
+fn a_declared_type_is_enforced_through_the_language() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE people;\n\
+             DEFINE FIELD age ON people TYPE int;\n\
+             CREATE people:1 = { age: 34 };",
+        )
+        .unwrap();
+
+    let error = session
+        .run("CREATE people:2 = { age: 'thirty four' };")
+        .unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("age"), "{text}");
+    assert!(text.contains("int"), "{text}");
+    assert!(text.contains("string"), "{text}");
+
+    // And nothing landed.
+    let found = session.run("SELECT * FROM people;").unwrap();
+    assert_eq!(found[0].records().unwrap().len(), 1);
+}
+
+#[test]
+fn a_reserved_word_is_read_as_a_type_name_after_type() {
+    // Five of the seventeen spellings are reserved elsewhere in the grammar. If
+    // the type position did not read them as text, those types could not be
+    // written down at all.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE events;\n\
+             DEFINE FIELD at ON events TYPE datetime;\n\
+             DEFINE FIELD who ON events TYPE record;\n\
+             DEFINE FIELD span ON events TYPE range;\n\
+             DEFINE FIELD tags ON events TYPE set;\n\
+             DEFINE FIELD kind ON events TYPE table;",
+        )
+        .unwrap();
+
+    session
+        .run("CREATE events:1 = { at: datetime '2026-08-22T00:00:00Z' };")
+        .unwrap();
+    assert!(session.run("CREATE events:2 = { at: 7 };").is_err());
+}
+
+#[test]
+fn a_word_that_is_not_a_type_is_refused_where_a_type_belongs() {
+    let store = store();
+    let mut session = ready(&store);
+    session.run("DEFINE TABLE shapes;").unwrap();
+    let error = session
+        .run("DEFINE FIELD outline ON shapes TYPE geometry;")
+        .unwrap_err();
+    assert!(error.to_string().contains("type name"), "{error}");
+}
+
+#[test]
+fn a_schemafull_table_refuses_a_misspelled_field_and_a_schemaless_one_does_not() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE ledger SCHEMAFULL;\n\
+             DEFINE FIELD amount ON ledger TYPE decimal;\n\
+             DEFINE TABLE notes;\n\
+             DEFINE FIELD amount ON notes TYPE decimal;",
+        )
+        .unwrap();
+
+    let error = session
+        .run("CREATE ledger:1 = { amuont: dec 12.34 };")
+        .unwrap_err();
+    assert!(error.to_string().contains("amuont"), "{error}");
+
+    // The same statement on a schemaless table lands, and the record is one
+    // nobody will find by filtering on `amount`.
+    session
+        .run("CREATE notes:1 = { amuont: dec 12.34 };")
+        .unwrap();
+}
+
+#[test]
+fn a_declaration_and_the_rows_it_constrains_land_together_or_not_at_all() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE guests;\n\
+             CREATE guests:1 = { handle: 'ada' };",
+        )
+        .unwrap();
+
+    // Declaring over a row that already violates it writes nothing — not the
+    // definition either, so the constraint cannot be believed to hold.
+    session.run("CREATE guests:2 = { handle: 7 };").unwrap();
+    assert!(
+        session
+            .run("DEFINE FIELD handle ON guests TYPE string;")
+            .is_err()
+    );
+    // The declaration is gone, so the offending value is still writable.
+    session.run("CREATE guests:3 = { handle: 9 };").unwrap();
+
+    session.run("DELETE guests:2;").unwrap();
+    session.run("DELETE guests:3;").unwrap();
+    session
+        .run("DEFINE FIELD handle ON guests TYPE string;")
+        .unwrap();
+    assert!(session.run("CREATE guests:4 = { handle: 7 };").is_err());
+}
+
+#[test]
+fn a_row_and_its_declaration_may_be_written_in_either_order_in_one_transaction() {
+    let store = store();
+    let mut session = ready(&store);
+    session.run("DEFINE TABLE staff;").unwrap();
+
+    session
+        .run(
+            "BEGIN;\n\
+             CREATE staff:1 = { handle: 'ada' };\n\
+             DEFINE FIELD handle ON staff TYPE string;\n\
+             COMMIT;",
+        )
+        .unwrap();
+
+    assert!(
+        session
+            .run(
+                "BEGIN;\n\
+                 CREATE staff:2 = { handle: 7 };\n\
+                 COMMIT;",
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn dropping_a_declaration_leaves_the_data_and_removes_only_the_rule() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE members;\n\
+             DEFINE FIELD handle ON members TYPE string;\n\
+             CREATE members:1 = { handle: 'ada' };",
+        )
+        .unwrap();
+    assert!(session.run("CREATE members:2 = { handle: 7 };").is_err());
+
+    session.run("DROP FIELD handle ON members;").unwrap();
+    session.run("CREATE members:2 = { handle: 7 };").unwrap();
+
+    let found = session.run("SELECT * FROM members;").unwrap();
+    assert_eq!(found[0].records().unwrap().len(), 2);
+}

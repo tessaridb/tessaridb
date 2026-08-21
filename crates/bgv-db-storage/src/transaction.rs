@@ -461,6 +461,11 @@ impl<'a> Transaction<'a> {
 
             let tail = self.store.committed_tail()?;
             self.check_for_conflicts()?;
+            // Inside the loop with the conflict check, and for the same reason:
+            // both are read against the committed state this attempt builds on,
+            // and a schema that moved between attempts must be re-read rather
+            // than assumed.
+            crate::schema::validate(self.store, &record)?;
 
             // Deciding the sequence locally is the *only* thing a commit does
             // that a replica's apply does not. Everything after this line is the

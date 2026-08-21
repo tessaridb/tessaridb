@@ -187,8 +187,6 @@ fn absent_feature(word: &str) -> Option<&'static str> {
         ("grant", "permissions in the language"),
         ("revoke", "permissions in the language"),
         ("permissions", "permissions in the language"),
-        ("schema", "a schema on a table"),
-        ("schemafull", "a schema on a table"),
     ];
     ABSENT
         .iter()

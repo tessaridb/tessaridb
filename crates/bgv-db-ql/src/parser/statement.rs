@@ -1,6 +1,8 @@
 //! One statement at a time.
 
 use super::Parser;
+use bgv_db_types::FieldKind;
+
 use crate::ast::{ExprKind, Name, RangeExpr, Select, Source, Statement, StatementKind, Test};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Spanned, Token};
@@ -97,8 +99,10 @@ impl Parser<'_> {
             Some(Keyword::Table) => {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
+                let name = self.name()?;
                 Ok(StatementKind::DefineTable {
-                    name: self.name()?,
+                    name,
+                    schemafull: self.eat_keyword(Keyword::Schemafull),
                     if_not_exists,
                 })
             }
@@ -111,7 +115,11 @@ impl Parser<'_> {
                 })
             }
             Some(Keyword::Index) => self.define_index(),
-            _ => Err(self.error_here("`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE` or `INDEX`")),
+            Some(Keyword::Field) => self.define_field(),
+            _ => {
+                Err(self
+                    .error_here("`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `INDEX` or `FIELD`"))
+            }
         }
     }
 
@@ -138,6 +146,42 @@ impl Parser<'_> {
         })
     }
 
+    /// `DEFINE FIELD email ON users TYPE string`
+    fn define_field(&mut self) -> Result<StatementKind> {
+        self.advance();
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        self.expect_keyword(Keyword::On, "`ON` and the table the field is on")?;
+        let table = self.table_ref()?;
+        self.expect_keyword(Keyword::Type, "`TYPE` and what the field may hold")?;
+        Ok(StatementKind::DefineField {
+            name,
+            table,
+            kind: self.field_kind()?,
+            if_not_exists,
+        })
+    }
+
+    /// A type name, which may be spelled with a reserved word.
+    ///
+    /// `table`, `set`, `range`, `datetime` and `uuid` are all reserved
+    /// elsewhere, and after `TYPE` nothing but a type name can appear — so the
+    /// word is read as text here, the way a field name inside an object literal
+    /// already is. The alternative is a language where five of the seventeen
+    /// types cannot be written down.
+    fn field_kind(&mut self) -> Result<FieldKind> {
+        let spelling = match self.peek() {
+            Some(Token::Keyword(keyword)) => keyword.spelling().to_owned(),
+            Some(Token::Ident(name)) => name.clone(),
+            _ => return Err(self.error_here("a type name")),
+        };
+        let Some(kind) = FieldKind::parse(&spelling) else {
+            return Err(self.error_here("a type name"));
+        };
+        self.advance();
+        Ok(kind)
+    }
+
     fn drop_statement(&mut self) -> Result<StatementKind> {
         self.advance();
         match self.peek_keyword() {
@@ -156,7 +200,16 @@ impl Parser<'_> {
                     table: self.table_ref()?,
                 })
             }
-            _ => Err(self.error_here("`TABLE`, `SPACE` or `INDEX`")),
+            Some(Keyword::Field) => {
+                self.advance();
+                let name = self.name()?;
+                self.expect_keyword(Keyword::On, "`ON` and the table the field is on")?;
+                Ok(StatementKind::DropField {
+                    name,
+                    table: self.table_ref()?,
+                })
+            }
+            _ => Err(self.error_here("`TABLE`, `SPACE`, `INDEX` or `FIELD`")),
         }
     }
 

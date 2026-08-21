@@ -41,6 +41,9 @@ pub const ALLOCATORS: TableId = TableId::new(5);
 /// Index definitions, keyed by index id.
 pub const INDEXES: TableId = TableId::new(6);
 
+/// Field definitions, keyed by field id.
+pub const FIELDS: TableId = TableId::new(7);
+
 /// The first id handed out at any level. Zero belongs to the system.
 pub const FIRST_ID: u32 = 1;
 
@@ -61,6 +64,8 @@ pub enum Level {
     Table,
     /// Indexes.
     Index,
+    /// Declared fields on a table.
+    Field,
 }
 
 impl Level {
@@ -72,6 +77,7 @@ impl Level {
             Self::Database => "database",
             Self::Table => "table",
             Self::Index => "index",
+            Self::Field => "field",
         }
     }
 
@@ -87,6 +93,7 @@ impl Level {
             Self::Database => "db",
             Self::Table => "tb",
             Self::Index => "ix",
+            Self::Field => "fd",
         }
     }
 }
@@ -104,7 +111,9 @@ mod tests {
 
     #[test]
     fn every_system_table_has_a_distinct_id() {
-        let ids = [NAMESPACES, DATABASES, TABLES, NAMES, ALLOCATORS, INDEXES];
+        let ids = [
+            NAMESPACES, DATABASES, TABLES, NAMES, ALLOCATORS, INDEXES, FIELDS,
+        ];
         for (index, table) in ids.iter().enumerate() {
             assert!(
                 !ids[index.saturating_add(1)..].contains(table),
@@ -120,6 +129,7 @@ mod tests {
             Level::Database,
             Level::Table,
             Level::Index,
+            Level::Field,
         ];
         for (index, level) in levels.iter().enumerate() {
             for other in &levels[index.saturating_add(1)..] {

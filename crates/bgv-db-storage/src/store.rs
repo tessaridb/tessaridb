@@ -178,6 +178,11 @@ impl Store {
                 found: at,
             });
         }
+        // A replica re-checks what the leader already checked. That is cheap
+        // relative to the apply, and a violation reaching this point is a
+        // divergence between two nodes' catalogs rather than a caller's mistake
+        // — which is worth stopping at rather than writing through.
+        crate::schema::validate(self, record)?;
         let batch = crate::index::maintain(self, record, crate::log::apply_batch(at, record))?;
         self.backend.apply(batch)?;
         Ok(())

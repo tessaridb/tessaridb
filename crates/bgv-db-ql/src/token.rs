@@ -186,6 +186,12 @@ pub enum Keyword {
     On,
     /// `FIELDS`
     Fields,
+    /// `FIELD`
+    Field,
+    /// `TYPE`
+    Type,
+    /// `SCHEMAFULL` — the table refuses a field it does not declare.
+    Schemafull,
     /// `UNIQUE`
     Unique,
     /// `IF`
@@ -260,6 +266,9 @@ impl Keyword {
             Self::Index => "INDEX",
             Self::On => "ON",
             Self::Fields => "FIELDS",
+            Self::Field => "FIELD",
+            Self::Type => "TYPE",
+            Self::Schemafull => "SCHEMAFULL",
             Self::Unique => "UNIQUE",
             Self::If => "IF",
             Self::Not => "NOT",
@@ -303,6 +312,9 @@ impl Keyword {
         Self::Index,
         Self::On,
         Self::Fields,
+        Self::Field,
+        Self::Type,
+        Self::Schemafull,
         Self::Unique,
         Self::If,
         Self::Not,
