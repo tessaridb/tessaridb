@@ -78,6 +78,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bgv-db-session"
+version = "0.0.0"
+dependencies = [
+ "bgv-db-encoding",
+ "bgv-db-kv",
+ "bgv-db-ql",
+ "bgv-db-storage",
+ "bgv-db-types",
+ "thiserror",
+]
+
+[[package]]
 name = "bgv-db-storage"
 version = "0.0.0"
 dependencies = [

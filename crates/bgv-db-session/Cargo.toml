@@ -1,0 +1,23 @@
+[package]
+name = "bgv-db-session"
+description = "Executing bgvQL scripts against a bgv-db store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+bgv-db-encoding.workspace = true
+bgv-db-ql.workspace = true
+bgv-db-storage.workspace = true
+bgv-db-types.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+bgv-db-kv.workspace = true
+
+[lints]
+workspace = true

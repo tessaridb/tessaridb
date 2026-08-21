@@ -152,6 +152,12 @@ UPDATE users:1 = { name: 'ada', email: 'ada2@example.com' };
 DELETE users:1;
 ```
 
+`CREATE` and `UPDATE` are not two spellings of one verb. **`CREATE` over a
+record that already exists is refused**, and **`UPDATE` over one that does not
+exist is refused**. The alternative — either verb quietly doing the other's job —
+loses a record with nothing anywhere to notice, and `SET` already exists for the
+caller who means "whatever is there, replace it".
+
 `SELECT` resolves to exactly one of the three access paths, and which one is
 decided by the target rather than by a cost model:
 
@@ -194,9 +200,12 @@ KEYS FROM sessions RANGE 'a'..'m';
 - `GET` returns the value, or `NONE` when the key is not there. `NONE` and a
   stored `NULL` are different answers, which is the point of having both.
 - `DEL` removes the key.
-- `KEYS` lists keys, optionally over a range. **A range works** because keys are
-  record ids and record ids are order-encoded (`docs/key-grammar.md` §5) — the
-  space is scanned, not filtered.
+- `KEYS` lists keys, optionally over a range. A range is meaningful because keys
+  are record ids and record ids are order-encoded (`docs/key-grammar.md` §5), so
+  the bound names a contiguous stretch of the space rather than an arbitrary
+  subset. At this milestone the bound is applied to a scan of the space rather
+  than seeked to: the answer is the same, the cost is not, and saying so here is
+  cheaper than a reader discovering it under load.
 
 ### Composition
 
@@ -236,6 +245,10 @@ COMMIT;
 ```
 
 `CANCEL` discards. A statement outside `BEGIN` is its own transaction.
+
+A script that opens a transaction and never closes it **discards the work and
+raises an error**. Committing it would commit work the author never said was
+finished; discarding it quietly would hide that the script ran at all.
 
 The isolation level is **snapshot isolation**, and its two permitted anomalies
 are part of the contract rather than defects: write skew, and phantoms. Both are

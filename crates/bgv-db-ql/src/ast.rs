@@ -11,6 +11,13 @@
 //! is the only place the answer is true. A tree that carried ids would have to
 //! be re-parsed whenever a definition changed under it.
 //!
+//! The enums here are deliberately **not** `#[non_exhaustive]`. They are the
+//! contract between the parser and whatever executes the tree, both of which
+//! version together in this workspace, and exhaustive matching is what makes
+//! adding a statement to the grammar fail to compile until something runs it.
+//! Sealing them would buy version tolerance nobody needs and pay for it with a
+//! wildcard arm that silently accepts every future statement.
+//!
 //! [`TableId`]: bgv_db_types::TableId
 
 use bgv_db_types::{RecordId, Value};
@@ -40,7 +47,6 @@ pub struct Statement {
 /// Flat rather than grouped by family: execution matches on it once, and a
 /// grouping would only move the match one level down.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum StatementKind {
     /// `USE NAMESPACE prod DATABASE orders` — at least one of the two.
     Use {
@@ -173,7 +179,6 @@ pub struct Select {
 /// cost model — there is no planner at this milestone and nothing pretends
 /// otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Source {
     /// One record, by its identity.
     Record(RecordTarget),
@@ -206,7 +211,6 @@ pub struct Expr {
 /// value usable inside a record statement without either model knowing about
 /// the other.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum ExprKind {
     /// A literal that is already a whole value.
     Literal(Value),
