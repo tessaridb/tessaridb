@@ -99,7 +99,16 @@ impl Number {
     ///
     /// `None` for a non-finite float, and for a finite float whose magnitude is
     /// beyond what a decimal represents.
-    fn as_decimal(&self) -> Option<Decimal> {
+    ///
+    /// This is the **normal form comparison uses**, which is why it is public:
+    /// an index encoder has to produce identical bytes for numbers that compare
+    /// equal, and the only way to be sure of that is to encode the same form the
+    /// comparison reduces to. Deriving the bytes independently would agree in
+    /// every obvious case and disagree in the ones that matter — a float that
+    /// underflows a decimal compares equal to zero here, and an encoder that
+    /// used the float's own digits would place it just above zero instead.
+    #[must_use]
+    pub fn as_decimal(&self) -> Option<Decimal> {
         match self {
             Self::Integer(value) => Some(Decimal::from(*value)),
             Self::Decimal(value) => Some(*value),

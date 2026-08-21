@@ -46,7 +46,7 @@ pub trait StoreValue: Sized {
 }
 
 /// Split the common header off a stored value.
-fn split_header(bytes: &[u8], allowed_flags: u8) -> Result<(u8, &[u8])> {
+pub(crate) fn split_header(bytes: &[u8], allowed_flags: u8) -> Result<(u8, &[u8])> {
     let header = bytes.get(..HEADER_LEN).ok_or(Error::ValueTruncated {
         len: bytes.len(),
         needed: HEADER_LEN,
@@ -67,7 +67,7 @@ fn split_header(bytes: &[u8], allowed_flags: u8) -> Result<(u8, &[u8])> {
 }
 
 /// Write the common header into a fresh buffer.
-fn with_header(flags: u8, payload_len: usize) -> Vec<u8> {
+pub(crate) fn with_header(flags: u8, payload_len: usize) -> Vec<u8> {
     let mut buffer = Vec::with_capacity(HEADER_LEN.saturating_add(payload_len));
     buffer.push(CODEC_VERSION);
     buffer.push(flags);

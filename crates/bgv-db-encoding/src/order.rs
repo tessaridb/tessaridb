@@ -187,6 +187,37 @@ impl<'a> KeyReader<'a> {
         Ok(bytes[0])
     }
 
+    /// The bytes consumed since `start`.
+    ///
+    /// Lets a caller keep a component's bytes verbatim when the component's own
+    /// encoding cannot be reversed — an index field, whose numbers are
+    /// normalised on the way in.
+    #[must_use]
+    pub fn consumed_since(&self, start: usize) -> &'a [u8] {
+        self.input.get(start..self.position).unwrap_or_default()
+    }
+
+    /// Look at the next byte without consuming it.
+    ///
+    /// A container ends with a terminator that is *below* every element tag, so
+    /// deciding whether the next thing is another element or the end has to
+    /// happen before the byte is taken.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Truncated`] when nothing is left.
+    pub fn peek(&self) -> Result<u8> {
+        self.input
+            .get(self.position)
+            .copied()
+            .ok_or(Error::Truncated {
+                kind: self.kind,
+                offset: self.position,
+                needed: 1,
+                available: 0,
+            })
+    }
+
     /// Read a `u32` written by [`KeyWriter::put_u32`].
     pub fn take_u32(&mut self) -> Result<u32> {
         Ok(u32::from_be_bytes(self.take_fixed::<4>()?))

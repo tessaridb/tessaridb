@@ -21,11 +21,16 @@
 
 #![forbid(unsafe_code)]
 
+mod catalog;
 mod error;
 mod log;
 mod store;
 mod transaction;
 
+pub use catalog::{
+    Catalog, DatabaseDefinition, NamespaceDefinition, SYSTEM_DATABASE, SYSTEM_NAMESPACE,
+    TableDefinition,
+};
 pub use error::{Error, Result};
 pub use store::Store;
 pub use transaction::{RecordAddress, Transaction};

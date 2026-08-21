@@ -59,6 +59,53 @@ pub enum Error {
         found: Sequence,
     },
 
+    /// A catalog name is already in use at that level.
+    ///
+    /// Raised by the read that precedes the write. It is a courtesy, not the
+    /// enforcement: uniqueness is enforced by both transactions writing the same
+    /// name record, so a creation that races past this check still loses at
+    /// commit with [`Error::Conflict`].
+    #[error("the name {qualified} is already in use")]
+    NameTaken {
+        /// The qualified name, including its level tag and parent ids.
+        qualified: String,
+    },
+
+    /// The parent a catalog entry was to be created under does not exist.
+    #[error("no such {entity}: {id}")]
+    NoSuchParent {
+        /// Which level was missing — `namespace` or `database`.
+        entity: &'static str,
+        /// The id that resolved to nothing.
+        id: u32,
+    },
+
+    /// A stored catalog entry does not have the shape a definition needs.
+    ///
+    /// The bytes decoded as a value, so this is not a codec failure: something
+    /// wrote a well-formed value that is not a definition, which makes it an
+    /// integrity problem rather than a compatibility one.
+    #[error("catalog entry for a {entity} has a malformed {field}: found {found}")]
+    CatalogMalformed {
+        /// Which kind of entry it was.
+        entity: &'static str,
+        /// The field that was wrong or missing.
+        field: &'static str,
+        /// The type found in its place, or `none`.
+        found: &'static str,
+    },
+
+    /// Every identifier at this level has been handed out.
+    ///
+    /// Ids are never reused after a drop, so the space is consumed by creations
+    /// rather than by live entries. Retrying cannot succeed; the store needs a
+    /// wider identifier, which is a format change.
+    #[error("the {level} id space is exhausted")]
+    IdSpaceExhausted {
+        /// The level whose counter reached its end.
+        level: &'static str,
+    },
+
     /// A failure from the key-value substrate.
     #[error(transparent)]
     Kv(#[from] bgv_db_kv::Error),
@@ -75,7 +122,11 @@ impl Error {
         match self {
             Self::Conflict { .. } => ErrorCategory::Conflict,
             Self::CommitContention { .. } => ErrorCategory::Busy,
-            Self::LogGap { .. } => ErrorCategory::Validation,
+            Self::LogGap { .. }
+            | Self::NameTaken { .. }
+            | Self::NoSuchParent { .. }
+            | Self::IdSpaceExhausted { .. } => ErrorCategory::Validation,
+            Self::CatalogMalformed { .. } => ErrorCategory::Corruption,
             Self::Kv(inner) => inner.category(),
             Self::Encoding(inner) => inner.category(),
         }

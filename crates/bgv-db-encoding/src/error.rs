@@ -144,6 +144,20 @@ pub enum Error {
         tag: u8,
     },
 
+    /// An index key carries a value tag this build does not know.
+    ///
+    /// Separate from [`Error::UnknownValueTag`] because the two tables are
+    /// separate contracts even though they carry the same numbers: one orders,
+    /// the other round-trips, and a message that named the wrong one would send
+    /// an operator to the wrong file.
+    #[error("{kind} key holds an unknown index value tag 0x{tag:02x}")]
+    UnknownIndexTag {
+        /// The kind being decoded.
+        kind: KeyKind,
+        /// The tag that was found.
+        tag: u8,
+    },
+
     /// A decimal's mantissa and scale do not describe a representable number.
     #[error("stored decimal has mantissa {mantissa} and scale {scale}, which is out of range")]
     InvalidDecimal {
@@ -193,6 +207,7 @@ impl Error {
             Self::UnsupportedCodecVersion { .. }
             | Self::ReservedFlags { .. }
             | Self::UnknownValueTag { .. }
+            | Self::UnknownIndexTag { .. }
             | Self::UnsupportedFormatVersion { .. } => ErrorCategory::Incompatible,
         }
     }

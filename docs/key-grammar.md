@@ -35,6 +35,31 @@ is fixed"). Each key kind belongs to exactly one.
 | `log` | the ordered log | append + forward scan |
 | `meta` | store-level state and the catalog | small, point read at open |
 
+### 2.1 Tenancy is prefix, not physical
+
+Namespace, database and table are **leading bytes of a key** and nothing else.
+None of them is a separate tree, a separate file, or a separate engine instance.
+
+The test is whether the count grows with application data. A store whose physical
+structure has one unit per tenant grows its memory footprint and its background
+scheduling with the customer list rather than with a design decision, and that
+cost is paid whether or not the tenant is being written. The keyspace set is the
+opposite: four, fixed here, justified one by one.
+
+Two consequences follow, and both are rules rather than observations.
+
+**A key never carries a shard, node, or partition component.** Placement is
+derived from the key by the routing layer — key → virtual shard → node, through a
+versioned map over a virtual-shard count fixed at design time. Putting the shard
+in the key would make moving a shard a re-keying of its data, and deriving the
+partition count from the node count would make adding a node a re-keying of
+nearly everything. Both are migrations wearing the costume of an operation.
+
+**Everything one transaction touches must share one physical unit.** Separate
+engine instances share no write-ahead log, so a batch cannot span them — not even
+two instances inside one process. The store's boundary is therefore the database:
+a transaction may span tables within a database and may not span databases.
+
 ## 3. Key-kind tags
 
 The first byte of every key is its kind tag. This is what lets one keyspace hold
@@ -49,19 +74,19 @@ because renumbering after data exists is a full rebuild.
 |---|---|---|---|
 | `0x00` | — | — | never assigned; reserved as a sentinel and as the escape byte (§4.3) |
 | `0x01` | `Record` | `data` | implemented |
-| `0x10` | `SecondaryIndex` | `index` | reserved — SG4 |
-| `0x11` | `UniqueIndex` | `index` | reserved — SG4 |
+| `0x10` | `SecondaryIndex` | `index` | implemented |
+| `0x11` | `UniqueIndex` | `index` | implemented |
 | `0x12` | `Posting` (full-text) | `index` | reserved — SG4 |
 | `0x13` | `VectorNode` | `index` | reserved — SG4 |
 | `0x14` | `Edge` (graph) | `index` | reserved — SG4 |
 | `0x20` | `LogEntry` | `log` | implemented |
 | `0x30` | `FormatVersion` | `meta` | implemented |
 | `0x31` | `AppliedPosition` | `meta` | implemented |
-| `0x32` | `NamespaceCatalog` | `meta` | reserved — SG2.T4 |
-| `0x33` | `DatabaseCatalog` | `meta` | reserved — SG2.T4 |
-| `0x34` | `TableCatalog` | `meta` | reserved — SG2.T4 |
+| `0x32` | `NamespaceCatalog` | `meta` | reserved, unused — see §9 |
+| `0x33` | `DatabaseCatalog` | `meta` | reserved, unused — see §9 |
+| `0x34` | `TableCatalog` | `meta` | reserved, unused — see §9 |
 | `0x35` | `IndexCatalog` | `meta` | reserved — SG4 |
-| `0x36` | `IdAllocator` | `meta` | reserved — SG2.T4 |
+| `0x36` | `IdAllocator` | `meta` | reserved, unused — see §9 |
 | `0x37` | `BackfillWatermark` | `meta` | reserved — SG4 |
 
 Tags are grouped by family (`0x0_` data, `0x1_` index, `0x2_` log, `0x3_` meta)
@@ -109,12 +134,50 @@ Worked cases, which are also the test vectors:
 Complement every byte (`!value`), written big-endian. Largest value sorts first.
 Used for the MVCC version suffix, and nowhere else without saying so.
 
-### 4.5 Floats
+### 4.5 Numbers in an index
 
-Not used in a key yet. When the value model lands (SG2.T4), the encoding is: take
-the IEEE-754 bit pattern, flip the sign bit when the value is positive, flip
-every bit when it is negative. **NaN has no position in a total order and is
-rejected by the encoder rather than given an arbitrary one.**
+An earlier draft of this document proposed encoding a float by its IEEE-754 bit
+pattern with the sign bit flipped. That is order-preserving **within** floats and
+useless across the numeric union, because the three kinds must compare
+semantically: `1`, `1.0` and decimal `1.00` are one value and must produce one
+set of bytes. A bit-pattern encoding gives three, and the consequence is a unique
+index that admits duplicates and an equality lookup that misses — with no error
+anywhere. The forward obligation in §5 is what that draft rule would have broken.
+
+The encoding actually used is a **normalised decimal form**:
+
+```
+<class:1> [ <exponent:i32, sign-flipped> <digits…> <terminator:1> ]
+```
+
+| Class | Byte | Payload |
+|---|---|---|
+| negative infinity | `0x00` | — |
+| negative finite | `0x01` | exponent and digits, every byte complemented, terminated `0xFF` |
+| zero | `0x02` | — |
+| positive finite | `0x03` | exponent and digits, terminated `0x00` |
+| positive infinity | `0x04` | — |
+| not a number | `0x05` | — |
+
+The four classes without a payload each hold exactly one value, so their class
+byte alone places them — which is also how the declared order `-∞ < finite < +∞ <
+NaN` becomes simple byte order.
+
+A finite value is written as `0.<digits> × 10^exponent` with trailing zeros
+dropped, so `1`, `1.0` and `1.00` all become exponent `1` and digits `1`. Digits
+are ASCII, and the terminator is below them for a positive number and above their
+complements for a negative one, so a shorter digit string sorts before a longer
+one that extends it — `0.5 < 0.51`, and `-0.51 < -0.5`.
+
+The digits come from the number's **decimal normal form**, which is the same form
+the comparison reduces to. Deriving them independently from the float would agree
+in every obvious case and disagree exactly where it matters: a float too small
+for a decimal compares *equal to zero*, and its own digits would place it just
+above.
+
+This encoding **cannot be reversed** — normalisation is what makes it correct and
+also what destroys the distinction between the three spellings. An index stores
+ordering identity, not values; a caller that wants the value reads the record.
 
 ## 5. `RecordId`
 
@@ -206,6 +269,41 @@ needs a policy for a commit that exceeds it.
 *encoder* being deterministic, not only on the apply path, so the record type
 orders them at construction rather than trusting its caller to.
 
+### 6.2a Index entries — keyspace `index`
+
+```
+secondary  <0x10> <namespace:u32> <database:u32> <table:u32> <index:u32> <values…> <0x00> <record-id>
+unique     <0x11> <namespace:u32> <database:u32> <table:u32> <index:u32> <values…> <0x00>
+```
+
+Bytes 0..17 are a **fixed-width prefix** identifying one index, for the same
+reason the record key's first 13 bytes identify one table.
+
+**A unique entry carries no record id, and that is the enforcement.** Two records
+holding the same indexed value produce the same key, so the second write collides
+with the first instead of sitting beside it. Uniqueness is a property of the
+layout rather than a check someone has to remember to run. The record id lives in
+the entry's *value* instead, because a unique lookup still has to say which
+record it found.
+
+A non-unique entry ends with the record id, so many records share one value. Its
+value is empty: the id is already in the key, and the same fact written twice is
+two statements that can disagree.
+
+The two are separate kinds rather than one kind with an optional suffix. A single
+kind would force a decoder to guess whether trailing bytes are a record id, and a
+grammar whose parse depends on a guess is precisely what this layer exists to
+rule out.
+
+**The field list is terminated** even though an index's arity is fixed by its
+definition. That keeps a key decodable on its own, without the catalog entry that
+describes it — which matters exactly when something has gone wrong and an
+operator is looking at raw bytes. The terminator `0x00` is below every value tag,
+so a shorter list sorts before a longer one that extends it.
+
+Values are encoded per §4.5 and §7a, and each is self-delimiting, which is what
+lets the parser find where the list ends and the record id begins.
+
 ### 6.3 `FormatVersion` — keyspace `meta`
 
 ```
@@ -259,6 +357,33 @@ Policies, stated rather than left to be discovered:
   (SG2.T5), compressing again per value defeats cross-record redundancy and
   doubles the CPU. Compression belongs to exactly one layer.
 
+## 7a. The index value tag table
+
+Index field values carry a leading tag in the value system's rank order, so byte
+order across types **is** the declared cross-type order.
+
+| Tag | Type | Encoding |
+|---|---|---|
+| `0x01` `0x02` | `none`, `null` | — |
+| `0x03` | `bool` | one byte |
+| `0x04` | `number` | §4.5 |
+| `0x05` `0x06` | `string`, `bytes` | escaped (§4.3) |
+| `0x07` `0x08` | `duration`, `datetime` | `<seconds:i64 sign-flipped><nanos:u32>` |
+| `0x09` | `uuid` | sixteen bytes |
+| `0x0a` | `table` | `<table:u32>` |
+| `0x0b` | `record` | `<table:u32>` then the record id (§5) |
+| `0x0c` `0x0f` | `array`, `set` | elements, then `0x00` |
+| `0x0d` | `object` | escaped name and value per field in name order, then `0x00` |
+| `0x0e` | `range` | two bounds, each `<kind:1>` and, unless open, a value |
+
+These are the same numbers as the payload codec's tags (`docs/value-system.md`
+§5) so that a hex dump reads the same way in both. They are nonetheless
+**separate contracts**: one is built to order and cannot be reversed, the other
+is built to round-trip and does not sort. Neither may be renumbered.
+
+The container terminator is `0x00`, which is below every tag — that is what makes
+`[1]` sort before `[1, 2]`.
+
 ## 8. What is fixed forever, and what is not
 
 | Decision | Changeable later? |
@@ -273,3 +398,31 @@ Policies, stated rather than left to be discovered:
 
 Anything in the first group changes only by rebuilding the store from an export.
 That is the reason this document exists before the code does.
+
+## 9. The catalog is records, and its reserved tags stay unused
+
+Tags `0x32`, `0x33`, `0x34` and `0x36` were reserved for namespace, database,
+table and allocator entries in the `meta` keyspace. They are **not used**, and
+the reservation is not withdrawn — withdrawing it would let a future kind reuse
+those bytes, and tags are permanent.
+
+The catalog is instead ordinary records in a reserved tenancy: namespace `0`,
+database `0`, and five well-known table ids inside it. Two properties are what
+decided it, and neither is available to a `meta` key kind:
+
+- **It rides the log.** State is a deterministic function of the log, so a
+  catalog change that was not a record would not appear in a log entry, and a
+  replica replaying the log would rebuild every row while knowing about no table
+  at all. Fixing that means a second mutation variant and a second apply path.
+- **It is versioned.** A definition is a record with an MVCC version, so a read
+  at sequence `S` sees the schema at `S`. Without versions, a transaction that
+  began before a change would decode its records against a definition written
+  after it — silently, and with plausible wrong values.
+
+That a table can be created and written to in one transaction falls out of the
+same choice rather than being built.
+
+A key never carries a catalog name. Names live inside the definition, and a
+separate name record makes them unique — conflict detection is over what a
+transaction wrote, so an invariant two transactions must not both satisfy has to
+be materialised into a key they both write.

@@ -63,6 +63,15 @@ define_id! {
     TableId(u32)
 }
 
+define_id! {
+    /// Identifies an index on a table.
+    ///
+    /// An index carries an id for the same reason a table does: the id is what
+    /// every index entry's key holds, so renaming an index rewrites one catalog
+    /// entry rather than every entry in it.
+    IndexId(u32)
+}
+
 /// A position in the store's ordered log.
 ///
 /// One number serves two roles, deliberately: it is the log position and it is
