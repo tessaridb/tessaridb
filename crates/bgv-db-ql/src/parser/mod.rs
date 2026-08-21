@@ -15,6 +15,7 @@
 mod condition;
 mod expression;
 mod path;
+mod shape;
 mod statement;
 
 use crate::ast::{Expr, Script};
@@ -100,6 +101,13 @@ impl Parser<'_> {
 
     fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.position).map(|spanned| &spanned.token)
+    }
+
+    /// Whether the token `offset` places past the cursor is this one.
+    fn follows_with(&self, offset: usize, token: &Token) -> bool {
+        self.tokens
+            .get(self.position.saturating_add(offset))
+            .is_some_and(|spanned| &spanned.token == token)
     }
 
     /// Consume a **contextual** word: one that shapes a clause without being
@@ -265,9 +273,7 @@ fn absent_feature(word: &str) -> Option<&'static str> {
         ("join", "joins"),
         ("inner", "joins"),
         ("left", "joins"),
-        ("group", "aggregation and grouping"),
-        ("having", "aggregation and grouping"),
-        ("count", "aggregation and grouping"),
+        ("having", "filtering groups"),
         ("offset", "limiting a result"),
         ("match", "full-text search"),
         ("search", "full-text search"),

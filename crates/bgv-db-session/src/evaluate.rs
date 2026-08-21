@@ -10,12 +10,13 @@ use std::collections::BTreeMap;
 
 use bgv_db_encoding::decode_payload;
 use bgv_db_ql::{
-    BinaryOp, Direction, Expr, ExprKind, Projected, Projection, RecordTarget, Select, Source, Span,
-    TableRef,
+    BinaryOp, Direction, Expr, ExprKind, Projectable, Projected, Projection, RecordTarget, Select,
+    Source, Span, TableRef,
 };
 use bgv_db_storage::{Catalog, RecordAddress, Transaction};
 use bgv_db_types::{Number, Path, RecordId, RecordRef, TableId, Value, ValueRange};
 
+use crate::aggregate::folds;
 use crate::arithmetic::{arithmetic, negate};
 use crate::call::call;
 use crate::condition::{apply, boolean, literal_prefix};
@@ -202,6 +203,9 @@ impl Session<'_> {
         let (records, path) = self.read_source(transaction, &select.from)?;
         let records = match &select.projection {
             Projection::All => records,
+            Projection::Values(wanted) if folds(wanted) || !select.group.is_empty() => {
+                self.grouped(transaction, records, wanted, &select.group)?
+            }
             Projection::Values(wanted) => {
                 let mut projected = Vec::with_capacity(records.len());
                 for (id, record) in records {
@@ -243,7 +247,13 @@ impl Session<'_> {
     ) -> Result<Value> {
         let mut projected = BTreeMap::new();
         for value in wanted {
-            let held = self.evaluate_in(transaction, &value.value, Some(record))?;
+            let Projectable::Value(expr) = &value.value else {
+                // A fold never reaches here: a projection carrying one goes
+                // through `grouped`, which is the only place many records
+                // become one.
+                continue;
+            };
+            let held = self.evaluate_in(transaction, expr, Some(record))?;
             if held.is_present() {
                 projected.insert(value.name.text.clone(), held);
             }

@@ -188,6 +188,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::ConditionNotBoolean { .. } => "ConditionNotBoolean",
         Error::NoRecordInScope { .. } => "NoRecordInScope",
         Error::DefaultDoesNotMatch { .. } => "DefaultDoesNotMatch",
+        Error::NotSummable { .. } => "NotSummable",
         Error::NotArithmetic { .. } => "NotArithmetic",
         Error::ArithmeticFailed { .. } => "ArithmeticFailed",
         Error::WrongArgument { .. } => "WrongArgument",
@@ -217,6 +218,8 @@ fn script_kind(error: &bgv_db_ql::Error) -> &'static str {
         bgv_db_ql::Error::UnnamedProjection { .. } => "UnnamedProjection",
         bgv_db_ql::Error::NoSuchFunction { .. } => "NoSuchFunction",
         bgv_db_ql::Error::WrongArity { .. } => "WrongArity",
+        bgv_db_ql::Error::UngroupedProjection { .. } => "UngroupedProjection",
+        bgv_db_ql::Error::StarIsOnlyForCount { .. } => "StarIsOnlyForCount",
         _ => "Unnamed",
     }
 }

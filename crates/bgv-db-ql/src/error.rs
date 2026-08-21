@@ -198,6 +198,34 @@ pub enum Error {
         span: Span,
     },
 
+    /// A grouped read projecting something that is neither a key nor a fold.
+    ///
+    /// The value has as many answers as the group has records, and picking one
+    /// silently is how a wrong number reaches a report.
+    #[error(
+        "{name:?} is neither a group key nor a fold, so a grouped read cannot answer with it (at {span})"
+    )]
+    UngroupedProjection {
+        /// The projection's name.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// `*` used where a fold needs a value.
+    ///
+    /// `count(*)` counts records; `sum(*)` would have to invent what it is
+    /// summing.
+    #[error(
+        "`*` means the records themselves, which only `count` can fold — not `{fold}` (at {span})"
+    )]
+    StarIsOnlyForCount {
+        /// The fold as written.
+        fold: &'static str,
+        /// Where the call is.
+        span: Span,
+    },
+
     /// A projected path ends in a position, so it has no name of its own.
     ///
     /// A projection is named by the last step of its path, and `[0]` is not a
@@ -230,6 +258,8 @@ impl Error {
             | Self::InvalidRecordId { span }
             | Self::NotARange { span }
             | Self::DuplicateField { span, .. }
+            | Self::UngroupedProjection { span, .. }
+            | Self::StarIsOnlyForCount { span, .. }
             | Self::NoSuchFunction { span, .. }
             | Self::WrongArity { span, .. }
             | Self::DuplicateProjection { span, .. }

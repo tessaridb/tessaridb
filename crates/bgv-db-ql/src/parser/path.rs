@@ -8,7 +8,7 @@
 use bgv_db_types::{Number, Path, Step};
 
 use super::Parser;
-use crate::ast::{ExprKind, FieldPath, Name, Projected, Projection};
+use crate::ast::{Aggregate, ExprKind, FieldPath, Name, Projectable, Projected, Projection};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Spanned, Token};
 
@@ -93,10 +93,27 @@ impl Parser<'_> {
     /// of its own and needs `AS`, for the same reason a position does: every
     /// invented spelling is a convention learned from a surprise.
     fn projected(&mut self) -> Result<Projected> {
+        if let Some(value) = self.aggregate()? {
+            let span = match &value {
+                Projectable::Aggregate { span, .. } => *span,
+                Projectable::Value(expr) => expr.span,
+            };
+            if !self.eat_keyword(Keyword::As) {
+                // A fold has no name of its own for the same reason anything
+                // computed has none: every invented spelling is a convention
+                // learned from a surprise.
+                return Err(Error::UnnamedProjection { span });
+            }
+            let name = self.name()?;
+            return Ok(Projected { value, name });
+        }
         let value = self.condition()?;
         if self.eat_keyword(Keyword::As) {
             let name = self.name()?;
-            return Ok(Projected { value, name });
+            return Ok(Projected {
+                value: Projectable::Value(value),
+                name,
+            });
         }
         let ExprKind::Path(path) = &value.kind else {
             return Err(Error::UnnamedProjection { span: value.span });
@@ -108,9 +125,49 @@ impl Parser<'_> {
         };
         let span = value.span;
         Ok(Projected {
-            value,
+            value: Projectable::Value(value),
             name: Name { text, span },
         })
+    }
+
+    /// `count(*)`, `sum(price)` — a fold, when one stands here.
+    ///
+    /// Recognised by the word and the `(` after it, so a field called `count` is
+    /// still readable everywhere a field can stand: only `count(` is a fold, and
+    /// a bare `count` is a route into the record. That is the same rule the six
+    /// contextual words of `ORDER BY` follow, and for the same reason.
+    fn aggregate(&mut self) -> Result<Option<Projectable>> {
+        let start = self.span_here();
+        let Some(Token::Ident(word)) = self.peek() else {
+            return Ok(None);
+        };
+        let Some(fold) = Aggregate::parse(word) else {
+            return Ok(None);
+        };
+        if !self.follows_with(1, &Token::Punct(Punct::ParenOpen)) {
+            return Ok(None);
+        }
+        self.advance();
+        self.advance();
+        // `count(*)` folds over the records themselves; every other fold, and
+        // `count(<expr>)`, folds over a value in each of them.
+        let over = if self.eat_punct(Punct::Star) {
+            None
+        } else {
+            Some(Box::new(self.condition()?))
+        };
+        let end = self.expect_punct(Punct::ParenClose, "`)` after what is folded")?;
+        if over.is_none() && fold != Aggregate::Count {
+            return Err(Error::StarIsOnlyForCount {
+                fold: fold.spelling(),
+                span: start.to(end),
+            });
+        }
+        Ok(Some(Projectable::Aggregate {
+            fold,
+            over,
+            span: start.to(end),
+        }))
     }
 
     /// A bare name, which is never a keyword.

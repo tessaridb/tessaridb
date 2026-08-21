@@ -13,9 +13,9 @@ CREATE users:1 = { name: 'ada', email: 'ada@example.com' };
 SELECT * FROM users JOIN orders;
 --- expect: error Unsupported
 
---- case: aggregation and grouping
+--- case: a grouped read cannot answer with every field
 SELECT * FROM users GROUP BY email;
---- expect: error Unsupported
+--- expect: error UngroupedProjection
 
 --- case: a character the grammar never uses
 SELECT * FROM users WHERE email @ 'ada';

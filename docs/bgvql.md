@@ -336,6 +336,8 @@ SELECT address.city AS home, tags[0] AS first_tag FROM users;
 SELECT price * quantity AS total, string::upper(name) AS shout FROM users;
 SELECT * FROM users ORDER BY name;
 SELECT * FROM users ORDER BY city, joined DESC START 20 LIMIT 10;
+SELECT count(*) AS n FROM users;
+SELECT city, count(*) AS n, mean(age) AS average FROM users GROUP BY city;
 
 UPDATE users:1 = { name: 'ada', email: 'ada2@example.com' };
 DELETE users:1;
@@ -439,6 +441,58 @@ The operators, and how tightly they bind — loosest first:
 Parentheses override, and **two comparisons cannot be written in a row**:
 `1 < age < 100` means "between" to a person and `(1 < age) < 100` to a parser, so
 a grammar that picked one would answer a question nobody asked.
+
+### One answer per group
+
+Everything above answers **one row per record**. A fold does not:
+
+```
+SELECT count(*) AS n FROM users;
+SELECT city, count(*) AS n FROM users GROUP BY city;
+SELECT city, sum(spend) AS total, mean(age) AS average FROM users GROUP BY city;
+SELECT city, count(*) AS n FROM users GROUP BY city ORDER BY n DESC LIMIT 3;
+```
+
+| Fold | Answers with |
+|---|---|
+| `count(*)` | how many records |
+| `count(<expr>)` | how many records where that is present and not `NULL` |
+| `sum(<expr>)` | the total; over nothing, `0` |
+| `mean(<expr>)` | the average; over nothing, `NONE` |
+| `min(<expr>)` / `max(<expr>)` | the smallest and largest, in the value system's order |
+
+**`GROUP BY` is not required.** `SELECT count(*) AS n FROM users` answers with
+one row, because the commonest question the language can be asked should not
+need a clause that means nothing.
+
+**A grouped read may answer only with its group keys and its folds.**
+`SELECT name, count(*) AS n … GROUP BY city` is refused when the statement is
+read, because `name` has as many values as the group has records and picking one
+silently is how a wrong number reaches a report. `SELECT *` over a group is
+refused for the same reason.
+
+**Every fold but `count(*)` passes over absent and `NULL`**, so `count(*)` and
+`count(email)` are two questions worth having both of. **Sum over nothing is
+`0`** — a sum answering `NONE` would make every caller write the same fallback —
+and **mean over nothing is `NONE`**, because an average of no numbers is not a
+number. A non-number reaching `sum` or `mean` **fails**, naming the type: the
+rule arithmetic already follows, and a silent skip would make a wrong total look
+like a right one.
+
+Sums promote the way arithmetic does: a group of integers totals to an integer,
+anything touching a float totals to a float. A mean is exact where the division
+allows, so it answers as a decimal.
+
+`ORDER BY` and `LIMIT` over a grouped read shape the **groups**, because
+ordering runs after projection and a group *is* the projected record by then.
+Groups themselves come out in the value system's order of their keys.
+
+`count`, `sum`, `mean`, `min` and `max` are written **without a namespace**,
+where every function has one. That is the namespacing rule earning its keep
+rather than being broken by it: `array::len` counts one record's array and
+`count` counts records, and the spelling says which arity you are looking at.
+Only `count(` is a fold — a bare `count` is a route into the record, so a field
+named `count` stays readable.
 
 ### Order, and how much of it
 
@@ -756,7 +810,10 @@ Named here rather than merely missing, so each absence reads as a decision:
 | ranking, highlighting, stemming, fuzzy matching | analyzer decisions; approximating them over a scan now would disagree with the index later |
 | `[*]` in a path — "any element of this array" | it turns a path from a function into a relation: the filter becomes existential, a projection returns several values, and the index becomes a multikey one with entries per element and a reclamation rule of its own. Three features wearing one syntax. |
 | declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
-| aggregation and grouping | needs an execution layer this milestone has not built |
+| `HAVING` | a filter over groups is a second filter position with its own scoping rule — it sees folds where `WHERE` does not — and is worth its own milestone rather than an afterthought |
+| `DISTINCT` | it is `GROUP BY` over the projection with no fold, and one spelling for one thing |
+| an expression over a fold (`mean(age) * 3`) | folds answer after the per-record evaluator has finished, so composing over one needs a second evaluation pass |
+| a spilling aggregate | groups are built in memory; a store that must aggregate more than fits needs a spill, and that is a measurement away rather than a guess away |
 | user-defined functions | a stored function is a catalog entry with its own lifecycle, permissions and replication story |
 | a separate `NOT NULL` | `REQUIRED` covers absence and null together; splitting them is additive |
 | a default on a whole table | a different feature wearing a similar word |
@@ -777,6 +834,10 @@ Named here rather than merely missing, so each absence reads as a decision:
 | `NONE` and `NULL` are distinct literals | **contract** — the storage layer keeps them apart |
 | An edge is a record, and traversal is an index read | **contract** — no separate graph keyspace, so edges get MVCC, transactions, replication and the schema check without any of them being built again |
 | An edge is identified by its endpoints | fixed for this milestone; an explicit-id form would be additive |
+| A fold answers once per group, and a grouped read answers only with keys and folds | **contract** |
+| `GROUP BY` is optional; folds without one make a single group | **contract** |
+| Every fold but `count(*)` passes over absent and null | **contract** |
+| Sum over nothing is `0`; mean over nothing is `NONE` | **contract** |
 | A sort is the value system's order, with `NONE` below `NULL` below every value | **contract** — a sort must place every row, where a comparison may decline to |
 | Ties are broken by record identity | **contract** — what keeps an added index from reordering equal rows |
 | `START` and `LIMIT` apply after ordering, always | **contract** |

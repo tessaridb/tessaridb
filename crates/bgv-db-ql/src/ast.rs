@@ -210,6 +210,13 @@ pub struct Select {
     pub projection: Projection,
     /// Which access path the statement resolves to.
     pub from: Source,
+    /// The keys the records are grouped by, when the read groups.
+    ///
+    /// Empty means no grouping — which is not the same as no aggregate:
+    /// `SELECT count(*) FROM users` folds every record into one group without
+    /// naming a key, because the commonest question the language can be asked
+    /// should not need a clause that means nothing.
+    pub group: Vec<FieldPath>,
     /// The keys the answer is sorted by, in order of significance.
     pub order: Vec<Ordering>,
     /// How many records to pass over before answering.
@@ -245,8 +252,8 @@ pub enum Projection {
 /// One projected value, and the name it answers under.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Projected {
-    /// How the value is produced: a route, or anything computed from one.
-    pub value: Expr,
+    /// How the value is produced.
+    pub value: Projectable,
     /// The name it answers under.
     ///
     /// Resolved at parse rather than left for the executor: whether two
@@ -501,6 +508,74 @@ pub struct RangeExpr {
     pub end: Box<Expr>,
     /// Whether the upper bound is included: `..=` rather than `..`.
     pub inclusive: bool,
+}
+
+/// What a projection produces: one value per record, or one per group.
+///
+/// The two are different **arities**, not two operators, which is why an
+/// aggregate could not ride along with the functions: everything else in the
+/// read language answers one row per record, and this does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Projectable {
+    /// An expression, evaluated against each record.
+    Value(Expr),
+    /// A fold over the records of a group.
+    Aggregate {
+        /// Which fold.
+        fold: Aggregate,
+        /// What it folds over — absent for `count(*)`, which folds over the
+        /// records themselves rather than over a value in them.
+        over: Option<Box<Expr>>,
+        /// Where it was written.
+        span: Span,
+    },
+}
+
+/// A fold over the records of a group.
+///
+/// Spelled without a namespace, where every function has one. That is the
+/// namespacing rule earning its keep rather than being broken by it:
+/// `array::len` counts one record's array and `count` counts records, and a
+/// reader can tell which arity they are looking at from the spelling alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Aggregate {
+    /// `count(*)` counts records; `count(<expr>)` counts the records where the
+    /// expression is present and not null.
+    Count,
+    /// `sum(<expr>)` — over nothing, zero.
+    Sum,
+    /// `mean(<expr>)` — over nothing, `NONE`.
+    Mean,
+    /// `min(<expr>)`, in the value system's order.
+    Min,
+    /// `max(<expr>)`, in the same order.
+    Max,
+}
+
+impl Aggregate {
+    /// Every fold, so a listing cannot drift from the set.
+    pub const ALL: &'static [Self] = &[Self::Count, Self::Sum, Self::Mean, Self::Min, Self::Max];
+
+    /// How the fold is written.
+    #[must_use]
+    pub const fn spelling(self) -> &'static str {
+        match self {
+            Self::Count => "count",
+            Self::Sum => "sum",
+            Self::Mean => "mean",
+            Self::Min => "min",
+            Self::Max => "max",
+        }
+    }
+
+    /// The fold a word spells, if it spells one.
+    #[must_use]
+    pub fn parse(word: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|fold| fold.spelling().eq_ignore_ascii_case(word))
+    }
 }
 
 /// An expression kept as the text it was written as.

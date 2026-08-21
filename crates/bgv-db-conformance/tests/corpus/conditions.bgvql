@@ -115,3 +115,46 @@ DEFINE TABLE order;
 CREATE order:1 = { limit: 10, by: 'ada', start: 1 };
 SELECT * FROM order ORDER BY by LIMIT 1;
 --- expect: rows 1
+
+--- case: a fold answers once for many records
+SELECT count(*) AS n FROM people;
+--- expect: rows 1
+
+--- case: counting a value and counting records are different questions
+SELECT count(*) AS records, count(age) AS ages FROM people;
+--- expect: rows 1
+
+--- case: grouping answers once per distinct key
+SELECT city, count(*) AS n FROM people GROUP BY city;
+--- expect: rows 2
+
+--- case: the folds pass over what holds nothing
+DEFINE TABLE scores;
+CREATE scores:1 = { n: 10 };
+CREATE scores:2 = { n: 20 };
+CREATE scores:3 = { n: NULL };
+CREATE scores:4 = { other: 'no n at all' };
+SELECT sum(n) AS total, mean(n) AS average, count(n) AS held FROM scores;
+--- expect: rows 1
+
+--- case: a fold over something that is not a number fails
+SELECT sum(name) AS total FROM people;
+--- expect: error NotSummable
+
+--- case: a grouped read may answer only with its keys and its folds
+SELECT name, count(*) AS n FROM people GROUP BY city;
+--- expect: error UngroupedProjection
+
+--- case: a star means the records themselves, which only count can fold
+SELECT sum(*) AS n FROM people;
+--- expect: error StarIsOnlyForCount
+
+--- case: ordering and bounding a grouped read shapes the groups
+SELECT city, count(*) AS n FROM people GROUP BY city ORDER BY n DESC LIMIT 1;
+--- expect: rows 1
+
+--- case: a field called count is still a field
+DEFINE TABLE tallies;
+CREATE tallies:1 = { count: 7 };
+SELECT * FROM tallies WHERE count = 7;
+--- expect: rows 1

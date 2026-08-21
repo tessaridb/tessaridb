@@ -218,6 +218,20 @@ pub enum Error {
         span: Span,
     },
 
+    /// A fold given something it cannot fold.
+    ///
+    /// A silent skip would make a wrong total look like a right one, which is
+    /// the same reason arithmetic refuses a non-number rather than ignoring it.
+    #[error("`{fold}` cannot fold {found} (at {span})")]
+    NotSummable {
+        /// The fold as written.
+        fold: &'static str,
+        /// What it was given, or why it could not answer.
+        found: &'static str,
+        /// Where the fold is.
+        span: Span,
+    },
+
     /// A route into a record, written where there is no record.
     ///
     /// **Unreachable through the language today**, and kept anyway. Two separate

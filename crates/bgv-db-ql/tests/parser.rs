@@ -508,19 +508,14 @@ fn statements_need_a_separator_and_the_last_one_may_omit_it() {
 
 #[test]
 fn what_the_specification_leaves_out_is_refused_by_name() {
-    for (source, feature) in [
-        ("SELECT * FROM users JOIN orders;", "joins"),
-        (
-            "SELECT * FROM users GROUP BY email;",
-            "aggregation and grouping",
-        ),
-    ] {
-        let error = parse(source).unwrap_err();
-        let Error::Unsupported { feature: named, .. } = &error else {
-            panic!("{source} produced {error}");
-        };
-        assert_eq!(*named, feature, "{source}");
-    }
+    // One row left: the others named features this language now has, and a test
+    // kept alive by softening what it checks stops being evidence.
+    let source = "SELECT * FROM users JOIN orders;";
+    let error = parse(source).unwrap_err();
+    let Error::Unsupported { feature, .. } = &error else {
+        panic!("{source} produced {error}");
+    };
+    assert_eq!(*feature, "joins");
 }
 
 #[test]

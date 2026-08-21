@@ -19,6 +19,7 @@
 
 #![forbid(unsafe_code)]
 
+mod aggregate;
 mod arithmetic;
 mod call;
 mod condition;

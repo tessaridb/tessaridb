@@ -2117,3 +2117,214 @@ fn the_words_that_shape_a_read_are_not_reserved_names() {
         vec![RecordId::Int(1)]
     );
 }
+
+#[test]
+fn a_fold_answers_once_for_many_records() {
+    let store = store();
+    let mut session = ready(&store);
+    sortable(&mut session);
+
+    let found = session.run("SELECT count(*) AS n FROM people;").unwrap();
+    let records = found[0].records().unwrap();
+    assert_eq!(records.len(), 1, "one answer, not one per record");
+    assert_eq!(
+        field(&records[0].1, "n"),
+        &Value::Number(Number::Integer(5))
+    );
+}
+
+#[test]
+fn counting_a_value_and_counting_records_are_different_questions() {
+    let store = store();
+    let mut session = ready(&store);
+    sortable(&mut session);
+
+    // people:4 has no age at all and people:3 holds null; neither is a value.
+    let found = session
+        .run("SELECT count(*) AS records, count(age) AS ages FROM people;")
+        .unwrap();
+    let record = &found[0].records().unwrap()[0].1;
+    assert_eq!(field(record, "records"), &Value::Number(Number::Integer(5)));
+    assert_eq!(field(record, "ages"), &Value::Number(Number::Integer(3)));
+}
+
+#[test]
+fn grouping_answers_once_per_distinct_key() {
+    let store = store();
+    let mut session = ready(&store);
+    sortable(&mut session);
+
+    let found = session
+        .run("SELECT city, count(*) AS n FROM people GROUP BY city;")
+        .unwrap();
+    let records = found[0].records().unwrap();
+    assert_eq!(records.len(), 2);
+    // Groups come out in the value system's order, so Lyon precedes Paris.
+    assert_eq!(field(&records[0].1, "city"), &Value::from("Lyon"));
+    assert_eq!(
+        field(&records[0].1, "n"),
+        &Value::Number(Number::Integer(2))
+    );
+    assert_eq!(field(&records[1].1, "city"), &Value::from("Paris"));
+    assert_eq!(
+        field(&records[1].1, "n"),
+        &Value::Number(Number::Integer(3))
+    );
+}
+
+#[test]
+fn the_folds_ignore_what_holds_nothing_and_say_so_when_there_is_nothing() {
+    let store = store();
+    let mut session = ready(&store);
+    sortable(&mut session);
+
+    let found = session
+        .run(
+            "SELECT sum(age) AS total, mean(age) AS average, \
+             min(age) AS youngest, max(age) AS oldest FROM people;",
+        )
+        .unwrap();
+    let record = &found[0].records().unwrap()[0].1;
+    // 45 + 17 + 45; the null and the absent are not values.
+    assert_eq!(field(record, "total"), &Value::Number(Number::Integer(107)));
+    assert_eq!(
+        field(record, "youngest"),
+        &Value::Number(Number::Integer(17))
+    );
+    assert_eq!(field(record, "oldest"), &Value::Number(Number::Integer(45)));
+    // A mean is exact where the arithmetic allows: 107/3 answers as a decimal
+    // carrying the division's full precision, not as a float that has already
+    // rounded. Asserted over data whose average is whole, so the assertion is
+    // about the value rather than about how many digits survived.
+    session
+        .run(
+            "DEFINE TABLE scores;\n\
+             CREATE scores:1 = { n: 10 };\n\
+             CREATE scores:2 = { n: 20 };\n\
+             CREATE scores:3 = { n: NULL };",
+        )
+        .unwrap();
+    let exact = session
+        .run("SELECT mean(n) AS average FROM scores;")
+        .unwrap();
+    assert_eq!(
+        field(&exact[0].records().unwrap()[0].1, "average"),
+        &Value::Number(Number::Integer(15)),
+        "a mean compares by value, whatever numeric kind carries it"
+    );
+
+    // Over a group holding no numbers at all: sum is zero, mean is nothing.
+    session
+        .run("DEFINE TABLE empty; CREATE empty:1 = { name: 'ada' };")
+        .unwrap();
+    let none = session
+        .run("SELECT sum(age) AS total, mean(age) AS average FROM empty;")
+        .unwrap();
+    let record = &none[0].records().unwrap()[0].1;
+    assert_eq!(field(record, "total"), &Value::Number(Number::Integer(0)));
+    let Value::Object(fields) = record else {
+        panic!("not an object");
+    };
+    assert!(
+        !fields.contains_key("average"),
+        "a mean of nothing is nothing, and nothing is left out"
+    );
+}
+
+#[test]
+fn a_fold_over_something_that_is_not_a_number_fails_rather_than_skipping() {
+    // A silent skip would make a wrong total look like a right one.
+    let store = store();
+    let mut session = ready(&store);
+    sortable(&mut session);
+
+    let error = session
+        .run("SELECT sum(name) AS total FROM people;")
+        .unwrap_err();
+    assert!(matches!(error, Error::NotSummable { .. }), "{error}");
+}
+
+#[test]
+fn a_grouped_read_may_answer_only_with_its_keys_and_its_folds() {
+    let store = store();
+    let mut session = ready(&store);
+    sortable(&mut session);
+
+    // `name` has as many values as the group has records, and picking one
+    // silently is how a wrong number reaches a report.
+    assert!(
+        session
+            .run("SELECT name, count(*) AS n FROM people GROUP BY city;")
+            .is_err()
+    );
+    // `*` over a group would answer with whichever record came last.
+    assert!(session.run("SELECT * FROM people GROUP BY city;").is_err());
+    // And a fold has no name of its own.
+    assert!(session.run("SELECT count(*) FROM people;").is_err());
+    // `*` means the records themselves, which only `count` can fold.
+    assert!(session.run("SELECT sum(*) AS n FROM people;").is_err());
+}
+
+#[test]
+fn ordering_and_bounding_a_grouped_read_shapes_the_groups() {
+    let store = store();
+    let mut session = ready(&store);
+    sortable(&mut session);
+
+    let found = session
+        .run(
+            "SELECT city, count(*) AS n FROM people \
+             GROUP BY city ORDER BY n DESC LIMIT 1;",
+        )
+        .unwrap();
+    let records = found[0].records().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(field(&records[0].1, "city"), &Value::from("Paris"));
+}
+
+#[test]
+fn grouping_by_several_keys_groups_by_the_combination() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE sales;\n\
+             CREATE sales:1 = { city: 'Paris', year: 2025, n: 1 };\n\
+             CREATE sales:2 = { city: 'Paris', year: 2026, n: 2 };\n\
+             CREATE sales:3 = { city: 'Paris', year: 2026, n: 4 };\n\
+             CREATE sales:4 = { city: 'Lyon', year: 2026, n: 8 };",
+        )
+        .unwrap();
+
+    let found = session
+        .run("SELECT city, year, sum(n) AS total FROM sales GROUP BY city, year;")
+        .unwrap();
+    let records = found[0].records().unwrap();
+    assert_eq!(records.len(), 3);
+    assert_eq!(
+        field(&records[2].1, "total"),
+        &Value::Number(Number::Integer(6)),
+        "Paris in 2026 is two rows folded into one"
+    );
+}
+
+#[test]
+fn a_field_called_count_is_still_a_field() {
+    // Only `count(` is a fold; a bare `count` is a route into the record, the
+    // same rule the words that shape a read already follow.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE TABLE tallies; CREATE tallies:1 = { count: 7 };")
+        .unwrap();
+
+    assert_eq!(
+        found_ids(&mut session, "SELECT * FROM tallies WHERE count = 7;"),
+        vec![RecordId::Int(1)]
+    );
+    let found = session.run("SELECT count FROM tallies;").unwrap();
+    assert_eq!(
+        field(&found[0].records().unwrap()[0].1, "count"),
+        &Value::Number(Number::Integer(7))
+    );
+}
