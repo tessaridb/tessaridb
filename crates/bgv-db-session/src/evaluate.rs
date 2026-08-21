@@ -19,9 +19,10 @@ use bgv_db_types::{Analyzer, Number, Path, RecordId, RecordRef, TableId, Value, 
 use crate::aggregate::folds;
 use crate::arithmetic::{arithmetic, negate};
 use crate::call::call;
-use crate::condition::{apply, boolean, literal_prefix};
+use crate::condition::{apply, boolean};
 use crate::error::{Error, Result};
 use crate::outcome::AccessPath;
+use crate::plan;
 use crate::rank::{Corpus, score};
 use crate::search::{Searched, matches_terms};
 use crate::session::Session;
@@ -410,9 +411,16 @@ impl Session<'_> {
 
     /// The records worth testing, and how they were reached.
     ///
-    /// An index narrows when the condition contains an equality or a prefix
-    /// pattern on an indexed path; otherwise the table is read. Which one
-    /// happens is decided by what exists, never by how the query was written.
+    /// Three steps that used to be one loop: enumerate every conjunct an index
+    /// could serve, choose the one that promises to narrow the most
+    /// ([`crate::plan`] owns that rule), and execute only the winner. Taking the
+    /// first servable conjunct was never a wrong answer — the candidates are
+    /// re-tested against the whole condition below — but it was a wrong cost,
+    /// decided by where the author happened to put a clause.
+    ///
+    /// Which one runs is still decided by what exists and never by how the query
+    /// was written; that now includes not being decided by the *order* it was
+    /// written in.
     fn candidates(
         &self,
         transaction: &mut Transaction<'_>,
@@ -421,55 +429,52 @@ impl Session<'_> {
         condition: &Expr,
         searched: &Searched,
     ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
-        for seek in seekable(condition) {
-            // A right-hand side that reads the record is not a constant, so it
-            // cannot be a bound; `seekable` has already excluded those.
-            let wanted = self.evaluate(transaction, seek.value)?;
-            let Some(index) = self.index_on_path(transaction, table, seek.path)? else {
-                continue;
-            };
-            let found = match seek.shape {
-                // An ordered index answers an equality and a prefix; it cannot
-                // answer a term, and a search index cannot answer either of the
-                // other two. Asking the wrong one would return the wrong rows
-                // rather than none, so the shapes are checked against the index.
-                Shape::Equality if !index.search => {
-                    transaction.records_by_index(&index, &[wanted])?
-                }
-                Shape::Prefix if !index.search => {
-                    let Value::String(pattern) = &wanted else {
-                        continue;
-                    };
-                    let Some(prefix) = literal_prefix(pattern) else {
-                        continue;
-                    };
-                    transaction.records_with_string_prefix(&index, &prefix)?
-                }
-                Shape::Terms if index.search => {
-                    let (Value::String(query), Some(analyzer)) =
-                        (&wanted, searched.analyzer(seek.path))
-                    else {
-                        continue;
-                    };
-                    let terms = analyzer.terms(query);
-                    if terms.is_empty() {
-                        continue;
-                    }
-                    let mut rows = Vec::new();
-                    for id in transaction.records_by_terms(&index, &terms)? {
-                        let at = RecordAddress::new(context.namespace, context.database, table, id);
-                        if let Some(payload) = transaction.get(&at)? {
-                            rows.push((at.id, payload));
-                        }
-                    }
-                    rows
-                }
-                _ => continue,
-            };
+        // Once for the statement rather than once per conjunct: which indexes a
+        // table carries is one question, and it used to be asked as many times
+        // as the condition had clauses.
+        let declared = Catalog::new(transaction).indexes_on(table)?;
+        let offered = self.enumerate(transaction, condition, &declared, searched)?;
+
+        if let Some(chosen) = plan::choose(offered) {
+            let found = self.serve(transaction, context, table, &chosen)?;
             return Ok((decode_all(found)?, AccessPath::Index));
         }
         let scanned = transaction.scan_table(context.namespace, context.database, table)?;
         Ok((decode_all(scanned)?, AccessPath::Scan))
+    }
+
+    /// Run the candidate the plan chose.
+    ///
+    /// Every arm has everything it needs on the candidate — the value, the
+    /// literal prefix, the analysed terms — because [`crate::plan`] computed
+    /// them while ranking. There is nothing here to recompute and no shape that
+    /// can arrive without its argument.
+    fn serve(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: crate::context::Context,
+        table: TableId,
+        chosen: &plan::Candidate,
+    ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        match &chosen.served {
+            plan::Served::Equality(bound) => {
+                transaction.records_by_index(&chosen.index, core::slice::from_ref(bound))
+            }
+            plan::Served::Prefix(prefix) => {
+                transaction.records_with_string_prefix(&chosen.index, prefix)
+            }
+            plan::Served::Terms(terms) => {
+                let mut rows = Vec::new();
+                for id in transaction.records_by_terms(&chosen.index, terms)? {
+                    let at = RecordAddress::new(context.namespace, context.database, table, id);
+                    if let Some(payload) = transaction.get(&at)? {
+                        rows.push((at.id, payload));
+                    }
+                }
+                Ok(rows)
+            }
+        }
+        .map_err(Error::from)
     }
 
     /// One hop along an edge table, and optionally one more into its far side.
@@ -597,67 +602,6 @@ pub(crate) fn within(id: &RecordId, start: &RecordId, end: &RecordId, inclusive:
     if inclusive { id <= end } else { id < end }
 }
 
-/// The shape of a test an index can answer.
-enum Shape {
-    /// `<path> = <constant>` — one entry.
-    Equality,
-    /// `<path> LIKE '<literal>%'` — a range over the values beginning with it.
-    Prefix,
-    /// `<path> MATCHES '<text>'` — the postings of every term the text holds.
-    Terms,
-}
-
-/// One conjunct an index could narrow with.
-struct Seek<'a> {
-    path: &'a Path,
-    value: &'a Expr,
-    shape: Shape,
-}
-
-/// The conjuncts of a condition an index could serve, outermost first.
-///
-/// Only `AND` is walked into. Under `OR` neither side alone narrows the
-/// answer — a record satisfying the other half would be missed — and under `NOT`
-/// an index that finds the matching records is exactly the wrong set. Both are
-/// left to the scan rather than served with a bound that would be a guess.
-///
-/// A right-hand side that reads the record is not a constant and cannot be a
-/// bound, so it is excluded here rather than discovered when it is evaluated
-/// without a record in scope.
-fn seekable(condition: &Expr) -> Vec<Seek<'_>> {
-    match &condition.kind {
-        ExprKind::And(left, right) => {
-            let mut found = seekable(left);
-            found.extend(seekable(right));
-            found
-        }
-        ExprKind::Binary { op, left, right } => {
-            let ExprKind::Path(field) = &left.kind else {
-                return Vec::new();
-            };
-            if reads_a_record(right) {
-                return Vec::new();
-            }
-            let shape = match op {
-                BinaryOp::Equal => Shape::Equality,
-                BinaryOp::Like => Shape::Prefix,
-                BinaryOp::Matches => Shape::Terms,
-                // An ordered index can serve `<` and `>` as a bounded range, and
-                // this does not build it: that needs a bounded scan on
-                // `Transaction` and an equivalence test of its own. Reported as
-                // a scan until it does, rather than served as a guess.
-                _ => return Vec::new(),
-            };
-            vec![Seek {
-                path: &field.path,
-                value: right,
-                shape,
-            }]
-        }
-        _ => Vec::new(),
-    }
-}
-
 /// What a source produced: the records, how they were reached, and what its
 /// searched fields need.
 ///
@@ -725,27 +669,4 @@ fn shown(select: &Select) -> Vec<&Expr> {
         found.push(&ordering.key);
     }
     found
-}
-
-/// Whether an expression reads the record being tested.
-fn reads_a_record(expr: &Expr) -> bool {
-    match &expr.kind {
-        ExprKind::Path(_) => true,
-        ExprKind::Not(inner) | ExprKind::Negate(inner) => reads_a_record(inner),
-        ExprKind::And(left, right) | ExprKind::Or(left, right) => {
-            reads_a_record(left) || reads_a_record(right)
-        }
-        ExprKind::Arithmetic { left, right, .. } | ExprKind::Binary { left, right, .. } => {
-            reads_a_record(left) || reads_a_record(right)
-        }
-        ExprKind::Call { arguments, .. } => arguments.iter().any(reads_a_record),
-        ExprKind::Array(items) | ExprKind::Set(items) => items.iter().any(reads_a_record),
-        ExprKind::Object(fields) => fields.iter().any(|field| reads_a_record(&field.value)),
-        ExprKind::Range(range) => reads_a_record(&range.start) || reads_a_record(&range.end),
-        ExprKind::Literal(_)
-        | ExprKind::Table(_)
-        | ExprKind::Record(_)
-        | ExprKind::Get(_)
-        | ExprKind::Select(_) => false,
-    }
 }

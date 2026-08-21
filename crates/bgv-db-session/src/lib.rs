@@ -29,6 +29,7 @@ mod evaluate;
 mod execute;
 mod identity;
 mod outcome;
+mod plan;
 mod rank;
 mod search;
 mod session;

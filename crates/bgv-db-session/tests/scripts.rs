@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use bgv_db_kv::{KvBackend, MemoryBackend};
-use bgv_db_session::{Error, Session};
+use bgv_db_session::{AccessPath, Error, Session};
 use bgv_db_storage::Store;
 use bgv_db_types::{Number, RecordId, Value};
 
@@ -3011,4 +3011,79 @@ fn the_system_namespace_has_no_name_and_so_no_statement_can_reach_it() {
         "the first namespace took the catalog's own id"
     );
     transaction.rollback();
+}
+
+#[test]
+fn the_plan_chooses_the_index_and_never_the_answer() {
+    // The planner is the component most tempted to break the store's governing
+    // rule, so the rule is asserted against it directly: the same condition,
+    // over the same rows, answers identically whichever candidate is chosen —
+    // and the choice is made to differ by declaring the indexes differently.
+    fn answered(indexes: &str) -> Vec<RecordId> {
+        let store = store();
+        let mut session = ready(&store);
+        session
+            .run(&format!(
+                "DEFINE TABLE users;\n\
+                 {indexes}\n\
+                 CREATE users:1 = {{ email: 'a@x', city: 'london', name: 'ada' }};\n\
+                 CREATE users:2 = {{ email: 'b@x', city: 'london', name: 'anne' }};\n\
+                 CREATE users:3 = {{ email: 'c@x', city: 'paris',  name: 'ada' }};"
+            ))
+            .unwrap();
+        session
+            .run("SELECT * FROM users WHERE city = 'london' AND name LIKE 'a%' AND email = 'a@x';")
+            .unwrap()[0]
+            .records()
+            .unwrap()
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    let expected = vec![RecordId::Int(1)];
+    // No index at all: the scan decides, which is the reference answer.
+    assert_eq!(answered(""), expected);
+    // Each index alone, so each candidate gets its turn at being the only one.
+    assert_eq!(answered("DEFINE INDEX i ON users FIELDS city;"), expected);
+    assert_eq!(answered("DEFINE INDEX i ON users FIELDS name;"), expected);
+    assert_eq!(
+        answered("DEFINE INDEX i ON users FIELDS email UNIQUE;"),
+        expected
+    );
+    // And all three, where the plan actually has to choose.
+    assert_eq!(
+        answered(
+            "DEFINE INDEX a ON users FIELDS city;\n\
+             DEFINE INDEX b ON users FIELDS name;\n\
+             DEFINE INDEX c ON users FIELDS email UNIQUE;"
+        ),
+        expected
+    );
+}
+
+#[test]
+fn a_filter_reports_the_index_it_used_and_the_scan_when_there_is_none() {
+    // The plan is not nameable from outside yet — `AccessPath` says `index`, not
+    // *which* — so this asserts the half that is observable: that a servable
+    // condition stops being a scan, and an unservable one does not pretend.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE users;\n\
+             DEFINE INDEX by_email ON users FIELDS email UNIQUE;\n\
+             CREATE users:1 = { email: 'a@x', city: 'london' };",
+        )
+        .unwrap();
+
+    let served = session
+        .run("SELECT * FROM users WHERE city = 'london' AND email = 'a@x';")
+        .unwrap();
+    assert_eq!(served[0].path(), Some(AccessPath::Index));
+
+    let scanned = session
+        .run("SELECT * FROM users WHERE city = 'london';")
+        .unwrap();
+    assert_eq!(scanned[0].path(), Some(AccessPath::Scan));
 }

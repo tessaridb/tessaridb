@@ -493,8 +493,9 @@ could answer without touching the record is a *covering* read, and choosing to
 run one is a planner's decision about how to execute the statement rather than a
 change to what the statement says.
 
-`SELECT` resolves to exactly one of the three access paths, and which one is
-decided by the target rather than by a cost model:
+`SELECT` resolves to exactly one of the three access paths, and which **kind** is
+decided by the target rather than by a cost model. Which index serves it, when
+more than one could, is the planner's decision and is described below.
 
 | Form | Access path |
 |---|---|
@@ -507,6 +508,37 @@ decided by the target rather than by a cost model:
 | `FROM users:1->follows->users` | the same index, then each far endpoint by its identity |
 | `FROM users:2<-follows<-users` | the index, on the edge table's `in` |
 | `FROM users` | every record of the table |
+
+### Which index runs
+
+Where a condition offers several conjuncts an index could serve, the one that
+promises to narrow the most runs. Not the one written first — that was the rule
+until a planner existed, and it meant that
+
+```
+SELECT * FROM users WHERE city = 'london' AND email = 'ada@example.com';
+```
+
+read the `city` index although `email` is unique and selects exactly one record.
+
+The ranking uses a real number **only where knowing it is free**: an equality on
+a unique index produces at most one record, because that is what unique means,
+and a `MATCHES` produces at most the smallest term's document frequency, which
+is a count of index keys. Everywhere else the shape decides — a single value
+beats a range, because `LIKE 'a%'` can be most of the table and an equality
+cannot be more than the records holding one value. Ties keep source order, so two
+runs of one statement cannot plan differently and an author can predict the plan
+from the condition they wrote.
+
+This is deliberately **not** a cost model. One needs to know how many records
+hold `city = 'london'` as against `city = 'tromsø'`, which means maintained
+histograms — and a stale histogram changes plans silently.
+
+**The plan can only change the cost.** Whichever candidate narrows, the whole
+condition is still tested against every record it produced, which is what makes
+adding an index — or reordering a condition — unable to change an answer. The
+access path an answer reports (`index` or `scan`) says which kind of read ran; it
+does not yet say *which index*, and naming it wants an `EXPLAIN` of its own.
 
 A `WHERE` takes a **condition**: an expression that answers with a boolean. In a
 condition a bare name is a path (§3) into the record being tested, so every
@@ -982,7 +1014,7 @@ Named here rather than merely missing, so each absence reads as a decision:
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
-| joins | no planner, and a join without one is a nested scan pretending otherwise |
+| joins | a join needs the planner to choose a driving side and a join order; the planner now chooses *an index* (see below) and does not yet choose between tables |
 | traversals longer than one hop, and filters inside a traversal | `a->e->b` is one hop to the edge and one to its far side, which is the shape that makes traversal useful; `->{1..3}`, mid-traversal filters and shortest-path are a language surface to design once |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |
 | a text **index** | `MATCHES` works today over a scan. The index that makes it fast is its own milestone, and the statement will not change when it lands — which is exactly why the analyzer is on the field and not on the index. |
