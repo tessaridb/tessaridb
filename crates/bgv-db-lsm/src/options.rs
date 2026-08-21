@@ -60,7 +60,10 @@
 use std::path::Path;
 
 use bgv_db_kv::Keyspace;
-use rocksdb::{BlockBasedOptions, Cache, DBCompressionType, DBRecoveryMode, Options, WriteOptions};
+use rocksdb::{
+    BlockBasedOptions, Cache, ChecksumType, DBCompressionType, DBRecoveryMode, Options,
+    WriteOptions,
+};
 
 /// What an acknowledged write is promised to survive.
 ///
@@ -122,6 +125,13 @@ pub struct StoreConfig {
     pub block_cache_bytes: usize,
     /// The ceiling on memtable memory across every region together.
     pub memtable_bytes: usize,
+    /// The most files the engine may keep open at once.
+    ///
+    /// This bounds the table-reader term of the memory budget. The engine's own
+    /// default is `-1`, meaning unlimited — which the audit found while the
+    /// module above was already describing that term as "bounded by the
+    /// open-file limit". It was not bounded; now it is.
+    pub max_open_files: i32,
 }
 
 impl StoreConfig {
@@ -131,6 +141,12 @@ impl StoreConfig {
     pub const DEFAULT_BLOCK_CACHE_BYTES: usize = 64 * 1024 * 1024;
     /// Starting point for the memtable ceiling. Not a measured value.
     pub const DEFAULT_MEMTABLE_BYTES: usize = 64 * 1024 * 1024;
+    /// Starting point for the open-file bound. Not a measured value.
+    ///
+    /// Finite rather than the engine's unlimited default, so the table-reader
+    /// term of the memory budget has a ceiling at all. The value that replaces
+    /// it comes from the capacity measurement on the readiness checklist.
+    pub const DEFAULT_MAX_OPEN_FILES: i32 = 1024;
 
     /// Open with the given durability and the default memory budget.
     #[must_use]
@@ -139,6 +155,7 @@ impl StoreConfig {
             durability,
             block_cache_bytes: Self::DEFAULT_BLOCK_CACHE_BYTES,
             memtable_bytes: Self::DEFAULT_MEMTABLE_BYTES,
+            max_open_files: Self::DEFAULT_MAX_OPEN_FILES,
         }
     }
 }
@@ -169,6 +186,11 @@ pub(crate) fn database_options(config: &StoreConfig, create: bool) -> Options {
 
     options.set_db_write_buffer_size(config.memtable_bytes);
 
+    // The engine's default is unlimited, which leaves the table-reader term of
+    // the memory budget with no ceiling. Found by auditing the written OPTIONS
+    // file against the module's own claim that the term was bounded.
+    options.set_max_open_files(config.max_open_files);
+
     // Wired before the first load rather than after the first incident.
     options.enable_statistics();
 
@@ -188,6 +210,11 @@ fn region_options(keyspace: Keyspace, cache: &Cache) -> Options {
         options.set_bottommost_compression_type(bottom);
     }
     options.set_block_based_table_factory(&table_options(keyspace, cache));
+
+    // Pinned at the value the engine already resolves to, so that a release
+    // changing its default cannot change how often this store rewrites itself
+    // without anyone deciding to. See SST_REWRITE_SECONDS.
+    options.set_ttl(SST_REWRITE_SECONDS);
     options
 }
 
@@ -224,7 +251,25 @@ fn bottommost_compression(keyspace: Keyspace) -> Option<DBCompressionType> {
 
 /// The engine's default level count. Changing it is a reopen, so the ladder
 /// above is sized to it deliberately rather than by coincidence.
+///
+/// Confirmed against the running release rather than assumed: the written
+/// OPTIONS file reports `num_levels=7`.
 const LEVELS: usize = 7;
+
+/// How old a file may get before compaction rewrites it: thirty days.
+///
+/// This is not a value chosen for a workload — it is the value the engine was
+/// **already applying**, discovered by auditing the OPTIONS file it writes. The
+/// header declares a sentinel default, and the engine resolves that sentinel to
+/// thirty days for leveled compaction, so reading the header alone says "unset"
+/// while the store rewrites every file monthly.
+///
+/// Pinning it changes nothing today. What it changes is that the rewrite is now
+/// a decision that survives a release changing its default, and that the
+/// alternative — disabling it, trading tombstone and space reclamation for less
+/// background writing on cold data — is a question the readiness checklist asks
+/// with a measurement rather than a question nobody knew existed.
+const SST_REWRITE_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 /// Bits per key for the membership filter.
 const FILTER_BITS_PER_KEY: f64 = 10.0;
@@ -232,6 +277,12 @@ const FILTER_BITS_PER_KEY: f64 = 10.0;
 fn table_options(keyspace: Keyspace, cache: &Cache) -> BlockBasedOptions {
     let mut table = BlockBasedOptions::default();
     table.set_block_cache(cache);
+
+    // Pinned at the release's current default. A checksum is part of the format
+    // a file is written in, so a release changing this default would change how
+    // new files are written while old ones stay readable — a divergence with no
+    // symptom until something needs to explain why two files differ.
+    table.set_checksum_type(ChecksumType::XXH3);
 
     // Charged into the one cache above rather than growing beside it.
     table.set_cache_index_and_filter_blocks(true);
@@ -252,11 +303,24 @@ fn table_options(keyspace: Keyspace, cache: &Cache) -> BlockBasedOptions {
 /// are key prefixes — because every region costs memtable memory and background
 /// scheduling whether or not anything writes to it.
 pub(crate) fn regions(cache: &Cache) -> Vec<(&'static str, Options)> {
-    Keyspace::ALL
+    let mut regions: Vec<(&'static str, Options)> = Keyspace::ALL
         .iter()
         .map(|keyspace| (keyspace.name(), region_options(*keyspace, cache)))
-        .collect()
+        .collect();
+
+    // The engine always creates a region called `default`, whether or not
+    // anything uses it — and this store never does. Left alone it opens on
+    // engine defaults, which means its own block cache: a second cache beside
+    // the one this module calls the only one. It holds nothing and would never
+    // fill, so the cost is not the point; the point is that "one shared cache"
+    // is either true or it is a sentence. It is given the metadata profile,
+    // being the cheapest, and it stays empty.
+    regions.push((DEFAULT_REGION, region_options(Keyspace::META, cache)));
+    regions
 }
+
+/// The region the engine creates on its own, which this store never writes to.
+pub(crate) const DEFAULT_REGION: &str = "default";
 
 /// The engine's own record of the options a store is running with.
 ///
@@ -343,10 +407,13 @@ mod tests {
     }
 
     #[test]
-    fn every_keyspace_becomes_exactly_one_region() {
+    fn every_keyspace_becomes_one_region_and_the_engine_s_own_region_is_managed_too() {
         let cache = Cache::new_lru_cache(1024 * 1024);
         let regions = regions(&cache);
         let names: Vec<&str> = regions.iter().map(|(name, _)| *name).collect();
-        assert_eq!(names, ["meta", "data", "index", "log"]);
+        // `default` is created by the engine whether or not anything uses it.
+        // Managing it is what makes "one shared block cache" true rather than
+        // nearly true; the audit found it opening on its own defaults.
+        assert_eq!(names, ["meta", "data", "index", "log", DEFAULT_REGION]);
     }
 }
