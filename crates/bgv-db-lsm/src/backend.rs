@@ -151,6 +151,38 @@ impl LsmBackend {
             .map(Option::unwrap_or_default)
     }
 
+    /// Compact every region, now, and wait for it.
+    ///
+    /// An operational tool rather than something the store needs: the engine
+    /// compacts on its own schedule, and this exists for the two moments when
+    /// waiting for that schedule is wrong — after a mass delete, when the space
+    /// is wanted back before the next natural compaction reaches those levels;
+    /// and in a test, where "the engine has compacted" has to be a fact rather
+    /// than a hope.
+    ///
+    /// **It cannot change an answer.** A compaction rewrites how records are
+    /// stored and never what they are, so every live record is still readable
+    /// and every deleted one still absent afterwards — which is the property the
+    /// readiness checklist asks to see asserted rather than assumed, because a
+    /// compaction that dropped a live record would do it silently.
+    ///
+    /// Expensive by construction: it rewrites every level of every region. Not
+    /// something to put on a timer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnknownKeyspace`] when a region is missing, which would
+    /// mean a store this build did not open.
+    pub fn compact(&self) -> Result<()> {
+        for keyspace in Keyspace::ALL.iter().copied() {
+            let region = self.region(keyspace)?;
+            // No bounds: every key of the region, which is what "forced" means.
+            self.database
+                .compact_range_cf(&region, None::<&[u8]>, None::<&[u8]>);
+        }
+        Ok(())
+    }
+
     /// Flush everything buffered and hand the directory back.
     ///
     /// A clean close saves the work that recovery would otherwise redo.
