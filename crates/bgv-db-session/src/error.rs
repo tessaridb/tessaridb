@@ -21,6 +21,20 @@ pub enum Error {
     #[error(transparent)]
     Store(#[from] bgv_db_storage::Error),
 
+    /// An assignment into a route the record does not have.
+    ///
+    /// `SET a.b.c = 1` on a record with no `a`. Creating the objects on the way
+    /// would be the store writing structure nobody asked for, which is the same
+    /// call it makes about zero-filling a hole in a file — so the route is named
+    /// and the write is refused.
+    #[error("{route} is not a route this record has, so nothing can be assigned to it (at {span})")]
+    NoSuchRouteToAssign {
+        /// The route as written.
+        route: String,
+        /// Where it was written.
+        span: bgv_db_ql::Span,
+    },
+
     /// A ranged write that would leave a gap in a file.
     ///
     /// Zero-filling it would be the store inventing bytes nobody wrote, and a

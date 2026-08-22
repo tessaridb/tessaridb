@@ -29,9 +29,11 @@ fn one(source: &str) -> StatementKind {
 /// The value a single-expression statement writes.
 fn written(source: &str) -> ExprKind {
     match one(source) {
-        StatementKind::Create { value, .. }
-        | StatementKind::Set { value, .. }
-        | StatementKind::Update { value, .. } => value.kind,
+        StatementKind::Create { value, .. } | StatementKind::Set { value, .. } => value.kind,
+        StatementKind::Update {
+            edit: bgv_db_ql::Edit::Whole(value),
+            ..
+        } => value.kind,
         other => panic!("{source} parsed as {other:?}"),
     }
 }

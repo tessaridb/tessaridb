@@ -284,3 +284,33 @@ SELECT * FROM readings;
 --- case: a delete without `FROM` reads its argument as an identity
 DELETE FROM readings;
 --- expect: error UnexpectedToken
+
+# `UPDATE … SET` — changing named routes rather than replacing the record. The
+# right-hand sides all see the record as it was, so a swap swaps.
+
+--- case: a record to change one field of
+CREATE staff:9 = { name: 'ada', city: 'Paris', visits: 3 };
+--- expect: ok
+
+--- case: one route changes and the rest do not
+UPDATE staff:9 SET name = 'ada lovelace';
+SELECT name, city, visits FROM staff:9;
+--- expect: rows 1
+
+--- case: a right-hand side may read the record
+UPDATE staff:9 SET visits = visits + 1;
+SELECT * FROM staff WHERE visits = 4;
+--- expect: rows 1
+
+--- case: assigning none removes the field
+UPDATE staff:9 SET city = NONE;
+SELECT * FROM staff WHERE city = 'Paris';
+--- expect: rows 0
+
+--- case: a route the record does not have is refused rather than created
+UPDATE staff:9 SET meta.source = 'import';
+--- expect: error NoSuchRouteToAssign
+
+--- case: and a record that is not there is refused
+UPDATE staff:404 SET name = 'nobody';
+--- expect: error NoSuchRecord

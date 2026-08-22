@@ -279,10 +279,10 @@ pub enum StatementKind {
     Select(Select),
     /// `UPDATE users:1 = { … }` — the value is replaced, never merged.
     Update {
-        /// The record to write.
+        /// The record to change.
         target: RecordTarget,
-        /// Its whole new content.
-        value: Expr,
+        /// How it changes.
+        edit: Edit,
     },
     /// `DELETE users:1`
     Delete {
@@ -357,6 +357,30 @@ pub enum StatementKind {
     Commit,
     /// `CANCEL`
     Cancel,
+}
+
+/// How an `UPDATE` changes the record it names.
+///
+/// One statement with two shapes rather than two statements, because both touch
+/// exactly **one** record. `DELETE` and `DELETE FROM … WHERE` are two statements
+/// for the opposite reason: they differ in how many records they reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    /// `UPDATE users:1 = { … }` — the record becomes this.
+    Whole(Expr),
+    /// `UPDATE users:1 SET name = 'grace', visits = visits + 1` — these routes
+    /// change and nothing else does.
+    Fields(Vec<Assignment>),
+}
+
+/// One route of a record, and what it becomes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assignment {
+    /// The route into the record.
+    pub route: FieldPath,
+    /// What it becomes, read against the record **as it was** — so
+    /// `SET a = b, b = a` swaps rather than assigning `b` to both.
+    pub value: Expr,
 }
 
 /// A read of records.

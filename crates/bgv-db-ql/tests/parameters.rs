@@ -39,9 +39,11 @@ fn written(source: &str, parameters: &Parameters) -> ExprKind {
         .bind(parameters)
         .unwrap_or_else(|error| panic!("{source}\n  failed to bind: {error}"));
     match script.statements.into_iter().next().unwrap().kind {
-        StatementKind::Create { value, .. }
-        | StatementKind::Set { value, .. }
-        | StatementKind::Update { value, .. } => value.kind,
+        StatementKind::Create { value, .. } | StatementKind::Set { value, .. } => value.kind,
+        StatementKind::Update {
+            edit: bgv_db_ql::Edit::Whole(value),
+            ..
+        } => value.kind,
         other => panic!("{source} parsed as {other:?}"),
     }
 }

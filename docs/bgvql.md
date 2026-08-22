@@ -747,6 +747,9 @@ SELECT count(*) AS n FROM users;
 SELECT city, count(*) AS n, mean(age) AS average FROM users GROUP BY city;
 
 UPDATE users:1 = { name: 'ada', email: 'ada2@example.com' };
+UPDATE users:1 SET email = 'ada2@example.com';
+UPDATE users:1 SET visits = visits + 1, seen = time::now();
+UPDATE users:1 SET address.city = 'Lyon';
 DELETE users:1;
 ```
 
@@ -755,6 +758,32 @@ record that already exists is refused**, and **`UPDATE` over one that does not
 exist is refused**. The alternative — either verb quietly doing the other's job —
 loses a record with nothing anywhere to notice, and `SET` already exists for the
 caller who means "whatever is there, replace it".
+
+**`UPDATE` has two shapes**, and they are one statement because both change
+exactly one record. Giving a value **replaces** it; `SET` changes the routes it
+names and leaves the rest alone — read, applied and written in one transaction,
+so nothing lands between the read and the write.
+
+Three rules, each here because the alternative is a surprise:
+
+- **Every right-hand side sees the record as it was**, so
+  `SET a = b, b = a` swaps rather than assigning `b` to both. Left to right, the
+  meaning of a statement would depend on the order somebody happened to type its
+  clauses in.
+- **Assigning `none` removes the field.** `none` means the field is not there, so
+  writing it in would say the field is there and holds not-being-there — the
+  contradiction the value system spends its rules avoiding. `null` is a value and
+  stays, which is the difference `= NONE` and `= NULL` already draw in a filter.
+- **A route the record does not have is refused, never created.**
+  `SET meta.source = 'x'` on a record with no `meta` names the route and stops.
+  Creating the objects on the way would be the store writing structure nobody
+  asked for.
+
+A right-hand side reads in the **condition position**, so a bare name is a route
+into the record — `visits + 1` is the record's `visits`, the same reading a
+`WHERE` and a projection give it. The result is an ordinary record write, so the
+schema, the defaults, the indexes, the change feed and the grants all apply to it
+without knowing which shape produced it.
 
 ### What a read answers with
 
@@ -1831,6 +1860,10 @@ it was first wanted.
 | Several terms mean all of them | **contract** |
 | A field with no analyzer holds no terms and matches nothing | **contract** |
 | `REQUIRED` means present and not null | **contract** |
+| `UPDATE` replaces with a value and changes with `SET`, and both touch one record | **contract** |
+| Every right-hand side of a `SET` sees the record as it was | **contract** — otherwise a statement's meaning depends on clause order |
+| Assigning `none` removes the field; `null` is a value and stays | **contract** |
+| A route the record does not have is refused, never created | **contract** — the store does not write structure nobody asked for |
 | `START` and `LIMIT` on a file are the row rule over bytes, and a range past the end is empty | **contract** |
 | A ranged write is one commit, and leaving `START` out replaces the file | **contract** — an offset writes at it and keeps what lies beyond |
 | A write that would leave a hole is refused, never zero-filled | **contract** — the store does not invent bytes nobody wrote |

@@ -33,7 +33,7 @@ use bgv_db_types::Value;
 use bgv_db_types::{Number, RecordId};
 
 use crate::ast::{
-    Expr, ExprKind, Identity, Projection, RangeExpr, RecordTarget, Script, Select, Source,
+    Edit, Expr, ExprKind, Identity, Projection, RangeExpr, RecordTarget, Script, Select, Source,
     StatementKind,
 };
 use crate::error::{Error, Result};
@@ -70,11 +70,25 @@ impl Script {
 fn bind_statement(kind: &mut StatementKind, parameters: &Parameters) -> Result<()> {
     match kind {
         StatementKind::Create { target, value }
-        | StatementKind::Update { target, value }
         | StatementKind::Set { target, value }
         | StatementKind::Put { target, value, .. } => {
             bind_target(target, parameters)?;
             bind_expr(value, parameters)
+        }
+        // Both shapes of an update hold expressions, and the field shape holds
+        // one per assignment: a parameter is legal in each of them, the same as
+        // it is anywhere else a value may stand.
+        StatementKind::Update { target, edit } => {
+            bind_target(target, parameters)?;
+            match edit {
+                Edit::Whole(value) => bind_expr(value, parameters),
+                Edit::Fields(assignments) => {
+                    for assignment in assignments {
+                        bind_expr(&mut assignment.value, parameters)?;
+                    }
+                    Ok(())
+                }
+            }
         }
         StatementKind::Get { target }
         | StatementKind::Delete { target }

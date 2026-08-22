@@ -4,8 +4,8 @@ use super::Parser;
 use bgv_db_types::{FieldKind, Filter, Path, Step};
 
 use crate::ast::{
-    Direction, ExprKind, FieldPath, Hop, Projection, RangeExpr, RecordTarget, Select, Source,
-    Statement, StatementKind, TableRef,
+    Assignment, Direction, Edit, ExprKind, FieldPath, Hop, Projection, RangeExpr, RecordTarget,
+    Select, Source, Statement, StatementKind, TableRef,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -507,12 +507,46 @@ impl Parser<'_> {
     fn write_statement(&mut self, verb: Keyword) -> Result<StatementKind> {
         self.advance();
         let target = self.record_target()?;
+        // `SET` is a key-value verb elsewhere and a clause here, which is the
+        // trick this grammar already plays with `ORDER`, `FETCH` and `VECTOR`:
+        // nothing but a clause can stand in this position, so nothing is
+        // ambiguous, and a field called `set` keeps working.
+        if verb == Keyword::Update && self.eat_keyword(Keyword::Set) {
+            let mut assignments = vec![self.assignment()?];
+            while self.eat_punct(Punct::Comma) {
+                assignments.push(self.assignment()?);
+            }
+            return Ok(StatementKind::Update {
+                target,
+                edit: Edit::Fields(assignments),
+            });
+        }
         self.expect_punct(Punct::Equals, "`=` and the value to write")?;
         let value = self.expression()?;
         Ok(match verb {
-            Keyword::Update => StatementKind::Update { target, value },
+            Keyword::Update => StatementKind::Update {
+                target,
+                edit: Edit::Whole(value),
+            },
             Keyword::Set => StatementKind::Set { target, value },
             _ => StatementKind::Create { target, value },
+        })
+    }
+
+    /// `name = 'grace'` — one route and what it becomes.
+    fn assignment(&mut self) -> Result<Assignment> {
+        let route = self.field_path()?;
+        // A route reaching several values would have to say which of them
+        // changes, and `[*]`'s three contexts do not include this one.
+        super::shape::no_several_path(&route)?;
+        self.expect_punct(Punct::Equals, "`=` and what the field becomes")?;
+        // The **condition** position, so a bare name is a route into the record
+        // rather than a table — the reading a `WHERE`, an `ORDER BY` and a
+        // projection all give it. `SET visits = visits + 1` is the whole point,
+        // and in the value position `visits` would be a table.
+        Ok(Assignment {
+            route,
+            value: self.condition()?,
         })
     }
 

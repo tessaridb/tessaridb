@@ -1,14 +1,16 @@
 //! Running one statement against the store.
 
-use bgv_db_encoding::encode_payload;
-use bgv_db_ql::{FieldPath, Name, RecordTarget, Span, StatementKind, TableRef};
+use bgv_db_encoding::{decode_payload, encode_payload};
+use bgv_db_ql::{Assignment, Edit, FieldPath, Name, RecordTarget, Span, StatementKind, TableRef};
 use bgv_db_storage::{
     Catalog, EDGE_IN, EDGE_OUT, FieldShape, IndexDefinition, IndexShape, RecordAddress, TableShape,
     Transaction, VectorDistance,
 };
 use std::collections::BTreeMap;
 
-use bgv_db_types::{Analyzer, FieldId, FieldKind, Filter, RecordId, RecordRef, TableId, Value};
+use bgv_db_types::{
+    Analyzer, FieldId, FieldKind, Filter, Path, RecordId, RecordRef, Step, TableId, Value,
+};
 
 use crate::error::{Error, Result};
 use crate::evaluate::{key_bound, within};
@@ -190,17 +192,26 @@ impl Session<'_> {
                 transaction.put(address, encode_payload(&payload).into_bytes());
                 Ok(Outcome::Done)
             }
-            StatementKind::Update { target, value } => {
+            StatementKind::Update { target, edit } => {
                 let (_, address) = self.writable(transaction, target)?;
-                if transaction.get(&address)?.is_none() {
+                let Some(existing) = transaction.get(&address)? else {
                     return Err(Error::NoSuchRecord {
                         id: address.id.to_string(),
                         span: target.span,
                     });
-                }
-                // An update replaces the whole record, so it is a write like a
-                // create and the defaults apply to it the same way.
-                let payload = self.evaluate(transaction, value)?;
+                };
+                let payload = match edit {
+                    // Replacing the whole record is a write like a create, so
+                    // the defaults apply to it the same way.
+                    Edit::Whole(value) => self.evaluate(transaction, value)?,
+                    Edit::Fields(assignments) => {
+                        self.edited(transaction, &existing, assignments, target.span)?
+                    }
+                };
+                // One rule rather than two: the result of either shape is a
+                // record being written, so `REQUIRED` + `DEFAULT` keeps meaning
+                // "this field always holds a value" even when a caller sets one
+                // to `none`.
                 let payload = self.with_defaults(transaction, address.table, payload)?;
                 transaction.put(address, encode_payload(&payload).into_bytes());
                 Ok(Outcome::Done)
@@ -606,4 +617,106 @@ impl Session<'_> {
         }
         Ok(Outcome::Keys(keys))
     }
+}
+
+impl Session<'_> {
+    /// The record a field-level `UPDATE` produces.
+    ///
+    /// # Every right-hand side sees the record as it was
+    ///
+    /// All of them are evaluated **before** any of them is applied, so
+    /// `SET a = b, b = a` swaps rather than assigning `b` to both. It is SQL's
+    /// rule and it is the only one that fits in a sentence; a left-to-right rule
+    /// would make the meaning of a statement depend on the order somebody
+    /// happened to type its clauses in.
+    ///
+    /// # Assigning `none` removes the field
+    ///
+    /// `Value::None` means the field is not there, so writing it into the object
+    /// would say the field is there and holds not-being-there — the contradiction
+    /// the value system spends its own rules avoiding, and the one a projection
+    /// already refuses to produce.
+    ///
+    /// # A missing intermediate is refused, never created
+    ///
+    /// `SET a.b.c = 1` on a record with no `a` is an error naming the route.
+    /// Creating the objects would be the store writing structure nobody asked
+    /// for — the same call this store makes about zero-filling a hole in a file.
+    fn edited(
+        &self,
+        transaction: &mut Transaction<'_>,
+        existing: &[u8],
+        assignments: &[Assignment],
+        span: Span,
+    ) -> Result<Value> {
+        let mut record = decode_payload(existing)?;
+        let mut wanted = Vec::with_capacity(assignments.len());
+        for assignment in assignments {
+            wanted.push(self.evaluate_in(
+                transaction,
+                &assignment.value,
+                crate::evaluate::Scope::of(&record),
+            )?);
+        }
+
+        if !matches!(record, Value::Object(_)) {
+            // A record that is not an object has no named fields to change. The
+            // key-value model stores single values that way (ADR-0010), and
+            // `SET` is the verb for those.
+            return Err(Error::NoSuchRouteToAssign {
+                route: assignments
+                    .first()
+                    .map_or_else(String::new, |first| first.route.path.to_string()),
+                span,
+            });
+        }
+        for (assignment, held) in assignments.iter().zip(wanted) {
+            let route = &assignment.route.path;
+            let steps = route.steps();
+            let Some((last, above)) = steps.split_last() else {
+                // A bare field name: the root of the route is the field.
+                set_field(&mut record, route.root(), held, &assignment.route, span)?;
+                continue;
+            };
+            let Step::Field(name) = last else {
+                // A position or `[*]`: assigning into an array by index is its
+                // own question and `[*]` has three contexts, none of them this.
+                return Err(Error::NoSuchRouteToAssign {
+                    route: route.to_string(),
+                    span: assignment.route.span,
+                });
+            };
+            let parent = Path::new(route.root().to_owned(), above.to_vec());
+            let Some(target) = parent.resolve_mut(&mut record) else {
+                return Err(Error::NoSuchRouteToAssign {
+                    route: parent.to_string(),
+                    span: assignment.route.span,
+                });
+            };
+            set_field(target, name, held, &assignment.route, span)?;
+        }
+        Ok(record)
+    }
+}
+
+/// Put a value into one field of an object, or take it out.
+fn set_field(
+    holder: &mut Value,
+    name: &str,
+    held: Value,
+    route: &FieldPath,
+    span: Span,
+) -> Result<()> {
+    let Value::Object(fields) = holder else {
+        return Err(Error::NoSuchRouteToAssign {
+            route: route.path.to_string(),
+            span,
+        });
+    };
+    if held.is_present() {
+        fields.insert(name.to_owned(), held);
+    } else {
+        fields.remove(name);
+    }
+    Ok(())
 }
