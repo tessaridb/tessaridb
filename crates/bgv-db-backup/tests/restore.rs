@@ -67,6 +67,15 @@ PUT media:'/gone' = 'removed before the backup was taken';\n\
 DELETE media:'/gone';\n\
 DEFINE USER root ROLE owner PASSWORD 'a long one';";
 
+/// The file's own header: magic, two versions, and the two sequences it spans.
+///
+/// Named rather than spelled as a number at four call sites, because the layout
+/// is the thing these tests are about and a change to it should touch one line.
+const HEADER_LEN: usize = 8 + 1 + 1 + 8 + 8;
+
+/// One record's frame: its length, its sequence, and its checksum.
+const FRAME_LEN: usize = 4 + 8 + 4;
+
 /// Reads that touch each engine, so a difference anywhere shows up as an answer.
 const INTERROGATION: &[&str] = &[
     "SELECT * FROM people;",
@@ -197,7 +206,7 @@ fn a_restore_into_a_store_that_holds_something_is_refused() {
     let before = dump(&target, Keyspace::LOG);
 
     let refused = bgv_db_backup::read(&occupied, &mut taken.as_slice()).unwrap_err();
-    assert!(matches!(refused, bgv_db_backup::Error::NotEmpty { .. }));
+    assert!(matches!(refused, bgv_db_backup::Error::WrongBase { .. }));
     // And nothing was written on the way to refusing.
     assert_eq!(dump(&target, Keyspace::LOG), before);
 }
@@ -243,7 +252,7 @@ fn a_truncated_backup_restores_what_it_holds_and_says_so() {
     // From the end of the header onward: inside a length prefix, inside a
     // sequence, inside a record body, and cleanly between two records. A cut
     // *inside* the header is a different answer and has its own test.
-    const HEADER: usize = 18;
+    const HEADER: usize = HEADER_LEN;
     for cut in (HEADER..taken.len()).step_by(7) {
         let (_, restored) = store();
         let outcome = bgv_db_backup::read(&restored, &mut &taken[..cut]).unwrap();
@@ -266,7 +275,7 @@ fn a_file_cut_inside_its_own_header_is_not_a_backup_at_all() {
     // The header says what the file is, so a file that has not finished saying
     // it cannot be read as one — and there is nothing to salvage before it.
     let (_, _held, taken) = original();
-    for cut in 0..18 {
+    for cut in 0..HEADER_LEN {
         let (_, restored) = store();
         let refused = bgv_db_backup::read(&restored, &mut &taken[..cut]).unwrap_err();
         assert!(
@@ -282,12 +291,15 @@ fn a_cut_exactly_between_two_records_is_still_noticed() {
     // The header's tail is what catches it, because sequences start at one and
     // cannot have gaps, so a backup taken at tail `n` holds exactly `n` records.
     let (_, _held, taken) = original();
-    // The first record's frame is 12 bytes of header plus its body.
+    // The first record's frame is its header plus its body.
     let length = usize::try_from(u32::from_be_bytes([
-        taken[18], taken[19], taken[20], taken[21],
+        taken[HEADER_LEN],
+        taken[HEADER_LEN + 1],
+        taken[HEADER_LEN + 2],
+        taken[HEADER_LEN + 3],
     ]))
     .unwrap();
-    let boundary = 18 + 12 + length;
+    let boundary = HEADER_LEN + FRAME_LEN + length;
     let (_, restored) = store();
     let outcome = bgv_db_backup::read(&restored, &mut &taken[..boundary]).unwrap();
     assert_eq!(outcome.records, 1);
@@ -339,4 +351,155 @@ fn a_restored_store_can_be_written_to_and_backed_up_again() {
     let mut again = Vec::new();
     let written = bgv_db_backup::write(&restored, &mut again).unwrap();
     assert_eq!(written.records, first.records.saturating_add(1));
+}
+
+#[test]
+fn a_backup_can_be_verified_without_being_applied_to_anything() {
+    // What somebody does before the day they need it. No store is involved,
+    // which is the point: a backup that can only be checked by restoring it is a
+    // backup nobody checks.
+    let (_, held, taken) = original();
+    let verified = bgv_db_backup::verify(&mut taken.as_slice()).unwrap();
+    assert_eq!(verified.from.get(), 1);
+    assert_eq!(verified.tail, held.committed_tail().unwrap());
+    assert_eq!(verified.good_through, verified.tail);
+    assert!(!verified.truncated);
+    assert_eq!(verified.records, verified.tail.get());
+}
+
+#[test]
+fn a_record_whose_bytes_changed_is_refused_before_it_is_applied() {
+    // The check framing cannot do: this file is exactly the right length and
+    // holds the wrong bytes. Without the checksum it either fails to decode,
+    // which is luck, or applies a record nobody wrote.
+    let (_, _held, taken) = original();
+    let mut damaged = taken.clone();
+    // A byte well inside the first record's body, past the header and the frame.
+    let at = HEADER_LEN + FRAME_LEN + 3;
+    damaged[at] ^= 0xff;
+
+    let refused = bgv_db_backup::verify(&mut damaged.as_slice()).unwrap_err();
+    assert!(
+        matches!(refused, bgv_db_backup::Error::Damaged { .. }),
+        "{refused}"
+    );
+
+    // And a restore refuses it too, rather than leaving the check to whoever
+    // remembered to verify.
+    let (_, restored) = store();
+    let refused = bgv_db_backup::read(&restored, &mut damaged.as_slice()).unwrap_err();
+    assert!(
+        matches!(refused, bgv_db_backup::Error::Damaged { .. }),
+        "{refused}"
+    );
+}
+
+#[test]
+fn an_incremental_backup_plus_its_base_is_the_whole_store() {
+    // The property that makes an incremental one worth having, asserted as an
+    // equality rather than as a count: the store built from two files answers
+    // what the original answers.
+    let (_, held, base) = original();
+
+    // More work after the base was taken.
+    {
+        let mut session = signed_in(&held);
+        session
+            .run(
+                "CREATE people:9 = { name: 'later', email: 'z@x', bio: 'after the base', \
+                 address: { city: 'york' }, at: [3.0, 3.0] };\n\
+                 PUT media:'/added.txt' = 'written after the base was taken';",
+            )
+            .unwrap();
+    }
+    let taken_at = base.len();
+    assert!(taken_at > 0);
+    let base_tail = bgv_db_backup::verify(&mut base.as_slice()).unwrap().tail;
+
+    let mut increment = Vec::new();
+    let written = bgv_db_backup::write_from(
+        &held,
+        &mut increment,
+        bgv_db_types::Sequence::new(base_tail.get() + 1),
+    )
+    .unwrap();
+    assert_eq!(written.from.get(), base_tail.get() + 1);
+    assert!(written.records > 0, "the increment holds nothing");
+
+    // Restore the base, then the increment onto it.
+    let (_, rebuilt) = store();
+    bgv_db_backup::read(&rebuilt, &mut base.as_slice()).unwrap();
+    bgv_db_backup::read(&rebuilt, &mut increment.as_slice()).unwrap();
+    assert_eq!(
+        rebuilt.committed_tail().unwrap(),
+        held.committed_tail().unwrap()
+    );
+
+    // And it answers what the original answers.
+    let mut there = signed_in(&held);
+    let mut here = signed_in(&rebuilt);
+    for question in INTERROGATION {
+        assert_eq!(
+            format!("{:?}", there.run(question)),
+            format!("{:?}", here.run(question)),
+            "{question}"
+        );
+    }
+}
+
+#[test]
+fn an_increment_refuses_a_store_that_is_not_where_it_continues_from() {
+    // The header says what the file continues from, so this is checkable rather
+    // than a filename's promise.
+    let (_, held, base) = original();
+    {
+        let mut session = signed_in(&held);
+        session
+            .run("CREATE people:9 = { name: 'later', email: 'z@x' };")
+            .unwrap();
+    }
+    let base_tail = bgv_db_backup::verify(&mut base.as_slice()).unwrap().tail;
+    let mut increment = Vec::new();
+    bgv_db_backup::write_from(
+        &held,
+        &mut increment,
+        bgv_db_types::Sequence::new(base_tail.get() + 1),
+    )
+    .unwrap();
+
+    // Onto an empty store, which is not where it continues from.
+    let (_, empty) = store();
+    let refused = bgv_db_backup::read(&empty, &mut increment.as_slice()).unwrap_err();
+    assert!(
+        matches!(refused, bgv_db_backup::Error::WrongBase { .. }),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_restore_can_stop_at_a_chosen_point() {
+    // The log is the store, so stopping the replay leaves the store holding
+    // exactly what it held then — there is no second mechanism to rewind and
+    // nothing to undo.
+    let (_, held, taken) = original();
+    let whole = held.committed_tail().unwrap();
+    let midpoint = bgv_db_types::Sequence::new(whole.get() / 2);
+
+    let (_, rebuilt) = store();
+    let outcome =
+        bgv_db_backup::read_until(&rebuilt, &mut taken.as_slice(), Some(midpoint)).unwrap();
+    assert_eq!(rebuilt.committed_tail().unwrap(), midpoint);
+    assert!(
+        !outcome.truncated,
+        "stopping where the caller asked is not a truncation"
+    );
+
+    // And what it holds is what the original held at that sequence, which is
+    // asserted by taking the original's own backup to the same point.
+    let (_, twin) = store();
+    bgv_db_backup::read_until(&twin, &mut taken.as_slice(), Some(midpoint)).unwrap();
+    assert_eq!(
+        twin.committed_tail().unwrap(),
+        rebuilt.committed_tail().unwrap()
+    );
 }

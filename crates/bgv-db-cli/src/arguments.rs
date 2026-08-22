@@ -26,6 +26,9 @@ usage: bgv [<path> | --at <host:port>] [-e <script> | -f <file>]
   -e <script>     run this and exit
   -f <file>       run this file and exit
   --backup <file> write the store's log to <file> and exit
+  --verify <file> read <file> and say what it holds, changing nothing
+  --from <n>      with --backup: write only what happened at or after <n>
+  --upto <n>      with --restore: stop replaying after sequence <n>
   --restore <file> replay <file> into an empty store and exit
   --health        say whether the store is well, and exit non-zero if not
   --help          this
@@ -53,6 +56,12 @@ pub struct Asked {
     pub source: Source,
     /// The values the script's parameters bind to.
     pub parameters: Parameters,
+    /// The sequence a backup starts at, or a restore stops after.
+    ///
+    /// One field for two flags because they are the same kind of thing — a
+    /// position in the log — and which one it means is decided by the source it
+    /// accompanies, which the parser has already refused to make ambiguous.
+    pub at_sequence: Option<u64>,
 }
 
 /// Where the statements come from, or what else was asked for.
@@ -70,6 +79,11 @@ pub enum Source {
     Restore(PathBuf),
     /// Say whether the store is well.
     Health,
+    /// Read a backup and say what it holds, without applying any of it.
+    ///
+    /// Needs no store, which is the point: a backup that can only be checked by
+    /// restoring it is a backup nobody checks.
+    Verify(PathBuf),
     /// Serve this store over the wire protocol.
     Serve(String),
 }
@@ -85,6 +99,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     let mut user = None;
     let mut source = Source::Standard;
     let mut parameters = Parameters::new();
+    let mut sequence = None;
     let mut arguments = arguments;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -108,6 +123,22 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                 source = Source::Backup(PathBuf::from(path));
             }
             "--health" => source = Source::Health,
+            "--verify" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| "--verify wants a path".to_owned())?;
+                source = Source::Verify(PathBuf::from(path));
+            }
+            "--from" | "--upto" => {
+                let written = arguments
+                    .next()
+                    .ok_or_else(|| format!("{argument} wants a sequence"))?;
+                sequence = Some(
+                    written
+                        .parse::<u64>()
+                        .map_err(|_| format!("{argument} wants a sequence, not {written:?}"))?,
+                );
+            }
             "--at" => {
                 let address = arguments
                     .next()
@@ -166,6 +197,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
             Source::Restore(_) => Some("--restore"),
             Source::Health => Some("--health"),
             Source::Serve(_) => Some("--serve"),
+            Source::Verify(_) => Some("--verify"),
             Source::Standard | Source::Inline(_) | Source::File(_) => None,
         };
         if let Some(named) = reached_past_the_session {
@@ -182,6 +214,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
         Source::Restore(_) => Some("--restore"),
         Source::Health => Some("--health"),
         Source::Serve(_) => Some("--serve"),
+        Source::Verify(_) => Some("--verify"),
         Source::Standard | Source::Inline(_) | Source::File(_) => None,
     };
     if let Some(named) = runs_no_script
@@ -191,12 +224,20 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
             "--param binds a value in a script, and {named} runs none"
         ));
     }
+    // A sequence means one thing next to `--backup` and another next to
+    // `--restore`, and nothing at all anywhere else. Refused rather than
+    // ignored: a caller who wrote `--from` expecting it to bound a read has
+    // asked for something, and silence would answer with everything.
+    if sequence.is_some() && !matches!(source, Source::Backup(_) | Source::Restore(_)) {
+        return Err("--from bounds a --backup and --upto bounds a --restore".to_owned());
+    }
     Ok(Asked {
         store,
         at,
         user,
         source,
         parameters,
+        at_sequence: sequence,
     })
 }
 
@@ -434,6 +475,37 @@ mod tests {
         assert!(asked(&["--param"]).is_err());
         assert!(asked(&["--param", "who"]).is_err());
         assert!(asked(&["--param", "='ada'"]).is_err());
+    }
+
+    #[test]
+    fn a_sequence_bounds_a_backup_or_a_restore_and_nothing_else() {
+        assert_eq!(
+            asked(&["./data", "--backup", "./out", "--from", "42"])
+                .expect("a bounded backup")
+                .at_sequence,
+            Some(42)
+        );
+        assert_eq!(
+            asked(&["./data", "--restore", "./in", "--upto", "7"])
+                .expect("a bounded restore")
+                .at_sequence,
+            Some(7)
+        );
+        // Elsewhere it means nothing, and silence would answer with everything.
+        assert!(asked(&["./data", "--from", "42"]).is_err());
+        assert!(asked(&["./data", "--health", "--upto", "7"]).is_err());
+        assert!(asked(&["./data", "--backup", "./out", "--from", "soon"]).is_err());
+    }
+
+    #[test]
+    fn verifying_needs_a_path_and_no_store() {
+        assert!(matches!(
+            asked(&["--verify", "./held"]).expect("a path").source,
+            Source::Verify(_)
+        ));
+        assert!(asked(&["--verify"]).is_err());
+        // It reads a file, so an address is a store it was not asked about.
+        assert!(asked(&["--at", "127.0.0.1:1", "--verify", "./held"]).is_err());
     }
 
     #[test]

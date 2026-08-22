@@ -30,9 +30,20 @@
 //! # The format
 //!
 //! ```text
-//! header   "BGVDBLOG" <format:u8> <codec:u8> <tail:u64>
-//! record   <length:u32> <sequence:u64> <bytes…>
+//! header   "BGVDBLOG" <format:u8> <codec:u8> <from:u64> <tail:u64>
+//! record   <length:u32> <sequence:u64> <crc32:u32> <bytes…>
 //! ```
+//!
+//! `from` is the first sequence the file holds, which is what makes an
+//! **incremental** backup a thing a reader can check rather than a thing a
+//! filename claims: a file starting at `from` restores onto a store standing at
+//! `from - 1`, and onto no other.
+//!
+//! The CRC is over the record's body and exists because framing catches a file
+//! that was *cut* and nothing about a file that is the right length and holds
+//! the wrong bytes. It detects **corruption**, which is what happens to files;
+//! it does not detect **tampering**, which needs a key and a threat model this
+//! format does not have.
 //!
 //! The header exists so a restore refuses a file it cannot read **before**
 //! applying any of it: a half-applied restore is worse than a refused one,
@@ -57,6 +68,8 @@ use bgv_db_encoding::{LogRecord, StoreValue};
 use bgv_db_storage::Store;
 use bgv_db_types::Sequence;
 
+mod check;
+
 /// What every file of this kind begins with.
 const MAGIC: &[u8; 8] = b"BGVDBLOG";
 
@@ -65,7 +78,11 @@ const MAGIC: &[u8; 8] = b"BGVDBLOG";
 /// Two versions because they change for different reasons: the framing here can
 /// gain a field without the records changing, and the records can change without
 /// the framing moving.
-const FORMAT: u8 = 1;
+///
+/// It moved to 2 when the header gained the sequence a file **starts** at and
+/// each record gained a checksum — a layout change, which is exactly what this
+/// byte is for. A version-1 file is refused by name rather than misread.
+const FORMAT: u8 = 2;
 
 /// How many log records are read from the store at a time.
 ///
@@ -107,15 +124,30 @@ pub enum Error {
         supported: u8,
     },
 
-    /// A restore into a store that already holds something.
+    /// A restore into a store that is not where this file continues from.
     ///
-    /// Merging a backup into a populated store is not a restore: the sequences
-    /// would collide with a different meaning, and the result would be a store
-    /// neither log explains. Refused rather than reconciled.
-    #[error("a restore needs an empty store; this one is at sequence {tail}")]
-    NotEmpty {
-        /// Where the store already is.
-        tail: u64,
+    /// A whole backup starts at sequence 1 and needs an empty store; an
+    /// incremental one starts at `from` and needs a store standing at
+    /// `from - 1`. Anything else is not a restore: the sequences would land with
+    /// a different meaning and the result would be a store no log explains.
+    #[error("this backup continues from sequence {needs}; the store is at {found}")]
+    WrongBase {
+        /// Where the store would have to be.
+        needs: u64,
+        /// Where it actually is.
+        found: u64,
+    },
+
+    /// A record whose bytes are not the bytes that were written.
+    ///
+    /// The check that framing cannot do. Raised rather than reported, because a
+    /// record that decodes into something nobody wrote is worse than a restore
+    /// that stops — and a caller who wants what is whole can verify first and
+    /// restore to the last good sequence.
+    #[error("the record at sequence {sequence} is damaged")]
+    Damaged {
+        /// Where in the log it was.
+        sequence: u64,
     },
 }
 
@@ -127,8 +159,28 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Written {
     /// How many log records it holds.
     pub records: u64,
+    /// The first sequence it holds.
+    pub from: Sequence,
     /// The sequence the store was at when it was taken.
     pub tail: Sequence,
+}
+
+/// What a backup turned out to hold, without any of it being applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Verified {
+    /// How many records read whole and checked out.
+    pub records: u64,
+    /// The first sequence the file says it holds.
+    pub from: Sequence,
+    /// The sequence the file says it was taken at.
+    pub tail: Sequence,
+    /// The last sequence that read whole and checked out.
+    ///
+    /// What a restore could safely be stopped at, which is the number somebody
+    /// holding a damaged file actually needs.
+    pub good_through: Sequence,
+    /// Whether the file ended mid-record.
+    pub truncated: bool,
 }
 
 /// What a restore applied.
@@ -151,13 +203,32 @@ pub struct Restored {
 ///
 /// Returns an error when the store or the stream fails.
 pub fn write(store: &Store, out: &mut impl Write) -> Result<Written> {
+    write_from(store, out, Sequence::new(1))
+}
+
+/// Write the part of a store's log at or after `from`.
+///
+/// An **incremental** backup. `from` is written into the header, so a reader
+/// knows what the file continues from rather than being told by a filename —
+/// and a restore refuses a store that is not standing exactly there.
+///
+/// `write_from(store, out, 1)` is a whole backup, which is what [`write`] is:
+/// the two are one path, so an incremental restore exercises the code an
+/// ordinary one does.
+///
+/// # Errors
+///
+/// Returns an error when the store or the stream fails.
+pub fn write_from(store: &Store, out: &mut impl Write, from: Sequence) -> Result<Written> {
+    let start = Sequence::new(from.get().max(1));
     let tail = store.committed_tail()?;
     out.write_all(MAGIC)?;
     out.write_all(&[FORMAT, bgv_db_encoding::CODEC_VERSION])?;
+    out.write_all(&start.get().to_be_bytes())?;
     out.write_all(&tail.get().to_be_bytes())?;
 
     let mut written = 0_u64;
-    let mut from = Sequence::new(1);
+    let mut from = start;
     loop {
         let page = store.log_records(from, PAGE)?;
         if page.is_empty() {
@@ -170,6 +241,7 @@ pub fn write(store: &Store, out: &mut impl Write) -> Result<Written> {
                 // than arbitrary.
                 return Ok(Written {
                     records: written,
+                    from: start,
                     tail,
                 });
             }
@@ -178,6 +250,7 @@ pub fn write(store: &Store, out: &mut impl Write) -> Result<Written> {
             let length = u32::try_from(body.len()).unwrap_or(u32::MAX);
             out.write_all(&length.to_be_bytes())?;
             out.write_all(&sequence.get().to_be_bytes())?;
+            out.write_all(&check::crc32(body).to_be_bytes())?;
             out.write_all(body)?;
             written = written.saturating_add(1);
         }
@@ -188,6 +261,7 @@ pub fn write(store: &Store, out: &mut impl Write) -> Result<Written> {
     }
     Ok(Written {
         records: written,
+        from: start,
         tail,
     })
 }
@@ -200,85 +274,212 @@ pub fn write(store: &Store, out: &mut impl Write) -> Result<Written> {
 /// anything, [`Error::NotEmpty`] when the store is not empty, and the store's
 /// own error when a record cannot be applied.
 pub fn read(store: &Store, input: &mut impl Read) -> Result<Restored> {
-    // The store is checked first, so a wrong target is refused before the file
-    // is even read.
-    let at = store.committed_tail()?;
-    if at.get() > 0 {
-        return Err(Error::NotEmpty { tail: at.get() });
-    }
+    read_until(store, input, None)
+}
 
-    let mut magic = [0_u8; 8];
-    input
-        .read_exact(&mut magic)
-        .map_err(|_| Error::NotABackup)?;
-    if &magic != MAGIC {
-        return Err(Error::NotABackup);
-    }
-    let mut versions = [0_u8; 2];
-    input
-        .read_exact(&mut versions)
-        .map_err(|_| Error::NotABackup)?;
-    if versions[0] != FORMAT {
-        return Err(Error::Unsupported {
-            what: "format",
-            found: versions[0],
-            supported: FORMAT,
+/// Replay a backup, stopping at `upto` when one is given.
+///
+/// A **point-in-time** restore. The store is left holding exactly what it held
+/// at that sequence, because the log *is* the store — there is no second
+/// mechanism to rewind, and nothing to undo.
+///
+/// `upto` above what the file holds restores all of it; below what the store
+/// needs as a base, nothing is applied. `read_until(store, input, None)` is a
+/// whole restore, which is what [`read`] is.
+///
+/// # Errors
+///
+/// [`Error::NotABackup`] or [`Error::Unsupported`] before applying anything,
+/// [`Error::WrongBase`] when the store is not where this file continues from,
+/// [`Error::Damaged`] at the first record whose bytes are not the bytes that
+/// were written, and the store's own error when a record cannot be applied.
+pub fn read_until(
+    store: &Store,
+    input: &mut impl Read,
+    upto: Option<Sequence>,
+) -> Result<Restored> {
+    let held = Head::read(input)?;
+    // The store is checked against the file rather than against zero: a whole
+    // backup continues from an empty store and an incremental one continues from
+    // where its predecessor stopped, and both are the same question.
+    let at = store.committed_tail()?;
+    let needs = held.from.get().saturating_sub(1);
+    if at.get() != needs {
+        return Err(Error::WrongBase {
+            needs,
+            found: at.get(),
         });
     }
-    if versions[1] != bgv_db_encoding::CODEC_VERSION {
-        return Err(Error::Unsupported {
-            what: "record codec",
-            found: versions[1],
-            supported: bgv_db_encoding::CODEC_VERSION,
-        });
-    }
-    let mut tail = [0_u8; 8];
-    input.read_exact(&mut tail).map_err(|_| Error::NotABackup)?;
-    let tail = Sequence::new(u64::from_be_bytes(tail));
 
     let mut applied = 0_u64;
+    let mut last = at;
     loop {
-        let mut header = [0_u8; 12];
-        match fill(input, &mut header)? {
-            Filled::Empty => break,
-            Filled::Short => {
-                return Ok(Restored {
-                    records: applied,
-                    tail,
-                    truncated: true,
-                });
-            }
-            Filled::Whole => {}
-        }
-        let length = usize::try_from(u32::from_be_bytes([
-            header[0], header[1], header[2], header[3],
-        ]))
-        .unwrap_or(0);
-        let sequence = Sequence::new(u64::from_be_bytes([
-            header[4], header[5], header[6], header[7], header[8], header[9], header[10],
-            header[11],
-        ]));
-        let mut body = vec![0_u8; length];
-        if !matches!(fill(input, &mut body)?, Filled::Whole) {
+        let Some((sequence, body)) = next(input)? else {
+            break;
+        };
+        let Some(body) = body else {
             return Ok(Restored {
                 records: applied,
-                tail,
+                tail: held.tail,
                 truncated: true,
+            });
+        };
+        if let Some(upto) = upto
+            && sequence.get() > upto.get()
+        {
+            // Stopped where the caller asked, which is not a truncation: the
+            // file is whole and the store is deliberately behind it.
+            return Ok(Restored {
+                records: applied,
+                tail: held.tail,
+                truncated: false,
             });
         }
         let record = LogRecord::decode(&body)?;
         store.apply_record(sequence, &record)?;
         applied = applied.saturating_add(1);
+        last = sequence;
     }
     Ok(Restored {
         records: applied,
-        tail,
+        tail: held.tail,
         // A file cut cleanly *between* records ends the way a whole one does, so
-        // the framing alone cannot tell them apart. The header can: sequences
-        // start at one and cannot have gaps, so a backup taken at tail `n` holds
-        // exactly `n` records, and fewer means the file lost some.
-        truncated: applied < tail.get(),
+        // the framing alone cannot tell them apart. The header can: a file
+        // running from `from` to `tail` holds exactly that many records, and
+        // fewer means the file lost some.
+        truncated: last.get() < held.tail.get(),
     })
+}
+
+/// Read a backup without applying any of it.
+///
+/// What somebody does *before* the day they need it, and what a restore should
+/// be preceded by on the day they do: it reads every record, checks every
+/// checksum, and says how far the file is good for.
+///
+/// # Errors
+///
+/// [`Error::NotABackup`] or [`Error::Unsupported`] for a file this build cannot
+/// read, and [`Error::Damaged`] at the first record whose bytes are not the
+/// bytes that were written.
+pub fn verify(input: &mut impl Read) -> Result<Verified> {
+    let held = Head::read(input)?;
+    let mut records = 0_u64;
+    let mut good_through = Sequence::new(held.from.get().saturating_sub(1));
+    loop {
+        let Some((sequence, body)) = next(input)? else {
+            break;
+        };
+        let Some(body) = body else {
+            return Ok(Verified {
+                records,
+                from: held.from,
+                tail: held.tail,
+                good_through,
+                truncated: true,
+            });
+        };
+        // Decoded as well as checksummed: a record whose bytes survived and
+        // whose *shape* did not is a record a restore would fail on, and the
+        // point of verifying is to find that out today.
+        LogRecord::decode(&body)?;
+        records = records.saturating_add(1);
+        good_through = sequence;
+    }
+    Ok(Verified {
+        records,
+        from: held.from,
+        tail: held.tail,
+        good_through,
+        truncated: good_through.get() < held.tail.get(),
+    })
+}
+
+/// What a backup's header says.
+#[derive(Debug, Clone, Copy)]
+struct Head {
+    from: Sequence,
+    tail: Sequence,
+}
+
+impl Head {
+    /// Read and check it, refusing anything this build cannot read **before**
+    /// any record is looked at.
+    fn read(input: &mut impl Read) -> Result<Self> {
+        let mut magic = [0_u8; 8];
+        input
+            .read_exact(&mut magic)
+            .map_err(|_| Error::NotABackup)?;
+        if &magic != MAGIC {
+            return Err(Error::NotABackup);
+        }
+        let mut versions = [0_u8; 2];
+        input
+            .read_exact(&mut versions)
+            .map_err(|_| Error::NotABackup)?;
+        let format = versions.first().copied().unwrap_or(0);
+        if format != FORMAT {
+            return Err(Error::Unsupported {
+                what: "format",
+                found: format,
+                supported: FORMAT,
+            });
+        }
+        let codec = versions.get(1).copied().unwrap_or(0);
+        if codec != bgv_db_encoding::CODEC_VERSION {
+            return Err(Error::Unsupported {
+                what: "record codec",
+                found: codec,
+                supported: bgv_db_encoding::CODEC_VERSION,
+            });
+        }
+        let mut bounds = [0_u8; 16];
+        input
+            .read_exact(&mut bounds)
+            .map_err(|_| Error::NotABackup)?;
+        let (from, tail) = bounds.split_at(8);
+        Ok(Self {
+            from: Sequence::new(u64::from_be_bytes(
+                from.try_into().map_err(|_| Error::NotABackup)?,
+            )),
+            tail: Sequence::new(u64::from_be_bytes(
+                tail.try_into().map_err(|_| Error::NotABackup)?,
+            )),
+        })
+    }
+}
+
+/// The next record: its sequence and its body, or `None` at a clean end.
+///
+/// A body of `None` means the file was cut inside this record.
+fn next(input: &mut impl Read) -> Result<Option<(Sequence, Option<Vec<u8>>)>> {
+    let mut header = [0_u8; 16];
+    match fill(input, &mut header)? {
+        Filled::Empty => return Ok(None),
+        Filled::Short => return Ok(Some((Sequence::new(0), None))),
+        Filled::Whole => {}
+    }
+    let (framing, rest) = header.split_at(4);
+    let (numbered, checked) = rest.split_at(8);
+    let length = usize::try_from(u32::from_be_bytes(
+        framing.try_into().map_err(|_| Error::NotABackup)?,
+    ))
+    .unwrap_or(0);
+    let sequence = Sequence::new(u64::from_be_bytes(
+        numbered.try_into().map_err(|_| Error::NotABackup)?,
+    ));
+    let expected = u32::from_be_bytes(checked.try_into().map_err(|_| Error::NotABackup)?);
+
+    let mut body = vec![0_u8; length];
+    if !matches!(fill(input, &mut body)?, Filled::Whole) {
+        return Ok(Some((sequence, None)));
+    }
+    if check::crc32(&body) != expected {
+        return Err(Error::Damaged {
+            sequence: sequence.get(),
+        });
+    }
+    Ok(Some((sequence, Some(body))))
 }
 
 /// How much of a buffer a read managed to fill.

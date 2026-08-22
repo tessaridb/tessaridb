@@ -68,6 +68,14 @@ fn main() -> ExitCode {
 fn run(asked: Asked) -> Result<Ended, String> {
     let credentials = credentials(asked.user)?;
     let parameters = asked.parameters;
+    let sequence = asked.at_sequence;
+
+    // Verifying reads a file and touches no store, so it happens before one is
+    // opened — which is what makes it usable on a machine that has nothing but
+    // the backup.
+    if let Source::Verify(path) = &asked.source {
+        return verify(path);
+    }
     if let Some(address) = &asked.at {
         let mut remote = store::Remote::connect(address, credentials, parameters)?;
         let mut out = io::stdout().lock();
@@ -83,11 +91,11 @@ fn run(asked: Asked) -> Result<Ended, String> {
     // session at all — and an operator rehearses a restore with a command, which
     // is what "rehearsed" in the readiness checklist means.
     match &asked.source {
-        Source::Backup(path) => return backup(&db, path).map(|()| Ended::Fine),
-        Source::Restore(path) => return restore(&db, path).map(|()| Ended::Fine),
+        Source::Backup(path) => return backup(&db, path, sequence).map(|()| Ended::Fine),
+        Source::Restore(path) => return restore(&db, path, sequence).map(|()| Ended::Fine),
         Source::Health => return health(&db),
         Source::Serve(address) => return serve(db, address),
-        Source::Standard | Source::Inline(_) | Source::File(_) => {}
+        Source::Verify(_) | Source::Standard | Source::Inline(_) | Source::File(_) => {}
     }
 
     let mut embedded = store::Embedded::new(&db, credentials.as_ref(), parameters)?;
@@ -128,7 +136,11 @@ fn statements(
             let mut input = io::Cursor::new(held);
             session::run(store, &mut input, out, Mode::Script)
         }
-        Source::Backup(_) | Source::Restore(_) | Source::Health | Source::Serve(_) => {
+        Source::Backup(_)
+        | Source::Restore(_)
+        | Source::Verify(_)
+        | Source::Health
+        | Source::Serve(_) => {
             // Resolved before this function is reached, for the embedded path,
             // and refused during parsing for a node.
             return Ok(Ended::Fine);
@@ -175,29 +187,32 @@ fn serve(db: Db, address: &str) -> Result<Ended, String> {
 ///
 /// The whole store, because state is a pure function of the log — so this is a
 /// complete backup and not a partial one, and restoring it is a replay.
-fn backup(db: &Db, path: &std::path::Path) -> Result<(), String> {
+fn backup(db: &Db, path: &std::path::Path, from: Option<u64>) -> Result<(), String> {
     let mut out = std::io::BufWriter::new(
         fs::File::create(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
     );
-    let written = bgv_db_backup::write(db.store(), &mut out)
+    let from = bgv_db::Sequence::new(from.unwrap_or(1));
+    let written = bgv_db_backup::write_from(db.store(), &mut out, from)
         .map_err(|failure| format!("{}: {failure}", path.display()))?;
     out.flush()
         .map_err(|failure| format!("{}: {failure}", path.display()))?;
     println!(
-        "{} record(s) to {}, at sequence {}",
+        "{} record(s) to {}, sequences {}..={}",
         written.records,
         path.display(),
+        written.from,
         written.tail
     );
     Ok(())
 }
 
 /// Replay a file into an empty store.
-fn restore(db: &Db, path: &std::path::Path) -> Result<(), String> {
+fn restore(db: &Db, path: &std::path::Path, upto: Option<u64>) -> Result<(), String> {
     let mut input = std::io::BufReader::new(
         fs::File::open(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
     );
-    let held = bgv_db_backup::read(db.store(), &mut input)
+    let upto = upto.map(bgv_db::Sequence::new);
+    let held = bgv_db_backup::read_until(db.store(), &mut input, upto)
         .map_err(|failure| format!("{}: {failure}", path.display()))?;
     println!("{} record(s) from {}", held.records, path.display());
     if held.truncated {
@@ -212,6 +227,31 @@ fn restore(db: &Db, path: &std::path::Path) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// Read a backup and say what it holds, applying none of it.
+fn verify(path: &std::path::Path) -> Result<Ended, String> {
+    let mut input = std::io::BufReader::new(
+        fs::File::open(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
+    );
+    let held = bgv_db_backup::verify(&mut input)
+        .map_err(|failure| format!("{}: {failure}", path.display()))?;
+    println!(
+        "{} record(s), sequences {}..={}, good through {}",
+        held.records, held.from, held.tail, held.good_through
+    );
+    if held.truncated {
+        // On the error stream and with a non-zero exit, because the whole point
+        // of verifying is that somebody's script can act on the answer.
+        eprintln!(
+            "warning: {} was cut short — it says it holds through {} and reads through {}",
+            path.display(),
+            held.tail,
+            held.good_through
+        );
+        return Ok(Ended::Refused);
+    }
+    Ok(Ended::Fine)
 }
 
 /// Say whether the store is well.

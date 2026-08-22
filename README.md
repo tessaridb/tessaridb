@@ -319,7 +319,28 @@ replica runs.
 ```
 bgv ./data --backup ./monday.bgvlog
 bgv ./restored --restore ./monday.bgvlog
+
+bgv --verify ./monday.bgvlog                       # changes nothing, needs no store
+bgv ./data --backup ./tuesday.bgvlog --from 4001   # only what happened since
+bgv ./restored --restore ./monday.bgvlog --upto 3000
 ```
+
+`--verify` reads a backup and says what it holds, applying none of it and opening
+no store — which is what makes it something a script can run on a schedule rather
+than a thing somebody does once. Each record carries a checksum, so a file that
+is the right *length* and holds the wrong *bytes* is caught; framing alone only
+catches a file that was cut. That detects **corruption**, which is what happens
+to files, and it does not claim to detect tampering, which needs a key.
+
+`--from` writes an **incremental** backup, and the file says in its header what
+it continues from — so restoring one onto a store that is not standing exactly
+there is refused rather than silently producing a store no log explains. A base
+plus its increments restores to a store that answers what the original answers,
+which is the acceptance test rather than the description.
+
+`--upto` stops a restore at a chosen sequence. There is nothing to rewind and
+nothing to undo: the log *is* the store, so a replay that stops leaves the store
+holding exactly what it held then.
 
 **A store's `*.log` files are not logs to tidy away — they are its newest data.**
 Removing the live one discards every write since the last flush, silently: the
@@ -328,9 +349,10 @@ write-ahead file the engine has already recorded is refused when it goes missing
 but the live one cannot be, because once it is gone there is nothing left to
 notice with. Copy the whole directory, or use `--backup`.
 
-A restore refuses a store that already holds something — merging a backup into a
-populated store is not a restore, and the sequences would collide with a
-different meaning. A file that has been cut short restores what it holds and says
+A restore refuses a store that is not where the file continues from — a whole
+backup needs an empty store and an increment needs the store its base left
+behind. Merging a backup into an unrelated store is not a restore, and the
+sequences would land with a different meaning. A file that has been cut short restores what it holds and says
 so on the error stream, because a backup interrupted at record nine thousand is
 still nine thousand records and refusing it outright would throw away what
 somebody is holding in a bad week.
