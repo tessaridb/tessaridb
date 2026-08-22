@@ -53,8 +53,8 @@ pub use bgv_db_lsm::{Durability, StoreConfig};
 pub use bgv_db_session::{AccessPath, Error, Outcome, Result, Session};
 pub use bgv_db_storage::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use bgv_db_types::{
-    Datetime, Duration, FieldKind, Number, Path as FieldPath, RecordId, RecordRef, Sequence, Step,
-    TableId, Value,
+    DatabaseId, Datetime, Duration, FieldKind, NamespaceId, Number, Path as FieldPath, RecordId,
+    RecordRef, Sequence, Step, TableId, Value,
 };
 
 /// Every table an answer's references point at.
@@ -229,6 +229,74 @@ impl Db {
             }
         }
         Ok(named)
+    }
+
+    /// What a table is called, for a caller holding only its id.
+    ///
+    /// The other direction of [`Db::names_in`], and here for the same reason: a
+    /// change on the feed names its table by id, and an id means nothing to
+    /// anybody outside this process. A table that has been dropped has no name
+    /// and keeps its id, the way a reference to a deleted record does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read.
+    pub fn table_name(&self, table: TableId) -> Result<Option<String>> {
+        let mut transaction = self.store.begin()?;
+        Ok(Catalog::new(&mut transaction)
+            .table(table)?
+            .map(|held| held.name))
+    }
+
+    /// Resolve the namespace and database a session has selected.
+    ///
+    /// A caller that reads the log needs these, because the log is every
+    /// tenancy's and a reader confined to one has to know which ids that is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read. A name that is not
+    /// there is `None`: not existing is an answer.
+    pub fn tenancy_in(
+        &self,
+        namespace: &str,
+        database: &str,
+    ) -> Result<Option<(NamespaceId, DatabaseId)>> {
+        let mut transaction = self.store.begin()?;
+        let catalog = Catalog::new(&mut transaction);
+        let Some(namespace) = catalog.namespace_id(namespace)? else {
+            return Ok(None);
+        };
+        Ok(catalog
+            .database_id(namespace, database)?
+            .map(|database| (namespace, database)))
+    }
+
+    /// Resolve a table by the three names a session selects it with.
+    ///
+    /// One method rather than three, because a caller that resolved a namespace
+    /// and a database itself would be holding two ids it has no other use for,
+    /// and every step of the walk is the same catalog read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read. A name that is not
+    /// there is `None` rather than an error: not existing is an answer.
+    pub fn table_in(
+        &self,
+        namespace: &str,
+        database: &str,
+        table: &str,
+    ) -> Result<Option<TableId>> {
+        let mut transaction = self.store.begin()?;
+        let catalog = Catalog::new(&mut transaction);
+        let Some(namespace) = catalog.namespace_id(namespace)? else {
+            return Ok(None);
+        };
+        let Some(database) = catalog.database_id(namespace, database)? else {
+            return Ok(None);
+        };
+        Ok(catalog.table_id(namespace, database, table)?)
     }
 
     /// The store underneath.

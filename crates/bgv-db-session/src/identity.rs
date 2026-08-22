@@ -128,7 +128,16 @@ impl Identity {
     ///
     /// `open` is whether the store has any user at all.
     pub(crate) fn allows(&self, kind: &StatementKind, open: bool, span: Span) -> Result<()> {
-        let needs = Needs::of(kind);
+        self.allows_needs(Needs::of(kind), open, span)
+    }
+
+    /// The same rule, for a caller that knows what it needs rather than which
+    /// statement it is running.
+    ///
+    /// A subscription is the caller: it is not a statement and never reaches the
+    /// executor, but it reads records, and "who may read" must be answered here
+    /// rather than a second time somewhere else.
+    pub(crate) fn allows_needs(&self, needs: Needs, open: bool, span: Span) -> Result<()> {
         match self {
             // An open store runs anything, which is what makes an empty one
             // usable at all.

@@ -12,7 +12,7 @@ use bgv_db_ql::{Statement, StatementKind, parse};
 use bgv_db_storage::{Catalog, Store, Transaction};
 
 use crate::error::{Error, Result};
-use crate::identity::{self, Identity};
+use crate::identity::{self, Identity, Needs};
 use crate::outcome::Outcome;
 
 /// A hash to check a name that does not exist against.
@@ -121,6 +121,33 @@ impl<'a> Session<'a> {
     /// Forget who this session is.
     pub fn sign_out(&mut self) {
         self.identity = Identity::Anonymous;
+    }
+
+    /// Refuse when this session may not read.
+    ///
+    /// # Why a session has to answer this at all
+    ///
+    /// Because not everything that reads records is a statement. A subscription
+    /// takes records from the log directly and never reaches the executor, so
+    /// without this it would be reading with no identity check whatsoever — on a
+    /// closed store, an anonymous caller receiving every write there is.
+    ///
+    /// It is here rather than in whatever asks because "who may read" is one
+    /// rule, and a second copy of it in a network surface is a second place for
+    /// it to be answered differently.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotSignedIn`] on a closed store with no identity, and
+    /// [`Error::RoleForbids`] when the role is not enough.
+    pub fn may_read(&self, store: &'a Store) -> Result<()> {
+        let mut transaction = store.begin()?;
+        let open = Catalog::new(&mut transaction).is_open()?;
+        transaction.rollback();
+        // A span over nothing, because there is no script here to point into —
+        // and inventing one would put a caret under a character nobody wrote.
+        self.identity
+            .allows_needs(Needs::Read, open, bgv_db_ql::Span::new(0, 0))
     }
 
     /// Refuse the statement when this session may not run it.

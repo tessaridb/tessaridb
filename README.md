@@ -154,9 +154,47 @@ this protocol is that a client decides nothing.
 > belongs on a trusted network or behind something that terminates TLS, and says
 > so rather than leaving it to be assumed.
 
-Frame kinds above 3 are reserved for **subscription push**, which is why this is
-framed rather than request-and-reply: a server that pushes has to be able to send
-what the client did not ask for. It is not built yet.
+### Being told rather than asking
+
+```rust
+let feed = Client::connect("127.0.0.1:9080")?
+    .follow(&Follow { from: last_seen + 1, table: Some("users".into()) })?;
+```
+
+This is why the protocol is framed rather than request-and-reply: a node that
+pushes has to be able to send what the client did not ask for. Subscribing
+**takes the connection over** — a socket delivering changes is not also answering
+scripts, and letting it do both means multiplexing, a much larger protocol for a
+case nobody has. A client that wants both opens two.
+
+`from` is a position in the log, **inclusive**, so a subscriber that was
+disconnected comes back with one more than the last change it handled and gets
+exactly what it missed. `committed_tail() + 1` means "only what happens next";
+`0` means everything the log still holds.
+
+**A slow subscriber cannot lose anything** — it can only be behind. That is
+inherited rather than promised: a subscription is a durable cursor over the log,
+not a queue in front of it, so the buffer is the log, and the only way to lose a
+change is to ask to (`skip_to`, which counts exactly what it discards).
+
+Which decides what a client that stops reading altogether gets. Its socket fills,
+the node's write blocks, and after thirty seconds that **connection** ends.
+Nothing is buffered on its behalf and nothing is dropped: it reconnects from the
+position it had. Buffering in the node instead would rebuild exactly the queue
+the design removed, and its losses would be caused by memory pressure rather than
+by a decision anyone made. Both halves are asserted — the feed ends short, and a
+resumed subscription gets the rest.
+
+A subscription **reads records**, so it answers to the same identity a `SELECT`
+does: on a closed store an anonymous connection is refused, and a subscriber
+signs in by running a request with credentials first — the session belongs to the
+connection, so it is still signed in when it follows. And because the log holds
+every namespace and database in the store, a subscription is confined to the one
+the session selected. Without that, "watch everything" would mean rather more
+than the caller who typed `USE` meant by it.
+
+A pushed change names its table, for the reason an answer does. `LIVE SELECT` as
+a bgvQL statement would be built on this and is not built.
 
 ## From a terminal
 

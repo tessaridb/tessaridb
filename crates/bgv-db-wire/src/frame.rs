@@ -60,6 +60,13 @@ pub(crate) enum Kind {
     Answer,
     /// The store refused, and said why.
     Refusal,
+    /// Follow the changes from a position onward.
+    ///
+    /// The client asks once; everything after it comes the other way without
+    /// being asked for, which is the reason this protocol has kinds at all.
+    Subscribe,
+    /// One change, sent because it happened.
+    Change,
 }
 
 impl Kind {
@@ -68,6 +75,8 @@ impl Kind {
             Self::Request => 1,
             Self::Answer => 2,
             Self::Refusal => 3,
+            Self::Subscribe => 4,
+            Self::Change => 5,
         }
     }
 
@@ -76,10 +85,12 @@ impl Kind {
             1 => Some(Self::Request),
             2 => Some(Self::Answer),
             3 => Some(Self::Refusal),
-            // 4 and above are reserved for the subscription frames, which is
-            // why this is a protocol with kinds rather than a request and a
-            // reply: a server that pushes has to be able to send something the
-            // client did not ask for.
+            4 => Some(Self::Subscribe),
+            5 => Some(Self::Change),
+            // 6 and above stay unclaimed, and an unknown kind still closes the
+            // connection rather than being skipped: a protocol that ignores what
+            // it does not understand is one where a version mismatch looks like
+            // silence.
             _ => None,
         }
     }
@@ -213,6 +224,20 @@ pub(crate) fn put_u32(into: &mut Vec<u8>, value: u32) {
     into.extend_from_slice(&value.to_be_bytes());
 }
 
+/// A `u64`, for a position in the log.
+pub(crate) fn put_u64(into: &mut Vec<u8>, value: u64) {
+    into.extend_from_slice(&value.to_be_bytes());
+}
+
+/// Read one back.
+pub(crate) fn take_u64(from: &[u8], at: usize) -> Result<(u64, usize)> {
+    let end = at.checked_add(8).ok_or(Error::Malformed)?;
+    let bytes = from.get(at..end).ok_or(Error::Malformed)?;
+    let mut held = [0_u8; 8];
+    held.copy_from_slice(bytes);
+    Ok((u64::from_be_bytes(held), end))
+}
+
 /// Read one back.
 pub(crate) fn take_u32(from: &[u8], at: usize) -> Result<(u32, usize)> {
     let end = at.checked_add(4).ok_or(Error::Malformed)?;
@@ -226,6 +251,33 @@ pub(crate) fn take_u32(from: &[u8], at: usize) -> Result<(u32, usize)> {
         ]),
         end,
     ))
+}
+
+/// A reader and a writer over one socket, for the greeting.
+///
+/// Here rather than beside either end, because both ends greet and the greeting
+/// is the one moment a connection needs both directions on one object. After it
+/// they are used independently, which is what lets a change be written while a
+/// read is waiting.
+pub(crate) struct Duplex<'a, R, W> {
+    pub(crate) reader: &'a mut R,
+    pub(crate) writer: &'a mut W,
+}
+
+impl<R: std::io::Read, W: std::io::Write> std::io::Read for Duplex<'_, R, W> {
+    fn read(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
+        self.reader.read(into)
+    }
+}
+
+impl<R: std::io::Read, W: std::io::Write> std::io::Write for Duplex<'_, R, W> {
+    fn write(&mut self, from: &[u8]) -> std::io::Result<usize> {
+        self.writer.write(from)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush()
+    }
 }
 
 #[cfg(test)]
