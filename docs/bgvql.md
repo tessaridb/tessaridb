@@ -1969,7 +1969,7 @@ these absences kept in code that had drifted from this one.
 | `LIMIT` on a delete | a retention run is one commit, so bounding one means deciding what a half-applied policy means |
 | filling a window that has no records | grouping answers with the groups the data has; filling a gap means knowing the range the caller meant, which the statement does not say |
 | a sub-second window | `time::bucket` takes a whole number of seconds; the nanosecond remainder is a different arithmetic and is refused rather than rounded |
-| a spilling aggregate | groups are built in memory; a store that must aggregate more than fits needs a spill, and that is a measurement away rather than a guess away |
+| a spilling aggregate | **narrowed by measurement, and by a smaller part of it than this row used to claim.** A fold holds one accumulator per group and not one value per record, so what a fold costs is set by how many groups there are and not by how many records went into them — every fold this store has is computable one value at a time. What is still built in memory is the **group map**, so grouping by a field with more distinct values than fit needs a spill, and so would a fold that cannot be computed incrementally, of which there is none. Note that this did not move a grouping read's peak: the fold frees each record as it folds it, so the peak is the source's materialised vector, exactly as it is for the two rows above |
 | user-defined functions | a stored function is a catalog entry with its own lifecycle, permissions and replication story |
 | a separate `NOT NULL` | `REQUIRED` covers absence and null together; splitting them is additive |
 | a default on a whole table | a different feature wearing a similar word |

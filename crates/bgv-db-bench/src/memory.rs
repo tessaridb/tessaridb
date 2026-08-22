@@ -187,6 +187,24 @@ fn reads_that_keep_less_than_they_touch(
             "    an ordered limit, no index",
             format!("SELECT * FROM spans ORDER BY note LIMIT {KEPT};"),
         ),
+        // Every record carries the same `note`, so this folds the whole table
+        // into one answer — the widest gap between what a read touches and what
+        // it keeps that this store can be asked for.
+        //
+        // It reads **one kibibyte above the whole table**, and that figure is
+        // the finding rather than a rounding. Wave 39 replaced a per-record
+        // collection inside the fold with one accumulator per group, and this
+        // row did not move: the fold consumes the records it was handed, so each
+        // record is freed as its value is folded, and live memory falls through
+        // the fold instead of rising. The collection was real and was never at
+        // the peak. So a grouping read's peak is the **source's**, exactly as
+        // the ordered-limit row above and the whole-table row below are — and
+        // the row's job here is to keep saying so, including on the day the
+        // source stops materialising and the fold becomes what is left.
+        (
+            "    a grouping that folds the table into one",
+            "SELECT note, count(*) AS how_many FROM spans GROUP BY note;".to_owned(),
+        ),
         ("    the whole table", "SELECT * FROM spans;".to_owned()),
     ];
     let mut reports = vec![Report::measurement(

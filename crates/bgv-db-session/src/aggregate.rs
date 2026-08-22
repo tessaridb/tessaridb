@@ -1,11 +1,21 @@
 use std::collections::BTreeMap;
 
-use bgv_db_ql::{Aggregate, Expr, ExprKind, Projected, Span};
+use bgv_db_ql::{Expr, ExprKind, Projected};
 use bgv_db_storage::Transaction;
 use bgv_db_types::{Number, RecordId, Value};
+
+// The reference implementation this module keeps for the accumulator to be
+// tested against needs a little more vocabulary than the executor does.
+#[cfg(test)]
+use bgv_db_ql::{Aggregate, Span};
+#[cfg(test)]
 use rust_decimal::Decimal;
 
-use crate::error::{Error, Result};
+#[cfg(test)]
+use crate::error::Error;
+
+use crate::accumulate::Accumulator;
+use crate::error::Result;
 use crate::evaluate::Scope;
 use crate::session::Session;
 
@@ -117,36 +127,54 @@ fn substituted(expr: &Expr, taken: &mut std::vec::IntoIter<Value>) -> Expr {
     }
 }
 
-/// What one fold occurrence saw, one entry per record of its group.
-type Seen = Vec<Value>;
+/// What every fold of a group holds: by projection, then by occurrence within it.
+///
+/// There is no third dimension, and that is the point. Until wave 39 the
+/// innermost entry was one value **per record**, so a group cost what its group
+/// cost rather than what its answer did; an accumulator has nowhere to put one.
+type Holding = Vec<Vec<Accumulator>>;
 
-/// What every fold saw: by projection, then by occurrence within it.
-type Collected = Vec<Vec<Seen>>;
+/// One group: the identity its answer carries, and what its folds hold.
+type Group = (RecordId, Holding);
 
-/// One group: the identity its answer carries, and what its folds saw.
-type Group = (RecordId, Collected);
+/// An accumulator per fold occurrence, positions preserved.
+fn holding(occurrences: &[Vec<&Expr>]) -> Holding {
+    occurrences
+        .iter()
+        .map(|held| {
+            held.iter()
+                .map(|fold| Accumulator::of(&fold.kind))
+                .collect()
+        })
+        .collect()
+}
 
 impl Session<'_> {
     /// The records folded into one answer per group.
     ///
     /// Groups are held in memory and keyed by the group's values, which is what
     /// makes the order of the groups the value system's order too — a
-    /// `BTreeMap` keyed by the same values `ORDER BY` sorts by. A store that
-    /// must aggregate more than fits needs a spill, and that is a measurement
-    /// away rather than a guess away.
+    /// `BTreeMap` keyed by the same values `ORDER BY` sorts by.
+    ///
+    /// **What a group holds is set by its folds and not by its records.** Each
+    /// fold occurrence keeps one [`Accumulator`] rather than one value per
+    /// record, so grouping fifty thousand records into three costs three
+    /// answers' worth and not fifty thousand. Every fold this store has is
+    /// computable one value at a time, so the case a spill was reserved for does
+    /// not arise for them; a fold that is not would bring it back.
     ///
     /// A read with folds and no `GROUP BY` has exactly one group, because
     /// `SELECT count(*) FROM users` should not need a clause that means nothing.
     ///
     /// # Two passes, because a fold answers after the records are gone
     ///
-    /// The first pass is per record and collects, for every fold **occurrence**
-    /// in every projected expression, what that fold saw in that record. The
-    /// second is per group: each occurrence is folded into one value, those
-    /// values are substituted into the expression, and the ordinary evaluator
-    /// runs over what is left. That is the whole of what makes `mean(age) * 2`
-    /// work — the composition is evaluated by the same code that evaluates
-    /// `age * 2`, over a literal.
+    /// The first pass is per record and offers, to every fold **occurrence** in
+    /// every projected expression, what that fold saw in that record. The second
+    /// is per group: each occurrence answers with one value, those values are
+    /// substituted into the expression, and the ordinary evaluator runs over
+    /// what is left. That is the whole of what makes `mean(age) * 2` work — the
+    /// composition is evaluated by the same code that evaluates `age * 2`, over
+    /// a literal.
     pub(crate) fn grouped(
         &self,
         transaction: &mut Transaction<'_>,
@@ -169,8 +197,8 @@ impl Session<'_> {
         // system's order; the identity of the first record in each group becomes
         // the group's, so an answer still has one.
         //
-        // The collected values are indexed by projection, then by fold
-        // occurrence within it, then by record.
+        // The accumulators are indexed by projection, then by fold occurrence
+        // within it — and there it stops.
         let mut groups: BTreeMap<Vec<Value>, Group> = BTreeMap::new();
         for (id, record) in records {
             // Evaluated rather than resolved, so a window — `time::bucket(at,
@@ -181,15 +209,9 @@ impl Session<'_> {
             for held in group {
                 key.push(self.evaluate_in(transaction, held, Scope::of(&record))?);
             }
-            let entry = groups.entry(key).or_insert_with(|| {
-                (
-                    id.clone(),
-                    occurrences
-                        .iter()
-                        .map(|held| vec![Vec::new(); held.len()])
-                        .collect(),
-                )
-            });
+            let entry = groups
+                .entry(key)
+                .or_insert_with(|| (id.clone(), holding(&occurrences)));
             for (position, held) in occurrences.iter().enumerate() {
                 for (which, fold) in held.iter().enumerate() {
                     let ExprKind::Fold { over, .. } = &fold.kind else {
@@ -197,42 +219,38 @@ impl Session<'_> {
                     };
                     let value = match over {
                         // `count(*)` folds over the records themselves, so what
-                        // it collects is one placeholder per record rather than
-                        // a value read out of one.
+                        // it is offered is one placeholder per record rather
+                        // than a value read out of one.
                         None => Value::Bool(true),
                         Some(expr) => self.evaluate_in(transaction, expr, Scope::of(&record))?,
                     };
-                    if let Some(collected) = entry
+                    if let Some(accumulator) = entry
                         .1
                         .get_mut(position)
                         .and_then(|held| held.get_mut(which))
                     {
-                        collected.push(value);
+                        accumulator.offer(&value)?;
                     }
                 }
             }
         }
 
         let mut answered = Vec::with_capacity(groups.len());
-        for (key, (id, collected)) in groups {
+        for (key, (id, accumulated)) in groups {
             let mut fields = BTreeMap::new();
             for (position, value) in wanted.iter().enumerate() {
                 let held = occurrences.get(position).map_or(&[][..], Vec::as_slice);
                 let mut computed = Vec::with_capacity(held.len());
                 for (which, fold) in held.iter().enumerate() {
-                    let ExprKind::Fold {
-                        fold: aggregate,
-                        span,
-                        ..
-                    } = &fold.kind
+                    let ExprKind::Fold { .. } = &fold.kind else {
+                        continue;
+                    };
+                    let Some(accumulator) =
+                        accumulated.get(position).and_then(|held| held.get(which))
                     else {
                         continue;
                     };
-                    let seen = collected
-                        .get(position)
-                        .and_then(|held| held.get(which))
-                        .map_or(&[][..], Vec::as_slice);
-                    computed.push(self::fold(*aggregate, seen, *span)?);
+                    computed.push(accumulator.finish()?);
                 }
                 let answer = if computed.is_empty() {
                     // No fold in this projection, so it is a group key — and a
@@ -274,6 +292,13 @@ fn key_value(key: &[Value], group: &[Expr], expr: &Expr) -> Value {
 /// `values` is what the folded expression produced for each record of the
 /// group — for `count(*)` it is one entry per record, holding nothing in
 /// particular.
+///
+/// **The reference implementation.** Since wave 39 the executor folds one value
+/// at a time ([`crate::accumulate::Accumulator`]) and this is what that is
+/// tested against, over a corpus of mixed kinds. It is kept rather than deleted
+/// for exactly that reason: an incremental total that agrees with itself proves
+/// nothing about the implementation it replaced.
+#[cfg(test)]
 pub(crate) fn fold(aggregate: Aggregate, values: &[Value], span: Span) -> Result<Value> {
     match aggregate {
         Aggregate::Count => count(values),
@@ -285,6 +310,7 @@ pub(crate) fn fold(aggregate: Aggregate, values: &[Value], span: Span) -> Result
 }
 
 /// How many of these are values at all.
+#[cfg(test)]
 fn count(values: &[Value]) -> Result<Value> {
     let held = values.iter().filter(|value| present(value)).count();
     let held = i64::try_from(held).unwrap_or(i64::MAX);
@@ -292,6 +318,7 @@ fn count(values: &[Value]) -> Result<Value> {
 }
 
 /// The numbers a fold is being given, refusing anything that is not one.
+#[cfg(test)]
 fn numbers(values: &[Value], fold: &'static str, span: Span) -> Result<Vec<Number>> {
     let mut held = Vec::new();
     for value in values.iter().filter(|value| present(value)) {
@@ -312,6 +339,7 @@ fn numbers(values: &[Value], fold: &'static str, span: Span) -> Result<Vec<Numbe
 /// The same promotion arithmetic uses: a group of integers totals to an
 /// integer, one holding a decimal totals exactly, and anything touching a float
 /// totals to a float and says so.
+#[cfg(test)]
 fn sum(values: &[Value], span: Span) -> Result<Value> {
     let numbers = numbers(values, "sum", span)?;
     let failed = |reason: &'static str| Error::NotSummable {
@@ -354,7 +382,7 @@ fn sum(values: &[Value], span: Span) -> Result<Value> {
 }
 
 /// A number as a float, for the branch that has already decided to be one.
-fn approximate(number: &Number) -> Option<f64> {
+pub(crate) fn approximate(number: &Number) -> Option<f64> {
     match number {
         Number::Float(held) => Some(*held),
         other => other
@@ -364,6 +392,7 @@ fn approximate(number: &Number) -> Option<f64> {
 }
 
 /// The average of what is there, or `NONE` when nothing is.
+#[cfg(test)]
 fn mean(values: &[Value], span: Span) -> Result<Value> {
     let numbers = numbers(values, "mean", span)?;
     if numbers.is_empty() {
@@ -393,6 +422,7 @@ fn mean(values: &[Value], span: Span) -> Result<Value> {
 }
 
 /// The smallest or largest value present, in the value system's order.
+#[cfg(test)]
 fn extreme(values: &[Value], smallest: bool) -> Value {
     let mut extreme: Option<&Value> = None;
     for value in values.iter().filter(|value| present(value)) {
@@ -409,6 +439,6 @@ fn extreme(values: &[Value], smallest: bool) -> Value {
 /// Absent and null are both "no value here", and every fold but `count(*)`
 /// passes over them. `count(*)` never reaches this, because it folds over the
 /// records rather than over a value in them.
-fn present(value: &Value) -> bool {
+pub(crate) fn present(value: &Value) -> bool {
     value.is_present() && *value != Value::Null
 }

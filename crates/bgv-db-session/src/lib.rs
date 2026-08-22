@@ -19,6 +19,7 @@
 
 #![forbid(unsafe_code)]
 
+mod accumulate;
 mod aggregate;
 mod arithmetic;
 mod authorize;
