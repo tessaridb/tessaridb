@@ -50,6 +50,7 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::Read { .. } => "READ",
         StatementKind::Backup { .. } => "BACKUP",
         StatementKind::Explain(_) => "EXPLAIN",
+        StatementKind::Info { .. } => "INFO FOR",
         StatementKind::Keys { .. } => "KEYS",
         StatementKind::Begin => "BEGIN",
         StatementKind::Commit => "COMMIT",
@@ -92,6 +93,7 @@ pub const FORMS: &[&str] = &[
     "READ",
     "BACKUP",
     "EXPLAIN",
+    "INFO FOR",
     "KEYS",
     "BEGIN",
     "COMMIT",
@@ -160,6 +162,7 @@ mod tests {
              READ b:'/a.txt';\
              BACKUP;\
              EXPLAIN SELECT * FROM t;\
+             INFO FOR STORE;\
              BEGIN;\
              COMMIT;\
              CANCEL;",

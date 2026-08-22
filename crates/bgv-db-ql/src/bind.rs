@@ -135,6 +135,10 @@ fn bind_statement(kind: &mut StatementKind, parameters: &Parameters) -> Result<(
         | StatementKind::DropIndex { .. }
         | StatementKind::RebuildIndex { .. }
         | StatementKind::Backup { .. }
+        // A subject is a name and never a value. `INFO FOR TABLE $t` would be a
+        // parameter supplying a *table*, which is refused everywhere else in
+        // this language for the reason `bind_target` gives.
+        | StatementKind::Info { .. }
         | StatementKind::Begin
         | StatementKind::Commit
         | StatementKind::Cancel => Ok(()),

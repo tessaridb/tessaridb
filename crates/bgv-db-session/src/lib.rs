@@ -31,6 +31,7 @@ mod execute;
 mod file;
 mod grants;
 mod identity;
+mod info;
 mod outcome;
 mod plan;
 mod rank;

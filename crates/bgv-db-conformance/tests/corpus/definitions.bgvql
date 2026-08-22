@@ -169,3 +169,40 @@ DEFINE FIELD low ON ledgers TYPE int ASSERT $value < high;
 --- case: nor any parameter but the value being checked
 DEFINE FIELD cap ON ledgers TYPE int ASSERT $limit > 3;
 --- expect: error AssertionNotAConstraint
+
+# `INFO FOR` — what the catalog holds, read from the catalog itself. Five
+# subjects, because each one has exactly one rule deciding what the caller may
+# see, and a statement whose answer mixes two permission levels can only give a
+# partial answer or a confusing refusal.
+
+--- case: the store lists its namespaces
+INFO FOR STORE;
+--- expect: ok
+
+--- case: a namespace lists its databases
+INFO FOR NAMESPACE;
+--- expect: ok
+
+--- case: a database lists its tables
+INFO FOR DATABASE;
+--- expect: ok
+
+--- case: a table reports its shape, its fields and its indexes
+INFO FOR TABLE users;
+--- expect: ok
+
+--- case: a table that does not exist is unknown, the way it is everywhere else
+INFO FOR TABLE nothing;
+--- expect: error Unknown
+
+--- case: only these five subjects, and a sixth names them
+INFO FOR INDEX by_email;
+--- expect: error UnexpectedToken
+
+--- case: FOR is not optional, because INFO alone asks nothing
+INFO STORE;
+--- expect: error UnexpectedToken
+
+--- case: FOR is contextual, so it is still a perfectly good field name
+CREATE users:'for-test' = { for: 'reserved words are expensive' };
+--- expect: ok

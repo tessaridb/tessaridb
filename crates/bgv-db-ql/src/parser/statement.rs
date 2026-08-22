@@ -4,8 +4,8 @@ use super::Parser;
 use bgv_db_types::{FieldKind, Filter, Path, Step};
 
 use crate::ast::{
-    Assignment, Direction, Edit, ExprKind, FieldPath, Hop, Projection, RangeExpr, RecordTarget,
-    Select, Source, Statement, StatementKind, TableRef,
+    Assignment, Direction, Edit, ExprKind, FieldPath, Hop, InfoSubject, Projection, RangeExpr,
+    RecordTarget, Select, Source, Statement, StatementKind, TableRef,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -64,6 +64,7 @@ impl Parser<'_> {
                 }
                 StatementKind::Explain(Box::new(self.select_statement()?))
             }
+            Some(Keyword::Info) => self.info_statement()?,
             Some(Keyword::Delete) => {
                 self.advance();
                 // `FROM` is what tells the two forms apart, and it is required
@@ -164,6 +165,52 @@ impl Parser<'_> {
             kind,
             span: start.to(self.span_behind()),
         })
+    }
+
+    /// `INFO FOR STORE` / `NAMESPACE` / `DATABASE` / `TABLE users` / `USER ada`
+    ///
+    /// # Only `INFO` is reserved
+    ///
+    /// `FOR` and `STORE` are read as contextual words, for the reason
+    /// [`Parser::eat_word`] gives: reserving a word takes a perfectly good table
+    /// and field name away from data that already exists. Nothing but `FOR` can
+    /// stand after `INFO` and nothing but a subject after `FOR`, so nothing here
+    /// is ambiguous. `INFO` itself has to be reserved, because it leads a
+    /// statement and the dispatcher reads a keyword — and that costs `DEFINE
+    /// TABLE info`, which is the price and is worth naming.
+    ///
+    /// A namespace and a database are the **selected** ones rather than named
+    /// ones. A caller asking about another says `USE`, which is the tenancy
+    /// question answered where the store already answers it, rather than a
+    /// second path to the same check.
+    fn info_statement(&mut self) -> Result<StatementKind> {
+        self.advance();
+        if !self.eat_word("for") {
+            return Err(self.error_here("`FOR` and what to report on"));
+        }
+        let subject = match self.peek_keyword() {
+            Some(Keyword::Namespace) => {
+                self.advance();
+                InfoSubject::Namespace
+            }
+            Some(Keyword::Database) => {
+                self.advance();
+                InfoSubject::Database
+            }
+            Some(Keyword::Table) => {
+                self.advance();
+                InfoSubject::Table(self.table_ref()?)
+            }
+            Some(Keyword::User) => {
+                self.advance();
+                InfoSubject::User(self.name()?)
+            }
+            _ if self.eat_word("store") => InfoSubject::Store,
+            _ => {
+                return Err(self.error_here("`STORE`, `NAMESPACE`, `DATABASE`, `TABLE` or `USER`"));
+            }
+        };
+        Ok(StatementKind::Info { subject })
     }
 
     /// `USE NAMESPACE prod DATABASE orders` — either part, in that order.

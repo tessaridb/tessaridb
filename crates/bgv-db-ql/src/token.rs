@@ -234,6 +234,8 @@ pub enum Keyword {
     Backup,
     /// `EXPLAIN` — the plan a read would take.
     Explain,
+    /// `INFO` — what the catalog holds.
+    Info,
     /// `INDEX`
     Index,
     /// `ON`
@@ -361,6 +363,7 @@ impl Keyword {
             Self::Read => "READ",
             Self::Backup => "BACKUP",
             Self::Explain => "EXPLAIN",
+            Self::Info => "INFO",
             Self::Index => "INDEX",
             Self::On => "ON",
             Self::Join => "JOIN",
@@ -432,6 +435,7 @@ impl Keyword {
         Self::Read,
         Self::Backup,
         Self::Explain,
+        Self::Info,
         Self::Index,
         Self::On,
         Self::Join,

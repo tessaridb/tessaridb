@@ -79,12 +79,32 @@ impl<'a> Session<'a> {
     ///
     /// Returns an error when the catalog cannot be read.
     pub fn readable(&self, store: &'a Store) -> Result<Option<Vec<TableId>>> {
+        let mut transaction = store.begin()?;
+        let readable = self.readable_in(&mut transaction);
+        transaction.rollback();
+        readable
+    }
+
+    /// The same question, for a caller already inside a transaction.
+    ///
+    /// `INFO FOR DATABASE` is the caller: it runs as a statement, so it has one,
+    /// and it must narrow the tables it reports to exactly these. It shares this
+    /// implementation rather than asking the catalog itself, because a second
+    /// answer to "which tables may this session read" is one waiting to disagree
+    /// silently — which is the reason the change feed calls the redactor instead
+    /// of reimplementing the field rule.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read.
+    pub(crate) fn readable_in(
+        &self,
+        transaction: &mut bgv_db_storage::Transaction<'_>,
+    ) -> Result<Option<Vec<TableId>>> {
         let Some(user) = self.identity.user() else {
             return Ok(None);
         };
-        let mut transaction = store.begin()?;
-        let grants = Catalog::new(&mut transaction).grants_for(user.id)?;
-        transaction.rollback();
+        let grants = Catalog::new(transaction).grants_for(user.id)?;
         if grants.is_empty() {
             return Ok(None);
         }

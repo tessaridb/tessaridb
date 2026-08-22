@@ -377,6 +377,72 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             .transpose()
     }
 
+    /// Every namespace that has been created.
+    ///
+    /// # The system tenancy is not in here, and not because it is filtered out
+    ///
+    /// Namespace zero holds the catalog itself and has **no definition record**:
+    /// it was never created through [`Catalog::create_namespace`], so nothing
+    /// wrote a row for it and this scan cannot produce one. That is the same
+    /// property that makes it unaddressable by name — it is absent rather than
+    /// hidden, and a listing that had to remember to exclude it would be one
+    /// somebody could forget to.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a stored definition cannot be read.
+    pub fn namespaces(&self) -> Result<Vec<NamespaceDefinition>> {
+        self.all(system::NAMESPACES, NamespaceDefinition::from_value)
+    }
+
+    /// Every database in one namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a stored definition cannot be read.
+    pub fn databases_in(&self, namespace: NamespaceId) -> Result<Vec<DatabaseDefinition>> {
+        Ok(self
+            .all(system::DATABASES, DatabaseDefinition::from_value)?
+            .into_iter()
+            .filter(|found| found.namespace == namespace)
+            .collect())
+    }
+
+    /// Every table in one database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a stored definition cannot be read.
+    pub fn tables_in(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+    ) -> Result<Vec<TableDefinition>> {
+        Ok(self
+            .all(system::TABLES, TableDefinition::from_value)?
+            .into_iter()
+            .filter(|found| found.namespace == namespace && found.database == database)
+            .collect())
+    }
+
+    /// Every definition in one system table, decoded.
+    ///
+    /// Reads the whole table and lets the caller filter, which is what
+    /// [`Catalog::indexes_on`] does and is honest at catalog scale — the
+    /// alternative is an index over the catalog, and the catalog is what indexes
+    /// are declared in. If a caller ever needs this hot, the answer is a cache
+    /// keyed by the catalog's own version rather than a cleverer scan.
+    fn all<T>(&self, table: TableId, decode: fn(&Value) -> Result<T>) -> Result<Vec<T>> {
+        let mut found = Vec::new();
+        for (_, payload) in
+            self.transaction
+                .scan_table(system::SYSTEM_NAMESPACE, system::SYSTEM_DATABASE, table)?
+        {
+            found.push(decode(&decode_payload(&payload)?)?);
+        }
+        Ok(found)
+    }
+
     /// Resolve a namespace name.
     ///
     /// # Errors

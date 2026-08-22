@@ -39,7 +39,7 @@
 use argon2::Argon2;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use bgv_db_ql::{Name, Span, StatementKind, TableRef};
+use bgv_db_ql::{InfoSubject, Name, Span, StatementKind, TableRef};
 use bgv_db_storage::{Catalog, Role, Transaction, UserDefinition};
 
 use crate::error::{Error, Result};
@@ -141,6 +141,18 @@ impl Needs {
             // to it, which `within_grants` says out loud rather than leaving to
             // the fact that a backup names no table.
             StatementKind::Backup { .. } => Self::Administer,
+            // Asking about a **user** is asking what the permission system says,
+            // so it is the same kind of act as writing it. The other four
+            // subjects filter — they report the tables and fields the caller may
+            // already read — but this one cannot: there is no smaller truthful
+            // answer about who may do what, and a partial one reads as the whole
+            // answer. So it refuses, and only an owner is answered.
+            StatementKind::Info {
+                subject: InfoSubject::User(_),
+            } => Self::Administer,
+            // The other four are reads of the catalog, and what they report is
+            // narrowed to what the caller could have found out anyway.
+            StatementKind::Info { .. } => Self::Read,
             // Everything else changes something: the records, or the structure
             // they are held in. Defining and dropping sit here rather than under
             // `Administer` because an `editor` is expected to shape the data

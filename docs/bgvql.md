@@ -1797,6 +1797,69 @@ be a metadata disclosure wearing a diagnostic's clothes.
 Only a read has a plan to describe. A write's cost is its index maintenance,
 which is a different report rather than this one wearing the same word.
 
+## 7c. Asking the catalog what it holds
+
+```
+INFO FOR STORE;
+INFO FOR NAMESPACE;
+INFO FOR DATABASE;
+INFO FOR TABLE users;
+INFO FOR USER ada;
+```
+
+Each answers with an object read **from the catalog**, not from a description
+kept beside it — so a report cannot describe a schema the store no longer has:
+
+```json
+{"tables": ["orders", "users"]}
+```
+
+```json
+{"table": "users", "schemafull": true, "edge": false, "bucket": false,
+ "fields": [{"name": "email", "type": "string", "required": true}],
+ "indexes": [{"name": "by_email", "fields": ["email"], "unique": true, "search": false}]}
+```
+
+Names come back in **name order** rather than in the order they were declared,
+so two stores built from the same schema by differently ordered scripts describe
+themselves identically.
+
+A namespace and a database are the **selected** ones. A caller asking about
+another says `USE`, which is where this store already answers the tenancy
+question — a second way to name one would be a second place for that check to be
+got wrong.
+
+### What a caller may see of it
+
+**A report says only what the caller could have found out anyway.** That is the
+rule a grant-governed subscription already follows on the change feed, applied
+to a description instead of to records.
+
+So four of the five subjects **narrow** rather than refuse:
+
+- `INFO FOR STORE` and `INFO FOR NAMESPACE` show a scoped user their own
+  tenancy and no other.
+- `INFO FOR DATABASE` lists the tables the caller may read. A table they were
+  never granted is absent, exactly as its records are.
+- `INFO FOR TABLE` names its table, so a caller without that grant is **refused**
+  — the same refusal a `SELECT` from it gives. What is left is the field grant,
+  which edits rather than refuses (§4): a caller granted `FIELDS name` is not
+  told that `salary` is declared, and is not told that `by_salary` indexes it.
+  An index is named after the values it projects, so listing one names them.
+
+`INFO FOR USER` is the fifth, and it **refuses**: it needs an owner, the same
+permission that declares a user. Its content is the permission system itself,
+and there is no smaller truthful answer about who may do what — a grant list
+with rows quietly removed reads as the whole of what that user can reach. The
+report never carries the password hash, which the stored definition does hold.
+
+**The catalog's own tenancy is not listed, and not because it is filtered out.**
+It was never created through the language, so it has no definition record to
+find — the same property that makes `USE NAMESPACE` unable to select it. A
+listing that had to remember to exclude it would be one somebody could forget to.
+A bucket's chunk table is absent for the neighbouring reason: its name carries a
+byte no identifier can hold, so nothing can name it and nothing lists it.
+
 ## 8. What is deliberately absent from this milestone
 
 Named here rather than merely missing, so each absence reads as a decision.
@@ -1847,6 +1910,9 @@ property of the key order rather than work left undone.
 | an order served from a **composite** index | its entries for one leading value are ordered by the *next* field, so the tie group at the bound is a group of leading values — and a leading value cannot be read back out of a key, because the index encoding normalises (`1` and `1.0` are the same bytes) and is deliberately not reversible. §5 |
 | an order served **under a `WHERE`** | the condition and the order would have to be served by one index, which is the same gathering-by-index restructuring the full-tuple seek needs. Today a filtered read narrows by the condition and sorts what it found, which is correct and costs a sort. §5 |
 | an index on a **later** field of a composite index, or a range on the second under an equality on the first | each is a different traversal of the same key order, and each is worth building when a read wants it rather than in anticipation. §4 |
+| `INFO FOR` on a **named** namespace, database or user's own account | the tenancy subjects report the **selected** namespace and database, because `USE` is where this store already answers "which tenancy", and a second way to name one is a second place for that check to be got wrong. A caller wanting another says `USE` and asks again. `INFO FOR USER` needs an owner, so a non-owner cannot read even their own grants — the smaller, safe rule while nothing has asked for the other; a self-form is a different permission question and would be built as one. §7c |
+| an analyzer named by a report | `INFO FOR` reports namespaces, databases, tables, fields, indexes, users and grants. An analyzer is declared store-wide rather than under any of them, so it has no subject to appear in — a real gap, and a small one: the catalog reader exists and what is missing is the decision about where it belongs. §7c |
+| a **schema dump** — a report rendered as the statements that would recreate it | `INFO FOR` answers with what the catalog holds, deliberately, because a renderer is a second description of the schema kept beside the first and the two drift. A dump wants that renderer plus a guarantee that replaying its output reproduces the store, which is a round-trip property worth testing rather than assuming. §7c |
 | a range read whose **answer** is bounded, rather than only its fetching | the entries a range read holds at once are bounded (§4), and the records it answers with are not: every one is resolved and held before the caller sees the first. Measured, that is the larger half by far — bounding the entries took about four per cent off the peak of a fifty-thousand-record read, and what remains is roughly 1.4 KiB of resident memory for each record answered, against a stored record of a couple of hundred bytes. Bounding the answer is not a storage change: the condition that asked is re-tested above this layer, so a limit cannot be pushed into the read without the planner and the executor consuming it as it arrives — the same answer-shape wall the streaming backup meets. §4 |
 | an **estimated row count** or a cost in a plan | it needs statistics about value distribution — how many records hold `city = 'london'` against `city = 'tromsø'` — which is maintained state whose staleness silently changes plans. A much larger decision than a selection rule, and one that wants a benchmark harness to justify it rather than an intuition. §7b |
 | a digest on a file's metadata | worth having, and it is a *verification* feature: it belongs with the backup verifier rather than half here and half there |
@@ -1949,6 +2015,12 @@ property of the key order rather than work left undone.
 | A `UNIQUE` composite promises no ceiling for a condition that fixes only its first field | **contract** — uniqueness is over the whole tuple |
 | `EXPLAIN` reports the plan that actually runs, and needs the read's own permission | **contract** — a second planner would disagree, and a plan is metadata about a table |
 | A plan carries no number the store cannot know | **contract** — no estimated rows, no cost |
+| `INFO FOR` reports what the caller could have found out anyway | **contract** — the change feed's rule applied to a description instead of to records: what is granted is listed, what is not is absent, and a named table is refused |
+| A field grant hides a field's declaration **and** the indexes that project it | **contract** — an index is named after the values it projects, so listing one names them |
+| `INFO FOR USER` refuses rather than narrows, and needs an owner | **contract** — a grant list with rows quietly removed reads as the whole of what that user can reach |
+| A report never carries a password hash | **contract** — the stored definition does, so the report is built field by field and not from it |
+| `INFO` is reserved; `FOR` and `STORE` are contextual | **contract** — a statement's leading word must be a keyword, and nothing else here must be |
+| A report's names are in name order | **contract** — an order that depends on how a script was written is two answers to one question |
 | `UPDATE` replaces with a value and changes with `SET`, and both touch one record | **contract** |
 | Every right-hand side of a `SET` sees the record as it was | **contract** — otherwise a statement's meaning depends on clause order |
 | Assigning `none` removes the field; `null` is a value and stays | **contract** |

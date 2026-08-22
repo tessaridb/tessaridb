@@ -12,7 +12,7 @@
 //! would either exempt a new statement from every grant in the store, or refuse
 //! it to everybody, and nobody would find out which until it mattered.
 
-use bgv_db_ql::{Select, Source, StatementKind, TableRef};
+use bgv_db_ql::{InfoSubject, Select, Source, StatementKind, TableRef};
 
 /// Every table this statement names, in the order it names them.
 ///
@@ -47,6 +47,27 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // grant-governed user by name — because a rule shaped "every table it
         // names is granted" passes vacuously over an empty list.
         | StatementKind::Backup { .. } => Vec::new(),
+
+        // `INFO FOR TABLE users` names its table, so the grant loop below asks
+        // about it exactly as a `SELECT` from it would — which is the rule the
+        // statement is meant to follow: it reports what the caller could have
+        // found out anyway.
+        StatementKind::Info {
+            subject: InfoSubject::Table(table),
+        } => vec![table],
+
+        // The other four subjects name **no** table, and that emptiness is the
+        // `BACKUP` shape — a loop reading "every table it names is granted"
+        // passes over an empty list vacuously. It is safe here for a reason that
+        // has to be stated rather than assumed, because the reason is somewhere
+        // else: the executor **filters** each report down to what the caller may
+        // read, so a table they were never granted is not in the answer to be
+        // refused. If that filter is ever removed, this arm is where the hole
+        // opens, and `info::tables` is where it is held shut.
+        //
+        // `INFO FOR USER` is the exception that refuses instead: it needs
+        // `Administer`, decided by `Needs::of` before this list is consulted.
+        StatementKind::Info { .. } => Vec::new(),
 
         // Declarations *on* a table, which is a table that already exists.
         StatementKind::DefineIndex { table, .. }

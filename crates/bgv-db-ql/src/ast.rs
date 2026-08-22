@@ -154,6 +154,15 @@ pub enum StatementKind {
     /// A decision nobody can look at is a decision nobody can debug, and one no
     /// test can assert without timing it.
     Explain(Box<Select>),
+    /// `INFO FOR TABLE users` — what the catalog holds about one subject.
+    ///
+    /// A read whose subject is the schema rather than the records. It reports
+    /// only what the caller could have found out anyway: which tables a grant
+    /// names, which fields a field grant leaves readable. See [`InfoSubject`].
+    Info {
+        /// What is being asked about.
+        subject: InfoSubject,
+    },
     /// `BACKUP` or `BACKUP FROM 42` — the store's log as a backup file.
     ///
     /// The one statement whose scope is the **store** rather than the selected
@@ -362,6 +371,30 @@ pub enum StatementKind {
     Commit,
     /// `CANCEL`
     Cancel,
+}
+
+/// What an `INFO FOR` asks about.
+///
+/// Five subjects, and each one has **exactly one** rule deciding what the caller
+/// may see. That is why they are five subjects rather than one with a filter
+/// argument: a statement whose answer mixes two permission levels can only give
+/// a partial answer or a confusing refusal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InfoSubject {
+    /// `INFO FOR STORE` — the namespaces.
+    Store,
+    /// `INFO FOR NAMESPACE` — the databases in the selected namespace.
+    Namespace,
+    /// `INFO FOR DATABASE` — the tables in the selected database.
+    Database,
+    /// `INFO FOR TABLE users` — one table's shape, fields and indexes.
+    Table(TableRef),
+    /// `INFO FOR USER ada` — one user's role, tenancy and grants.
+    ///
+    /// The one subject that refuses rather than filters, because its content
+    /// *is* the permission system: a partial view of who may do what is worse
+    /// than none, since it reads as the whole answer.
+    User(Name),
 }
 
 /// How an `UPDATE` changes the record it names.
