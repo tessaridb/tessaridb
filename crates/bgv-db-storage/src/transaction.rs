@@ -669,8 +669,14 @@ impl<'a> Transaction<'a> {
             };
             let batch = self.store.backend().scan(&request)?;
             let last = batch.last().map(|(key, _)| key.clone());
+            // Decoded before anything is resolved, because deciding *what* to
+            // resolve reads the entry's key and never its record: the boundary
+            // test asks whether an entry is still in the tie group, and the
+            // group is the value the key carries. So the walk can plan a whole
+            // batch's reads without issuing one.
+            let mut entries: Vec<(IndexValues, RecordId)> = Vec::with_capacity(batch.len());
             for (key, value) in &batch {
-                let (values, id) = if index.unique {
+                entries.push(if index.unique {
                     (
                         UniqueIndexKey::decode(key.as_slice())?.values,
                         IndexTarget::decode(value.as_slice())?.id,
@@ -678,17 +684,53 @@ impl<'a> Transaction<'a> {
                 } else {
                     let entry = SecondaryIndexKey::decode(key.as_slice())?;
                     (entry.values, entry.id)
-                };
-                if boundary.as_ref().is_some_and(|edge| *edge != values) {
-                    return Ok(Some(found));
-                }
-                let at = RecordAddress::new(index.namespace, index.database, index.table, id);
-                if let Some(payload) = self.get(&at)? {
-                    found.push((at.id, payload));
-                    if found.len() >= wanted && boundary.is_none() {
-                        boundary = Some(values);
+                });
+            }
+            let mut at = 0;
+            while at < entries.len() {
+                // Sized to what is still needed rather than to the scan batch.
+                // Resolving the whole batch would be one round trip instead of
+                // ten and a hundred and twenty-eight record reads instead of
+                // ten — a different cost, not a smaller one. At most one chunk
+                // of overhang is read past the point the bound fills, and that
+                // is bounded by `wanted`.
+                let still = wanted.saturating_sub(found.len()).max(1);
+                let mut end = at.saturating_add(still).min(entries.len());
+                if let Some(edge) = &boundary {
+                    // Draining a tie group, not filling a bound. Where it ends
+                    // is knowable from the keys, so the drain reads exactly the
+                    // records still in the group and stops.
+                    end = at.saturating_add(
+                        entries
+                            .get(at..end)
+                            .unwrap_or_default()
+                            .iter()
+                            .take_while(|(values, _)| values == edge)
+                            .count(),
+                    );
+                    if end == at {
+                        return Ok(Some(found));
                     }
                 }
+                let chunk = entries.get(at..end).unwrap_or_default();
+                let addresses: Vec<RecordAddress> = chunk
+                    .iter()
+                    .map(|(_, id)| {
+                        RecordAddress::new(index.namespace, index.database, index.table, id.clone())
+                    })
+                    .collect();
+                for ((values, id), payload) in chunk.iter().zip(self.get_each(&addresses)?) {
+                    if boundary.as_ref().is_some_and(|edge| edge != values) {
+                        return Ok(Some(found));
+                    }
+                    if let Some(payload) = payload {
+                        found.push((id.clone(), payload));
+                        if found.len() >= wanted && boundary.is_none() {
+                            boundary = Some(values.clone());
+                        }
+                    }
+                }
+                at = end;
             }
             // A short batch is the end of the index: the walk has seen every
             // entry, and whether that filled the bound is the whole answer.

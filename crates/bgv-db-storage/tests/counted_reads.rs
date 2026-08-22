@@ -317,3 +317,69 @@ fn resolving_a_range_costs_round_trips_per_batch_and_not_per_record() {
         "the point of the bound: the cost must not be proportional to the answer"
     );
 }
+
+// ------------------------------------------------------------------------ C8
+
+/// What a bounded descending read costs in round trips.
+///
+/// The entries ceiling above says the walk does not *examine* the table. It says
+/// nothing about how many times the backend is asked, and the two are
+/// independent: the walk read its entries in bounded batches and then resolved
+/// **each record with its own one-row scan**, so the asks were one per record
+/// answered — the cost wave 27 removed from `records_in_range` and left here
+/// (Q-69), on the grounds that a bound of ten is cheap where a range of two
+/// thousand is not.
+///
+/// Cheap is not free, and it was two call sites resolving records two different
+/// ways, which is the shape that drifts.
+///
+/// Stated as an **equality**, for the reason the range test states it: a
+/// `<= WANTED` bound would have passed on the old cost of one round trip per
+/// record, which is the cost this test exists to have caught. Two asks: one scan
+/// for the entry batch, one batched resolution for the records it named.
+#[test]
+fn a_bounded_descending_read_costs_two_asks_and_not_one_per_record() {
+    let fixture = Fixture::new();
+    fixture.write(RECORDS);
+    let transaction = fixture.store.begin().unwrap();
+    // After `begin`, so the snapshot lookup a transaction does on its way up is
+    // not counted as part of what the read cost.
+    fixture.counting.reset();
+    let found = transaction
+        .records_in_descending_order(&fixture.index, WANTED)
+        .unwrap()
+        .expect("the index holds enough records to fill the bound");
+    assert_eq!(found.len(), WANTED);
+
+    assert_eq!(
+        fixture.counting.round_trips(),
+        2,
+        "one ask for the entry batch and one for the records it named, \
+         answering with {WANTED} of {RECORDS}"
+    );
+}
+
+/// Doubling the bound does not double the asks.
+///
+/// One measurement cannot tell a constant from something proportional to the
+/// answer. The entries the walk reads follow the bound; the number of times it
+/// asks must not.
+#[test]
+fn doubling_the_bound_does_not_double_the_asks() {
+    let mut measured = Vec::new();
+    for wanted in [WANTED, WANTED * 8] {
+        let fixture = Fixture::new();
+        fixture.write(RECORDS);
+        let transaction = fixture.store.begin().unwrap();
+        fixture.counting.reset();
+        transaction
+            .records_in_descending_order(&fixture.index, wanted)
+            .unwrap()
+            .expect("the index holds enough");
+        measured.push(fixture.counting.round_trips());
+    }
+    assert_eq!(
+        measured[0], measured[1],
+        "asks moved with the bound: {measured:?}"
+    );
+}
