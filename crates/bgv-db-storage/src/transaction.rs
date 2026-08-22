@@ -27,7 +27,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
-use bgv_db_constants::MAX_COMMIT_ATTEMPTS;
+use bgv_db_constants::{DESCENDING_SCAN_BATCH_ENTRIES, MAX_COMMIT_ATTEMPTS};
 use bgv_db_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, PostingKey, RecordKey,
     RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, StoreKey, StoreValue,
@@ -55,6 +55,13 @@ fn after(mut bytes: Vec<u8>) -> Vec<u8> {
     }
     bytes
 }
+
+/// A record as an index read hands it back: its identity, and its stored bytes.
+///
+/// Named because [`Transaction::records_in_descending_order`] answers with an
+/// *optional* list of them, and a nested triple of generics is a signature
+/// nobody reads twice.
+pub type StoredRecord = (RecordId, Vec<u8>);
 
 /// Where a record lives: its table, and its identity within it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -368,6 +375,122 @@ impl<'a> Transaction<'a> {
             }
         }
         Ok(found.into_iter().collect())
+    }
+
+    /// The records an index holds, **greatest value first**, stopping once the
+    /// bound is filled and its tie group closed.
+    ///
+    /// `None` when the index runs out before `wanted` records were found. That
+    /// is not an error and not an empty answer: the records an index does not
+    /// hold — the ones whose indexed value is absent — sort *below* every value
+    /// it does hold, so an answer the index cannot fill needs them, and finding
+    /// them is the scan. The caller falls back to it.
+    ///
+    /// # Why the tie group is drained
+    ///
+    /// The order a read answers in is the value system's order with ties broken
+    /// by the record's identity **ascending**, and an entry's key is its value
+    /// followed by that identity — so walking backwards yields a tie group with
+    /// its identities *descending*. Cutting the walk at the bound would therefore
+    /// take the wrong members of the group straddling it: ten records sharing one
+    /// value under `LIMIT 10` would answer with the ten largest identities where
+    /// the order asks for the ten smallest.
+    ///
+    /// So the walk continues past the bound until an entry carries a different
+    /// value, and the caller sorts and cuts what comes back. Two properties make
+    /// the comparison exact rather than approximate: the encoding is
+    /// order-preserving, and it **normalises** — `1` and `1.0` encode
+    /// identically, which is the same pair the value system's order calls equal.
+    /// A tie group in bytes is a tie group in the order.
+    ///
+    /// The walk is unbounded only when the ordering is: a table whose every
+    /// record carries one value costs the whole index, which is what ordering by
+    /// a constant is.
+    ///
+    /// # Entries are taken at face value here, and that is a precondition
+    ///
+    /// Every other index read in this type treats an entry as a candidate and
+    /// confirms it against the record, because entries hold the current state and
+    /// carry no version. This one does not, because it has no condition to
+    /// confirm against — the entry's *position* is the answer. Its caller
+    /// therefore serves an ordering only from the committed tail, where every
+    /// entry does reflect the record it points at.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a key cannot be decoded.
+    pub fn records_in_descending_order(
+        &self,
+        index: &IndexDefinition,
+        wanted: usize,
+    ) -> Result<Option<Vec<StoredRecord>>> {
+        if wanted == 0 {
+            return Ok(Some(Vec::new()));
+        }
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let kind = if index.unique {
+            KeyKind::UniqueIndex
+        } else {
+            KeyKind::SecondaryIndex
+        };
+        let prefix = address.prefix(kind);
+        let lower = Key::from(prefix.clone());
+        let mut upper = Key::from(after(prefix));
+        let mut found: Vec<StoredRecord> = Vec::new();
+        // The value of the `wanted`-th record, once there is one. From then on
+        // the walk is draining a tie group rather than filling a bound.
+        let mut boundary: Option<IndexValues> = None;
+        loop {
+            let request = ScanRequest {
+                keyspace: kind.keyspace(),
+                range: KeyRange::between(lower.clone(), upper.clone()),
+                direction: ScanDirection::Reverse,
+                limit: Some(DESCENDING_SCAN_BATCH_ENTRIES),
+            };
+            let batch = self.store.backend().scan(&request)?;
+            let last = batch.last().map(|(key, _)| key.clone());
+            for (key, value) in &batch {
+                let (values, id) = if index.unique {
+                    (
+                        UniqueIndexKey::decode(key.as_slice())?.values,
+                        IndexTarget::decode(value.as_slice())?.id,
+                    )
+                } else {
+                    let entry = SecondaryIndexKey::decode(key.as_slice())?;
+                    (entry.values, entry.id)
+                };
+                if boundary.as_ref().is_some_and(|edge| *edge != values) {
+                    return Ok(Some(found));
+                }
+                let at = RecordAddress::new(index.namespace, index.database, index.table, id);
+                if let Some(payload) = self.get(&at)? {
+                    found.push((at.id, payload));
+                    if found.len() >= wanted && boundary.is_none() {
+                        boundary = Some(values);
+                    }
+                }
+            }
+            // A short batch is the end of the index: the walk has seen every
+            // entry, and whether that filled the bound is the whole answer.
+            let Some(last) = last.filter(|_| batch.len() >= DESCENDING_SCAN_BATCH_ENTRIES) else {
+                return Ok((found.len() >= wanted).then_some(found));
+            };
+            // The upper end is exclusive, so the next batch continues strictly
+            // below the last entry this one read.
+            upper = last;
+        }
+    }
+
+    /// Whether this transaction has written to one table without committing.
+    ///
+    /// Asked by a read that would otherwise be served from an index: an
+    /// uncommitted record has no entry, because entries are derived at commit,
+    /// so an ordering served from the index would place it nowhere.
+    #[must_use]
+    pub fn writes_in(&self, namespace: NamespaceId, database: DatabaseId, table: TableId) -> bool {
+        self.writes.keys().any(|address| {
+            address.namespace == namespace && address.database == database && address.table == table
+        })
     }
 
     /// The records a vector index says are nearest, nearest first.

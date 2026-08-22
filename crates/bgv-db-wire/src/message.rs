@@ -343,14 +343,19 @@ const fn path_tag(path: AccessPath) -> u8 {
         AccessPath::Record => 0,
         AccessPath::Index => 1,
         AccessPath::Scan => 2,
+        AccessPath::Ordered => 3,
     }
 }
 
 /// And back, as the name the store uses.
+///
+/// An unknown tag reads as the scan, which is the honest answer to a path this
+/// build has no name for: it is the one path that promises nothing.
 const fn path_name(tag: u8) -> &'static str {
     match tag {
         0 => "record",
         1 => "index",
+        3 => "ordered",
         _ => "scan",
     }
 }

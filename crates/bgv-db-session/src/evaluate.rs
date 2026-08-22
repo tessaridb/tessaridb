@@ -514,6 +514,15 @@ impl Session<'_> {
                 {
                     return Ok((found, AccessPath::Index, searched));
                 }
+                // The other shape an index serves without a condition: an order
+                // it is already stored in, and a bound to stop at. Exact — the
+                // records come back for `sorted` and `bounded` to shape, the
+                // same two functions every other answer goes through.
+                if let Some(bound) = plan::descending(select)
+                    && let Some(found) = self.descend(transaction, context, id, &bound)?
+                {
+                    return Ok((found, AccessPath::Ordered, searched));
+                }
                 let found = transaction.scan_table(context.namespace, context.database, id)?;
                 let visible = self.visible_in(transaction, id)?;
                 Ok((
@@ -776,6 +785,97 @@ impl Session<'_> {
             }
         }
         Ok(Some(rows))
+    }
+
+    /// A bounded descending read, taken from an index that is already in that
+    /// order.
+    ///
+    /// `None` is the scan, and every `None` below is a way the store — rather
+    /// than the statement, which [`plan::descending`] has already judged — makes
+    /// the order the index holds differ from the order the read must answer in:
+    ///
+    /// - **no ordered index on that field.** A search index holds terms and a
+    ///   vector index holds a graph; neither is stored in this order.
+    ///   `index_on_path` also settles the field count: it matches an index whose
+    ///   field list *is* this one path, so a composite index is never taken. Its
+    ///   entries for one leading value are ordered by the *next* field, and the
+    ///   tie group at the bound is a group of leading values — which cannot be
+    ///   read off a key, because [`bgv_db_encoding::IndexValues`] is opaque by
+    ///   design.
+    /// - **the field is not visible to this caller.** A field permission removes
+    ///   the field *before* anything looks at the record, so today a caller
+    ///   without it sorts by `none` and gets identity order. An ordering taken
+    ///   from the index would sort by the values themselves — the order
+    ///   disclosing what the projection hides, one comparison at a time.
+    /// - **this transaction has written to the table.** Entries are derived at
+    ///   commit, so an uncommitted record has none and the index cannot place it.
+    /// - **the snapshot is not the committed tail.** Entries hold the current
+    ///   state and carry no version, so a record changed since the snapshot sits
+    ///   in the index under a value this reader cannot see — and the answer that
+    ///   comes back is not short, it is in the **wrong order**, with the record
+    ///   placed where its newer value belongs. A condition served by an index
+    ///   survives that because its candidates are re-tested against the record;
+    ///   an ordering has nothing to re-test, since the entry's position is the
+    ///   answer. The storage suite demonstrates it rather than this sentence
+    ///   asserting it.
+    ///
+    /// The last `None` is the index running out before the bound was filled,
+    /// which is the answer needing records the index does not hold.
+    fn descend(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: crate::context::Context,
+        table: TableId,
+        wanted: &plan::Bounded<'_>,
+    ) -> Result<Option<Vec<(RecordId, Value)>>> {
+        let Some((index, visible)) =
+            self.index_serving_order(transaction, context, table, wanted.path)?
+        else {
+            return Ok(None);
+        };
+        let Some(found) = transaction.records_in_descending_order(&index, wanted.wanted)? else {
+            return Ok(None);
+        };
+        self.records_of(found, &visible).map(Some)
+    }
+
+    /// The index that may serve this order, if one may — and what the caller may
+    /// see of the table, which deciding that had to read anyway.
+    ///
+    /// Everything above [`Self::descend`]'s list except the bound filling, which
+    /// only the read itself can know. It is one function because `EXPLAIN` asks
+    /// the same question and a second implementation would answer it correctly
+    /// until the day one of them changed.
+    ///
+    /// The visible set travels back rather than being read again: it is a
+    /// catalog read per statement, and the read that follows needs the same one.
+    pub(crate) fn index_serving_order(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: crate::context::Context,
+        table: TableId,
+        path: &bgv_db_types::Path,
+    ) -> Result<Option<(bgv_db_storage::IndexDefinition, crate::redact::Visible)>> {
+        let Some(index) = self.index_on_path(transaction, table, path)? else {
+            return Ok(None);
+        };
+        if index.search || index.vector.is_some() {
+            return Ok(None);
+        }
+        let visible = self.visible_in(transaction, table)?;
+        if visible
+            .as_ref()
+            .is_some_and(|fields| !fields.contains(path.root()))
+        {
+            return Ok(None);
+        }
+        if transaction.writes_in(context.namespace, context.database, table) {
+            return Ok(None);
+        }
+        if transaction.snapshot() != self.store.committed_tail()? {
+            return Ok(None);
+        }
+        Ok(Some((index, visible)))
     }
 
     /// Run the candidate the plan chose.

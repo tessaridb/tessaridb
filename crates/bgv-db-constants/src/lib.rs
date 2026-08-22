@@ -38,6 +38,23 @@ pub const MAX_COMMIT_ATTEMPTS: u32 = 8;
 /// real backlog.
 pub const SKIP_BATCH_RECORDS: usize = 256;
 
+/// How many index entries a bounded descending read fetches at a time.
+///
+/// Unit: index entries.
+///
+/// A read serving `ORDER BY … DESC LIMIT n` cannot ask for exactly `n` entries:
+/// an entry may point at a record the reader cannot see, and the tie group at
+/// the bound has to be drained past it, so the number of entries a bound needs
+/// is not known before they are read. It fetches in batches instead and stops at
+/// the first entry that closes the group.
+///
+/// One hundred and twenty-eight is a starting value: enough that the ordinary
+/// case — a bound in the tens, no ties, every entry resolving — finishes in one
+/// round trip, and small enough that a degenerate ordering (every record sharing
+/// one value) walks the index in bounded steps rather than materialising it.
+/// Provisional until measured against a real index.
+pub const DESCENDING_SCAN_BATCH_ENTRIES: usize = 128;
+
 /// How quickly repeating a term stops improving a BM25 score.
 ///
 /// Unit: dimensionless.

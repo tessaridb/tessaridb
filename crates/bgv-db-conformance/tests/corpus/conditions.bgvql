@@ -110,6 +110,20 @@ SELECT * FROM people ORDER BY name START 99;
 SELECT * FROM people LIMIT 1;
 --- expect: rows 1
 
+--- case: a bounded descending order is taken from an index that holds it
+# Three of the five carry an age, so the index holds three entries. The order
+# itself is asserted in the session suite, which can see it; what this pins is
+# that the statement answers the same count either way.
+DEFINE INDEX by_age ON people FIELDS age;
+SELECT * FROM people ORDER BY age DESC LIMIT 2;
+--- expect: rows 2
+
+--- case: and a bound the index cannot fill is still answered, by the scan
+# `people:5` has no age at all, so it has no entry — and descending it belongs
+# after every record that does.
+SELECT * FROM people ORDER BY age DESC LIMIT 5;
+--- expect: rows 5
+
 --- case: the words that shape a read are not reserved names
 DEFINE TABLE order;
 CREATE order:1 = { limit: 10, by: 'ada', start: 1 };

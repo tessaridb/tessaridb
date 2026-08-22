@@ -50,6 +50,15 @@ pub enum AccessPath {
     Record,
     /// Through an index.
     Index,
+    /// Through an index read in the order the statement asked for, stopping at
+    /// its bound.
+    ///
+    /// Its own path rather than [`Self::Index`]: this one is chosen by the
+    /// `ORDER BY` and the `LIMIT` rather than by a condition, and it is the only
+    /// one that falls back — an index that cannot fill the bound leaves the
+    /// answer needing records it does not hold, and reports the scan that then
+    /// ran.
+    Ordered,
     /// Every record of the table was read and tested.
     ///
     /// Correct, and linear in the size of the table. A text search reports this
@@ -65,6 +74,7 @@ impl AccessPath {
         match self {
             Self::Record => "record",
             Self::Index => "index",
+            Self::Ordered => "ordered",
             Self::Scan => "scan",
         }
     }

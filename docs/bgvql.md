@@ -855,6 +855,7 @@ more than one could, is the planner's decision and is described below.
 | `FROM users:1->follows` | the index, on the edge table's `out` |
 | `FROM users:1->follows->users` | the same index, then each far endpoint by its identity |
 | `FROM users:2<-follows<-users` | the index, on the edge table's `in` |
+| `FROM users ORDER BY <indexed path> DESC LIMIT <n>` | the index, walked backwards to the bound (§5) |
 | `FROM users` | every record of the table |
 
 ### Asking for an approximate ordering
@@ -1279,9 +1280,27 @@ reach", which is a different answer on another node. A `START` past the end
 answers with nothing rather than failing: asking for page nine of an eight-page
 result is a state, not a mistake.
 
-Ordering does not become an index read. An ordered index could serve
-`ORDER BY email LIMIT 10` without sorting anything, and that is not built — the
-same deferral `<` and `>` already carry. The path reported is the one that ran.
+**A bounded descending order is taken from an index that is already in it.**
+`SELECT * FROM users ORDER BY joined DESC LIMIT 10`, with an index on `joined`,
+walks that index backwards and stops — no scan, no sort. The index and the sort
+use one order, so there is nothing to compute; the plan reports `ordered` and
+names the index (§7b).
+
+It is **descending** because of the absences. A record with no `joined` has no
+entry in an index on `joined`, and the sort still places it — below every value.
+Descending, those come last, so a bound reaches them only once the index has run
+out; ascending, they come *first*, which makes the records an ascending bounded
+read answers with exactly the ones the index does not hold. That is not a
+missing optimisation but a read the index cannot serve, and §8 says what would
+open the door.
+
+Everything else is the scan, and answers identically: an ascending order, a
+second sort key, a computed key, no `LIMIT`, a `GROUP BY`, a projection (the sort
+runs after it and may name what it produced), a `FETCH`, a composite index, and a
+field the caller's grant does not include — an order taken from an index would
+sort by values a field permission has already removed from the record. An index
+that cannot fill the bound hands the read back to the scan, and **the path
+reported is always the one that ran**.
 
 `ORDER`, `BY`, `ASC`, `DESC`, `LIMIT` and `START` are **not reserved words**.
 They shape a clause where nothing else can stand, so nothing is ambiguous, and
@@ -1752,10 +1771,16 @@ answers with the plan the read would take, without taking it:
 {"access": "index", "index": "by_email", "shape": "equality", "at_most": 1, "table": "users"}
 ```
 
-`access` is one of `record`, `index`, `scan`, `approximate`, `graph` or `join`.
-An index-served read also names the index and the **shape** that served it —
-`equality`, `prefix`, `range` or `terms` — and carries `at_most` when a ceiling
-was free to learn, which today means an equality on a `UNIQUE` index.
+`access` is one of `record`, `index`, `ordered`, `scan`, `approximate`, `graph`
+or `join`. An index-served read also names the index and the **shape** that
+served it — `equality`, `prefix`, `range` or `terms` — and carries `at_most` when
+a ceiling was free to learn, which today means an equality on a `UNIQUE` index.
+
+`ordered` is a bounded descending read taken from an index already in that order
+(§5), and it names the index. It is the one plan with a condition it cannot
+check: whether the index holds enough records to fill the bound is the read
+itself, and an index that runs out hands the read to the scan — which is then
+what the read reports.
 
 **A number this store cannot know is a number it will not print.** There is no
 estimated row count and no cost, because producing one needs statistics about
@@ -1802,7 +1827,14 @@ named the constraint correctly and the fix wrongly — "a guard the store calls 
 the session implements" cannot work, because a replica applying a log record has
 no session. What was actually needed was already in the tree: the comparison
 module was **already pure**, and only lived above the store by accident of where
-it was first wanted.
+it was first wanted. A ninth left with this wave: **a descending bounded
+scan**, disproved by `SELECT * FROM users ORDER BY joined DESC LIMIT 10` (§5).
+Its row read "a saving that needs the `LIMIT` pushed into it", which was true and
+was the smallest part: what the walk actually needed was a rule for the tie group
+straddling the bound, since a key is stored as its value followed by the record's
+identity and the answer breaks ties by identity *ascending*. It left two rows
+behind it — the ascending case and the composite one — each of which is a
+property of the key order rather than work left undone.
 
 | Absent | Why |
 |---|---|
@@ -1811,6 +1843,9 @@ it was first wanted.
 | a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the wall a **whole-file** `READ` still meets even now that a ranged one exists, and worth crossing once for both. §7a |
 | a backup of **one namespace** | the file is the log, and the log is the store; selecting part of it means replaying with a filter, which is a different reader and a different restore story. §7a |
 | a **full-tuple seek** on a composite index | `last = 'x' AND first = 'y'` is served through the leading field and the whole condition then decides, which is correct and costs more than it needs to. Using both columns as one lookup means gathering the servable conjuncts *by index* rather than per clause, which is a restructuring of the planner rather than an addition — and without it a `UNIQUE` composite can never promise a ceiling of one. §4 |
+| an **ascending** bounded read served by an index | the records with no value for the key sort **first**, and those are exactly the ones an index does not hold — so an ascending bound asks the index for the records it is missing. The door is a `REQUIRED` field, where there are no absences and the index holds every record; that is a schema fact the planner could read, and a read whose correctness depends on a declaration is worth building deliberately. §5 |
+| an order served from a **composite** index | its entries for one leading value are ordered by the *next* field, so the tie group at the bound is a group of leading values — and a leading value cannot be read back out of a key, because the index encoding normalises (`1` and `1.0` are the same bytes) and is deliberately not reversible. §5 |
+| an order served **under a `WHERE`** | the condition and the order would have to be served by one index, which is the same gathering-by-index restructuring the full-tuple seek needs. Today a filtered read narrows by the condition and sorts what it found, which is correct and costs a sort. §5 |
 | an index on a **later** field of a composite index, or a range on the second under an equality on the first | each is a different traversal of the same key order, and each is worth building when a read wants it rather than in anticipation. §4 |
 | an **estimated row count** or a cost in a plan | it needs statistics about value distribution — how many records hold `city = 'london'` against `city = 'tromsø'` — which is maintained state whose staleness silently changes plans. A much larger decision than a selection rule, and one that wants a benchmark harness to justify it rather than an intuition. §7b |
 | a digest on a file's metadata | worth having, and it is a *verification* feature: it belongs with the backup verifier rather than half here and half there |
@@ -1856,7 +1891,6 @@ it was first wanted.
 | a default on a whole table | a different feature wearing a similar word |
 | `||` as a second spelling for concatenation | `string::concat` says it, and a second spelling for one thing is a decision to take once rather than by accident |
 | a range over the first column of a **composite** index | an index whose field list is one path serves a range today; a prefix of a multi-column one needs its own bound construction and its own equivalence test |
-| a descending bounded scan | `ORDER BY` sorts what the range produced; making the scan itself run backwards is a saving that needs the `LIMIT` pushed into it |
 | `BETWEEN` | `a >= x AND a <= y` says it, and one spelling for one thing |
 | three-valued logic | §5 — comparison answers true or false, and `= NONE` / `= NULL` say what `IS NULL` would |
 | row-level security — a grant that names *which records* rather than which table and fields | a table grant refuses and a field grant edits; a row grant would have to *filter*, which means every read carries a predicate the caller did not write and every count answers about a set they cannot see. That is a different feature from either, and the one where getting it subtly wrong leaks by arithmetic |
@@ -1889,6 +1923,11 @@ it was first wanted.
 | Sum over nothing is `0`; mean over nothing is `NONE` | **contract** |
 | A sort is the value system's order, with `NONE` below `NULL` below every value | **contract** — a sort must place every row, where a comparison may decline to |
 | Ties are broken by record identity | **contract** — what keeps an added index from reordering equal rows |
+| A bounded **descending** order is taken from the index that holds it | **contract** — the sort order and the index order are one order, so the walk is the answer rather than a computation of it |
+| An order taken from an index drains the tie group straddling the bound | **contract** — a key is its value followed by the record's identity, so the walk yields ties descending while the answer wants them ascending; cutting at the bound would take the wrong members of the group |
+| An index that cannot fill the bound hands the read back to the scan | **contract** — the records below its last entry are the ones it does not hold, and the path reported is the one that ran |
+| An order is served only from the committed tail | **contract** — an entry carries no version, so at an older snapshot a changed record sits under a value the reader cannot see, and the answer comes back in the wrong order rather than short |
+| An order is not served over a field the caller's grant excludes | **contract** — a field permission removes the field before anything reads it, and an order taken from the index would sort by what the projection hides |
 | `START` and `LIMIT` apply after ordering, always | **contract** |
 | `ORDER`, `BY`, `ASC`, `DESC`, `LIMIT`, `START` are contextual, not reserved | **contract** — reserving a word takes a name away from data that exists |
 | The analyzer belongs to the field, not to the index | **contract** — an analyzer on an index lets adding one change an answer |

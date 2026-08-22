@@ -53,7 +53,7 @@
 use core::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use bgv_db_ql::{BinaryOp, Expr, ExprKind, Function, Projected, Select, Source};
+use bgv_db_ql::{BinaryOp, Expr, ExprKind, Function, Projected, Projection, Select, Source};
 use bgv_db_storage::{Catalog, IndexDefinition, Transaction, VectorDistance};
 use bgv_db_types::{Path, Value};
 
@@ -641,6 +641,80 @@ pub(crate) fn nearest(select: &Select) -> Option<Nearest<'_>> {
     })
 }
 
+/// A bounded descending read an ordered index could serve.
+///
+/// # An index is already in the order a sort wants
+///
+/// The index and the sort use one order — the value system's — so an ordered
+/// index read backwards produces its records in the order the statement asked
+/// for, and a `LIMIT` stops it. Nothing here is a new order; what is new is
+/// reading the one that was already stored instead of throwing it away.
+///
+/// # Why descending, and why that is a rule rather than a stage of work
+///
+/// A sort places **every** record, including those whose key is absent, and the
+/// value system puts `none` below every value — but a record with no value has
+/// **no index entry** (`index::project` yields nothing for it). Descending, the
+/// absences come last, so a bounded read never reaches them while the index
+/// fills the bound. Ascending, they come *first*: the records an ascending
+/// bounded read answers with are exactly the ones the index does not hold. That
+/// is not an optimisation left undone, it is a read the index cannot serve — and
+/// the door it leaves open is a `REQUIRED` field, where there are no absences.
+///
+/// # Every condition below is a way the answer could change
+///
+/// Each is a scan rather than a guess, and each is refused here — where the
+/// judgement is a pure function of the statement and can be tested without a
+/// store:
+///
+/// - more than one sort key, or an ascending one;
+/// - a key that is not a plain route into the record — a computed key is not
+///   what any index holds, and a `[*]` route denotes several values, which is
+///   several entries per record;
+/// - no `LIMIT`, so the read wants every record and there is nothing to stop;
+/// - `GROUP BY`, which folds the records the order would have chosen between;
+/// - a projection, because the sort runs *after* it and may name what the
+///   projection produced rather than what the index holds;
+/// - a `FETCH`, which replaces a reference with the record it names before the
+///   sort sees it — so the key the index holds is not the key that would sort;
+/// - `APPROXIMATE`, which is the vector shape and is recognised on its own.
+pub(crate) struct Bounded<'a> {
+    /// The field the order is over.
+    pub(crate) path: &'a Path,
+    /// How many records the bound needs, `START` included.
+    pub(crate) wanted: usize,
+}
+
+/// The bounded descending read this statement is, if it is one.
+pub(crate) fn descending(select: &Select) -> Option<Bounded<'_>> {
+    if select.approximate || !select.group.is_empty() || !select.fetch.is_empty() {
+        return None;
+    }
+    if !matches!(select.projection, Projection::All) {
+        return None;
+    }
+    let [ordering] = select.order.as_slice() else {
+        return None;
+    };
+    if !ordering.descending {
+        return None;
+    }
+    let ExprKind::Path(field) = &ordering.key.kind else {
+        return None;
+    };
+    if field.path.is_several() {
+        return None;
+    }
+    let limit = select.limit?;
+    // A `START` passes over records the read still has to find, so it is added
+    // to the bound rather than making the read unservable.
+    let wanted = limit.saturating_add(select.start.unwrap_or(0));
+    Some(Bounded {
+        path: &field.path,
+        wanted: usize::try_from(wanted).unwrap_or(usize::MAX),
+    })
+}
+
 /// Whether an index's declared distance answers this statement's.
 ///
 /// A graph whose edges were chosen by one measure approximates that measure and
@@ -700,6 +774,20 @@ impl Session<'_> {
                     if let Some(name) = named {
                         plan.insert("index".to_owned(), Value::from(name.as_str()));
                     }
+                } else if let Some(bound) = descending(select)
+                    && let Some((index, _)) = {
+                        let (context, id) = self.resolve_table(transaction, table)?;
+                        self.index_serving_order(transaction, context, id, bound.path)?
+                    }
+                {
+                    // Every condition but one, and the one it cannot ask is
+                    // whether the index will fill the bound — which is the read
+                    // itself. So this reports the plan the read *takes*, and a
+                    // read whose index runs out first answers `scan`, because
+                    // the records below the last entry are the ones the index
+                    // does not hold.
+                    plan.insert("access".to_owned(), Value::from("ordered"));
+                    plan.insert("index".to_owned(), Value::from(index.name.as_str()));
                 } else {
                     plan.insert("access".to_owned(), Value::from("scan"));
                 }
