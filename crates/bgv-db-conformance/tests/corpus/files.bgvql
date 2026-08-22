@@ -87,6 +87,10 @@ RELATE users:1->attached->media:'/logo.png';
 SELECT * FROM users:1->attached->media;
 --- expect: rows 1
 
+--- case: and backwards from the file, which is the half a record would also have
+SELECT * FROM media:'/logo.png'<-attached<-users;
+--- expect: rows 1
+
 --- case: writing over a file replaces it rather than adding to it
 PUT media:'/notes.txt' = 'shorter';
 READ media:'/notes.txt';

@@ -274,3 +274,90 @@ fn the_whole_record_form_still_replaces_the_record() {
         "the replace did not replace: {after}"
     );
 }
+
+// ------------------------------------------------- the reason `SET` exists
+
+/// How many times the concurrency invariant is re-run.
+///
+/// The same constant `bgv-db-storage`'s isolation suite uses, for the same
+/// reason: a scheduling-dependent assertion that went green once has proved
+/// nothing about the schedules it did not happen to take.
+const CONCURRENCY_RUNS: u32 = 25;
+/// Sessions competing for one field in each run.
+const WRITERS: u32 = 8;
+
+/// Eight sessions increment one field, and all eight land.
+///
+/// # This is the property a client cannot build for itself
+///
+/// The convenience half of `SET` — not rewriting the fields you did not mean to
+/// change — is what it looks like it is for. The correctness half is this:
+/// `visits = visits + 1` **reads and writes inside one transaction**, so the
+/// read cannot go stale between the two. A client doing the same job reads in
+/// one call and writes in another, and every interleaving in between is an
+/// update it silently overwrote.
+///
+/// Asserted **against the count**, not against "it did not error". A lost update
+/// raises nothing anywhere — that is the entire difficulty of it — so the only
+/// witness is arithmetic: eight increments from zero is eight, and any smaller
+/// number names exactly how many were lost.
+///
+/// A conflict is retried rather than tolerated. A conflict means this session's
+/// snapshot was stale, and retrying on a fresh one is the correct response;
+/// counting a conflict as a landed write would make the assertion vacuous.
+#[test]
+fn concurrent_sessions_incrementing_one_field_all_land() {
+    use std::thread;
+
+    for run in 0..CONCURRENCY_RUNS {
+        let store = store();
+        {
+            let mut session = ready(&store);
+            session.run("UPDATE users:1 SET visits = 0;").unwrap();
+        }
+
+        thread::scope(|scope| {
+            for _ in 0..WRITERS {
+                let store = store.clone();
+                scope.spawn(move || {
+                    let mut session = Session::new(&store);
+                    session
+                        .run("USE NAMESPACE prod; USE DATABASE shop;")
+                        .unwrap();
+                    loop {
+                        match session.run("UPDATE users:1 SET visits = visits + 1;") {
+                            Ok(_) => break,
+                            Err(error) if retryable(&error) => (),
+                            Err(other) => panic!("run {run}: unexpected error: {other}"),
+                        }
+                    }
+                });
+            }
+        });
+
+        let mut session = Session::new(&store);
+        session
+            .run("USE NAMESPACE prod; USE DATABASE shop;")
+            .unwrap();
+        let landed = field(&mut session, "SELECT * FROM users:1;", "visits");
+        assert_eq!(
+            landed,
+            format!("Number(Integer({WRITERS}))"),
+            "run {run}: an update was lost"
+        );
+    }
+}
+
+/// Whether a failed write is one this session should simply take again.
+///
+/// A conflict says the snapshot read was overtaken; contention says the commit
+/// could not get through. Both are answered by trying again on a fresh
+/// snapshot, and nothing else here is.
+fn retryable(error: &bgv_db_session::Error) -> bool {
+    matches!(
+        error,
+        bgv_db_session::Error::Store(
+            bgv_db_storage::Error::Conflict { .. } | bgv_db_storage::Error::CommitContention { .. }
+        )
+    )
+}
