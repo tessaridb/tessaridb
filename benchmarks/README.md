@@ -81,6 +81,44 @@ records; `filter-index` doubles on disk because the cost is reads. The index
 still wins by 10× on disk, but the *shape* of the win differs by backend, which a
 single-backend harness would have hidden.
 
+## What the `range` workload was built to settle, and what it found instead
+
+Recorded 2026-08-22 on the same machine. The workload reads one indexed range at
+four widths — 100, 5 000, 25 000 and 50 000 of 50 000 records — and reports the
+process's resident set at each, because the question was whether resolving a
+range's entries in bounded fetches is worth doing.
+
+**It is worth doing, and it is not where the memory is.** Three runs each, memory
+backend, peak growth over the widest read:
+
+| the entries fetched | peak growth, three runs | p50 |
+|---|---|---|
+| all at once | 75904 / 74896 / 74320 KiB | 42.4–44.1 ms |
+| in batches of 1024 | 71792 / 72624 / 71728 KiB | 42.6–44.8 ms |
+
+About three megabytes, four per cent, at no cost in time. The bands do not
+overlap, which is the only reason the difference is reportable at all: a single
+run of each would have been inside the spread.
+
+**The batch size is not the lever.** 128 and 1024 differ by less than the
+run-to-run spread. What the constant buys is that the entries held at once stop
+being proportional to the width of the range — a few per cent at fifty thousand
+entries, an order of magnitude at five million. A bound is not a percentage.
+
+**The other ninety-six per cent is the answer itself**, and the workload is what
+made it visible: reading fifty thousand records costs about **1.4 KiB of resident
+memory per record answered**, for records whose stored form is a couple of
+hundred bytes. Every record between the bounds is resolved and held before the
+caller sees the first one, and no change inside the storage layer can alter that
+— the condition that asked is re-tested above it, so a limit cannot be pushed
+down without the planner and the executor consuming the answer as it arrives.
+Recorded as an absence in `docs/bgvql.md` §8 with these numbers behind it.
+
+**The `served by` row exists because the phase can silently stop measuring what
+it claims.** If a planner change stopped serving the range from the index, the
+timings would read as a regression in the range read rather than as the loss of
+one. The row names the access path and the record count on every run.
+
 ## What is deliberately not measured here
 
 - **Concurrency.** The store is single-writer (ADR-0007), so a concurrent write

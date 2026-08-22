@@ -27,7 +27,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
-use bgv_db_constants::{DESCENDING_SCAN_BATCH_ENTRIES, MAX_COMMIT_ATTEMPTS};
+use bgv_db_constants::{
+    DESCENDING_SCAN_BATCH_ENTRIES, MAX_COMMIT_ATTEMPTS, RANGE_SCAN_BATCH_ENTRIES,
+};
 use bgv_db_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, PostingKey, RecordKey,
     RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, StoreKey, StoreValue,
@@ -53,6 +55,24 @@ fn after(mut bytes: Vec<u8>) -> Vec<u8> {
             return bytes;
         }
     }
+    bytes
+}
+
+/// The smallest key strictly greater than this one.
+///
+/// Appending a zero byte, which is the immediate successor in byte order: a key
+/// above `bytes` either extends it — and the shortest extension is this one — or
+/// differs from it earlier, and is then above every extension of it. So a scan
+/// resuming here sees every remaining key and re-reads none.
+///
+/// Deliberately **not** [`after`], which is the successor of the whole *prefix*
+/// and skips every key carrying `bytes` as a byte prefix. Today no index key
+/// carries another as a prefix, because every variable-width component of one is
+/// terminated when it is encoded — so `after` would work here. That property
+/// lives in the encoder, a crate away from this loop, and a walk that silently
+/// returns fewer records if it ever changes is not worth the byte it saves.
+fn resuming_after(mut bytes: Vec<u8>) -> Vec<u8> {
+    bytes.push(0);
     bytes
 }
 
@@ -302,6 +322,20 @@ impl<'a> Transaction<'a> {
     /// An absent bound is unbounded on that side, so one comparison serves as
     /// well as two.
     ///
+    /// # The entries are fetched in batches; the records are not
+    ///
+    /// A range has no early stop — every entry between the bounds belongs to the
+    /// answer — so batching buys no skipped work. What it buys is that the
+    /// entries held at once stop being proportional to the width of the range,
+    /// which is a bound rather than a saving: measured over fifty thousand
+    /// entries it is about four per cent of the read's peak, and at five million
+    /// it is the difference between tens of kilobytes and hundreds of megabytes.
+    ///
+    /// The **records** are still all held: they are the answer, and the caller
+    /// re-tests the condition that asked against every one of them, so bounding
+    /// them is a change to the shape of an answer rather than to this read.
+    /// `docs/bgvql.md` §8 records that with the numbers.
+    ///
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
@@ -338,23 +372,34 @@ impl<'a> Transaction<'a> {
             None => after(prefix.clone()),
         };
 
-        let request = ScanRequest {
-            keyspace: kind.keyspace(),
-            range: KeyRange::between(Key::from(start), Key::from(end)),
-            direction: ScanDirection::Forward,
-            limit: None,
-        };
         let mut found: BTreeMap<RecordId, Vec<u8>> = BTreeMap::new();
-        for (key, value) in self.store.backend().scan(&request)? {
-            let id = if index.unique {
-                IndexTarget::decode(value.as_slice())?.id
-            } else {
-                SecondaryIndexKey::decode(key.as_slice())?.id
+        let mut from = start;
+        loop {
+            let request = ScanRequest {
+                keyspace: kind.keyspace(),
+                range: KeyRange::between(Key::from(from), Key::from(end.clone())),
+                direction: ScanDirection::Forward,
+                limit: Some(RANGE_SCAN_BATCH_ENTRIES),
             };
-            let record = RecordAddress::new(index.namespace, index.database, index.table, id);
-            if let Some(payload) = self.get(&record)? {
-                found.insert(record.id, payload);
+            let batch = self.store.backend().scan(&request)?;
+            let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
+            for (key, value) in &batch {
+                let id = if index.unique {
+                    IndexTarget::decode(value.as_slice())?.id
+                } else {
+                    SecondaryIndexKey::decode(key.as_slice())?.id
+                };
+                let record = RecordAddress::new(index.namespace, index.database, index.table, id);
+                if let Some(payload) = self.get(&record)? {
+                    found.insert(record.id, payload);
+                }
             }
+            // A short batch is the end of the range; a full one may or may not
+            // be, so the walk continues and finds out.
+            let Some(last) = last.filter(|_| batch.len() >= RANGE_SCAN_BATCH_ENTRIES) else {
+                break;
+            };
+            from = resuming_after(last);
         }
         // A record this transaction wrote but has not committed has no index
         // entry yet, so it is folded in the way every other index read folds it.

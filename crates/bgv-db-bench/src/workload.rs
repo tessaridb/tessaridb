@@ -83,6 +83,11 @@ pub const ALL: &[Workload] = &[
         run: filter,
     },
     Workload {
+        name: "range",
+        about: "an index range at four widths, with what the process holds at each",
+        run: crate::ranges::range,
+    },
+    Workload {
         name: "search",
         about: "a term search over a full-text index, against the scan of the same condition",
         run: search,
@@ -408,7 +413,7 @@ fn capacity(db: &Db) -> Failable<Vec<Report>> {
 /// `ps` is on every platform this runs on, the harness is not a production path,
 /// and a dependency taken to read one number would be in the tree for ever. A
 /// platform where it does not answer reports nothing rather than a guess.
-fn resident_bytes() -> Option<u64> {
+pub(crate) fn resident_bytes() -> Option<u64> {
     let held = std::process::Command::new("ps")
         .args(["-o", "rss=", "-p"])
         .arg(std::process::id().to_string())

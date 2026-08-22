@@ -33,6 +33,7 @@
 //! the debug build, and reporting those numbers as the store's would be a lie
 //! that looks like data.
 
+mod ranges;
 mod samples;
 mod workload;
 

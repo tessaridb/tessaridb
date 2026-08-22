@@ -55,6 +55,31 @@ pub const SKIP_BATCH_RECORDS: usize = 256;
 /// Provisional until measured against a real index.
 pub const DESCENDING_SCAN_BATCH_ENTRIES: usize = 128;
 
+/// How many index entries a range read fetches at a time.
+///
+/// Unit: index entries.
+///
+/// Separate from [`DESCENDING_SCAN_BATCH_ENTRIES`] because the two batches are
+/// answers to different questions. A bounded descending read may stop early, so
+/// its batch is a **guess** at how far it has to walk and a large one is work
+/// thrown away. A range read has no early stop — every entry between the bounds
+/// is part of the answer — so its batch is only a bound on how many entries are
+/// held at once, and fetching more of them per round trip costs nothing but the
+/// buffer.
+///
+/// The value is **measured, and the measurement says the size is not the
+/// lever**. Over a fifty-thousand-entry range on the `range` workload, one
+/// hundred and twenty-eight and one thousand and twenty-four differ by less than
+/// the run-to-run spread, while both sit about three megabytes — four per cent —
+/// below the same read taken in a single fetch, at the same latency. What the
+/// constant buys is therefore the **bound** and not its value: the entries held
+/// at once stop being proportional to the width of the range, which is a few per
+/// cent at fifty thousand entries and an order of magnitude at five million.
+///
+/// A thousand and twenty-four is taken from the indifferent band as the fewer
+/// round trips, and it is a few tens of kilobytes.
+pub const RANGE_SCAN_BATCH_ENTRIES: usize = 1024;
+
 /// How quickly repeating a term stops improving a BM25 score.
 ///
 /// Unit: dimensionless.
