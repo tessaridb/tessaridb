@@ -38,28 +38,31 @@ pub const MAX_COMMIT_ATTEMPTS: u32 = 8;
 /// real backlog.
 pub const SKIP_BATCH_RECORDS: usize = 256;
 
-/// How many index entries a bounded descending read fetches at a time.
+/// How many index entries a bounded ordered read fetches at a time.
 ///
 /// Unit: index entries.
 ///
-/// A read serving `ORDER BY … DESC LIMIT n` cannot ask for exactly `n` entries:
-/// an entry may point at a record the reader cannot see, and the tie group at
-/// the bound has to be drained past it, so the number of entries a bound needs
-/// is not known before they are read. It fetches in batches instead and stops at
-/// the first entry that closes the group.
+/// A read serving `ORDER BY … LIMIT n` from an index cannot ask for exactly `n`
+/// entries: an entry may point at a record the reader cannot see, so the number
+/// of entries a bound needs is not known before they are read. Descending adds a
+/// second reason — the tie group at the bound has to be drained past it, because
+/// walking backwards yields a tie group in the reverse of the order the answer
+/// wants. It fetches in batches instead.
+///
+/// Shared by both directions, which is why it is not named for one of them.
 ///
 /// One hundred and twenty-eight is a starting value: enough that the ordinary
 /// case — a bound in the tens, no ties, every entry resolving — finishes in one
 /// round trip, and small enough that a degenerate ordering (every record sharing
 /// one value) walks the index in bounded steps rather than materialising it.
 /// Provisional until measured against a real index.
-pub const DESCENDING_SCAN_BATCH_ENTRIES: usize = 128;
+pub const ORDERED_SCAN_BATCH_ENTRIES: usize = 128;
 
 /// How many index entries a range read fetches at a time.
 ///
 /// Unit: index entries.
 ///
-/// Separate from [`DESCENDING_SCAN_BATCH_ENTRIES`] because the two batches are
+/// Separate from [`ORDERED_SCAN_BATCH_ENTRIES`] because the two batches are
 /// answers to different questions. A bounded descending read may stop early, so
 /// its batch is a **guess** at how far it has to walk and a large one is work
 /// thrown away. A range read has no early stop — every entry between the bounds

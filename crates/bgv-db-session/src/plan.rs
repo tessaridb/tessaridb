@@ -769,7 +769,7 @@ pub(crate) fn nearest(select: &Select) -> Option<Nearest<'_>> {
     })
 }
 
-/// A bounded descending read an ordered index could serve.
+/// A bounded ordered read an index could serve.
 ///
 /// # An index is already in the order a sort wants
 ///
@@ -778,16 +778,28 @@ pub(crate) fn nearest(select: &Select) -> Option<Nearest<'_>> {
 /// for, and a `LIMIT` stops it. Nothing here is a new order; what is new is
 /// reading the one that was already stored instead of throwing it away.
 ///
-/// # Why descending, and why that is a rule rather than a stage of work
+/// # Why the direction is not a symmetry, and where the door was
 ///
 /// A sort places **every** record, including those whose key is absent, and the
 /// value system puts `none` below every value — but a record with no value has
 /// **no index entry** (`index::project` yields nothing for it). Descending, the
 /// absences come last, so a bounded read never reaches them while the index
 /// fills the bound. Ascending, they come *first*: the records an ascending
-/// bounded read answers with are exactly the ones the index does not hold. That
-/// is not an optimisation left undone, it is a read the index cannot serve — and
-/// the door it leaves open is a `REQUIRED` field, where there are no absences.
+/// bounded read answers with are exactly the ones the index does not hold.
+///
+/// So ascending was refused here until wave 40, when the door this comment
+/// named — *a `REQUIRED` field, where there are no absences* — was measured
+/// rather than assumed and turned out to be real: `DEFINE FIELD … REQUIRED` is
+/// **refused against a table already holding a record without the field**, so
+/// the invariant holds at declaration as well as at every write after it.
+///
+/// The direction therefore **travels on the bound** rather than being decided
+/// here, because whether it is servable is a question about the *schema* and
+/// this function is a pure function of the statement. Every caller must read
+/// [`Bounded::descending`]: `index_serving_order` refuses an ascending bound
+/// over a field that is not `REQUIRED`, and the walk under a `WHERE` refuses an
+/// ascending bound outright, because it retries past its bound and the entries
+/// it would retry over are not the ones an ascending answer needs.
 ///
 /// # Every condition below is a way the answer could change
 ///
@@ -795,7 +807,7 @@ pub(crate) fn nearest(select: &Select) -> Option<Nearest<'_>> {
 /// judgement is a pure function of the statement and can be tested without a
 /// store:
 ///
-/// - more than one sort key, or an ascending one;
+/// - more than one sort key;
 /// - a key that is not a plain route into the record — a computed key is not
 ///   what any index holds, and a `[*]` route denotes several values, which is
 ///   several entries per record;
@@ -811,10 +823,18 @@ pub(crate) struct Bounded<'a> {
     pub(crate) path: &'a Path,
     /// How many records the bound needs, `START` included.
     pub(crate) wanted: usize,
+    /// Which way the order runs.
+    ///
+    /// Carried rather than decided here: whether an **ascending** bound is
+    /// servable depends on the field being `REQUIRED`, which is a fact about the
+    /// schema and not about the statement. A caller that ignores this field
+    /// would hand an ascending bound to a descending walk, so every one reads
+    /// it.
+    pub(crate) descending: bool,
 }
 
-/// The bounded descending read this statement is, if it is one.
-pub(crate) fn descending(select: &Select) -> Option<Bounded<'_>> {
+/// The bounded ordered read this statement is, if it is one.
+pub(crate) fn ordered(select: &Select) -> Option<Bounded<'_>> {
     if select.approximate || !select.group.is_empty() || !select.fetch.is_empty() {
         return None;
     }
@@ -824,9 +844,6 @@ pub(crate) fn descending(select: &Select) -> Option<Bounded<'_>> {
     let [ordering] = select.order.as_slice() else {
         return None;
     };
-    if !ordering.descending {
-        return None;
-    }
     let ExprKind::Path(field) = &ordering.key.kind else {
         return None;
     };
@@ -840,6 +857,7 @@ pub(crate) fn descending(select: &Select) -> Option<Bounded<'_>> {
     Some(Bounded {
         path: &field.path,
         wanted: usize::try_from(wanted).unwrap_or(usize::MAX),
+        descending: ordering.descending,
     })
 }
 
@@ -940,10 +958,16 @@ impl Session<'_> {
                     if let Some(name) = named {
                         plan.insert("index".to_owned(), Value::from(name.as_str()));
                     }
-                } else if let Some(bound) = descending(select)
+                } else if let Some(bound) = ordered(select)
                     && let Some((index, _)) = {
                         let (context, id) = self.resolve_table(transaction, table)?;
-                        self.index_serving_order(transaction, context, id, bound.path)?
+                        self.index_serving_order(
+                            transaction,
+                            context,
+                            id,
+                            bound.path,
+                            bound.descending,
+                        )?
                     }
                 {
                     // Every condition but one, and the one it cannot ask is
@@ -968,9 +992,15 @@ impl Session<'_> {
                 // one a plan can answer: a condition too unselective for the
                 // order sends the read back to the scan, and this reports the
                 // path the planner chose rather than the one it settled for.
-                if let Some(bound) = descending(select)
-                    && let Some((index, _)) =
-                        self.index_serving_order(transaction, context, id, bound.path)?
+                if let Some(bound) = ordered(select)
+                    && bound.descending
+                    && let Some((index, _)) = self.index_serving_order(
+                        transaction,
+                        context,
+                        id,
+                        bound.path,
+                        bound.descending,
+                    )?
                 {
                     plan.insert("access".to_owned(), Value::from("ordered"));
                     plan.insert("index".to_owned(), Value::from(index.name.as_str()));

@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use bgv_db_constants::DESCENDING_SCAN_BATCH_ENTRIES;
+use bgv_db_constants::ORDERED_SCAN_BATCH_ENTRIES;
 use bgv_db_encoding::encode_payload;
 use bgv_db_kv::{
     Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
@@ -201,7 +201,7 @@ const WANTED: usize = 10;
 /// and kept ten.
 ///
 /// The ceiling has two terms and both are earned. One
-/// `DESCENDING_SCAN_BATCH_ENTRIES`: the walk reads in fixed-size batches and
+/// `ORDERED_SCAN_BATCH_ENTRIES`: the walk reads in fixed-size batches and
 /// cannot know it has enough until it has looked, and it drains the tie group
 /// straddling the bound. Plus `WANTED`: each record it keeps is resolved, and a
 /// resolution is a one-row scan, so it contributes a row to this count too.
@@ -224,7 +224,7 @@ fn a_bounded_descending_read_examines_its_bound_and_not_the_table() {
     assert_eq!(found.len(), WANTED);
 
     let examined = fixture.counting.entries();
-    let ceiling = DESCENDING_SCAN_BATCH_ENTRIES + WANTED;
+    let ceiling = ORDERED_SCAN_BATCH_ENTRIES + WANTED;
     assert!(
         examined <= ceiling,
         "examined {examined} entries for a bound of {WANTED} \
@@ -257,7 +257,7 @@ fn doubling_the_bound_does_not_double_the_table_read() {
             .expect("the index holds enough");
         measured.push(fixture.counting.entries());
     }
-    let ceiling = DESCENDING_SCAN_BATCH_ENTRIES + WANTED * 2;
+    let ceiling = ORDERED_SCAN_BATCH_ENTRIES + WANTED * 2;
     assert!(
         measured[1] <= ceiling,
         "a bound of {} examined {} entries (ceiling {ceiling})",

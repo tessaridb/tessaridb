@@ -27,9 +27,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
-use bgv_db_constants::{
-    DESCENDING_SCAN_BATCH_ENTRIES, MAX_COMMIT_ATTEMPTS, RANGE_SCAN_BATCH_ENTRIES,
-};
+use bgv_db_constants::{MAX_COMMIT_ATTEMPTS, ORDERED_SCAN_BATCH_ENTRIES, RANGE_SCAN_BATCH_ENTRIES};
 use bgv_db_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, PostingKey, RecordKey,
     RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, StoreKey, StoreValue,
@@ -665,7 +663,7 @@ impl<'a> Transaction<'a> {
                 keyspace: kind.keyspace(),
                 range: KeyRange::between(lower.clone(), upper.clone()),
                 direction: ScanDirection::Reverse,
-                limit: Some(DESCENDING_SCAN_BATCH_ENTRIES),
+                limit: Some(ORDERED_SCAN_BATCH_ENTRIES),
             };
             let batch = self.store.backend().scan(&request)?;
             let last = batch.last().map(|(key, _)| key.clone());
@@ -734,12 +732,129 @@ impl<'a> Transaction<'a> {
             }
             // A short batch is the end of the index: the walk has seen every
             // entry, and whether that filled the bound is the whole answer.
-            let Some(last) = last.filter(|_| batch.len() >= DESCENDING_SCAN_BATCH_ENTRIES) else {
+            let Some(last) = last.filter(|_| batch.len() >= ORDERED_SCAN_BATCH_ENTRIES) else {
                 return Ok((found.len() >= wanted).then_some(found));
             };
             // The upper end is exclusive, so the next batch continues strictly
             // below the last entry this one read.
             upper = last;
+        }
+    }
+
+    /// The records an index holds, **least value first**, stopping once the
+    /// bound is filled.
+    ///
+    /// # Precondition: every record of the table has an entry
+    ///
+    /// A record whose indexed value is absent has **no index entry**, and the
+    /// value system puts `none` below every value — so ascending, the records an
+    /// index does not hold are exactly the ones that come *first*. This walk
+    /// cannot see them and does not try to. Its caller admits the read only over
+    /// a field the schema declares `REQUIRED`, where there are no absences: the
+    /// declaration is refused against a table already holding a record without
+    /// the field, and every write is checked after it, so the invariant holds in
+    /// both directions in time.
+    ///
+    /// Under that precondition an index that runs out has answered the **whole
+    /// table**, so a short answer is a complete one and this returns it rather
+    /// than `None`. That is the difference from
+    /// [`Transaction::records_in_descending_order`], which must hand a short
+    /// answer back for the scan to finish.
+    ///
+    /// # Why there is no tie group to drain
+    ///
+    /// The order a read answers in is the value system's order with ties broken
+    /// by the record's identity **ascending**, and an entry's key is its value
+    /// followed by that identity. A forward walk therefore yields a tie group
+    /// with its identities ascending — which is already the order the answer
+    /// wants, so the first `wanted` entries are the first `wanted` records.
+    /// Descending has to drain past the bound precisely because walking
+    /// backwards reverses that inner order; ascending does not reverse it, and
+    /// the asymmetry is in the direction rather than in the rule.
+    ///
+    /// # Entries are taken at face value here, and that is a precondition too
+    ///
+    /// As in the descending walk: the entry's *position* is the answer and there
+    /// is no condition to confirm it against, so the caller serves an ordering
+    /// only from the committed tail. A record the reader cannot see is skipped
+    /// rather than counted, which is why the walk continues until the bound is
+    /// filled instead of reading exactly `wanted` entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a key cannot be decoded.
+    pub fn records_in_ascending_order(
+        &self,
+        index: &IndexDefinition,
+        wanted: usize,
+    ) -> Result<Vec<StoredRecord>> {
+        if wanted == 0 {
+            return Ok(Vec::new());
+        }
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let kind = if index.unique {
+            KeyKind::UniqueIndex
+        } else {
+            KeyKind::SecondaryIndex
+        };
+        let prefix = address.prefix(kind);
+        let mut lower = Key::from(prefix.clone());
+        let upper = Key::from(after(prefix));
+        let mut found: Vec<StoredRecord> = Vec::new();
+        loop {
+            let request = ScanRequest {
+                keyspace: kind.keyspace(),
+                range: KeyRange::between(lower.clone(), upper.clone()),
+                direction: ScanDirection::Forward,
+                limit: Some(ORDERED_SCAN_BATCH_ENTRIES),
+            };
+            let batch = self.store.backend().scan(&request)?;
+            let last = batch.last().map(|(key, _)| key.clone());
+            let mut entries: Vec<RecordId> = Vec::with_capacity(batch.len());
+            for (key, value) in &batch {
+                entries.push(if index.unique {
+                    IndexTarget::decode(value.as_slice())?.id
+                } else {
+                    SecondaryIndexKey::decode(key.as_slice())?.id
+                });
+            }
+            let mut at = 0;
+            while at < entries.len() {
+                // Sized to what is still needed rather than to the scan batch,
+                // for the reason wave 34 recorded: resolving the whole batch
+                // would take the round trips from ten to one *and* the record
+                // reads from ten to a hundred and twenty-eight, which is a
+                // different cost rather than a smaller one.
+                let still = wanted.saturating_sub(found.len()).max(1);
+                let end = at.saturating_add(still).min(entries.len());
+                let chunk = entries.get(at..end).unwrap_or_default();
+                let addresses: Vec<RecordAddress> = chunk
+                    .iter()
+                    .map(|id| {
+                        RecordAddress::new(index.namespace, index.database, index.table, id.clone())
+                    })
+                    .collect();
+                for (id, payload) in chunk.iter().zip(self.get_each(&addresses)?) {
+                    if let Some(payload) = payload {
+                        found.push((id.clone(), payload));
+                        if found.len() >= wanted {
+                            return Ok(found);
+                        }
+                    }
+                }
+                at = end;
+            }
+            // A short batch is the end of the index, and under this method's
+            // precondition that is the end of the table.
+            let Some(last) = last.filter(|_| batch.len() >= ORDERED_SCAN_BATCH_ENTRIES) else {
+                return Ok(found);
+            };
+            // The lower end is inclusive, so the next batch continues strictly
+            // above the last entry this one read. `resuming_after` and never
+            // `after`: the latter is the successor of the whole *prefix* and
+            // would skip every key carrying this one as a byte prefix, which
+            // costs a walk records rather than an error.
+            lower = Key::from(resuming_after(last.as_slice().to_vec()));
         }
     }
 

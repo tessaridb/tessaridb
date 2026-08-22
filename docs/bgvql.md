@@ -1285,21 +1285,38 @@ reach", which is a different answer on another node. A `START` past the end
 answers with nothing rather than failing: asking for page nine of an eight-page
 result is a state, not a mistake.
 
-**A bounded descending order is taken from an index that is already in it.**
+**A bounded order is taken from an index that is already in it.**
 `SELECT * FROM users ORDER BY joined DESC LIMIT 10`, with an index on `joined`,
 walks that index backwards and stops — no scan, no sort. The index and the sort
 use one order, so there is nothing to compute; the plan reports `ordered` and
 names the index (§7b).
 
-It is **descending** because of the absences. A record with no `joined` has no
-entry in an index on `joined`, and the sort still places it — below every value.
-Descending, those come last, so a bound reaches them only once the index has run
-out; ascending, they come *first*, which makes the records an ascending bounded
-read answers with exactly the ones the index does not hold. That is not a
-missing optimisation but a read the index cannot serve, and §8 says what would
-open the door.
+**The two directions are admitted on different terms, because of the absences.**
+A record with no `joined` has no entry in an index on `joined`, and the sort
+still places it — below every value. Descending, those come last, so a bound
+reaches them only once the index has run out, and the direction is admitted
+unconditionally. Ascending, they come *first*: the records an ascending bounded
+read answers with are exactly the ones the index does not hold, so an ascending
+read served by the index would answer **short** — real records, fewer of them,
+nothing raised.
 
-Everything else is the scan, and answers identically: an ascending order, a
+So ascending is admitted only where there are no absences, and that is a
+declaration the planner can read: a **`REQUIRED`** field. The requirement is
+refused against a table that already breaks it and enforced on every write
+after, so it holds in both directions in time, which is what the read needs.
+`ORDER BY joined LIMIT 10` over a `REQUIRED` `joined` is served by the index;
+over an optional one it is refused and takes the scan. `REQUIRED` is declared on
+a field and promises nothing about what lives inside one, so a route below it —
+`ORDER BY address.city` under a required `address` — is refused too.
+
+One consequence is worth naming because it is not symmetric: ascending needs no
+tie-group drain. A forward walk yields a tie group with identities **ascending**,
+which is already the order the answer wants, while walking backwards reverses
+that inner order and has to drain past the bound to correct it. And under
+`REQUIRED` an index that runs out has answered the whole table, so a short answer
+is a complete one rather than a handover to the scan.
+
+Everything else is the scan, and answers identically: a
 second sort key, a computed key, no `LIMIT`, a `GROUP BY`, a projection (the sort
 runs after it and may name what it produced), a `FETCH`, a composite index, and a
 field the caller's grant does not include — an order taken from an index would
@@ -1781,11 +1798,13 @@ or `join`. An index-served read also names the index and the **shape** that
 served it — `equality`, `prefix`, `range` or `terms` — and carries `at_most` when
 a ceiling was free to learn, which today means an equality on a `UNIQUE` index.
 
-`ordered` is a bounded descending read taken from an index already in that order
-(§5), and it names the index. It is the one plan with a condition it cannot
+`ordered` is a bounded read taken from an index already in that order (§5), and
+it names the index. **Descending** it is the one plan with a condition it cannot
 check: whether the index holds enough records to fill the bound is the read
 itself, and an index that runs out hands the read to the scan — which is then
-what the read reports.
+what the read reports. **Ascending** the plan carries no such gap, because the
+direction is admitted only over a `REQUIRED` field, where an index that runs out
+has already answered the whole table.
 
 **A number this store cannot know is a number it will not print.** There is no
 estimated row count and no cost, because producing one needs statistics about
@@ -1916,13 +1935,24 @@ police itself, and it is why the audit found two more things this list cannot
 show: a row whose *reason* was false the day it was written, and a second copy of
 these absences kept in code that had drifted from this one.
 
+An eleventh is the first of the two the ninth left behind: **an ascending bounded
+read served by an index**, disproved by `SELECT * FROM events ORDER BY at LIMIT
+10` over a `REQUIRED` `at` (§5). Its row named the door in advance — a `REQUIRED`
+field, where there are no absences — so what is worth recording is not that the
+door opened but that it had to be **measured** rather than read. Reading the
+schema code said the requirement was checked on write, which would leave a record
+written *before* the declaration invisible to it and the read quietly short. Run
+instead of inferred, `DEFINE FIELD … REQUIRED` is refused against a table that
+already breaks it, so the invariant holds at declaration as well as at every
+write, and that is the half the read actually rests on. A row that names its own
+door still owes the door a test.
+
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
 | a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the wall a **whole-file** `READ` still meets even now that a ranged one exists, and worth crossing once for both. §7a |
 | a backup of **one namespace** | the file is the log, and the log is the store; selecting part of it means replaying with a filter, which is a different reader and a different restore story. §7a |
-| an **ascending** bounded read served by an index | the records with no value for the key sort **first**, and those are exactly the ones an index does not hold — so an ascending bound asks the index for the records it is missing. The door is a `REQUIRED` field, where there are no absences and the index holds every record; that is a schema fact the planner could read, and a read whose correctness depends on a declaration is worth building deliberately. §5 |
 | an order served from a **composite** index | its entries for one leading value are ordered by the *next* field, so the tie group at the bound is a group of leading values — and a leading value cannot be read back out of a key, because the index encoding normalises (`1` and `1.0` are the same bytes) and is deliberately not reversible. §5 |
 | an index on a **later** field of a composite index, or a range on the second under an equality on the first | each is a different traversal of the same key order, and each is worth building when a read wants it rather than in anticipation. §4 |
 | `INFO FOR` on a **named** namespace, database or user's own account | the tenancy subjects report the **selected** namespace and database, because `USE` is where this store already answers "which tenancy", and a second way to name one is a second place for that check to be got wrong. A caller wanting another says `USE` and asks again. `INFO FOR USER` needs an owner, so a non-owner cannot read even their own grants — the smaller, safe rule while nothing has asked for the other; a self-form is a different permission question and would be built as one. §7c |
@@ -2006,9 +2036,9 @@ these absences kept in code that had drifted from this one.
 | Sum over nothing is `0`; mean over nothing is `NONE` | **contract** |
 | A sort is the value system's order, with `NONE` below `NULL` below every value | **contract** — a sort must place every row, where a comparison may decline to |
 | Ties are broken by record identity | **contract** — what keeps an added index from reordering equal rows |
-| A bounded **descending** order is taken from the index that holds it | **contract** — the sort order and the index order are one order, so the walk is the answer rather than a computation of it |
-| An order taken from an index drains the tie group straddling the bound | **contract** — a key is its value followed by the record's identity, so the walk yields ties descending while the answer wants them ascending; cutting at the bound would take the wrong members of the group |
-| An index that cannot fill the bound hands the read back to the scan | **contract** — the records below its last entry are the ones it does not hold, and the path reported is the one that ran |
+| A bounded order is taken from the index that holds it, **descending always and ascending over a `REQUIRED` field** | **contract** — the sort order and the index order are one order, so the walk is the answer rather than a computation of it. The directions differ only in the absences: a record with no value has no entry, and it sorts first, so ascending is admitted exactly where a declaration says there are none. A route *below* a required field is refused — `REQUIRED` promises a value for the field, not for what lives inside it |
+| A **descending** order taken from an index drains the tie group straddling the bound | **contract** — a key is its value followed by the record's identity, so walking backwards yields ties in the reverse of the order the answer wants and cutting at the bound would take the wrong members. **Ascending does not drain**, and that asymmetry is a property of the key rather than an optimisation: a forward walk yields the tie group already ascending |
+| A **descending** index that cannot fill the bound hands the read back to the scan | **contract** — the records below its last entry are the ones it does not hold, and the path reported is the one that ran. **Ascending, an exhausted index has answered the whole table**, because it is admitted only where every record has an entry, so a short answer is a complete one |
 | An order is served only from the committed tail | **contract** — an entry carries no version, so at an older snapshot a changed record sits under a value the reader cannot see, and the answer comes back in the wrong order rather than short |
 | An order is not served over a field the caller's grant excludes | **contract** — a field permission removes the field before anything reads it, and an order taken from the index would sort by what the projection hides |
 | `START` and `LIMIT` apply after ordering, always | **contract** — and it is now a cost rule as well as a meaning one. A read with no ordering may have its bound handed to the source, which then stops early; a read with one may not, because the first *n* found and the first *n* in that order are different records. The refusal is what keeps this row true, so an optimisation that dropped it would not be faster — it would answer a different question. A read *with* an ordering is bounded in a second place instead: the sort keeps only the records that can still reach the answer, so it visits every record and holds *n*. Both are one rule read twice — a bound may move anywhere that nothing between it and the answer can change how many records there are, and only the source has such stages above it |

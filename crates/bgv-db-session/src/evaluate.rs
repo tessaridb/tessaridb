@@ -528,8 +528,8 @@ impl Session<'_> {
                 // it is already stored in, and a bound to stop at. Exact — the
                 // records come back for `sorted` and `bounded` to shape, the
                 // same two functions every other answer goes through.
-                if let Some(bound) = plan::descending(select)
-                    && let Some(found) = self.descend(transaction, context, id, &bound)?
+                if let Some(bound) = plan::ordered(select)
+                    && let Some(found) = self.walk_in_order(transaction, context, id, &bound)?
                 {
                     return Ok((found, AccessPath::Ordered, searched));
                 }
@@ -576,7 +576,12 @@ impl Session<'_> {
                 // narrows and then sorts is correct and costs a sort of
                 // everything the condition matched; taking the records in the
                 // order they are already stored in costs the bound.
-                if let Some(bound) = plan::descending(select)
+                // Descending only. The walk under a condition retries past its
+                // bound, and an ascending retry would read further into values
+                // the answer has already passed rather than further into the
+                // ones it still needs — a different read, not a longer one.
+                if let Some(bound) = plan::ordered(select)
+                    && bound.descending
                     && let Some(found) = self.descend_matching(
                         transaction,
                         context,
@@ -859,7 +864,7 @@ impl Session<'_> {
     ///
     /// The last `None` is the index running out before the bound was filled,
     /// which is the answer needing records the index does not hold.
-    fn descend(
+    fn walk_in_order(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
@@ -867,12 +872,24 @@ impl Session<'_> {
         wanted: &plan::Bounded<'_>,
     ) -> Result<Option<Vec<(RecordId, Value)>>> {
         let Some((index, visible)) =
-            self.index_serving_order(transaction, context, table, wanted.path)?
+            self.index_serving_order(transaction, context, table, wanted.path, wanted.descending)?
         else {
             return Ok(None);
         };
-        let Some(found) = transaction.records_in_descending_order(&index, wanted.wanted)? else {
-            return Ok(None);
+        // The two directions differ in what a short walk *means*, which is why
+        // one returns an option and the other does not. Descending, an index
+        // that runs out is missing the records whose value is absent — they sort
+        // below everything it holds, so the answer needs them and the caller
+        // scans. Ascending is admitted only where there are no absences, so an
+        // index that runs out has answered the whole table and a short answer is
+        // a complete one.
+        let found = if wanted.descending {
+            match transaction.records_in_descending_order(&index, wanted.wanted)? {
+                Some(found) => found,
+                None => return Ok(None),
+            }
+        } else {
+            transaction.records_in_ascending_order(&index, wanted.wanted)?
         };
         self.records_of(found, &visible).map(Some)
     }
@@ -930,8 +947,13 @@ impl Session<'_> {
         condition: &Expr,
         searched: &Searched,
     ) -> Result<Option<Vec<(RecordId, Value)>>> {
+        // Descending, stated rather than taken from the bound: this walk's whole
+        // argument rests on absences sorting *last*, and passing the caller's
+        // direction through would make that argument depend on a value from
+        // somewhere else. The caller refuses an ascending bound before it gets
+        // here; this is the second lock on the same door.
         let Some((index, visible)) =
-            self.index_serving_order(transaction, context, table, wanted.path)?
+            self.index_serving_order(transaction, context, table, wanted.path, true)?
         else {
             return Ok(None);
         };
@@ -981,11 +1003,24 @@ impl Session<'_> {
         context: crate::context::Context,
         table: TableId,
         path: &bgv_db_types::Path,
+        descending: bool,
     ) -> Result<Option<(bgv_db_storage::IndexDefinition, crate::redact::Visible)>> {
         let Some(index) = self.index_on_path(transaction, table, path)? else {
             return Ok(None);
         };
         if index.search || index.vector.is_some() {
+            return Ok(None);
+        }
+        // Ascending, the records the index does **not** hold are the ones that
+        // come first, so the read is only sound where there are none of them.
+        // `REQUIRED` is that guarantee and it holds in both directions in time:
+        // the declaration is refused against a table already holding a record
+        // without the field, and every write after it is checked.
+        //
+        // Asked here rather than at each call site, so the executor and
+        // `EXPLAIN` cannot come to disagree about which reads are servable —
+        // the same reason the other four refusals below live here.
+        if !descending && !self.every_record_has(transaction, table, path)? {
             return Ok(None);
         }
         let visible = self.visible_in(transaction, table)?;
@@ -1002,6 +1037,33 @@ impl Session<'_> {
             return Ok(None);
         }
         Ok(Some((index, visible)))
+    }
+
+    /// Whether every record of this table is guaranteed to hold a value at this
+    /// route — which is what makes it certain that every record has an index
+    /// entry.
+    ///
+    /// **Only a plain top-level field can answer yes.** `REQUIRED` is declared
+    /// on a field, so it says nothing about what lives *inside* one: a required
+    /// `address` does not promise an `address.city`, and a route with steps
+    /// below its root is therefore refused rather than approximated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read.
+    fn every_record_has(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: TableId,
+        path: &bgv_db_types::Path,
+    ) -> Result<bool> {
+        if !path.steps().is_empty() {
+            return Ok(false);
+        }
+        Ok(Catalog::new(transaction)
+            .fields_on(table)?
+            .iter()
+            .any(|field| field.name == path.root() && field.required))
     }
 
     /// Run the candidate the plan chose.
