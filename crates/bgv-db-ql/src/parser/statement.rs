@@ -551,11 +551,12 @@ impl Parser<'_> {
         super::shape::check_grouping(&projection, &group)?;
         super::shape::check_fold_positions(&from, &group, &order)?;
         // Where `[*]` may stand. A condition admits one on the left of a
-        // comparison; a projection, a key and an ordering do not yet, and each
-        // is refused by name rather than by a stray-token message.
+        // comparison and a projection admits one as a whole projected value; a
+        // key and an ordering do not yet, and each is refused by name rather
+        // than by a stray-token message.
         if let Projection::Values(values) = &projection {
             for value in values {
-                super::shape::no_several(&value.value)?;
+                super::shape::check_projected(&value.value)?;
             }
         }
         for key in &group {

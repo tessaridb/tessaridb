@@ -288,6 +288,23 @@ pub(super) fn check_several(expr: &Expr) -> Result<()> {
     no_several(expr)
 }
 
+/// A route reaching several values stands as the **whole** projected value, and
+/// nowhere inside a larger one.
+///
+/// A projection collects, so `tags[*] AS all_tags` answers with every value the
+/// route reaches. `array::len(tags[*])` is refused because it has two defensible
+/// answers — the function over the collected values, or the function applied to
+/// each of them — and a language that picks one silently teaches the other by
+/// surprise.
+pub(super) fn check_projected(expr: &Expr) -> Result<()> {
+    if let ExprKind::Path(field) = &expr.kind
+        && field.path.is_several()
+    {
+        return Ok(());
+    }
+    no_several(expr)
+}
+
 /// Refuse a route reaching several values anywhere in this expression.
 pub(super) fn no_several(expr: &Expr) -> Result<()> {
     if let ExprKind::Path(field) = &expr.kind

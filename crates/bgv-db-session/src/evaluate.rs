@@ -403,6 +403,27 @@ impl Session<'_> {
     ) -> Result<Value> {
         let mut projected = BTreeMap::new();
         for value in wanted {
+            // A route reaching several values is **collected** here rather than
+            // resolved, and the rule lives in the projection the way the
+            // existential rule lives in the comparison. Reading it in the
+            // evaluator's path arm instead would be fewer lines and would hand
+            // `array::len(tags[*])` an answer nobody decided on — a rule kept
+            // honest only by a parser refusal is a rule waiting for the day
+            // somebody moves the refusal.
+            //
+            // A relation is **total**, so this always writes its field: every
+            // record has a reach, and zero of them is an empty array rather than
+            // an absence. An empty array, an absent field and a single value all
+            // reach nothing and so all answer `[]` — a projection that told them
+            // apart would be reading whether the field exists, which is a
+            // different question that `tags` already answers on its own.
+            if let ExprKind::Path(field) = &value.value.kind
+                && field.path.is_several()
+            {
+                let reached = field.path.reach(record).into_iter().cloned().collect();
+                projected.insert(value.name.text.clone(), Value::Array(reached));
+                continue;
+            }
             // The searched context reaches here as well as the `WHERE` and the
             // `ORDER BY`: a projection is where a caller most often asks for a
             // score, and it needs the same collection the ordering measures

@@ -99,8 +99,9 @@ SELECT name FROM people WHERE address.city = 'Paris';
 --- expect: rows 1
 
 # `[*]` — every element rather than one of them. A route holding it denotes the
-# values it reaches rather than a value, and only one context has a rule for
-# several so far: a comparison, which holds when any of them satisfies it.
+# values it reaches rather than a value, and two contexts have a rule for several
+# so far: a comparison, which holds when any of them satisfies it, and a
+# projection, which answers with all of them.
 
 --- case: a comparison over every element holds when any element does
 SELECT * FROM people WHERE tags[*] = 'urgent';
@@ -118,9 +119,21 @@ SELECT * FROM people WHERE tags[*] = 'nothing like this';
 SELECT * FROM people WHERE NOT tags[*] = 'urgent';
 --- expect: rows 3
 
---- case: a projection over several has no rule yet, and says so
+--- case: a projection over several answers with all of them
 SELECT tags[*] AS all_tags FROM people;
+--- expect: rows 4
+
+--- case: and every record answers, because zero of them is an empty array
+SELECT tags[*] AS all_tags FROM people:4;
+--- expect: rows 1
+
+--- case: it stands as the whole projected value and not inside a larger one
+SELECT array::len(tags[*]) AS n FROM people;
 --- expect: error SeveralOutsideAComparison
+
+--- case: a multi-valued projection still has to be named
+SELECT tags[*] FROM people;
+--- expect: error UnnamedProjection
 
 --- case: an index over several would be a multikey index, which is not built
 DEFINE INDEX by_tag ON people FIELDS tags[*];

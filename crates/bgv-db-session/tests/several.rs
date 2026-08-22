@@ -1,12 +1,13 @@
 //! `[*]` — a route that reaches several values.
 //!
 //! The step that turns a path from a **function** into a **relation**. What a
-//! context does with several values is the context's own rule, and only one of
-//! the three contexts is built: a comparison holds when **any** reached value
-//! satisfies it. A projection over several and an index over several are their
-//! own tasks, and are refused by name here rather than half-built — so most of
-//! this file is about where `[*]` may *not* stand, which is the part that would
-//! otherwise be discovered by somebody getting a wrong answer.
+//! context does with several values is the context's own rule, and two of the
+//! three contexts are built: a comparison holds when **any** reached value
+//! satisfies it, and a projection answers with **all** of them. An index over
+//! several is its own task and is refused by name here rather than half-built —
+//! so a good part of this file is about where `[*]` may *not* stand, which is
+//! the part that would otherwise be discovered by somebody getting a wrong
+//! answer.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
@@ -15,7 +16,7 @@ use std::sync::Arc;
 use bgv_db_kv::{KvBackend, MemoryBackend};
 use bgv_db_session::{AccessPath, Error, Session};
 use bgv_db_storage::Store;
-use bgv_db_types::RecordId;
+use bgv_db_types::{RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
@@ -36,7 +37,8 @@ fn ready(store: &Store) -> Session<'_> {
              CREATE notes:4 = { title: 'fourth' };\n\
              CREATE notes:5 = { title: 'fifth', tags: 'urgent' };\n\
              CREATE notes:6 = { title: 'sixth', \
-                                items: [{ sku: 'a1', n: 2 }, { sku: 'b2', n: 5 }] };",
+                                items: [{ sku: 'a1', n: 2 }, { sku: 'b2', n: 5 }] };\n\
+             CREATE notes:7 = { title: 'seventh', tags: ['dup', 'dup'] };",
         )
         .unwrap();
     session
@@ -205,15 +207,14 @@ fn no_index_serves_a_condition_over_several() {
 
 #[test]
 fn every_position_without_a_rule_yet_is_refused_by_name() {
-    // Half-building the other two contexts would be worse than refusing them:
-    // a projection over several would have to invent what an empty reach
-    // answers, and an index over several would answer about arrays. Each
-    // refusal names `[*]` rather than reporting a stray token.
+    // Half-building the remaining context would be worse than refusing it: an
+    // index over several would answer a question about elements with an answer
+    // about arrays. The same holds for the positions that are not a context at
+    // all — a key, an ordering, a function argument. Each refusal names `[*]`
+    // rather than reporting a stray token.
     let store = store();
     let mut session = ready(&store);
     for script in [
-        // A projection: SGJ.T2.
-        "SELECT tags[*] AS all_tags FROM notes;",
         // An index: SGJ.T3.
         "DEFINE INDEX by_tag ON notes FIELDS tags[*];",
         // A key and an ordering: both are per record and neither has a rule.
@@ -233,6 +234,183 @@ fn every_position_without_a_rule_yet_is_refused_by_name() {
             "{script} was accepted: {refused:?}"
         );
     }
+}
+
+/// One projected field of the one answer a read gives, as text.
+fn projected(session: &mut Session<'_>, script: &str, field: &str) -> String {
+    let outcomes = session.run(script).unwrap();
+    let records = outcomes[0].records().unwrap();
+    assert_eq!(records.len(), 1, "expected one record: {records:?}");
+    let Value::Object(fields) = &records[0].1 else {
+        panic!("not an object: {:?}", records[0].1);
+    };
+    format!("{:?}", fields.get(field).unwrap_or(&Value::None))
+}
+
+#[test]
+fn a_projection_answers_with_all_of_them() {
+    // The second of the three contexts. A comparison over several tests; a
+    // projection **collects**.
+    let store = store();
+    let mut session = ready(&store);
+    assert_eq!(
+        projected(
+            &mut session,
+            "SELECT tags[*] AS all_tags FROM notes:1;",
+            "all_tags"
+        ),
+        r#"Array([String("urgent"), String("draft")])"#
+    );
+}
+
+#[test]
+fn it_collects_rather_than_summarising() {
+    // Route order, duplicates kept. A projection reports what is there:
+    // deduplicating or sorting would be a different statement, and one the
+    // caller did not write.
+    let store = store();
+    let mut session = ready(&store);
+    assert_eq!(
+        projected(
+            &mut session,
+            "SELECT tags[*] AS all_tags FROM notes:7;",
+            "all_tags"
+        ),
+        r#"Array([String("dup"), String("dup")])"#
+    );
+}
+
+#[test]
+fn a_projection_reaches_through_an_array_of_objects() {
+    let store = store();
+    let mut session = ready(&store);
+    assert_eq!(
+        projected(
+            &mut session,
+            "SELECT items[*].sku AS skus FROM notes:6;",
+            "skus"
+        ),
+        r#"Array([String("a1"), String("b2")])"#
+    );
+}
+
+#[test]
+fn three_records_that_reach_nothing_answer_the_same_empty_array() {
+    // The one real question this task had to settle, and the answer is that
+    // there was nothing to settle once the denotation was taken seriously. An
+    // empty array, an absent field and a single value all **reach nothing**, so
+    // they answer the same thing — a projection that told them apart would be
+    // reading whether the field exists, which `tags` already answers on its own.
+    //
+    // And that thing is `[]` rather than an omitted field, because a relation is
+    // **total**: every record has a reach, and zero of them is an empty
+    // collection rather than an absence. The store's older rule — a projection
+    // that reaches nothing omits its field — is about an expression having *no
+    // value*, and this expression has one.
+    let store = store();
+    let mut session = ready(&store);
+    for id in ["notes:3", "notes:4", "notes:5"] {
+        assert_eq!(
+            projected(
+                &mut session,
+                &format!("SELECT tags[*] AS all_tags FROM {id};"),
+                "all_tags"
+            ),
+            "Array([])",
+            "{id} did not answer with an empty array"
+        );
+    }
+    // …while the field itself still says what it is, which is the question the
+    // projection above is deliberately not answering.
+    assert_eq!(
+        projected(&mut session, "SELECT tags FROM notes:3;", "tags"),
+        "Array([])"
+    );
+    assert_eq!(
+        projected(&mut session, "SELECT tags FROM notes:4;", "tags"),
+        "None"
+    );
+    assert_eq!(
+        projected(&mut session, "SELECT tags FROM notes:5;", "tags"),
+        r#"String("urgent")"#
+    );
+}
+
+#[test]
+fn a_multi_valued_projection_still_has_to_be_named() {
+    // `tags[*]` has no name of its own: every invented spelling — `tags_0`,
+    // `tags`, `_0` — is a convention the author would learn from a surprise.
+    let store = store();
+    let mut session = ready(&store);
+    let refused = session.run("SELECT tags[*] FROM notes;");
+    assert!(
+        matches!(refused, Err(Error::Script(_))),
+        "an unnamed multi-valued projection was accepted: {refused:?}"
+    );
+}
+
+#[test]
+fn a_projection_admits_it_whole_and_not_inside_something_larger() {
+    // The rule is one per context, and this is where the projection's ends.
+    // `array::len(tags[*])` has two defensible answers — the function over the
+    // collected values, or the function applied to each of them — and a language
+    // that picks one silently teaches the other by surprise.
+    let store = store();
+    let mut session = ready(&store);
+    for script in [
+        "SELECT array::len(tags[*]) AS n FROM notes;",
+        "SELECT string::upper(tags[*]) AS shout FROM notes;",
+        "SELECT tags[*] + 'x' AS odd FROM notes;",
+        "SELECT [tags[*]] AS wrapped FROM notes;",
+    ] {
+        let refused = session.run(script);
+        assert!(
+            matches!(refused, Err(Error::Script(_))),
+            "{script} was accepted: {refused:?}"
+        );
+    }
+}
+
+#[test]
+fn a_grouped_read_still_refuses_it() {
+    // It is neither a group key nor a fold, so it has as many values as the
+    // group has records — the rule that keeps a wrong number out of a report,
+    // and it needed nothing new to keep holding.
+    let store = store();
+    let mut session = ready(&store);
+    let refused =
+        session.run("SELECT title, tags[*] AS t, count(*) AS n FROM notes GROUP BY title;");
+    assert!(
+        matches!(refused, Err(Error::Script(_))),
+        "a multi-valued projection in a grouped read was accepted: {refused:?}"
+    );
+}
+
+#[test]
+fn an_ordering_may_name_what_the_projection_produced() {
+    // A projected array is an ordinary value, so ordering by the name it answers
+    // under needs nothing built. `notes:3` reaches nothing and sorts first;
+    // `notes:7`'s two `dup`s sort last.
+    let store = store();
+    let mut session = ready(&store);
+    let outcomes = session
+        .run("SELECT title, tags[*] AS t FROM notes ORDER BY t, title;")
+        .unwrap();
+    let records = outcomes[0].records().unwrap();
+    let first = &records[0].1;
+    let last = &records[records.len() - 1].1;
+    let held = |value: &Value| {
+        let Value::Object(fields) = value else {
+            panic!("not an object: {value:?}");
+        };
+        format!("{:?}", fields.get("t").unwrap_or(&Value::None))
+    };
+    assert_eq!(held(first), "Array([])", "{records:?}");
+    assert_eq!(
+        held(last),
+        r#"Array([String("urgent"), String("draft")])"#,
+        "{records:?}"
+    );
 }
 
 #[test]

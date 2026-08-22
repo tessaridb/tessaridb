@@ -202,13 +202,37 @@ three:
 | Context | Rule |
 |---|---|
 | a comparison | holds when **any** of the reached values satisfies it |
-| a projection | would answer with all of them — **not built**, see §8 |
+| a projection | answers with **all** of them |
 | an index | would keep one entry per element — **not built**, see §8 |
 
-Only the first exists, and the other two are refused **by name** rather than
-half-built: a `[*]` in a projection, an ordering, a group key, a function's
-argument, a `FETCH` route or an index's fields is an error that says `[*]` is
-what it does not yet handle.
+```
+SELECT tags[*] AS all_tags FROM people;
+SELECT items[*].sku AS skus FROM orders;
+```
+
+A projection **collects**: the values arrive in route order with duplicates kept,
+because a projection reports what is there and deduplicating or sorting would be
+a different statement. It needs `AS`, since a route ending in `[*]` has no name of
+its own — every invented spelling is a convention learned from a surprise.
+
+**Every record answers, and a record that reaches nothing answers `[]`.** A
+relation is total: each record has a reach, and zero of them is an empty
+collection rather than an absence. So an empty array, an absent field and a
+single value all answer the same `[]` — they have the same reach, and a
+projection that told them apart would be reading whether the field exists, which
+`tags` on its own already answers. This does not bend the rule that a projection
+reaching nothing omits its field: that rule is about an expression having *no
+value*, and this one has one.
+
+`[*]` stands as the **whole** projected value and not inside a larger one, so
+`array::len(tags[*])` is refused: it has two defensible answers — the function
+over the collected values, or the function applied to each of them — and a
+language that picks one silently teaches the other by surprise.
+
+The third context is refused **by name** rather than half-built, and so is every
+position that is not a context at all: a `[*]` in an ordering, a group key, a
+function's argument, a `FETCH` route or an index's fields is an error that says
+`[*]` is what it does not yet handle.
 
 **No index serves a comparison over several.** An ordinary index over `tags`
 holds one entry for the whole array, so answering `tags[*] = 'urgent'` from it
@@ -1566,10 +1590,14 @@ Row-level security, which the second row also named, genuinely is absent and now
 says so on its own. A third left the same day: **rebuilding a vector index that
 has churned**, disproved by `REBUILD INDEX by_embedding ON notes` (§4); a fourth,
 **an expression over a fold**, disproved by `SELECT sum(price) * 1.2 AS with_tax`
-(§5); and a fifth, **traversals longer than one hop**, disproved by
-`SELECT * FROM users:1->follows->users->follows->users` (§4a) — the last of which
-left three narrower rows behind it, because building the half that was asked for
-showed exactly what the other half would take.
+(§5); a fifth, **traversals longer than one hop**, disproved by
+`SELECT * FROM users:1->follows->users->follows->users` (§4a) — which left three
+narrower rows behind it, because building the half that was asked for showed
+exactly what the other half would take; and a sixth, a **projection over `[*]`**,
+disproved by `SELECT tags[*] AS all_tags FROM people` (§3). That last row asked
+what an empty reach projects and treated it as an open question; the answer fell
+out of the denotation rather than being chosen, which is why the row is gone
+rather than answered in place.
 
 | Absent | Why |
 |---|---|
@@ -1601,7 +1629,7 @@ showed exactly what the other half would take.
 | a filtered nearest-neighbour read | the graph answers a distance question and knows nothing of a `WHERE`, so combining them needs either over-fetching by an unknown factor or a filtered walk |
 | highlighting, fuzzy matching, phrase and proximity queries | each needs postings to carry more than membership — offsets for a highlight or a phrase, an edit automaton for fuzziness — which is a different index rather than a bigger one. Ranking itself is built: see [Ranking](#ranking) |
 | per-index `k1` / `b`, per-field weighting | tuning knobs nobody can yet turn responsibly: this project has no labelled relevance set to measure a different value against, and a knob chosen without one is a guess with a syntax |
-| a **projection** over `[*]` | it has to answer what an empty reach projects — an absent field or an empty array — and those are different claims about a record. §3 |
+| a **function applied to each reached value** | `array::len(tags[*])` is refused because it has two answers — the function over the collected values, or the function applied to each of them. The second is a mapping operator and deserves its own spelling rather than being what a parenthesis happens to mean. §3 |
 | a **multikey index** over `[*]` | one record produces several entries, so "remove the entry for the value it replaced" becomes "remove the entries", and an element leaving an array must remove exactly its own. `UNIQUE` over one is a second question — no two records sharing an element, or a record's own elements being distinct — and is refused until it is answered. §3 |
 | `[*]` on the right of a comparison, or twice in one route | the first is the same question written backwards, and a second spelling for one thing is what this language keeps refusing; the second composes two relations and needs a rule for what that means |
 | declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
@@ -1685,6 +1713,9 @@ showed exactly what the other half would take.
 | `[*]` makes a path denote several values, and each context has its own rule for several | **contract** — one denotation, three rules, rather than one syntax with three meanings |
 | A comparison over several holds when any of them does | **contract** |
 | A single value is not an array of one | **contract** — the rule `CONTAINS` already follows |
+| A projection over several answers with all of them, in route order, duplicates kept | **contract** — a projection collects; deduplicating or sorting is a different statement |
+| A projection over several always answers, and an empty reach answers `[]` | **contract** — a relation is total, so zero values is an empty collection rather than an absence; an empty array, an absent field and a single value therefore answer alike |
+| `[*]` stands as a whole projected value and not inside a larger expression | **contract** — the alternative has two readings and picking one silently teaches the other by surprise |
 | A build is authoritative, so `REBUILD INDEX` is `DEFINE INDEX` run again | **contract** — an index's entries are made to *be* what the rows imply rather than added to what is there, which is why a rebuild needs no second path and no log shape of its own |
 | A rebuild is a statement, never the store's own decision | **contract** — replicas that each rebuilt on their own reckoning would answer one approximate question differently, and differ in silence |
 | A rebuilt index is a function of the rows, not of the order they arrived in | **contract** — the rows are read in record-id order, so two replicas that received them differently still agree |

@@ -278,6 +278,58 @@ fn field_scoped(store: &Store) {
 }
 
 #[test]
+fn a_multi_valued_projection_reaches_only_into_the_record_the_session_may_see() {
+    // A route reaching several values is a second way to read a field, so it is
+    // a second way to leak one — and the check is that it needed **no** rule of
+    // its own. A field permission edits the record before anything looks at it,
+    // so the route reaches into a record the hidden field has already left, and
+    // an unreadable field answers what any other empty reach answers.
+    let store = store();
+    ready(&store);
+    let mut root = signed_in(&store, "root");
+    root.run(
+        "DEFINE TABLE people;\n\
+         CREATE people:1 = { name: 'ada', aliases: ['a.l.', 'countess'], \
+                             secrets: ['a key', 'another'] };",
+    )
+    .unwrap();
+    root.run("GRANT read ON people FIELDS name, aliases TO ada;")
+        .unwrap();
+
+    let mut ada = signed_in(&store, "ada");
+    let outcomes = ada
+        .run("SELECT aliases[*] AS shown, secrets[*] AS hidden FROM people:1;")
+        .unwrap();
+    let records = outcomes.last().unwrap().records().unwrap();
+    let Value::Object(fields) = &records[0].1 else {
+        panic!("not an object");
+    };
+    assert_eq!(
+        format!("{:?}", fields.get("shown").unwrap()),
+        r#"Array([String("a.l."), String("countess")])"#
+    );
+    assert_eq!(
+        format!("{:?}", fields.get("hidden").unwrap()),
+        "Array([])",
+        "a multi-valued projection read past a field grant: {fields:?}"
+    );
+
+    // …and the owner, who may read it, gets the values — so the empty answer
+    // above is the permission and not the projection failing to find anything.
+    let outcomes = root
+        .run("SELECT secrets[*] AS hidden FROM people:1;")
+        .unwrap();
+    let records = outcomes.last().unwrap().records().unwrap();
+    let Value::Object(fields) = &records[0].1 else {
+        panic!("not an object");
+    };
+    assert_eq!(
+        format!("{:?}", fields.get("hidden").unwrap()),
+        r#"Array([String("a key"), String("another")])"#
+    );
+}
+
+#[test]
 fn a_field_grant_hides_the_field_from_a_read() {
     let store = store();
     field_scoped(&store);
