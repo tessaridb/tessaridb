@@ -119,6 +119,36 @@ it claims.** If a planner change stopped serving the range from the index, the
 timings would read as a regression in the range read rather than as the loss of
 one. The row names the access path and the record count on every run.
 
+## What batching the record resolution changed
+
+Recorded 2026-08-22 on the same machine, three runs of the widest read (50 000
+records) per backend, against the immediately preceding commit — not against the
+numbers above, for a reason worth stating: those were taken four waves earlier,
+so a difference against them would be attributable to anything landed in
+between. A before/after is only a before/after when the two trees are adjacent.
+
+Resolving the records an index range names used to cost **one backend round trip
+per record** — 2 002 for 2 000. It now costs **two per entry batch**: 4 for the
+same 2 000, one scan for the entries and one batched read for their records.
+
+| the widest read, p50 | before | after |
+|---|---|---|
+| on disk | 102.4 / 104.9 / 105.0 ms | 68.7 / 68.8 / 68.9 ms |
+| in memory | 43.8 / 43.5 / 44.6 ms | 43.5 / 43.5 / 43.5 ms |
+
+**The disk read is about 1.5× faster and the in-memory one is unchanged, which
+is the result that says what the cost actually was.** Reading one record is a
+range, because records are versioned and the visible one is the newest at or
+below the snapshot. On the engine every range read builds an iterator that pins
+the store's view while it lives, so fifty thousand records meant fifty thousand
+of them; the batched path builds one and seeks it. In memory there is no
+iterator to build — the saving is a few lock acquisitions — so the number does
+not move, and that it does not is the control.
+
+Resident memory is unchanged on both backends: the bands overlap in every
+direction. The bound from the section above still holds and is still the larger
+cost — the answer itself, not how it was fetched.
+
 ## What is deliberately not measured here
 
 - **Concurrency.** The store is single-writer (ADR-0007), so a concurrent write

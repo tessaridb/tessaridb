@@ -186,6 +186,55 @@ impl<'a> Transaction<'a> {
         })
     }
 
+    /// Read several records as of this transaction's snapshot, in one ask.
+    ///
+    /// Answers exactly as [`Self::get`] called on each address would — pending
+    /// writes folded in the same way, tombstones absent the same way — and
+    /// returns one entry per address, in order.
+    ///
+    /// It exists because resolving the records an index names is the place
+    /// where the cost of reading one record is multiplied by the size of an
+    /// answer. Each record read is a bounded range rather than a point lookup,
+    /// because records are versioned and the visible one is the newest at or
+    /// below the snapshot; asking for those ranges together lets a backend set
+    /// up once instead of once per record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or stored bytes cannot be
+    /// decoded.
+    fn get_each(&self, addresses: &[RecordAddress]) -> Result<Vec<Option<Vec<u8>>>> {
+        let mut answers: Vec<Option<Vec<u8>>> = vec![None; addresses.len()];
+        let mut ranges = Vec::new();
+        let mut asked = Vec::new();
+        for (index, address) in addresses.iter().enumerate() {
+            if let Some(pending) = self.writes.get(address) {
+                if let RecordValue::Present(payload) = pending {
+                    answers[index] = Some(payload.clone());
+                }
+                continue;
+            }
+            let bounds = KeyRange::prefix(&address.versions_prefix());
+            ranges.push(KeyRange::from_bounds(
+                Bound::Included(address.key_at(self.snapshot).encode()),
+                bounds.end().clone(),
+            ));
+            asked.push(index);
+        }
+
+        let found = self
+            .store
+            .backend()
+            .first_of_each(RecordKey::keyspace(), &ranges)?;
+        for (index, pair) in asked.into_iter().zip(found) {
+            let Some((_, value)) = pair else { continue };
+            if let RecordValue::Present(payload) = RecordValue::decode(value.as_slice())? {
+                answers[index] = Some(payload);
+            }
+        }
+        Ok(answers)
+    }
+
     /// Every live record of one table, as of this transaction's snapshot.
     ///
     /// Records come back in key order, with this transaction's own uncommitted
@@ -322,19 +371,28 @@ impl<'a> Transaction<'a> {
     /// An absent bound is unbounded on that side, so one comparison serves as
     /// well as two.
     ///
-    /// # The entries are fetched in batches; the records are not
+    /// # Two costs, bounded separately
     ///
     /// A range has no early stop — every entry between the bounds belongs to the
-    /// answer — so batching buys no skipped work. What it buys is that the
-    /// entries held at once stop being proportional to the width of the range,
-    /// which is a bound rather than a saving: measured over fifty thousand
-    /// entries it is about four per cent of the read's peak, and at five million
-    /// it is the difference between tens of kilobytes and hundreds of megabytes.
+    /// answer — so batching buys no skipped work. It bounds two different things.
     ///
-    /// The **records** are still all held: they are the answer, and the caller
-    /// re-tests the condition that asked against every one of them, so bounding
-    /// them is a change to the shape of an answer rather than to this read.
-    /// `docs/bgvql.md` §8 records that with the numbers.
+    /// **What is held at once.** The entries stop being proportional to the
+    /// width of the range, which is a bound rather than a saving: measured over
+    /// fifty thousand entries it is about four per cent of the read's peak, and
+    /// at five million it is the difference between tens of kilobytes and
+    /// hundreds of megabytes. The **records** are still all held — they are the
+    /// answer, and the caller re-tests the condition that asked against every
+    /// one of them, so bounding them would change the shape of an answer rather
+    /// than this read. `docs/bgvql.md` §8 records that with the numbers.
+    ///
+    /// **What is asked of the backend.** Each entry names a record, and reading
+    /// a record is itself a bounded range because records are versioned. Asking
+    /// for those one at a time costs one backend round trip per record — a cost
+    /// proportional to the answer, and on an engine one iterator per record,
+    /// each pinning the store's view while it lives. The records a batch of
+    /// entries names are therefore resolved together through
+    /// [`Self::get_each`], so the whole read costs two round trips per entry
+    /// batch rather than one per record.
     ///
     /// # Errors
     ///
@@ -383,15 +441,27 @@ impl<'a> Transaction<'a> {
             };
             let batch = self.store.backend().scan(&request)?;
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
+            // The entries name the records; the records are then read together.
+            // Reading each one as it is named would be the same answer at one
+            // backend round trip per record, which is a cost that grows with the
+            // answer and is what `get_each` exists to avoid.
+            let mut addresses = Vec::with_capacity(batch.len());
             for (key, value) in &batch {
                 let id = if index.unique {
                     IndexTarget::decode(value.as_slice())?.id
                 } else {
                     SecondaryIndexKey::decode(key.as_slice())?.id
                 };
-                let record = RecordAddress::new(index.namespace, index.database, index.table, id);
-                if let Some(payload) = self.get(&record)? {
-                    found.insert(record.id, payload);
+                addresses.push(RecordAddress::new(
+                    index.namespace,
+                    index.database,
+                    index.table,
+                    id,
+                ));
+            }
+            for (address, payload) in addresses.iter().zip(self.get_each(&addresses)?) {
+                if let Some(payload) = payload {
+                    found.insert(address.id.clone(), payload);
                 }
             }
             // A short batch is the end of the range; a full one may or may not

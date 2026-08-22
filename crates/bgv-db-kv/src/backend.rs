@@ -81,6 +81,12 @@ impl ScanRequest {
 ///    from another.
 /// 5. **Absence is a value.** Reading a key that does not exist returns
 ///    `Ok(None)`, never an error.
+/// 6. **Batched reads agree with single ones.** [`Self::first_of_each`] answers
+///    each range exactly as a forward [`Self::scan`] of that range limited to
+///    one pair would. An override that seeks faster but bounds differently
+///    returns a plausible pair belonging to a neighbouring range, which decodes,
+///    reads sensibly and is wrong — so this is stated as a contract rather than
+///    left to the override's judgement.
 ///
 /// # What this trait deliberately does not provide
 ///
@@ -120,6 +126,51 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
 
     /// Read a range of keys.
     fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>>;
+
+    /// The first pair of each of several ranges, in one ask.
+    ///
+    /// Returns one entry per range, in the order the ranges were given: the
+    /// first pair in forward key order, or `None` when the range is empty.
+    ///
+    /// # Why this exists
+    ///
+    /// The layer above resolves a record by finding the newest version at or
+    /// below a snapshot, which is a range bounded to one row rather than a
+    /// point read. Resolving the records an index range names therefore issues
+    /// one such read per record, and a backend that answers each of them
+    /// independently pays a per-record setup cost — on an engine that means an
+    /// iterator, and an iterator is not free to create. That cost is a function
+    /// of how much state the store holds rather than of how large the answer
+    /// is, which is the shape that stops being affordable quietly.
+    ///
+    /// Asking for many at once lets a backend set up once and seek many times.
+    ///
+    /// **Defaulted** in terms of [`Self::scan`], so a backend that has nothing
+    /// better to offer is still correct — the default is the same work, spelled
+    /// the same way, and the override is an optimisation rather than a
+    /// contract. An empty slice touches the backend not at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's own failure. A range that is empty is an answer,
+    /// not a failure.
+    fn first_of_each(
+        &self,
+        keyspace: Keyspace,
+        ranges: &[KeyRange],
+    ) -> Result<Vec<Option<(Key, Value)>>> {
+        let mut found = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            let request = ScanRequest {
+                keyspace,
+                range: range.clone(),
+                direction: ScanDirection::Forward,
+                limit: Some(1),
+            };
+            found.push(self.scan(&request)?.into_iter().next());
+        }
+        Ok(found)
+    }
 
     /// Apply a batch atomically, subject to its preconditions.
     ///

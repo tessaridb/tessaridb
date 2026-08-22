@@ -263,6 +263,45 @@ impl KvBackend for LsmBackend {
         Ok(collected)
     }
 
+    /// One iterator, seeked many times, instead of one iterator per range.
+    ///
+    /// [`Self::scan`] creates an engine iterator per call, and creating one is
+    /// not free: it pins the engine's view of the store for as long as it lives.
+    /// Resolving the records an index range names issues one bounded read per
+    /// record, so answering them one at a time creates one iterator per record —
+    /// a per-item cost that grows with how much the store holds rather than with
+    /// how large the answer is. Here the iterator is created once and moved.
+    ///
+    /// Each hit is checked against **its own** range's end before it is
+    /// accepted. A seek positions at the first key at or after the target and
+    /// knows nothing about where the caller wanted to stop, so without that
+    /// check a range with nothing in it would answer with the next range's first
+    /// key: a real pair, decodable, and the wrong record's.
+    fn first_of_each(
+        &self,
+        keyspace: Keyspace,
+        ranges: &[KeyRange],
+    ) -> Result<Vec<Option<(Key, Value)>>> {
+        if ranges.is_empty() {
+            return Ok(Vec::new());
+        }
+        let region = self.region(keyspace)?;
+        let mut options = ReadOptions::default();
+        // No prefix extractor is configured today, so a seek is already a
+        // total-order seek. Saying so is what keeps this call correct if one is
+        // ever configured: with an extractor and without this, a seek is allowed
+        // to stop at the end of the target's prefix and report absence for a key
+        // that exists.
+        options.set_total_order_seek(true);
+        let mut iterator = self.database.raw_iterator_cf_opt(region, options);
+
+        let mut found = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            found.push(seek_first(&mut iterator, range)?);
+        }
+        Ok(found)
+    }
+
     fn apply(&self, batch: WriteBatch) -> Result<()> {
         let _writer = self.write_lock.lock().map_err(|_| Error::Backend {
             backend: BACKEND_NAME,
@@ -336,6 +375,46 @@ fn successor(key: &Key) -> Vec<u8> {
     let mut bytes = key.as_slice().to_vec();
     bytes.push(0x00);
     bytes
+}
+
+/// Move an already-open iterator to the first pair of one range.
+///
+/// The iterator carries no bounds of its own, because it serves many ranges in
+/// turn. Both halves of a range are therefore applied here: the start decides
+/// where to seek, and the end decides whether what was found belongs to this
+/// range at all.
+fn seek_first(
+    iterator: &mut rocksdb::DBRawIterator<'_>,
+    range: &KeyRange,
+) -> Result<Option<(Key, Value)>> {
+    use std::ops::Bound;
+
+    if range.is_provably_empty() {
+        return Ok(None);
+    }
+    match range.start() {
+        Bound::Included(key) => iterator.seek(key.as_slice()),
+        Bound::Excluded(key) => iterator.seek(successor(key)),
+        Bound::Unbounded => iterator.seek_to_first(),
+    }
+    if !iterator.valid() {
+        // Past the last key is an answer; a read failure is not, and only
+        // asking distinguishes them.
+        iterator.status().map_err(|error| from_engine(&error))?;
+        return Ok(None);
+    }
+    let (Some(key), Some(value)) = (iterator.key(), iterator.value()) else {
+        return Ok(None);
+    };
+    let within = match range.end() {
+        Bound::Included(end) => key <= end.as_slice(),
+        Bound::Excluded(end) => key < end.as_slice(),
+        Bound::Unbounded => true,
+    };
+    if !within {
+        return Ok(None);
+    }
+    Ok(Some((Key::new(key.to_vec()), Value::new(value.to_vec()))))
 }
 
 #[cfg(test)]

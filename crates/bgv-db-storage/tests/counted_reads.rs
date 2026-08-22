@@ -44,7 +44,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use bgv_db_constants::DESCENDING_SCAN_BATCH_ENTRIES;
 use bgv_db_encoding::encode_payload;
 use bgv_db_kv::{
-    Key, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue, WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
+    WriteBatch,
 };
 use bgv_db_storage::{Catalog, IndexDefinition, IndexShape, RecordAddress, Store, TableShape};
 use bgv_db_types::{DatabaseId, NamespaceId, Path, RecordId, TableId, Value};
@@ -102,6 +103,25 @@ impl KvBackend for Counting {
         self.scans.fetch_add(1, Ordering::Relaxed);
         let found = self.inner.scan(request)?;
         self.entries.fetch_add(found.len(), Ordering::Relaxed);
+        Ok(found)
+    }
+
+    /// Counted as **one** round trip however many ranges it carries.
+    ///
+    /// That is the claim being measured, so it has to be delegated rather than
+    /// defaulted. The trait's default answers a batched call by making the
+    /// un-batched ones, and taken here it would count one round trip per range
+    /// and report the batching as having changed nothing — a wrapper that does
+    /// not do what the backends below it do measures the wrapper.
+    fn first_of_each(
+        &self,
+        keyspace: Keyspace,
+        ranges: &[KeyRange],
+    ) -> Result<Vec<Option<(Key, KvValue)>>> {
+        self.scans.fetch_add(1, Ordering::Relaxed);
+        let found = self.inner.first_of_each(keyspace, ranges)?;
+        let returned = found.iter().filter(|pair| pair.is_some()).count();
+        self.entries.fetch_add(returned, Ordering::Relaxed);
         Ok(found)
     }
 
@@ -266,7 +286,7 @@ fn doubling_the_bound_does_not_double_the_table_read() {
 /// asks for — rather than passing quietly and leaving the criterion looking
 /// closed. A test that would not notice the fix is not evidence about the fix.
 #[test]
-fn resolving_a_range_costs_a_round_trip_per_record_today() {
+fn resolving_a_range_costs_round_trips_per_batch_and_not_per_record() {
     const IN_RANGE: i64 = 2_000;
     let fixture = Fixture::new();
     fixture.write(IN_RANGE);
@@ -280,14 +300,20 @@ fn resolving_a_range_costs_a_round_trip_per_record_today() {
     let records = usize::try_from(IN_RANGE).unwrap();
     assert_eq!(found.len(), records);
 
-    // One batched scan per RANGE_SCAN_BATCH_ENTRIES entries, then one scan per
-    // record. The entry batches are the cheap term and are not what C6 is about.
+    // Two asks per entry batch: one for the entries, one for the records they
+    // name. Stated as an equality so that a change in either direction has to
+    // be looked at — a `<= records` bound would have passed on the old cost of
+    // one round trip per record, which is the cost this test exists to have
+    // caught.
     let batches = records.div_ceil(bgv_db_constants::RANGE_SCAN_BATCH_ENTRIES);
     assert_eq!(
         fixture.counting.round_trips(),
-        records + batches,
-        "the resolution is one round trip per record plus {batches} entry \
-         batches — if this now differs, the batching C6 asks for has landed \
-         and this test states the old cost"
+        batches * 2,
+        "the whole read should cost two round trips per entry batch ({batches} \
+         batches for {records} records)"
+    );
+    assert!(
+        fixture.counting.round_trips() < records,
+        "the point of the bound: the cost must not be proportional to the answer"
     );
 }

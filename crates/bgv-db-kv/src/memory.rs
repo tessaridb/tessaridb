@@ -20,7 +20,7 @@ use std::sync::RwLock;
 use crate::backend::{KvBackend, ScanDirection, ScanRequest};
 use crate::batch::{WriteBatch, WriteOp};
 use crate::error::{Error, Result};
-use crate::key::{Key, Value};
+use crate::key::{Key, KeyRange, Value};
 use crate::keyspace::Keyspace;
 
 const BACKEND_NAME: &str = "memory";
@@ -127,6 +127,37 @@ impl KvBackend for MemoryBackend {
                 .collect(),
         };
         Ok(collected)
+    }
+
+    /// One lock acquisition for every range, rather than one each.
+    ///
+    /// The saving here is modest — this backend's per-scan setup is a lock and
+    /// a map lookup. It is overridden anyway because the counted guard above
+    /// measures round trips at this boundary, and a backend that answered the
+    /// batched call by making the un-batched calls would report the batching
+    /// as having no effect on the backend that every test uses.
+    fn first_of_each(
+        &self,
+        keyspace: Keyspace,
+        ranges: &[KeyRange],
+    ) -> Result<Vec<Option<(Key, Value)>>> {
+        if ranges.is_empty() {
+            return Ok(Vec::new());
+        }
+        let guard = self.read_guard()?;
+        let tree = tree_of(&guard, keyspace)?;
+        Ok(ranges
+            .iter()
+            .map(|range| {
+                if range.is_provably_empty() {
+                    return None;
+                }
+                let bounds = (clone_bound(range.start()), clone_bound(range.end()));
+                tree.range(bounds)
+                    .next()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+            })
+            .collect())
     }
 
     fn apply(&self, batch: WriteBatch) -> Result<()> {

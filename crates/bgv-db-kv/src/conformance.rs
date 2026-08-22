@@ -329,6 +329,88 @@ fn empty_range_returns_nothing(backend: &dyn KvBackend) -> CheckResult {
     }
 }
 
+/// Rule 6 — a batched first-of-each answers exactly as one scan per range would.
+///
+/// The comparison is against [`KvBackend::scan`] rather than against a list this
+/// check wrote down, because the trait defines the batched read *in terms of*
+/// the single one. An override is free to be faster and is not free to be
+/// different.
+///
+/// The ranges are chosen for the ways a seek-based override goes wrong. A range
+/// with nothing in it but with keys after it is the one that matters most: a
+/// seek lands on the next key in the store and does not know it has overshot,
+/// so an override that forgets its end bound answers with a real pair belonging
+/// to somebody else. That failure decodes, reads sensibly, and raises nothing.
+fn batched_first_agrees_with_scan(backend: &dyn KvBackend) -> CheckResult {
+    const NAME: &str = "batched-first-agrees-with-scan";
+    let batch = WriteBatch::new()
+        .put(Keyspace::DATA, key(b"b:1"), value(b"one"))
+        .put(Keyspace::DATA, key(b"b:2"), value(b"two"))
+        .put(Keyspace::DATA, key(b"d:1"), value(b"four"));
+    if let Err(error) = backend.apply(batch) {
+        return CheckResult::fail(NAME, format!("apply failed: {error}"));
+    }
+
+    let ranges = [
+        // Has a hit, and a second key it must not return.
+        KeyRange::prefix(b"b:"),
+        // Empty, with keys on both sides of it — the overshoot case.
+        KeyRange::prefix(b"c:"),
+        // Bounded start, unbounded end.
+        KeyRange::from_bounds(
+            std::ops::Bound::Included(key(b"d:")),
+            std::ops::Bound::Unbounded,
+        ),
+        // Unbounded start: the first key in the keyspace.
+        KeyRange::from_bounds(
+            std::ops::Bound::Unbounded,
+            std::ops::Bound::Excluded(key(b"z")),
+        ),
+        // Excluded start, so the key it names is not the answer.
+        KeyRange::from_bounds(
+            std::ops::Bound::Excluded(key(b"b:1")),
+            std::ops::Bound::Unbounded,
+        ),
+        // Inverted, and therefore empty however it is read.
+        KeyRange::between(key(b"z"), key(b"a")),
+        // Past everything.
+        KeyRange::prefix(b"zz:"),
+    ];
+
+    let batched = match backend.first_of_each(Keyspace::DATA, &ranges) {
+        Ok(found) => found,
+        Err(error) => return CheckResult::fail(NAME, format!("first_of_each failed: {error}")),
+    };
+    if batched.len() != ranges.len() {
+        return CheckResult::fail(
+            NAME,
+            format!("asked for {} ranges, got {}", ranges.len(), batched.len()),
+        );
+    }
+    for (index, range) in ranges.iter().enumerate() {
+        let request = ScanRequest::new(Keyspace::DATA, range.clone()).with_limit(1);
+        let alone = match backend.scan(&request) {
+            Ok(pairs) => pairs.into_iter().next(),
+            Err(error) => return CheckResult::fail(NAME, format!("scan failed: {error}")),
+        };
+        if batched.get(index) != Some(&alone) {
+            return CheckResult::fail(
+                NAME,
+                format!(
+                    "range {index} batched to {:?} but alone reads {alone:?}",
+                    batched.get(index)
+                ),
+            );
+        }
+    }
+
+    match backend.first_of_each(Keyspace::DATA, &[]) {
+        Ok(none) if none.is_empty() => CheckResult::pass(NAME),
+        Ok(none) => CheckResult::fail(NAME, format!("no ranges returned {} answers", none.len())),
+        Err(error) => CheckResult::fail(NAME, format!("empty slice failed: {error}")),
+    }
+}
+
 /// Every check in the suite, in a stable order.
 type Check = (&'static str, fn(&dyn KvBackend) -> CheckResult);
 
@@ -362,6 +444,10 @@ const CHECKS: &[Check] = &[
     ("delete-removes-the-key", delete_removes_the_key),
     ("last-write-in-a-batch-wins", last_write_in_a_batch_wins),
     ("empty-range-returns-nothing", empty_range_returns_nothing),
+    (
+        "batched-first-agrees-with-scan",
+        batched_first_agrees_with_scan,
+    ),
 ];
 
 /// How many checks the suite contains.
