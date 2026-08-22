@@ -149,6 +149,90 @@ Resident memory is unchanged on both backends: the bands overlap in every
 direction. The bound from the section above still holds and is still the larger
 cost — the answer itself, not how it was fetched.
 
+## Where the answer's memory actually goes
+
+Recorded 2026-08-22 on the same machine. The section above left a number and no
+explanation: about 1.4 KiB of resident memory per record answered, against a
+stored record of a couple of hundred bytes. `ps` cannot say where the difference
+goes — it reports the store, the harness and the answer in one figure, it lags
+behind a free, and it is a high-water mark across a run.
+
+So the instrument changed. The `memory` workload runs behind a **counting global
+allocator**, which is off by default and enabled by a feature, because installing
+one unconditionally would put an atomic add on every allocation in every workload
+and quietly invalidate every timing above.
+
+```
+cargo run -p bgv-db-bench --release --features counting -- --workload memory
+```
+
+It counts **requested** bytes, so it under-reports what the process holds: the
+allocator's rounding and its own bookkeeping are invisible to it. Every figure
+here is a floor, never a ceiling — which is also why it does not contradict the
+1.4 KiB above. That figure came from `ps` and includes the rounding; this one is
+what was asked for.
+
+Three runs each, both backends, and **every counted figure was identical in all
+six** — the arithmetic is deterministic, so a difference between two runs would
+be a difference in the code. Only the `ps` row moved, by about one per cent,
+which is the comparison the two rows exist to make.
+
+| | in memory | on disk |
+|---|---|---|
+| the answer, per record | 887 bytes | 887 bytes |
+| built and discarded, per record | 72 bytes | 72 bytes |
+| the store's own growth across the read | 0 KiB | 0 KiB |
+| the same, by `ps` | 102 528 KiB against 72 214 counted | 94 064 KiB against 43 331 counted |
+
+**The read does not copy the answer.** 72 bytes per record is one pair — a single
+vector reallocation's worth spread across fifty thousand records, not a second
+copy of anything. Whatever the peak costs, it is not a pipeline holding the
+answer twice, which is a defect this measurement was equally prepared to find and
+would have repaired differently.
+
+**The cost is the decoded record, not the reading.** The same record built with
+no store involved, in the answer's own shape, costs 865 bytes against the
+answer's 887. The read adds twenty-two.
+
+| the record built outside the store | per record |
+|---|---|
+| no fields at all | 72 bytes |
+| one field | 793 bytes |
+| two — what the store actually holds | 865 bytes |
+| four | 869 bytes |
+| eight | 877 bytes |
+
+**721 of those bytes arrive with the first field, and the next seven cost twelve
+between them.** An object's map allocates room for eleven entries the moment it
+holds one, so every record pays for eleven whatever it has. The whole table
+reconciles to the byte, which is why it is worth writing out rather than
+summarising:
+
+- **72** — the pair in the vector, `size_of::<(RecordId, Value)>()`. No map yet.
+- **+721** for the first field: 11 × (24 for a key + 40 for a value) is 704, the
+  node's own header is 16, and the key `"n"` is a one-byte allocation.
+- **+72** for the second: the `note` field's 68-byte payload and its 4-byte name.
+- **+4** and **+8** for the next two and the next four: their names and nothing
+  else. The values fit in the room already paid for.
+
+Nothing in that account is proportional to the record. It is proportional to the
+type.
+
+That is the finding, and it redirects the work rather than confirming it. Two
+explanations were open before the measurement — the cost is *holding many records
+at once*, or it is *a per-record constant of the decoded form* — and they want
+different fixes. It is the second. A bounded collector still earns its place,
+because it bounds how many constants are held at once; it just does not touch the
+constant. Neither would streaming: an answer that handed records over one at a
+time would pay 887 bytes on each one in flight.
+
+**On disk the counter cannot see the engine**, and the `ps` column says so:
+94 064 KiB resident against 43 331 counted, because the block cache and the
+mapped files are not allocated through Rust. For this question that is harmless,
+since the answer is Rust-allocated on both backends and both report 887 bytes to
+the byte. For a question about the engine's own memory it would be the wrong
+instrument entirely.
+
 ## What is deliberately not measured here
 
 - **Concurrency.** The store is single-writer (ADR-0007), so a concurrent write

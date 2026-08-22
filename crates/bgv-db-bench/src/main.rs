@@ -33,9 +33,23 @@
 //! the debug build, and reporting those numbers as the store's would be a lie
 //! that looks like data.
 
+#[cfg(feature = "counting")]
+mod counting;
+#[cfg(feature = "counting")]
+mod memory;
 mod ranges;
 mod samples;
 mod workload;
+
+/// A running total in front of the system allocator, in the counting build only.
+///
+/// Behind a feature because a global allocator is global: making it the default
+/// would put an atomic add on every allocation in every workload, including the
+/// ones whose recorded baselines are timings taken without it. Off, the ordinary
+/// build is what it was; on, the preamble says so.
+#[cfg(feature = "counting")]
+#[global_allocator]
+static ALLOCATOR: counting::Counting = counting::Counting;
 
 use std::env;
 use std::fs;
@@ -252,10 +266,18 @@ fn preamble(backend: Backend) -> String {
     } else {
         "release build"
     };
+    // Named in the preamble for the same reason the debug build is: a timing
+    // taken with a counter in front of every allocation is comparable with
+    // another taken the same way, and with nothing else.
+    let counting = if cfg!(feature = "counting") {
+        " (counting allocator installed — timings are not comparable with an ordinary build)"
+    } else {
+        ""
+    };
     format!(
         "# bgv-db benchmark\n\n\
          - backend: `{}`\n\
-         - build: {}\n\
+         - build: {}{counting}\n\
          - machine: `{}` / `{}`\n\
          - records per workload: {}\n\
          - percentiles: nearest-rank over every retained sample, per phase\n\n\

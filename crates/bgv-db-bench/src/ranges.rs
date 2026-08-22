@@ -48,7 +48,7 @@ use crate::workload::{Failable, resident_bytes};
 ///
 /// Large enough that the widest read is far past any plausible fetch size, and
 /// small enough that writing them is a couple of seconds even on disk.
-const RECORDS: u64 = 50_000;
+pub(crate) const RECORDS: u64 = 50_000;
 
 /// The widths a range is read at: a slice, a tenth, a half, the whole table.
 const WIDTHS: &[u64] = &[100, 5_000, 25_000, 50_000];
@@ -71,23 +71,7 @@ const FEWEST_READS: u64 = 10;
 ///
 /// Returns an error when a statement fails or the store cannot be prepared.
 pub fn range(db: &Db) -> Failable<Vec<Report>> {
-    let mut session = db.session();
-    session.run(
-        "DEFINE NAMESPACE bench; USE NAMESPACE bench;\n\
-         DEFINE DATABASE bench; USE DATABASE bench;\n\
-         DEFINE TABLE spans;\n\
-         DEFINE INDEX by_n ON spans FIELDS n;",
-    )?;
-
-    let mut written = Samples::with_capacity(usize::try_from(RECORDS).unwrap_or(0));
-    for n in 0..RECORDS {
-        let started = Instant::now();
-        session.run(&format!(
-            "CREATE spans:{n} = {{ n: {n}, \
-             note: 'a line of prose long enough to be a real payload rather than a token' }};"
-        ))?;
-        written.push(started.elapsed());
-    }
+    let written = spans(db, RECORDS)?;
     let mut reports = vec![written.summarise("range-write")];
 
     // Read before any range read, so every later figure has something to be a
@@ -106,6 +90,42 @@ pub fn range(db: &Db) -> Failable<Vec<Report>> {
     }
     Ok(reports)
 }
+
+/// Write the workload's records into a table with an index over `n`, timing
+/// each write.
+///
+/// Shared with the `memory` workload rather than written twice, because the two
+/// report on the same records: a per-record cost measured against a different
+/// record shape would not be the figure this workload's resident readings —
+/// and `docs/bgvql.md` §8 after them — are about. A benchmark fixture is an
+/// input like any other, and two copies of one drift silently.
+pub(crate) fn spans(db: &Db, records: u64) -> Failable<Samples> {
+    let mut session = db.session();
+    session.run(
+        "DEFINE NAMESPACE bench; USE NAMESPACE bench;\n\
+         DEFINE DATABASE bench; USE DATABASE bench;\n\
+         DEFINE TABLE spans;\n\
+         DEFINE INDEX by_n ON spans FIELDS n;",
+    )?;
+
+    let mut written = Samples::with_capacity(usize::try_from(records).unwrap_or(0));
+    for n in 0..records {
+        let started = Instant::now();
+        session.run(&format!(
+            "CREATE spans:{n} = {{ n: {n}, \
+             note: '{NOTE}' }};"
+        ))?;
+        written.push(started.elapsed());
+    }
+    Ok(written)
+}
+
+/// The payload every record carries, so a record is a real one rather than a
+/// token. Named because the `memory` workload rebuilds a record of this exact
+/// shape outside the store, and the comparison is only worth making while the
+/// two are the same string.
+pub(crate) const NOTE: &str =
+    "a line of prose long enough to be a real payload rather than a token";
 
 /// One width: the reads, what they answered, and what the process was holding.
 fn at_width(db: &Db, width: u64, settled: Option<u64>) -> Failable<Vec<Report>> {

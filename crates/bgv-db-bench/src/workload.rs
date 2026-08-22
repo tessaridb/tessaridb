@@ -87,6 +87,15 @@ pub const ALL: &[Workload] = &[
         about: "an index range at four widths, with what the process holds at each",
         run: crate::ranges::range,
     },
+    // Only in a counting build, because without the allocator behind it every
+    // figure it reports would be zero — a workload that runs and answers
+    // nothing is worse than one that is absent from `--list`.
+    #[cfg(feature = "counting")]
+    Workload {
+        name: "memory",
+        about: "where an answer's memory goes: four readings around one widest read, and the same record built outside the store",
+        run: crate::memory::memory,
+    },
     Workload {
         name: "search",
         about: "a term search over a full-text index, against the scan of the same condition",
