@@ -295,7 +295,7 @@ fn resolving_a_range_costs_round_trips_per_batch_and_not_per_record() {
     // not counted as part of what the read cost.
     fixture.counting.reset();
     let found = transaction
-        .records_in_range(&fixture.index, None, None)
+        .records_in_range(&fixture.index, &[], None, None)
         .unwrap();
     let records = usize::try_from(IN_RANGE).unwrap();
     assert_eq!(found.len(), records);

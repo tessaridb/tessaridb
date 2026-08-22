@@ -456,7 +456,24 @@ impl<'a> Transaction<'a> {
         Ok(holding.into_iter().collect())
     }
 
-    /// The records an ordered index holds between two bounds.
+    /// The records an ordered index holds between two bounds, inside the run its
+    /// `fixed` leading values name.
+    ///
+    /// # What `fixed` is for
+    ///
+    /// An empty `fixed` is a range on the index's **leading** field, which is
+    /// every range this store served before composite ranges existed. A
+    /// non-empty one names a value for each field before the ranged one, so
+    /// `(at, tag)` under `at = 20 AND tag >= 1950` walks only the entries of that
+    /// day. The bytes are built the same way in both cases — the fixed values and
+    /// the bound are one run of encoded values — so with `fixed` empty every key
+    /// this builds is byte-identical to the ones it built before, which is what
+    /// makes the existing range reads the regression proof for the general one.
+    ///
+    /// The caller is responsible for `fixed` being a genuine leading run of the
+    /// index's fields with the ranged field immediately after it; `plan::ranged`
+    /// is the only thing that decides that, and it stops at the first field no
+    /// equality fixes.
     ///
     /// # Both ends are inclusive, and that is not a limitation
     ///
@@ -503,6 +520,7 @@ impl<'a> Transaction<'a> {
     pub fn records_in_range(
         &self,
         index: &IndexDefinition,
+        fixed: &[Value],
         lower: Option<&Value>,
         upper: Option<&Value>,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
@@ -513,25 +531,25 @@ impl<'a> Transaction<'a> {
             KeyKind::SecondaryIndex
         };
         let prefix = address.prefix(kind);
-        let start = match lower {
-            Some(held) => {
-                let mut bytes = prefix.clone();
-                bytes.extend_from_slice(&IndexValues::leading(core::slice::from_ref(held)));
-                bytes
+        // The fixed values and the bound are one run of encoded values, so a
+        // bound is appended to the fixed run rather than encoded beside it.
+        let within = |bound: Option<&Value>| {
+            let mut values = fixed.to_vec();
+            if let Some(held) = bound {
+                values.push(held.clone());
             }
-            None => prefix.clone(),
+            let mut bytes = prefix.clone();
+            bytes.extend_from_slice(&IndexValues::leading(&values));
+            bytes
         };
+        // An absent bound is unbounded within the fixed run, not within the whole
+        // index — which for an empty run is the same thing, and for a non-empty
+        // one is the difference between reading a day and reading the table.
+        let start = within(lower);
         // The end is exclusive in `KeyRange::between`, and the bound itself must
         // be included — so the stop point is one byte past every key that begins
         // with the bound's encoding.
-        let end = match upper {
-            Some(held) => {
-                let mut bytes = prefix.clone();
-                bytes.extend_from_slice(&IndexValues::leading(core::slice::from_ref(held)));
-                after(bytes)
-            }
-            None => after(prefix.clone()),
-        };
+        let end = after(within(upper));
 
         let mut found: BTreeMap<RecordId, Vec<u8>> = BTreeMap::new();
         let mut from = start;

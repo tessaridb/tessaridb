@@ -83,6 +83,7 @@ impl Fixture {
         let found = transaction
             .records_in_range(
                 &self.index,
+                &[],
                 lower.map(Value::from).as_ref(),
                 upper.map(Value::from).as_ref(),
             )
@@ -203,7 +204,7 @@ fn an_uncommitted_write_is_folded_into_a_range_of_any_width() {
     transaction.delete(fixture.at(RecordId::Int(0)));
 
     let found = transaction
-        .records_in_range(&fixture.index, None, None)
+        .records_in_range(&fixture.index, &[], None, None)
         .unwrap();
     transaction.rollback();
 

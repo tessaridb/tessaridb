@@ -51,9 +51,19 @@
 //! predict which of two equal candidates wins.
 //!
 //! One rule sits above it, and only because it is a **proof** rather than a
-//! preference: a candidate fixing more of its index's columns cannot return more
-//! records than one fixing fewer of them, since its entries are a subset. An
-//! equal count still falls through to the order the conjuncts were written.
+//! preference: a candidate narrowing more of its index's columns cannot return
+//! more records than one narrowing fewer of them, since its entries are a
+//! subset. An equal count still falls through to the order the conjuncts were
+//! written.
+//!
+//! That proof sits above the **shape** ranking too, and it has to. The shape
+//! order in `Shape` describes what a candidate is *trusted* to narrow when
+//! nothing exact is known, which is a heuristic and is stated as one. Below the
+//! proof it made a composite range unreachable: `a = 1 AND b > 2` on `(a, b)`
+//! narrows two columns as a range and one as an equality, and `Equality` sorts
+//! before `Range`, so the wider candidate won on the guess. Nothing this store
+//! chose before moves, because every candidate that narrowed more than one
+//! column was an equality — which the shape order already preferred.
 //!
 //! This is the rule the gathering restructuring most easily loses. Asking each
 //! index what the whole condition fixes for it invites an outer loop over
@@ -134,6 +144,14 @@ pub(crate) enum Served {
     /// scan takes both ends inclusive and the condition that asked discards what
     /// it does not want, which it was going to do to every candidate anyway.
     Range {
+        /// The leading run of the index's fields the condition fixes to exact
+        /// values, with the ranged field immediately after it.
+        ///
+        /// Empty for a range on the index's own leading field, which is every
+        /// range this store served before composite ranges existed. Non-empty
+        /// for `a = 1 AND b > 2` on `(a, b)`, where the bounds apply *inside* the
+        /// entries holding `a = 1` rather than across the whole index.
+        fixed: Vec<Value>,
         /// The lower end, when the condition gave one.
         lower: Option<Value>,
         /// The upper end, when it gave one.
@@ -152,17 +170,20 @@ impl Served {
         }
     }
 
-    /// How many of the index's fields this lookup fixes exactly.
+    /// How many of the index's fields this lookup narrows.
     ///
-    /// One for every shape that reaches only the leading field, and the length
-    /// of the run for an equality tuple. It is a **proof of narrowing**, not an
-    /// estimate: the entries matching two fixed fields are a subset of those
-    /// matching the first alone, whatever the data holds. That is why it ranks
-    /// candidates and a guess would not.
+    /// One for a shape that reaches only the leading field, the length of the
+    /// run for an equality tuple, and for a range the fixed run **plus one** for
+    /// the field it bounds. It is a **proof of narrowing**, not an estimate: the
+    /// entries matching two fixed fields are a subset of those matching the
+    /// first alone, and the entries a range keeps are a subset of the run it
+    /// walks — whatever the data holds. That is why it ranks candidates and a
+    /// guess would not.
     pub(crate) fn fixed(&self) -> usize {
         match self {
             Self::Equality(values) => values.len(),
-            Self::Prefix(_) | Self::Terms(_) | Self::Range { .. } => 1,
+            Self::Prefix(_) | Self::Terms(_) => 1,
+            Self::Range { fixed, .. } => fixed.len().saturating_add(1),
         }
     }
 }
@@ -238,20 +259,30 @@ pub(crate) fn choose(candidates: Vec<Candidate>) -> Option<Candidate> {
 }
 
 /// Whether the first candidate promises fewer records than the second.
+///
+/// The order of the three tests is the whole rule, and the middle one moved
+/// here. A ceiling decides first because it is a counted fact. Then the number
+/// of fields narrowed, because **that is a proof** — a subset cannot be larger
+/// than the set it is drawn from — and a proof outranks the shape ranking, which
+/// its own doc describes as what a candidate is *trusted* to narrow when nothing
+/// exact is known. Shape decides last, among candidates that narrow equally
+/// many fields, and an equal shape still falls through to source order.
+///
+/// Placing the count below the shape, as it was, made a composite range
+/// unreachable: `a = 1 AND b > 2` on `(a, b)` offers an equality fixing one
+/// field and a range fixing one and bounding a second, and `Shape::Equality`
+/// sorts before `Shape::Range`, so the narrower candidate lost to the wider one
+/// on a heuristic. No decision this store made before changes, because every
+/// candidate that narrowed more than one field was an equality, which the shape
+/// ranking already preferred.
 fn better(candidate: &Candidate, than: &Candidate) -> bool {
     match candidate.rows.rank(than.rows) {
         Ordering::Less => true,
         Ordering::Greater => false,
-        Ordering::Equal => match candidate.served.shape().cmp(&than.served.shape()) {
-            Ordering::Less => true,
-            Ordering::Greater => false,
-            // Neither has a ceiling and both narrow the same way, so the one
-            // fixing more of its index's fields wins. This sits above source
-            // order deliberately: it is the only rule here that is a proof
-            // rather than a preference — a subset cannot be larger than the set
-            // it is drawn from — and an equal count still falls through to
-            // source order, which is what the heading above promises.
-            Ordering::Equal => candidate.served.fixed() > than.served.fixed(),
+        Ordering::Equal => match candidate.served.fixed().cmp(&than.served.fixed()) {
+            Ordering::Greater => true,
+            Ordering::Less => false,
+            Ordering::Equal => candidate.served.shape() < than.served.shape(),
         },
     }
 }
@@ -284,6 +315,51 @@ fn serving<'a>(
         .iter()
         .filter(|index| index.fields.first() == Some(path) && index.search == search)
         .collect()
+}
+
+/// Every declared index that can bound a range on this path, with the leading
+/// run of values the condition fixes before it.
+///
+/// An index qualifies when `path` is one of its fields **and** every field
+/// before it is fixed to an exact value by the condition. That is what makes the
+/// entries the range walks contiguous: the key puts the fixed values first, so
+/// fixing all of them names one run, and inside that run the entries are ordered
+/// by the very field being bounded.
+///
+/// Position zero is the ordinary case and yields an empty run — a range on the
+/// index's own leading field, which is every range this store served before.
+/// Position `p > 0` with any of `0..p` unfixed does **not** qualify: the tags in
+/// range would be scattered across every value of the fields before them, and
+/// finding them means visiting each run's slice in turn. That is a different
+/// traversal and it is deliberately not built here.
+///
+/// A vector index holds a distance rather than an order over the value, so a
+/// range over one would be a scan wearing an index's name.
+fn ranged<'a>(
+    declared: &'a [IndexDefinition],
+    path: &Path,
+    fixed: &BTreeMap<&Path, &Value>,
+) -> Vec<(&'a IndexDefinition, Vec<Value>)> {
+    let mut found = Vec::new();
+    for index in declared {
+        if index.search || index.vector.is_some() {
+            continue;
+        }
+        let Some(at) = index.fields.iter().position(|field| field == path) else {
+            continue;
+        };
+        let mut run = Vec::with_capacity(at);
+        for field in index.fields.iter().take(at) {
+            let Some(held) = fixed.get(field) else {
+                break;
+            };
+            run.push((*held).clone());
+        }
+        if run.len() == at {
+            found.push((index, run));
+        }
+    }
+    found
 }
 
 /// The leading run of this index's fields the condition fixes to a value.
@@ -454,21 +530,18 @@ impl Session<'_> {
         }
 
         for (path, (lower, upper)) in bounds {
-            for index in serving(declared, path, false) {
-                // A vector index holds a distance, not an order over the value,
-                // so a range over it would be a scan wearing an index's name.
-                if index.vector.is_some() {
-                    continue;
-                }
+            for (index, run) in ranged(declared, path, &fixed) {
                 offered.push(Candidate {
                     served: Served::Range {
+                        fixed: run,
                         lower: lower.clone(),
                         upper: upper.clone(),
                     },
-                    index: (*index).clone(),
-                    // A range can be the whole table and its size is not knowable
-                    // without doing the read, which is the same answer a prefix
-                    // gives.
+                    index: index.clone(),
+                    // A range can be the whole run it walks and its size is not
+                    // knowable without doing the read, which is the same answer a
+                    // prefix gives. What it narrows is carried by `Served::fixed`
+                    // instead, where it is a proof rather than a guess.
                     rows: Rows::Unknown,
                 });
             }
@@ -1085,6 +1158,7 @@ mod tests {
             Shape::Prefix => Served::Prefix("x".to_owned()),
             Shape::Terms => Served::Terms(vec!["x".to_owned()]),
             Shape::Range => Served::Range {
+                fixed: Vec::new(),
                 lower: Some(Value::from("a")),
                 upper: Some(Value::from("z")),
             },

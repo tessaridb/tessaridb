@@ -1967,13 +1967,34 @@ already ordered by identity. A composite's group is ordered by the *next* indexe
 field instead, so a bound cut inside it answers with the wrong members in either
 direction. The eleventh departure's cheerful asymmetry lasted exactly one wave.
 
+**The thirteenth departure** removed this row's sibling — a range on a composite's
+second field under an equality on its first — and its interest is where the
+obstacle turned out to be. Not in the key: `IndexValues::leading` already encodes
+a *slice* of values and the existing call site passed a one-element one, so the
+generalisation was one argument, and with the fixed run empty every byte it
+builds is identical to what it built before. The obstacle was in the **ranking**.
+`plan::better` compared shape before the count of columns a candidate narrows,
+and `Equality` sorts before `Range` — so a candidate fixing one column beat one
+fixing a column *and* bounding the next, which is a strict subset of it. Shape's
+own doc says what it is: what a candidate is *trusted* to narrow when nothing
+exact is known. That is a heuristic, and it was sitting above a proof. Moving the
+proof up changes no decision this store made before, because every candidate that
+narrowed more than one column was an equality, which the shape order already
+preferred.
+
+Worth recording beside the twelfth, because the two are the same mistake wearing
+different clothes: there a true statement about the key encoding answered a
+question the code never asked, and here a true statement about ranges in general
+— *a range can be the whole table* — was applied to a range that provably cannot
+be, because it is confined to the run its fixed values name.
+
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
 | a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the wall a **whole-file** `READ` still meets even now that a ranged one exists, and worth crossing once for both. §7a |
 | a backup of **one namespace** | the file is the log, and the log is the store; selecting part of it means replaying with a filter, which is a different reader and a different restore story. §7a |
-| an index on a **later** field of a composite index, or a range on the second under an equality on the first | each is a different traversal of the same key order, and each is worth building when a read wants it rather than in anticipation. §4 |
+| an index on a **later** field of a composite index, with nothing fixing the fields before it | the entries for one value of a later field are scattered across every value of the fields ahead of it, so reaching them means visiting each leading run's slice in turn. A different traversal of the same key order, and worth building when a read wants it rather than in anticipation. Its sibling — a range on a later field **under equalities fixing every field before it** — is no longer here: it walks one contiguous run and is served. §4 |
 | `INFO FOR` on a **named** namespace, database or user's own account | the tenancy subjects report the **selected** namespace and database, because `USE` is where this store already answers "which tenancy", and a second way to name one is a second place for that check to be got wrong. A caller wanting another says `USE` and asks again. `INFO FOR USER` needs an owner, so a non-owner cannot read even their own grants — the smaller, safe rule while nothing has asked for the other; a self-form is a different permission question and would be built as one. §7c |
 | an analyzer's own **definition** in a report — its name and the filters it applies | a field's report already names the analyzer attached to it, so a caller can see *which* one is used; what no subject holds is the analyzer itself. It is declared store-wide rather than under a namespace, a database or a table, so there is nowhere in these five subjects for its filter list to appear. A real gap and a small one: the catalog reader exists, and what is missing is the decision about where it belongs. §7c |
 | a **schema dump** — a report rendered as the statements that would recreate it | `INFO FOR` answers with what the catalog holds, deliberately, because a renderer is a second description of the schema kept beside the first and the two drift. A dump wants that renderer plus a guarantee that replaying its output reproduces the store, which is a round-trip property worth testing rather than assuming. §7c |
@@ -2077,9 +2098,9 @@ direction. The eleventh departure's cheerful asymmetry lasted exactly one wave.
 | A field with no analyzer holds no terms and matches nothing | **contract** |
 | `REQUIRED` means present and not null | **contract** |
 | A bounded descending order under a `WHERE` is taken from the index that holds the order, and gives it up rather than answering short | **contract** — the index narrows and the condition decides, so the walk continues until the **bound is filled by records that survive the condition**, not until the bound is filled by entries. Past a stated multiple of the bound the condition is too thin for the order to be worth serving that way and the read takes the scan it would have taken anyway. The ceiling bounds the cost and never the answer |
-| An index over several fields serves a condition on the **leading run** of them the condition fixes to values | **contract** — the field order decides which reads it can serve, and `last = 'x' AND first = 'y'` on `(last, first)` is one lookup rather than a lookup on `last` and a re-test of `first`. The run stops at the first field the condition does not fix with an equality, so a `LIKE` or a range on the second column leaves the lookup at one column and is re-tested like any other clause |
+| An index over several fields serves a condition on the **leading run** of them the condition fixes to values | **contract** — the field order decides which reads it can serve, and `last = 'x' AND first = 'y'` on `(last, first)` is one lookup rather than a lookup on `last` and a re-test of `first`. The *lookup* run stops at the first field the condition does not fix with an equality, so a `LIKE` on the second column leaves the lookup at one column and is re-tested like any other clause. A **range** on the field immediately after the run is the exception, and it is served: the fixed values name one contiguous run of entries and that run is already ordered by the very field being bounded, so the bounds are a bound on a walk rather than a filter over the run. `at = 20 AND tag >= 1950 AND tag <= 1959` on `(at, tag)` reads the ten entries the bounds name and not the day's hundred |
 | A `UNIQUE` composite promises a ceiling of **one** exactly when the condition fixes every one of its fields, and none otherwise | **contract** — uniqueness is over the whole tuple, so fixing only the first promises nothing: one `last` may have any number of `first`s |
-| Among candidates with no ceiling and the same shape, the one fixing more of its index's columns wins | **contract** — a proof rather than an estimate: the entries matching two fixed fields are a subset of those matching the first alone, whatever the data holds. An equal count still falls through to the order the conjuncts were written |
+| Among candidates with no ceiling, the one narrowing more of its index's columns wins — **before** shape is consulted | **contract** — a proof rather than an estimate: the entries matching two fixed fields are a subset of those matching the first alone, and the entries a range keeps are a subset of the run it walks, whatever the data holds. The shape order below it says what a candidate is *trusted* to narrow when nothing exact is known, which is a heuristic, and a proof outranks a heuristic. That ordering is load-bearing rather than tidy: with shape on top, `a = 1 AND b > 2` on `(a, b)` lost the range candidate to the equality one, because `Equality` sorts before `Range` — the wider candidate winning on a guess. An equal count still falls through to shape, and an equal shape to the order the conjuncts were written |
 | `EXPLAIN` reports the plan that actually runs, and needs the read's own permission | **contract** — a second planner would disagree, and a plan is metadata about a table |
 | A plan carries no number the store cannot know | **contract** — no estimated rows, no cost |
 | `INFO FOR` reports what the caller could have found out anyway | **contract** — the change feed's rule applied to a description instead of to records: what is granted is listed, what is not is absent, and a named table is refused |
