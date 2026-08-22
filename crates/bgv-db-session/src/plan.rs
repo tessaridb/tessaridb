@@ -53,8 +53,8 @@
 use core::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use bgv_db_ql::{BinaryOp, Expr, ExprKind, Function, Projected, Select};
-use bgv_db_storage::{IndexDefinition, Transaction, VectorDistance};
+use bgv_db_ql::{BinaryOp, Expr, ExprKind, Function, Projected, Select, Source};
+use bgv_db_storage::{Catalog, IndexDefinition, Transaction, VectorDistance};
 use bgv_db_types::{Path, Value};
 
 use crate::condition::literal_prefix;
@@ -170,6 +170,18 @@ pub(crate) struct Candidate {
     pub(crate) index: IndexDefinition,
     /// How many records it can produce.
     pub(crate) rows: Rows,
+}
+
+/// The word a shape answers under, for a plan somebody is reading.
+impl Shape {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Equality => "equality",
+            Self::Prefix => "prefix",
+            Self::Range => "range",
+            Self::Terms => "terms",
+        }
+    }
 }
 
 /// The candidate that promises to narrow the most.
@@ -622,6 +634,98 @@ pub(crate) const fn answers(declared: VectorDistance, asked: Function) -> bool {
         (VectorDistance::Cosine, Function::VectorCosine)
             | (VectorDistance::Euclidean, Function::VectorEuclidean)
     )
+}
+
+impl Session<'_> {
+    /// The plan a read would take, without taking it.
+    ///
+    /// # It calls the same enumeration and the same `choose`
+    ///
+    /// Not a second planner that agrees today. Two of them would disagree the
+    /// first time one changed, and a plan describing a read nobody runs is worse
+    /// than no plan at all — it is a wrong answer to the one question this
+    /// statement exists to answer truthfully.
+    ///
+    /// # It reports what the planner knows and nothing more
+    ///
+    /// The access path, the index by name, the shape that served it, and the
+    /// ceiling — when there was one that was free to learn. No invented cost: a
+    /// number this store cannot know is a number it will not print, and a plan
+    /// carrying a made-up estimate is how somebody comes to trust one.
+    pub(crate) fn explain(
+        &self,
+        transaction: &mut Transaction<'_>,
+        select: &Select,
+    ) -> Result<crate::outcome::Outcome> {
+        let mut plan = BTreeMap::new();
+        match &select.from {
+            // Straight to one record by its identity: there is nothing to choose.
+            Source::Record(target) => {
+                plan.insert("access".to_owned(), Value::from("record"));
+                plan.insert(
+                    "table".to_owned(),
+                    Value::from(target.table.name.text.as_str()),
+                );
+            }
+            Source::Table(table) => {
+                plan.insert("table".to_owned(), Value::from(table.name.text.as_str()));
+                // A read with no condition has nothing for an index to narrow —
+                // except the one shape an index answers differently from a scan,
+                // which says so by name rather than hiding inside "index".
+                if nearest(select).is_some() {
+                    let (_, id) = self.resolve_table(transaction, table)?;
+                    let declared = Catalog::new(transaction).indexes_on(id)?;
+                    let named = declared
+                        .iter()
+                        .find(|index| index.vector.is_some())
+                        .map(|index| index.name.clone());
+                    plan.insert("access".to_owned(), Value::from("approximate"));
+                    if let Some(name) = named {
+                        plan.insert("index".to_owned(), Value::from(name.as_str()));
+                    }
+                } else {
+                    plan.insert("access".to_owned(), Value::from("scan"));
+                }
+            }
+            Source::Where { table, condition } => {
+                let (_, id) = self.resolve_table(transaction, table)?;
+                plan.insert("table".to_owned(), Value::from(table.name.text.as_str()));
+                let searched = self.searched_for(transaction, id, &[condition])?;
+                let declared = Catalog::new(transaction).indexes_on(id)?;
+                let offered = self.enumerate(transaction, condition, &declared, &searched)?;
+                match choose(offered) {
+                    Some(chosen) => {
+                        plan.insert("access".to_owned(), Value::from("index"));
+                        plan.insert("index".to_owned(), Value::from(chosen.index.name.as_str()));
+                        plan.insert(
+                            "shape".to_owned(),
+                            Value::from(chosen.served.shape().name()),
+                        );
+                        if let Rows::AtMost(held) = chosen.rows {
+                            plan.insert(
+                                "at_most".to_owned(),
+                                Value::Number(bgv_db_types::Number::Integer(
+                                    i64::try_from(held).unwrap_or(i64::MAX),
+                                )),
+                            );
+                        }
+                    }
+                    None => {
+                        plan.insert("access".to_owned(), Value::from("scan"));
+                    }
+                }
+            }
+            // A walk reads an index per step, and which index is not a choice:
+            // an edge table is given one on each endpoint when it is declared.
+            Source::Traverse { .. } => {
+                plan.insert("access".to_owned(), Value::from("graph"));
+            }
+            Source::Join { .. } => {
+                plan.insert("access".to_owned(), Value::from("join"));
+            }
+        }
+        Ok(crate::outcome::Outcome::Value(Value::Object(plan)))
+    }
 }
 
 #[cfg(test)]

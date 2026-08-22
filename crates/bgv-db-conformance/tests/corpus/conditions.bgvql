@@ -187,3 +187,18 @@ DEFINE TABLE tallies;
 CREATE tallies:1 = { count: 7 };
 SELECT * FROM tallies WHERE count = 7;
 --- expect: rows 1
+
+# `EXPLAIN` — the plan a read would take, without taking it. A decision nobody
+# can look at is a decision nobody can debug.
+
+--- case: a read no index serves explains as a scan
+EXPLAIN SELECT * FROM people WHERE age > 1;
+--- expect: ok
+
+--- case: and one an index serves names it
+EXPLAIN SELECT * FROM people WHERE city = 'Paris';
+--- expect: ok
+
+--- case: only a read has a plan to describe
+EXPLAIN DELETE people:1;
+--- expect: error UnexpectedToken

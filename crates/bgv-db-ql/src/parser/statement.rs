@@ -54,6 +54,16 @@ impl Parser<'_> {
             Some(Keyword::Update) => self.write_statement(Keyword::Update)?,
             Some(Keyword::Set) => self.write_statement(Keyword::Set)?,
             Some(Keyword::Select) => StatementKind::Select(self.select_statement()?),
+            Some(Keyword::Explain) => {
+                self.advance();
+                // Only a read has a plan to describe. A write's cost is its
+                // index maintenance, which is a different report rather than
+                // this one wearing the same word.
+                if self.peek_keyword() != Some(Keyword::Select) {
+                    return Err(self.error_here("`SELECT` and the read to explain"));
+                }
+                StatementKind::Explain(Box::new(self.select_statement()?))
+            }
             Some(Keyword::Delete) => {
                 self.advance();
                 // `FROM` is what tells the two forms apart, and it is required

@@ -81,6 +81,12 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         } => vec![&from.table, edges, &to.table],
 
         StatementKind::Select(select) => in_source(select),
+        // **The read's tables, not none.** An `EXPLAIN` that named no table
+        // would pass a grant check vacuously — the shape that let a backup
+        // through until it was refused by name — and it would leak which index
+        // serves a table the caller may not read: a metadata disclosure wearing
+        // a diagnostic's clothes.
+        StatementKind::Explain(select) => in_source(select),
     }
 }
 

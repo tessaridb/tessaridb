@@ -149,6 +149,11 @@ pub enum StatementKind {
         /// Whether re-declaring an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `EXPLAIN SELECT …` — the plan a read would take, without taking it.
+    ///
+    /// A decision nobody can look at is a decision nobody can debug, and one no
+    /// test can assert without timing it.
+    Explain(Box<Select>),
     /// `BACKUP` or `BACKUP FROM 42` — the store's log as a backup file.
     ///
     /// The one statement whose scope is the **store** rather than the selected

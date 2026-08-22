@@ -232,6 +232,8 @@ pub enum Keyword {
     Read,
     /// `BACKUP` — answer the store's log as a backup file.
     Backup,
+    /// `EXPLAIN` — the plan a read would take.
+    Explain,
     /// `INDEX`
     Index,
     /// `ON`
@@ -358,6 +360,7 @@ impl Keyword {
             Self::Put => "PUT",
             Self::Read => "READ",
             Self::Backup => "BACKUP",
+            Self::Explain => "EXPLAIN",
             Self::Index => "INDEX",
             Self::On => "ON",
             Self::Join => "JOIN",
@@ -428,6 +431,7 @@ impl Keyword {
         Self::Put,
         Self::Read,
         Self::Backup,
+        Self::Explain,
         Self::Index,
         Self::On,
         Self::Join,

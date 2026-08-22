@@ -110,6 +110,10 @@ fn bind_statement(kind: &mut StatementKind, parameters: &Parameters) -> Result<(
             None => Ok(()),
         },
         StatementKind::Select(select) => bind_select(select, parameters),
+        // The read it explains is a read, so its parameters bind the same way —
+        // and an `EXPLAIN` of a parameterised read is exactly what somebody
+        // debugging one reaches for.
+        StatementKind::Explain(select) => bind_select(select, parameters),
         // Everything else names things and holds no values: the definitions, the
         // drops, the grants, the tenancy statements, the point reads and the
         // transaction words.

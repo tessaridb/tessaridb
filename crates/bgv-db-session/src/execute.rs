@@ -285,6 +285,7 @@ impl Session<'_> {
                 let (records, path) = self.read(transaction, select)?;
                 Ok(Outcome::Records { records, path })
             }
+            StatementKind::Explain(select) => self.explain(transaction, select),
             StatementKind::Keys { space, range } => self.keys(transaction, space, range.as_ref()),
             // The transaction verbs and `USE` never reach here; the session
             // handles them, because they change what the next statement runs in

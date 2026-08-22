@@ -137,21 +137,33 @@ fn every_example_in_the_specification_parses() {
 /// ones, and a `text` block is a diagram rather than a script.
 fn fenced_blocks(text: &str) -> Vec<(usize, String)> {
     let mut blocks = Vec::new();
-    let mut open: Option<(usize, String)> = None;
+    // Whether a fence is open, and whether what it holds is bgvQL. A **labelled**
+    // fence (```json, ```text) is tracked as open even though its body is
+    // skipped: without that its closing line reads as an opener, every fence
+    // after it pairs with the wrong partner, and the document's prose starts
+    // arriving here as though it were a statement. That inverted silently until
+    // a labelled fence was added beside a bare one.
+    let mut open: Option<(usize, String, bool)> = None;
     for (index, line) in text.lines().enumerate() {
         let number = index.saturating_add(1);
         if let Some(rest) = line.trim_end().strip_prefix("```") {
             match open.take() {
-                Some((at, body)) => blocks.push((at, body)),
-                None => {
-                    if rest.trim().is_empty() {
-                        open = Some((number.saturating_add(1), String::new()));
+                Some((at, body, checked)) => {
+                    if checked {
+                        blocks.push((at, body));
                     }
+                }
+                None => {
+                    open = Some((
+                        number.saturating_add(1),
+                        String::new(),
+                        rest.trim().is_empty(),
+                    ));
                 }
             }
             continue;
         }
-        if let Some((_, body)) = open.as_mut() {
+        if let Some((_, body, _)) = open.as_mut() {
             body.push_str(line);
             body.push('\n');
         }

@@ -119,6 +119,9 @@ impl Needs {
             // catch-all, which reads as `Write` — the default that is right for
             // every statement that changes something and wrong for this one.
             | StatementKind::Read { .. }
+            // Explaining a read is reading: the catalog, about a table. The
+            // caller must be allowed both, and `tables_named` says which.
+            | StatementKind::Explain(_)
             // `USE` and the transaction verbs change what the *next* statement
             // runs in rather than touching anything, and refusing them would
             // make a viewer unable to say which database it is reading.

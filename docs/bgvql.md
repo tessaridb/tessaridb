@@ -1730,6 +1730,38 @@ The cost is stated rather than discovered: the whole file is materialised,
 because a statement answers with a value. `FROM` is what bounds it, and a
 streaming answer is named in §8.
 
+## 7b. Looking at a plan
+
+```
+EXPLAIN SELECT * FROM users WHERE city = 'Paris' AND email = 'ada@example.com';
+```
+
+answers with the plan the read would take, without taking it:
+
+```json
+{"access": "index", "index": "by_email", "shape": "equality", "at_most": 1, "table": "users"}
+```
+
+`access` is one of `record`, `index`, `scan`, `approximate`, `graph` or `join`.
+An index-served read also names the index and the **shape** that served it —
+`equality`, `prefix`, `range` or `terms` — and carries `at_most` when a ceiling
+was free to learn, which today means an equality on a `UNIQUE` index.
+
+**A number this store cannot know is a number it will not print.** There is no
+estimated row count and no cost, because producing one needs statistics about
+value distribution and this store keeps none (§8). A plan carrying a made-up
+estimate is how somebody comes to trust one.
+
+**It explains what actually runs.** The same enumeration and the same choice, not
+a second planner that agrees today and disagrees after the next change.
+
+**It needs exactly the permission the read needs**, over exactly the same tables.
+An `EXPLAIN` that named the index serving a table the caller may not read would
+be a metadata disclosure wearing a diagnostic's clothes.
+
+Only a read has a plan to describe. A write's cost is its index maintenance,
+which is a different report rather than this one wearing the same word.
+
 ## 8. What is deliberately absent from this milestone
 
 Named here rather than merely missing, so each absence reads as a decision.
@@ -1768,6 +1800,7 @@ it was first wanted.
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
 | a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the wall a **whole-file** `READ` still meets even now that a ranged one exists, and worth crossing once for both. §7a |
 | a backup of **one namespace** | the file is the log, and the log is the store; selecting part of it means replaying with a filter, which is a different reader and a different restore story. §7a |
+| an **estimated row count** or a cost in a plan | it needs statistics about value distribution — how many records hold `city = 'london'` against `city = 'tromsø'` — which is maintained state whose staleness silently changes plans. A much larger decision than a selection rule, and one that wants a benchmark harness to justify it rather than an intuition. §7b |
 | a digest on a file's metadata | worth having, and it is a *verification* feature: it belongs with the backup verifier rather than half here and half there |
 | a content type on a file | the store holds bytes and has no opinion about them. It becomes worth carrying when something serves them over HTTP, which is where a content type is actually read |
 | listing a bucket by prefix (`/photos/…`) | `SELECT * FROM media WHERE path LIKE '/photos/%'` is the question, and it needs the record's identity addressable as a value in a filter — which is a language feature about identities, not about files |
@@ -1860,6 +1893,8 @@ it was first wanted.
 | Several terms mean all of them | **contract** |
 | A field with no analyzer holds no terms and matches nothing | **contract** |
 | `REQUIRED` means present and not null | **contract** |
+| `EXPLAIN` reports the plan that actually runs, and needs the read's own permission | **contract** — a second planner would disagree, and a plan is metadata about a table |
+| A plan carries no number the store cannot know | **contract** — no estimated rows, no cost |
 | `UPDATE` replaces with a value and changes with `SET`, and both touch one record | **contract** |
 | Every right-hand side of a `SET` sees the record as it was | **contract** — otherwise a statement's meaning depends on clause order |
 | Assigning `none` removes the field; `null` is a value and stays | **contract** |
