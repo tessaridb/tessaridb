@@ -203,7 +203,7 @@ impl<'a> Transaction<'a> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    fn get_each(&self, addresses: &[RecordAddress]) -> Result<Vec<Option<Vec<u8>>>> {
+    pub fn get_each(&self, addresses: &[RecordAddress]) -> Result<Vec<Option<Vec<u8>>>> {
         let mut answers: Vec<Option<Vec<u8>>> = vec![None; addresses.len()];
         let mut ranges = Vec::new();
         let mut asked = Vec::new();

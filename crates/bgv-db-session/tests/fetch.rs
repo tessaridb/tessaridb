@@ -9,8 +9,12 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
-use bgv_db_kv::{KvBackend, MemoryBackend};
+use bgv_db_kv::{
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
+    WriteBatch,
+};
 use bgv_db_session::Session;
 use bgv_db_storage::Store;
 use bgv_db_types::{RecordId, Value};
@@ -316,4 +320,151 @@ fn two_routes_naming_two_records_do_not_get_each_others_answers() {
             &Value::from(reviewer)
         );
     }
+}
+
+// --------------------------------------------------------------- what it costs
+
+/// A backend that answers exactly as the one beneath it and says what it was
+/// asked.
+///
+/// Two quantities, deliberately separate — the lesson a sibling wave paid for.
+/// A change that took the asks from many to one **by asking for more rows** is
+/// not a saving, and a single instrument would report it as one.
+#[derive(Debug)]
+struct Counting {
+    inner: Arc<dyn KvBackend>,
+    asks: AtomicUsize,
+    rows: AtomicUsize,
+}
+
+impl Counting {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            inner: Arc::new(MemoryBackend::new()),
+            asks: AtomicUsize::new(0),
+            rows: AtomicUsize::new(0),
+        })
+    }
+
+    fn reset(&self) {
+        self.asks.store(0, AtomicOrdering::Relaxed);
+        self.rows.store(0, AtomicOrdering::Relaxed);
+    }
+}
+
+impl KvBackend for Counting {
+    fn name(&self) -> &'static str {
+        "counting"
+    }
+
+    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<KvValue>> {
+        self.asks.fetch_add(1, AtomicOrdering::Relaxed);
+        let found = self.inner.get(keyspace, key)?;
+        if found.is_some() {
+            self.rows.fetch_add(1, AtomicOrdering::Relaxed);
+        }
+        Ok(found)
+    }
+
+    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, KvValue)>> {
+        self.asks.fetch_add(1, AtomicOrdering::Relaxed);
+        let found = self.inner.scan(request)?;
+        self.rows.fetch_add(found.len(), AtomicOrdering::Relaxed);
+        Ok(found)
+    }
+
+    fn first_of_each(
+        &self,
+        keyspace: Keyspace,
+        ranges: &[KeyRange],
+    ) -> Result<Vec<Option<(Key, KvValue)>>> {
+        self.asks.fetch_add(1, AtomicOrdering::Relaxed);
+        let found = self.inner.first_of_each(keyspace, ranges)?;
+        self.rows
+            .fetch_add(found.iter().flatten().count(), AtomicOrdering::Relaxed);
+        Ok(found)
+    }
+
+    fn apply(&self, batch: WriteBatch) -> Result<()> {
+        self.inner.apply(batch)
+    }
+}
+
+/// How many posts the counted fixture holds.
+const POSTS: u64 = 100;
+/// How many people wrote them.
+const AUTHORS: u64 = 5;
+
+/// `POSTS` posts by `AUTHORS` authors — the shape this feature is for, where the
+/// references far outnumber the records they name.
+fn crowded(store: &Store) -> Session<'_> {
+    let mut session = Session::new(store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE orders; USE DATABASE orders;\n\
+             DEFINE TABLE users;\n\
+             DEFINE TABLE posts;",
+        )
+        .unwrap();
+    for n in 1..=AUTHORS {
+        session
+            .run(&format!("CREATE users:{n} = {{ name: 'n{n}' }};"))
+            .unwrap();
+    }
+    for n in 1..=POSTS {
+        let author = (n % AUTHORS).saturating_add(1);
+        session
+            .run(&format!(
+                "CREATE posts:{n} = {{ title: 't{n}', author: users:{author} }};"
+            ))
+            .unwrap();
+    }
+    session
+}
+
+#[test]
+fn a_fetch_costs_one_ask_however_many_references_it_follows() {
+    // Asserted as the **difference** against the same read without the clause:
+    // both resolve the same catalog and scan the same table, so subtracting
+    // cancels everything that is not the fetch. An assertion on the level would
+    // carry a fudge factor and stop meaning anything the day the catalog changed
+    // shape.
+    let counting = Counting::new();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let mut session = crowded(&store);
+
+    counting.reset();
+    session.run("SELECT * FROM posts;").unwrap();
+    let plain = counting.asks.load(AtomicOrdering::Relaxed);
+    let plain_rows = counting.rows.load(AtomicOrdering::Relaxed);
+
+    counting.reset();
+    let answered = session.run("SELECT * FROM posts FETCH author;").unwrap();
+    let fetched = counting.asks.load(AtomicOrdering::Relaxed);
+    let fetched_rows = counting.rows.load(AtomicOrdering::Relaxed);
+
+    // One ask for the five records, plus the catalog reads that decide which of
+    // the *other* table's fields may be shown — a question a read without the
+    // clause never has to ask. The number that would fail this is `AUTHORS`:
+    // one ask per distinct reference, which is what it used to be.
+    assert_eq!(
+        fetched.saturating_sub(plain),
+        3,
+        "plain {plain} asks, fetched {fetched}, for {AUTHORS} distinct \
+         references across {POSTS} posts"
+    );
+    // And the rows did not rise to pay for it: the batch is the distinct set,
+    // which is exactly what the read was going to ask for anyway.
+    assert!(
+        fetched_rows.saturating_sub(plain_rows) <= usize::try_from(AUTHORS).unwrap() * 2,
+        "plain {plain_rows} rows, fetched {fetched_rows}"
+    );
+    // …and it answered.
+    let records = answered.last().unwrap().records().unwrap();
+    assert_eq!(records.len(), usize::try_from(POSTS).unwrap());
+    assert_eq!(
+        field(field(&records[0].1, "author"), "name"),
+        &Value::from("n2")
+    );
 }

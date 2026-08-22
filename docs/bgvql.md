@@ -948,11 +948,16 @@ Four rules, each of which is a decision rather than an omission:
 - **A route that reaches nothing is not an error**, the missing-field rule one
   level down.
 
-**What it costs, stated rather than measured later:** one point read per
-*distinct* reference across the whole read. Distinct, because a read resolves at
-one snapshot and two reads of one address at one snapshot must answer the same
-thing — so a hundred posts by three authors is three reads. Turning many point
-reads into one batched request is a planner decision and is not made here.
+**What it costs, stated rather than measured later:** **one request**, for every
+distinct reference the read holds. Distinct, because a read resolves at one
+snapshot and two reads of one address at one snapshot must answer the same
+thing — so a hundred posts by three authors reads three records, and asks for
+them once. The set is gathered from the records already in hand before anything
+is read, so the batch is the distinct set rather than a batch's worth of whatever
+is nearby; and the addresses travel together whatever tables they name, because
+each is asked for as its own bounded range. That is a change to *when* the
+records are asked for and not to *which* — the answer is the answer a read
+resolving them one at a time gives.
 
 ### Matching two tables on a value
 
@@ -1942,7 +1947,7 @@ these absences kept in code that had drifted from this one.
 | joining a table to itself | two records under one name is not a row anybody can read, and telling them apart needs aliases — a language surface to design once rather than a clause |
 | a join on anything but an equality, or on more than one pair | `ON a.x = b.y` is what an index can serve and what a map can be keyed by; a join predicate that is neither is a nested loop with a filter, which is the shape the equality was chosen to avoid |
 | a join of more than two tables | the row is `{ left: …, right: … }`, so a third side is a shape decision (nest or flatten) and an order decision, and neither is worth taking before something needs it |
-| `FETCH` through something already fetched, and cycles | one level, so the work is one point read per reference and a cycle is impossible rather than handled |
+| `FETCH` through something already fetched, and cycles | one level, so the work is bounded by the references the answer already holds — one request, whatever their number — and a cycle is impossible rather than handled |
 | a variable-length traversal (`->{1..3}`), a filter inside a traversal, shortest path | a written-out chain is a fixed number of steps the reader can count. A bound turns the walk into a search with a termination rule, a frontier and an answer that may or may not include the shorter paths — a language surface to design once rather than a clause |
 | a traversal whose arrows change direction | `a->follows->users<-follows<-users` — "who follows somebody ada follows" — is a real question, and a useful one. It needs a rule for what each step's anchor *is* when the direction turns, and a chain where every arrow reads the same way is the one a reader can follow without one |
 | a traversal that answers with the path rather than its end | the answer would be a list of records rather than a record, which is a shape for rows and not for records — the same wall the join met, and the same milestone |
