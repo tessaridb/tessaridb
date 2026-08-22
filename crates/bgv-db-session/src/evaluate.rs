@@ -9,8 +9,8 @@ use core::ops::Bound;
 use std::collections::BTreeMap;
 
 use bgv_db_ql::{
-    BinaryOp, Direction, Expr, ExprKind, Function, Hop, Projectable, Projected, Projection,
-    RecordTarget, Select, Source, Span, TableRef,
+    BinaryOp, Direction, Expr, ExprKind, Function, Hop, Projected, Projection, RecordTarget,
+    Select, Source, Span, TableRef,
 };
 use bgv_db_storage::{Catalog, RecordAddress, Transaction};
 use bgv_db_types::{Analyzer, Number, Path, RecordId, RecordRef, TableId, Value, ValueRange};
@@ -55,6 +55,13 @@ impl Session<'_> {
                 // without the language needing an `IS NULL` operator at all.
                 Ok(field.path.resolve(record).cloned().unwrap_or(Value::None))
             }
+            // A fold is replaced by the value it produced before the enclosing
+            // expression is evaluated, so one reaching here is one that stood
+            // somewhere a fold may not stand. The parser refuses those, which
+            // makes this the arm that says the parser is the only gate — and
+            // says it out loud rather than by a wildcard that would quietly
+            // answer `none`.
+            ExprKind::Fold { span, .. } => Err(Error::FoldOutsideAGroup { span: *span }),
             ExprKind::Not(operand) => {
                 let held = self.evaluate_in(transaction, operand, scope)?;
                 Ok(Value::Bool(!boolean(&held, operand.span)?))
@@ -370,17 +377,18 @@ impl Session<'_> {
     ) -> Result<Value> {
         let mut projected = BTreeMap::new();
         for value in wanted {
-            let Projectable::Value(expr) = &value.value else {
-                // A fold never reaches here: a projection carrying one goes
-                // through `grouped`, which is the only place many records
-                // become one.
-                continue;
-            };
             // The searched context reaches here as well as the `WHERE` and the
             // `ORDER BY`: a projection is where a caller most often asks for a
             // score, and it needs the same collection the ordering measures
             // against or the two would disagree in the same statement.
-            let held = self.evaluate_in(transaction, expr, Scope::searching(record, searched))?;
+            //
+            // A fold never reaches here: a projection holding one goes through
+            // `grouped`, which is the only place many records become one.
+            let held = self.evaluate_in(
+                transaction,
+                &value.value,
+                Scope::searching(record, searched),
+            )?;
             if held.is_present() {
                 projected.insert(value.name.text.clone(), held);
             }
@@ -957,6 +965,19 @@ pub(crate) struct Scope<'a> {
 }
 
 impl<'a> Scope<'a> {
+    /// No record at all.
+    ///
+    /// For an expression that has none to read: a fold's value substituted into
+    /// its projection is arithmetic over a literal, and a path standing beside
+    /// one would be a value per record where a value per group belongs — which
+    /// the grouping rule refuses before anything runs.
+    pub(crate) const fn none() -> Self {
+        Self {
+            record: None,
+            searched: None,
+        }
+    }
+
     /// A record, with nothing searched.
     pub(crate) const fn of(record: &'a Value) -> Self {
         Self {
@@ -993,9 +1014,7 @@ fn shown(select: &Select) -> Vec<&Expr> {
     let mut found = Vec::new();
     if let Projection::Values(wanted) = &select.projection {
         for projected in wanted {
-            if let Projectable::Value(expr) = &projected.value {
-                found.push(expr);
-            }
+            found.push(&projected.value);
         }
     }
     for ordering in &select.order {

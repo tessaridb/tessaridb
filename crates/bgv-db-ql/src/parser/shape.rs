@@ -12,7 +12,7 @@
 use bgv_db_types::Number;
 
 use super::Parser;
-use crate::ast::{Expr, FieldPath, Ordering, Projectable, Projection};
+use crate::ast::{Expr, ExprKind, FieldPath, Ordering, Projection, Source};
 use crate::error::{Error, Result};
 use crate::token::{Punct, Span, Token};
 
@@ -116,25 +116,153 @@ pub(super) fn check_grouping(projection: &Projection, group: &[Expr]) -> Result<
             span: Span::new(0, 0),
         });
     };
-    let folds = values
-        .iter()
-        .any(|value| matches!(value.value, Projectable::Aggregate { .. }));
+    let folds = values.iter().any(|value| holds_a_fold(&value.value));
     if !folds && group.is_empty() {
         return Ok(());
     }
     for value in values {
-        let Projectable::Value(expr) = &value.value else {
-            continue;
-        };
-        // The projection has to *be* a group key. Compared by shape rather than
-        // by `==`, because the same expression written twice in one statement
-        // sits at two spans and would otherwise never match itself.
-        if !group.iter().any(|key| key.same_shape(expr)) {
+        if !grouped_by(&value.value, group) {
             return Err(Error::UngroupedProjection {
                 name: value.name.text.clone(),
-                span: expr.span,
+                span: value.value.span,
             });
         }
+        nested_fold(&value.value)?;
+    }
+    Ok(())
+}
+
+/// Whether this expression has one value per group.
+///
+/// Recursive, because a projection may now be *built from* folds and keys rather
+/// than being one: `mean(age) * 2` is admissible and `name` is not, and the
+/// difference is a property of every part rather than of the whole.
+///
+/// - A **fold** has one value per group by definition, and what is inside it is
+///   per-record and is not this rule's business.
+/// - An expression with the **shape of a group key** has one value per group,
+///   because that is what grouping by it means. Compared by shape rather than by
+///   `==`, since the same expression written twice sits at two spans and would
+///   otherwise never match itself.
+/// - A **literal** is one value everywhere.
+/// - Anything built out of those is one value per group.
+///
+/// What is left is a path, a parameter or a read that reaches into the record,
+/// and each of those has as many values as the group has records — which is how
+/// a wrong number reaches a report.
+fn grouped_by(expr: &Expr, group: &[Expr]) -> bool {
+    if group.iter().any(|key| key.same_shape(expr)) {
+        return true;
+    }
+    match &expr.kind {
+        ExprKind::Fold { .. } | ExprKind::Literal(_) => true,
+        ExprKind::Not(inner) | ExprKind::Negate(inner) => grouped_by(inner, group),
+        ExprKind::And(left, right)
+        | ExprKind::Or(left, right)
+        | ExprKind::Arithmetic { left, right, .. }
+        | ExprKind::Binary { left, right, .. } => {
+            grouped_by(left, group) && grouped_by(right, group)
+        }
+        ExprKind::Call { arguments, .. } => {
+            arguments.iter().all(|argument| grouped_by(argument, group))
+        }
+        ExprKind::Array(items) | ExprKind::Set(items) => {
+            items.iter().all(|item| grouped_by(item, group))
+        }
+        ExprKind::Object(fields) => fields.iter().all(|field| grouped_by(&field.value, group)),
+        // A path, a parameter, a table, a record, a range, a read: none of them
+        // is one value per group unless it *is* a key, which was asked above.
+        _ => false,
+    }
+}
+
+/// Whether this expression holds a fold anywhere inside it.
+fn holds_a_fold(expr: &Expr) -> bool {
+    if matches!(expr.kind, ExprKind::Fold { .. }) {
+        return true;
+    }
+    children(expr).into_iter().any(holds_a_fold)
+}
+
+/// A fold inside a fold is refused, and refused where the statement is read.
+///
+/// `mean(sum(price))` has no meaning at one grouping level: the inner fold has
+/// already collapsed the records the outer one would fold over, so what is left
+/// to average is a single number. It is a property of the statement, so nothing
+/// has to run for it to be wrong.
+fn nested_fold(expr: &Expr) -> Result<()> {
+    if let ExprKind::Fold {
+        over: Some(over),
+        span,
+        ..
+    } = &expr.kind
+        && holds_a_fold(over)
+    {
+        return Err(Error::FoldInsideAFold { span: *span });
+    }
+    for child in children(expr) {
+        nested_fold(child)?;
+    }
+    Ok(())
+}
+
+/// The expressions one expression is built out of.
+fn children(expr: &Expr) -> Vec<&Expr> {
+    match &expr.kind {
+        ExprKind::Fold { over, .. } => over.as_deref().into_iter().collect(),
+        ExprKind::Not(inner) | ExprKind::Negate(inner) => vec![inner],
+        ExprKind::And(left, right)
+        | ExprKind::Or(left, right)
+        | ExprKind::Arithmetic { left, right, .. }
+        | ExprKind::Binary { left, right, .. } => vec![left, right],
+        ExprKind::Call { arguments, .. } => arguments.iter().collect(),
+        ExprKind::Array(items) | ExprKind::Set(items) => items.iter().collect(),
+        ExprKind::Object(fields) => fields.iter().map(|field| &field.value).collect(),
+        ExprKind::Range(range) => vec![&range.start, &range.end],
+        _ => Vec::new(),
+    }
+}
+
+/// A fold stands in a projection and nowhere else.
+///
+/// A filter sees one record at a time, so a fold in a `WHERE` is asking a
+/// question the filter cannot be handed the records to answer — and what it
+/// *means* is a filter over groups, which is `HAVING`: a second filter position
+/// with its own scoping rule, and its own row in the specification's list of
+/// absences. The refusal says which of the two it is, because "unexpected token"
+/// would send the author looking for a typo.
+///
+/// An `ORDER BY` and a `GROUP BY` key are refused for the same reason: both are
+/// evaluated per record, before there is a group to fold over.
+pub(super) fn check_fold_positions(
+    from: &Source,
+    group: &[Expr],
+    order: &[Ordering],
+) -> Result<()> {
+    match from {
+        Source::Where { condition, .. } => no_fold(condition)?,
+        Source::Join {
+            condition: Some(condition),
+            ..
+        } => no_fold(condition)?,
+        Source::Record(_) | Source::Table(_) | Source::Traverse { .. } | Source::Join { .. } => {}
+    }
+    for key in group {
+        no_fold(key)?;
+    }
+    for ordering in order {
+        no_fold(&ordering.key)?;
+    }
+    Ok(())
+}
+
+/// Refuse a fold anywhere in this expression.
+pub(super) fn no_fold(expr: &Expr) -> Result<()> {
+    if let ExprKind::Fold { span, .. } = &expr.kind {
+        return Err(Error::FoldInAFilter { span: *span });
+    }
+    for child in children(expr) {
+        no_fold(child)?;
     }
     Ok(())
 }

@@ -53,7 +53,7 @@
 use core::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use bgv_db_ql::{BinaryOp, Expr, ExprKind, Function, Projectable, Projected, Select};
+use bgv_db_ql::{BinaryOp, Expr, ExprKind, Function, Projected, Select};
 use bgv_db_storage::{IndexDefinition, Transaction, VectorDistance};
 use bgv_db_types::{Path, Value};
 
@@ -391,6 +391,16 @@ fn reads_a_record(expr: &Expr) -> bool {
         ExprKind::Array(items) | ExprKind::Set(items) => items.iter().any(reads_a_record),
         ExprKind::Object(fields) => fields.iter().any(|field| reads_a_record(&field.value)),
         ExprKind::Range(range) => reads_a_record(&range.start) || reads_a_record(&range.end),
+        // A fold reads records, so it is not constant and must never be
+        // evaluated once above the loop.
+        //
+        // Today nothing asks: a projection holding a fold is answered by the
+        // grouped path, which never reaches the constant-folding pass. Answering
+        // `false` here would still be a statement about the world that is
+        // wrong — this question is "can this be computed without records", and
+        // for a fold it cannot — and the day the two paths are reordered, a
+        // wrong `false` becomes a fold evaluated with no group to fold over.
+        ExprKind::Fold { .. } => true,
         // A parameter is a value, so it reads no record — and after binding
         // there is none left to ask.
         ExprKind::Literal(_)
@@ -498,12 +508,8 @@ impl Session<'_> {
     ) -> Result<Vec<Projected>> {
         let mut held = Vec::with_capacity(wanted.len());
         for projected in wanted {
-            let value = match &projected.value {
-                Projectable::Value(expr) => Projectable::Value(self.folded(transaction, expr)?),
-                other => other.clone(),
-            };
             held.push(Projected {
-                value,
+                value: self.folded(transaction, &projected.value)?,
                 name: projected.name.clone(),
             });
         }

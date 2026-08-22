@@ -390,6 +390,22 @@ pub enum Error {
         span: Span,
     },
 
+    /// A fold reached the evaluator instead of being replaced by its value.
+    ///
+    /// **Unreachable through the language today**, for the same reason
+    /// [`Error::NoRecordInScope`] is: the parser refuses a fold everywhere
+    /// except a projection, and a projection holding one is answered by the
+    /// grouped path, which computes each fold once per group and substitutes it
+    /// as a literal before anything is evaluated. Kept because the alternative
+    /// arm would be a wildcard answering `none` — a wrong number where a fold
+    /// was asked for, which is the failure this store spends most of its rules
+    /// avoiding.
+    #[error("a fold has no value outside a group (at {span})")]
+    FoldOutsideAGroup {
+        /// Where the fold was written.
+        span: Span,
+    },
+
     /// A route into a record, written where there is no record.
     ///
     /// **Unreachable through the language today**, and kept anyway. Two separate

@@ -1039,11 +1039,35 @@ SELECT city, count(*) AS n FROM users GROUP BY city ORDER BY n DESC LIMIT 3;
 one row, because the commonest question the language can be asked should not
 need a clause that means nothing.
 
-**A grouped read may answer only with its group keys and its folds.**
-`SELECT name, count(*) AS n … GROUP BY city` is refused when the statement is
-read, because `name` has as many values as the group has records and picking one
-silently is how a wrong number reaches a report. `SELECT *` over a group is
-refused for the same reason.
+**A fold is an expression**, so it composes with everything an expression can do:
+
+```
+SELECT sum(price) * 1.2 AS with_tax FROM sales;
+SELECT sum(price) / count(*) AS per_sale FROM sales;
+SELECT city, string::upper(max(clerk)) AS last FROM sales GROUP BY city;
+```
+
+A fold's value is **constant within its group**, and that is what makes the
+composition mean something: the fold is computed once per group and the result
+stands in the expression as a literal, so `sum(price) * 1.2` is arithmetic over a
+number and needs no rule of its own.
+
+**A grouped read may answer only with its group keys, its folds, and expressions
+built out of those.** `SELECT name, count(*) AS n … GROUP BY city` is refused
+when the statement is read, because `name` has as many values as the group has
+records and picking one silently is how a wrong number reaches a report.
+`SELECT *` over a group is refused for the same reason. `SELECT city, count(*) *
+10 … GROUP BY city` is accepted, because every part of it has one value per
+group.
+
+**A fold cannot fold over a fold.** `mean(sum(price))` has nothing left to
+average: the inner fold has already collapsed the records the outer one would
+fold over.
+
+**A fold stands in a projection and nowhere else.** In a `WHERE`, an `ORDER BY`
+or a `GROUP BY` key it is refused, and the refusal says what it would be rather
+than reporting a stray token: a filter over *groups* is `HAVING`, which is a
+second filter position with its own scoping rule and is listed in §8.
 
 **Every fold but `count(*)` passes over absent and `NULL`**, so `count(*)` and
 `count(email)` are two questions worth having both of. **Sum over nothing is
@@ -1506,7 +1530,12 @@ being read. Two rows left on 2026-08-22: a full-text **index**, disproved by
 disproved by `GRANT read, write ON orders TO ada` and its `FIELDS` form (§4).
 Row-level security, which the second row also named, genuinely is absent and now
 says so on its own. A third left the same day: **rebuilding a vector index that
-has churned**, disproved by `REBUILD INDEX by_embedding ON notes` (§4).
+has churned**, disproved by `REBUILD INDEX by_embedding ON notes` (§4); a fourth,
+**an expression over a fold**, disproved by `SELECT sum(price) * 1.2 AS with_tax`
+(§5); and a fifth, **traversals longer than one hop**, disproved by
+`SELECT * FROM users:1->follows->users->follows->users` (§4a) — the last of which
+left three narrower rows behind it, because building the half that was asked for
+showed exactly what the other half would take.
 
 | Absent | Why |
 |---|---|
@@ -1540,11 +1569,10 @@ has churned**, disproved by `REBUILD INDEX by_embedding ON notes` (§4).
 | per-index `k1` / `b`, per-field weighting | tuning knobs nobody can yet turn responsibly: this project has no labelled relevance set to measure a different value against, and a knob chosen without one is a guess with a syntax |
 | `[*]` in a path — "any element of this array" | it turns a path from a function into a relation: the filter becomes existential, a projection returns several values, and the index becomes a multikey one with entries per element and a reclamation rule of its own. Three features wearing one syntax. |
 | declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
-| `HAVING` | a filter over groups is a second filter position with its own scoping rule — it sees folds where `WHERE` does not — and is worth its own milestone rather than an afterthought |
+| `HAVING` | a filter over groups is a second filter position with its own scoping rule — it sees folds where `WHERE` does not — and is worth its own milestone rather than an afterthought. A fold written in a `WHERE` is refused by name rather than as a stray token, so the message says which of the two the author wanted |
 | `DISTINCT` | it is `GROUP BY` over the projection with no fold, and one spelling for one thing |
 | a declared retention policy, enforced in the background | a policy is `DELETE FROM … WHERE`, run by an operator or a schedule; a declared one needs a job runner and a decision about when it runs, and hiding that in a table is how a store deletes something at three in the morning that nobody expected |
 | `LIMIT` on a delete | a retention run is one commit, so bounding one means deciding what a half-applied policy means |
-| an expression over a fold (`mean(age) * 3`) | folds answer after the per-record evaluator has finished, so composing over one needs a second evaluation pass |
 | filling a window that has no records | grouping answers with the groups the data has; filling a gap means knowing the range the caller meant, which the statement does not say |
 | a sub-second window | `time::bucket` takes a whole number of seconds; the nanosecond remainder is a different arithmetic and is refused rather than rounded |
 | a spilling aggregate | groups are built in memory; a store that must aggregate more than fits needs a spill, and that is a measurement away rather than a guess away |
@@ -1579,6 +1607,9 @@ has churned**, disproved by `REBUILD INDEX by_embedding ON notes` (§4).
 | A fold answers once per group, and a grouped read answers only with keys and folds | **contract** |
 | `GROUP BY` is optional; folds without one make a single group | **contract** |
 | Every fold but `count(*)` passes over absent and null | **contract** |
+| A fold is an expression, so it composes | **contract** — one shape for a fold in the tree, and `mean(age) * 2` is arithmetic over the value it produced |
+| A fold's value is constant within its group | **contract** — computed once per group and substituted, so the composition is evaluated by the same code that evaluates any other arithmetic |
+| A fold stands in a projection and nowhere else | **contract** — a filter and an ordering are per record, and what a fold there would mean is `HAVING` |
 | Sum over nothing is `0`; mean over nothing is `NONE` | **contract** |
 | A sort is the value system's order, with `NONE` below `NULL` below every value | **contract** — a sort must place every row, where a comparison may decline to |
 | Ties are broken by record identity | **contract** — what keeps an added index from reordering equal rows |

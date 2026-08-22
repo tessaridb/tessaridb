@@ -1,30 +1,6 @@
-//! Folding many records into one answer.
-//!
-//! Everything else in the read language answers one row per record — a filter
-//! narrows, a projection reshapes, an order arranges. A fold does not, and that
-//! difference in **arity** is the whole of why aggregates are their own thing
-//! rather than more functions.
-//!
-//! # What each fold does with the rows that hold nothing
-//!
-//! The interesting half of an aggregate:
-//!
-//! - `count(*)` counts records. `count(<expr>)` counts the records where the
-//!   expression is present and not null — SQL's rule, and what makes
-//!   `count(*)` and `count(email)` two questions worth having both of.
-//! - `sum` and `mean` ignore absent and null. **Sum over nothing is zero**, so
-//!   no caller has to write the same `?? 0`; **mean over nothing is `NONE`**,
-//!   because an average of no numbers is not a number.
-//! - `min` and `max` ignore absent and null and use the value system's order —
-//!   the same one `ORDER BY` uses, so the minimum of a group is the first row an
-//!   order over it would give.
-//! - A non-number reaching `sum` or `mean` **fails**, naming the type. That is
-//!   the rule arithmetic already follows, and a silent skip would make a wrong
-//!   total look like a right one.
-
 use std::collections::BTreeMap;
 
-use bgv_db_ql::{Aggregate, Expr, Projectable, Projected, Span};
+use bgv_db_ql::{Aggregate, Expr, ExprKind, Projected, Span};
 use bgv_db_storage::Transaction;
 use bgv_db_types::{Number, RecordId, Value};
 use rust_decimal::Decimal;
@@ -35,10 +11,120 @@ use crate::session::Session;
 
 /// Whether a projection folds many records into one.
 pub(crate) fn folds(wanted: &[Projected]) -> bool {
-    wanted
-        .iter()
-        .any(|value| matches!(value.value, Projectable::Aggregate { .. }))
+    wanted.iter().any(|value| holds_a_fold(&value.value))
 }
+
+/// Whether this expression holds a fold anywhere inside it.
+fn holds_a_fold(expr: &Expr) -> bool {
+    matches!(expr.kind, ExprKind::Fold { .. }) || children(expr).into_iter().any(holds_a_fold)
+}
+
+/// The expressions one expression is built out of.
+fn children(expr: &Expr) -> Vec<&Expr> {
+    match &expr.kind {
+        ExprKind::Fold { over, .. } => over.as_deref().into_iter().collect(),
+        ExprKind::Not(inner) | ExprKind::Negate(inner) => vec![inner],
+        ExprKind::And(left, right)
+        | ExprKind::Or(left, right)
+        | ExprKind::Arithmetic { left, right, .. }
+        | ExprKind::Binary { left, right, .. } => vec![left, right],
+        ExprKind::Call { arguments, .. } => arguments.iter().collect(),
+        ExprKind::Array(items) | ExprKind::Set(items) => items.iter().collect(),
+        ExprKind::Object(fields) => fields.iter().map(|field| &field.value).collect(),
+        ExprKind::Range(range) => vec![&range.start, &range.end],
+        _ => Vec::new(),
+    }
+}
+
+/// Every fold in this expression, in the order a walk meets them.
+///
+/// The **order is the identity**: what a fold collected and what it computed are
+/// matched up by position, so the collecting walk and the substituting walk have
+/// to meet the folds the same way. They do because both use this function, which
+/// is why it exists rather than each walking the tree in its own words.
+fn folds_in<'a>(expr: &'a Expr, found: &mut Vec<&'a Expr>) {
+    if matches!(expr.kind, ExprKind::Fold { .. }) {
+        found.push(expr);
+    }
+    for child in children(expr) {
+        folds_in(child, found);
+    }
+}
+
+/// The same expression with each fold replaced by the value it produced.
+///
+/// A fold's value is **constant within its group**, and this makes that
+/// literally true rather than a claim about the implementation: what the
+/// ordinary evaluator then meets is arithmetic over a literal, and it needs to
+/// know nothing about folding at all.
+///
+/// `taken` is consumed in walk order, which is the order [`folds_in`] produced
+/// the collections in.
+fn substituted(expr: &Expr, taken: &mut std::vec::IntoIter<Value>) -> Expr {
+    if matches!(expr.kind, ExprKind::Fold { .. }) {
+        return Expr {
+            kind: ExprKind::Literal(taken.next().unwrap_or(Value::None)),
+            span: expr.span,
+        };
+    }
+    let kind = match &expr.kind {
+        ExprKind::Not(inner) => ExprKind::Not(Box::new(substituted(inner, taken))),
+        ExprKind::Negate(inner) => ExprKind::Negate(Box::new(substituted(inner, taken))),
+        ExprKind::And(left, right) => ExprKind::And(
+            Box::new(substituted(left, taken)),
+            Box::new(substituted(right, taken)),
+        ),
+        ExprKind::Or(left, right) => ExprKind::Or(
+            Box::new(substituted(left, taken)),
+            Box::new(substituted(right, taken)),
+        ),
+        ExprKind::Arithmetic { op, left, right } => ExprKind::Arithmetic {
+            op: *op,
+            left: Box::new(substituted(left, taken)),
+            right: Box::new(substituted(right, taken)),
+        },
+        ExprKind::Binary { op, left, right } => ExprKind::Binary {
+            op: *op,
+            left: Box::new(substituted(left, taken)),
+            right: Box::new(substituted(right, taken)),
+        },
+        ExprKind::Call {
+            function,
+            arguments,
+            span,
+        } => ExprKind::Call {
+            function: *function,
+            arguments: arguments
+                .iter()
+                .map(|argument| substituted(argument, taken))
+                .collect(),
+            span: *span,
+        },
+        ExprKind::Array(items) => {
+            ExprKind::Array(items.iter().map(|item| substituted(item, taken)).collect())
+        }
+        ExprKind::Set(items) => {
+            ExprKind::Set(items.iter().map(|item| substituted(item, taken)).collect())
+        }
+        // Nothing else can hold a fold: an object's values, a range's ends and a
+        // nested read are all refused a fold by the grouping rule, so leaving
+        // them as written is what they are.
+        other => other.clone(),
+    };
+    Expr {
+        kind,
+        span: expr.span,
+    }
+}
+
+/// What one fold occurrence saw, one entry per record of its group.
+type Seen = Vec<Value>;
+
+/// What every fold saw: by projection, then by occurrence within it.
+type Collected = Vec<Vec<Seen>>;
+
+/// One group: the identity its answer carries, and what its folds saw.
+type Group = (RecordId, Collected);
 
 impl Session<'_> {
     /// The records folded into one answer per group.
@@ -51,6 +137,16 @@ impl Session<'_> {
     ///
     /// A read with folds and no `GROUP BY` has exactly one group, because
     /// `SELECT count(*) FROM users` should not need a clause that means nothing.
+    ///
+    /// # Two passes, because a fold answers after the records are gone
+    ///
+    /// The first pass is per record and collects, for every fold **occurrence**
+    /// in every projected expression, what that fold saw in that record. The
+    /// second is per group: each occurrence is folded into one value, those
+    /// values are substituted into the expression, and the ordinary evaluator
+    /// runs over what is left. That is the whole of what makes `mean(age) * 2`
+    /// work — the composition is evaluated by the same code that evaluates
+    /// `age * 2`, over a literal.
     pub(crate) fn grouped(
         &self,
         transaction: &mut Transaction<'_>,
@@ -58,10 +154,24 @@ impl Session<'_> {
         wanted: &[Projected],
         group: &[Expr],
     ) -> Result<Vec<(RecordId, Value)>> {
+        // Which folds each projection holds, resolved once rather than per
+        // record — the tree does not change under a read.
+        let occurrences: Vec<Vec<&Expr>> = wanted
+            .iter()
+            .map(|value| {
+                let mut found = Vec::new();
+                folds_in(&value.value, &mut found);
+                found
+            })
+            .collect();
+
         // Keyed by the group's values so the groups come out in the value
         // system's order; the identity of the first record in each group becomes
         // the group's, so an answer still has one.
-        let mut groups: BTreeMap<Vec<Value>, (RecordId, Vec<Vec<Value>>)> = BTreeMap::new();
+        //
+        // The collected values are indexed by projection, then by fold
+        // occurrence within it, then by record.
+        let mut groups: BTreeMap<Vec<Value>, Group> = BTreeMap::new();
         for (id, record) in records {
             // Evaluated rather than resolved, so a window — `time::bucket(at,
             // 1h)` — is a key like any other. A bare name still reads as a route
@@ -71,42 +181,68 @@ impl Session<'_> {
             for held in group {
                 key.push(self.evaluate_in(transaction, held, Scope::of(&record))?);
             }
-            let entry = groups
-                .entry(key)
-                .or_insert_with(|| (id.clone(), vec![Vec::new(); wanted.len()]));
-            for (position, value) in wanted.iter().enumerate() {
-                let held = match &value.value {
-                    // `count(*)` folds over the records themselves, so what it
-                    // collects is one placeholder per record rather than a value
-                    // read out of one.
-                    Projectable::Aggregate { over: None, .. } => Value::Bool(true),
-                    Projectable::Aggregate {
-                        over: Some(expr), ..
-                    } => self.evaluate_in(transaction, expr, Scope::of(&record))?,
-                    Projectable::Value(expr) => {
-                        self.evaluate_in(transaction, expr, Scope::of(&record))?
+            let entry = groups.entry(key).or_insert_with(|| {
+                (
+                    id.clone(),
+                    occurrences
+                        .iter()
+                        .map(|held| vec![Vec::new(); held.len()])
+                        .collect(),
+                )
+            });
+            for (position, held) in occurrences.iter().enumerate() {
+                for (which, fold) in held.iter().enumerate() {
+                    let ExprKind::Fold { over, .. } = &fold.kind else {
+                        continue;
+                    };
+                    let value = match over {
+                        // `count(*)` folds over the records themselves, so what
+                        // it collects is one placeholder per record rather than
+                        // a value read out of one.
+                        None => Value::Bool(true),
+                        Some(expr) => self.evaluate_in(transaction, expr, Scope::of(&record))?,
+                    };
+                    if let Some(collected) = entry
+                        .1
+                        .get_mut(position)
+                        .and_then(|held| held.get_mut(which))
+                    {
+                        collected.push(value);
                     }
-                };
-                if let Some(collected) = entry.1.get_mut(position) {
-                    collected.push(held);
                 }
             }
         }
 
         let mut answered = Vec::with_capacity(groups.len());
-        for (_, (id, collected)) in groups {
+        for (key, (id, collected)) in groups {
             let mut fields = BTreeMap::new();
             for (position, value) in wanted.iter().enumerate() {
-                let held = collected.get(position).map_or(&[][..], Vec::as_slice);
-                let answer = match &value.value {
-                    Projectable::Aggregate {
+                let held = occurrences.get(position).map_or(&[][..], Vec::as_slice);
+                let mut computed = Vec::with_capacity(held.len());
+                for (which, fold) in held.iter().enumerate() {
+                    let ExprKind::Fold {
                         fold: aggregate,
                         span,
                         ..
-                    } => fold(*aggregate, held, *span)?,
-                    // A group key has one value per group by construction, so
-                    // the first is the only.
-                    Projectable::Value(_) => held.first().cloned().unwrap_or(Value::None),
+                    } = &fold.kind
+                    else {
+                        continue;
+                    };
+                    let seen = collected
+                        .get(position)
+                        .and_then(|held| held.get(which))
+                        .map_or(&[][..], Vec::as_slice);
+                    computed.push(self::fold(*aggregate, seen, *span)?);
+                }
+                let answer = if computed.is_empty() {
+                    // No fold in this projection, so it is a group key — and a
+                    // key has one value per group by construction. Evaluated
+                    // against nothing, because a key's value is the key.
+                    key_value(&key, group, &value.value)
+                } else {
+                    let mut taken = computed.into_iter();
+                    let substituted = substituted(&value.value, &mut taken);
+                    self.evaluate_in(transaction, &substituted, Scope::none())?
                 };
                 if answer.is_present() {
                     fields.insert(value.name.text.clone(), answer);
@@ -116,6 +252,21 @@ impl Session<'_> {
         }
         Ok(answered)
     }
+}
+
+/// The value a projected group key holds for this group.
+///
+/// The key was evaluated once per record to build the group; every record of the
+/// group produced the same value, which is what grouping by it means. So the
+/// answer is read back out of the group's own key rather than evaluated again —
+/// one place the value comes from, and no chance of the two disagreeing.
+fn key_value(key: &[Value], group: &[Expr], expr: &Expr) -> Value {
+    group
+        .iter()
+        .position(|held| held.same_shape(expr))
+        .and_then(|at| key.get(at))
+        .cloned()
+        .unwrap_or(Value::None)
 }
 
 /// Fold the values one aggregate saw across a group.

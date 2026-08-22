@@ -33,8 +33,8 @@ use bgv_db_types::Value;
 use bgv_db_types::{Number, RecordId};
 
 use crate::ast::{
-    Expr, ExprKind, Identity, Projectable, Projection, RangeExpr, RecordTarget, Script, Select,
-    Source, StatementKind,
+    Expr, ExprKind, Identity, Projection, RangeExpr, RecordTarget, Script, Select, Source,
+    StatementKind,
 };
 use crate::error::{Error, Result};
 
@@ -156,14 +156,7 @@ fn bind_target(target: &mut RecordTarget, parameters: &Parameters) -> Result<()>
 fn bind_select(select: &mut Select, parameters: &Parameters) -> Result<()> {
     if let Projection::Values(projected) = &mut select.projection {
         for one in projected {
-            match &mut one.value {
-                Projectable::Value(value) => bind_expr(value, parameters)?,
-                Projectable::Aggregate { over, .. } => {
-                    if let Some(over) = over {
-                        bind_expr(over, parameters)?;
-                    }
-                }
-            }
+            bind_expr(&mut one.value, parameters)?;
         }
     }
     match &mut select.from {
@@ -204,6 +197,13 @@ fn bind_expr(expr: &mut Expr, parameters: &Parameters) -> Result<()> {
             Ok(())
         }
         ExprKind::Not(inner) | ExprKind::Negate(inner) => bind_expr(inner, parameters),
+        // What a fold folds over is an ordinary per-record expression, so a
+        // parameter inside it binds like any other. `count(*)` folds over the
+        // records themselves and has nothing to bind.
+        ExprKind::Fold { over, .. } => match over {
+            Some(over) => bind_expr(over, parameters),
+            None => Ok(()),
+        },
         ExprKind::Call { arguments, .. } => {
             for argument in arguments {
                 bind_expr(argument, parameters)?;

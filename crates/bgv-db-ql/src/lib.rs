@@ -23,8 +23,8 @@ mod token;
 
 pub use ast::{
     Aggregate, ArithmeticOp, BinaryOp, Direction, Expr, ExprKind, Field, FieldPath, Hop, Identity,
-    Name, Ordering, Projectable, Projected, Projection, RangeExpr, RecordTarget, Script, Select,
-    Source, Statement, StatementKind, TableRef, Written,
+    Name, Ordering, Projected, Projection, RangeExpr, RecordTarget, Script, Select, Source,
+    Statement, StatementKind, TableRef, Written,
 };
 pub use bind::Parameters;
 pub use error::{Error, Result};

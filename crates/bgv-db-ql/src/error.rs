@@ -226,6 +226,31 @@ pub enum Error {
         span: Span,
     },
 
+    /// A fold folding over another fold.
+    ///
+    /// `mean(sum(price))` has no meaning at one grouping level: the inner fold
+    /// has already collapsed the records the outer one would fold over, so what
+    /// is left to average is one number. Refused where the statement is read,
+    /// because nothing has to run for it to be wrong.
+    #[error("a fold cannot fold over another fold (at {span})")]
+    FoldInsideAFold {
+        /// Where the outer fold is.
+        span: Span,
+    },
+
+    /// A fold standing in a filter rather than a projection.
+    ///
+    /// A filter over *groups* is a second filter position with its own scoping
+    /// rule — it sees folds where `WHERE` does not — and this language does not
+    /// have one yet.
+    #[error(
+        "a fold filters groups rather than records; `WHERE` sees one record at a time (at {span})"
+    )]
+    FoldInAFilter {
+        /// Where the fold is.
+        span: Span,
+    },
+
     /// A projected path ends in a position, so it has no name of its own.
     ///
     /// A projection is named by the last step of its path, and `[0]` is not a
@@ -338,6 +363,8 @@ impl Error {
             | Self::DuplicateField { span, .. }
             | Self::UngroupedProjection { span, .. }
             | Self::StarIsOnlyForCount { span, .. }
+            | Self::FoldInsideAFold { span }
+            | Self::FoldInAFilter { span }
             | Self::NoSuchFunction { span, .. }
             | Self::WrongArity { span, .. }
             | Self::DuplicateProjection { span, .. }

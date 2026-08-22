@@ -413,7 +413,13 @@ pub enum Projection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Projected {
     /// How the value is produced.
-    pub value: Projectable,
+    ///
+    /// An ordinary expression, which is what makes `mean(age) * 2` writable: a
+    /// fold is an [`ExprKind::Fold`] node like any other, so composing over one
+    /// needs no second kind of projection. There is exactly one shape a fold
+    /// has in this tree, which is the point — two would eventually disagree,
+    /// and the disagreement would be a wrong number.
+    pub value: Expr,
     /// The name it answers under.
     ///
     /// Resolved at parse rather than left for the executor: whether two
@@ -738,6 +744,31 @@ pub enum ExprKind {
     Not(Box<Expr>),
     /// `-<expr>` — the operand must be a number.
     Negate(Box<Expr>),
+    /// `count(*)`, `mean(age)` — a fold over the records of a group.
+    ///
+    /// An expression node rather than a projection of its own, so a fold
+    /// composes: `mean(price) * 1.2` is arithmetic whose left operand happens to
+    /// collapse many records into one.
+    ///
+    /// It is legal only in a projection, and only in a read that groups —
+    /// which is every read that contains one, since a fold is what makes a read
+    /// grouped. In a condition it is refused and the refusal names what it would
+    /// be: a filter over groups is `HAVING`, which has its own scoping rule and
+    /// its own row in the specification's list of absences.
+    ///
+    /// Its value is **constant within a group**, and the evaluator makes that
+    /// literally true rather than claiming it: the fold is computed once per
+    /// group and substituted into the tree as a literal before the enclosing
+    /// expression is evaluated.
+    Fold {
+        /// Which fold.
+        fold: Aggregate,
+        /// What it folds over — absent for `count(*)`, which folds over the
+        /// records themselves rather than over a value in them.
+        over: Option<Box<Expr>>,
+        /// Where it was written.
+        span: Span,
+    },
     /// `group::name(a, b)` — a call of one of the language's own functions.
     ///
     /// Arity is checked when the statement is read, because the set of
@@ -854,27 +885,6 @@ pub struct RangeExpr {
     pub end: Box<Expr>,
     /// Whether the upper bound is included: `..=` rather than `..`.
     pub inclusive: bool,
-}
-
-/// What a projection produces: one value per record, or one per group.
-///
-/// The two are different **arities**, not two operators, which is why an
-/// aggregate could not ride along with the functions: everything else in the
-/// read language answers one row per record, and this does not.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Projectable {
-    /// An expression, evaluated against each record.
-    Value(Expr),
-    /// A fold over the records of a group.
-    Aggregate {
-        /// Which fold.
-        fold: Aggregate,
-        /// What it folds over — absent for `count(*)`, which folds over the
-        /// records themselves rather than over a value in them.
-        over: Option<Box<Expr>>,
-        /// Where it was written.
-        span: Span,
-    },
 }
 
 /// A fold over the records of a group.

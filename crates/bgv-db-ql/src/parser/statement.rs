@@ -63,9 +63,11 @@ impl Parser<'_> {
                 if self.eat_keyword(Keyword::From) {
                     let table = self.table_ref()?;
                     self.expect_keyword(Keyword::Where, "`WHERE` and what to remove")?;
+                    let condition = self.condition()?;
+                    super::shape::no_fold(&condition)?;
                     StatementKind::DeleteWhere {
                         table,
-                        condition: Box::new(self.condition()?),
+                        condition: Box::new(condition),
                     }
                 } else {
                     StatementKind::Delete {
@@ -538,6 +540,7 @@ impl Parser<'_> {
         // field.
         let approximate = self.eat_word("approximate");
         super::shape::check_grouping(&projection, &group)?;
+        super::shape::check_fold_positions(&from, &group, &order)?;
         Ok(Select {
             projection,
             from,

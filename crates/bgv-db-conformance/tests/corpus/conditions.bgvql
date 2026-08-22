@@ -149,6 +149,35 @@ SELECT name, count(*) AS n FROM people GROUP BY city;
 SELECT sum(*) AS n FROM people;
 --- expect: error StarIsOnlyForCount
 
+# Composing over a fold. A fold is an expression, so everything an expression can
+# be part of, a fold can be part of — and its value is constant within its group,
+# which the evaluator makes literally true by substituting it before the rest of
+# the expression runs.
+
+--- case: arithmetic over a fold
+SELECT sum(n) * 2 AS doubled FROM scores;
+--- expect: rows 1
+
+--- case: two folds in one expression are two folds
+SELECT sum(n) / count(*) AS per_score FROM scores;
+--- expect: rows 1
+
+--- case: a fold composed with a group key, per group
+SELECT city, count(*) * 10 AS scaled FROM people GROUP BY city;
+--- expect: rows 2
+
+--- case: a fold folding over a fold has nothing left to fold
+SELECT mean(sum(n)) AS nonsense FROM scores;
+--- expect: error FoldInsideAFold
+
+--- case: a filter sees one record at a time, so a fold there is a filter over groups
+SELECT city FROM people WHERE count(*) > 1 GROUP BY city;
+--- expect: error FoldInAFilter
+
+--- case: and an ordering is per record too
+SELECT city, count(*) AS n FROM people GROUP BY city ORDER BY count(*);
+--- expect: error FoldInAFilter
+
 --- case: ordering and bounding a grouped read shapes the groups
 SELECT city, count(*) AS n FROM people GROUP BY city ORDER BY n DESC LIMIT 1;
 --- expect: rows 1
