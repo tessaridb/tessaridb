@@ -78,6 +78,21 @@ impl Parser<'_> {
                     target: self.record_target()?,
                 }
             }
+            Some(Keyword::Put) => {
+                self.advance();
+                let target = self.record_target()?;
+                self.expect_punct(Punct::Equals, "`=` and the file's bytes")?;
+                StatementKind::Put {
+                    target,
+                    value: self.expression()?,
+                }
+            }
+            Some(Keyword::Read) => {
+                self.advance();
+                StatementKind::Read {
+                    target: self.record_target()?,
+                }
+            }
             Some(Keyword::Del) => {
                 self.advance();
                 StatementKind::Del {
@@ -179,12 +194,20 @@ impl Parser<'_> {
                     if_not_exists,
                 })
             }
+            Some(Keyword::Bucket) => {
+                self.advance();
+                let if_not_exists = self.eat_if_not_exists()?;
+                Ok(StatementKind::DefineBucket {
+                    name: self.name()?,
+                    if_not_exists,
+                })
+            }
             Some(Keyword::Index) => self.define_index(),
             Some(Keyword::Field) => self.define_field(),
             Some(Keyword::Analyzer) => self.define_analyzer(),
             Some(Keyword::User) => self.define_user(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `INDEX`, `FIELD`, `ANALYZER` or `USER`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER` or `USER`",
             )),
         }
     }
@@ -426,9 +449,9 @@ impl Parser<'_> {
     /// twice.
     fn grant_statement(&mut self, giving: bool) -> Result<StatementKind> {
         self.advance();
-        let mut verbs = vec![self.name()?];
+        let mut verbs = vec![self.word_or_name()?];
         while self.eat_punct(Punct::Comma) {
-            verbs.push(self.name()?);
+            verbs.push(self.word_or_name()?);
         }
         self.expect_keyword(Keyword::On, "`ON` and the table")?;
         let table = self.table_ref()?;

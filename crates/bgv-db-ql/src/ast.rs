@@ -88,6 +88,18 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `DEFINE BUCKET media` — a table whose records are files.
+    ///
+    /// The bytes live in a companion table nothing can name, and the records
+    /// here are metadata the store fills in (ADR-0011). Declared with its own
+    /// word rather than a flag on `DEFINE TABLE`, because what a caller may do
+    /// to it differs: a bucket is written through `PUT` and never by hand.
+    DefineBucket {
+        /// The name to create.
+        name: Name,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
     /// `DEFINE INDEX by_email ON users FIELDS email UNIQUE`
     DefineIndex {
         /// The index's name, unique within its table.
@@ -278,6 +290,20 @@ pub enum StatementKind {
     /// `DEL sessions:'abc'`
     Del {
         /// The key to remove.
+        target: RecordTarget,
+    },
+    /// `PUT media:'/logo.png' = 0x0a1b` — a file's whole content.
+    ///
+    /// One commit, so a half-written file is not a state this store can be in.
+    Put {
+        /// The file to write.
+        target: RecordTarget,
+        /// Its bytes.
+        value: Expr,
+    },
+    /// `READ media:'/logo.png'` — a file's bytes.
+    Read {
+        /// The file to read.
         target: RecordTarget,
     },
     /// `KEYS FROM sessions RANGE 'a'..'m'`

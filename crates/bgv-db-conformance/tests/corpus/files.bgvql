@@ -1,0 +1,102 @@
+# Files: a bucket is a table, a file is a record in it, and its bytes are
+# records too.
+#
+# There is no object store beside this one. A bucket is declared, a file is
+# written and read, and everything the language already had — reading, ordering,
+# relating, deleting — works on files because a file is not a new shape.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE library;
+USE DATABASE library;
+DEFINE BUCKET media;
+--- expect: ok
+
+--- case: a bucket that already exists is refused, like every other name
+DEFINE BUCKET media;
+--- expect: error NameTaken
+
+--- case: unless the statement says it will accept one
+DEFINE BUCKET IF NOT EXISTS media;
+--- expect: ok
+
+--- case: a file goes in as bytes
+PUT media:'/logo.png' = 0x89504e47;
+--- expect: ok
+
+--- case: and comes back as the bytes it was
+READ media:'/logo.png';
+--- expect: value 0x89504e47
+
+--- case: text is accepted too, because a file is very often text
+PUT media:'/notes.txt' = 'ada wrote this';
+--- expect: ok
+
+--- case: and comes back as bytes, which is what a file is
+READ media:'/notes.txt';
+--- expect: value 0x6164612077726f74652074686973
+
+--- case: a file nobody wrote is nothing, rather than a failure
+READ media:'/missing.txt';
+--- expect: value NONE
+
+--- case: what the store knows about a file is an ordinary record
+SELECT size FROM media:'/logo.png';
+--- expect: rows 1
+
+--- case: so listing a bucket is a query and not an API call
+SELECT * FROM media;
+--- expect: rows 2
+
+--- case: and the chunks are not in it
+SELECT count(*) AS held FROM media;
+--- expect: rows 1
+
+--- case: a file is named by a path, so an integer identity is refused
+PUT media:1 = 0x00;
+--- expect: error FileNeedsAPath
+
+--- case: a file is bytes, so a number is refused rather than encoded
+PUT media:'/wrong' = 42;
+--- expect: error FileIsNotBytes
+
+--- case: an ordinary table is not a bucket
+DEFINE TABLE users;
+PUT users:'/x' = 0x00;
+--- expect: error NotABucket
+
+--- case: and a bucket is not written by hand, because metadata would then lie
+CREATE media:'/forged.png' = { size: 3 };
+--- expect: error NotWrittenByHand
+
+--- case: a record points at a file the way it points at any record
+CREATE users:1 = { name: 'ada', avatar: media:'/logo.png' };
+--- expect: ok
+
+--- case: and following the reference reads the file's metadata
+SELECT avatar FROM users:1 FETCH avatar;
+--- expect: rows 1
+
+--- case: a relation to a file is an ordinary edge
+DEFINE TABLE attached EDGE;
+RELATE users:1->attached->media:'/logo.png';
+--- expect: ok
+
+--- case: traversed like any other
+SELECT * FROM users:1->attached->media;
+--- expect: rows 1
+
+--- case: writing over a file replaces it rather than adding to it
+PUT media:'/notes.txt' = 'shorter';
+READ media:'/notes.txt';
+--- expect: value 0x73686f72746572
+
+--- case: deleting a file removes it
+DELETE media:'/notes.txt';
+SELECT * FROM media;
+--- expect: rows 1
+
+--- case: and what it held is gone with it
+READ media:'/notes.txt';
+--- expect: value NONE

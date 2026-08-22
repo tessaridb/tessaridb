@@ -1339,6 +1339,50 @@ A space is not indexed by value. A record whose payload is not an object project
 to no fields, so an index over a space holds nothing. Searching a space by its
 values is a separate feature and is not claimed here.
 
+## 6a. Files
+
+A **bucket** is a table whose records are files.
+
+```
+DEFINE BUCKET media;
+PUT media:'/logo.png' = 0x89504e47;
+READ media:'/logo.png';
+```
+
+`PUT` writes a file's whole content in one commit, so a half-written file is not
+a state this store can be in. `READ` answers its bytes, or `NONE` where there is
+no file. Bytes or text may be written — a file is very often text, and making a
+caller spell out `0x…` for a document would be ceremony with no property behind
+it — and what comes back is bytes either way, because that is what a file is.
+
+**A file is a record, and its bytes are records too.** That sentence is the whole
+design, and everything below it follows rather than being built:
+
+```
+SELECT * FROM media;
+SELECT * FROM media WHERE size > 1000000 ORDER BY updated DESC;
+CREATE users:1 = { name: 'ada', avatar: media:'/logo.png' };
+RELATE users:1->attached->media:'/logo.png';
+DELETE media:'/logo.png';
+```
+
+Listing a bucket is a query. Pointing a record at a file is a record reference,
+which is one of the fifteen value types, so `FETCH` follows it. Relating a record
+to a file is an ordinary edge. Removing a file is `DELETE`, and the bytes go with
+it in the same commit. A grant on the bucket governs the metadata and the bytes
+together, because there is one table to grant on. A backup carries files, because
+a backup carries the log.
+
+What a bucket's records hold is what the store knows: `size`, `chunks` and
+`updated`. **They are not written by hand** — `CREATE`, `UPDATE` and `SET`
+against a bucket are refused, because metadata a caller can write is metadata
+that can disagree with the bytes, and nothing would ever catch it.
+
+A file is named by a **path**, so its identity is text: `media:1` is refused.
+That is not an aesthetic rule. A chunk's identity is the path followed by its
+ordinal, and an integer identity and the text of that integer would produce the
+same chunk — two files sharing bytes, which is not a defect anybody finds twice.
+
 ## 7. Transactions
 
 ```
@@ -1371,6 +1415,12 @@ Named here rather than merely missing, so each absence reads as a decision:
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
+| a byte range on `PUT` or `READ` — writing or reading part of a file | one commit is what makes a file whole or absent, and a partial write needs a rule for what a reader sees between two of them. The read half is cheaper than the write half and will land first |
+| a digest on a file's metadata | worth having, and it is a *verification* feature: it belongs with the backup verifier rather than half here and half there |
+| a content type on a file | the store holds bytes and has no opinion about them. It becomes worth carrying when something serves them over HTTP, which is where a content type is actually read |
+| listing a bucket by prefix (`/photos/…`) | `SELECT * FROM media WHERE path LIKE '/photos/%'` is the question, and it needs the record's identity addressable as a value in a filter — which is a language feature about identities, not about files |
+| a bucket whose bytes live somewhere else | the point of a bucket here is that everything is in one database — one backup, one identity, one feed. Pointing one at another service is additive and has its own credential and failure story |
+| sharing identical chunks between files | deduplication needs a reference count, and a reference count is a derived value that must be exactly right or space leaks or data vanishes |
 | a parameter where a **name** stands — a table, a field, an index, a namespace, a user, a role | a parameter is a value, and the rule that it is legal exactly where a literal is has one job: a caller who can supply a value must not thereby choose which column is read. A parameterised *name* is a second feature with a permission story of its own |
 | a parameter as a record id (`users:$id`) | an identity is written `table:id`, and the id half genuinely is a value — so this is additive rather than refused on principle. It waits for a surface that shows callers want it, because a record target is parsed in several places and widening all of them for a guess is the wrong order |
 | a prepared statement — a parse kept under a name and bound many times | parameters make it *possible*: the parsed tree no longer holds any caller's values. What it needs beyond that is a catalog object with a lifetime and an invalidation rule for when the schema under it changes, which is a feature and not an optimisation |
@@ -1438,6 +1488,10 @@ Named here rather than merely missing, so each absence reads as a decision:
 | `ORDER`, `BY`, `ASC`, `DESC`, `LIMIT`, `START` are contextual, not reserved | **contract** — reserving a word takes a name away from data that exists |
 | The analyzer belongs to the field, not to the index | **contract** — an analyzer on an index lets adding one change an answer |
 | `MATCHES` asks about words, `LIKE` about characters, `CONTAINS` about membership | **contract** |
+| A bucket is a table and a file is a record in it | **contract** (ADR-0011) — what makes linking, relating, listing, granting, subscribing and backing up files cost nothing |
+| A file's identity is text | **contract** — a chunk is addressed by the path and its ordinal, so an integer identity would collide with the text of that integer |
+| A bucket's records are written by `PUT` and never by hand | **contract** — metadata that can be written is metadata that can lie about bytes |
+| `PUT` is one commit | **contract** — a file is whole or absent, never partial |
 | A parameter is legal exactly where a literal is, and nowhere a name is | **contract** — the whole safety argument, and it is checkable by reading the grammar rather than by auditing the places a value is used |
 | A parameter is replaced after parsing and before the first statement runs | **contract** — so a supplied value can never be read as grammar, and a script with an unsupplied one writes nothing at all |
 | Values are supplied as values, not as text | **contract** — `36` and `'36'` are different questions, and a caller must not have to know how this language would have read a string |

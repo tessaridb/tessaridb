@@ -171,6 +171,33 @@ impl Parser<'_> {
     }
 
     /// A bare name, which is never a keyword.
+    /// A name in a position where only a name can stand, reading a reserved
+    /// word as one.
+    ///
+    /// The language already does this after `TYPE`, for an object literal's
+    /// field name, and for a function's group before `::`: where nothing but a
+    /// name is grammatical, a reserved word is a name and refusing it would be
+    /// pedantry that takes a word away from data.
+    ///
+    /// A grant's verbs are exactly such a position — `GRANT read, write ON …`
+    /// admits nothing else between `GRANT` and `ON` — and `read` became a
+    /// reserved word when files gained `READ`. Reading the source slice keeps
+    /// the verb spelled the way it was written, which matters because the store
+    /// compares it case-sensitively.
+    pub(super) fn word_or_name(&mut self) -> Result<Name> {
+        if let Some(Token::Keyword(_)) = self.peek() {
+            let span = self.span_here();
+            self.advance();
+            let text = self
+                .source
+                .get(span.start..span.end)
+                .unwrap_or_default()
+                .to_owned();
+            return Ok(Name { text, span });
+        }
+        self.name()
+    }
+
     pub(super) fn name(&mut self) -> Result<Name> {
         if !matches!(self.peek(), Some(Token::Ident(_))) {
             return Err(self.error_here("a name"));

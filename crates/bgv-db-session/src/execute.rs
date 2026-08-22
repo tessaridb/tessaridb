@@ -44,6 +44,7 @@ impl Session<'_> {
                 TableShape {
                     schemafull: *schemafull,
                     edge: *edge,
+                    bucket: false,
                 },
                 *if_not_exists,
                 span,
@@ -164,7 +165,7 @@ impl Session<'_> {
                 Ok(Outcome::Done)
             }
             StatementKind::Create { target, value } => {
-                let (_, address) = self.address(transaction, target)?;
+                let (_, address) = self.writable(transaction, target)?;
                 // A create over a record that is already there is refused. The
                 // alternative is silent replacement, which loses a record with
                 // nothing anywhere to notice — and `UPDATE` and `SET` both say
@@ -181,7 +182,7 @@ impl Session<'_> {
                 Ok(Outcome::Done)
             }
             StatementKind::Update { target, value } => {
-                let (_, address) = self.address(transaction, target)?;
+                let (_, address) = self.writable(transaction, target)?;
                 if transaction.get(&address)?.is_none() {
                     return Err(Error::NoSuchRecord {
                         id: address.id.to_string(),
@@ -198,12 +199,16 @@ impl Session<'_> {
             // A key-value write replaces whatever was there, which is why it is
             // a different verb from `CREATE` rather than the same one.
             StatementKind::Set { target, value } => {
-                let (_, address) = self.address(transaction, target)?;
+                let (_, address) = self.writable(transaction, target)?;
                 let payload = self.evaluate(transaction, value)?;
                 transaction.put(address, encode_payload(&payload).into_bytes());
                 Ok(Outcome::Done)
             }
             StatementKind::Delete { target } | StatementKind::Del { target } => {
+                // A file's bytes go with its metadata, in this commit. A bucket
+                // that kept chunks nothing describes would leak space nothing
+                // could ever find its way back to.
+                self.clear_file(transaction, target)?;
                 let (_, address) = self.address(transaction, target)?;
                 transaction.delete(address);
                 Ok(Outcome::Done)
@@ -211,6 +216,39 @@ impl Session<'_> {
             StatementKind::DeleteWhere { table, condition } => {
                 self.delete_where(transaction, table, condition)
             }
+            StatementKind::DefineBucket {
+                name,
+                if_not_exists,
+            } => self.define_table(
+                transaction,
+                name,
+                TableShape {
+                    schemafull: false,
+                    edge: false,
+                    bucket: true,
+                },
+                *if_not_exists,
+                span,
+            ),
+            StatementKind::Put { target, value } => {
+                let bytes = match self.evaluate(transaction, value)? {
+                    Value::Bytes(bytes) => bytes,
+                    // Text is accepted because a file is very often text, and
+                    // making a caller write `0x…` for a document would be a
+                    // ceremony with no property behind it. Nothing else is: a
+                    // file is bytes, and guessing at an encoding for a number or
+                    // an object is a decision this store has no business taking.
+                    Value::String(text) => text.into_bytes(),
+                    other => {
+                        return Err(Error::FileIsNotBytes {
+                            found: other.type_name(),
+                            span,
+                        });
+                    }
+                };
+                self.put_file(transaction, target, &bytes)
+            }
+            StatementKind::Read { target } => self.read_file(transaction, target),
             StatementKind::Get { target } => {
                 Ok(Outcome::Value(self.read_key(transaction, target)?))
             }

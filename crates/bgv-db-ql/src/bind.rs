@@ -68,7 +68,8 @@ fn bind_statement(kind: &mut StatementKind, parameters: &Parameters) -> Result<(
     match kind {
         StatementKind::Create { value, .. }
         | StatementKind::Update { value, .. }
-        | StatementKind::Set { value, .. } => bind_expr(value, parameters),
+        | StatementKind::Set { value, .. }
+        | StatementKind::Put { value, .. } => bind_expr(value, parameters),
         StatementKind::DeleteWhere { condition, .. } => bind_expr(condition, parameters),
         StatementKind::Relate { value, .. } => match value {
             Some(value) => bind_expr(value, parameters),
@@ -87,6 +88,8 @@ fn bind_statement(kind: &mut StatementKind, parameters: &Parameters) -> Result<(
         | StatementKind::DefineDatabase { .. }
         | StatementKind::DefineTable { .. }
         | StatementKind::DefineSpace { .. }
+        | StatementKind::DefineBucket { .. }
+        | StatementKind::Read { .. }
         | StatementKind::DefineIndex { .. }
         | StatementKind::DefineField { .. }
         | StatementKind::DefineAnalyzer { .. }

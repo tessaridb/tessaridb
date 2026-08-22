@@ -27,6 +27,7 @@ const FIELD_SEARCH: &str = "search";
 const FIELD_VECTOR: &str = "vector";
 const FIELD_SCHEMAFULL: &str = "schemafull";
 const FIELD_EDGE: &str = "edge";
+const FIELD_BUCKET: &str = "bucket";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +76,18 @@ pub struct TableDefinition {
     /// before writing, because an edge nothing can traverse to is worse than a
     /// refusal.
     pub edge: bool,
+    /// Whether the table holds files rather than records a caller writes.
+    ///
+    /// A bucket's records are a file's **metadata** — its size, its chunk count,
+    /// when it was written — and the store is what fills them in, from bytes it
+    /// actually holds. So `CREATE`, `UPDATE` and `SET` against one are refused:
+    /// metadata a caller can write by hand is metadata that can lie, and a size
+    /// that disagrees with the bytes is a lie nothing would ever catch.
+    ///
+    /// Reading is not restricted. Listing a bucket is `SELECT * FROM media`,
+    /// which is a query rather than an API call, and that is the point of a
+    /// bucket being a table at all (ADR-0011).
+    pub bucket: bool,
 }
 
 impl NamespaceDefinition {
@@ -140,6 +153,7 @@ impl TableDefinition {
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
             (FIELD_SCHEMAFULL.to_owned(), Value::Bool(self.schemafull)),
             (FIELD_EDGE.to_owned(), Value::Bool(self.edge)),
+            (FIELD_BUCKET.to_owned(), Value::Bool(self.bucket)),
         ]))
     }
 
@@ -162,6 +176,7 @@ impl TableDefinition {
             name: field_name(fields, "table")?,
             schemafull: flag(fields, FIELD_SCHEMAFULL, "table")?,
             edge: flag(fields, FIELD_EDGE, "table")?,
+            bucket: flag(fields, FIELD_BUCKET, "table")?,
         })
     }
 }
@@ -178,6 +193,9 @@ pub struct TableShape {
     pub schemafull: bool,
     /// Hold edges: records carrying `out` and `in`, each with an index.
     pub edge: bool,
+    /// Hold files: records carrying metadata the store fills in, with the bytes
+    /// in a companion table nothing can name.
+    pub bucket: bool,
 }
 
 /// What a `DEFINE INDEX` says beyond which values it projects.
@@ -496,6 +514,7 @@ mod tests {
             name: "line_items".to_owned(),
             schemafull: true,
             edge: false,
+            bucket: false,
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),

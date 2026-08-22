@@ -25,6 +25,7 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DefineDatabase { .. } => "DEFINE DATABASE",
         StatementKind::DefineTable { .. } => "DEFINE TABLE",
         StatementKind::DefineSpace { .. } => "DEFINE SPACE",
+        StatementKind::DefineBucket { .. } => "DEFINE BUCKET",
         StatementKind::DefineIndex { .. } => "DEFINE INDEX",
         StatementKind::DefineField { .. } => "DEFINE FIELD",
         StatementKind::DefineAnalyzer { .. } => "DEFINE ANALYZER",
@@ -44,6 +45,8 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::Get { .. } => "GET",
         StatementKind::Set { .. } => "SET",
         StatementKind::Del { .. } => "DEL",
+        StatementKind::Put { .. } => "PUT",
+        StatementKind::Read { .. } => "READ",
         StatementKind::Keys { .. } => "KEYS",
         StatementKind::Begin => "BEGIN",
         StatementKind::Commit => "COMMIT",
@@ -61,6 +64,7 @@ pub const FORMS: &[&str] = &[
     "DEFINE DATABASE",
     "DEFINE TABLE",
     "DEFINE SPACE",
+    "DEFINE BUCKET",
     "DEFINE INDEX",
     "DEFINE FIELD",
     "DEFINE ANALYZER",
@@ -80,6 +84,8 @@ pub const FORMS: &[&str] = &[
     "GET",
     "SET",
     "DEL",
+    "PUT",
+    "READ",
     "KEYS",
     "BEGIN",
     "COMMIT",
@@ -122,6 +128,7 @@ mod tests {
              DEFINE DATABASE d;\
              DEFINE TABLE t;\
              DEFINE SPACE s;\
+             DEFINE BUCKET b;\
              DEFINE INDEX i ON t FIELDS f;\
              DEFINE FIELD f ON t TYPE string;\
              DROP TABLE t;\
@@ -142,6 +149,8 @@ mod tests {
              SET s:1 = 1;\
              DEL s:1;\
              KEYS FROM s;\
+             PUT b:'/a.txt' = 0x0a;\
+             READ b:'/a.txt';\
              BEGIN;\
              COMMIT;\
              CANCEL;",

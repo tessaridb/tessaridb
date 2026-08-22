@@ -26,6 +26,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // table they are about to create — see `Error::GrantedUserCannotDeclare`.
         StatementKind::DefineTable { .. }
         | StatementKind::DefineSpace { .. }
+        | StatementKind::DefineBucket { .. }
         // Nothing here touches a table: a tenancy, an analyzer, a user, a grant,
         // a selection or a transaction verb.
         | StatementKind::Use { .. }
@@ -55,7 +56,14 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::Set { target, .. }
         | StatementKind::Get { target }
         | StatementKind::Delete { target }
-        | StatementKind::Del { target } => vec![&target.table],
+        | StatementKind::Del { target }
+        // A file is a record in the bucket, so the bucket is the table a grant
+        // is asked about. The chunks live in a table nothing can name, and are
+        // reached only through these two statements — which is what keeps a
+        // file's bytes and its metadata behind **one** permission question
+        // rather than two (ADR-0011).
+        | StatementKind::Put { target, .. }
+        | StatementKind::Read { target } => vec![&target.table],
 
         // An edge reaches three: the two records it connects and the table the
         // relation is recorded in. A grant on the edge table alone would let

@@ -422,10 +422,17 @@ impl Parser<'_> {
         // Read from the source rather than from the token, so a reserved word
         // used as a group keeps the case it was written in: `type::of` is a
         // function and `TYPE::of` is not, the same as every other name here.
+        //
+        // The half after `::` gets the same treatment, and for a reason that
+        // arrived rather than being foreseen: `time::bucket` stopped parsing the
+        // day files gave `BUCKET` a meaning. A function's name sits where
+        // nothing but a name can stand, so a reserved word there is a name — and
+        // reading it from the source keeps its case, which is what makes
+        // `time::BUCKET` still not a function.
         let group = self.span_here();
         self.advance();
         self.expect_punct(Punct::ColonColon, "`::` after a function's group")?;
-        let name = self.name()?;
+        let name = self.word_or_name()?;
         let Some(group) = self.source.get(group.start..group.end) else {
             return Err(self.error_here("a function's group"));
         };

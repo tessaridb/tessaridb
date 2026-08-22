@@ -206,6 +206,11 @@ fn kind_name(error: &Error) -> &'static str {
         Error::ArithmeticFailed { .. } => "ArithmeticFailed",
         Error::WrongArgument { .. } => "WrongArgument",
         Error::CallFailed { .. } => "CallFailed",
+        Error::NotABucket { .. } => "NotABucket",
+        Error::NotWrittenByHand { .. } => "NotWrittenByHand",
+        Error::FileNeedsAPath { .. } => "FileNeedsAPath",
+        Error::FileIsNotBytes { .. } => "FileIsNotBytes",
+        Error::FileIsIncomplete { .. } => "FileIsIncomplete",
         _ => "Unnamed",
     }
 }

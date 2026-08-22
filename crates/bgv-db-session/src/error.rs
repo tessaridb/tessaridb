@@ -405,6 +405,69 @@ pub enum Error {
         span: Span,
     },
 
+    /// A statement that only a bucket answers, aimed at an ordinary table.
+    ///
+    /// Refused rather than writing a record that looks like a file: the two are
+    /// the same shape on disk, so a table that gained file semantics because
+    /// somebody used the wrong verb is a state nothing could later tell apart.
+    #[error("{table} is not a bucket (at {span}) — define it with `DEFINE BUCKET`")]
+    NotABucket {
+        /// The table as written.
+        table: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A record written by hand into a bucket.
+    ///
+    /// A bucket's records describe bytes the store holds. One a caller can write
+    /// is one that can lie — a size that disagrees with the file, a chunk count
+    /// pointing at chunks nobody wrote — and nothing would ever catch it,
+    /// because there is nothing to catch it against.
+    #[error("{table} is a bucket (at {span}) — write a file with `PUT`")]
+    NotWrittenByHand {
+        /// The bucket as written.
+        table: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A `PUT` whose value is neither bytes nor text.
+    #[error("a file is bytes, not {found} (at {span})")]
+    FileIsNotBytes {
+        /// The type that stood there instead.
+        found: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A file addressed by something other than a path.
+    ///
+    /// A file's identity is text, because a chunk's identity is the path
+    /// followed by its ordinal — and an integer identity and the text of that
+    /// integer would produce the same chunk key, which is two files sharing
+    /// bytes.
+    #[error("a file is named by a path, so its identity is text (at {span})")]
+    FileNeedsAPath {
+        /// Where the identity was written.
+        span: Span,
+    },
+
+    /// Metadata promising a chunk the store does not hold.
+    ///
+    /// Unreachable through the statements that write files — the metadata and
+    /// the chunks land in one commit — so this says the store is inconsistent
+    /// rather than answering a file that is quietly short.
+    #[error("{path:?} is missing chunk {ordinal} (at {span})")]
+    FileIsIncomplete {
+        /// The file's path.
+        path: String,
+        /// Which chunk is absent.
+        ordinal: u32,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A parameter in an expression that belongs to no call.
     ///
     /// Every parameter in a script is replaced by its value before the first

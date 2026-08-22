@@ -144,9 +144,15 @@ impl Parser<'_> {
                 .get(self.position.saturating_add(offset))
                 .map(|spanned| &spanned.token)
         };
+        // A reserved word is admitted on **both** sides of the `::`. The group
+        // always was — `type::of` is a function. The name half was added when
+        // `time::bucket` stopped parsing the day files gave `BUCKET` a meaning:
+        // nothing but a name can stand there, so a reserved word there is a
+        // name, and the alternative is a grammar that quietly loses a function
+        // every time a word is reserved somewhere else.
         matches!(at(0), Some(Token::Ident(_) | Token::Keyword(_)))
             && matches!(at(1), Some(Token::Punct(Punct::ColonColon)))
-            && matches!(at(2), Some(Token::Ident(_)))
+            && matches!(at(2), Some(Token::Ident(_) | Token::Keyword(_)))
             && matches!(at(3), Some(Token::Punct(Punct::ParenOpen)))
     }
 

@@ -1,0 +1,357 @@
+//! Files: a bucket's metadata, and the chunks its bytes live in.
+//!
+//! # A file is a record, and so is a chunk
+//!
+//! ADR-0011. `media:'/logo.png'` is an ordinary record in an ordinary table, and
+//! its payload is what the store knows about the file — how big it is, how many
+//! chunks it took, when it was written. The bytes are records too, in a
+//! companion table whose name carries a byte an identifier cannot hold, so no
+//! statement can reach them.
+//!
+//! What that buys is everything already built. Snapshot isolation, deterministic
+//! apply, version reclamation, the change feed, backup and restore, tenancy in
+//! the key, per-table grants — none of them is extended by a line, and the
+//! restore-and-compare test covers files the day they exist.
+//!
+//! # Why a chunk's identity is bytes
+//!
+//! `Bytes(path ++ ordinal:u32 big-endian)`. The path first so one file's chunks
+//! are contiguous, the ordinal fixed-width and big-endian so they are in order —
+//! record identities are order-encoded, so that ordering is the store's and not
+//! a convention this module maintains.
+//!
+//! It also forces a file's own identity to be **text**: an integer identity and
+//! the text of that integer would produce the same chunk key, and two files
+//! sharing chunks is not a bug anybody would find twice.
+
+use bgv_db_encoding::{decode_payload, encode_payload};
+use bgv_db_ql::{RecordTarget, Span};
+use bgv_db_storage::{Catalog, RecordAddress, Transaction};
+use bgv_db_types::{RecordId, TableId, Value};
+
+use crate::context::Context;
+use crate::error::{Error, Result};
+use crate::outcome::Outcome;
+use crate::session::Session;
+
+/// How much of a file one record holds.
+///
+/// A megabyte: comfortably inside the wire protocol's 16 MiB frame and the
+/// engine's write batch, and large enough that an ordinary document is one or
+/// two records rather than hundreds.
+const CHUNK: usize = 1024 * 1024;
+
+/// What a file's metadata record holds.
+const FIELD_SIZE: &str = "size";
+const FIELD_CHUNKS: &str = "chunks";
+const FIELD_UPDATED: &str = "updated";
+
+impl Session<'_> {
+    /// `PUT media:'/logo.png' = 0x…` — write a file's whole content.
+    ///
+    /// One commit, so a half-written file is not a state this store can be in:
+    /// the chunks and the metadata that describes them land together or neither
+    /// does.
+    pub(crate) fn put_file(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+        bytes: &[u8],
+    ) -> Result<Outcome> {
+        let (context, table) = self.bucket(transaction, target)?;
+        let path = text_identity(&target.id, target.span)?;
+        let chunks = self.chunk_table(transaction, &context, table, target.span)?;
+
+        // The file that was there is removed first, because a shorter file
+        // written over a longer one would otherwise keep the tail of the old
+        // one — chunks nothing describes and nothing would ever read, until a
+        // later write made the count long enough to reach them again.
+        self.clear_chunks(transaction, &context, chunks, table, &target.id)?;
+
+        let mut ordinal: u32 = 0;
+        for part in bytes.chunks(CHUNK) {
+            transaction.put(
+                RecordAddress::new(
+                    context.namespace,
+                    context.database,
+                    chunks,
+                    chunk_id(path, ordinal),
+                ),
+                encode_payload(&Value::Bytes(part.to_vec())).into_bytes(),
+            );
+            ordinal = ordinal.saturating_add(1);
+        }
+
+        let metadata = Value::Object(
+            [
+                (FIELD_SIZE.to_owned(), count(bytes.len())),
+                (
+                    FIELD_CHUNKS.to_owned(),
+                    count(usize::try_from(ordinal).unwrap_or(usize::MAX)),
+                ),
+                (FIELD_UPDATED.to_owned(), written_at()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        transaction.put(
+            RecordAddress::new(
+                context.namespace,
+                context.database,
+                table,
+                target.id.clone(),
+            ),
+            encode_payload(&metadata).into_bytes(),
+        );
+        Ok(Outcome::Done)
+    }
+
+    /// `READ media:'/logo.png'` — the file's bytes, or `NONE` if there is none.
+    ///
+    /// Read by point reads rather than by a scan: the metadata says how many
+    /// chunks there are and it was written in the same commit as the chunks, so
+    /// the count is not a guess that a scan would be checking.
+    pub(crate) fn read_file(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+    ) -> Result<Outcome> {
+        let (context, table) = self.bucket(transaction, target)?;
+        let path = text_identity(&target.id, target.span)?;
+        let address = RecordAddress::new(
+            context.namespace,
+            context.database,
+            table,
+            target.id.clone(),
+        );
+        let Some(payload) = transaction.get(&address)? else {
+            return Ok(Outcome::Value(Value::None));
+        };
+        let held = decode_payload(&payload)?;
+        let chunks = self.chunk_table(transaction, &context, table, target.span)?;
+
+        let mut bytes = Vec::new();
+        for ordinal in 0..chunk_count(&held) {
+            let at = RecordAddress::new(
+                context.namespace,
+                context.database,
+                chunks,
+                chunk_id(path, ordinal),
+            );
+            let Some(part) = transaction.get(&at)? else {
+                // A chunk the metadata promises and the store does not hold. It
+                // cannot happen through this module — both are written in one
+                // commit — so saying so is better than answering a short file.
+                return Err(Error::FileIsIncomplete {
+                    path: path.to_owned(),
+                    ordinal,
+                    span: target.span,
+                });
+            };
+            match decode_payload(&part)? {
+                Value::Bytes(part) => bytes.extend_from_slice(&part),
+                _ => {
+                    return Err(Error::FileIsIncomplete {
+                        path: path.to_owned(),
+                        ordinal,
+                        span: target.span,
+                    });
+                }
+            }
+        }
+        Ok(Outcome::Value(Value::Bytes(bytes)))
+    }
+
+    /// Remove a file's chunks, given what its metadata says it has.
+    ///
+    /// Called before a write and before a delete. Silent when there is no file:
+    /// a bucket with nothing at that path has no chunks to remove, which is not
+    /// a condition worth an error.
+    pub(crate) fn clear_chunks(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: &Context,
+        chunks: TableId,
+        bucket: TableId,
+        id: &RecordId,
+    ) -> Result<()> {
+        let RecordId::Text(path) = id else {
+            return Ok(());
+        };
+        let address = RecordAddress::new(context.namespace, context.database, bucket, id.clone());
+        let Some(payload) = transaction.get(&address)? else {
+            return Ok(());
+        };
+        let held = decode_payload(&payload)?;
+        for ordinal in 0..chunk_count(&held) {
+            transaction.delete(RecordAddress::new(
+                context.namespace,
+                context.database,
+                chunks,
+                chunk_id(path, ordinal),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Resolve a target that must **not** name a bucket.
+    ///
+    /// The one guard behind `CREATE`, `UPDATE` and `SET`. A bucket's records are
+    /// metadata describing bytes the store holds, so a record written by hand is
+    /// a record that can lie — a size that disagrees with the file, a chunk count
+    /// pointing at chunks nobody wrote. Nothing would ever catch it, because
+    /// there is nothing to catch it against.
+    ///
+    /// `DELETE` is deliberately not here: removing a file is how a file is
+    /// removed, and it takes the chunks with it.
+    pub(crate) fn writable(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+    ) -> Result<(Context, RecordAddress)> {
+        let (context, address) = self.address(transaction, target)?;
+        if Catalog::new(transaction)
+            .table(address.table)?
+            .is_some_and(|found| found.bucket)
+        {
+            return Err(Error::NotWrittenByHand {
+                table: target.table.name.text.clone(),
+                span: target.span,
+            });
+        }
+        Ok((context, address))
+    }
+
+    /// Remove a file's chunks when the table being deleted from is a bucket.
+    ///
+    /// Called by `DELETE`, which is the statement that removes a file — so the
+    /// bytes go with the metadata in one commit, and a bucket cannot accumulate
+    /// chunks nothing describes.
+    pub(crate) fn clear_file(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+    ) -> Result<()> {
+        let (context, table) = self.resolve_table(transaction, &target.table)?;
+        let named = Catalog::new(transaction)
+            .table(table)?
+            .filter(|found| found.bucket)
+            .map(|found| Catalog::chunks_named(&found.name));
+        let Some(named) = named else {
+            return Ok(());
+        };
+        let Some(chunks) =
+            Catalog::new(transaction).table_id(context.namespace, context.database, &named)?
+        else {
+            return Ok(());
+        };
+        self.clear_chunks(transaction, &context, chunks, table, &target.id)
+    }
+
+    /// Resolve a target that must name a bucket.
+    ///
+    /// A `PUT` against an ordinary table is refused here rather than writing a
+    /// record that looks like a file: the two are the same shape on disk, and a
+    /// table that gained file semantics because somebody used the wrong verb is
+    /// a state nothing could later tell apart.
+    pub(crate) fn bucket(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+    ) -> Result<(Context, TableId)> {
+        let (context, table) = self.resolve_table(transaction, &target.table)?;
+        let definition = Catalog::new(transaction).table(table)?;
+        if !definition.is_some_and(|found| found.bucket) {
+            return Err(Error::NotABucket {
+                table: target.table.name.text.clone(),
+                span: target.span,
+            });
+        }
+        Ok((context, table))
+    }
+
+    /// The table a bucket's chunks live in.
+    fn chunk_table(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: &Context,
+        bucket: TableId,
+        span: Span,
+    ) -> Result<TableId> {
+        let named = Catalog::new(transaction)
+            .table(bucket)?
+            .map(|found| Catalog::chunks_named(&found.name));
+        let Some(named) = named else {
+            return Err(Error::Unknown {
+                entity: "table",
+                name: "a bucket".to_owned(),
+                span,
+            });
+        };
+        Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &named)?
+            .ok_or(Error::Unknown {
+                entity: "the table a bucket's chunks live in",
+                name: named,
+                span,
+            })
+    }
+}
+
+/// A chunk's identity: the file's path, then its ordinal.
+///
+/// Big-endian and fixed-width so the identities sort in the order the chunks are
+/// read in — the store orders record identities, so this is the store's ordering
+/// and not one this module maintains.
+fn chunk_id(path: &str, ordinal: u32) -> RecordId {
+    let mut bytes = path.as_bytes().to_vec();
+    bytes.extend_from_slice(&ordinal.to_be_bytes());
+    RecordId::Bytes(bytes)
+}
+
+/// A file is named by a path, so its identity is text.
+fn text_identity(id: &RecordId, span: Span) -> Result<&str> {
+    match id {
+        RecordId::Text(path) => Ok(path),
+        _ => Err(Error::FileNeedsAPath { span }),
+    }
+}
+
+/// How many chunks a metadata record says a file has.
+///
+/// Absent or malformed reads as none, which answers an empty file rather than
+/// failing: the alternative is an error whose only cause is a record this module
+/// wrote, and a metadata record it did not write cannot exist.
+fn chunk_count(metadata: &Value) -> u32 {
+    let Value::Object(fields) = metadata else {
+        return 0;
+    };
+    match fields.get(FIELD_CHUNKS) {
+        Some(Value::Number(bgv_db_types::Number::Integer(held))) => {
+            u32::try_from(*held).unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
+/// When a file was written.
+///
+/// `NONE` if the clock is unreadable rather than a failure: a file whose bytes
+/// landed and whose timestamp did not is still a file, and refusing the write
+/// would lose the thing the caller actually asked to keep.
+fn written_at() -> Value {
+    let Ok(since) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return Value::None;
+    };
+    let Ok(seconds) = i64::try_from(since.as_secs()) else {
+        return Value::None;
+    };
+    bgv_db_types::Datetime::new(seconds, since.subsec_nanos()).map_or(Value::None, Value::Datetime)
+}
+
+/// A count, as the value system holds one.
+fn count(held: usize) -> Value {
+    Value::Number(bgv_db_types::Number::Integer(
+        i64::try_from(held).unwrap_or(i64::MAX),
+    ))
+}

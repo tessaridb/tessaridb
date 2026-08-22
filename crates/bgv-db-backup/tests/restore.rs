@@ -18,9 +18,17 @@ use bgv_db_storage::Store;
 /// Every engine this project has built, in one script.
 ///
 /// Records, an ordered index, a unique one, a path index, a full-text index with
-/// its maintained statistics, a vector graph, edges, a key-value space, schema
-/// declarations with a default, users — and updates and deletes after the
-/// indexes exist, so the maintenance path runs rather than only the build path.
+/// its maintained statistics, a vector graph, edges, a key-value space, a bucket
+/// of files, schema declarations with a default, users — and updates and deletes
+/// after the indexes exist, so the maintenance path runs rather than only the
+/// build path.
+///
+/// The bucket is here for the same reason everything else is, and it needed no
+/// new machinery to be: a file is a record and a chunk is a record, so a restore
+/// that reproduces records reproduces files. A bucket whose files did *not*
+/// survive would mean something about them is not derived from the log — which
+/// would be a defect in the store rather than in the backup, and this is where
+/// that shows.
 const EVERYTHING: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
 DEFINE DATABASE orders; USE DATABASE orders;\n\
@@ -50,6 +58,13 @@ DEFINE TABLE sessions;\n\
 SET sessions:'abc' = { user: people:1, level: 3 };\n\
 SET sessions:'def' = [1, 2, 3];\n\
 DEL sessions:'def';\n\
+DEFINE BUCKET media;\n\
+PUT media:'/logo.png' = 0x89504e470d0a1a0a;\n\
+PUT media:'/notes.txt' = 'ada wrote this, and it is stored as bytes';\n\
+PUT media:'/replaced' = 'the long one that gets written over';\n\
+PUT media:'/replaced' = 'short';\n\
+PUT media:'/gone' = 'removed before the backup was taken';\n\
+DELETE media:'/gone';\n\
 DEFINE USER root ROLE owner PASSWORD 'a long one';";
 
 /// Reads that touch each engine, so a difference anywhere shows up as an answer.
@@ -68,6 +83,11 @@ const INTERROGATION: &[&str] = &[
     "GET sessions:'def';",
     "KEYS FROM sessions;",
     "SELECT count(*) AS held, address.city FROM people GROUP BY address.city;",
+    "SELECT * FROM media;",
+    "READ media:'/logo.png';",
+    "READ media:'/notes.txt';",
+    "READ media:'/replaced';",
+    "READ media:'/gone';",
 ];
 
 fn store() -> (Arc<dyn KvBackend>, Store) {

@@ -222,6 +222,12 @@ pub enum Keyword {
     Table,
     /// `SPACE`
     Space,
+    /// `BUCKET` — a table whose records are files.
+    Bucket,
+    /// `PUT` — write a file's bytes.
+    Put,
+    /// `READ` — answer a file's bytes.
+    Read,
     /// `INDEX`
     Index,
     /// `ON`
@@ -343,6 +349,9 @@ impl Keyword {
             Self::Drop => "DROP",
             Self::Table => "TABLE",
             Self::Space => "SPACE",
+            Self::Bucket => "BUCKET",
+            Self::Put => "PUT",
+            Self::Read => "READ",
             Self::Index => "INDEX",
             Self::On => "ON",
             Self::Join => "JOIN",
@@ -408,6 +417,9 @@ impl Keyword {
         Self::Drop,
         Self::Table,
         Self::Space,
+        Self::Bucket,
+        Self::Put,
+        Self::Read,
         Self::Index,
         Self::On,
         Self::Join,

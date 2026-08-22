@@ -151,6 +151,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             name: name.to_owned(),
             schemafull: shape.schemafull,
             edge: shape.edge,
+            bucket: shape.bucket,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
@@ -170,7 +171,31 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 self.create_field(id, endpoint, FieldKind::Record, FieldShape::default())?;
             }
         }
+        if shape.bucket {
+            // The companion table the bytes live in. Its name carries a byte an
+            // identifier cannot hold, so no statement can name it — the same
+            // mechanism the catalog itself uses to be unreachable rather than
+            // merely undocumented, and the reason `SELECT * FROM media` answers
+            // with files and never with chunks (ADR-0011 §2).
+            self.create_table(
+                namespace,
+                database,
+                &Self::chunks_named(name),
+                TableShape::default(),
+            )?;
+        }
         Ok(definition)
+    }
+
+    /// The name of the table a bucket's chunks live in.
+    ///
+    /// Derived rather than stored: the name carries the fact, so a second field
+    /// in the catalog holding the same id would be a fact that can disagree with
+    /// itself. The `\u{1}` is what makes it unnameable — an identifier is
+    /// letters, digits and underscores, so nothing a caller can write reaches it.
+    #[must_use]
+    pub fn chunks_named(bucket: &str) -> String {
+        format!("{bucket}\u{1}chunks")
     }
 
     /// Create an index on an existing table.

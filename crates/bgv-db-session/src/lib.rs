@@ -28,6 +28,7 @@ mod context;
 mod error;
 mod evaluate;
 mod execute;
+mod file;
 mod grants;
 mod identity;
 mod outcome;
