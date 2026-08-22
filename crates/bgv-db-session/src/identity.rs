@@ -101,6 +101,10 @@ impl Needs {
             StatementKind::Select(_)
             | StatementKind::Get { .. }
             | StatementKind::Keys { .. }
+            // Reading a file is reading. Named rather than left to the
+            // catch-all, which reads as `Write` — the default that is right for
+            // every statement that changes something and wrong for this one.
+            | StatementKind::Read { .. }
             // `USE` and the transaction verbs change what the *next* statement
             // runs in rather than touching anything, and refusing them would
             // make a viewer unable to say which database it is reading.
