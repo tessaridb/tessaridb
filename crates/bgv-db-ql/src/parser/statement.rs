@@ -97,6 +97,25 @@ impl Parser<'_> {
                     target: self.record_target()?,
                 }
             }
+            Some(Keyword::Backup) => {
+                self.advance();
+                // `FROM` reads as it does everywhere else — where the answer
+                // starts — and leaving it out means the whole log, which is what
+                // `write_from(.., 1)` already is.
+                let from = if self.eat_keyword(Keyword::From) {
+                    let expected = "the sequence the backup starts at";
+                    let Some(Token::Number(bgv_db_types::Number::Integer(held))) = self.peek()
+                    else {
+                        return Err(self.error_here(expected));
+                    };
+                    let held = u64::try_from(*held).map_err(|_| self.error_here(expected))?;
+                    self.advance();
+                    Some(held)
+                } else {
+                    None
+                };
+                StatementKind::Backup { from }
+            }
             Some(Keyword::Del) => {
                 self.advance();
                 StatementKind::Del {

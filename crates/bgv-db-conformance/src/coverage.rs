@@ -48,6 +48,7 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::Del { .. } => "DEL",
         StatementKind::Put { .. } => "PUT",
         StatementKind::Read { .. } => "READ",
+        StatementKind::Backup { .. } => "BACKUP",
         StatementKind::Keys { .. } => "KEYS",
         StatementKind::Begin => "BEGIN",
         StatementKind::Commit => "COMMIT",
@@ -88,6 +89,7 @@ pub const FORMS: &[&str] = &[
     "DEL",
     "PUT",
     "READ",
+    "BACKUP",
     "KEYS",
     "BEGIN",
     "COMMIT",
@@ -154,6 +156,7 @@ mod tests {
              KEYS FROM s;\
              PUT b:'/a.txt' = 0x0a;\
              READ b:'/a.txt';\
+             BACKUP;\
              BEGIN;\
              COMMIT;\
              CANCEL;",

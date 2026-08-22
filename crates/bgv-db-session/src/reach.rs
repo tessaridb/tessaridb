@@ -39,7 +39,14 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::Revoke { .. }
         | StatementKind::Begin
         | StatementKind::Commit
-        | StatementKind::Cancel => Vec::new(),
+        | StatementKind::Cancel
+        // A backup names **no** table because it reaches every one. That is the
+        // opposite of what an empty answer means everywhere else here, so the
+        // authorization for it is a role check that does not consult this list
+        // at all (`Needs::Administer`), and `within_grants` refuses a
+        // grant-governed user by name — because a rule shaped "every table it
+        // names is granted" passes vacuously over an empty list.
+        | StatementKind::Backup { .. } => Vec::new(),
 
         // Declarations *on* a table, which is a table that already exists.
         StatementKind::DefineIndex { table, .. }

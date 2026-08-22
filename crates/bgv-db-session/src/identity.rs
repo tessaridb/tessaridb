@@ -132,6 +132,12 @@ impl Needs {
             | StatementKind::DropUser { .. }
             | StatementKind::Grant { .. }
             | StatementKind::Revoke { .. } => Self::Administer,
+            // A backup is every record in the store, past every grant and every
+            // tenancy boundary. There is no permission smaller than "may see all
+            // of it", so the role is the whole check — and a grant can never add
+            // to it, which `within_grants` says out loud rather than leaving to
+            // the fact that a backup names no table.
+            StatementKind::Backup { .. } => Self::Administer,
             // Everything else changes something: the records, or the structure
             // they are held in. Defining and dropping sit here rather than under
             // `Administer` because an `editor` is expected to shape the data

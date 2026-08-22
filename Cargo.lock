@@ -138,6 +138,7 @@ name = "bgv-db-http"
 version = "0.0.0"
 dependencies = [
  "bgv-db",
+ "bgv-db-backup",
  "bgv-db-kv",
  "bgv-db-storage",
  "bgv-db-types",
@@ -178,6 +179,7 @@ name = "bgv-db-session"
 version = "0.0.0"
 dependencies = [
  "argon2",
+ "bgv-db-backup",
  "bgv-db-constants",
  "bgv-db-encoding",
  "bgv-db-kv",

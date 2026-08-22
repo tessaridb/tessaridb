@@ -117,6 +117,44 @@ impl Session<'_> {
     /// Read by point reads rather than by a scan: the metadata says how many
     /// chunks there are and it was written in the same commit as the chunks, so
     /// the count is not a guess that a scan would be checking.
+    /// The store's log as a backup file, from `from` or from the beginning.
+    ///
+    /// # Why this answers with the bytes rather than writing a file
+    ///
+    /// Because a node that is **serving** holds the store, and this store is
+    /// single-writer (ADR-0007) — so no second process can open it to take a
+    /// backup. Asking the node is the only way, and the language is how this
+    /// store is asked (ADR-0011 §6): the HTTP route is a surface over this
+    /// statement rather than a second implementation of it, and the CLI and the
+    /// wire protocol get it without one either.
+    ///
+    /// # What a concurrent write does to it
+    ///
+    /// Nothing, and that was already true: `write_from` fixes the log's tail
+    /// **before** reading the first record and stops there, so a write that
+    /// lands mid-backup is honestly outside the file rather than half inside it.
+    /// The tail is written into the header, which is what makes "outside"
+    /// checkable rather than a claim.
+    ///
+    /// # The cost, stated
+    ///
+    /// The whole file is materialised, because a statement answers with a value.
+    /// `FROM` is what bounds it — an incremental backup carries the records since
+    /// a sequence — and a streaming answer is named in `docs/bgvql.md` §8 rather
+    /// than left to be discovered by whoever backs up a large store first.
+    pub(crate) fn backup(&self, from: Option<u64>) -> Result<Outcome> {
+        let mut held = Vec::new();
+        bgv_db_backup::write_from(
+            self.store,
+            &mut held,
+            bgv_db_types::Sequence::new(from.unwrap_or(1).max(1)),
+        )
+        .map_err(|error| Error::BackupFailed {
+            reason: error.to_string(),
+        })?;
+        Ok(Outcome::Value(Value::Bytes(held)))
+    }
+
     pub(crate) fn read_file(
         &self,
         transaction: &mut Transaction<'_>,

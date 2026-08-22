@@ -121,6 +121,14 @@ fn answer(db: &Db, mut request: Request) {
         // for everyone: a load balancer must not need a credential to tell a
         // live node from a dead one.
         (Method::Get, "/health") => respond::health(db),
+        // Split on `?` here rather than reaching for a URL parser: this route
+        // takes one optional parameter and a dependency to read it would be a
+        // poor trade.
+        (Method::Get, url) if url == "/backup" || url.starts_with("/backup?") => respond::backup(
+            db,
+            url.split_once('?').map(|(_, query)| query),
+            credentials.as_ref(),
+        ),
         (Method::Post, "/script") => {
             let mut script = String::new();
             match request.as_reader().read_to_string(&mut script) {

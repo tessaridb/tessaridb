@@ -116,6 +116,7 @@ fn bind_statement(kind: &mut StatementKind, parameters: &Parameters) -> Result<(
         | StatementKind::DropTable { .. }
         | StatementKind::DropIndex { .. }
         | StatementKind::RebuildIndex { .. }
+        | StatementKind::Backup { .. }
         | StatementKind::Begin
         | StatementKind::Commit
         | StatementKind::Cancel => Ok(()),

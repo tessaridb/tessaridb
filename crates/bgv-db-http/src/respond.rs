@@ -149,6 +149,48 @@ pub(crate) fn session_for<'a>(
     Ok(session)
 }
 
+/// `GET /backup` — the store's log as a backup file, or `?from=<n>` for the
+/// records since a sequence.
+///
+/// A surface over the `BACKUP` statement rather than a second implementation of
+/// it, so who may take one is decided in one place: the statement needs an
+/// owner, and a grant-governed user is refused by name. This route adds no
+/// permission of its own and must not — a backup is every table at once, and an
+/// endpoint that decided that for itself would be a second answer to a question
+/// the language already answers.
+pub(crate) fn backup(db: &Db, query: Option<&str>, credentials: Option<&Credentials>) -> Answer {
+    let from = match query {
+        None => None,
+        Some(written) => match written.strip_prefix("from=").map(str::parse::<u64>) {
+            Some(Ok(held)) => Some(held),
+            // A query string that is not the one parameter this route takes is a
+            // mistake worth naming: silently backing the whole store up when the
+            // caller asked for an increment is a very expensive typo.
+            _ => {
+                return Answer::bad_request("the only query this route takes is `from=<sequence>`");
+            }
+        },
+    };
+    let mut session = match session_for(db, credentials) {
+        Ok(session) => session,
+        Err(answer) => return answer,
+    };
+    let script = from.map_or_else(
+        || "BACKUP;".to_owned(),
+        |held| format!("BACKUP FROM {held};"),
+    );
+    match session.run(&script) {
+        Ok(outcomes) => match outcomes.last() {
+            Some(Outcome::Value(bgv_db::Value::Bytes(bytes))) => Answer::octets(200, bytes.clone()),
+            _ => Answer::new(
+                500,
+                r#"{"error":"the backup answered with no bytes"}"#.to_owned(),
+            ),
+        },
+        Err(error) => failure(&error),
+    }
+}
+
 /// A bucket's listing, as the records it answered with.
 pub(crate) fn listing(db: &Db, outcomes: &[Outcome]) -> Answer {
     let Some(outcome) = outcomes.last() else {

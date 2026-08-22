@@ -21,6 +21,18 @@ pub enum Error {
     #[error(transparent)]
     Store(#[from] bgv_db_storage::Error),
 
+    /// A backup could not be written.
+    ///
+    /// Its own variant rather than a wrapped store error, because the failures
+    /// differ in kind: a backup writes into a buffer and reads the log, so what
+    /// goes wrong is the log or the buffer, and a caller reading "the store
+    /// refused the work" would look in the wrong place.
+    #[error("the backup could not be written: {reason}")]
+    BackupFailed {
+        /// What the backup writer said.
+        reason: String,
+    },
+
     /// A stored value could not be read back.
     #[error(transparent)]
     Encoding(#[from] bgv_db_encoding::Error),
@@ -322,6 +334,19 @@ pub enum Error {
         needs: &'static str,
         /// Where the statement is.
         span: Span,
+    },
+
+    /// A grant-governed user asking for a backup.
+    ///
+    /// A grant names a table, and a backup names none because it reaches every
+    /// one — so no grant could permit it, and an emptiness that read as
+    /// permission would be worse than a refusal that says why.
+    #[error("{user} holds grants, and a backup is every table at once (at {span})")]
+    GrantedUserCannotBackUp {
+        /// The user who asked.
+        user: String,
+        /// Where the statement is.
+        span: bgv_db_ql::Span,
     },
 
     /// A grant-governed user tried to declare structure.

@@ -1633,6 +1633,49 @@ a name unique.
 A conflict is reported, never retried silently. The losing transaction wrote
 nothing, and re-running it needs a fresh read, not a repeat.
 
+## 7a. Backing up a node that is serving
+
+```
+BACKUP;
+BACKUP FROM 4096;
+```
+
+`BACKUP` answers with the store's **log**, as the file the backup reader and the
+verifier already read. `FROM` makes it incremental — the records at or after that
+sequence — and a base plus its increments answers what the original answers.
+
+**It is a statement because a serving node is the only thing that can take one.**
+This store is single-writer, so a node that is up holds the store and no second
+process can open it. The node has to be asked, and the language is how this store
+is asked — so the HTTP route below is a surface over this statement rather than a
+second implementation, and the CLI and the wire protocol get it without one
+either.
+
+**A concurrent write does not tear it.** The log's tail is fixed before the first
+record is read, and the file stops there. A write that lands mid-backup is
+outside the file rather than half inside it, and the tail written into the header
+is what makes "outside" checkable rather than a claim.
+
+**It needs an owner, and a grant can never permit it.** A backup is every record
+in the store, past every grant and every tenancy boundary — so it is the one
+statement whose scope is the *store* rather than the selected namespace, and
+there is no permission smaller than "may see all of it". A grant names a table
+and a backup names none, so a user who holds grants is refused by name rather
+than let through by an empty list that reads as permission.
+
+Over HTTP:
+
+```text
+GET /backup
+GET /backup?from=4096
+```
+
+Same identity rules, because they are the statement's. The body is the file.
+
+The cost is stated rather than discovered: the whole file is materialised,
+because a statement answers with a value. `FROM` is what bounds it, and a
+streaming answer is named in §8.
+
 ## 8. What is deliberately absent from this milestone
 
 Named here rather than merely missing, so each absence reads as a decision.
@@ -1669,6 +1712,8 @@ it was first wanted.
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | a byte range on `PUT` or `READ` — writing or reading part of a file | one commit is what makes a file whole or absent, and a partial write needs a rule for what a reader sees between two of them. The read half is cheaper than the write half and will land first |
+| a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the same wall a byte range on `READ` meets, and worth crossing once for both. §7a |
+| a backup of **one namespace** | the file is the log, and the log is the store; selecting part of it means replaying with a filter, which is a different reader and a different restore story. §7a |
 | a digest on a file's metadata | worth having, and it is a *verification* feature: it belongs with the backup verifier rather than half here and half there |
 | a content type on a file | the store holds bytes and has no opinion about them. It becomes worth carrying when something serves them over HTTP, which is where a content type is actually read |
 | listing a bucket by prefix (`/photos/…`) | `SELECT * FROM media WHERE path LIKE '/photos/%'` is the question, and it needs the record's identity addressable as a value in a filter — which is a language feature about identities, not about files |
@@ -1761,6 +1806,9 @@ it was first wanted.
 | Several terms mean all of them | **contract** |
 | A field with no analyzer holds no terms and matches nothing | **contract** |
 | `REQUIRED` means present and not null | **contract** |
+| `BACKUP` answers with the log as the file the verifier reads | **contract** — a surface that rendered it instead would be a second format |
+| A backup is fixed at the log's tail when it began | **contract** — a write landing mid-backup is outside it, and the header says where "outside" starts |
+| A backup needs an owner, and no grant can permit one | **contract** — it is every table at once, so an empty list of named tables must not read as permission |
 | `ASSERT` constrains a present, non-null value, and `REQUIRED` is the one constraint about absence | **contract** — otherwise `REQUIRED` would mean two things depending on what stood beside it |
 | An assertion is a closed vocabulary and what falls outside it is refused where it is written | **contract** — validation must stay a pure function of the record, and "happens to be pure" is not a property to re-establish forever |
 | `$value` is the only parameter an assertion may name | **contract** — a declaration belongs to no call, and the store is what binds this one |

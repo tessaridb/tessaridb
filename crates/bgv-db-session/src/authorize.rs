@@ -158,6 +158,18 @@ impl<'a> Session<'a> {
             });
         }
 
+        // A backup reaches **every** table and therefore names none, so the loop
+        // below — every table this statement names is granted — would pass over
+        // it vacuously. That is the same shape as the defect a `READ` falling
+        // through a catch-all produced, so it is refused here by name rather than
+        // left to an emptiness that reads as permission.
+        if matches!(kind, StatementKind::Backup { .. }) {
+            return Err(Error::GrantedUserCannotBackUp {
+                user: user.name.clone(),
+                span,
+            });
+        }
+
         let needs = Needs::of(kind);
         let verb = match needs {
             Needs::Read => Verb::Read,

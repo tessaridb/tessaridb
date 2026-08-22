@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 argon2.workspace = true
 bgv-db-constants.workspace = true
+bgv-db-backup.workspace = true
 bgv-db-encoding.workspace = true
 bgv-db-ql.workspace = true
 bgv-db-storage.workspace = true

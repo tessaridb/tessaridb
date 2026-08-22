@@ -149,6 +149,15 @@ pub enum StatementKind {
         /// Whether re-declaring an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `BACKUP` or `BACKUP FROM 42` — the store's log as a backup file.
+    ///
+    /// The one statement whose scope is the **store** rather than the selected
+    /// namespace, which is why it needs an owner rather than a table permission:
+    /// there is no table for a grant to name.
+    Backup {
+        /// The sequence the file starts at; absent means the whole log.
+        from: Option<u64>,
+    },
     /// `DEFINE ANALYZER simple FILTERS lowercase, ascii`
     DefineAnalyzer {
         /// The name to create.

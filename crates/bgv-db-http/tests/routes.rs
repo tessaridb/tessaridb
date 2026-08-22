@@ -25,6 +25,49 @@ fn node() -> (Arc<Node>, String) {
     (node, address)
 }
 
+/// One request whose answer is **bytes** rather than text.
+///
+/// Its own helper because a backup is a binary file: reading it into a `String`
+/// would either fail or lie about what came back, and the file is exactly what
+/// this route exists to hand over.
+fn send_bytes(
+    address: &str,
+    method: &str,
+    path: &str,
+    credential: Option<&str>,
+) -> (u16, Vec<String>, Vec<u8>) {
+    let mut stream = TcpStream::connect(address).unwrap();
+    let authorization =
+        credential.map_or_else(String::new, |value| format!("Authorization: {value}\r\n"));
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\n{authorization}Content-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.flush().unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).unwrap();
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut headers = Vec::new();
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        if line.trim().is_empty() {
+            break;
+        }
+        headers.push(line.trim().to_owned());
+    }
+    let mut held = Vec::new();
+    reader.read_to_end(&mut held).unwrap();
+    (status, headers, held)
+}
+
 /// One request, and the status and body it answers with.
 fn request(address: &str, method: &str, path: &str, body: &str) -> (u16, String) {
     let (status, _, answered) = send(address, method, path, body, None);
@@ -485,4 +528,57 @@ fn a_record_reference_comes_back_as_something_a_client_can_follow() {
         !body.contains(r#""1:1""#),
         "an id leaked into the answer: {body}"
     );
+}
+
+#[test]
+fn the_backup_route_hands_over_a_file_the_verifier_reads() {
+    // The route is a surface over the `BACKUP` statement (ADR-0011 §6), so what
+    // it hands over must be the file `backup::write` produces — not a rendering
+    // of one. The verifier is the check that says so, because it is the code an
+    // operator would actually run against what they downloaded.
+    let (_node, address) = node();
+    let (status, body) = request(&address, "POST", "/script", READY);
+    assert_eq!(status, 200, "{body}");
+
+    let (status, headers, held) = send_bytes(&address, "GET", "/backup", None);
+    assert_eq!(status, 200);
+    assert!(
+        headers.iter().any(|line| line
+            .to_ascii_lowercase()
+            .contains("application/octet-stream")),
+        "{headers:?}"
+    );
+    let verified = bgv_db_backup::verify(&mut held.as_slice()).unwrap();
+    assert!(verified.records > 0, "{verified:?}");
+    assert!(!verified.truncated, "{verified:?}");
+}
+
+#[test]
+fn the_backup_route_takes_one_query_and_names_the_mistake_of_any_other() {
+    // Silently backing the whole store up when the caller asked for an increment
+    // is a very expensive typo, so the route refuses rather than guessing.
+    let (_node, address) = node();
+    request(&address, "POST", "/script", READY);
+
+    let (status, _, held) = send_bytes(&address, "GET", "/backup?from=1", None);
+    assert_eq!(status, 200);
+    assert!(bgv_db_backup::verify(&mut held.as_slice()).is_ok());
+
+    let (status, body) = request(&address, "GET", "/backup?since=1", "");
+    assert_eq!(status, 400, "{body}");
+    let (status, body) = request(&address, "GET", "/backup?from=later", "");
+    assert_eq!(status, 400, "{body}");
+}
+
+#[test]
+fn the_backup_route_adds_no_permission_of_its_own() {
+    // The identity rules are the statement's, so a viewer is refused here for
+    // exactly the reason they are refused in the language — and an endpoint that
+    // decided this for itself would be a second answer to a settled question.
+    let (_node, address) = closed();
+    let (status, _, body) = send(&address, "GET", "/backup", "", Some(GRACE));
+    assert!(status >= 400, "a viewer downloaded the whole store: {body}");
+    let (status, _, held) = send_bytes(&address, "GET", "/backup", Some(ROOT));
+    assert_eq!(status, 200);
+    assert!(bgv_db_backup::verify(&mut held.as_slice()).is_ok());
 }

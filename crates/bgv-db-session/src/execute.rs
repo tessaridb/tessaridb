@@ -258,6 +258,7 @@ impl Session<'_> {
                 self.put_file(transaction, target, &bytes)
             }
             StatementKind::Read { target } => self.read_file(transaction, target),
+            StatementKind::Backup { from } => self.backup(*from),
             StatementKind::Get { target } => {
                 Ok(Outcome::Value(self.read_key(transaction, target)?))
             }

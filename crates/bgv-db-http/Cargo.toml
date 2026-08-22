@@ -16,6 +16,7 @@ thiserror.workspace = true
 tiny_http = "0.12"
 
 [dev-dependencies]
+bgv-db-backup.workspace = true
 bgv-db-kv.workspace = true
 bgv-db-storage.workspace = true
 

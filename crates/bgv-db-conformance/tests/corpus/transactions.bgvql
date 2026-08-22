@@ -55,3 +55,19 @@ CREATE users:3 = { name: 'hopper' };
 COMMIT;
 SELECT * FROM users;
 --- expect: rows 2
+
+# `BACKUP` — the store's log as a backup file, asked of the node that holds it.
+# The one statement whose scope is the store rather than the selected namespace,
+# which is why it needs an owner: there is no table for a grant to name.
+
+--- case: a node hands over its whole log
+BACKUP;
+--- expect: ok
+
+--- case: and the part of it since a sequence
+BACKUP FROM 2;
+--- expect: ok
+
+--- case: FROM takes a sequence and says so when it does not get one
+BACKUP FROM soon;
+--- expect: error UnexpectedToken

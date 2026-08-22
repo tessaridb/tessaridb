@@ -230,6 +230,8 @@ pub enum Keyword {
     Put,
     /// `READ` — answer a file's bytes.
     Read,
+    /// `BACKUP` — answer the store's log as a backup file.
+    Backup,
     /// `INDEX`
     Index,
     /// `ON`
@@ -355,6 +357,7 @@ impl Keyword {
             Self::Bucket => "BUCKET",
             Self::Put => "PUT",
             Self::Read => "READ",
+            Self::Backup => "BACKUP",
             Self::Index => "INDEX",
             Self::On => "ON",
             Self::Join => "JOIN",
@@ -424,6 +427,7 @@ impl Keyword {
         Self::Bucket,
         Self::Put,
         Self::Read,
+        Self::Backup,
         Self::Index,
         Self::On,
         Self::Join,
