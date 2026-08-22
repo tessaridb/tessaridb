@@ -1309,6 +1309,16 @@ over an optional one it is refused and takes the scan. `REQUIRED` is declared on
 a field and promises nothing about what lives inside one, so a route below it —
 `ORDER BY address.city` under a required `address` — is refused too.
 
+The permission stops at the read with no condition. Under a `WHERE`, an order is
+taken from the index **descending only**, whatever the field declares: the walk
+that fills a bound with survivors rests on absences sorting last, and it passes
+its own direction rather than the statement's so that argument cannot be handed a
+different one. `WHERE city = 'Paris' ORDER BY joined LIMIT 10` over a `REQUIRED`
+`joined` narrows on `city` and then sorts the survivors; the order does not come
+from `joined`'s index, and the `REQUIRED` on it changes nothing. Not an oversight
+and not a soundness limit — the door `REQUIRED` opens is simply not used there,
+and no read has asked for it.
+
 One consequence is worth naming because it is not symmetric: ascending needs no
 tie-group drain. A forward walk yields a tie group with identities **ascending**,
 which is already the order the answer wants, while walking backwards reverses
