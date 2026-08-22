@@ -111,7 +111,27 @@ curl -s localhost:8080/script --data-binary '
 # {"results":[{"kind":"done"},{"kind":"records","path":"index","records":[…]}]}
 ```
 
-Two routes, and no REST resource tree over tables: that would be a second query
+A caller with a **value** to supply sends the script and the values together,
+in a body the `Content-Type` marks as JSON. The value is written in bgvQL rather
+than in JSON's own types — one value syntax, the one `--param` already uses, and
+the one an answer prints back:
+
+```json
+{
+  "script": "USE NAMESPACE prod DATABASE orders; SELECT email FROM users WHERE city = $city;",
+  "parameters": { "city": "'Paris'" }
+}
+```
+
+So `"3"` is the integer three and `"'3'"` is the text, and `dec 12.34` stays a
+decimal instead of becoming a double on the way in. **A supplied value can never
+be read as grammar**: binding happens after the script is parsed and before the
+first statement runs, so `'; DROP TABLE users; --` is a string that says
+something alarming rather than a statement. A value that is not a value on its
+own is refused before anything runs. A plain body — no JSON content type — is
+still just the script.
+
+No REST resource tree over tables: that would be a second query
 language expressed in URLs, and it could say less than the one above. **The
 language is the API.** Each request is its own session and each answer carries
 the access path that served it, so a scan is visible rather than folklore.

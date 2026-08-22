@@ -36,6 +36,7 @@
 mod basic;
 mod json;
 mod object;
+mod request;
 mod respond;
 
 use std::sync::Arc;
@@ -130,10 +131,30 @@ fn answer(db: &Db, mut request: Request) {
             credentials.as_ref(),
         ),
         (Method::Post, "/script") => {
-            let mut script = String::new();
-            match request.as_reader().read_to_string(&mut script) {
-                Ok(_) => respond::script(db, &script, credentials.as_ref()),
+            // The body's shape is decided by what the caller says it is, not by
+            // sniffing a leading brace: HTTP has a field for this, and a rule
+            // nobody can look up is a rule nobody can rely on. A plain body is
+            // the script, which is what it has always been.
+            let json = request.headers().iter().any(|header| {
+                header.field.equiv("Content-Type")
+                    && header
+                        .value
+                        .as_str()
+                        .to_ascii_lowercase()
+                        .contains("application/json")
+            });
+            let mut body = String::new();
+            match request.as_reader().read_to_string(&mut body) {
                 Err(_) => Answer::bad_request("the request body is not text"),
+                Ok(_) if !json => {
+                    respond::script(db, &body, &Default::default(), credentials.as_ref())
+                }
+                Ok(_) => match request::envelope(&body) {
+                    Ok(read) => {
+                        respond::script(db, &read.script, &read.parameters, credentials.as_ref())
+                    }
+                    Err(reason) => Answer::bad_request(&reason),
+                },
             }
         }
         // "No such thing" and "not that way" are different answers, and a caller

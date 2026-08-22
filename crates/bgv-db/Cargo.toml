@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 bgv-db-kv.workspace = true
 bgv-db-lsm.workspace = true
+bgv-db-ql.workspace = true
 bgv-db-session.workspace = true
 bgv-db-storage.workspace = true
 bgv-db-types.workspace = true

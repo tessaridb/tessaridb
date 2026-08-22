@@ -28,6 +28,8 @@
 //! you" against "I know you and no". A client that cannot tell them apart
 //! retries a signin that will never help, or gives up on one that would.
 
+use std::collections::BTreeMap;
+
 use bgv_db::{AccessPath, Db, Error, Outcome};
 
 use crate::basic::Credentials;
@@ -207,12 +209,36 @@ pub(crate) fn listing(db: &Db, outcomes: &[Outcome]) -> Answer {
     Answer::new(200, body)
 }
 
-pub(crate) fn script(db: &Db, source: &str, credentials: Option<&Credentials>) -> Answer {
+/// `POST /script` — run a script, with the values its parameters bind to.
+///
+/// Each value arrives **written in bgvQL** and is read by the language, which is
+/// what keeps a supplied value from ever being read as grammar (SGA.T2): binding
+/// happens after parsing and before the first statement, so `'; DROP TABLE
+/// users; --` is a string that says something alarming rather than a statement.
+/// A value that would not stand alone in a script is refused here, before
+/// anything runs.
+pub(crate) fn script(
+    db: &Db,
+    source: &str,
+    written: &BTreeMap<String, String>,
+    credentials: Option<&Credentials>,
+) -> Answer {
     let mut session = match session_for(db, credentials) {
         Ok(session) => session,
         Err(answer) => return answer,
     };
-    match session.run(source) {
+    let mut given = bgv_db::Parameters::new();
+    for (name, value) in written {
+        match bgv_db::value_of(value) {
+            Ok(held) => {
+                given.insert(name.clone(), held);
+            }
+            Err(reason) => {
+                return Answer::bad_request(&format!("parameter {name}: {reason}"));
+            }
+        }
+    }
+    match session.run_with(source, &given) {
         Ok(outcomes) => {
             // Resolved once for the whole answer rather than per outcome, and
             // only when something in it holds a reference: a record reference

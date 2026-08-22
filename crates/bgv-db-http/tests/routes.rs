@@ -582,3 +582,139 @@ fn the_backup_route_adds_no_permission_of_its_own() {
     assert_eq!(status, 200);
     assert!(bgv_db_backup::verify(&mut held.as_slice()).is_ok());
 }
+
+/// A JSON body, sent with the content type that says so.
+fn json(address: &str, body: &str, credential: Option<&str>) -> (u16, String) {
+    let mut stream = TcpStream::connect(address).unwrap();
+    let authorization =
+        credential.map_or_else(String::new, |value| format!("Authorization: {value}\r\n"));
+    let head = format!(
+        "POST /script HTTP/1.1\r\nHost: {address}\r\n{authorization}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(body.as_bytes()).unwrap();
+    stream.flush().unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).unwrap();
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        if line.trim().is_empty() {
+            break;
+        }
+    }
+    let mut answered = String::new();
+    reader.read_to_string(&mut answered).unwrap();
+    (status, answered)
+}
+
+#[test]
+fn a_supplied_value_reaches_the_last_surface_that_could_not_take_one() {
+    // The property SGA.T2 built was real and, over HTTP, unreachable: a caller
+    // with a value to supply had no way to supply it, so they built a string —
+    // and a property that protects nobody is not protection.
+    let (_node, address) = node();
+    request(&address, "POST", "/script", READY);
+    request(
+        &address,
+        "POST",
+        "/script",
+        "USE NAMESPACE prod DATABASE orders; \
+         CREATE users:1 = { name: 'ada' }; CREATE users:2 = { name: 'grace' };",
+    );
+
+    let (status, body) = json(
+        &address,
+        r#"{"script":"USE NAMESPACE prod DATABASE orders; SELECT * FROM users WHERE name = $who;","parameters":{"who":"'grace'"}}"#,
+        None,
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("grace"), "{body}");
+    assert!(!body.contains("ada"), "{body}");
+}
+
+#[test]
+fn a_value_supplied_over_http_can_never_be_read_as_grammar() {
+    // The same attempt the wire test makes, at the surface a caller most often
+    // reaches for. Binding happens after parsing and before the first statement,
+    // so this is a string that says something alarming.
+    let (_node, address) = node();
+    request(&address, "POST", "/script", READY);
+    request(
+        &address,
+        "POST",
+        "/script",
+        "USE NAMESPACE prod DATABASE orders; CREATE users:1 = { name: 'ada' };",
+    );
+
+    let (status, body) = json(
+        &address,
+        r#"{"script":"USE NAMESPACE prod DATABASE orders; SELECT * FROM users WHERE name = $who;","parameters":{"who":"'; DROP TABLE users; --'"}}"#,
+        None,
+    );
+    assert_eq!(status, 200, "{body}");
+
+    // The table is still there, holding what it held.
+    let (status, body) = request(
+        &address,
+        "POST",
+        "/script",
+        "USE NAMESPACE prod DATABASE orders; SELECT * FROM users;",
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("ada"), "the table did not survive: {body}");
+}
+
+#[test]
+fn a_plain_body_is_still_the_script_it_always_was() {
+    // Breaking `curl -d 'SELECT …'` to add a feature nobody using it asked for
+    // would be a poor trade, so the shape is decided by the content type.
+    let (_node, address) = node();
+    let (status, body) = request(&address, "POST", "/script", READY);
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body.matches(r#""kind":"done""#).count(), 5, "{body}");
+}
+
+#[test]
+fn a_body_that_is_not_the_envelope_says_which_part_was_wrong() {
+    let (_node, address) = node();
+    for (body, expected) in [
+        (r#"{"parameters":{}}"#, "script"),
+        (r#"{"script":"SELECT 1;","parameters":{"n":3}}"#, "bgvQL"),
+        (r#"not json at all"#, "expected"),
+        // A value that is a statement rather than a value: refused before
+        // anything runs, which is the CLI's rule at this surface.
+        (
+            r#"{"script":"SELECT 1;","parameters":{"n":"1; DROP TABLE users"}}"#,
+            "not a value",
+        ),
+    ] {
+        let (status, answered) = json(&address, body, None);
+        assert_eq!(status, 400, "{body} answered {answered}");
+        assert!(
+            answered.contains(expected),
+            "{body} answered {answered}, which does not mention {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn an_unbound_parameter_is_refused_in_the_sessions_own_words() {
+    let (_node, address) = node();
+    request(&address, "POST", "/script", READY);
+    let (status, body) = json(
+        &address,
+        r#"{"script":"USE NAMESPACE prod DATABASE orders; SELECT * FROM users WHERE name = $who;"}"#,
+        None,
+    );
+    assert!(status >= 400, "{body}");
+    assert!(body.contains("who"), "{body}");
+}

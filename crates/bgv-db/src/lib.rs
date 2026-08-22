@@ -49,6 +49,38 @@ use bgv_db_kv::{KvBackend, MemoryBackend};
 use bgv_db_lsm::LsmBackend;
 use bgv_db_storage::{Catalog, Store};
 
+/// The value a piece of text denotes, when it denotes one by itself.
+///
+/// How a **supplied** value is written on every surface outside a script: the
+/// CLI's `--param x=3`, and the `parameters` of an HTTP request body. bgvQL
+/// rather than each surface's own notation, because there is one value syntax
+/// here and the console already reads and writes it — what an answer prints
+/// pastes back into the next statement, and `dec 12.34`, `2s` and
+/// `datetime '…'` all say themselves.
+///
+/// Read **in isolation**, so it is a value or it is nothing: `1; DROP TABLE
+/// users` is refused as a literal rather than smuggled in as a statement. A
+/// read, a path or anything needing a record is likewise not a value here — an
+/// argument that had to consult the store to say what it is would be a statement
+/// wearing a value's clothes.
+///
+/// It lives in the facade because two surfaces need it and neither is above the
+/// other (ADR-0012).
+///
+/// # Errors
+///
+/// Returns a sentence naming what the text is instead of a value.
+pub fn value_of(written: &str) -> core::result::Result<bgv_db_types::Value, String> {
+    let refusal = || format!("{written:?} is not a value bgvQL can read on its own");
+    match bgv_db_ql::parse_expression(written)
+        .map_err(|_| refusal())?
+        .kind
+    {
+        bgv_db_ql::ExprKind::Literal(value) => Ok(value),
+        _ => Err(refusal()),
+    }
+}
+
 pub use bgv_db_lsm::{Durability, StoreConfig};
 pub use bgv_db_session::redact::{Visible, seen};
 pub use bgv_db_session::{AccessPath, Error, Outcome, Parameters, Result, Session};

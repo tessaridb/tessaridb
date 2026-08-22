@@ -64,6 +64,7 @@ version = "0.0.0"
 dependencies = [
  "bgv-db-kv",
  "bgv-db-lsm",
+ "bgv-db-ql",
  "bgv-db-session",
  "bgv-db-storage",
  "bgv-db-types",

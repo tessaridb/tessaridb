@@ -12,7 +12,6 @@ use std::env;
 use std::path::PathBuf;
 
 use bgv_db::{Parameters, Value};
-use bgv_db_ql::{ExprKind, parse_expression};
 
 pub const USAGE: &str = "\
 usage: bgv [<path> | --at <host:port>] [-e <script> | -f <file>]
@@ -248,10 +247,11 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
 /// the way an answer is printed closes that loop — `dec 12.34`, `2s` and
 /// `datetime '…'` all say themselves.
 ///
-/// The value is parsed **in isolation**, so it is a value or it is nothing:
-/// `--param x="1; DROP TABLE users"` is refused as a literal rather than
-/// smuggled in as a statement. That is the grammar's rule one layer out, and it
-/// is why this does not simply paste the text into the script.
+/// The value is parsed **in isolation** by `bgv_db::value_of`, so it is a value
+/// or it is nothing: `--param x="1; DROP TABLE users"` is refused as a literal
+/// rather than smuggled in as a statement. That reader is shared with the HTTP
+/// body's `parameters`, so the two surfaces cannot come to read a supplied value
+/// differently.
 fn parameter(given: &str) -> Result<(String, Value), String> {
     let Some((name, written)) = given.split_once('=') else {
         return Err(format!("--param wants <name>=<value>, not {given:?}"));
@@ -260,22 +260,8 @@ fn parameter(given: &str) -> Result<(String, Value), String> {
         return Err("--param wants a name before the `=`".to_owned());
     }
     let name = name.strip_prefix('$').unwrap_or(name);
-    let value = literal(written).ok_or_else(|| {
-        format!("--param {name}: {written:?} is not a value bgvQL can read on its own")
-    })?;
+    let value = bgv_db::value_of(written).map_err(|reason| format!("--param {name}: {reason}"))?;
     Ok((name.to_owned(), value))
-}
-
-/// The value a piece of text denotes, when it denotes one by itself.
-///
-/// A read, a path and anything needing a record are not values here — an
-/// argument that had to consult the store to say what it is would be a statement
-/// wearing a value's clothes.
-fn literal(written: &str) -> Option<Value> {
-    match parse_expression(written).ok()?.kind {
-        ExprKind::Literal(value) => Some(value),
-        _ => None,
-    }
 }
 
 /// Who to say we are, when a name was given.
