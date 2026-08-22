@@ -85,16 +85,28 @@ impl Parser<'_> {
             Some(Keyword::Put) => {
                 self.advance();
                 let target = self.record_target()?;
+                // Before the `=`, because it qualifies the target rather than
+                // the value: `PUT media:'/x' START 1024 = 0x…` writes those
+                // bytes at that offset.
+                let start = self.bound("start")?;
                 self.expect_punct(Punct::Equals, "`=` and the file's bytes")?;
                 StatementKind::Put {
                     target,
+                    start,
                     value: self.expression()?,
                 }
             }
             Some(Keyword::Read) => {
                 self.advance();
+                let target = self.record_target()?;
+                // The same two words a bounded read of rows uses, meaning the
+                // same two things over bytes: skip this many, take this many.
+                let start = self.bound("start")?;
+                let limit = self.bound("limit")?;
                 StatementKind::Read {
-                    target: self.record_target()?,
+                    target,
+                    start,
+                    limit,
                 }
             }
             Some(Keyword::Backup) => {

@@ -71,7 +71,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // file's bytes and its metadata behind **one** permission question
         // rather than two (ADR-0011).
         | StatementKind::Put { target, .. }
-        | StatementKind::Read { target } => vec![&target.table],
+        | StatementKind::Read { target, .. } => vec![&target.table],
 
         // An edge reaches three: the two records it connects and the table the
         // relation is recorded in. A grant on the edge table alone would let

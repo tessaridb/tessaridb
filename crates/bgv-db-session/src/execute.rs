@@ -239,7 +239,11 @@ impl Session<'_> {
                 *if_not_exists,
                 span,
             ),
-            StatementKind::Put { target, value } => {
+            StatementKind::Put {
+                target,
+                start,
+                value,
+            } => {
                 let bytes = match self.evaluate(transaction, value)? {
                     Value::Bytes(bytes) => bytes,
                     // Text is accepted because a file is very often text, and
@@ -255,9 +259,13 @@ impl Session<'_> {
                         });
                     }
                 };
-                self.put_file(transaction, target, &bytes)
+                self.put_file(transaction, target, *start, &bytes)
             }
-            StatementKind::Read { target } => self.read_file(transaction, target),
+            StatementKind::Read {
+                target,
+                start,
+                limit,
+            } => self.read_file(transaction, target, *start, *limit),
             StatementKind::Backup { from } => self.backup(*from),
             StatementKind::Get { target } => {
                 Ok(Outcome::Value(self.read_key(transaction, target)?))

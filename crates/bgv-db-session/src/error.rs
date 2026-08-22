@@ -21,6 +21,23 @@ pub enum Error {
     #[error(transparent)]
     Store(#[from] bgv_db_storage::Error),
 
+    /// A ranged write that would leave a gap in a file.
+    ///
+    /// Zero-filling it would be the store inventing bytes nobody wrote, and a
+    /// real hole is a sparse-file feature nobody has asked for — so the write is
+    /// refused and says where the file actually ends.
+    #[error("writing {path} at {at} would leave a hole: the file is {size} bytes (at {span})")]
+    WriteWouldLeaveAHole {
+        /// The file's path.
+        path: String,
+        /// The offset the write asked for.
+        at: usize,
+        /// How long the file is.
+        size: usize,
+        /// Where the statement is.
+        span: bgv_db_ql::Span,
+    },
+
     /// A backup could not be written.
     ///
     /// Its own variant rather than a wrapped store error, because the failures

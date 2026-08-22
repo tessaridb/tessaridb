@@ -72,14 +72,14 @@ fn bind_statement(kind: &mut StatementKind, parameters: &Parameters) -> Result<(
         StatementKind::Create { target, value }
         | StatementKind::Update { target, value }
         | StatementKind::Set { target, value }
-        | StatementKind::Put { target, value } => {
+        | StatementKind::Put { target, value, .. } => {
             bind_target(target, parameters)?;
             bind_expr(value, parameters)
         }
         StatementKind::Get { target }
         | StatementKind::Delete { target }
         | StatementKind::Del { target }
-        | StatementKind::Read { target } => bind_target(target, parameters),
+        | StatementKind::Read { target, .. } => bind_target(target, parameters),
         StatementKind::Relate {
             from, to, value, ..
         } => {

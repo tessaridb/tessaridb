@@ -47,35 +47,87 @@ const FIELD_CHUNKS: &str = "chunks";
 const FIELD_UPDATED: &str = "updated";
 
 impl Session<'_> {
-    /// `PUT media:'/logo.png' = 0x…` — write a file's whole content.
+    /// `PUT media:'/logo.png' = 0x…` — write a file, whole or in part.
     ///
-    /// One commit, so a half-written file is not a state this store can be in:
-    /// the chunks and the metadata that describes them land together or neither
-    /// does.
+    /// One commit either way, so a half-written file is not a state this store
+    /// can be in: the chunks and the metadata that describes them land together
+    /// or neither does. That is what makes a **ranged** write possible without a
+    /// visibility rule — there is no moment between two commits for a reader to
+    /// see, because there are not two commits. What remains genuinely absent is a
+    /// *staged* upload, many commits building one file, which does need such a
+    /// rule and is named in `docs/bgvql.md` §8 with it.
+    ///
+    /// # A ranged write reads before it writes, and that is the risky part
+    ///
+    /// A write that begins mid-chunk has to keep the bytes on either side of it
+    /// inside that chunk, so the edge chunks are read, spliced and written back.
+    /// The tests assert the **whole** file after each ranged write rather than
+    /// the range that was written, because a bad splice loses the bytes nobody
+    /// was looking at.
+    ///
+    /// # A hole is refused rather than filled
+    ///
+    /// Writing past the end of a file would leave a gap, and zero-filling it
+    /// would be the store inventing bytes nobody wrote. A real hole is a
+    /// sparse-file feature and nobody has asked for one.
     pub(crate) fn put_file(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
+        start: Option<u64>,
         bytes: &[u8],
     ) -> Result<Outcome> {
         let (context, table) = self.bucket(transaction, target)?;
         let path = text_identity(target.id.fixed(target.span)?, target.span)?;
         let chunks = self.chunk_table(transaction, &context, table, target.span)?;
+        let id = target.id.fixed(target.span)?.clone();
+        let at = RecordAddress::new(context.namespace, context.database, table, id.clone());
 
-        // The file that was there is removed first, because a shorter file
-        // written over a longer one would otherwise keep the tail of the old
-        // one — chunks nothing describes and nothing would ever read, until a
-        // later write made the count long enough to reach them again.
-        self.clear_chunks(
-            transaction,
-            &context,
-            chunks,
-            table,
-            target.id.fixed(target.span)?,
-        )?;
+        let held = match start {
+            // No offset: the file is replaced. The old one goes first, because a
+            // shorter file written over a longer one would otherwise keep the
+            // tail of the old one — chunks nothing describes and nothing would
+            // ever read, until a later write made the count long enough to reach
+            // them again.
+            None => {
+                self.clear_chunks(transaction, &context, chunks, table, &id)?;
+                bytes.to_vec()
+            }
+            // An offset — including zero. `START 0` writes at the beginning and
+            // keeps whatever lies past the bytes given, which is what "at an
+            // offset" means; replacing the file is what leaving `START` out is
+            // for, and one spelling per thing.
+            Some(offset) => {
+                let existing = match transaction.get(&at)? {
+                    Some(payload) => {
+                        self.whole_file(transaction, &context, chunks, path, &payload, target.span)?
+                    }
+                    None => Vec::new(),
+                };
+                let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+                if offset > existing.len() {
+                    return Err(Error::WriteWouldLeaveAHole {
+                        path: path.to_owned(),
+                        at: offset,
+                        size: existing.len(),
+                        span: target.span,
+                    });
+                }
+                let mut spliced = existing;
+                let end = offset.saturating_add(bytes.len());
+                if end > spliced.len() {
+                    spliced.resize(end, 0);
+                }
+                if let Some(slice) = spliced.get_mut(offset..end) {
+                    slice.copy_from_slice(bytes);
+                }
+                self.clear_chunks(transaction, &context, chunks, table, &id)?;
+                spliced
+            }
+        };
 
         let mut ordinal: u32 = 0;
-        for part in bytes.chunks(CHUNK) {
+        for part in held.chunks(CHUNK) {
             transaction.put(
                 RecordAddress::new(
                     context.namespace,
@@ -90,7 +142,7 @@ impl Session<'_> {
 
         let metadata = Value::Object(
             [
-                (FIELD_SIZE.to_owned(), count(bytes.len())),
+                (FIELD_SIZE.to_owned(), count(held.len())),
                 (
                     FIELD_CHUNKS.to_owned(),
                     count(usize::try_from(ordinal).unwrap_or(usize::MAX)),
@@ -100,15 +152,7 @@ impl Session<'_> {
             .into_iter()
             .collect(),
         );
-        transaction.put(
-            RecordAddress::new(
-                context.namespace,
-                context.database,
-                table,
-                target.id.fixed(target.span)?.clone(),
-            ),
-            encode_payload(&metadata).into_bytes(),
-        );
+        transaction.put(at, encode_payload(&metadata).into_bytes());
         Ok(Outcome::Done)
     }
 
@@ -155,10 +199,23 @@ impl Session<'_> {
         Ok(Outcome::Value(Value::Bytes(held)))
     }
 
+    /// `READ media:'/logo.png' [START n] [LIMIT n]` — a file's bytes, or part of
+    /// them, or `NONE` if there is no such file.
+    ///
+    /// `START` and `LIMIT` mean here exactly what they mean over rows — skip
+    /// this many, take this many — over bytes rather than records. A range that
+    /// begins past the end of the file answers **empty**, which is the same
+    /// answer a `START` past the last row already gives: a range that finds
+    /// nothing is not a failure.
+    ///
+    /// Only the chunks the range touches are read, so asking for a kilobyte of a
+    /// large file costs a kilobyte's worth of chunks rather than the file.
     pub(crate) fn read_file(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
+        start: Option<u64>,
+        limit: Option<u64>,
     ) -> Result<Outcome> {
         let (context, table) = self.bucket(transaction, target)?;
         let path = text_identity(target.id.fixed(target.span)?, target.span)?;
@@ -173,9 +230,26 @@ impl Session<'_> {
         };
         let held = decode_payload(&payload)?;
         let chunks = self.chunk_table(transaction, &context, table, target.span)?;
+        let total = chunk_count(&held);
+
+        // The half-open byte range the caller asked for, and the chunks it
+        // touches. `usize::MAX` for an absent limit is not a magic number doing
+        // work: it is clamped by the file's own length below.
+        let from = usize::try_from(start.unwrap_or(0)).unwrap_or(usize::MAX);
+        let wanted = limit.map_or(usize::MAX, |held| {
+            usize::try_from(held).unwrap_or(usize::MAX)
+        });
+        let until = from.saturating_add(wanted);
+        let first = u32::try_from(from / CHUNK).unwrap_or(u32::MAX);
+        let last = u32::try_from(until.saturating_sub(1) / CHUNK)
+            .unwrap_or(u32::MAX)
+            .min(total.saturating_sub(1));
 
         let mut bytes = Vec::new();
-        for ordinal in 0..chunk_count(&held) {
+        if wanted == 0 || first >= total {
+            return Ok(Outcome::Value(Value::Bytes(bytes)));
+        }
+        for ordinal in first..=last {
             let at = RecordAddress::new(
                 context.namespace,
                 context.database,
@@ -193,7 +267,19 @@ impl Session<'_> {
                 });
             };
             match decode_payload(&part)? {
-                Value::Bytes(part) => bytes.extend_from_slice(&part),
+                Value::Bytes(part) => {
+                    // Where this chunk sits in the file, intersected with what
+                    // was asked for. The whole-file read is the case where the
+                    // intersection is the chunk.
+                    let base = usize::try_from(ordinal)
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(CHUNK);
+                    let begins = from.saturating_sub(base).min(part.len());
+                    let ends = until.saturating_sub(base).min(part.len());
+                    if let Some(slice) = part.get(begins..ends) {
+                        bytes.extend_from_slice(slice);
+                    }
+                }
                 _ => {
                     return Err(Error::FileIsIncomplete {
                         path: path.to_owned(),
@@ -204,6 +290,46 @@ impl Session<'_> {
             }
         }
         Ok(Outcome::Value(Value::Bytes(bytes)))
+    }
+
+    /// Every byte of a file, for a ranged write to splice into.
+    fn whole_file(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: &Context,
+        chunks: TableId,
+        path: &str,
+        payload: &[u8],
+        span: Span,
+    ) -> Result<Vec<u8>> {
+        let held = decode_payload(payload)?;
+        let mut bytes = Vec::new();
+        for ordinal in 0..chunk_count(&held) {
+            let at = RecordAddress::new(
+                context.namespace,
+                context.database,
+                chunks,
+                chunk_id(path, ordinal),
+            );
+            let Some(part) = transaction.get(&at)? else {
+                return Err(Error::FileIsIncomplete {
+                    path: path.to_owned(),
+                    ordinal,
+                    span,
+                });
+            };
+            match decode_payload(&part)? {
+                Value::Bytes(part) => bytes.extend_from_slice(&part),
+                _ => {
+                    return Err(Error::FileIsIncomplete {
+                        path: path.to_owned(),
+                        ordinal,
+                        span,
+                    });
+                }
+            }
+        }
+        Ok(bytes)
     }
 
     /// Remove a file's chunks, given what its metadata says it has.

@@ -178,6 +178,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::Script(inner) => script_kind(inner),
         Error::Store(inner) => store_kind(inner),
         Error::Encoding(_) => "Encoding",
+        Error::WriteWouldLeaveAHole { .. } => "WriteWouldLeaveAHole",
         Error::NoNamespaceSelected { .. } => "NoNamespaceSelected",
         Error::NoDatabaseSelected { .. } => "NoDatabaseSelected",
         Error::Unknown { .. } => "Unknown",

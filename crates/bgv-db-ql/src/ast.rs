@@ -326,13 +326,23 @@ pub enum StatementKind {
     Put {
         /// The file to write.
         target: RecordTarget,
+        /// The byte offset to write at; absent replaces the whole file.
+        ///
+        /// `START` means here what it means over rows: skip this many. A write
+        /// at an offset lands in **one** commit, the same as a whole-file one,
+        /// so there is no moment at which a reader sees half of it.
+        start: Option<u64>,
         /// Its bytes.
         value: Expr,
     },
-    /// `READ media:'/logo.png'` — a file's bytes.
+    /// `READ media:'/logo.png'` — a file's bytes, or part of them.
     Read {
         /// The file to read.
         target: RecordTarget,
+        /// The byte offset to read from; absent starts at the beginning.
+        start: Option<u64>,
+        /// How many bytes to answer with; absent reads to the end.
+        limit: Option<u64>,
     },
     /// `KEYS FROM sessions RANGE 'a'..'m'`
     Keys {

@@ -1580,6 +1580,31 @@ no file. Bytes or text may be written — a file is very often text, and making 
 caller spell out `0x…` for a document would be ceremony with no property behind
 it — and what comes back is bytes either way, because that is what a file is.
 
+**Part of a file, read or written**, with the two words a bounded read of rows
+already uses meaning the same two things over bytes:
+
+```
+READ media:'/big.bin' START 1048576 LIMIT 4096;
+PUT media:'/big.bin' START 1048576 = 0x00ff00ff;
+```
+
+Only the chunks a range touches are read, so asking for a kilobyte of a large
+file costs a kilobyte's worth of chunks. A range beginning past the end answers
+**empty** rather than failing — the rule a `START` past the last row already
+follows.
+
+A ranged write is **one commit**, exactly as a whole-file write is, which is what
+lets it exist without a rule for what a reader sees midway: there is no midway.
+Its bound is the bound a whole-file write already has — what one transaction can
+hold — and building a file across *many* commits is a different feature with its
+own visibility rule, named in §8.
+
+Leaving `START` out replaces the file; giving an offset — **any** offset,
+including zero — writes at it and keeps whatever lies beyond the bytes given. One
+spelling per thing. A write that would begin past the end of the file is
+**refused**: zero-filling the gap would be the store inventing bytes nobody
+wrote, and a real hole is a sparse-file feature nobody has asked for.
+
 **A file is a record, and its bytes are records too.** That sentence is the whole
 design, and everything below it follows rather than being built:
 
@@ -1711,8 +1736,8 @@ it was first wanted.
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
-| a byte range on `PUT` or `READ` — writing or reading part of a file | one commit is what makes a file whole or absent, and a partial write needs a rule for what a reader sees between two of them. The read half is cheaper than the write half and will land first |
-| a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the same wall a byte range on `READ` meets, and worth crossing once for both. §7a |
+| a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
+| a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the wall a **whole-file** `READ` still meets even now that a ranged one exists, and worth crossing once for both. §7a |
 | a backup of **one namespace** | the file is the log, and the log is the store; selecting part of it means replaying with a filter, which is a different reader and a different restore story. §7a |
 | a digest on a file's metadata | worth having, and it is a *verification* feature: it belongs with the backup verifier rather than half here and half there |
 | a content type on a file | the store holds bytes and has no opinion about them. It becomes worth carrying when something serves them over HTTP, which is where a content type is actually read |
@@ -1806,6 +1831,9 @@ it was first wanted.
 | Several terms mean all of them | **contract** |
 | A field with no analyzer holds no terms and matches nothing | **contract** |
 | `REQUIRED` means present and not null | **contract** |
+| `START` and `LIMIT` on a file are the row rule over bytes, and a range past the end is empty | **contract** |
+| A ranged write is one commit, and leaving `START` out replaces the file | **contract** — an offset writes at it and keeps what lies beyond |
+| A write that would leave a hole is refused, never zero-filled | **contract** — the store does not invent bytes nobody wrote |
 | `BACKUP` answers with the log as the file the verifier reads | **contract** — a surface that rendered it instead would be a second format |
 | A backup is fixed at the log's tail when it began | **contract** — a write landing mid-backup is outside it, and the header says where "outside" starts |
 | A backup needs an owner, and no grant can permit one | **contract** — it is every table at once, so an empty list of named tables must not read as permission |

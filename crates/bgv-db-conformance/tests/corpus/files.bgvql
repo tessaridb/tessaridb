@@ -100,3 +100,28 @@ SELECT * FROM media;
 --- case: and what it held is gone with it
 READ media:'/notes.txt';
 --- expect: value NONE
+
+# Part of a file. `START` and `LIMIT` mean here what they mean over rows — skip
+# this many, take this many — over bytes. A ranged write lands in one commit, so
+# there is no moment at which a reader sees half of it.
+
+--- case: a file to take a range of
+PUT media:'/range.bin' = 0x00010203040506070809;
+--- expect: ok
+
+--- case: a range answers exactly those bytes
+READ media:'/range.bin' START 2 LIMIT 3;
+--- expect: value 0x020304
+
+--- case: a range that begins past the end answers rather than failing
+READ media:'/range.bin' START 99 LIMIT 3;
+--- expect: ok
+
+--- case: a write at an offset replaces those bytes and leaves the rest
+PUT media:'/range.bin' START 4 = 0xffff;
+READ media:'/range.bin';
+--- expect: value 0x00010203ffff06070809
+
+--- case: and one that would leave a hole is refused
+PUT media:'/range.bin' START 500 = 0xff;
+--- expect: error WriteWouldLeaveAHole
