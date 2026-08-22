@@ -150,9 +150,19 @@ fn a_write_ahead_file_the_manifest_recorded_is_refused_when_it_is_gone() {
     // closed one to remove rather than only the live one.
     small.memtable_bytes = 512 * 1024;
 
+    // **Written until rotation is observed**, rather than a byte count chosen to
+    // produce it. A fixed count made this fail its own *precondition* under load
+    // — the engine's arena allocates in blocks larger than this budget, so how
+    // much has to be written before a file closes is not a number a test can
+    // know. It failed twice, days apart, and never on a re-run: exactly what a
+    // precondition that is a guess looks like.
+    //
+    // The bound is generous and the failure it produces is the same sentence as
+    // before, so an engine that genuinely stopped rotating still says so.
     {
         let store = LsmBackend::open(&path, small).unwrap();
-        for n in 0..4_000 {
+        let mut n = 0_usize;
+        while logs(&path).len() < 2 && n < 40_000 {
             store
                 .apply(WriteBatch::new().put(
                     Keyspace::DATA,
@@ -160,6 +170,7 @@ fn a_write_ahead_file_the_manifest_recorded_is_refused_when_it_is_gone() {
                     Value::from_slice(&[b'x'; 1024]),
                 ))
                 .unwrap();
+            n = n.saturating_add(1);
         }
         drop(store);
     }
