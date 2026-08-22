@@ -391,7 +391,10 @@ fn reads_a_record(expr: &Expr) -> bool {
         ExprKind::Array(items) | ExprKind::Set(items) => items.iter().any(reads_a_record),
         ExprKind::Object(fields) => fields.iter().any(|field| reads_a_record(&field.value)),
         ExprKind::Range(range) => reads_a_record(&range.start) || reads_a_record(&range.end),
+        // A parameter is a value, so it reads no record — and after binding
+        // there is none left to ask.
         ExprKind::Literal(_)
+        | ExprKind::Parameter(_)
         | ExprKind::Table(_)
         | ExprKind::Record(_)
         | ExprKind::Get(_)

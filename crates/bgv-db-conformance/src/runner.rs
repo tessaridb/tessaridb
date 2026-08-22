@@ -155,8 +155,10 @@ fn value_of(expr: &Expr) -> Option<Value> {
         ExprKind::Table(_) | ExprKind::Record(_) | ExprKind::Range(_) => None,
         ExprKind::Get(_) | ExprKind::Select(_) => None,
         // A test is not a value, and a path needs a record to read from —
-        // neither can stand where a corpus says what it expects.
-        ExprKind::Path(_) | ExprKind::Not(_) => None,
+        // neither can stand where a corpus says what it expects. Nor can a
+        // parameter: a corpus case supplies no bindings, so an expectation
+        // written with one would be saying it expects whatever it was handed.
+        ExprKind::Path(_) | ExprKind::Not(_) | ExprKind::Parameter(_) => None,
         ExprKind::And(_, _) | ExprKind::Or(_, _) | ExprKind::Binary { .. } => None,
         // Arithmetic and a call could be folded here, and are not: an
         // expectation that computes is one that can be wrong in the same way

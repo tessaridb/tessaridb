@@ -404,4 +404,22 @@ pub enum Error {
         /// Where the path was written.
         span: Span,
     },
+
+    /// A parameter in an expression that belongs to no call.
+    ///
+    /// Every parameter in a script is replaced by its value before the first
+    /// statement runs, so this is not reachable from a script. What is reachable
+    /// is a **stored** expression — a field's `DEFAULT` — which is evaluated on
+    /// every write that omits the field and therefore belongs to no particular
+    /// caller. There is nobody to bind it, so it is refused where it is declared
+    /// rather than surprising a write months later.
+    #[error(
+        "the parameter `${name}` at {span} has no value here — a stored expression belongs to no call"
+    )]
+    ParameterHasNoValue {
+        /// The parameter's name, without its marker.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
 }

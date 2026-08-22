@@ -60,6 +60,7 @@ impl<'a> Lexer<'a> {
                     self.number(start)?
                 }
                 '\'' | '"' => Token::Str(self.string(character, start)?),
+                '$' => self.parameter(start)?,
                 character if is_name_start(character) => self.word(),
                 _ => Token::Punct(self.punctuation(character, start)?),
             };
@@ -95,6 +96,29 @@ impl<'a> Lexer<'a> {
         }
         let word = self.slice(start, self.position);
         Keyword::from_word(word).map_or_else(|| Token::Ident(word.to_owned()), Token::Keyword)
+    }
+
+    /// `$name` — a parameter the caller binds a value to.
+    ///
+    /// A bare `$` is refused rather than read as punctuation: it is written by
+    /// somebody who meant a parameter, and the alternative is a parse failure
+    /// several tokens later pointing at something that is not the mistake.
+    fn parameter(&mut self, start: usize) -> Result<Token> {
+        self.advance('$');
+        let from = self.position;
+        while let Some(character) = self.peek() {
+            if !is_name_continue(character) {
+                break;
+            }
+            self.advance(character);
+        }
+        if self.position == from {
+            return Err(Error::UnexpectedCharacter {
+                found: '$',
+                span: Span::new(start, self.position),
+            });
+        }
+        Ok(Token::Parameter(self.slice(from, self.position).to_owned()))
     }
 
     fn number(&mut self, start: usize) -> Result<Token> {

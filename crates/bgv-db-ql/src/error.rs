@@ -284,6 +284,21 @@ pub enum Error {
         /// Where it was written.
         span: Span,
     },
+
+    /// A parameter the caller did not supply a value for.
+    ///
+    /// Refused while binding, which is before the first statement runs — so a
+    /// script whose last statement names an unbound parameter writes nothing at
+    /// all. Failing where the value is reached instead would leave a
+    /// half-applied script behind, which is the state the store's own
+    /// transaction rules exist to prevent.
+    #[error("no value was supplied for the parameter `${name}` at {span}")]
+    UnboundParameter {
+        /// The parameter's name, without its marker.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
 }
 
 impl Error {
@@ -314,7 +329,8 @@ impl Error {
             | Self::UnnamedProjection { span }
             | Self::NotASideOfTheJoin { span, .. }
             | Self::OneSidedJoin { span, .. }
-            | Self::JoinKeyIsNotAField { span, .. } => *span,
+            | Self::JoinKeyIsNotAField { span, .. }
+            | Self::UnboundParameter { span, .. } => *span,
         }
     }
 }

@@ -8,7 +8,7 @@
 //! error anywhere. The lookup is one catalog read per statement, and the store
 //! is the only thing entitled to say what a name currently means.
 
-use bgv_db_ql::{Statement, StatementKind, parse};
+use bgv_db_ql::{Parameters, Statement, StatementKind, parse};
 use bgv_db_storage::{Catalog, Store, Transaction};
 
 use crate::error::{Error, Result};
@@ -68,8 +68,29 @@ impl<'a> Session<'a> {
     /// Returns the first failure. Work buffered in an uncommitted transaction is
     /// discarded — nothing reaches the store until `commit`.
     pub fn run(&mut self, source: &str) -> Result<Vec<Outcome>> {
+        self.run_with(source, &Parameters::new())
+    }
+
+    /// Read a script, give its parameters the values `parameters` binds, and run
+    /// it.
+    ///
+    /// This is what [`Session::run`] does with an empty map, and it exists so a
+    /// caller with a value does not have to write that value into the script
+    /// text. A parameter is legal wherever a literal is and nowhere a name is,
+    /// and binding happens **after** parsing — so a supplied value cannot become
+    /// syntax no matter what it holds.
+    ///
+    /// A binding nobody used is accepted; a parameter nobody bound is refused,
+    /// before the first statement runs.
+    ///
+    /// # Errors
+    ///
+    /// [`bgv_db_ql::Error::UnboundParameter`] when the script names a parameter
+    /// this map has no value for, and nothing is written when it does. Otherwise
+    /// as [`Session::run`].
+    pub fn run_with(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
         let store = self.store;
-        let script = parse(source)?;
+        let script = parse(source)?.bind(parameters)?;
         let mut outcomes = Vec::with_capacity(script.statements.len());
         let mut open: Option<(Transaction<'a>, bgv_db_ql::Span)> = None;
 

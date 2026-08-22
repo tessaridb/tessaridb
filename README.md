@@ -41,6 +41,22 @@ let found = session.run(
 
 The two ways of opening differ in where the bytes live and in nothing else.
 
+A caller who has a value does not write it into the script. `$name` stands
+wherever a literal stands, and the value travels beside the script:
+
+```rust
+use bgv_db::{Parameters, Value};
+
+let mut given = Parameters::new();
+given.insert("city".to_owned(), Value::String("Paris".to_owned()));
+
+let found = session.run_with("SELECT * FROM users WHERE city = $city;", &given)?;
+```
+
+A parameter is legal exactly where a literal is and nowhere a name is, and it is
+replaced *after* the script is parsed — so whatever a caller supplies, it cannot
+be read as grammar.
+
 ## Talking to one over HTTP
 
 ```rust

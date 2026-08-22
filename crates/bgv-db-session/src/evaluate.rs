@@ -120,6 +120,15 @@ impl Session<'_> {
                 Ok(Value::Bool(apply(*op, &held, &other)))
             }
             ExprKind::Literal(value) => Ok(value.clone()),
+            // Binding replaces every parameter in a script before its first
+            // statement runs, so the only way one arrives here is from an
+            // expression that was **stored** — a field's `DEFAULT` — and a
+            // stored expression belongs to no call, so nothing could have bound
+            // it. Refused with that said, rather than treated as absent.
+            ExprKind::Parameter(name) => Err(Error::ParameterHasNoValue {
+                name: name.clone(),
+                span: expr.span,
+            }),
             ExprKind::Table(table) => {
                 let (_, id) = self.resolve_table(transaction, table)?;
                 Ok(Value::Table(id))

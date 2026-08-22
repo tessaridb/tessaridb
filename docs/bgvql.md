@@ -93,6 +93,45 @@ float `1.` beside `.10`. And digits touching a letter are a duration, whatever
 the letter is — `5y` is a duration with an unknown unit and is refused, rather
 than the number five beside a name that fails somewhere else.
 
+### Supplying a value from outside the script
+
+A caller who has a value writes `$name` and supplies the value alongside the
+script:
+
+```
+SELECT * FROM users WHERE name = $who;
+CREATE users:3 = { name: $name, age: $age };
+```
+
+**A parameter is legal exactly where a literal is, and nowhere a name is.** It
+may stand in a condition, in a projection, inside an object, an array, a set, a
+range, a function argument or an arithmetic operand. It may not stand where a
+table, a field, an index, a namespace, a user or a role is named. That is one
+rule rather than a list of positions, and it is what keeps a caller who can
+supply a value from thereby choosing which column is read.
+
+Two consequences follow from *when* a parameter is replaced, which is after the
+script is parsed and before its first statement runs:
+
+- **A supplied value cannot become syntax.** There is no stage left at which it
+  could be read as grammar, whatever it holds. This is a property of the order
+  the work happens in, not a claim about quoting.
+- **A script either binds completely or does nothing.** A parameter with no
+  value refuses the script, naming the parameter, before anything is written —
+  so an unsupplied name in the last statement of a script does not leave the
+  first one applied.
+
+A value supplied under a name the script does not use is accepted; a caller who
+reuses one set of values across two scripts has not made a mistake.
+
+Values are supplied as values and not as text, so `$age` bound to the number
+`36` and `$age` bound to the string `'36'` ask different questions — the caller
+never has to know how this language would have read a piece of text.
+
+An index still serves a read whose value came in this way. Replacement happens
+before anything plans the read, so `WHERE name = $who` is planned exactly as
+`WHERE name = 'ada'` is.
+
 ### Naming a value inside a record
 
 A record payload is a tree: an object may hold objects and arrays, and those may
@@ -1323,6 +1362,10 @@ Named here rather than merely missing, so each absence reads as a decision:
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
+| a parameter where a **name** stands — a table, a field, an index, a namespace, a user, a role | a parameter is a value, and the rule that it is legal exactly where a literal is has one job: a caller who can supply a value must not thereby choose which column is read. A parameterised *name* is a second feature with a permission story of its own |
+| a parameter as a record id (`users:$id`) | an identity is written `table:id`, and the id half genuinely is a value — so this is additive rather than refused on principle. It waits for a surface that shows callers want it, because a record target is parsed in several places and widening all of them for a guess is the wrong order |
+| a prepared statement — a parse kept under a name and bound many times | parameters make it *possible*: the parsed tree no longer holds any caller's values. What it needs beyond that is a catalog object with a lifetime and an invalidation rule for when the schema under it changes, which is a feature and not an optimisation |
+| a parameter inside a stored expression — a field's `DEFAULT` | a stored expression is evaluated on every write that omits the field, so it belongs to no call and there is nobody to bind it. Refused where it is declared rather than surprising a write months later |
 | a field grant on a **nested** route | a grant names a field of a table; `address.city` is a route into a value, and hiding one means rebuilding the object around it rather than dropping a key. Top-level only, so that a half-answer does not look like a whole one |
 | a field grant that limits **writing** | `FIELDS` narrows reading, and a write replaces a whole record — limiting which fields a write may set is a merge semantic the language does not have |
 | `LEFT`, `RIGHT` and `FULL` joins | a bare `JOIN` is inner, chosen so that these stay purely additive: an outer qualifier added later changes no statement already written |
@@ -1386,6 +1429,10 @@ Named here rather than merely missing, so each absence reads as a decision:
 | `ORDER`, `BY`, `ASC`, `DESC`, `LIMIT`, `START` are contextual, not reserved | **contract** — reserving a word takes a name away from data that exists |
 | The analyzer belongs to the field, not to the index | **contract** — an analyzer on an index lets adding one change an answer |
 | `MATCHES` asks about words, `LIKE` about characters, `CONTAINS` about membership | **contract** |
+| A parameter is legal exactly where a literal is, and nowhere a name is | **contract** — the whole safety argument, and it is checkable by reading the grammar rather than by auditing the places a value is used |
+| A parameter is replaced after parsing and before the first statement runs | **contract** — so a supplied value can never be read as grammar, and a script with an unsupplied one writes nothing at all |
+| Values are supplied as values, not as text | **contract** — `36` and `'36'` are different questions, and a caller must not have to know how this language would have read a string |
+| A supplied value under an unused name is accepted | **contract** — reusing one set of values across two scripts is not a mistake this store can see |
 | Several terms mean all of them | **contract** |
 | A field with no analyzer holds no terms and matches nothing | **contract** |
 | `REQUIRED` means present and not null | **contract** |

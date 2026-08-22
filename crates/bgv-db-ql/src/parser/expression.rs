@@ -65,6 +65,14 @@ impl Parser<'_> {
                     span,
                 })
             }
+            // A parameter reads the same in both positions, which is the point:
+            // it is a value, so a caller who can supply one cannot thereby name
+            // a field, a table or a route into a record.
+            Some(Token::Parameter(name)) => {
+                let kind = ExprKind::Parameter(name.clone());
+                self.advance();
+                Ok(Expr { kind, span })
+            }
             Some(Token::Ident(_)) => self.table_or_record(),
             Some(Token::Punct(Punct::BracketOpen)) => {
                 let (items, span) = self.items(Punct::BracketClose, span)?;

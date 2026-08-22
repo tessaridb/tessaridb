@@ -662,6 +662,15 @@ impl Expr {
 pub enum ExprKind {
     /// A literal that is already a whole value.
     Literal(Value),
+    /// `$name` — a value the caller supplies when the script is run.
+    ///
+    /// Present only between parsing and binding: [`Script::bind`] replaces every
+    /// one of these with the [`ExprKind::Literal`] it is bound to, so nothing
+    /// downstream — the planner, the index chooser, the evaluator — ever meets
+    /// one. That is the whole design: substitution happens **after** parsing, so
+    /// there is no stage left at which a supplied value could be read as
+    /// grammar.
+    Parameter(String),
     /// A value read out of the record being tested: `name`, `address.city`.
     ///
     /// Only meaningful where there **is** a record — inside a condition. In a

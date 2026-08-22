@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 mod ast;
+mod bind;
 mod error;
 mod function;
 mod lexer;
@@ -25,6 +26,7 @@ pub use ast::{
     Projectable, Projected, Projection, RangeExpr, RecordTarget, Script, Select, Source, Statement,
     StatementKind, TableRef, Written,
 };
+pub use bind::Parameters;
 pub use error::{Error, Result};
 pub use function::Function;
 pub use lexer::tokenize;

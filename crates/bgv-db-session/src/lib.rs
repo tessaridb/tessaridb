@@ -41,6 +41,7 @@ mod session;
 mod shape;
 mod vector;
 
+pub use bgv_db_ql::Parameters;
 pub use error::{Error, Result};
 pub use outcome::{AccessPath, Outcome};
 pub use session::Session;

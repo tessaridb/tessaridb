@@ -82,6 +82,12 @@ pub enum Token {
     Keyword(Keyword),
     /// A name: a namespace, table, field, or index.
     Ident(String),
+    /// A parameter the caller binds a value to, written `$name`.
+    ///
+    /// Lexically distinct from a name because it is grammatically distinct: a
+    /// parameter stands where a **literal** stands and nowhere a name does, and
+    /// that rule is what makes a bound value unable to become syntax.
+    Parameter(String),
     /// An integer or a float. The exact-decimal marker is a keyword, so a
     /// decimal arrives here as the number the keyword applies to.
     Number(Number),

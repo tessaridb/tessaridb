@@ -51,7 +51,7 @@ use bgv_db_storage::{Catalog, Store};
 
 pub use bgv_db_lsm::{Durability, StoreConfig};
 pub use bgv_db_session::redact::{Visible, seen};
-pub use bgv_db_session::{AccessPath, Error, Outcome, Result, Session};
+pub use bgv_db_session::{AccessPath, Error, Outcome, Parameters, Result, Session};
 pub use bgv_db_storage::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use bgv_db_types::{
     DatabaseId, Datetime, Duration, FieldKind, NamespaceId, Number, Path as FieldPath, RecordId,

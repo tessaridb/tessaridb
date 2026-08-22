@@ -294,6 +294,7 @@ fn describe(token: &Token) -> String {
     match token {
         Token::Keyword(keyword) => format!("`{keyword}`"),
         Token::Ident(name) => format!("the name `{name}`"),
+        Token::Parameter(name) => format!("the parameter `${name}`"),
         Token::Number(_) => "a number".to_owned(),
         Token::Str(_) => "text".to_owned(),
         Token::Bytes(_) => "bytes".to_owned(),
