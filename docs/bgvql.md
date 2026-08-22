@@ -110,6 +110,19 @@ table, a field, an index, a namespace, a user or a role is named. That is one
 rule rather than a list of positions, and it is what keeps a caller who can
 supply a value from thereby choosing which column is read.
 
+A record is `table:id`, and the two halves fall on either side of that line: the
+table is a name and the **id is a value**, so a parameter stands there.
+
+```
+GET sessions:$token;
+READ media:$path;
+```
+
+A supplied identity must be something a record can be identified by — an integer,
+text, a uuid or bytes. A float or an object is refused where it is supplied
+rather than converted into text, which would quietly make `1.0` and `'1.0'` the
+same record.
+
 Two consequences follow from *when* a parameter is replaced, which is after the
 script is parsed and before its first statement runs:
 
@@ -1422,7 +1435,6 @@ Named here rather than merely missing, so each absence reads as a decision:
 | a bucket whose bytes live somewhere else | the point of a bucket here is that everything is in one database — one backup, one identity, one feed. Pointing one at another service is additive and has its own credential and failure story |
 | sharing identical chunks between files | deduplication needs a reference count, and a reference count is a derived value that must be exactly right or space leaks or data vanishes |
 | a parameter where a **name** stands — a table, a field, an index, a namespace, a user, a role | a parameter is a value, and the rule that it is legal exactly where a literal is has one job: a caller who can supply a value must not thereby choose which column is read. A parameterised *name* is a second feature with a permission story of its own |
-| a parameter as a record id (`users:$id`) | an identity is written `table:id`, and the id half genuinely is a value — so this is additive rather than refused on principle. It waits for a surface that shows callers want it, because a record target is parsed in several places and widening all of them for a guess is the wrong order |
 | a prepared statement — a parse kept under a name and bound many times | parameters make it *possible*: the parsed tree no longer holds any caller's values. What it needs beyond that is a catalog object with a lifetime and an invalidation rule for when the schema under it changes, which is a feature and not an optimisation |
 | a parameter inside a stored expression — a field's `DEFAULT` | a stored expression is evaluated on every write that omits the field, so it belongs to no call and there is nobody to bind it. Refused where it is declared rather than surprising a write months later |
 | a field grant on a **nested** route | a grant names a field of a table; `address.city` is a route into a value, and hiding one means rebuilding the object around it rather than dropping a key. Top-level only, so that a half-answer does not look like a whole one |
@@ -1493,6 +1505,7 @@ Named here rather than merely missing, so each absence reads as a decision:
 | A bucket's records are written by `PUT` and never by hand | **contract** — metadata that can be written is metadata that can lie about bytes |
 | `PUT` is one commit | **contract** — a file is whole or absent, never partial |
 | A parameter is legal exactly where a literal is, and nowhere a name is | **contract** — the whole safety argument, and it is checkable by reading the grammar rather than by auditing the places a value is used |
+| A record's **id** is a value, so a parameter stands there; its table is a name, so one does not | **contract** — the line between what a caller may supply and what they may choose |
 | A parameter is replaced after parsing and before the first statement runs | **contract** — so a supplied value can never be read as grammar, and a script with an unsupplied one writes nothing at all |
 | Values are supplied as values, not as text | **contract** — `36` and `'36'` are different questions, and a caller must not have to know how this language would have read a string |
 | A supplied value under an unused name is accepted | **contract** — reusing one set of values across two scripts is not a mistake this store can see |

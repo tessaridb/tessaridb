@@ -22,9 +22,9 @@ mod parser;
 mod token;
 
 pub use ast::{
-    Aggregate, ArithmeticOp, BinaryOp, Direction, Expr, ExprKind, Field, FieldPath, Name, Ordering,
-    Projectable, Projected, Projection, RangeExpr, RecordTarget, Script, Select, Source, Statement,
-    StatementKind, TableRef, Written,
+    Aggregate, ArithmeticOp, BinaryOp, Direction, Expr, ExprKind, Field, FieldPath, Identity, Name,
+    Ordering, Projectable, Projected, Projection, RangeExpr, RecordTarget, Script, Select, Source,
+    Statement, StatementKind, TableRef, Written,
 };
 pub use bind::Parameters;
 pub use error::{Error, Result};

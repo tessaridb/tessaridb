@@ -237,3 +237,85 @@ fn a_parameter_in_a_stored_expression_is_refused_where_it_is_written() {
         "{refusal}"
     );
 }
+
+#[test]
+fn a_parameter_names_the_record_and_never_the_table() {
+    // The half of `table:id` a caller may supply. A table is a name and an id is
+    // a value, so this is where the line falls — and it is the shape a
+    // key-value read and an object store both actually have.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE SPACE sessions; SET sessions:'abc' = { level: 3 };")
+        .unwrap();
+
+    let outcomes = session
+        .run_with(
+            "GET sessions:$key;",
+            &bound("key", Value::String("abc".to_owned())),
+        )
+        .unwrap();
+    let Outcome::Value(Value::Object(held)) = &outcomes[0] else {
+        panic!("not an object: {:?}", outcomes[0]);
+    };
+    assert_eq!(held.get("level"), Some(&Value::Number(Number::Integer(3))));
+}
+
+#[test]
+fn a_supplied_identity_is_the_value_it_was_and_not_its_text() {
+    // `users:1` and `users:'1'` are different records, so a parameter holding
+    // the number 1 must not reach the record the text would.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("CREATE users:'1' = { name: 'the text one' };")
+        .unwrap();
+
+    let outcomes = session
+        .run_with(
+            "SELECT * FROM users:$who;",
+            &bound("who", Value::Number(Number::Integer(1))),
+        )
+        .unwrap();
+    let Outcome::Records { records, .. } = &outcomes[0] else {
+        panic!("not records: {:?}", outcomes[0]);
+    };
+    assert_eq!(records[0].0, RecordId::Int(1), "the text record answered");
+}
+
+#[test]
+fn an_identity_a_record_cannot_have_is_refused_where_it_is_supplied() {
+    // A float or an object, converted into text, would quietly make `1.0` and
+    // `'1.0'` the same record. Refused at the boundary instead.
+    let store = store();
+    let mut session = ready(&store);
+    let refusal = session
+        .run_with(
+            "SELECT * FROM users:$who;",
+            &bound("who", Value::Number(Number::float(1.5))),
+        )
+        .expect_err("a float identified a record");
+    assert!(refusal.to_string().contains("who"), "{refusal}");
+}
+
+#[test]
+fn a_file_is_reachable_by_a_supplied_path() {
+    // What an object API needs: a path arriving from outside, reaching a
+    // statement without a script being built around it.
+    let store = store();
+    let mut session = ready(&store);
+    session.run("DEFINE BUCKET media;").unwrap();
+
+    let mut given = Parameters::new();
+    given.insert("path".to_owned(), Value::String("/a b/c.txt".to_owned()));
+    given.insert("held".to_owned(), Value::String("content".to_owned()));
+    session
+        .run_with("PUT media:$path = $held;", &given)
+        .unwrap();
+
+    let outcomes = session.run_with("READ media:$path;", &given).unwrap();
+    assert_eq!(
+        outcomes[0],
+        Outcome::Value(Value::Bytes(b"content".to_vec()))
+    );
+}

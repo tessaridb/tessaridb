@@ -195,7 +195,7 @@ impl Session<'_> {
                 context.namespace,
                 context.database,
                 table,
-                target.id.clone(),
+                target.id.fixed(target.span)?.clone(),
             ),
         ))
     }

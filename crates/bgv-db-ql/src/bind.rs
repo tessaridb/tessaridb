@@ -30,8 +30,11 @@ use std::collections::BTreeMap;
 
 use bgv_db_types::Value;
 
+use bgv_db_types::{Number, RecordId};
+
 use crate::ast::{
-    Expr, ExprKind, Projectable, Projection, RangeExpr, Script, Select, Source, StatementKind,
+    Expr, ExprKind, Identity, Projectable, Projection, RangeExpr, RecordTarget, Script, Select,
+    Source, StatementKind,
 };
 use crate::error::{Error, Result};
 
@@ -66,15 +69,28 @@ impl Script {
 /// this stays complete as the language grows.
 fn bind_statement(kind: &mut StatementKind, parameters: &Parameters) -> Result<()> {
     match kind {
-        StatementKind::Create { value, .. }
-        | StatementKind::Update { value, .. }
-        | StatementKind::Set { value, .. }
-        | StatementKind::Put { value, .. } => bind_expr(value, parameters),
+        StatementKind::Create { target, value }
+        | StatementKind::Update { target, value }
+        | StatementKind::Set { target, value }
+        | StatementKind::Put { target, value } => {
+            bind_target(target, parameters)?;
+            bind_expr(value, parameters)
+        }
+        StatementKind::Get { target }
+        | StatementKind::Delete { target }
+        | StatementKind::Del { target }
+        | StatementKind::Read { target } => bind_target(target, parameters),
+        StatementKind::Relate {
+            from, to, value, ..
+        } => {
+            bind_target(from, parameters)?;
+            bind_target(to, parameters)?;
+            match value {
+                Some(value) => bind_expr(value, parameters),
+                None => Ok(()),
+            }
+        }
         StatementKind::DeleteWhere { condition, .. } => bind_expr(condition, parameters),
-        StatementKind::Relate { value, .. } => match value {
-            Some(value) => bind_expr(value, parameters),
-            None => Ok(()),
-        },
         StatementKind::Keys { range, .. } => match range {
             Some(range) => bind_range(range, parameters),
             None => Ok(()),
@@ -89,7 +105,6 @@ fn bind_statement(kind: &mut StatementKind, parameters: &Parameters) -> Result<(
         | StatementKind::DefineTable { .. }
         | StatementKind::DefineSpace { .. }
         | StatementKind::DefineBucket { .. }
-        | StatementKind::Read { .. }
         | StatementKind::DefineIndex { .. }
         | StatementKind::DefineField { .. }
         | StatementKind::DefineAnalyzer { .. }
@@ -100,13 +115,41 @@ fn bind_statement(kind: &mut StatementKind, parameters: &Parameters) -> Result<(
         | StatementKind::DropField { .. }
         | StatementKind::DropTable { .. }
         | StatementKind::DropIndex { .. }
-        | StatementKind::Delete { .. }
-        | StatementKind::Get { .. }
-        | StatementKind::Del { .. }
         | StatementKind::Begin
         | StatementKind::Commit
         | StatementKind::Cancel => Ok(()),
     }
+}
+
+/// A record target's **id** may be supplied; its table may not.
+fn bind_target(target: &mut RecordTarget, parameters: &Parameters) -> Result<()> {
+    let Identity::Parameter(name) = &target.id else {
+        return Ok(());
+    };
+    let Some(value) = parameters.get(name.as_str()) else {
+        return Err(Error::UnboundParameter {
+            name: name.clone(),
+            span: target.span,
+        });
+    };
+    let id = match value {
+        Value::Number(Number::Integer(held)) => RecordId::Int(*held),
+        Value::String(text) => RecordId::Text(text.clone()),
+        Value::Uuid(bytes) => RecordId::Uuid(*bytes),
+        Value::Bytes(bytes) => RecordId::Bytes(bytes.clone()),
+        // A float, an object, a duration: values a record cannot be identified
+        // by. Refused where it is supplied rather than converted into text,
+        // which would make `1.0` and `'1.0'` the same record.
+        other => {
+            return Err(Error::NotARecordIdentity {
+                name: name.clone(),
+                found: other.type_name(),
+                span: target.span,
+            });
+        }
+    };
+    target.id = Identity::Fixed(id);
+    Ok(())
 }
 
 fn bind_select(select: &mut Select, parameters: &Parameters) -> Result<()> {
@@ -123,13 +166,15 @@ fn bind_select(select: &mut Select, parameters: &Parameters) -> Result<()> {
         }
     }
     match &mut select.from {
+        Source::Record(target) => bind_target(target, parameters)?,
+        Source::Traverse { from, .. } => bind_target(from, parameters)?,
         Source::Where { condition, .. } => bind_expr(condition, parameters)?,
         Source::Join { condition, .. } => {
             if let Some(condition) = condition {
                 bind_expr(condition, parameters)?;
             }
         }
-        Source::Record(_) | Source::Table(_) | Source::Traverse { .. } => {}
+        Source::Table(_) => {}
     }
     for key in &mut select.group {
         bind_expr(key, parameters)?;
@@ -187,10 +232,7 @@ fn bind_expr(expr: &mut Expr, parameters: &Parameters) -> Result<()> {
         ExprKind::Select(select) => bind_select(select, parameters),
         // A literal is already a value; a path, a table and a record are names,
         // which a parameter may never be.
-        ExprKind::Literal(_)
-        | ExprKind::Path(_)
-        | ExprKind::Table(_)
-        | ExprKind::Record(_)
-        | ExprKind::Get(_) => Ok(()),
+        ExprKind::Record(target) | ExprKind::Get(target) => bind_target(target, parameters),
+        ExprKind::Literal(_) | ExprKind::Path(_) | ExprKind::Table(_) => Ok(()),
     }
 }

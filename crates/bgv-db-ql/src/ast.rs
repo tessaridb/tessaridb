@@ -768,6 +768,43 @@ pub enum ExprKind {
     Select(Box<Select>),
 }
 
+/// How a record target names the record.
+///
+/// A record is `table:id`, and the two halves are different things: the table is
+/// a **name**, which a caller may never supply, and the id is a **value**, which
+/// they may. So a parameter stands here and nowhere else in an identity —
+/// `GET sessions:$token` is the shape a key-value read actually has, and
+/// building it as text is the string-building parameters exist to remove.
+///
+/// [`Script::bind`] replaces every [`Identity::Parameter`] with the value it is
+/// bound to, so nothing past binding meets one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Identity {
+    /// Written in the statement.
+    Fixed(RecordId),
+    /// Supplied by the caller.
+    Parameter(String),
+}
+
+impl Identity {
+    /// The identity, once it is one.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::UnboundParameter`] when a parameter reaches execution,
+    /// which binding makes unreachable — so this says the script was run without
+    /// being bound rather than guessing at a value.
+    pub fn fixed(&self, span: Span) -> crate::Result<&RecordId> {
+        match self {
+            Self::Fixed(id) => Ok(id),
+            Self::Parameter(name) => Err(crate::Error::UnboundParameter {
+                name: name.clone(),
+                span,
+            }),
+        }
+    }
+}
+
 /// One field of an object literal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Field {
@@ -942,7 +979,7 @@ pub struct RecordTarget {
     /// The table the record lives in.
     pub table: TableRef,
     /// Its identity within that table.
-    pub id: RecordId,
+    pub id: Identity,
     /// Where the whole reference sits.
     pub span: Span,
 }

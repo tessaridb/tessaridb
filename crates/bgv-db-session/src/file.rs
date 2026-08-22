@@ -59,14 +59,20 @@ impl Session<'_> {
         bytes: &[u8],
     ) -> Result<Outcome> {
         let (context, table) = self.bucket(transaction, target)?;
-        let path = text_identity(&target.id, target.span)?;
+        let path = text_identity(target.id.fixed(target.span)?, target.span)?;
         let chunks = self.chunk_table(transaction, &context, table, target.span)?;
 
         // The file that was there is removed first, because a shorter file
         // written over a longer one would otherwise keep the tail of the old
         // one — chunks nothing describes and nothing would ever read, until a
         // later write made the count long enough to reach them again.
-        self.clear_chunks(transaction, &context, chunks, table, &target.id)?;
+        self.clear_chunks(
+            transaction,
+            &context,
+            chunks,
+            table,
+            target.id.fixed(target.span)?,
+        )?;
 
         let mut ordinal: u32 = 0;
         for part in bytes.chunks(CHUNK) {
@@ -99,7 +105,7 @@ impl Session<'_> {
                 context.namespace,
                 context.database,
                 table,
-                target.id.clone(),
+                target.id.fixed(target.span)?.clone(),
             ),
             encode_payload(&metadata).into_bytes(),
         );
@@ -117,12 +123,12 @@ impl Session<'_> {
         target: &RecordTarget,
     ) -> Result<Outcome> {
         let (context, table) = self.bucket(transaction, target)?;
-        let path = text_identity(&target.id, target.span)?;
+        let path = text_identity(target.id.fixed(target.span)?, target.span)?;
         let address = RecordAddress::new(
             context.namespace,
             context.database,
             table,
-            target.id.clone(),
+            target.id.fixed(target.span)?.clone(),
         );
         let Some(payload) = transaction.get(&address)? else {
             return Ok(Outcome::Value(Value::None));
@@ -245,7 +251,13 @@ impl Session<'_> {
         else {
             return Ok(());
         };
-        self.clear_chunks(transaction, &context, chunks, table, &target.id)
+        self.clear_chunks(
+            transaction,
+            &context,
+            chunks,
+            table,
+            target.id.fixed(target.span)?,
+        )
     }
 
     /// Resolve a target that must name a bucket.

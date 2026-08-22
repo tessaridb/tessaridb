@@ -8,7 +8,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use bgv_db_ql::{
-    BinaryOp, Error, ExprKind, Projection, RecordTarget, Script, Source, StatementKind, parse,
+    BinaryOp, Error, ExprKind, Identity, Projection, RecordTarget, Script, Source, StatementKind,
+    parse,
 };
 use bgv_db_types::{Datetime, Number, RecordId, Value};
 
@@ -214,7 +215,7 @@ fn a_record_id_is_one_of_its_four_kinds_and_a_float_is_not_one() {
         let StatementKind::Delete { target } = one(&format!("DELETE {source};")) else {
             panic!("{source} did not parse as a delete");
         };
-        assert_eq!(target.id, expected, "{source}");
+        assert_eq!(target.id, Identity::Fixed(expected), "{source}");
     }
 
     // `users:1.0` and `users:1` would otherwise be one record or two depending
@@ -477,7 +478,7 @@ fn a_record_and_a_table_both_stand_where_a_value_stands() {
         panic!("expected a record");
     };
     assert_eq!(table.name.text, "users");
-    assert_eq!(id, RecordId::Int(1));
+    assert_eq!(id, Identity::Fixed(RecordId::Int(1)));
 
     assert!(matches!(written("SET k:1 = users"), ExprKind::Table(_)));
 }

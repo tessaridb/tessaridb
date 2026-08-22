@@ -4,7 +4,7 @@ use bgv_db_types::{Datetime, Number, RecordId, Value, parse_uuid};
 use rust_decimal::Decimal;
 
 use super::Parser;
-use crate::ast::{Expr, ExprKind, Field, Name, RangeExpr, RecordTarget, TableRef};
+use crate::ast::{Expr, ExprKind, Field, Identity, Name, RangeExpr, RecordTarget, TableRef};
 use crate::error::{Error, Result};
 use crate::function::Function;
 use crate::token::{Keyword, Punct, Span, Spanned, Token};
@@ -394,19 +394,22 @@ impl Parser<'_> {
     ///
     /// A float is refused rather than converted: `users:1.0` and `users:1` would
     /// otherwise be one record or two depending on how the text was written.
-    fn record_id(&mut self, at: Span) -> Result<RecordId> {
+    fn record_id(&mut self, at: Span) -> Result<Identity> {
         if self.peek_keyword() == Some(Keyword::Uuid) {
             let (text, span) = self.marked_string("text after `uuid`")?;
             let bytes = parse_uuid(&text).ok_or(Error::InvalidUuid { text, span })?;
-            return Ok(RecordId::Uuid(bytes));
+            return Ok(Identity::Fixed(RecordId::Uuid(bytes)));
         }
         let Some(spanned) = self.advance() else {
             return Err(Error::InvalidRecordId { span: at });
         };
         match spanned.token {
-            Token::Number(Number::Integer(value)) => Ok(RecordId::Int(value)),
-            Token::Str(text) => Ok(RecordId::Text(text)),
-            Token::Bytes(bytes) => Ok(RecordId::Bytes(bytes)),
+            Token::Number(Number::Integer(value)) => Ok(Identity::Fixed(RecordId::Int(value))),
+            Token::Str(text) => Ok(Identity::Fixed(RecordId::Text(text))),
+            Token::Bytes(bytes) => Ok(Identity::Fixed(RecordId::Bytes(bytes))),
+            // The table half of `table:id` is a name and the id half is a value,
+            // which is why a parameter stands here and never one step left.
+            Token::Parameter(name) => Ok(Identity::Parameter(name)),
             _ => Err(Error::InvalidRecordId { span: spanned.span }),
         }
     }

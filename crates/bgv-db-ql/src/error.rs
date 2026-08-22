@@ -285,6 +285,21 @@ pub enum Error {
         span: Span,
     },
 
+    /// A parameter supplying something a record cannot be identified by.
+    ///
+    /// A record's identity is an integer, text, a uuid or bytes. A float or an
+    /// object is refused where it is supplied rather than converted into text,
+    /// which would quietly make `1.0` and `'1.0'` the same record.
+    #[error("`${name}` at {span} holds {found}, which a record cannot be identified by")]
+    NotARecordIdentity {
+        /// The parameter's name, without its marker.
+        name: String,
+        /// What it held.
+        found: &'static str,
+        /// Where the identity was written.
+        span: Span,
+    },
+
     /// A parameter the caller did not supply a value for.
     ///
     /// Refused while binding, which is before the first statement runs — so a
@@ -330,7 +345,8 @@ impl Error {
             | Self::NotASideOfTheJoin { span, .. }
             | Self::OneSidedJoin { span, .. }
             | Self::JoinKeyIsNotAField { span, .. }
-            | Self::UnboundParameter { span, .. } => *span,
+            | Self::UnboundParameter { span, .. }
+            | Self::NotARecordIdentity { span, .. } => *span,
         }
     }
 }
