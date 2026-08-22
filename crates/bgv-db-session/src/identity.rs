@@ -108,7 +108,12 @@ impl Needs {
             | StatementKind::Begin
             | StatementKind::Commit
             | StatementKind::Cancel => Self::Read,
-            StatementKind::DefineUser { .. } | StatementKind::DropUser { .. } => Self::Administer,
+            // Granting is administering: it decides what somebody else may do,
+            // which is the same kind of act as declaring them.
+            StatementKind::DefineUser { .. }
+            | StatementKind::DropUser { .. }
+            | StatementKind::Grant { .. }
+            | StatementKind::Revoke { .. } => Self::Administer,
             _ => Self::Write,
         }
     }
@@ -227,6 +232,14 @@ impl Session<'_> {
             .into_iter()
             .find(|user| user.name == name.text);
         if let Some(user) = found {
+            // The grants go with the user. Leaving them would let a later user
+            // allocated the same id inherit permissions nobody gave them, which
+            // is the same shape of bug as a reused table id resolving a stale
+            // reference — and the catalog already refuses to reuse ids for
+            // exactly that reason.
+            for held in Catalog::new(transaction).grants_for(user.id)? {
+                Catalog::new(transaction).revoke(user.id, held.table);
+            }
             Catalog::new(transaction).drop_user(&user)?;
         }
         Ok(Outcome::Done)

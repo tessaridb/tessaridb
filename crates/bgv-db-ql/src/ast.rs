@@ -161,6 +161,38 @@ pub enum StatementKind {
         /// The name to remove.
         name: Name,
     },
+    /// `GRANT read, write ON orders TO ada`
+    ///
+    /// # Grants, if a user has any, are the whole story
+    ///
+    /// A user with none is governed by their role, which is what lets this exist
+    /// without changing what any already-declared user may do. A user with one
+    /// reaches exactly what they were granted — because a role can only widen,
+    /// and a permission system that cannot narrow is decoration.
+    Grant {
+        /// What may be done — one or more verbs, as written.
+        verbs: Vec<Name>,
+        /// The table it is on.
+        table: TableRef,
+        /// Who it is for.
+        user: Name,
+    },
+    /// `REVOKE write ON orders FROM ada`
+    ///
+    /// # It will not take away the last one
+    ///
+    /// Going from one grant to none **widens** a user from a named table to
+    /// every table their role allows, which is the opposite of what somebody
+    /// running a `REVOKE` is thinking about. So the last one is refused and the
+    /// refusal says how to widen deliberately.
+    Revoke {
+        /// What is being taken away.
+        verbs: Vec<Name>,
+        /// The table it was on.
+        table: TableRef,
+        /// Who it was for.
+        user: Name,
+    },
     /// `DROP FIELD email ON users` — removes the declaration, not the data.
     DropField {
         /// The field's name.

@@ -101,6 +101,12 @@ impl Session<'_> {
                 span,
             ),
             StatementKind::DropUser { name } => self.drop_user(transaction, name),
+            StatementKind::Grant { verbs, table, user } => {
+                self.grant(transaction, verbs, table, user, span)
+            }
+            StatementKind::Revoke { verbs, table, user } => {
+                self.revoke(transaction, verbs, table, user, span)
+            }
             StatementKind::DropField { name, table } => {
                 let (_, id) = self.resolve_table(transaction, table)?;
                 let field = self.field_named(transaction, id, name)?;

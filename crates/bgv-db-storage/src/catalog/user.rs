@@ -38,6 +38,44 @@ const FIELD_SECRET: &str = "secret";
 
 const ENTITY: &str = "user";
 
+/// What may be done to a table.
+///
+/// The same two words a grant is written with and a role is measured against, so
+/// that "may ada read this" is one question with one vocabulary rather than a
+/// role's answer and a grant's answer needing to be reconciled.
+///
+/// Administering is deliberately absent: declaring a user is a store-level act
+/// and there is no table to grant it on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Verb {
+    /// Reading records.
+    Read,
+    /// Writing records, and declaring structure on the table.
+    Write,
+}
+
+impl Verb {
+    /// Every verb, so a listing cannot drift from the set.
+    pub const ALL: &'static [Self] = &[Self::Read, Self::Write];
+
+    /// How the verb is written.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+
+    /// Read one back from how it is written.
+    ///
+    /// Case-sensitive, like every other name in this language.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|held| held.name() == text)
+    }
+}
+
 /// What a user is allowed to do.
 ///
 /// Three, not a grant matrix. A matrix over verbs and objects is a real feature

@@ -23,6 +23,7 @@ mod analyzer;
 mod change;
 mod definition;
 mod field;
+mod grant;
 mod system;
 mod user;
 
@@ -36,8 +37,9 @@ pub use definition::{
     TableShape, VectorDistance,
 };
 pub use field::{FieldDefinition, FieldShape};
+pub use grant::GrantDefinition;
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
-pub use user::{Role, UserDefinition};
+pub use user::{Role, UserDefinition, Verb};
 
 use crate::error::{Error, Result};
 use crate::transaction::{RecordAddress, Transaction};

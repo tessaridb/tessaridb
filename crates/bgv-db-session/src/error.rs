@@ -298,6 +298,65 @@ pub enum Error {
         span: Span,
     },
 
+    /// A verb this language does not have.
+    #[error("there is no verb called {name:?}; a grant carries `read` or `write` (at {span})")]
+    NoSuchVerb {
+        /// The name as written.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A grant-governed user reached a table nobody granted them.
+    ///
+    /// Named separately from [`Error::RoleForbids`] because the two send the
+    /// reader to different places: a role is changed by re-declaring the user,
+    /// and a grant by running one more `GRANT`.
+    #[error("{user:?} has not been granted {needs} on {table:?} (at {span})")]
+    NotGranted {
+        /// Who was asking.
+        user: String,
+        /// The table they named.
+        table: String,
+        /// What they needed on it.
+        needs: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A grant-governed user tried to declare structure.
+    ///
+    /// `DEFINE TABLE x` names a table that does not exist, so no grant for it
+    /// can exist either — the statement is unreachable rather than refused by a
+    /// rule, and saying so is better than a refusal that reads like a bug.
+    #[error(
+        "{user:?} is governed by grants, and a grant names a table that already exists — \
+         declaring one is not a scoped activity (at {span})"
+    )]
+    GrantedUserCannotDeclare {
+        /// Who was asking.
+        user: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A revocation that would have removed a user's last grant.
+    ///
+    /// Which would **widen** them from a named table to every table their role
+    /// allows — the opposite of what somebody running a `REVOKE` is thinking
+    /// about. Widening is done by granting, which is a statement whose name says
+    /// what it does.
+    #[error(
+        "that is {user:?}'s last grant, and taking it away would widen them to every table \
+         their role allows; grant what they should reach instead (at {span})"
+    )]
+    LastGrant {
+        /// Who the grant is for.
+        user: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A password the hasher will not take.
     #[error("that password cannot be stored (at {span})")]
     PasswordUnusable {

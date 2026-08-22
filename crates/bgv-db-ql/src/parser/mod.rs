@@ -279,9 +279,9 @@ fn absent_feature(word: &str) -> Option<&'static str> {
         ("offset", "limiting a result"),
         ("search", "a search index"),
         ("knn", "vector search"),
-        ("grant", "permissions in the language"),
-        ("revoke", "permissions in the language"),
-        ("permissions", "permissions in the language"),
+        // `GRANT` and `REVOKE` are built. What is not is a permission on a
+        // *field*, which refuses nothing and edits instead — see §8.
+        ("permissions", "per-field permissions"),
     ];
     ABSENT
         .iter()

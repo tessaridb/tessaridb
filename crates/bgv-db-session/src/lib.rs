@@ -21,16 +21,19 @@
 
 mod aggregate;
 mod arithmetic;
+mod authorize;
 mod call;
 mod condition;
 mod context;
 mod error;
 mod evaluate;
 mod execute;
+mod grants;
 mod identity;
 mod outcome;
 mod plan;
 mod rank;
+mod reach;
 mod reference;
 mod search;
 mod session;

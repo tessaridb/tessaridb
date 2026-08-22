@@ -47,6 +47,8 @@ impl Parser<'_> {
             Some(Keyword::Use) => self.use_statement()?,
             Some(Keyword::Define) => self.define_statement()?,
             Some(Keyword::Drop) => self.drop_statement()?,
+            Some(Keyword::Grant) => self.grant_statement(true)?,
+            Some(Keyword::Revoke) => self.grant_statement(false)?,
             Some(Keyword::Create) => self.write_statement(Keyword::Create)?,
             Some(Keyword::Update) => self.write_statement(Keyword::Update)?,
             Some(Keyword::Set) => self.write_statement(Keyword::Set)?,
@@ -412,6 +414,37 @@ impl Parser<'_> {
             Keyword::Update => StatementKind::Update { target, value },
             Keyword::Set => StatementKind::Set { target, value },
             _ => StatementKind::Create { target, value },
+        })
+    }
+
+    /// `GRANT read, write ON orders TO ada` and its opposite.
+    ///
+    /// One function for both because they differ in two tokens and nothing else,
+    /// and two nearly identical parsers is two places for the grammar to drift.
+    /// `TO` and `FROM` rather than one word for both, because a reader should be
+    /// able to tell which direction a statement goes without reading its verb
+    /// twice.
+    fn grant_statement(&mut self, giving: bool) -> Result<StatementKind> {
+        self.advance();
+        let mut verbs = vec![self.name()?];
+        while self.eat_punct(Punct::Comma) {
+            verbs.push(self.name()?);
+        }
+        self.expect_keyword(Keyword::On, "`ON` and the table")?;
+        let table = self.table_ref()?;
+        if giving {
+            self.expect_keyword(Keyword::To, "`TO` and the user")?;
+            return Ok(StatementKind::Grant {
+                verbs,
+                table,
+                user: self.name()?,
+            });
+        }
+        self.expect_keyword(Keyword::From, "`FROM` and the user")?;
+        Ok(StatementKind::Revoke {
+            verbs,
+            table,
+            user: self.name()?,
         })
     }
 

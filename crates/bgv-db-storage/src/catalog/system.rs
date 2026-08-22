@@ -50,6 +50,9 @@ pub const ANALYZERS: TableId = TableId::new(8);
 /// Declared users.
 pub const USERS: TableId = TableId::new(9);
 
+/// Which tables a user may reach, and for what.
+pub const GRANTS: TableId = TableId::new(10);
+
 /// The first id handed out at any level. Zero belongs to the system.
 pub const FIRST_ID: u32 = 1;
 

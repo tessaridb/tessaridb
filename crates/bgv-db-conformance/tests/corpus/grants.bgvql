@@ -1,0 +1,49 @@
+# Permissions per table.
+#
+# A role says what verbs a user may use; a grant says which tables they may use
+# them on. The rule is one sentence: **a user's grants, if they have any, are the
+# whole story, and a user with none is governed by their role.**
+#
+# A corpus file is one anonymous session, the same as `users.bgvql`, so what
+# these cases pin is the shape of the statements and the refusals reachable
+# before the first `DEFINE USER` closes the store. What a grant *does* to a
+# signed-in session is asserted where a session can sign in —
+# `crates/bgv-db-session/tests/grants.rs` — for the same reason the per-role
+# checks live there.
+
+--- case: a namespace, a database and two tables to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+DEFINE TABLE users;
+DEFINE TABLE orders;
+--- expect: ok
+
+--- case: a grant names a user, and there is none yet
+GRANT read ON users TO nobody;
+--- expect: error Unknown
+
+--- case: a grant names a table, and this is not one
+GRANT read ON nonesuch TO nobody;
+--- expect: error Unknown
+
+--- case: a grant names a verb the language has
+GRANT scribble ON users TO nobody;
+--- expect: error NoSuchVerb
+
+--- case: and so does a revocation
+REVOKE scribble ON users FROM nobody;
+--- expect: error NoSuchVerb
+
+--- case: a user, which closes the store
+DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse';
+--- expect: ok
+
+--- case: granting is administering, so an anonymous session may not
+GRANT read ON users TO ada;
+--- expect: error NotSignedIn
+
+--- case: and neither may it revoke
+REVOKE read ON users FROM ada;
+--- expect: error NotSignedIn

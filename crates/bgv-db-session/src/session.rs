@@ -12,7 +12,7 @@ use bgv_db_ql::{Statement, StatementKind, parse};
 use bgv_db_storage::{Catalog, Store, Transaction};
 
 use crate::error::{Error, Result};
-use crate::identity::{self, Identity, Needs};
+use crate::identity::{self, Identity};
 use crate::outcome::Outcome;
 
 /// A hash to check a name that does not exist against.
@@ -25,10 +25,12 @@ const ABSENT_USER_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$    c29tZXNhbHR2Y
 /// A connection's worth of state: where statements run, and against what.
 #[derive(Debug)]
 pub struct Session<'a> {
-    store: &'a Store,
+    /// Visible to the crate for the same reason `identity` is.
+    pub(crate) store: &'a Store,
     namespace: Option<String>,
     database: Option<String>,
-    identity: Identity,
+    /// Visible to the crate because `authorize.rs` asks it three questions.
+    pub(crate) identity: Identity,
 }
 
 impl<'a> Session<'a> {
@@ -121,146 +123,6 @@ impl<'a> Session<'a> {
     /// Forget who this session is.
     pub fn sign_out(&mut self) {
         self.identity = Identity::Anonymous;
-    }
-
-    /// Refuse when this session may not read.
-    ///
-    /// # Why a session has to answer this at all
-    ///
-    /// Because not everything that reads records is a statement. A subscription
-    /// takes records from the log directly and never reaches the executor, so
-    /// without this it would be reading with no identity check whatsoever — on a
-    /// closed store, an anonymous caller receiving every write there is.
-    ///
-    /// It is here rather than in whatever asks because "who may read" is one
-    /// rule, and a second copy of it in a network surface is a second place for
-    /// it to be answered differently.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::NotSignedIn`] on a closed store with no identity, and
-    /// [`Error::RoleForbids`] when the role is not enough.
-    pub fn may_read(&self, store: &'a Store) -> Result<()> {
-        let mut transaction = store.begin()?;
-        let open = Catalog::new(&mut transaction).is_open()?;
-        transaction.rollback();
-        // A span over nothing, because there is no script here to point into —
-        // and inventing one would put a caret under a character nobody wrote.
-        self.identity
-            .allows_needs(Needs::Read, open, bgv_db_ql::Span::new(0, 0))
-    }
-
-    /// Refuse the statement when this session may not run it.
-    ///
-    /// The check is one catalog read per statement. It reads `is_open` — whether
-    /// the store has any user at all — because an empty store must stay usable,
-    /// and that is a property of the data rather than of the session.
-    fn authorize(
-        &self,
-        store: &'a Store,
-        kind: &StatementKind,
-        span: bgv_db_ql::Span,
-    ) -> Result<()> {
-        let mut transaction = store.begin()?;
-        let open = Catalog::new(&mut transaction).is_open()?;
-        transaction.rollback();
-        self.identity.allows(kind, open, span)?;
-        self.within_tenancy(kind, span)
-    }
-
-    /// Refuse a resolved tenancy that is not the signed-in user's own.
-    ///
-    /// This is the check that **cannot be walked around**, and it is here rather
-    /// than at `USE` for a reason: a statement may name a database directly —
-    /// `SELECT * FROM other.notes` — and never touch the session's selection at
-    /// all. Every path that reaches a record first resolves a namespace and a
-    /// database into ids, so refusing at that resolution refuses all of them by
-    /// construction. Checking only `USE` would guard the front door of a room
-    /// with two.
-    ///
-    /// The refusal names the **tenancy** and never says whether the record or
-    /// the table exists: a refusal that leaks that has answered the question it
-    /// declined.
-    /// `named` is the tenancy as the author wrote it, which is what the refusal
-    /// echoes back. Naming it leaks nothing they did not already type, and it is
-    /// the only thing here that reads as an answer to what they asked.
-    pub(crate) fn permits(
-        &self,
-        namespace: bgv_db_types::NamespaceId,
-        database: bgv_db_types::DatabaseId,
-        named: &str,
-        span: bgv_db_ql::Span,
-    ) -> Result<()> {
-        let Some(user) = self.identity.user() else {
-            return Ok(());
-        };
-        let outside = user.namespace.is_some_and(|own| own != namespace)
-            || user.database.is_some_and(|own| own != database);
-        if outside {
-            return Err(Error::OutsideTenancy {
-                name: named.to_owned(),
-                span,
-            });
-        }
-        Ok(())
-    }
-
-    /// Refuse a statement reaching outside the tenancy its user belongs to.
-    ///
-    /// This one catches `USE` specifically, which resolves no tenancy of its own
-    /// — it only records a name for the statements after it. Without it a scoped
-    /// user's `USE NAMESPACE other` would succeed and the refusal would arrive
-    /// one statement later, naming something the author did not just write.
-    fn within_tenancy(&self, kind: &StatementKind, span: bgv_db_ql::Span) -> Result<()> {
-        let Some(user) = self.identity.user() else {
-            return Ok(());
-        };
-        let Some(_) = user.namespace else {
-            return Ok(());
-        };
-        // A scoped user may only work inside the namespace and database it was
-        // declared in, and `USE` is where a session says which those are.
-        if let StatementKind::Use {
-            namespace,
-            database,
-        } = kind
-        {
-            for named in [namespace.as_ref(), database.as_ref()]
-                .into_iter()
-                .flatten()
-            {
-                if !self.names_own_tenancy(user, &named.text) {
-                    return Err(Error::OutsideTenancy {
-                        name: named.text.clone(),
-                        span,
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Whether this name is one of the user's own tenancy names.
-    fn names_own_tenancy(&self, user: &bgv_db_storage::UserDefinition, named: &str) -> bool {
-        let Ok(mut transaction) = self.store.begin() else {
-            return false;
-        };
-        let catalog = Catalog::new(&mut transaction);
-        let matches = user.namespace.is_some_and(|id| {
-            catalog
-                .namespace(id)
-                .ok()
-                .flatten()
-                .is_some_and(|found| found.name == named)
-        }) || user.database.is_some_and(|id| {
-            catalog
-                .database(id)
-                .ok()
-                .flatten()
-                .is_some_and(|found| found.name == named)
-        });
-        transaction.rollback();
-        matches
     }
 
     /// One statement, inside the open transaction or in one of its own.

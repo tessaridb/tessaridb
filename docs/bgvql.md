@@ -178,10 +178,40 @@ anonymous session keeps, or it would be a back door anyone could walk through by
 declaring themselves an owner, and `DROP USER` is refused for the same reason. A
 lost owner password is therefore a restore from backup rather than a recovery.
 
-There are three roles and no grant matrix. A `viewer` reads; an `editor` also
-writes records and defines structure; an `owner` also declares users. `USE` and
-the transaction verbs count as reading, because a viewer that cannot say which
+There are three roles. A `viewer` reads; an `editor` also writes records and
+defines structure; an `owner` also declares users and grants. `USE` and the
+transaction verbs count as reading, because a viewer that cannot say which
 database it is reading cannot read.
+
+A role says which **verbs** a user may use. A grant says which **tables** they
+may use them on:
+
+```
+GRANT read ON users TO ada;
+GRANT read, write ON orders TO ada;
+REVOKE write ON orders FROM ada;
+```
+
+The rule is one sentence: **a user's grants, if they have any, are the whole
+story, and a user with none is governed by their role.** So the first grant is
+also a restriction — which is the point, because a role can only widen, and a
+permission system that cannot narrow is decoration. A grant is identified by the
+pair it names, so granting twice is one grant and granting again replaces what
+was there; narrowing is done by re-granting.
+
+**`REVOKE` will not take away the last one.** Going from one grant to none would
+widen a user from a named table to every table their role allows, which is the
+opposite of what somebody running a revocation is thinking about. Widening is
+done by granting, which is a statement whose name says what it does; undoing
+scoping entirely is `DROP USER` and a fresh declaration, which is deliberate and
+visible in the log as what it is. Dropping a user takes their grants with them,
+so a later user allocated the same id inherits nothing.
+
+**A grant-governed user cannot declare a table.** A grant names a table that
+already exists, so there is no grant that could permit `DEFINE TABLE` — the
+statement is unreachable rather than refused by a rule, and the refusal says so.
+Every table a statement names is checked, not only the first: `RELATE` needs the
+two endpoints as well as the edge table, and a join needs both sides.
 
 `ON prod.orders` scopes a user to one namespace and database, and a scoped user
 cannot reach another — not through `USE`, and not by naming a database directly
@@ -1260,6 +1290,7 @@ Named here rather than merely missing, so each absence reads as a decision:
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
+| per-**field** permissions | a per-table grant *refuses*; a per-field grant *edits*, and redacting an answer hides nothing — `SELECT count(*) FROM staff WHERE salary > 100000` interrogates a field it never shows. Doing it correctly means the field is unreadable to the evaluator, so the condition is consistently false and the projection consistently omits it, which reaches the evaluator, the change feed, index maintenance and a join's composite. A different feature, not more of the same |
 | `LEFT`, `RIGHT` and `FULL` joins | a bare `JOIN` is inner, chosen so that these stay purely additive: an outer qualifier added later changes no statement already written |
 | joining a table to itself | two records under one name is not a row anybody can read, and telling them apart needs aliases — a language surface to design once rather than a clause |
 | a join on anything but an equality, or on more than one pair | `ON a.x = b.y` is what an index can serve and what a map can be keyed by; a join predicate that is neither is a nested loop with a filter, which is the shape the equality was chosen to avoid |

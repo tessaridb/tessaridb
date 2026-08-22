@@ -469,3 +469,68 @@ fn a_subscriber_that_stops_reading_is_cut_off_rather_than_buffered_and_loses_not
         .unwrap();
     assert_eq!(answers.len(), 1);
 }
+
+#[test]
+fn a_grant_governed_subscriber_is_told_only_about_tables_it_was_granted() {
+    // A subscription reaches records without running a statement, so grants have
+    // to be asked here or not at all — and not at all means a feed handing
+    // somebody a table nobody granted them. This surface has produced that shape
+    // of hole twice; the test is what makes the third time a failure rather than
+    // a discovery.
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (_node, address) = serving(Arc::clone(&db));
+    let mut open = Client::connect(&address).unwrap();
+    open.run(READY, None).unwrap();
+    open.run(
+        "DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
+        None,
+    )
+    .unwrap();
+
+    let owner = Some(("root", "correct horse battery"));
+    let mut root = Client::connect(&address).unwrap();
+    root.run("USE NAMESPACE prod; USE DATABASE orders;", owner)
+        .unwrap();
+    root.run(
+        "DEFINE USER ada ON prod.orders ROLE editor PASSWORD 'correct horse battery';",
+        owner,
+    )
+    .unwrap();
+    root.run("GRANT read, write ON orders TO ada;", owner)
+        .unwrap();
+
+    let scoped = Some(("ada", "correct horse battery"));
+    let mut ada = Client::connect(&address).unwrap();
+    ada.run("USE NAMESPACE prod; USE DATABASE orders;", scoped)
+        .unwrap();
+    let feed = feeding(
+        ada,
+        &Follow {
+            from: db.committed_tail().unwrap().get() + 1,
+            table: None,
+        },
+    );
+
+    // The ungranted table is written to first, so a feed that filtered nothing
+    // would deliver it.
+    root.run("CREATE users:1 = { name: 'not yours' };", owner)
+        .unwrap();
+    root.run("CREATE orders:1 = { total: 3 };", owner).unwrap();
+
+    let change = within(&feed, "a change from the granted table");
+    assert_eq!(change.table, "orders");
+
+    // And naming the ungranted table outright is refused rather than silent.
+    let mut asking = Client::connect(&address).unwrap();
+    asking
+        .run("USE NAMESPACE prod; USE DATABASE orders;", scoped)
+        .unwrap();
+    let mut refused = asking
+        .follow(&Follow {
+            from: 0,
+            table: Some("users".to_owned()),
+        })
+        .unwrap();
+    let said = refused.wait().expect_err("a refusal");
+    assert!(said.to_string().contains("granted"), "{said}");
+}

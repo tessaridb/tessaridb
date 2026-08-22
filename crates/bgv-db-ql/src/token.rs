@@ -222,6 +222,12 @@ pub enum Keyword {
     On,
     /// `JOIN` — match two tables on a value neither stores a pointer for.
     Join,
+    /// `GRANT` — give a user verbs on a table.
+    Grant,
+    /// `REVOKE` — take them away.
+    Revoke,
+    /// `TO` — who a grant is for.
+    To,
     /// `FIELDS`
     Fields,
     /// `FIELD`
@@ -334,6 +340,9 @@ impl Keyword {
             Self::Index => "INDEX",
             Self::On => "ON",
             Self::Join => "JOIN",
+            Self::Grant => "GRANT",
+            Self::Revoke => "REVOKE",
+            Self::To => "TO",
             Self::Fields => "FIELDS",
             Self::Field => "FIELD",
             Self::Type => "TYPE",
@@ -396,6 +405,9 @@ impl Keyword {
         Self::Index,
         Self::On,
         Self::Join,
+        Self::Grant,
+        Self::Revoke,
+        Self::To,
         Self::Fields,
         Self::Field,
         Self::Type,

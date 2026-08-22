@@ -247,6 +247,15 @@ fn follow(
     if let Err(refusal) = session.may_read(db.store()) {
         return refuse(writer, &refusal.to_string());
     }
+    // The *table* question, which `may_read` does not answer. A grant-governed
+    // subscriber sees what they were granted and nothing else — the same answer
+    // their `SELECT` per table would give. Forgetting this is how a feed hands
+    // somebody a table nobody granted them, which is the shape of hole this
+    // surface has now produced twice.
+    let readable = match session.readable(db.store()) {
+        Ok(readable) => readable,
+        Err(failure) => return refuse(writer, &failure.to_string()),
+    };
     let (Some(namespace), Some(database)) = (session.namespace(), session.database()) else {
         return refuse(writer, "no database is selected to follow the changes to");
     };
@@ -256,7 +265,17 @@ fn follow(
     let watch = match &asked.table {
         None => Watch::default(),
         Some(name) => match db.table_in(namespace, database, name) {
-            Ok(Some(table)) => Watch::table(table),
+            Ok(Some(table)) => {
+                // Named explicitly, so the refusal is better than a feed that
+                // silently delivers nothing forever.
+                if readable.as_ref().is_some_and(|held| !held.contains(&table)) {
+                    return refuse(
+                        writer,
+                        &format!("{name:?} is not a table this session has been granted to read"),
+                    );
+                }
+                Watch::table(table)
+            }
             Ok(None) => return refuse(writer, &format!("no table named {name:?} to watch")),
             Err(failure) => return refuse(writer, &failure.to_string()),
         },
@@ -280,6 +299,15 @@ fn follow(
             // nothing about namespaces, so this is where a subscriber is kept
             // inside the database it selected.
             if (change.namespace, change.database) != tenancy {
+                continue;
+            }
+            // And the grant, for a subscriber watching everything. Filtered
+            // rather than refused, because "everything I was granted" is what
+            // the same user's reads answer.
+            if readable
+                .as_ref()
+                .is_some_and(|held| !held.contains(&change.table))
+            {
                 continue;
             }
             // A change whose table has been dropped has no name to give, and
