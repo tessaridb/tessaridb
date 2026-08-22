@@ -29,6 +29,20 @@ use crate::rank::{Corpus, score};
 use crate::search::{Searched, matches_terms};
 use crate::session::Session;
 
+/// How many of an index's leading values an index-served order compares.
+///
+/// One, because `plan::ordered` refuses a second sort key — so the field the
+/// order names is the only one a tie group may be defined by. It is the width of
+/// the comparison rather than a tunable, which is why it lives here beside the
+/// reads that use it and not in `bgv-db-constants`.
+///
+/// The number matters because it decides what a *tie* is. On a single-field
+/// index it is every value the entry holds; on `(last, first)` ordered by `last`
+/// it is the first of two, and comparing both instead would make every entry its
+/// own group — so nothing would ever drain, and a bound cut inside a group of
+/// equal `last` would answer with the wrong members and raise nothing.
+const ORDERED_LEADING_FIELDS: usize = 1;
+
 impl Session<'_> {
     /// The value an expression denotes, with no record in scope.
     pub(crate) fn evaluate(&self, transaction: &mut Transaction<'_>, expr: &Expr) -> Result<Value> {
@@ -839,12 +853,15 @@ impl Session<'_> {
     ///
     /// - **no ordered index on that field.** A search index holds terms and a
     ///   vector index holds a graph; neither is stored in this order.
-    ///   `index_on_path` also settles the field count: it matches an index whose
-    ///   field list *is* this one path, so a composite index is never taken. Its
-    ///   entries for one leading value are ordered by the *next* field, and the
-    ///   tie group at the bound is a group of leading values — which cannot be
-    ///   read off a key, because [`bgv_db_encoding::IndexValues`] is opaque by
-    ///   design.
+    ///   A composite index **is** taken when the ordered field is its leading
+    ///   one, because its entries are stored by that field before anything else.
+    ///   What changes with it is the tie group: the entries sharing one leading
+    ///   value are ordered by the *next* indexed field rather than by the
+    ///   record's identity, so the group at the bound is drained in **both**
+    ///   directions. The group's edge is read off the key without decoding it —
+    ///   [`bgv_db_encoding::IndexValues`] cannot be reversed, but two entries
+    ///   agree on their leading values exactly when those bytes are equal, and
+    ///   agreement is the only thing a tie test asks.
     /// - **the field is not visible to this caller.** A field permission removes
     ///   the field *before* anything looks at the record, so today a caller
     ///   without it sorts by `none` and gets identity order. An ordering taken
@@ -884,12 +901,16 @@ impl Session<'_> {
         // index that runs out has answered the whole table and a short answer is
         // a complete one.
         let found = if wanted.descending {
-            match transaction.records_in_descending_order(&index, wanted.wanted)? {
+            match transaction.records_in_descending_order(
+                &index,
+                ORDERED_LEADING_FIELDS,
+                wanted.wanted,
+            )? {
                 Some(found) => found,
                 None => return Ok(None),
             }
         } else {
-            transaction.records_in_ascending_order(&index, wanted.wanted)?
+            transaction.records_in_ascending_order(&index, ORDERED_LEADING_FIELDS, wanted.wanted)?
         };
         self.records_of(found, &visible).map(Some)
     }
@@ -964,7 +985,9 @@ impl Session<'_> {
             // entries, and the records that would fill the rest of the answer
             // are ones it does not hold. The scan is the read that can find
             // those.
-            let Some(found) = transaction.records_in_descending_order(&index, asking)? else {
+            let Some(found) =
+                transaction.records_in_descending_order(&index, ORDERED_LEADING_FIELDS, asking)?
+            else {
                 return Ok(None);
             };
             let mut matched = Vec::new();
@@ -1005,7 +1028,7 @@ impl Session<'_> {
         path: &bgv_db_types::Path,
         descending: bool,
     ) -> Result<Option<(bgv_db_storage::IndexDefinition, crate::redact::Visible)>> {
-        let Some(index) = self.index_on_path(transaction, table, path)? else {
+        let Some(index) = self.index_ordering_on_path(transaction, table, path)? else {
             return Ok(None);
         };
         if index.search || index.vector.is_some() {

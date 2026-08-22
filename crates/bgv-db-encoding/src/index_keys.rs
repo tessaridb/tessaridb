@@ -160,6 +160,42 @@ impl IndexValues {
     pub fn as_slice(&self) -> &[u8] {
         &self.0
     }
+
+    /// The bytes of this entry's first `fields` values, without the terminator.
+    ///
+    /// **What a tie group is, when the order names fewer fields than the index
+    /// has.** An entry of `(last, first)` is ordered by `last`, then `first`,
+    /// then the record's identity, so the entries sharing one `last` are a
+    /// contiguous run — and `ORDER BY last` has to know where that run ends
+    /// before it may cut at a bound, or it takes the wrong members of it.
+    ///
+    /// The values are **not decoded**, and they do not need to be. Two entries
+    /// agree on their first `fields` values exactly when these bytes are equal,
+    /// because every value's encoding is self-delimiting (the same property
+    /// [`IndexValues::leading`] rests on). That the encoding cannot be reversed
+    /// is therefore not an obstacle here: the question is agreement, not
+    /// identity. And the normalisation that destroys reversibility is what makes
+    /// byte equality the *right* test rather than a workaround — `1` and `1.0`
+    /// are one value, so they belong in one tie group, and the bytes say so.
+    ///
+    /// Returns the whole encoding minus its terminator when `fields` is at least
+    /// the number of values held, so a caller asking for more fields than the
+    /// index has compares everything rather than silently comparing less.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bytes are truncated or carry an unknown tag,
+    /// which for an entry this store wrote is unreachable.
+    pub fn leading_of(&self, fields: usize) -> Result<&[u8]> {
+        let mut reader = KeyReader::new(KeyKind::SecondaryIndex, &self.0);
+        let start = reader.position();
+        let mut seen = 0;
+        while seen < fields && reader.peek()? != index_value::END {
+            index_value::skip(&mut reader)?;
+            seen = seen.saturating_add(1);
+        }
+        Ok(reader.consumed_since(start))
+    }
 }
 
 /// One entry of a non-unique index.
@@ -646,11 +682,15 @@ fn take_values(reader: &mut KeyReader<'_>) -> Result<IndexValues> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::panic)]
+    #![allow(clippy::panic, clippy::unwrap_used)]
 
     use bgv_db_types::{DatabaseId, IndexId, NamespaceId, TableId};
 
-    use super::{IndexAddress, SearchStatistics, SearchStatisticsKey, StoreKey, StoreValue};
+    use bgv_db_types::Value;
+
+    use super::{
+        IndexAddress, IndexValues, SearchStatistics, SearchStatisticsKey, StoreKey, StoreValue,
+    };
 
     fn address() -> IndexAddress {
         IndexAddress::new(
@@ -719,5 +759,52 @@ mod tests {
         assert_eq!(held.average_length(), Some(4_294_967_296.0));
         let bigger = SearchStatistics::new(2, 1 << 40);
         assert_eq!(bigger.average_length(), Some(549_755_813_888.0));
+    }
+
+    #[test]
+    fn the_leading_values_of_a_composite_entry_are_the_bytes_a_shorter_entry_encodes() {
+        // What an order over the leading field of a composite index compares.
+        // Whether two entries share a `last` is asked of the *bytes*, because
+        // the encoding cannot be reversed — so the bytes have to be exactly what
+        // a one-value entry encodes, or a tie group would be recognised by a
+        // rule the writer does not follow.
+        let composite = IndexValues::of(&[Value::from("ward"), Value::from("ada")]);
+        let other_first = IndexValues::of(&[Value::from("ward"), Value::from("zoe")]);
+        let other_last = IndexValues::of(&[Value::from("wardle"), Value::from("ada")]);
+
+        let one = composite.leading_of(1).unwrap();
+        assert_eq!(one, IndexValues::leading(&[Value::from("ward")]).as_slice());
+        assert_eq!(one, other_first.leading_of(1).unwrap());
+        assert_ne!(one, other_last.leading_of(1).unwrap());
+
+        // `ward` must not be the leading run of `wardle`, or the tie group would
+        // swallow the next value's entries. This is the self-delimiting property
+        // stated as a test rather than as a comment.
+        assert!(!other_last.leading_of(1).unwrap().starts_with(one));
+    }
+
+    #[test]
+    fn asking_for_more_fields_than_the_entry_holds_compares_all_of_them() {
+        // The failure this refuses is silent: comparing *fewer* values than
+        // asked for would merge tie groups that are not tied, and the answer
+        // would be short with every record it returned real.
+        let entry = IndexValues::of(&[Value::from("ward"), Value::from("ada")]);
+        let all = entry.leading_of(2).unwrap();
+        assert_eq!(all, entry.leading_of(9).unwrap());
+        assert_eq!(
+            all,
+            IndexValues::leading(&[Value::from("ward"), Value::from("ada")]).as_slice()
+        );
+        assert_eq!(entry.leading_of(0).unwrap(), b"");
+    }
+
+    #[test]
+    fn two_spellings_of_one_number_lead_with_the_same_bytes() {
+        // The normalisation that makes the encoding one-way is what makes byte
+        // equality the *right* tie test: `1` and `1.0` are one value, so they
+        // belong in one tie group and must not be walked as two.
+        let integer = IndexValues::of(&[Value::from(1_i64), Value::from("a")]);
+        let float = IndexValues::of(&[Value::from(1.0_f64), Value::from("b")]);
+        assert_eq!(integer.leading_of(1).unwrap(), float.leading_of(1).unwrap());
     }
 }

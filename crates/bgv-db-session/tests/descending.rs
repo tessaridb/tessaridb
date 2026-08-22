@@ -265,17 +265,31 @@ fn every_other_shape_is_a_scan_and_answers_the_same() {
 }
 
 #[test]
-fn a_composite_index_does_not_serve_an_order() {
-    // Its entries for one leading value are ordered by the *next* field, and the
-    // tie group at the bound is a group of leading values — which cannot be read
-    // off a key, because the encoding normalises and is not reversible.
+fn a_composite_index_serves_an_order_on_its_leading_field_and_not_on_a_later_one() {
+    // This test used to assert the opposite, and its reason was that the tie
+    // group at the bound is a group of leading values "which cannot be read off
+    // a key, because the encoding normalises and is not reversible". The premise
+    // is true and the conclusion did not follow: a tie test asks whether two
+    // entries *agree*, never what they hold, and agreement is byte equality over
+    // a self-delimiting prefix. Kept as one test rather than split, because the
+    // two halves are the same rule seen from its two sides.
     let store = store();
     let mut session = ready(&store);
     session
         .run("DEFINE INDEX by_joined_name ON users FIELDS joined, name;")
         .unwrap();
-    assert_eq!(path(&mut session, READ), AccessPath::Scan);
-    assert_eq!(plan(&mut session, READ, "access"), r#"String("scan")"#);
+
+    // `joined` is the leading field, so the entries are stored in exactly the
+    // order this read asks for.
+    assert_eq!(path(&mut session, READ), AccessPath::Ordered);
+    assert_eq!(plan(&mut session, READ, "access"), r#"String("ordered")"#);
+
+    // `name` is not. Its entries are grouped inside each `joined`, so reading
+    // them in key order yields `name` restarted once per `joined` — not that
+    // field's order at any point, and not nearly it either.
+    let later = "SELECT * FROM users ORDER BY name DESC LIMIT 3;";
+    assert_eq!(path(&mut session, later), AccessPath::Scan);
+    assert_eq!(plan(&mut session, later, "access"), r#"String("scan")"#);
 }
 
 #[test]

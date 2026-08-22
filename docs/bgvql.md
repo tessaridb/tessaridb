@@ -1947,13 +1947,32 @@ already breaks it, so the invariant holds at declaration as well as at every
 write, and that is the half the read actually rests on. A row that names its own
 door still owes the door a test.
 
+A twelfth is the **other** row the ninth left behind: **an order served from a
+composite index**, disproved by `SELECT * FROM users ORDER BY joined DESC LIMIT
+3` on `DEFINE INDEX by_joined_name ON users FIELDS joined, name` (§5). This one
+is not a door that opened — it is a **reason that did not survive being read
+twice**. The row argued that the tie group at the bound is a group of leading
+values *"and a leading value cannot be read back out of a key"*, which is true:
+the index encoding normalises and offers no way back. The conclusion does not
+follow, because a tie test never asks what an entry **holds**. It asks whether
+two entries **agree**, and agreement is byte equality over a prefix the encoding
+already guarantees is self-delimiting. The property the row cited as the
+obstacle — normalisation — is in fact what makes byte equality the *right* test:
+`1` and `1.0` are one value and belong in one tie group.
+
+What the composite genuinely costs is the opposite of what the row claimed, and
+was not written down anywhere: **it takes the tie-group drain back**. Ascending
+over a single-field index needs none, because a forward walk yields the group
+already ordered by identity. A composite's group is ordered by the *next* indexed
+field instead, so a bound cut inside it answers with the wrong members in either
+direction. The eleventh departure's cheerful asymmetry lasted exactly one wave.
+
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
 | a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the wall a **whole-file** `READ` still meets even now that a ranged one exists, and worth crossing once for both. §7a |
 | a backup of **one namespace** | the file is the log, and the log is the store; selecting part of it means replaying with a filter, which is a different reader and a different restore story. §7a |
-| an order served from a **composite** index | its entries for one leading value are ordered by the *next* field, so the tie group at the bound is a group of leading values — and a leading value cannot be read back out of a key, because the index encoding normalises (`1` and `1.0` are the same bytes) and is deliberately not reversible. §5 |
 | an index on a **later** field of a composite index, or a range on the second under an equality on the first | each is a different traversal of the same key order, and each is worth building when a read wants it rather than in anticipation. §4 |
 | `INFO FOR` on a **named** namespace, database or user's own account | the tenancy subjects report the **selected** namespace and database, because `USE` is where this store already answers "which tenancy", and a second way to name one is a second place for that check to be got wrong. A caller wanting another says `USE` and asks again. `INFO FOR USER` needs an owner, so a non-owner cannot read even their own grants — the smaller, safe rule while nothing has asked for the other; a self-form is a different permission question and would be built as one. §7c |
 | an analyzer's own **definition** in a report — its name and the filters it applies | a field's report already names the analyzer attached to it, so a caller can see *which* one is used; what no subject holds is the analyzer itself. It is declared store-wide rather than under a namespace, a database or a table, so there is nowhere in these five subjects for its filter list to appear. A real gap and a small one: the catalog reader exists, and what is missing is the decision about where it belongs. §7c |
@@ -2036,8 +2055,8 @@ door still owes the door a test.
 | Sum over nothing is `0`; mean over nothing is `NONE` | **contract** |
 | A sort is the value system's order, with `NONE` below `NULL` below every value | **contract** — a sort must place every row, where a comparison may decline to |
 | Ties are broken by record identity | **contract** — what keeps an added index from reordering equal rows |
-| A bounded order is taken from the index that holds it, **descending always and ascending over a `REQUIRED` field** | **contract** — the sort order and the index order are one order, so the walk is the answer rather than a computation of it. The directions differ only in the absences: a record with no value has no entry, and it sorts first, so ascending is admitted exactly where a declaration says there are none. A route *below* a required field is refused — `REQUIRED` promises a value for the field, not for what lives inside it |
-| A **descending** order taken from an index drains the tie group straddling the bound | **contract** — a key is its value followed by the record's identity, so walking backwards yields ties in the reverse of the order the answer wants and cutting at the bound would take the wrong members. **Ascending does not drain**, and that asymmetry is a property of the key rather than an optimisation: a forward walk yields the tie group already ascending |
+| A bounded order is taken from the index that holds it — a single-field index on the ordered field, **or a composite whose leading field it is** — **descending always and ascending over a `REQUIRED` field** | **contract** — the sort order and the index order are one order, so the walk is the answer rather than a computation of it. The directions differ only in the absences: a record with no value has no entry, and it sorts first, so ascending is admitted exactly where a declaration says there are none. A route *below* a required field is refused — `REQUIRED` promises a value for the field, not for what lives inside it |
+| An order taken from an index drains the tie group straddling the bound, **except ascending over an index the order names every field of** | **contract** — cutting at the bound would take the wrong members of the group, all of them real records. The exception is exactly where the group's inner order is already the answer's: a single-field key is its value followed by the record's identity, so a *forward* walk yields ties ascending by identity and there is nothing to correct. Everything else drains — descending because walking backwards reverses that inner order, and a **composite** in either direction because the entries sharing one leading value are ordered by the *next* indexed field rather than by identity |
 | A **descending** index that cannot fill the bound hands the read back to the scan | **contract** — the records below its last entry are the ones it does not hold, and the path reported is the one that ran. **Ascending, an exhausted index has answered the whole table**, because it is admitted only where every record has an entry, so a short answer is a complete one |
 | An order is served only from the committed tail | **contract** — an entry carries no version, so at an older snapshot a changed record sits under a value the reader cannot see, and the answer comes back in the wrong order rather than short |
 | An order is not served over a field the caller's grant excludes | **contract** — a field permission removes the field before anything reads it, and an order taken from the index would sort by what the projection hides |

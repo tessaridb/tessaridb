@@ -72,7 +72,7 @@ impl Fixture {
     fn descending(&self, wanted: usize) -> Option<Vec<RecordId>> {
         let transaction = self.store.begin().unwrap();
         let found = transaction
-            .records_in_descending_order(&self.index, wanted)
+            .records_in_descending_order(&self.index, 1, wanted)
             .unwrap();
         let answer = found.map(|rows| rows.into_iter().map(|(id, _)| id).collect());
         transaction.rollback();
@@ -141,7 +141,7 @@ fn at_an_older_snapshot_the_entries_no_longer_describe_the_records() {
     let held = fixture.store.begin().unwrap();
     // At this snapshot record 1 still holds 1990, and it is the greatest.
     assert_eq!(
-        held.records_in_descending_order(&fixture.index, 2)
+        held.records_in_descending_order(&fixture.index, 1, 2)
             .unwrap()
             .unwrap()
             .first()
@@ -160,7 +160,7 @@ fn at_an_older_snapshot_the_entries_no_longer_describe_the_records() {
     // the position of the entry is the whole answer. The refusal is therefore on
     // the snapshot and not on the count.
     assert_eq!(
-        held.records_in_descending_order(&fixture.index, 2)
+        held.records_in_descending_order(&fixture.index, 1, 2)
             .unwrap()
             .unwrap()
             .into_iter()

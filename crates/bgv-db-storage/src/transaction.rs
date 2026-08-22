@@ -595,6 +595,38 @@ impl<'a> Transaction<'a> {
         Ok(found.into_iter().collect())
     }
 
+    /// How far into `entries[at..end]` the tie group `edge` still runs.
+    ///
+    /// Both walks ask this the same way and for the same reason: a drain reads
+    /// exactly the records still in the group and stops, so where the group ends
+    /// has to be answered from the **keys** — before a single record is fetched.
+    /// A record could answer it too, but only by reading the rows the question
+    /// exists to avoid reading.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an entry's values cannot be walked.
+    fn still_in_group(
+        &self,
+        entries: &[(IndexValues, RecordId)],
+        at: usize,
+        end: usize,
+        leading_fields: usize,
+        edge: &[u8],
+    ) -> Result<usize> {
+        let mut stop = at;
+        while stop < end {
+            let Some((values, _)) = entries.get(stop) else {
+                break;
+            };
+            if values.leading_of(leading_fields)? != edge {
+                break;
+            }
+            stop = stop.saturating_add(1);
+        }
+        Ok(stop)
+    }
+
     /// The records an index holds, **greatest value first**, stopping once the
     /// bound is filled and its tie group closed.
     ///
@@ -640,6 +672,7 @@ impl<'a> Transaction<'a> {
     pub fn records_in_descending_order(
         &self,
         index: &IndexDefinition,
+        leading_fields: usize,
         wanted: usize,
     ) -> Result<Option<Vec<StoredRecord>>> {
         if wanted == 0 {
@@ -655,9 +688,12 @@ impl<'a> Transaction<'a> {
         let lower = Key::from(prefix.clone());
         let mut upper = Key::from(after(prefix));
         let mut found: Vec<StoredRecord> = Vec::new();
-        // The value of the `wanted`-th record, once there is one. From then on
-        // the walk is draining a tie group rather than filling a bound.
-        let mut boundary: Option<IndexValues> = None;
+        // The leading values of the `wanted`-th record's entry, once there is
+        // one. From then on the walk is draining a tie group rather than filling
+        // a bound. Descending drains whatever the order names: walking backwards
+        // reverses the group's inner order, so even a group ordered by identity
+        // comes out in the reverse of the answer's order.
+        let mut boundary: Option<Vec<u8>> = None;
         loop {
             let request = ScanRequest {
                 keyspace: kind.keyspace(),
@@ -698,14 +734,7 @@ impl<'a> Transaction<'a> {
                     // Draining a tie group, not filling a bound. Where it ends
                     // is knowable from the keys, so the drain reads exactly the
                     // records still in the group and stops.
-                    end = at.saturating_add(
-                        entries
-                            .get(at..end)
-                            .unwrap_or_default()
-                            .iter()
-                            .take_while(|(values, _)| values == edge)
-                            .count(),
-                    );
+                    end = self.still_in_group(&entries, at, end, leading_fields, edge)?;
                     if end == at {
                         return Ok(Some(found));
                     }
@@ -718,13 +747,15 @@ impl<'a> Transaction<'a> {
                     })
                     .collect();
                 for ((values, id), payload) in chunk.iter().zip(self.get_each(&addresses)?) {
-                    if boundary.as_ref().is_some_and(|edge| edge != values) {
+                    if let Some(edge) = &boundary
+                        && values.leading_of(leading_fields)? != edge.as_slice()
+                    {
                         return Ok(Some(found));
                     }
                     if let Some(payload) = payload {
                         found.push((id.clone(), payload));
                         if found.len() >= wanted && boundary.is_none() {
-                            boundary = Some(values.clone());
+                            boundary = Some(values.leading_of(leading_fields)?.to_vec());
                         }
                     }
                 }
@@ -786,6 +817,7 @@ impl<'a> Transaction<'a> {
     pub fn records_in_ascending_order(
         &self,
         index: &IndexDefinition,
+        leading_fields: usize,
         wanted: usize,
     ) -> Result<Vec<StoredRecord>> {
         if wanted == 0 {
@@ -800,7 +832,15 @@ impl<'a> Transaction<'a> {
         let prefix = address.prefix(kind);
         let mut lower = Key::from(prefix.clone());
         let upper = Key::from(after(prefix));
+        // The order names `leading_fields` of the index's fields. Where it names
+        // *all* of them the tie group's inner order is the record's identity,
+        // ascending — the answer's own order — so the first `wanted` entries are
+        // the first `wanted` records and there is nothing to drain. Where it
+        // names fewer, the group is ordered by the *next* indexed field instead,
+        // and cutting at the bound would take the wrong members of it.
+        let drains = leading_fields < index.fields.len();
         let mut found: Vec<StoredRecord> = Vec::new();
+        let mut boundary: Option<Vec<u8>> = None;
         loop {
             let request = ScanRequest {
                 keyspace: kind.keyspace(),
@@ -810,12 +850,16 @@ impl<'a> Transaction<'a> {
             };
             let batch = self.store.backend().scan(&request)?;
             let last = batch.last().map(|(key, _)| key.clone());
-            let mut entries: Vec<RecordId> = Vec::with_capacity(batch.len());
+            let mut entries: Vec<(IndexValues, RecordId)> = Vec::with_capacity(batch.len());
             for (key, value) in &batch {
                 entries.push(if index.unique {
-                    IndexTarget::decode(value.as_slice())?.id
+                    (
+                        UniqueIndexKey::decode(key.as_slice())?.values,
+                        IndexTarget::decode(value.as_slice())?.id,
+                    )
                 } else {
-                    SecondaryIndexKey::decode(key.as_slice())?.id
+                    let entry = SecondaryIndexKey::decode(key.as_slice())?;
+                    (entry.values, entry.id)
                 });
             }
             let mut at = 0;
@@ -826,19 +870,35 @@ impl<'a> Transaction<'a> {
                 // reads from ten to a hundred and twenty-eight, which is a
                 // different cost rather than a smaller one.
                 let still = wanted.saturating_sub(found.len()).max(1);
-                let end = at.saturating_add(still).min(entries.len());
+                let mut end = at.saturating_add(still).min(entries.len());
+                if let Some(edge) = &boundary {
+                    end = self.still_in_group(&entries, at, end, leading_fields, edge)?;
+                    if end == at {
+                        return Ok(found);
+                    }
+                }
                 let chunk = entries.get(at..end).unwrap_or_default();
                 let addresses: Vec<RecordAddress> = chunk
                     .iter()
-                    .map(|id| {
+                    .map(|(_, id)| {
                         RecordAddress::new(index.namespace, index.database, index.table, id.clone())
                     })
                     .collect();
-                for (id, payload) in chunk.iter().zip(self.get_each(&addresses)?) {
+                for ((values, id), payload) in chunk.iter().zip(self.get_each(&addresses)?) {
+                    if let Some(edge) = &boundary
+                        && values.leading_of(leading_fields)? != edge.as_slice()
+                    {
+                        return Ok(found);
+                    }
                     if let Some(payload) = payload {
                         found.push((id.clone(), payload));
                         if found.len() >= wanted {
-                            return Ok(found);
+                            if !drains {
+                                return Ok(found);
+                            }
+                            if boundary.is_none() {
+                                boundary = Some(values.leading_of(leading_fields)?.to_vec());
+                            }
                         }
                     }
                 }

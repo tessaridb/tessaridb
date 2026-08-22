@@ -218,7 +218,7 @@ fn a_bounded_descending_read_examines_its_bound_and_not_the_table() {
     // not counted as part of what the read cost.
     fixture.counting.reset();
     let found = transaction
-        .records_in_descending_order(&fixture.index, WANTED)
+        .records_in_descending_order(&fixture.index, 1, WANTED)
         .unwrap()
         .expect("the index holds enough records to fill the bound");
     assert_eq!(found.len(), WANTED);
@@ -252,7 +252,7 @@ fn doubling_the_bound_does_not_double_the_table_read() {
         let transaction = fixture.store.begin().unwrap();
         fixture.counting.reset();
         transaction
-            .records_in_descending_order(&fixture.index, wanted)
+            .records_in_descending_order(&fixture.index, 1, wanted)
             .unwrap()
             .expect("the index holds enough");
         measured.push(fixture.counting.entries());
@@ -346,7 +346,7 @@ fn a_bounded_descending_read_costs_two_asks_and_not_one_per_record() {
     // not counted as part of what the read cost.
     fixture.counting.reset();
     let found = transaction
-        .records_in_descending_order(&fixture.index, WANTED)
+        .records_in_descending_order(&fixture.index, 1, WANTED)
         .unwrap()
         .expect("the index holds enough records to fill the bound");
     assert_eq!(found.len(), WANTED);
@@ -373,7 +373,7 @@ fn doubling_the_bound_does_not_double_the_asks() {
         let transaction = fixture.store.begin().unwrap();
         fixture.counting.reset();
         transaction
-            .records_in_descending_order(&fixture.index, wanted)
+            .records_in_descending_order(&fixture.index, 1, wanted)
             .unwrap()
             .expect("the index holds enough");
         measured.push(fixture.counting.round_trips());

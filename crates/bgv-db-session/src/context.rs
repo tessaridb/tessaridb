@@ -150,4 +150,42 @@ impl Session<'_> {
             .into_iter()
             .find(|index| index.fields.as_slice() == [path.clone()]))
     }
+
+    /// The index whose entries are stored in this field's order, if one exists.
+    ///
+    /// Wider than [`Context::index_on_path`] by exactly one case: an index whose
+    /// **leading** field is this path. `(last, first)` stores its entries by
+    /// `last` first of all, so it holds the order `ORDER BY last` asks for — a
+    /// fact about the key layout that an exact field-list match cannot see.
+    ///
+    /// A later field does not qualify and is not nearly-right: the entries for
+    /// `first` are grouped inside each `last`, so reading them in key order
+    /// yields `first` restarted once per `last`, which is not that field's order
+    /// at any point.
+    ///
+    /// **An exact match still wins.** A single-field index on `last` and a
+    /// composite `(last, first)` hold the same order, but the shorter one is
+    /// fewer bytes per entry, so preferring it keeps every read this store
+    /// already serves on the path it already took.
+    ///
+    /// Deliberately separate rather than a widening of `index_on_path`, whose
+    /// other three callers ask a different question — *which index answers this
+    /// value* — and for whom a leading match would be wrong.
+    pub(crate) fn index_ordering_on_path(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: TableId,
+        path: &Path,
+    ) -> Result<Option<IndexDefinition>> {
+        let indexes = Catalog::new(transaction).indexes_on(table)?;
+        if let Some(exact) = indexes
+            .iter()
+            .find(|index| index.fields.as_slice() == [path.clone()])
+        {
+            return Ok(Some(exact.clone()));
+        }
+        Ok(indexes
+            .into_iter()
+            .find(|index| index.fields.first() == Some(path)))
+    }
 }
