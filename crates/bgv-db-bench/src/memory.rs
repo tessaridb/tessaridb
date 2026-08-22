@@ -68,6 +68,9 @@ const WIDTHS: &[usize] = &[0, 1, 2, 4, 8];
 /// The size of the block the self-check allocates.
 const CHECK: usize = 1 << 20;
 
+/// How many records the limited reads ask to keep.
+const KEPT: usize = 10;
+
 /// Where the memory an answer costs goes.
 ///
 /// # Errors
@@ -142,7 +145,72 @@ pub fn memory(db: &Db) -> Failable<Vec<Report>> {
         ));
     }
 
+    reports.extend(reads_that_keep_less_than_they_touch(&mut session)?);
     reports.extend(shapes());
+    Ok(reports)
+}
+
+/// Four reads over the same table whose answers differ by four orders of
+/// magnitude, and what each one's peak costs.
+///
+/// # What this decides
+///
+/// Which of a bounded answer's cases has a peak worth bounding, and which has a
+/// peak that **is** the answer. A read asking for everything cannot be cheaper
+/// than everything while an answer is a materialised value, so the quantity that
+/// matters is the gap between what a read *touches* and what it *keeps*.
+///
+/// The answer it gave is not the one the shape of the question suggests. An
+/// ordered limit with no index to serve it costs **more than reading the whole
+/// table** — it materialises every record and then builds a sort key on each,
+/// to keep ten. That is the case a collector is for, and it is the only one of
+/// the four where anything is left to win.
+fn reads_that_keep_less_than_they_touch(
+    session: &mut bgv_db::Session<'_>,
+) -> Failable<Vec<Report>> {
+    // `note` carries no index and `n` carries one, deliberately. Ordering by
+    // `n DESC` is served from the index by the bounded descending read, so it
+    // measures the case that is already solved rather than the case a collector
+    // is for — which is why every row below reports its access path. The first
+    // version of this phase ordered by `n` and reported sixteen kibibytes, a
+    // real number about the wrong read.
+    let asked = [
+        (
+            "    a plain limit",
+            format!("SELECT * FROM spans LIMIT {KEPT};"),
+        ),
+        (
+            "    an ordered limit, index-served",
+            format!("SELECT * FROM spans ORDER BY n DESC LIMIT {KEPT};"),
+        ),
+        (
+            "    an ordered limit, no index",
+            format!("SELECT * FROM spans ORDER BY note LIMIT {KEPT};"),
+        ),
+        ("    the whole table", "SELECT * FROM spans;".to_owned()),
+    ];
+    let mut reports = vec![Report::measurement(
+        "  what a read touches against what it keeps",
+        &format!("{RECORDS} records in the table, {KEPT} kept where a limit says so"),
+    )];
+    for (what, read) in asked {
+        let before = counting::live();
+        counting::reset_peak();
+        let outcome = session.run(&read)?;
+        let peak = counting::peak();
+        let (answered, path) = match outcome.last() {
+            Some(Outcome::Records { records, path }) => (records.len(), path.name()),
+            _ => (0, "nothing"),
+        };
+        drop(outcome);
+        reports.push(Report::measurement(
+            what,
+            &format!(
+                "peak +{} KiB, answered {answered}, served by {path}",
+                peak.saturating_sub(before) / 1024
+            ),
+        ));
+    }
     Ok(reports)
 }
 

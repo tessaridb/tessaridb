@@ -233,6 +233,35 @@ since the answer is Rust-allocated on both backends and both report 887 bytes to
 the byte. For a question about the engine's own memory it would be the wrong
 instrument entirely.
 
+## What a read touches against what it keeps
+
+Recorded 2026-08-22, same machine, same `memory` workload. Four reads over the
+same fifty-thousand-record table, and the peak each one reaches. Every row names
+its access path, and that is not decoration — the first version of this phase
+ordered by an **indexed** field and reported 16 KiB, a real number about a read
+that was already solved.
+
+| the read | peak | answered | served by |
+|---|---|---|---|
+| a plain limit | +11 KiB | 10 | scan |
+| an ordered limit, index-served | +16 KiB | 10 | ordered |
+| an ordered limit, **no index** | **+53 371 KiB** | 10 | scan |
+| the whole table | +45 822 KiB | 50 000 | scan |
+
+**An ordered limit answering ten records costs more than reading the entire
+table.** It materialises all fifty thousand and then builds a sort key on each,
+to keep ten — so it pays the whole table's cost plus the keys. That inversion is
+the finding, and it names the only case among the four where anything is left to
+win.
+
+The other three are already where they can be. The plain limit hands its bound to
+the source, so it touches what it keeps. The index-served order takes its bound
+from the index and never builds the set. And the whole table's peak **is** its
+answer: the caller asked for fifty thousand records and any answer contains fifty
+thousand records, so no collector and no spill can make it smaller while an
+answer is a materialised value. That last row is a stated limit of this store
+rather than an unfinished feature.
+
 ## What is deliberately not measured here
 
 - **Concurrency.** The store is single-writer (ADR-0007), so a concurrent write
