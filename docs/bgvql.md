@@ -1064,8 +1064,8 @@ histograms — and a stale histogram changes plans silently.
 **The plan can only change the cost.** Whichever candidate narrows, the whole
 condition is still tested against every record it produced, which is what makes
 adding an index — or reordering a condition — unable to change an answer. The
-access path an answer reports (`index` or `scan`) says which kind of read ran; it
-does not yet say *which index*, and naming it wants an `EXPLAIN` of its own.
+access path an answer reports (`record`, `index`, `ordered` or `scan`) says which
+kind of read ran; `EXPLAIN` (§7b) says *which index* served it and on what shape.
 
 A `WHERE` takes a **condition**: an expression that answers with a boolean. In a
 condition a bare name is a path (§3) into the record being tested, so every
@@ -1899,6 +1899,18 @@ identity and the answer breaks ties by identity *ascending*. It left two rows
 behind it — the ascending case and the composite one — each of which is a
 property of the key order rather than work left undone.
 
+A tenth left differently from the nine before it. **A range over the first column
+of a composite index** was disproved by
+`SELECT * FROM users WHERE last > 'l'` on `DEFINE INDEX by_name ON users FIELDS
+last, first` (§4) — and the wave that built it did not notice. Every earlier
+departure was found by the wave that caused it, which is the cheap case: the
+author knows what they just built. This one was found by reading the whole table
+against the tree at once, three sections away from where the change was made.
+That is the argument for auditing the table rather than trusting each wave to
+police itself, and it is why the audit found two more things this list cannot
+show: a row whose *reason* was false the day it was written, and a second copy of
+these absences kept in code that had drifted from this one.
+
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
@@ -1911,7 +1923,7 @@ property of the key order rather than work left undone.
 | an order served **under a `WHERE`** | the condition and the order would have to be served by one index, which is the same gathering-by-index restructuring the full-tuple seek needs. Today a filtered read narrows by the condition and sorts what it found, which is correct and costs a sort. §5 |
 | an index on a **later** field of a composite index, or a range on the second under an equality on the first | each is a different traversal of the same key order, and each is worth building when a read wants it rather than in anticipation. §4 |
 | `INFO FOR` on a **named** namespace, database or user's own account | the tenancy subjects report the **selected** namespace and database, because `USE` is where this store already answers "which tenancy", and a second way to name one is a second place for that check to be got wrong. A caller wanting another says `USE` and asks again. `INFO FOR USER` needs an owner, so a non-owner cannot read even their own grants — the smaller, safe rule while nothing has asked for the other; a self-form is a different permission question and would be built as one. §7c |
-| an analyzer named by a report | `INFO FOR` reports namespaces, databases, tables, fields, indexes, users and grants. An analyzer is declared store-wide rather than under any of them, so it has no subject to appear in — a real gap, and a small one: the catalog reader exists and what is missing is the decision about where it belongs. §7c |
+| an analyzer's own **definition** in a report — its name and the filters it applies | a field's report already names the analyzer attached to it, so a caller can see *which* one is used; what no subject holds is the analyzer itself. It is declared store-wide rather than under a namespace, a database or a table, so there is nowhere in these five subjects for its filter list to appear. A real gap and a small one: the catalog reader exists, and what is missing is the decision about where it belongs. §7c |
 | a **schema dump** — a report rendered as the statements that would recreate it | `INFO FOR` answers with what the catalog holds, deliberately, because a renderer is a second description of the schema kept beside the first and the two drift. A dump wants that renderer plus a guarantee that replaying its output reproduces the store, which is a round-trip property worth testing rather than assuming. §7c |
 | a range read whose **answer** is bounded, rather than only its fetching | the entries a range read holds at once are bounded (§4), and the records it answers with are not: every one is resolved and held before the caller sees the first. Measured, that is the larger half by far — bounding the entries took about four per cent off the peak of a fifty-thousand-record read, and what remains is roughly 1.4 KiB of resident memory for each record answered, against a stored record of a couple of hundred bytes. Bounding the answer is not a storage change: the condition that asked is re-tested above this layer, so a limit cannot be pushed into the read without the planner and the executor consuming it as it arrives — the same answer-shape wall the streaming backup meets. §4 |
 | an **estimated row count** or a cost in a plan | it needs statistics about value distribution — how many records hold `city = 'london'` against `city = 'tromsø'` — which is maintained state whose staleness silently changes plans. A much larger decision than a selection rule, and one that wants a benchmark harness to justify it rather than an intuition. §7b |
@@ -1956,8 +1968,7 @@ property of the key order rather than work left undone.
 | user-defined functions | a stored function is a catalog entry with its own lifecycle, permissions and replication story |
 | a separate `NOT NULL` | `REQUIRED` covers absence and null together; splitting them is additive |
 | a default on a whole table | a different feature wearing a similar word |
-| `||` as a second spelling for concatenation | `string::concat` says it, and a second spelling for one thing is a decision to take once rather than by accident |
-| a range over the first column of a **composite** index | an index whose field list is one path serves a range today; a prefix of a multi-column one needs its own bound construction and its own equivalence test |
+| `\|\|` as a second spelling for concatenation | `string::concat` says it, and a second spelling for one thing is a decision to take once rather than by accident |
 | `BETWEEN` | `a >= x AND a <= y` says it, and one spelling for one thing |
 | three-valued logic | §5 — comparison answers true or false, and `= NONE` / `= NULL` say what `IS NULL` would |
 | row-level security — a grant that names *which records* rather than which table and fields | a table grant refuses and a field grant edits; a row grant would have to *filter*, which means every read carries a predicate the caller did not write and every count answers about a set they cannot see. That is a different feature from either, and the one where getting it subtly wrong leaks by arithmetic |

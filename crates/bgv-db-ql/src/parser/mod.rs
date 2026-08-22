@@ -275,21 +275,37 @@ impl Parser<'_> {
 /// They are looked up here rather than reserved as keywords, so that a table
 /// called `order` stays legal while `ORDER BY` still gets an answer that names
 /// the reason instead of complaining about a semicolon.
+///
+/// # An entry leaves when the thing it names is built
+///
+/// This is the same rule §8's own table follows, and it has to be stated here
+/// because this list is a **second copy** of that table and copies drift. It
+/// drifted: an audit of §8 found `search` and `knn` still here after both were
+/// built, so a caller who typed either was told a feature was missing while the
+/// store had it. Nothing raised — the message is only read by somebody who
+/// already made a mistake, so a wrong one goes unseen for as long as it exists.
+///
+/// `search` had additionally become **unreachable**: once `SEARCH` was reserved
+/// the lexer stopped producing an identifier for it, so the entry could not have
+/// fired even had it been true. That is worth noticing about any entry here — a
+/// word that becomes a keyword leaves this list by the same rule.
+///
+/// Lifted out of the function body so the tests below can walk it. A list whose
+/// entries nothing checks is how this one came to hold two false ones.
+const ABSENT: &[(&str, &str)] = &[
+    // `JOIN` is built. `INNER` and `LEFT` are not: a bare `JOIN` is inner, and
+    // `LEFT` is the additive change that default was chosen to leave room for.
+    ("inner", "a join qualifier — a bare `JOIN` is already inner"),
+    ("left", "an outer join"),
+    ("having", "filtering groups"),
+    ("offset", "limiting a result"),
+    // `GRANT` and `REVOKE` are built. What is not is a permission on a *field*,
+    // which refuses nothing and edits instead — see §8.
+    ("permissions", "per-field permissions"),
+];
+
+/// The feature `word` names, when `docs/bgvql.md` §8 leaves it out on purpose.
 fn absent_feature(word: &str) -> Option<&'static str> {
-    const ABSENT: &[(&str, &str)] = &[
-        // `JOIN` is built. `INNER` and `LEFT` are not: a bare `JOIN` is inner,
-        // and `LEFT` is the additive change that default was chosen to leave
-        // room for.
-        ("inner", "a join qualifier — a bare `JOIN` is already inner"),
-        ("left", "an outer join"),
-        ("having", "filtering groups"),
-        ("offset", "limiting a result"),
-        ("search", "a search index"),
-        ("knn", "vector search"),
-        // `GRANT` and `REVOKE` are built. What is not is a permission on a
-        // *field*, which refuses nothing and edits instead — see §8.
-        ("permissions", "per-field permissions"),
-    ];
     ABSENT
         .iter()
         .find(|(spelling, _)| spelling.eq_ignore_ascii_case(word))
@@ -307,5 +323,59 @@ fn describe(token: &Token) -> String {
         Token::Bytes(_) => "bytes".to_owned(),
         Token::Duration(_) => "a duration".to_owned(),
         Token::Punct(punct) => format!("`{punct}`"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ABSENT, absent_feature};
+    use crate::token::Keyword;
+
+    /// An entry whose word the lexer reserves can never fire.
+    ///
+    /// `search` sat here for several milestones after `SEARCH` became a keyword:
+    /// the lexer stopped producing an identifier for it, so the lookup could not
+    /// be reached, and the entry went on saying a built feature was missing. The
+    /// two halves of that failure are separable — this one catches the
+    /// unreachability, which is the half a reader cannot see.
+    #[test]
+    fn no_entry_names_a_word_the_lexer_reserves() {
+        for (word, feature) in ABSENT {
+            let reserved = Keyword::ALL
+                .iter()
+                .any(|keyword| keyword.spelling().eq_ignore_ascii_case(word));
+            assert!(
+                !reserved,
+                "`{word}` ({feature}) is a keyword, so this entry can never fire"
+            );
+        }
+    }
+
+    /// The other half: a word naming something the store has.
+    ///
+    /// Pins the two the §8 audit found rather than the class, because the class
+    /// has no test — nothing here can ask whether a feature exists. What keeps
+    /// the rest honest is the audit, and what this asserts is that these two do
+    /// not come back.
+    #[test]
+    fn a_feature_the_store_has_is_not_reported_absent() {
+        assert_eq!(
+            absent_feature("search"),
+            None,
+            "a search index is built — `DEFINE INDEX … SEARCH`"
+        );
+        assert_eq!(
+            absent_feature("knn"),
+            None,
+            "vector search is built — `DEFINE INDEX … VECTOR euclidean` and `APPROXIMATE`"
+        );
+    }
+
+    /// The list still does its job for what really is absent.
+    #[test]
+    fn a_word_naming_an_absent_feature_still_names_it() {
+        assert_eq!(absent_feature("having"), Some("filtering groups"));
+        assert_eq!(absent_feature("OFFSET"), Some("limiting a result"));
+        assert_eq!(absent_feature("nothing_like_this"), None);
     }
 }
