@@ -7,6 +7,7 @@
 
 use core::ops::Bound;
 use std::collections::BTreeMap;
+use std::ops::ControlFlow;
 
 use bgv_db_constants::ORDERED_FILTER_REACH;
 use bgv_db_ql::{
@@ -336,7 +337,17 @@ impl Session<'_> {
         // The searched context travels with the records because a sort key is
         // an expression too, and one holding a `MATCHES` or a score must mean
         // the same thing there as it does in the `WHERE` that produced them.
-        let (mut records, path, searched) = self.read_source(transaction, select)?;
+        // Collected here, for now, because the stages below still need the
+        // whole set: `follow` batches every reference into one ask (C9), and a
+        // sort key cannot be evaluated until `searched` is known, which the
+        // source reports only once it has chosen its path. ADR-0014 converts the
+        // source's contract; wiring the collector directly to the visitor is the
+        // node after this one, and it is where the peak falls.
+        let mut records: Vec<(RecordId, Value)> = Vec::new();
+        let (path, searched) = self.read_source(transaction, select, &mut |id, record| {
+            records.push((id, record));
+            ControlFlow::Continue(())
+        })?;
         // Before anything groups, projects or sorts, so a projection and a sort
         // key both see the record rather than the reference that named it.
         if !select.fetch.is_empty() {
@@ -512,7 +523,12 @@ impl Session<'_> {
     /// searched fields need is decided by every expression the read evaluates —
     /// a `SELECT … ORDER BY search::score(body, 'x') FROM notes` searches a
     /// field its source never mentions.
-    fn read_source(&self, transaction: &mut Transaction<'_>, select: &Select) -> Result<Reached> {
+    fn read_source(
+        &self,
+        transaction: &mut Transaction<'_>,
+        select: &Select,
+        visit: Visit<'_>,
+    ) -> Result<Reached> {
         match &select.from {
             Source::Record(target) => {
                 let (_, address) = self.address(transaction, target)?;
@@ -523,7 +539,8 @@ impl Session<'_> {
                     }
                     None => Vec::new(),
                 };
-                Ok((found, AccessPath::Record, Searched::default()))
+                hand_over(found, visit);
+                Ok((AccessPath::Record, Searched::default()))
             }
             Source::Table(table) => {
                 let (context, id) = self.resolve_table(transaction, table)?;
@@ -536,7 +553,8 @@ impl Session<'_> {
                 if let Some(walk) = plan::nearest(select)
                     && let Some(found) = self.walk(transaction, context, id, &walk)?
                 {
-                    return Ok((found, AccessPath::Index, searched));
+                    hand_over(found, visit);
+                    return Ok((AccessPath::Index, searched));
                 }
                 // The other shape an index serves without a condition: an order
                 // it is already stored in, and a bound to stop at. Exact — the
@@ -545,7 +563,8 @@ impl Session<'_> {
                 if let Some(bound) = plan::ordered(select)
                     && let Some(found) = self.walk_in_order(transaction, context, id, &bound)?
                 {
-                    return Ok((found, AccessPath::Ordered, searched));
+                    hand_over(found, visit);
+                    return Ok((AccessPath::Ordered, searched));
                 }
                 // The bound reaches the source here, and only here, because this
                 // is the one arm where the records the source produces are the
@@ -561,11 +580,18 @@ impl Session<'_> {
                     None => transaction.scan_table(context.namespace, context.database, id)?,
                 };
                 let visible = self.visible_in(transaction, id)?;
-                Ok((
-                    self.records_of(found, &visible)?,
-                    AccessPath::Scan,
-                    searched,
-                ))
+                // Decoded one at a time and handed straight over, so the
+                // decoded form of the whole table never exists at once. This is
+                // where the measured cost is: 43 328 KiB of a 45 822 KiB peak
+                // was this vector, and the stored payloads it is decoded from
+                // are a tenth of it (ADR-0014, Q-72).
+                for (found_id, payload) in found {
+                    let record = self.record_of(&payload, &visible)?;
+                    if visit(found_id, record).is_break() {
+                        break;
+                    }
+                }
+                Ok((AccessPath::Scan, searched))
             }
             Source::Traverse {
                 from,
@@ -573,7 +599,8 @@ impl Session<'_> {
                 hops,
             } => {
                 let (found, path) = self.traverse(transaction, from, *direction, hops)?;
-                Ok((found, path, Searched::default()))
+                hand_over(found, visit);
+                Ok((path, Searched::default()))
             }
             Source::Where { table, condition } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
@@ -605,7 +632,8 @@ impl Session<'_> {
                         &searched,
                     )?
                 {
-                    return Ok((found, AccessPath::Ordered, searched));
+                    hand_over(found, visit);
+                    return Ok((AccessPath::Ordered, searched));
                 }
                 let (candidates, path) =
                     self.candidates(transaction, id, context, condition, &searched)?;
@@ -625,7 +653,8 @@ impl Session<'_> {
                         matched.push((id, record));
                     }
                 }
-                Ok((matched, path, searched))
+                hand_over(matched, visit);
+                Ok((path, searched))
             }
             Source::Join {
                 left,
@@ -633,15 +662,19 @@ impl Session<'_> {
                 left_key,
                 right_key,
                 condition,
-            } => self.join(
-                transaction,
-                select,
-                left,
-                right,
-                left_key,
-                right_key,
-                condition.as_deref(),
-            ),
+            } => {
+                let (found, path, searched) = self.join(
+                    transaction,
+                    select,
+                    left,
+                    right,
+                    left_key,
+                    right_key,
+                    condition.as_deref(),
+                )?;
+                hand_over(found, visit);
+                Ok((path, searched))
+            }
         }
     }
 
@@ -688,7 +721,7 @@ impl Session<'_> {
         left_key: &bgv_db_ql::FieldPath,
         right_key: &bgv_db_ql::FieldPath,
         condition: Option<&Expr>,
-    ) -> Result<Reached> {
+    ) -> Result<Joined> {
         let (left_context, left_id) = self.resolve_table(transaction, left)?;
         let (right_context, right_id) = self.resolve_table(transaction, right)?;
         let left_name = left.name.text.clone();
@@ -1309,7 +1342,46 @@ fn ordered_index_on(
         }))
 }
 
-type Reached = (Vec<(RecordId, Value)>, AccessPath, Searched);
+/// What a source reports about itself, now that it no longer reports its
+/// records: the path it took and the fields a later expression may search.
+///
+/// The records go to the visitor as they are found (ADR-0014). This type shrank
+/// rather than gained a field, which is the point — a source that hands back a
+/// collection is a source that has already paid for the whole answer.
+type Reached = (AccessPath, Searched);
+
+/// What a join produces, which is still a collection.
+///
+/// A join builds a map of one side and probes it with the other, so its work is
+/// not per-record and streaming it would move the materialisation rather than
+/// remove it. Named separately so the difference is visible in the signature
+/// rather than resting on a comment.
+type Joined = (Vec<(RecordId, Value)>, AccessPath, Searched);
+
+/// What a source does with each record it finds.
+///
+/// `Break` stops the source where it stands. That is the same mechanism a bound
+/// already uses to reach the source (ADR-0013) rather than a second one beside
+/// it, and it is why the source never learns what the consumer keeps.
+type Visit<'v> = &'v mut dyn FnMut(RecordId, Value) -> ControlFlow<()>;
+
+/// Hand a collection to the visitor, stopping where it says to.
+///
+/// The arms that still build a collection before producing it call this. They
+/// are the ones whose work is not per-record — a join builds a map, a filtered
+/// read tests candidates — and converting them would move the materialisation
+/// rather than remove it. The scan arm, which is where the measured cost is,
+/// decodes straight into the visitor instead.
+fn hand_over(found: Vec<(RecordId, Value)>, visit: Visit<'_>) {
+    for (id, record) in found {
+        if visit(id, record).is_break() {
+            // Nothing follows in any arm that calls this, so stopping the loop
+            // is the whole of honouring the break. Returning the `ControlFlow`
+            // would hand every call site a value it has no work left to skip.
+            break;
+        }
+    }
+}
 
 /// What the evaluator can see besides the expression itself.
 ///
