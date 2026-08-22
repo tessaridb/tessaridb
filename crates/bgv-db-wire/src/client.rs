@@ -8,6 +8,8 @@ use std::io::{BufReader, BufWriter};
 use std::net::{TcpStream, ToSocketAddrs};
 
 use crate::error::{Error, Result};
+use bgv_db::Parameters;
+
 use crate::message::{Answer, Request};
 use crate::push::{Follow, Happened};
 use crate::{frame, message};
@@ -65,9 +67,30 @@ impl Client {
     /// Returns [`Error::Refused`] carrying the store's own message when the
     /// store refused, and the stream's failure otherwise.
     pub fn run(&mut self, script: &str, credentials: Option<(&str, &str)>) -> Result<Vec<Answer>> {
+        self.run_with(script, credentials, &Parameters::new())
+    }
+
+    /// Run a script whose parameters take the values `parameters` binds.
+    ///
+    /// The values travel in the store's own codec, so all fifteen kinds cross
+    /// unchanged and the server never has to *read* one — which is what keeps
+    /// the grammar's rule intact at this distance: a supplied value cannot
+    /// become syntax, and nothing about being remote gives that back.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::run`], and [`Error::Refused`] naming the parameter when the
+    /// script asks for one this map has no value for.
+    pub fn run_with(
+        &mut self,
+        script: &str,
+        credentials: Option<(&str, &str)>,
+        parameters: &Parameters,
+    ) -> Result<Vec<Answer>> {
         let request = Request {
             script: script.to_owned(),
             credentials: credentials.map(|(name, password)| (name.to_owned(), password.to_owned())),
+            parameters: parameters.clone(),
         };
         frame::write(&mut self.writer, frame::Kind::Request, &request.encode())?;
 

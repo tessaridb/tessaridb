@@ -57,6 +57,10 @@ A parameter is legal exactly where a literal is and nowhere a name is, and it is
 replaced *after* the script is parsed — so whatever a caller supplies, it cannot
 be read as grammar.
 
+Every way in carries them: `Client::run_with` over the wire, where the values
+travel in the store's own codec, and `bgv --param who='ada' -e '…'` at the
+console, where a value is written as bgvQL and parsed on its own.
+
 ## Talking to one over HTTP
 
 ```rust

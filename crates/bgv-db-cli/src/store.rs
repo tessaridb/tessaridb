@@ -20,7 +20,7 @@
 //! scripts — so they belong to the embedded path alone, and asking for one over
 //! an address is refused in `main` rather than quietly ignored.
 
-use bgv_db::{Db, Outcome, Session};
+use bgv_db::{Db, Outcome, Parameters, Session};
 use bgv_db_wire::{Answer, Client, Names};
 
 /// Somewhere statements can be run.
@@ -36,6 +36,11 @@ pub trait Store {
     ///
     /// Returns the message a person should read: the store's refusal, or the
     /// reason the node could not be reached.
+    ///
+    /// The values `--param` supplied are held by the implementation rather than
+    /// passed here, because they are given once for the whole run: a prompt, a
+    /// file and a pipe all see the same bindings, which is what makes `$who`
+    /// usable across the lines of a session rather than only inside one script.
     fn run(&mut self, script: &str) -> Result<Vec<Answer>, String>;
 }
 
@@ -43,6 +48,7 @@ pub trait Store {
 pub struct Embedded<'a> {
     db: &'a Db,
     session: Session<'a>,
+    parameters: Parameters,
 }
 
 impl<'a> Embedded<'a> {
@@ -54,20 +60,31 @@ impl<'a> Embedded<'a> {
     /// here rather than at the first statement, because a session that carried
     /// on anonymously after a failed sign-in would answer a different question
     /// than the one that was asked.
-    pub fn new(db: &'a Db, credentials: Option<&(String, String)>) -> Result<Self, String> {
+    pub fn new(
+        db: &'a Db,
+        credentials: Option<&(String, String)>,
+        parameters: Parameters,
+    ) -> Result<Self, String> {
         let mut session = db.session();
         if let Some((name, password)) = credentials {
             session
                 .sign_in(name, password)
                 .map_err(|held| held.to_string())?;
         }
-        Ok(Self { db, session })
+        Ok(Self {
+            db,
+            session,
+            parameters,
+        })
     }
 }
 
 impl Store for Embedded<'_> {
     fn run(&mut self, script: &str) -> Result<Vec<Answer>, String> {
-        let outcomes = self.session.run(script).map_err(|held| held.to_string())?;
+        let outcomes = self
+            .session
+            .run_with(script, &self.parameters)
+            .map_err(|held| held.to_string())?;
         Ok(outcomes
             .iter()
             .map(|outcome| {
@@ -84,6 +101,7 @@ impl Store for Embedded<'_> {
 pub struct Remote {
     client: Client,
     credentials: Option<(String, String)>,
+    parameters: Parameters,
 }
 
 impl Remote {
@@ -93,10 +111,15 @@ impl Remote {
     ///
     /// Returns the reason the node could not be reached or did not speak this
     /// protocol.
-    pub fn connect(address: &str, credentials: Option<(String, String)>) -> Result<Self, String> {
+    pub fn connect(
+        address: &str,
+        credentials: Option<(String, String)>,
+        parameters: Parameters,
+    ) -> Result<Self, String> {
         Ok(Self {
             client: Client::connect(address).map_err(|held| format!("{address}: {held}"))?,
             credentials,
+            parameters,
         })
     }
 }
@@ -112,7 +135,7 @@ impl Store for Remote {
             .as_ref()
             .map(|(name, password)| (name.as_str(), password.as_str()));
         self.client
-            .run(script, credentials)
+            .run_with(script, credentials, &self.parameters)
             .map_err(|held| held.to_string())
     }
 }

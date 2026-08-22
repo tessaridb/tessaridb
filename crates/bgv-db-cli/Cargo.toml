@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 bgv-db.workspace = true
 bgv-db-backup.workspace = true
+bgv-db-ql.workspace = true
 bgv-db-storage.workspace = true
 bgv-db-types.workspace = true
 bgv-db-wire.workspace = true

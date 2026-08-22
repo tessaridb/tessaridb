@@ -67,8 +67,9 @@ fn main() -> ExitCode {
 
 fn run(asked: Asked) -> Result<Ended, String> {
     let credentials = credentials(asked.user)?;
+    let parameters = asked.parameters;
     if let Some(address) = &asked.at {
-        let mut remote = store::Remote::connect(address, credentials)?;
+        let mut remote = store::Remote::connect(address, credentials, parameters)?;
         let mut out = io::stdout().lock();
         return statements(&mut remote, &mut out, &asked.source, Where::Node(address));
     }
@@ -89,7 +90,7 @@ fn run(asked: Asked) -> Result<Ended, String> {
         Source::Standard | Source::Inline(_) | Source::File(_) => {}
     }
 
-    let mut embedded = store::Embedded::new(&db, credentials.as_ref())?;
+    let mut embedded = store::Embedded::new(&db, credentials.as_ref(), parameters)?;
     let mut out = io::stdout().lock();
     let opened = asked.store.as_deref();
     statements(&mut embedded, &mut out, &asked.source, Where::Store(opened))

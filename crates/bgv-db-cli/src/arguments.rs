@@ -11,6 +11,9 @@
 use std::env;
 use std::path::PathBuf;
 
+use bgv_db::{Parameters, Value};
+use bgv_db_ql::{ExprKind, parse_expression};
+
 pub const USAGE: &str = "\
 usage: bgv [<path> | --at <host:port>] [-e <script> | -f <file>]
 
@@ -19,6 +22,7 @@ usage: bgv [<path> | --at <host:port>] [-e <script> | -f <file>]
   --user <name>   sign in as this user; the password comes from BGV_PASSWORD,
                   never from an argument, which the process table would publish
   --serve <host:port> serve this store over the wire protocol until stopped
+  --param <name>=<value> bind $name to <value>, written as bgvQL; repeatable
   -e <script>     run this and exit
   -f <file>       run this file and exit
   --backup <file> write the store's log to <file> and exit
@@ -47,6 +51,8 @@ pub struct Asked {
     pub user: Option<String>,
     /// Where the statements come from.
     pub source: Source,
+    /// The values the script's parameters bind to.
+    pub parameters: Parameters,
 }
 
 /// Where the statements come from, or what else was asked for.
@@ -78,6 +84,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     let mut at = None;
     let mut user = None;
     let mut source = Source::Standard;
+    let mut parameters = Parameters::new();
     let mut arguments = arguments;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -106,6 +113,13 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                     .next()
                     .ok_or_else(|| "--at wants a host:port".to_owned())?;
                 at = Some(address);
+            }
+            "--param" => {
+                let given = arguments
+                    .next()
+                    .ok_or_else(|| "--param wants <name>=<value>".to_owned())?;
+                let (name, value) = parameter(&given)?;
+                parameters.insert(name, value);
             }
             "--user" => {
                 let name = arguments
@@ -160,12 +174,67 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
             ));
         }
     }
+    // A parameter binds to a script, and these three run no script. Refused
+    // rather than ignored, for the same reason an unknown flag is: a value
+    // silently dropped is a value somebody believes was used.
+    let runs_no_script = match source {
+        Source::Backup(_) => Some("--backup"),
+        Source::Restore(_) => Some("--restore"),
+        Source::Health => Some("--health"),
+        Source::Serve(_) => Some("--serve"),
+        Source::Standard | Source::Inline(_) | Source::File(_) => None,
+    };
+    if let Some(named) = runs_no_script
+        && !parameters.is_empty()
+    {
+        return Err(format!(
+            "--param binds a value in a script, and {named} runs none"
+        ));
+    }
     Ok(Asked {
         store,
         at,
         user,
         source,
+        parameters,
     })
+}
+
+/// One `<name>=<value>`, with the value read as a bgvQL literal.
+///
+/// bgvQL rather than JSON because the console already reads and writes it: what
+/// an answer prints pastes back into the next statement, and a parameter written
+/// the way an answer is printed closes that loop — `dec 12.34`, `2s` and
+/// `datetime '…'` all say themselves.
+///
+/// The value is parsed **in isolation**, so it is a value or it is nothing:
+/// `--param x="1; DROP TABLE users"` is refused as a literal rather than
+/// smuggled in as a statement. That is the grammar's rule one layer out, and it
+/// is why this does not simply paste the text into the script.
+fn parameter(given: &str) -> Result<(String, Value), String> {
+    let Some((name, written)) = given.split_once('=') else {
+        return Err(format!("--param wants <name>=<value>, not {given:?}"));
+    };
+    if name.is_empty() {
+        return Err("--param wants a name before the `=`".to_owned());
+    }
+    let name = name.strip_prefix('$').unwrap_or(name);
+    let value = literal(written).ok_or_else(|| {
+        format!("--param {name}: {written:?} is not a value bgvQL can read on its own")
+    })?;
+    Ok((name.to_owned(), value))
+}
+
+/// The value a piece of text denotes, when it denotes one by itself.
+///
+/// A read, a path and anything needing a record are not values here — an
+/// argument that had to consult the store to say what it is would be a statement
+/// wearing a value's clothes.
+fn literal(written: &str) -> Option<Value> {
+    match parse_expression(written).ok()?.kind {
+        ExprKind::Literal(value) => Some(value),
+        _ => None,
+    }
 }
 
 /// Who to say we are, when a name was given.
@@ -186,7 +255,9 @@ pub fn credentials(user: Option<String>) -> Result<Option<(String, String)>, Str
 mod tests {
     #![allow(clippy::panic)]
 
-    use super::{Asked, PASSWORD, Source, credentials, parse};
+    use bgv_db::Number;
+
+    use super::{Asked, PASSWORD, Source, Value, credentials, parse};
 
     fn asked(arguments: &[&str]) -> Result<Asked, String> {
         parse(arguments.iter().map(|held| (*held).to_owned()))
@@ -295,5 +366,90 @@ mod tests {
             Source::Serve(_)
         ));
         assert!(asked(&["--serve"]).is_err());
+    }
+
+    #[test]
+    fn a_parameter_is_read_as_a_bgvql_value() {
+        let held = asked(&[
+            "-e",
+            "SELECT * FROM users WHERE name = $who;",
+            "--param",
+            "who='ada'",
+        ])
+        .expect("a parameter");
+        assert_eq!(
+            held.parameters.get("who"),
+            Some(&Value::String("ada".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_parameter_keeps_the_kinds_json_would_have_flattened() {
+        let held = asked(&[
+            "-e",
+            "SELECT 1;",
+            "--param",
+            "cost=dec 12.34",
+            "--param",
+            "span=1h30m",
+        ])
+        .expect("two parameters");
+        assert!(matches!(
+            held.parameters.get("cost"),
+            Some(Value::Number(Number::Decimal(_)))
+        ));
+        assert!(matches!(
+            held.parameters.get("span"),
+            Some(Value::Duration(_))
+        ));
+    }
+
+    #[test]
+    fn a_parameter_may_be_written_with_its_marker() {
+        // `--param $who='ada'` is what somebody types after reading the script,
+        // and refusing it would be pedantry with a shell-quoting trap attached.
+        let held = asked(&["-e", "SELECT 1;", "--param", "$who='ada'"]).expect("a parameter");
+        assert!(held.parameters.contains_key("who"));
+    }
+
+    #[test]
+    fn a_parameter_that_is_not_a_value_is_refused() {
+        // The rule one layer out from the grammar: a value is a value or it is
+        // nothing, so a statement smuggled in as one is refused here rather
+        // than pasted into a script.
+        for given in [
+            "who=1; DROP TABLE users",
+            "who=SELECT * FROM users",
+            "who=name",
+        ] {
+            assert!(
+                asked(&["-e", "SELECT 1;", "--param", given]).is_err(),
+                "{given} was accepted as a value"
+            );
+        }
+    }
+
+    #[test]
+    fn a_parameter_needs_a_name_and_a_value() {
+        assert!(asked(&["--param"]).is_err());
+        assert!(asked(&["--param", "who"]).is_err());
+        assert!(asked(&["--param", "='ada'"]).is_err());
+    }
+
+    #[test]
+    fn a_parameter_is_refused_where_no_script_runs() {
+        // Ignoring it would leave somebody believing a value was used.
+        for source in [
+            vec!["./data", "--health"],
+            vec!["./data", "--backup", "./out"],
+            vec!["./data", "--serve", "127.0.0.1:0"],
+        ] {
+            let mut arguments = source.clone();
+            arguments.extend(["--param", "who='ada'"]);
+            assert!(
+                asked(&arguments).is_err(),
+                "{source:?} accepted a parameter"
+            );
+        }
     }
 }

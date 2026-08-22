@@ -183,14 +183,14 @@ mod tests {
 
     use std::io::Cursor;
 
-    use bgv_db::Db;
+    use bgv_db::{Db, Parameters};
 
     use super::{Ended, Mode, closed, run};
     use crate::store::Embedded;
 
     fn ran(script: &str, mode: Mode) -> (String, Ended) {
         let db = Db::in_memory().expect("a database");
-        let mut store = Embedded::new(&db, None).expect("a session");
+        let mut store = Embedded::new(&db, None, Parameters::new()).expect("a session");
         let mut input = Cursor::new(script.as_bytes().to_vec());
         let mut out = Vec::new();
         let ended = run(&mut store, &mut input, &mut out, mode).expect("a run");

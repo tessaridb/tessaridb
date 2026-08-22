@@ -176,7 +176,7 @@ fn converse(db: &Db, committed: &Commits, stream: TcpStream) -> Result<()> {
             )?;
             continue;
         }
-        match session.run(&request.script) {
+        match session.run_with(&request.script, &request.parameters) {
             Ok(outcomes) => {
                 let mut answer = Vec::new();
                 frame::put_u32(

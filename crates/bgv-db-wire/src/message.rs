@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use bgv_db::{AccessPath, Outcome, RecordId, Value};
+use bgv_db::{AccessPath, Outcome, Parameters, RecordId, Value};
 use bgv_db_encoding::{decode_payload, encode_payload};
 use bgv_db_types::TableId;
 
@@ -68,6 +68,13 @@ pub struct Request {
     /// empty one usable; a closed store's refusal comes from the session rather
     /// than from a second rule here.
     pub credentials: Option<(String, String)>,
+    /// The values the script's parameters are bound to.
+    ///
+    /// Carried in the store's own codec rather than as text the server parses.
+    /// A value the server has to *read* is a value that can be read as something
+    /// else, which is the thing binding after parsing exists to make impossible
+    /// — undoing it at the wire would be a strange place to give it back.
+    pub parameters: Parameters,
 }
 
 /// Written by hand rather than derived, because the derived one prints the
@@ -89,6 +96,7 @@ impl std::fmt::Debug for Request {
                     .as_ref()
                     .map_or("nobody", |(name, _)| name.as_str()),
             )
+            .field("parameters", &self.parameters.keys())
             .finish_non_exhaustive()
     }
 }
@@ -107,6 +115,14 @@ impl Request {
             }
             None => body.push(0),
         }
+        put_u32(
+            &mut body,
+            u32::try_from(self.parameters.len()).unwrap_or(u32::MAX),
+        );
+        for (name, value) in &self.parameters {
+            put_text(&mut body, name);
+            put_bytes(&mut body, encode_payload(value).as_slice());
+        }
         body
     }
 
@@ -118,18 +134,31 @@ impl Request {
     pub fn decode(body: &[u8]) -> Result<Self> {
         let (script, at) = take_text(body, 0)?;
         let flag = body.get(at).copied().ok_or(Error::Malformed)?;
-        let credentials = match flag {
-            0 => None,
+        // The offset travels out of the match rather than being recomputed from
+        // the lengths afterwards: recomputing it would mean this reader knowing
+        // how the writer frames a string, which is exactly the coupling a pair
+        // of `put`/`take` helpers exists to remove.
+        let (credentials, at) = match flag {
+            0 => (None, at.saturating_add(1)),
             1 => {
                 let (name, at) = take_text(body, at.saturating_add(1))?;
-                let (password, _) = take_text(body, at)?;
-                Some((name, password))
+                let (password, at) = take_text(body, at)?;
+                (Some((name, password)), at)
             }
             _ => return Err(Error::Malformed),
         };
+        let (count, mut at) = take_u32(body, at)?;
+        let mut parameters = Parameters::new();
+        for _ in 0..count {
+            let (name, next) = take_text(body, at)?;
+            let (bytes, next) = take_bytes(body, next)?;
+            parameters.insert(name, decode_payload(&bytes)?);
+            at = next;
+        }
         Ok(Self {
             script,
             credentials,
+            parameters,
         })
     }
 }
@@ -340,7 +369,7 @@ pub fn spell(id: &RecordId) -> String {
 mod tests {
     #![allow(clippy::panic)]
 
-    use bgv_db::{AccessPath, Outcome, RecordId, Value};
+    use bgv_db::{AccessPath, Outcome, Parameters, RecordId, Value};
     use bgv_db_types::{RecordRef, TableId};
 
     use super::{Answer, Names, Request, decode_outcome, encode_outcome};
@@ -356,6 +385,7 @@ mod tests {
             let held = Request {
                 script: "SELECT * FROM users;".to_owned(),
                 credentials,
+                parameters: Parameters::new(),
             };
             let read = Request::decode(&held.encode()).expect("a request");
             assert_eq!(read, held);
@@ -369,6 +399,7 @@ mod tests {
         let held = Request {
             script: "SELECT * FROM users;".to_owned(),
             credentials: Some(("ada".to_owned(), "a long one".to_owned())),
+            parameters: Parameters::new(),
         };
         let printed = format!("{held:?}");
         assert!(!printed.contains("a long one"), "{printed}");
@@ -377,9 +408,12 @@ mod tests {
 
     #[test]
     fn a_request_body_that_promises_more_than_it_holds_is_refused() {
+        let mut parameters = Parameters::new();
+        parameters.insert("who".to_owned(), Value::String("ada".to_owned()));
         let held = Request {
-            script: "SELECT * FROM users;".to_owned(),
+            script: "SELECT * FROM users WHERE name = $who;".to_owned(),
             credentials: Some(("ada".to_owned(), "x".to_owned())),
+            parameters,
         };
         let body = held.encode();
         for cut in 0..body.len() {

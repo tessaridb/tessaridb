@@ -124,6 +124,15 @@ script is parsed and before its first statement runs:
 A value supplied under a name the script does not use is accepted; a caller who
 reuses one set of values across two scripts has not made a mistake.
 
+Every way in carries them. The embedded session takes a map, the wire protocol
+carries the values in the store's own codec — so all fifteen kinds cross
+unchanged and the server never has to *read* one — and the console takes
+`--param <name>=<value>` with the value written as bgvQL, repeatably. The console
+spells it in bgvQL rather than JSON because what the console prints already
+pastes back into the next statement, and the value is parsed **in isolation**, so
+`--param x='1; DROP TABLE users'` is refused as a value rather than smuggled in
+as a statement.
+
 Values are supplied as values and not as text, so `$age` bound to the number
 `36` and `$age` bound to the string `'36'` ask different questions — the caller
 never has to know how this language would have read a piece of text.

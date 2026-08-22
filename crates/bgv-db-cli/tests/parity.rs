@@ -24,7 +24,7 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use bgv_db::Db;
+use bgv_db::{Db, Parameters, Value};
 use bgv_db_wire::Node;
 
 use crate::session::{Mode, run};
@@ -80,13 +80,13 @@ fn scripts() -> Vec<(&'static str, &'static str)> {
 
 /// Run a script against a store in this process, and collect what was printed.
 fn embedded(db: &Db, script: &str) -> String {
-    let mut store = Embedded::new(db, None).expect("a session");
+    let mut store = Embedded::new(db, None, Parameters::new()).expect("a session");
     said(&mut store, script)
 }
 
 /// The same, against a node.
 fn remote(address: &str, script: &str) -> String {
-    let mut store = Remote::connect(address, None).expect("a connection");
+    let mut store = Remote::connect(address, None, Parameters::new()).expect("a connection");
     said(&mut store, script)
 }
 
@@ -102,7 +102,7 @@ fn every_answer_shape_reads_the_same_from_a_socket_as_from_this_process() {
     let here = Db::in_memory().unwrap();
     let there = Arc::new(Db::in_memory().unwrap());
     for db in [&here, there.as_ref()] {
-        let mut store = Embedded::new(db, None).expect("a session");
+        let mut store = Embedded::new(db, None, Parameters::new()).expect("a session");
         store.run(SEED).expect("a seeded store");
     }
 
@@ -123,13 +123,45 @@ fn every_answer_shape_reads_the_same_from_a_socket_as_from_this_process() {
 }
 
 #[test]
+fn a_parameterised_script_reads_the_same_from_a_socket_as_from_this_process() {
+    // The parity property, extended to the values a caller supplies. Both paths
+    // hold their own bindings and neither is allowed to reach a different
+    // answer — which is the half a `--param` flag could silently get wrong, by
+    // binding on one side and interpolating on the other.
+    let here = Db::in_memory().unwrap();
+    let there = Arc::new(Db::in_memory().unwrap());
+    for db in [&here, there.as_ref()] {
+        let mut store = Embedded::new(db, None, Parameters::new()).expect("a session");
+        store.run(SEED).expect("a seeded store");
+    }
+
+    let node = Arc::new(Node::bind(Arc::clone(&there), "127.0.0.1:0").unwrap());
+    let address = node.address().unwrap();
+    let serving = Arc::clone(&node);
+    drop(std::thread::spawn(move || serving.serve()));
+
+    let mut given = Parameters::new();
+    given.insert("who".to_owned(), Value::String("ada".to_owned()));
+    let script = "SELECT * FROM users WHERE name = $who;";
+
+    let mut near_store = Embedded::new(&here, None, given.clone()).expect("a session");
+    let near = said(&mut near_store, script);
+    let mut far_store = Remote::connect(&address, None, given).expect("a connection");
+    let far = said(&mut far_store, script);
+
+    assert_eq!(near, far, "embedded:\n{near}\nremote:\n{far}");
+    assert!(!near.contains("error:"), "refused:\n{near}");
+    assert!(near.contains("ada"), "the parameter did not bind:\n{near}");
+}
+
+#[test]
 fn a_reference_renders_as_a_name_over_the_wire_and_not_as_an_id() {
     // Without the names the answer carries, this reads `<record 3:2>` — which is
     // exactly what the renderer exists to avoid, since what is printed is
     // supposed to paste back into the next statement.
     let db = Arc::new(Db::in_memory().unwrap());
     {
-        let mut store = Embedded::new(&db, None).expect("a session");
+        let mut store = Embedded::new(&db, None, Parameters::new()).expect("a session");
         store.run(SEED).expect("a seeded store");
     }
     let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
