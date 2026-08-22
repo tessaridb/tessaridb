@@ -33,11 +33,19 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         verbs: &[Name],
         table: &TableRef,
+        fields: &[Name],
         user: &Name,
         span: Span,
     ) -> Result<Outcome> {
         let (asked, held) = self.grant_operands(transaction, verbs, table, user, span)?;
-        Catalog::new(transaction).grant(held.id, asked.1, &asked.0)?;
+        // A user who cannot see a field but may write the record would overwrite
+        // it whole and destroy what they cannot see — a data-loss hole created by
+        // the permission system rather than closed by it.
+        if !fields.is_empty() && asked.0.contains(&Verb::Write) {
+            return Err(Error::FieldsOnAWrite { span });
+        }
+        let named: Vec<String> = fields.iter().map(|name| name.text.clone()).collect();
+        Catalog::new(transaction).grant(held.id, asked.1, &asked.0, &named)?;
         Ok(Outcome::Done)
     }
 
@@ -78,7 +86,14 @@ impl Session<'_> {
         if remaining.is_empty() {
             catalog.revoke(held.id, asked.1);
         } else {
-            catalog.grant(held.id, asked.1, &remaining)?;
+            // The field list travels with the grant it belongs to: revoking a
+            // verb narrows what may be done, never what may be seen.
+            let kept = existing
+                .iter()
+                .find(|grant| grant.table == asked.1)
+                .map(|grant| grant.fields.clone())
+                .unwrap_or_default();
+            catalog.grant(held.id, asked.1, &remaining, &kept)?;
         }
         Ok(Outcome::Done)
     }

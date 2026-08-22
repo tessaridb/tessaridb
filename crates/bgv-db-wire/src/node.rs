@@ -286,6 +286,12 @@ fn follow(
     // holding this thread until the process stops.
     writer.get_ref().set_write_timeout(Some(READING))?;
 
+    // What a subscriber may see of each table, resolved once per table rather
+    // than once per change. The feed pushes whole records and never passes
+    // through a session's read path, so a field grant reaches it here or not at
+    // all — and "not at all" means pushing a field nobody granted.
+    let mut visible: std::collections::BTreeMap<bgv_db::TableId, bgv_db::Visible> =
+        std::collections::BTreeMap::new();
     let mut subscription = Db::subscribe(Sequence::new(asked.from), watch);
     let mut seen = 0;
     loop {
@@ -313,11 +319,23 @@ fn follow(
             // A change whose table has been dropped has no name to give, and
             // inventing one would be worse than not sending it. The cursor has
             // already moved past it either way.
+            let allowed = match visible.get(&change.table) {
+                Some(held) => held.clone(),
+                None => {
+                    let held = session.visible(db.store(), change.table).unwrap_or(None);
+                    visible.insert(change.table, held.clone());
+                    held
+                }
+            };
             let Some(named) = push::named(change, db.table_name(change.table).unwrap_or(None))
             else {
                 continue;
             };
-            frame::write(writer, frame::Kind::Change, &named.encode())?;
+            frame::write(
+                writer,
+                frame::Kind::Change,
+                &named.hiding(&allowed).encode(),
+            )?;
         }
         if changes.is_empty() {
             seen = committed.wait(seen);

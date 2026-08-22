@@ -207,6 +207,39 @@ scoping entirely is `DROP USER` and a fresh declaration, which is deliberate and
 visible in the log as what it is. Dropping a user takes their grants with them,
 so a later user allocated the same id inherits nothing.
 
+A grant may narrow what is **read** to named fields:
+
+```
+GRANT read ON staff FIELDS name, title TO ada;
+```
+
+Naming no fields covers the whole record — the same rule one level down: what is
+named is the whole story, and naming nothing names no limit.
+
+**The field is unreadable to the evaluator, not to the printer**, and that is the
+whole design rather than an implementation note. `SELECT count(*) FROM staff
+WHERE salary > 100000` never shows `salary` and asks about it precisely, so
+editing the *answer* would leave the count intact and the field readable one bit
+at a time. Instead the record the condition runs against does not contain the
+field: the path resolves to `NONE`, the comparison is false by the missing-field
+rule the language already has, and the count is zero. The projection then omits
+it for the same reason rather than for a second one. An index on a hidden field
+changes nothing, because the candidates it offers are re-tested against that same
+record — an index narrows and never answers. A join hides it on whichever side
+declared it, `FETCH` hides it in the table it lands on, and the change feed hides
+it too.
+
+**`FIELDS` may not accompany `write`.** A user who cannot see `salary` but may
+write the record would overwrite it whole and destroy what they cannot see — a
+hole the permission system would have created rather than closed.
+
+**What grants do not govern**, said plainly rather than left to be assumed: they
+are a property of a **session**. A backup reads the log directly and a caller
+holding the store through the embedded facade reads whatever they like — both
+require the store's own files, and no permission system defends against somebody
+who has those. Grants govern who may ask this database a question, not who may
+pick up the disk.
+
 **A grant-governed user cannot declare a table.** A grant names a table that
 already exists, so there is no grant that could permit `DEFINE TABLE` — the
 statement is unreachable rather than refused by a rule, and the refusal says so.
@@ -1290,7 +1323,8 @@ Named here rather than merely missing, so each absence reads as a decision:
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
-| per-**field** permissions | a per-table grant *refuses*; a per-field grant *edits*, and redacting an answer hides nothing — `SELECT count(*) FROM staff WHERE salary > 100000` interrogates a field it never shows. Doing it correctly means the field is unreadable to the evaluator, so the condition is consistently false and the projection consistently omits it, which reaches the evaluator, the change feed, index maintenance and a join's composite. A different feature, not more of the same |
+| a field grant on a **nested** route | a grant names a field of a table; `address.city` is a route into a value, and hiding one means rebuilding the object around it rather than dropping a key. Top-level only, so that a half-answer does not look like a whole one |
+| a field grant that limits **writing** | `FIELDS` narrows reading, and a write replaces a whole record — limiting which fields a write may set is a merge semantic the language does not have |
 | `LEFT`, `RIGHT` and `FULL` joins | a bare `JOIN` is inner, chosen so that these stay purely additive: an outer qualifier added later changes no statement already written |
 | joining a table to itself | two records under one name is not a row anybody can read, and telling them apart needs aliases — a language surface to design once rather than a clause |
 | a join on anything but an equality, or on more than one pair | `ON a.x = b.y` is what an index can serve and what a map can be keyed by; a join predicate that is neither is a nested loop with a filter, which is the shape the equality was chosen to avoid |

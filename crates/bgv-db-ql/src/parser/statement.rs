@@ -433,10 +433,20 @@ impl Parser<'_> {
         self.expect_keyword(Keyword::On, "`ON` and the table")?;
         let table = self.table_ref()?;
         if giving {
+            // `FIELDS` narrows what may be *read*. It sits where the same word
+            // sits in `DEFINE INDEX … FIELDS`, because it names the same thing.
+            let mut fields = Vec::new();
+            if self.eat_keyword(Keyword::Fields) {
+                fields.push(self.name()?);
+                while self.eat_punct(Punct::Comma) {
+                    fields.push(self.name()?);
+                }
+            }
             self.expect_keyword(Keyword::To, "`TO` and the user")?;
             return Ok(StatementKind::Grant {
                 verbs,
                 table,
+                fields,
                 user: self.name()?,
             });
         }

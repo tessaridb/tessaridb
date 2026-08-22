@@ -47,3 +47,12 @@ GRANT read ON users TO ada;
 --- case: and neither may it revoke
 REVOKE read ON users FROM ada;
 --- expect: error NotSignedIn
+
+--- case: identity is decided before the grant's own contents are
+# `FIELDS` with `write` has a refusal of its own — it would let somebody
+# overwrite whole records they cannot fully see — and it is not the refusal an
+# anonymous session gets here. Which order those two run in is worth pinning:
+# a refusal naming the field rule would have told a stranger their statement
+# parsed. The field rule itself is asserted in `bgv-db-session/tests/grants.rs`.
+GRANT read, write ON users FIELDS name TO ada;
+--- expect: error NotSignedIn

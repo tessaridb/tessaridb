@@ -174,6 +174,11 @@ pub enum StatementKind {
         verbs: Vec<Name>,
         /// The table it is on.
         table: TableRef,
+        /// Which fields may be read, or empty for all of them.
+        ///
+        /// The same rule the grant has one level up: what is named is the whole
+        /// story, and naming nothing names no limit.
+        fields: Vec<Name>,
         /// Who it is for.
         user: Name,
     },

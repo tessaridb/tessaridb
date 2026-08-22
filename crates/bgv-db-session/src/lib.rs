@@ -34,6 +34,7 @@ mod outcome;
 mod plan;
 mod rank;
 mod reach;
+pub mod redact;
 mod reference;
 mod search;
 mod session;

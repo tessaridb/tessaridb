@@ -101,9 +101,12 @@ impl Session<'_> {
                 span,
             ),
             StatementKind::DropUser { name } => self.drop_user(transaction, name),
-            StatementKind::Grant { verbs, table, user } => {
-                self.grant(transaction, verbs, table, user, span)
-            }
+            StatementKind::Grant {
+                verbs,
+                table,
+                fields,
+                user,
+            } => self.grant(transaction, verbs, table, fields, user, span),
             StatementKind::Revoke { verbs, table, user } => {
                 self.revoke(transaction, verbs, table, user, span)
             }

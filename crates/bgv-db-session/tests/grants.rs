@@ -14,6 +14,7 @@ use std::sync::Arc;
 use bgv_db_kv::{KvBackend, MemoryBackend};
 use bgv_db_session::Session;
 use bgv_db_storage::Store;
+use bgv_db_types::Value;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
@@ -260,4 +261,199 @@ fn dropping_a_user_takes_their_grants_with_them() {
     let mut ada = signed_in(&store, "ada");
     ada.run("SELECT * FROM users;").unwrap();
     ada.run("SELECT * FROM orders;").unwrap();
+}
+
+/// A staff table with a field worth hiding, and ada granted only two of three.
+fn field_scoped(store: &Store) {
+    ready(store);
+    let mut root = signed_in(store, "root");
+    root.run(
+        "DEFINE TABLE staff;\n\
+         CREATE staff:1 = { name: 'ada', title: 'engineer', salary: 120000 };\n\
+         CREATE staff:2 = { name: 'grace', title: 'admiral', salary: 200000 };",
+    )
+    .unwrap();
+    root.run("GRANT read ON staff FIELDS name, title TO ada;")
+        .unwrap();
+}
+
+#[test]
+fn a_field_grant_hides_the_field_from_a_read() {
+    let store = store();
+    field_scoped(&store);
+    let mut ada = signed_in(&store, "ada");
+    let outcomes = ada.run("SELECT * FROM staff;").unwrap();
+    let records = outcomes.last().unwrap().records().unwrap();
+    assert_eq!(records.len(), 2);
+    for (_, held) in records {
+        let Value::Object(fields) = held else {
+            panic!("not an object");
+        };
+        assert!(fields.contains_key("name"), "{fields:?}");
+        assert!(!fields.contains_key("salary"), "{fields:?}");
+    }
+}
+
+#[test]
+fn a_condition_on_a_hidden_field_answers_nothing_rather_than_a_redacted_row() {
+    // The difference between a permission and a redaction. If the field were
+    // removed from the *answer* this would still return two rows, and the
+    // condition would have reported on a field nobody may read.
+    let store = store();
+    field_scoped(&store);
+    let mut ada = signed_in(&store, "ada");
+    let outcomes = ada
+        .run("SELECT * FROM staff WHERE salary > 100000;")
+        .unwrap();
+    assert!(outcomes.last().unwrap().records().unwrap().is_empty());
+}
+
+#[test]
+fn the_bisection_attack_returns_zero() {
+    // The statement this whole design exists to answer. It never shows `salary`
+    // and asks about it precisely, so redacting the output would leave the count
+    // intact and the field readable one bit at a time.
+    let store = store();
+    field_scoped(&store);
+    let mut ada = signed_in(&store, "ada");
+    for probe in [
+        "SELECT count(*) AS n FROM staff WHERE salary > 100000;",
+        "SELECT count(*) AS n FROM staff WHERE salary > 150000;",
+        "SELECT count(*) AS n FROM staff WHERE salary = 200000;",
+    ] {
+        let outcomes = ada.run(probe).unwrap();
+        let records = outcomes.last().unwrap().records().unwrap();
+        // Every probe answers the same thing, which is what makes it useless:
+        // no records matched, so the fold has nothing to fold and there is no
+        // row — indistinguishable from a table holding nobody.
+        assert!(records.is_empty(), "{probe} answered {records:?}");
+    }
+
+    // And the owner, who may read it, gets the real answers — otherwise the
+    // assertions above pass for a store that simply does not work.
+    let mut root = signed_in(&store, "root");
+    let outcomes = root
+        .run("SELECT count(*) AS n FROM staff WHERE salary > 100000;")
+        .unwrap();
+    let records = outcomes.last().unwrap().records().unwrap();
+    let Value::Object(row) = &records[0].1 else {
+        panic!("not an object");
+    };
+    assert_eq!(row.get("n"), Some(&Value::from(2_i64)));
+}
+
+#[test]
+fn an_index_on_a_hidden_field_changes_neither_answer() {
+    // The governing rule of this store, at the place a permission could break
+    // it: an index narrows and never answers, so the candidates it offers are
+    // re-tested against the record the reader may actually see.
+    let store = store();
+    field_scoped(&store);
+    signed_in(&store, "root")
+        .run("DEFINE INDEX by_salary ON staff FIELDS salary;")
+        .unwrap();
+
+    let mut ada = signed_in(&store, "ada");
+    let outcomes = ada
+        .run("SELECT * FROM staff WHERE salary = 120000;")
+        .unwrap();
+    assert!(outcomes.last().unwrap().records().unwrap().is_empty());
+}
+
+#[test]
+fn ordering_by_a_hidden_field_leaks_no_ordering() {
+    let store = store();
+    field_scoped(&store);
+    let mut ada = signed_in(&store, "ada");
+    let outcomes = ada
+        .run("SELECT * FROM staff ORDER BY salary DESC;")
+        .unwrap();
+    let records = outcomes.last().unwrap().records().unwrap();
+    // Every key is `NONE`, so the sort is a no-op and the answer is the read's
+    // own order — which says nothing about salaries.
+    assert_eq!(records.len(), 2);
+    for (_, held) in records {
+        let Value::Object(fields) = held else {
+            panic!("not an object");
+        };
+        assert!(!fields.contains_key("salary"));
+    }
+}
+
+#[test]
+fn a_join_hides_the_field_on_the_side_that_declared_it() {
+    let store = store();
+    field_scoped(&store);
+    let mut root = signed_in(&store, "root");
+    root.run("CREATE users:2 = { name: 'grace' };").unwrap();
+    root.run("GRANT read ON users TO ada;").unwrap();
+
+    let mut ada = signed_in(&store, "ada");
+    let outcomes = ada
+        .run("SELECT * FROM users JOIN staff ON users.name = staff.name;")
+        .unwrap();
+    let records = outcomes.last().unwrap().records().unwrap();
+    assert!(!records.is_empty());
+    for (_, held) in records {
+        let Value::Object(row) = held else {
+            panic!("not an object");
+        };
+        let Some(Value::Object(side)) = row.get("staff") else {
+            panic!("no staff side");
+        };
+        assert!(!side.contains_key("salary"), "{side:?}");
+    }
+}
+
+#[test]
+fn fetch_into_a_field_scoped_table_hides_it_there_too() {
+    // A reference is an address into a *different* table, and following one is
+    // not a way to read what that table's grant refuses.
+    let store = store();
+    field_scoped(&store);
+    let mut root = signed_in(&store, "root");
+    root.run("DEFINE TABLE notes; CREATE notes:1 = { about: staff:1 };")
+        .unwrap();
+    root.run("GRANT read ON notes TO ada;").unwrap();
+
+    let mut ada = signed_in(&store, "ada");
+    let outcomes = ada.run("SELECT * FROM notes FETCH about;").unwrap();
+    let records = outcomes.last().unwrap().records().unwrap();
+    let Value::Object(row) = &records[0].1 else {
+        panic!("not an object");
+    };
+    let Some(Value::Object(about)) = row.get("about") else {
+        panic!("the reference was not followed: {row:?}");
+    };
+    assert!(about.contains_key("name"), "{about:?}");
+    assert!(!about.contains_key("salary"), "{about:?}");
+}
+
+#[test]
+fn a_grant_naming_no_fields_still_covers_the_whole_record() {
+    let store = store();
+    field_scoped(&store);
+    signed_in(&store, "root")
+        .run("GRANT read ON staff TO ada;")
+        .unwrap();
+
+    let mut ada = signed_in(&store, "ada");
+    let outcomes = ada.run("SELECT * FROM staff:1;").unwrap();
+    let records = outcomes.last().unwrap().records().unwrap();
+    let Value::Object(fields) = &records[0].1 else {
+        panic!("not an object");
+    };
+    assert!(fields.contains_key("salary"), "{fields:?}");
+}
+
+#[test]
+fn fields_with_a_write_is_refused_with_its_reason() {
+    // A user who cannot see a field but may write the record would overwrite it
+    // whole and destroy what they cannot see.
+    let store = store();
+    ready(&store);
+    let refused = signed_in(&store, "root")
+        .run("GRANT read, write ON users FIELDS name TO ada;")
+        .expect_err("a refusal");
+    assert!(refused.to_string().contains("destroy"), "{refused}");
 }

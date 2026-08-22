@@ -52,8 +52,6 @@ use bgv_db_ql::FieldPath;
 use bgv_db_storage::{RecordAddress, Transaction};
 use bgv_db_types::{RecordId, RecordRef, TableId, Value};
 
-use bgv_db_encoding::decode_payload;
-
 use crate::context::Context;
 use crate::error::Result;
 use crate::session::Session;
@@ -68,6 +66,11 @@ impl Session<'_> {
         context: Context,
     ) -> Result<()> {
         let mut seen: BTreeMap<(TableId, RecordId), Option<Value>> = BTreeMap::new();
+        // Which fields may be read is a property of the *table*, so it is
+        // resolved once per table rather than once per reference — a hundred
+        // posts by three authors is three catalog reads, the same saving the
+        // record memo makes one line up.
+        let mut visible: BTreeMap<TableId, crate::redact::Visible> = BTreeMap::new();
         for (_, record) in records {
             for route in routes {
                 let Some(held) = route.path.resolve_mut(record) else {
@@ -75,7 +78,13 @@ impl Session<'_> {
                 };
                 match held {
                     Value::Record(reference) => {
-                        if let Some(found) = read(transaction, context, reference, &mut seen)? {
+                        if let Some(found) = self.referenced(
+                            transaction,
+                            context,
+                            reference,
+                            &mut seen,
+                            &mut visible,
+                        )? {
                             *held = found;
                         }
                     }
@@ -84,7 +93,13 @@ impl Session<'_> {
                             let Value::Record(reference) = item else {
                                 continue;
                             };
-                            if let Some(found) = read(transaction, context, reference, &mut seen)? {
+                            if let Some(found) = self.referenced(
+                                transaction,
+                                context,
+                                reference,
+                                &mut seen,
+                                &mut visible,
+                            )? {
                                 *item = found;
                             }
                         }
@@ -97,31 +112,49 @@ impl Session<'_> {
     }
 }
 
-/// The record a reference names, or `None` when there is not one.
-///
-/// A reference carries a table and an id and no tenancy, so it resolves in the
-/// read's own database — which is also why a fetch cannot reach across one
-/// (ADR-0008).
-fn read(
-    transaction: &mut Transaction<'_>,
-    context: Context,
-    reference: &RecordRef,
-    seen: &mut BTreeMap<(TableId, RecordId), Option<Value>>,
-) -> Result<Option<Value>> {
-    let at = (reference.table, reference.id.clone());
-    if let Some(held) = seen.get(&at) {
-        return Ok(held.clone());
+impl Session<'_> {
+    /// The record a reference names, or `None` when there is not one.
+    ///
+    /// A reference carries a table and an id and no tenancy, so it resolves in
+    /// the read's own database — which is also why a fetch cannot reach across
+    /// one (ADR-0008).
+    ///
+    /// **The record it lands on is redacted by its own table's grant.** A
+    /// reference is an address into a *different* table, and following one is
+    /// not a way to read what that table's grant refuses. The memo is keyed by
+    /// the address, so the visibility set is resolved once per table per read
+    /// rather than once per reference.
+    fn referenced(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: Context,
+        reference: &RecordRef,
+        seen: &mut BTreeMap<(TableId, RecordId), Option<Value>>,
+        visible: &mut BTreeMap<TableId, crate::redact::Visible>,
+    ) -> Result<Option<Value>> {
+        let at = (reference.table, reference.id.clone());
+        if let Some(held) = seen.get(&at) {
+            return Ok(held.clone());
+        }
+        let allowed = match visible.get(&reference.table) {
+            Some(held) => held.clone(),
+            None => {
+                let held = self.visible_in(transaction, reference.table)?;
+                visible.insert(reference.table, held.clone());
+                held
+            }
+        };
+        let address = RecordAddress::new(
+            context.namespace,
+            context.database,
+            reference.table,
+            reference.id.clone(),
+        );
+        let found = match transaction.get(&address)? {
+            Some(payload) => Some(self.record_of(&payload, &allowed)?),
+            None => None,
+        };
+        seen.insert(at, found.clone());
+        Ok(found)
     }
-    let address = RecordAddress::new(
-        context.namespace,
-        context.database,
-        reference.table,
-        reference.id.clone(),
-    );
-    let found = match transaction.get(&address)? {
-        Some(payload) => Some(decode_payload(&payload)?),
-        None => None,
-    };
-    seen.insert(at, found.clone());
-    Ok(found)
 }

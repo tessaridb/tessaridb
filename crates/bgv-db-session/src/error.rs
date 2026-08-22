@@ -340,6 +340,20 @@ pub enum Error {
         span: Span,
     },
 
+    /// A field list on a grant that also carries `write`.
+    ///
+    /// A user who cannot see a field but may write the record would overwrite it
+    /// whole and destroy what they cannot see — a data-loss hole created by the
+    /// permission system rather than closed by it.
+    #[error(
+        "`FIELDS` narrows what may be read, and a `write` grant replaces whole records — \
+         so the two together would let somebody destroy what they cannot see (at {span})"
+    )]
+    FieldsOnAWrite {
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A revocation that would have removed a user's last grant.
     ///
     /// Which would **widen** them from a named table to every table their role

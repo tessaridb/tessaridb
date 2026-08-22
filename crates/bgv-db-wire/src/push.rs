@@ -128,6 +128,25 @@ pub enum Became {
 }
 
 impl Happened {
+    /// The same change with everything the subscriber may not read taken out.
+    ///
+    /// Through the session's own redactor rather than a copy of it: a second
+    /// implementation of "what does this user see" is a second answer waiting to
+    /// disagree with the first, and the disagreement would be silent.
+    #[must_use]
+    pub fn hiding(self, visible: &bgv_db::Visible) -> Self {
+        match self.became {
+            Became::Written(held) => Self {
+                became: Became::Written(bgv_db::seen(held, visible)),
+                ..self
+            },
+            // A removal carries no value, so there is nothing in it to hide —
+            // and *that* a record was removed is what the table grant already
+            // decided this subscriber may know.
+            Became::Removed => self,
+        }
+    }
+
     /// The body of a change frame.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {

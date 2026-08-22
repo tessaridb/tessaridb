@@ -8,7 +8,6 @@
 use core::ops::Bound;
 use std::collections::BTreeMap;
 
-use bgv_db_encoding::decode_payload;
 use bgv_db_ql::{
     BinaryOp, Direction, Expr, ExprKind, Function, Projectable, Projected, Projection,
     RecordTarget, Select, Source, Span, TableRef,
@@ -199,8 +198,9 @@ impl Session<'_> {
         target: &RecordTarget,
     ) -> Result<Value> {
         let (_, address) = self.address(transaction, target)?;
+        let visible = self.visible_in(transaction, address.table)?;
         match transaction.get(&address)? {
-            Some(payload) => Ok(decode_payload(&payload)?),
+            Some(payload) => self.record_of(&payload, &visible),
             None => Ok(Value::None),
         }
     }
@@ -426,8 +426,11 @@ impl Session<'_> {
         match &select.from {
             Source::Record(target) => {
                 let (_, address) = self.address(transaction, target)?;
+                let visible = self.visible_in(transaction, address.table)?;
                 let found = match transaction.get(&address)? {
-                    Some(payload) => vec![(address.id, decode_payload(&payload)?)],
+                    Some(payload) => {
+                        vec![(address.id, self.record_of(&payload, &visible)?)]
+                    }
                     None => Vec::new(),
                 };
                 Ok((found, AccessPath::Record, Searched::default()))
@@ -446,7 +449,12 @@ impl Session<'_> {
                     return Ok((found, AccessPath::Index, searched));
                 }
                 let found = transaction.scan_table(context.namespace, context.database, id)?;
-                Ok((decode_all(found)?, AccessPath::Scan, searched))
+                let visible = self.visible_in(transaction, id)?;
+                Ok((
+                    self.records_of(found, &visible)?,
+                    AccessPath::Scan,
+                    searched,
+                ))
             }
             Source::Traverse {
                 from,
@@ -556,14 +564,20 @@ impl Session<'_> {
         let left_name = left.name.text.clone();
         let right_name = right.name.text.clone();
 
+        // Each side is redacted by its own table's grant: a join is two reads
+        // and neither borrows the other's permission.
+        let left_visible = self.visible_in(transaction, left_id)?;
+        let right_visible = self.visible_in(transaction, right_id)?;
+
         let served = ordered_index_on(transaction, right_id, right_key)?;
         let mut built = BTreeMap::new();
         if served.is_none() {
-            for (id, record) in decode_all(transaction.scan_table(
+            let found = transaction.scan_table(
                 right_context.namespace,
                 right_context.database,
                 right_id,
-            )?)? {
+            )?;
+            for (id, record) in self.records_of(found, &right_visible)? {
                 let Some(key) = right_key.path.resolve(&record).cloned() else {
                     continue;
                 };
@@ -573,11 +587,9 @@ impl Session<'_> {
 
         let searched = self.searched_for(transaction, left_id, &shown(select))?;
         let mut rows = Vec::new();
-        for (id, record) in decode_all(transaction.scan_table(
-            left_context.namespace,
-            left_context.database,
-            left_id,
-        )?)? {
+        let driving =
+            transaction.scan_table(left_context.namespace, left_context.database, left_id)?;
+        for (id, record) in self.records_of(driving, &left_visible)? {
             // A left record with nothing at the key matches nothing: `NONE` is a
             // value and the right side would have to carry it to match, which is
             // what an inner join means.
@@ -588,7 +600,7 @@ impl Session<'_> {
                 Some(index) => {
                     let offered =
                         transaction.records_by_index(index, core::slice::from_ref(&key))?;
-                    decode_all(offered)?
+                    self.records_of(offered, &right_visible)?
                         .into_iter()
                         .filter(|(_, held)| right_key.path.resolve(held) == Some(&key))
                         .collect()
@@ -650,12 +662,16 @@ impl Session<'_> {
         let declared = Catalog::new(transaction).indexes_on(table)?;
         let offered = self.enumerate(transaction, condition, &declared, searched)?;
 
+        // Resolved before either path, so an index-served read and a scan see
+        // the same record — which is what makes candidates re-tested against the
+        // whole condition unable to answer what a scan refuses.
+        let visible = self.visible_in(transaction, table)?;
         if let Some(chosen) = plan::choose(offered) {
             let found = self.serve(transaction, context, table, &chosen)?;
-            return Ok((decode_all(found)?, AccessPath::Index));
+            return Ok((self.records_of(found, &visible)?, AccessPath::Index));
         }
         let scanned = transaction.scan_table(context.namespace, context.database, table)?;
-        Ok((decode_all(scanned)?, AccessPath::Scan))
+        Ok((self.records_of(scanned, &visible)?, AccessPath::Scan))
     }
 
     /// Walk a vector index, when there is one that answers this read.
@@ -685,13 +701,14 @@ impl Session<'_> {
         else {
             return Ok(None);
         };
+        let visible = self.visible_in(transaction, table)?;
         let mut rows = Vec::new();
         for id in transaction.records_by_vector(&index, &query, wanted.wanted)? {
             // Resolved at this reader's own snapshot, like every index read, so
             // a node left behind by a deleted record produces nothing.
             let at = RecordAddress::new(context.namespace, context.database, table, id);
             if let Some(payload) = transaction.get(&at)? {
-                rows.push((at.id, decode_payload(&payload)?));
+                rows.push((at.id, self.record_of(&payload, &visible)?));
             }
         }
         Ok(Some(rows))
@@ -779,13 +796,18 @@ impl Session<'_> {
 
         let (_, start) = self.address(transaction, from)?;
         let anchor = Value::Record(RecordRef::new(start.table, start.id.clone()));
-        let found = decode_all(transaction.records_by_index(&index, &[anchor])?)?;
+        let edge_visible = self.visible_in(transaction, edge_table)?;
+        let offered = transaction.records_by_index(&index, &[anchor])?;
+        let found = self.records_of(offered, &edge_visible)?;
 
         let Some(target) = target else {
             return Ok((found, AccessPath::Index));
         };
 
         let (context, target_table) = self.resolve_table(transaction, target)?;
+        // The far side is read from its own table, so its own grant applies —
+        // reaching a record through an edge is not a way around one.
+        let far_visible = self.visible_in(transaction, target_table)?;
         let mut reached = Vec::new();
         for (_, edge) in found {
             let Value::Object(fields) = &edge else {
@@ -804,7 +826,7 @@ impl Session<'_> {
                 far.id.clone(),
             );
             if let Some(payload) = transaction.get(&address)? {
-                reached.push((far.id.clone(), decode_payload(&payload)?));
+                reached.push((far.id.clone(), self.record_of(&payload, &far_visible)?));
             }
         }
         Ok((reached, AccessPath::Index))
@@ -827,14 +849,6 @@ impl Session<'_> {
             records.into_iter().map(|(_, value)| value).collect(),
         ))
     }
-}
-
-fn decode_all(found: Vec<(RecordId, Vec<u8>)>) -> Result<Vec<(RecordId, Value)>> {
-    let mut records = Vec::with_capacity(found.len());
-    for (id, payload) in found {
-        records.push((id, decode_payload(&payload)?));
-    }
-    Ok(records)
 }
 
 /// The record identity a range bound names.

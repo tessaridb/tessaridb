@@ -534,3 +534,54 @@ fn a_grant_governed_subscriber_is_told_only_about_tables_it_was_granted() {
     let said = refused.wait().expect_err("a refusal");
     assert!(said.to_string().contains("granted"), "{said}");
 }
+
+#[test]
+fn a_field_grant_reaches_the_feed_too() {
+    // The feed pushes whole records and never passes through a session's read
+    // path, so a field grant reaches it here or not at all. This surface has
+    // produced that class of hole twice; the test is what makes a third a
+    // failure rather than a discovery.
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (_node, address) = serving(Arc::clone(&db));
+    let mut open = Client::connect(&address).unwrap();
+    open.run(READY, None).unwrap();
+    open.run(
+        "DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
+        None,
+    )
+    .unwrap();
+
+    let owner = Some(("root", "correct horse battery"));
+    let mut root = Client::connect(&address).unwrap();
+    root.run("USE NAMESPACE prod; USE DATABASE orders;", owner)
+        .unwrap();
+    root.run(
+        "DEFINE USER ada ON prod.orders ROLE editor PASSWORD 'correct horse battery';",
+        owner,
+    )
+    .unwrap();
+    root.run("GRANT read ON users FIELDS name TO ada;", owner)
+        .unwrap();
+
+    let scoped = Some(("ada", "correct horse battery"));
+    let mut ada = Client::connect(&address).unwrap();
+    ada.run("USE NAMESPACE prod; USE DATABASE orders;", scoped)
+        .unwrap();
+    let feed = feeding(
+        ada,
+        &Follow {
+            from: db.committed_tail().unwrap().get() + 1,
+            table: Some("users".to_owned()),
+        },
+    );
+
+    root.run("CREATE users:1 = { name: 'ada', salary: 120000 };", owner)
+        .unwrap();
+
+    let change = within(&feed, "a change from the granted table");
+    let Became::Written(Value::Object(held)) = change.became else {
+        panic!("not a write");
+    };
+    assert!(held.contains_key("name"), "{held:?}");
+    assert!(!held.contains_key("salary"), "{held:?}");
+}

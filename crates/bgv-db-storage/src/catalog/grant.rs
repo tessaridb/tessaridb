@@ -36,6 +36,7 @@ use crate::error::{Error, Result};
 const FIELD_USER: &str = "user";
 const FIELD_TABLE: &str = "table";
 const FIELD_VERBS: &str = "verbs";
+const FIELD_FIELDS: &str = "fields";
 
 const ENTITY: &str = "grant";
 
@@ -48,6 +49,14 @@ pub struct GrantDefinition {
     pub table: TableId,
     /// What may be done to it, smallest first and never repeated.
     pub verbs: Vec<Verb>,
+    /// Which fields may be read, or empty for all of them.
+    ///
+    /// Empty is no restriction, which is the same rule the grant itself has one
+    /// level up: what is named is the whole story, and naming nothing names no
+    /// limit. Sorted and deduplicated for the same reason the verbs are — a
+    /// stored set that depends on the order somebody typed it in is two values
+    /// for one fact.
+    pub fields: Vec<String>,
 }
 
 impl GrantDefinition {
@@ -76,6 +85,15 @@ impl GrantDefinition {
                         .collect(),
                 ),
             ),
+            (
+                FIELD_FIELDS.to_owned(),
+                Value::Array(
+                    self.fields
+                        .iter()
+                        .map(|name| Value::from(name.as_str()))
+                        .collect(),
+                ),
+            ),
         ]))
     }
 
@@ -85,12 +103,12 @@ impl GrantDefinition {
     ///
     /// Returns [`Error::Malformed`] when the stored value is not one.
     pub fn from_value(value: &Value) -> Result<Self> {
-        let Value::Object(fields) = value else {
+        let Value::Object(fields_in) = value else {
             return Err(malformed("body", "not an object"));
         };
-        let user = whole(fields.get(FIELD_USER), FIELD_USER)?;
-        let table = TableId::new(whole(fields.get(FIELD_TABLE), FIELD_TABLE)?);
-        let Some(Value::Array(held)) = fields.get(FIELD_VERBS) else {
+        let user = whole(fields_in.get(FIELD_USER), FIELD_USER)?;
+        let table = TableId::new(whole(fields_in.get(FIELD_TABLE), FIELD_TABLE)?);
+        let Some(Value::Array(held)) = fields_in.get(FIELD_VERBS) else {
             return Err(malformed(FIELD_VERBS, "not an array"));
         };
         let mut verbs = Vec::new();
@@ -105,7 +123,28 @@ impl GrantDefinition {
         }
         verbs.sort_unstable();
         verbs.dedup();
-        Ok(Self { user, table, verbs })
+        // Absent rather than empty in a store written before fields existed,
+        // which reads as no restriction — the same thing an empty list means.
+        let mut fields = Vec::new();
+        if let Some(held) = fields_in.get(FIELD_FIELDS) {
+            let Value::Array(named) = held else {
+                return Err(malformed(FIELD_FIELDS, "not an array"));
+            };
+            for name in named {
+                let Value::String(name) = name else {
+                    return Err(malformed(FIELD_FIELDS, "not a name"));
+                };
+                fields.push(name.clone());
+            }
+        }
+        fields.sort_unstable();
+        fields.dedup();
+        Ok(Self {
+            user,
+            table,
+            verbs,
+            fields,
+        })
     }
 }
 
@@ -139,11 +178,25 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the write cannot be staged.
-    pub fn grant(&mut self, user: u32, table: TableId, verbs: &[Verb]) -> Result<GrantDefinition> {
+    pub fn grant(
+        &mut self,
+        user: u32,
+        table: TableId,
+        verbs: &[Verb],
+        fields: &[String],
+    ) -> Result<GrantDefinition> {
         let mut verbs = verbs.to_vec();
         verbs.sort_unstable();
         verbs.dedup();
-        let definition = GrantDefinition { user, table, verbs };
+        let mut fields = fields.to_vec();
+        fields.sort_unstable();
+        fields.dedup();
+        let definition = GrantDefinition {
+            user,
+            table,
+            verbs,
+            fields,
+        };
         self.transaction.put(
             system::address(system::GRANTS, GrantDefinition::identity(user, table)),
             bgv_db_encoding::encode_payload(&definition.to_value()).into_bytes(),
