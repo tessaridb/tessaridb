@@ -144,7 +144,7 @@ fn the_second_field_alone_is_still_a_scan() {
 
 #[test]
 fn a_unique_composite_promises_no_ceiling() {
-    // Uniqueness is over the **pair**, and the planner fixes only the first
+    // Uniqueness is over the **pair**, and this condition fixes only the first
     // field — so a lookup can return any number of records. Claiming `at_most 1`
     // would make the planner prefer an index that can return the whole table.
     let store = store();

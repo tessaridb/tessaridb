@@ -49,9 +49,20 @@
 //! Not arbitrarily, and not on index id: two runs of one statement must choose
 //! the same way, and an author who reads their own condition should be able to
 //! predict which of two equal candidates wins.
+//!
+//! One rule sits above it, and only because it is a **proof** rather than a
+//! preference: a candidate fixing more of its index's columns cannot return more
+//! records than one fixing fewer of them, since its entries are a subset. An
+//! equal count still falls through to the order the conjuncts were written.
+//!
+//! This is the rule the gathering restructuring most easily loses. Asking each
+//! index what the whole condition fixes for it invites an outer loop over
+//! *indexes*, which would make an equal tie resolve by declaration order — a
+//! schema fact the author of the condition cannot see. So the gathering is by
+//! index and the emitting is by conjunct, which keeps both properties at once.
 
 use core::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bgv_db_ql::{BinaryOp, Expr, ExprKind, Function, Projected, Projection, Select, Source};
 use bgv_db_storage::{Catalog, IndexDefinition, Transaction, VectorDistance};
@@ -96,8 +107,21 @@ pub(crate) enum Shape {
 /// the analysed terms are computed once, while ranking, and travel to the read.
 #[derive(Debug, Clone)]
 pub(crate) enum Served {
-    /// The value the index is looked up by.
-    Equality(Value),
+    /// The values the index is looked up by — one per field it fixes, in field
+    /// order, and always a **leading** run of them.
+    ///
+    /// A tuple rather than a value, because an index that could answer about
+    /// two of its columns and was only ever asked about one is the cost §8 named
+    /// twice. When the run reaches the index's arity the lookup is complete, and
+    /// `Transaction::records_by_index` turns a complete lookup on a unique index
+    /// into a point read — which is what makes a `UNIQUE` composite able to
+    /// promise a ceiling of one at all.
+    ///
+    /// The run stops at the first field the condition does not fix with an
+    /// equality, so `a = 1 AND b LIKE 'x%'` on `(a, b)` fixes `[1]`: the lookup
+    /// takes exact values per field and a mixed tuple cannot be said in it. The
+    /// condition re-tests the rest, as it does for every candidate anyway.
+    Equality(Vec<Value>),
     /// The literal prefix the range starts at.
     Prefix(String),
     /// The terms whose postings are intersected.
@@ -125,6 +149,20 @@ impl Served {
             Self::Prefix(_) => Shape::Prefix,
             Self::Terms(_) => Shape::Terms,
             Self::Range { .. } => Shape::Range,
+        }
+    }
+
+    /// How many of the index's fields this lookup fixes exactly.
+    ///
+    /// One for every shape that reaches only the leading field, and the length
+    /// of the run for an equality tuple. It is a **proof of narrowing**, not an
+    /// estimate: the entries matching two fixed fields are a subset of those
+    /// matching the first alone, whatever the data holds. That is why it ranks
+    /// candidates and a guess would not.
+    pub(crate) fn fixed(&self) -> usize {
+        match self {
+            Self::Equality(values) => values.len(),
+            Self::Prefix(_) | Self::Terms(_) | Self::Range { .. } => 1,
         }
     }
 }
@@ -204,8 +242,64 @@ fn better(candidate: &Candidate, than: &Candidate) -> bool {
     match candidate.rows.rank(than.rows) {
         Ordering::Less => true,
         Ordering::Greater => false,
-        Ordering::Equal => candidate.served.shape() < than.served.shape(),
+        Ordering::Equal => match candidate.served.shape().cmp(&than.served.shape()) {
+            Ordering::Less => true,
+            Ordering::Greater => false,
+            // Neither has a ceiling and both narrow the same way, so the one
+            // fixing more of its index's fields wins. This sits above source
+            // order deliberately: it is the only rule here that is a proof
+            // rather than a preference — a subset cannot be larger than the set
+            // it is drawn from — and an equal count still falls through to
+            // source order, which is what the heading above promises.
+            Ordering::Equal => candidate.served.fixed() > than.served.fixed(),
+        },
     }
+}
+
+/// Every declared index whose **leading** field is this path, of the kind that
+/// can answer the question asking.
+///
+/// An index serves a condition on its first field, whether or not it has others:
+/// the key encoding puts that field first and byte order is value order, so the
+/// entries for one value of it are contiguous. Only the first — the entries for
+/// one value of a *later* field are scattered across every value of the ones
+/// before it, so an index offered for that would be answering about the wrong
+/// column.
+///
+/// **Every** such index, not the first one declared, and that is the wave's
+/// restructuring in one line. Taking the first meant an index was never asked
+/// what it could serve; it was handed a conjunct. So a composite `(last, first)`
+/// was invisible whenever a plain `last` happened to be declared before it, and
+/// a field carrying both a search index and an ordered one could be served by
+/// neither — the search index won the search and then failed the equality guard.
+///
+/// A `Vec` rather than an iterator because the list is a handful of definitions
+/// and a borrowing iterator here would tie the caller's hands for nothing.
+fn serving<'a>(
+    declared: &'a [IndexDefinition],
+    path: &Path,
+    search: bool,
+) -> Vec<&'a IndexDefinition> {
+    declared
+        .iter()
+        .filter(|index| index.fields.first() == Some(path) && index.search == search)
+        .collect()
+}
+
+/// The leading run of this index's fields the condition fixes to a value.
+///
+/// It stops at the first field nothing fixes, so the result is always a genuine
+/// prefix of the index — which is what `Transaction::records_by_index` requires
+/// and what makes "complete" mean the same thing on both sides.
+fn gathered(index: &IndexDefinition, fixed: &BTreeMap<&Path, &Value>) -> Vec<Value> {
+    let mut values = Vec::new();
+    for field in &index.fields {
+        let Some(held) = fixed.get(field) else {
+            break;
+        };
+        values.push((*held).clone());
+    }
+    values
 }
 
 impl Session<'_> {
@@ -215,6 +309,13 @@ impl Session<'_> {
     /// because ranking a search candidate needs it, and because evaluating it
     /// again in the executor would let a `time::now()` in a filter mean two
     /// different instants inside one statement.
+    ///
+    /// The gathering is **by index**, not by clause: an index is asked what the
+    /// whole condition fixes for it, so `last = 'x' AND first = 'y'` against
+    /// `(last, first)` becomes one lookup rather than a lookup on `last` and a
+    /// re-test of `first`. Candidates are still emitted in the order the author
+    /// wrote the conjuncts, because that is what makes an equal-ranked tie
+    /// predictable from the condition rather than from the schema.
     pub(crate) fn enumerate(
         &self,
         transaction: &mut Transaction<'_>,
@@ -222,62 +323,86 @@ impl Session<'_> {
         declared: &[IndexDefinition],
         searched: &Searched,
     ) -> Result<Vec<Candidate>> {
+        let seeks = seekable(condition);
+        // Evaluated once each and in the order they were written, before
+        // anything is gathered. Gathering has to look ahead at conjuncts the
+        // emitting loop has not reached, and evaluating a bound at the point it
+        // is looked at would evaluate some of them twice.
+        //
+        // A right-hand side that reads the record is not a constant, so it
+        // cannot be a bound; `seekable` has already excluded those.
+        let mut bounds_of = Vec::with_capacity(seeks.len());
+        for seek in &seeks {
+            bounds_of.push(self.evaluate(transaction, seek.value)?);
+        }
+        // What the condition fixes each path to. The **first** equality on a
+        // path wins: `a = 1 AND a = 2` answers with nothing whichever value
+        // narrows, because the condition is re-tested above the source, so a
+        // second candidate for the same path is a second answer to one question.
+        let mut fixed: BTreeMap<&Path, &Value> = BTreeMap::new();
+        for (seek, bound) in seeks.iter().zip(&bounds_of) {
+            if seek.shape == Shape::Equality {
+                fixed.entry(seek.path).or_insert(bound);
+            }
+        }
+
         let mut offered = Vec::new();
+        let mut already: BTreeSet<&Path> = BTreeSet::new();
         // `at >= x AND at < y` is one range written as two conjuncts, and
         // serving one of them would read half a table to find a day. Bounds on
         // one path are gathered before anything is offered; bounds on different
         // paths are not combined, because they narrow independently and the
         // planner is what chooses between them.
         let mut bounds: BTreeMap<&Path, (Option<Value>, Option<Value>)> = BTreeMap::new();
-        for seek in seekable(condition) {
-            // A right-hand side that reads the record is not a constant, so it
-            // cannot be a bound; `seekable` has already excluded those.
-            let bound = self.evaluate(transaction, seek.value)?;
-            // An index serves a condition on its **first** field, whether or not
-            // it has others: the key encoding puts that field first and byte
-            // order is value order, so the entries for one value of it are
-            // contiguous. Until this said `first`, an index with more than one
-            // field matched nothing at all and was maintained on every write for
-            // no read — which cost nothing visible, because a wrong cost never
-            // raises anything.
-            //
-            // Only the first. The entries for one value of a *later* field are
-            // scattered across every value of the ones before it, so an index
-            // offered for that would be answering about the wrong column.
-            let Some(index) = declared
-                .iter()
-                .find(|index| index.fields.first() == Some(seek.path))
-            else {
-                continue;
-            };
+        for (seek, bound) in seeks.iter().zip(&bounds_of) {
             // An ordered index answers an equality and a prefix; it cannot answer
             // a term, and a search index cannot answer either of the other two.
             // Asking the wrong one would return the wrong rows rather than none.
-            let (served, rows) = match seek.shape {
-                Shape::Equality if !index.search => (
-                    Served::Equality(bound),
-                    // A unique index holds one entry per **whole tuple**, so an
-                    // equality on one produces at most one record only when the
-                    // condition fixes every field. On a composite index this
-                    // fixes the first, and one `last` may have any number of
-                    // `first`s — claiming a ceiling of one there would make the
-                    // planner prefer an index that can return the whole table.
-                    if index.unique && index.fields.len() == 1 {
-                        Rows::AtMost(1)
-                    } else {
-                        Rows::Unknown
-                    },
-                ),
-                Shape::Prefix if !index.search => {
-                    let Value::String(pattern) = &bound else {
+            match seek.shape {
+                Shape::Equality => {
+                    // Once per path rather than once per conjunct: the tuple is
+                    // gathered from the whole condition, so arriving at the same
+                    // path again would re-offer what is already offered.
+                    if !already.insert(seek.path) {
+                        continue;
+                    }
+                    for index in serving(declared, seek.path, false) {
+                        let values = gathered(index, &fixed);
+                        // A unique index holds one entry per **whole tuple**, so
+                        // an equality on one produces at most one record exactly
+                        // when the condition fixes every field. Fixing only some
+                        // of them promises nothing: one `last` may have any
+                        // number of `first`s, and claiming a ceiling there would
+                        // make the planner prefer an index that can return the
+                        // whole table.
+                        let rows = if index.unique && values.len() == index.fields.len() {
+                            Rows::AtMost(1)
+                        } else {
+                            Rows::Unknown
+                        };
+                        offered.push(Candidate {
+                            served: Served::Equality(values),
+                            index: (*index).clone(),
+                            rows,
+                        });
+                    }
+                }
+                Shape::Prefix => {
+                    let Value::String(pattern) = bound else {
                         continue;
                     };
                     let Some(prefix) = literal_prefix(pattern) else {
                         continue;
                     };
-                    (Served::Prefix(prefix), Rows::Unknown)
+                    for index in serving(declared, seek.path, false) {
+                        offered.push(Candidate {
+                            served: Served::Prefix(prefix.clone()),
+                            index: (*index).clone(),
+                            rows: Rows::Unknown,
+                        });
+                    }
                 }
-                Shape::Range if !index.search && index.vector.is_none() => {
+                Shape::Range => {
                     let (lower, upper) = bounds.entry(seek.path).or_default();
                     // The tighter of two bounds in one direction wins; a
                     // condition may say `at > 1 AND at > 5` and mean the second.
@@ -287,17 +412,18 @@ impl Session<'_> {
                     };
                     let tighter = match (&end, &seek.op) {
                         (None, _) => true,
-                        (Some(held), BinaryOp::Greater | BinaryOp::GreaterOrEqual) => bound > *held,
-                        (Some(held), _) => bound < *held,
+                        (Some(held), BinaryOp::Greater | BinaryOp::GreaterOrEqual) => {
+                            *bound > *held
+                        }
+                        (Some(held), _) => *bound < *held,
                     };
                     if tighter {
-                        *end = Some(bound);
+                        *end = Some(bound.clone());
                     }
-                    continue;
                 }
-                Shape::Terms if index.search => {
+                Shape::Terms => {
                     let (Value::String(query), Some(analyzer)) =
-                        (&bound, searched.analyzer(seek.path))
+                        (bound, searched.analyzer(seek.path))
                     else {
                         continue;
                     };
@@ -305,45 +431,47 @@ impl Session<'_> {
                     if terms.is_empty() {
                         continue;
                     }
-                    // The intersection of the postings cannot be larger than the
-                    // smallest of them, and a document frequency is a count of
-                    // keys rather than a set of decoded ids — so this ceiling is
-                    // real and cheap. Were it expensive, a search candidate would
-                    // have to rank by shape like the others.
-                    let mut smallest = u64::MAX;
-                    for term in &terms {
-                        let held = transaction.document_frequency(index, term)?;
-                        smallest = smallest.min(held);
+                    for index in serving(declared, seek.path, true) {
+                        // The intersection of the postings cannot be larger than
+                        // the smallest of them, and a document frequency is a
+                        // count of keys rather than a set of decoded ids — so
+                        // this ceiling is real and cheap. Were it expensive, a
+                        // search candidate would have to rank by shape like the
+                        // others.
+                        let mut smallest = u64::MAX;
+                        for term in &terms {
+                            let held = transaction.document_frequency(index, term)?;
+                            smallest = smallest.min(held);
+                        }
+                        offered.push(Candidate {
+                            served: Served::Terms(terms.clone()),
+                            index: (*index).clone(),
+                            rows: Rows::AtMost(smallest),
+                        });
                     }
-                    (Served::Terms(terms), Rows::AtMost(smallest))
                 }
-                _ => continue,
-            };
-            offered.push(Candidate {
-                served,
-                index: index.clone(),
-                rows,
-            });
+            }
         }
 
         for (path, (lower, upper)) in bounds {
-            // The same rule the equality match follows, and it has to be the
-            // same one: a range over the first field of a composite index is
-            // exactly the reason its fields are in an order.
-            let Some(index) = declared
-                .iter()
-                .find(|index| index.fields.first() == Some(path))
-            else {
-                continue;
-            };
-            offered.push(Candidate {
-                served: Served::Range { lower, upper },
-                index: index.clone(),
-                // A range can be the whole table and its size is not knowable
-                // without doing the read, which is the same answer a prefix
-                // gives.
-                rows: Rows::Unknown,
-            });
+            for index in serving(declared, path, false) {
+                // A vector index holds a distance, not an order over the value,
+                // so a range over it would be a scan wearing an index's name.
+                if index.vector.is_some() {
+                    continue;
+                }
+                offered.push(Candidate {
+                    served: Served::Range {
+                        lower: lower.clone(),
+                        upper: upper.clone(),
+                    },
+                    index: (*index).clone(),
+                    // A range can be the whole table and its size is not knowable
+                    // without doing the read, which is the same answer a prefix
+                    // gives.
+                    rows: Rows::Unknown,
+                });
+            }
         }
         Ok(offered)
     }
@@ -844,6 +972,18 @@ impl Session<'_> {
                             "shape".to_owned(),
                             Value::from(chosen.served.shape().name()),
                         );
+                        // How many of the index's fields the lookup fixes. A
+                        // separate number rather than a second `shape` word,
+                        // because `Shape`'s ordering is the ranking's tie-break
+                        // and a new variant would move plans this is only
+                        // reporting on. Equal to the index's arity is a complete
+                        // lookup — the thing §8 said could not be asked for.
+                        plan.insert(
+                            "columns".to_owned(),
+                            Value::Number(bgv_db_types::Number::Integer(
+                                i64::try_from(chosen.served.fixed()).unwrap_or(i64::MAX),
+                            )),
+                        );
                         if let Rows::AtMost(held) = chosen.rows {
                             plan.insert(
                                 "at_most".to_owned(),
@@ -896,7 +1036,7 @@ mod tests {
 
     fn candidate(name: &str, shape: Shape, rows: Rows) -> Candidate {
         let served = match shape {
-            Shape::Equality => Served::Equality(Value::from("x")),
+            Shape::Equality => Served::Equality(vec![Value::from("x")]),
             Shape::Prefix => Served::Prefix("x".to_owned()),
             Shape::Terms => Served::Terms(vec!["x".to_owned()]),
             Shape::Range => Served::Range {

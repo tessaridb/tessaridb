@@ -913,9 +913,7 @@ impl Session<'_> {
         chosen: &plan::Candidate,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
         match &chosen.served {
-            plan::Served::Equality(bound) => {
-                transaction.records_by_index(&chosen.index, core::slice::from_ref(bound))
-            }
+            plan::Served::Equality(values) => transaction.records_by_index(&chosen.index, values),
             plan::Served::Prefix(prefix) => {
                 transaction.records_with_string_prefix(&chosen.index, prefix)
             }
