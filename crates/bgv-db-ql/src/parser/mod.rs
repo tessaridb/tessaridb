@@ -298,10 +298,21 @@ const ABSENT: &[(&str, &str)] = &[
     ("inner", "a join qualifier — a bare `JOIN` is already inner"),
     ("left", "an outer join"),
     ("having", "filtering groups"),
-    ("offset", "limiting a result"),
-    // `GRANT` and `REVOKE` are built. What is not is a permission on a *field*,
-    // which refuses nothing and edits instead — see §8.
-    ("permissions", "per-field permissions"),
+    // The **spelling** is what is absent, not the feature. `START 5 LIMIT 2`
+    // parses; an entry saying "limiting a result" told an author a built thing
+    // was missing, which is the same failure `search` had and the reason this
+    // table is re-audited rather than trusted (§8 names the spelling, not the
+    // feature).
+    ("offset", "a second spelling for `START`"),
+    // `GRANT` and `REVOKE` are built, **including on fields**:
+    // `GRANT read ON staff FIELDS name, title TO ada` parses. So the absent
+    // thing is the clause, not the capability — §8 lists two narrower absences
+    // (a field grant on a nested route, and one that limits writing) and neither
+    // is what an author writing `PERMISSIONS` is reaching for.
+    (
+        "permissions",
+        "a `PERMISSIONS` clause — field access is granted with `GRANT … FIELDS`",
+    ),
 ];
 
 /// The feature `word` names, when `docs/bgvql.md` §8 leaves it out on purpose.
@@ -369,13 +380,39 @@ mod tests {
             None,
             "vector search is built — `DEFINE INDEX … VECTOR euclidean` and `APPROXIMATE`"
         );
+        // The two the §8 re-audit found (wave 38), pinned the same way and for
+        // the same reason: both told an author that a **built** feature was
+        // missing. `SELECT * FROM t OFFSET 5` answered "limiting a result is
+        // not in this milestone" while `START 5 LIMIT 2` parses; `PERMISSIONS`
+        // answered "per-field permissions" while
+        // `GRANT read ON staff FIELDS name TO ada` parses.
+        assert_ne!(
+            absent_feature("offset"),
+            Some("limiting a result"),
+            "limiting a result is built — `START` and `LIMIT`"
+        );
+        assert_ne!(
+            absent_feature("permissions"),
+            Some("per-field permissions"),
+            "per-field permissions are built — `GRANT … ON … FIELDS … TO …`"
+        );
     }
 
     /// The list still does its job for what really is absent.
+    ///
+    /// The `OFFSET` line used to read `Some("limiting a result")`, and that is
+    /// worth leaving a note about: **the test was holding the wrong message in
+    /// place.** A word naming a built feature survived here precisely because
+    /// something asserted it, and an assertion is as good at preserving a false
+    /// statement as at preventing one. What each line pins now is the *spelling*
+    /// being absent, which is what §8 actually says.
     #[test]
     fn a_word_naming_an_absent_feature_still_names_it() {
         assert_eq!(absent_feature("having"), Some("filtering groups"));
-        assert_eq!(absent_feature("OFFSET"), Some("limiting a result"));
+        assert_eq!(
+            absent_feature("OFFSET"),
+            Some("a second spelling for `START`")
+        );
         assert_eq!(absent_feature("nothing_like_this"), None);
     }
 }
