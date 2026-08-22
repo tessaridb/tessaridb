@@ -715,6 +715,44 @@ pub(crate) fn descending(select: &Select) -> Option<Bounded<'_>> {
     })
 }
 
+/// How many records the source may stop at, when the statement's shape lets a
+/// bound reach it at all (ADR-0013 mechanism 1).
+///
+/// # Why this is a whitelist and never a blacklist
+///
+/// `START` and `LIMIT` are applied last — after the source, the `FETCH`, the
+/// projection and the sort — so a bound handed to the source is only the same
+/// answer when nothing in between changes how many records there are. Two
+/// clauses do:
+///
+/// - a **grouping or a fold** turns many records into one, so the limit counts
+///   groups and cutting the source cuts the grouping's input instead;
+/// - an **ordering the source does not serve** decides which records survive,
+///   so the first *n* found and the first *n* in that order are different sets.
+///
+/// Both failures are a **quietly short answer**: real records, fewer of them,
+/// returned with nothing raised. That asymmetry is why the rule is written as
+/// the shapes that are allowed rather than the shapes that are not — a clause
+/// added to this language later is a missed optimisation under a whitelist and
+/// a silent wrong answer under a blacklist.
+///
+/// `FETCH` is allowed through: it maps one record to one record.
+pub(crate) fn bound(select: &Select) -> Option<usize> {
+    if !select.group.is_empty() || !select.order.is_empty() {
+        return None;
+    }
+    if let Projection::Values(wanted) = &select.projection
+        && crate::aggregate::folds(wanted)
+    {
+        return None;
+    }
+    let limit = select.limit?;
+    // A `START` passes over records the source still has to produce, so it is
+    // part of the bound rather than something applied to it afterwards.
+    let wanted = limit.saturating_add(select.start.unwrap_or(0));
+    Some(usize::try_from(wanted).unwrap_or(usize::MAX))
+}
+
 /// Whether an index's declared distance answers this statement's.
 ///
 /// A graph whose edges were chosen by one measure approximates that measure and

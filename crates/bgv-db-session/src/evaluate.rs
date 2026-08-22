@@ -523,7 +523,19 @@ impl Session<'_> {
                 {
                     return Ok((found, AccessPath::Ordered, searched));
                 }
-                let found = transaction.scan_table(context.namespace, context.database, id)?;
+                // The bound reaches the source here, and only here, because this
+                // is the one arm where the records the source produces are the
+                // records the answer holds. `plan::bound` returns nothing for
+                // every shape where they differ (ADR-0013).
+                let found = match plan::bound(select) {
+                    Some(wanted) => transaction.first_records_of(
+                        context.namespace,
+                        context.database,
+                        id,
+                        wanted,
+                    )?,
+                    None => transaction.scan_table(context.namespace, context.database, id)?,
+                };
                 let visible = self.visible_in(transaction, id)?;
                 Ok((
                     self.records_of(found, &visible)?,
