@@ -12,6 +12,7 @@
 //! it — which is precisely what the marker exists to prevent — so the decimal is
 //! read from the characters the author wrote.
 
+mod assertion;
 mod condition;
 mod expression;
 mod path;

@@ -11,6 +11,8 @@
 #![forbid(unsafe_code)]
 
 mod analyzer;
+mod assertion;
+mod condition;
 mod field_kind;
 mod ids;
 mod number;
@@ -21,6 +23,8 @@ mod time;
 mod value;
 
 pub use analyzer::{Analyzer, Filter};
+pub use assertion::Assertion;
+pub use condition::{BinaryOp, apply};
 pub use field_kind::FieldKind;
 pub use ids::{DatabaseId, FieldId, IndexId, NamespaceId, Sequence, TableId};
 pub use number::Number;

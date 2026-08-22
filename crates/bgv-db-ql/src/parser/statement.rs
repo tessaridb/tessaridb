@@ -373,6 +373,7 @@ impl Parser<'_> {
         let mut required = false;
         let mut default = None;
         let mut analyzer = None;
+        let mut assert = None;
         loop {
             if !required && self.eat_keyword(Keyword::Required) {
                 required = true;
@@ -380,6 +381,11 @@ impl Parser<'_> {
                 default = Some(self.written_expression()?);
             } else if analyzer.is_none() && self.eat_keyword(Keyword::Analyzer) {
                 analyzer = Some(self.name()?);
+            } else if assert.is_none() && self.eat_word("assert") {
+                // Contextual, like `vector` and `fetch`: nothing but this marker
+                // can stand here, and a field called `assert` is not a name to
+                // take away from a table that has one.
+                assert = Some(super::assertion::lower(&self.condition()?)?);
             } else {
                 break;
             }
@@ -391,6 +397,7 @@ impl Parser<'_> {
             required,
             default,
             analyzer,
+            assert,
             if_not_exists,
         })
     }

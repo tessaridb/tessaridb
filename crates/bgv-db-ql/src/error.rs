@@ -242,6 +242,23 @@ pub enum Error {
         span: Span,
     },
 
+    /// An `ASSERT` that is not a constraint the store can check.
+    ///
+    /// An assertion is checked on the store's apply path, where the verdict must
+    /// be a pure function of the record so that a replica reaches the same one.
+    /// So it is a **closed vocabulary** — `$value` compared against a literal,
+    /// combined with `AND`, `OR` and `NOT` — and everything else is refused
+    /// where it is written rather than where it would run.
+    #[error(
+        "an ASSERT compares `$value` against a written value, combined with AND, OR and NOT; \
+         a call, an arithmetic expression, a field or another parameter is not checkable \
+         where validation lives (at {span})"
+    )]
+    AssertionNotAConstraint {
+        /// Where the offending part was written.
+        span: Span,
+    },
+
     /// A `UNIQUE` index over a multi-valued route.
     ///
     /// It has two readings and the store must not pick one silently: *no two
@@ -424,6 +441,7 @@ impl Error {
             | Self::UngroupedProjection { span, .. }
             | Self::StarIsOnlyForCount { span, .. }
             | Self::SeveralOutsideAComparison { span }
+            | Self::AssertionNotAConstraint { span }
             | Self::SeveralInAUniqueIndex { span }
             | Self::SeveralInAnAnalysedIndex { span }
             | Self::SeveralRoutesInOneIndex { span }

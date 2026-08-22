@@ -537,6 +537,44 @@ Four things about it, each stated rather than discovered:
 `REQUIRED` and `DEFAULT` compose, and together they mean "this field always holds
 a value".
 
+**`ASSERT` is what the value must satisfy beyond its type**:
+
+```
+DEFINE FIELD balance ON accounts TYPE int ASSERT $value >= 0;
+DEFINE FIELD age ON people TYPE int ASSERT $value > 0 AND $value < 150;
+DEFINE FIELD status ON orders TYPE string ASSERT $value IN ['new', 'paid'];
+```
+
+`$value` is the value being checked, and it is the **only** parameter an
+assertion may name. That is the `DEFAULT` rule read forwards: a declaration
+belongs to no call, so nothing can bind a parameter in one — and `$value` is the
+exception precisely because the *store* binds it, once per record.
+
+It follows the rules `TYPE` already follows, for the same reasons:
+
+- it constrains a **present, non-null** value, so an absent field and a `null`
+  one pass. `REQUIRED` is the one constraint about absence, and an assertion that
+  also implied presence would make `REQUIRED` mean two things depending on what
+  stood beside it;
+- **declaring one binds the rows already there**: an assertion over data that
+  violates it is refused, writing nothing at all, not even the declaration;
+- a violation **fails the whole commit**, so a transaction never lands half
+  constrained.
+
+An assertion is a **closed vocabulary** — `$value` compared against a written
+value, combined with `AND`, `OR` and `NOT` — and anything outside it is refused
+where it is written. That is not a limit for its own sake. The check runs on the
+store's apply path, where validation has to live so a replica reaches the same
+verdict from the record alone; an arbitrary expression is not a pure function of
+the record (`time::now()` is not, a read is not), so a store holding one would
+have to keep proving that the expression it was given happens to be pure. A
+closed vocabulary is pure, total and cheap by construction.
+
+The comparison an assertion makes is **the same function a `WHERE` makes** —
+literally the same, in a module both sit above — so `ASSERT $value > 0` and
+`WHERE balance > 0` cannot disagree about a value, and a write one node refuses
+cannot be one another node accepts.
+
 ### Searching text
 
 `MATCHES` asks whether text holds a **word**:
@@ -1619,7 +1657,13 @@ out of the denotation rather than being chosen, which is why the row is gone
 rather than answered in place; and a seventh, a **multikey index**, disproved by
 `DEFINE INDEX by_tag ON people FIELDS tags[*]` (§4), which left two narrower rows
 where it stood — the `UNIQUE` reading and the two-route product, each of which is
-a decision somebody has to make rather than work somebody has to do.
+a decision somebody has to make rather than work somebody has to do. An eighth left with this wave: **`ASSERT`**, disproved by
+`DEFINE FIELD balance ON accounts TYPE int ASSERT $value >= 0` (§4). Its row had
+named the constraint correctly and the fix wrongly — "a guard the store calls and
+the session implements" cannot work, because a replica applying a log record has
+no session. What was actually needed was already in the tree: the comparison
+module was **already pure**, and only lived above the store by accident of where
+it was first wanted.
 
 | Absent | Why |
 |---|---|
@@ -1675,7 +1719,8 @@ a decision somebody has to make rather than work somebody has to do.
 | tokens, or a session that outlives a request | a token is a second credential with its own lifetime, revocation and storage |
 | `SIGNIN` as a statement | deliberate, and stated above rather than missing |
 | rate-limiting a signin | Argon2 is slow on purpose, which is most of the defence; a lockout policy has its own decisions about who it locks out |
-| `ASSERT` | it needs an expression **evaluated where validation lives**, and validation lives on the store's apply path so that a replica reaches the same verdict without anything being sent. The store sits below the language and cannot parse or evaluate bgvQL. The fix has a shape — a guard the store calls and the session implements — and inverting the layering is not it. |
+| an **assertion over more than one field** | `ASSERT $value < high` needs a rule for which record the other field is read from, and for what a declaration means when the field it names is declared later or dropped. §4 |
+| a **computed assertion** (`string::len($value) > 3`) | the useful ones are pure, and the vocabulary could take them — but a function set that is pure *today* is a property somebody would have to re-establish every time the set grows, so the door opens with a marked-pure function set rather than by trusting the current one. §4 |
 | changing a declared type in place | `DROP FIELD` then `DEFINE FIELD` re-checks every row through the one path; a migration primitive is its own work |
 
 ## 9. What is fixed here, and what can still move
@@ -1716,6 +1761,10 @@ a decision somebody has to make rather than work somebody has to do.
 | Several terms mean all of them | **contract** |
 | A field with no analyzer holds no terms and matches nothing | **contract** |
 | `REQUIRED` means present and not null | **contract** |
+| `ASSERT` constrains a present, non-null value, and `REQUIRED` is the one constraint about absence | **contract** — otherwise `REQUIRED` would mean two things depending on what stood beside it |
+| An assertion is a closed vocabulary and what falls outside it is refused where it is written | **contract** — validation must stay a pure function of the record, and "happens to be pure" is not a property to re-establish forever |
+| `$value` is the only parameter an assertion may name | **contract** — a declaration belongs to no call, and the store is what binds this one |
+| `ASSERT` and `WHERE` compare by the same function | **contract** — two implementations would eventually make a write one node refuses and another accepts |
 | A default fills only what a write leaves out, and never reaches backwards | **contract** |
 | A default is a value-position expression, checked when it is declared | **contract** |
 | A filter is a condition, and a condition is a boolean | **contract** |

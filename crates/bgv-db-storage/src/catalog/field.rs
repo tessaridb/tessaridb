@@ -13,7 +13,9 @@
 use std::collections::BTreeMap;
 
 use bgv_db_encoding::decode_payload;
-use bgv_db_types::{DatabaseId, FieldId, FieldKind, NamespaceId, RecordId, TableId, Value};
+use bgv_db_types::{
+    Assertion, DatabaseId, FieldId, FieldKind, NamespaceId, RecordId, TableId, Value,
+};
 
 use super::definition::{field_id, field_name, flag, number, object};
 use super::{Catalog, Level, id_key, qualify, system};
@@ -28,6 +30,7 @@ const FIELD_KIND: &str = "kind";
 const FIELD_REQUIRED: &str = "required";
 const FIELD_DEFAULT: &str = "default";
 const FIELD_ANALYZER: &str = "analyzer";
+const FIELD_ASSERT: &str = "assert";
 
 const ENTITY: &str = "field";
 
@@ -47,6 +50,14 @@ pub struct FieldShape {
     /// On the **field** and not on an index, which is the whole design: an
     /// analyzer on an index would let adding one change what a search finds.
     pub analyzer: Option<String>,
+    /// What the value must satisfy beyond its type.
+    ///
+    /// Already lowered, unlike `default`, and the difference says who checks
+    /// each: a default is evaluated by the **session** when a write supplies no
+    /// value, so it can stay as written; an assertion is checked by the
+    /// **store** on its apply path, where nothing can parse bgvQL and where a
+    /// replica has to reach the same verdict from the record alone.
+    pub assert: Option<Assertion>,
 }
 
 /// A declared field on a table.
@@ -85,6 +96,15 @@ pub struct FieldDefinition {
     /// Held by **name** rather than by id, so a dump reads without a second
     /// lookup and so the attachment survives an analyzer being redeclared.
     pub analyzer: Option<String>,
+    /// What the value must satisfy beyond its type.
+    ///
+    /// **Lowered**, unlike `default`, and the contrast says who checks each. A
+    /// default is evaluated by the session before the record is written, so it
+    /// can stay as text. An assertion is checked by the store on its apply path,
+    /// where nothing can parse bgvQL and where a replica must reach the same
+    /// verdict from the record alone — so what is stored is the constraint
+    /// itself rather than the sentence that described it.
+    pub assert: Option<Assertion>,
 }
 
 impl FieldDefinition {
@@ -111,6 +131,12 @@ impl FieldDefinition {
             (
                 FIELD_ANALYZER.to_owned(),
                 self.analyzer.as_deref().map_or(Value::None, Value::from),
+            ),
+            (
+                FIELD_ASSERT.to_owned(),
+                self.assert
+                    .as_ref()
+                    .map_or(Value::None, Assertion::to_value),
             ),
         ]))
     }
@@ -152,7 +178,27 @@ impl FieldDefinition {
             required: flag(fields, FIELD_REQUIRED, ENTITY)?,
             default: optional_text(fields, FIELD_DEFAULT)?,
             analyzer: optional_text(fields, FIELD_ANALYZER)?,
+            assert: optional_assertion(fields)?,
         })
+    }
+}
+
+/// The assertion a definition carries, if it carries one.
+///
+/// A value that is present but describes no assertion is **corruption** rather
+/// than an absent one: it was written by something that knew a constraint this
+/// binary does not, and reading it as "no constraint" would let a write land
+/// that the node which wrote the definition would refuse.
+fn optional_assertion(fields: &BTreeMap<String, Value>) -> Result<Option<Assertion>> {
+    match fields.get(FIELD_ASSERT) {
+        None | Some(Value::None) => Ok(None),
+        Some(held) => Assertion::from_value(held)
+            .map(Some)
+            .ok_or(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_ASSERT,
+                found: held.type_name(),
+            }),
     }
 }
 
@@ -214,6 +260,7 @@ impl Catalog<'_, '_> {
             required: shape.required,
             default: shape.default,
             analyzer: shape.analyzer,
+            assert: shape.assert,
         };
         self.write(system::FIELDS, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
@@ -305,6 +352,7 @@ mod tests {
             kind,
             required: false,
             default: None,
+            assert: None,
             analyzer: None,
         }
     }

@@ -22,10 +22,11 @@ mod parser;
 mod token;
 
 pub use ast::{
-    Aggregate, ArithmeticOp, BinaryOp, Direction, Expr, ExprKind, Field, FieldPath, Hop, Identity,
-    Name, Ordering, Projected, Projection, RangeExpr, RecordTarget, Script, Select, Source,
-    Statement, StatementKind, TableRef, Written,
+    Aggregate, ArithmeticOp, Direction, Expr, ExprKind, Field, FieldPath, Hop, Identity, Name,
+    Ordering, Projected, Projection, RangeExpr, RecordTarget, Script, Select, Source, Statement,
+    StatementKind, TableRef, Written,
 };
+pub use bgv_db_types::BinaryOp;
 pub use bind::Parameters;
 pub use error::{Error, Result};
 pub use function::Function;

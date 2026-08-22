@@ -128,3 +128,44 @@ DEFINE FIELD tier ON ledgers TYPE int DEFAULT 'gold';
 --- case: requiring a field over rows that lack it writes nothing
 DEFINE FIELD nickname ON ledgers TYPE string REQUIRED;
 --- expect: error MissingRequiredField
+
+# `ASSERT` — what a value must satisfy beyond its type. Checked by the store on
+# its apply path, so what the catalog holds is the lowered constraint rather than
+# the sentence that described it, and a replica reaches the same verdict from the
+# record alone.
+
+--- case: a field may demand more than a type
+DEFINE FIELD balance ON ledgers TYPE int ASSERT $value >= 0;
+--- expect: ok
+
+--- case: a value it refuses does not land
+CREATE ledgers:10 = { holder: 'ada', balance: -1 };
+--- expect: error AssertionViolation
+
+--- case: and one it accepts does
+CREATE ledgers:11 = { holder: 'ada', balance: 5 };
+--- expect: ok
+
+--- case: an absent value is not a violation, the way an absent type is not
+CREATE ledgers:12 = { holder: 'grace' };
+--- expect: ok
+
+--- case: a range is two comparisons
+DEFINE FIELD age ON ledgers TYPE int ASSERT $value > 0 AND $value < 150;
+--- expect: ok
+
+--- case: a set of permitted values is one membership
+DEFINE FIELD tier ON ledgers TYPE string ASSERT $value IN ['bronze', 'gold'];
+--- expect: ok
+
+--- case: a call is not checkable where validation lives
+DEFINE FIELD seen ON ledgers TYPE datetime ASSERT $value < time::now();
+--- expect: error AssertionNotAConstraint
+
+--- case: nor is a field of the record
+DEFINE FIELD low ON ledgers TYPE int ASSERT $value < high;
+--- expect: error AssertionNotAConstraint
+
+--- case: nor any parameter but the value being checked
+DEFINE FIELD cap ON ledgers TYPE int ASSERT $limit > 3;
+--- expect: error AssertionNotAConstraint

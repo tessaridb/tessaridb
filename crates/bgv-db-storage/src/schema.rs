@@ -60,7 +60,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bgv_db_encoding::{LogRecord, RecordValue, decode_payload};
-use bgv_db_types::{DatabaseId, FieldKind, NamespaceId, RecordId, TableId, Value};
+use bgv_db_types::{Assertion, DatabaseId, FieldKind, NamespaceId, RecordId, TableId, Value};
 
 use crate::catalog::{Catalog, CatalogChange, catalog_change};
 use crate::error::{Error, Result};
@@ -88,12 +88,18 @@ impl TableSchema {
 }
 
 /// What one declaration constrains.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Declared {
     /// What the field may hold when it holds anything.
     kind: FieldKind,
     /// Whether it must hold something: present, and not `null`.
     required: bool,
+    /// What it must satisfy beyond its type, when it holds anything.
+    ///
+    /// Already lowered by the language, so checking it here is a comparison and
+    /// not an evaluation — which is what lets validation stay a pure function of
+    /// the record and the catalog.
+    assert: Option<Assertion>,
 }
 
 /// A table addressed the way a scan needs it.
@@ -181,6 +187,24 @@ fn check(schema: &TableSchema, value: &Value, table: TableId, id: &RecordId) -> 
                     found: held.type_name(),
                 });
             }
+            // An assertion constrains a **present, non-null** value, exactly as
+            // a kind does. `REQUIRED` is the one constraint about absence, and an
+            // assertion that also implied presence would make `REQUIRED` mean
+            // two things depending on what stood beside it.
+            Some(declared)
+                if held.is_present()
+                    && *held != Value::Null
+                    && declared
+                        .assert
+                        .as_ref()
+                        .is_some_and(|assertion| !assertion.holds(held)) =>
+            {
+                return Err(Error::AssertionViolation {
+                    table: table.get(),
+                    record: id.to_string(),
+                    field: name.clone(),
+                });
+            }
             Some(_) => {}
             None if schema.schemafull => {
                 return Err(Error::UndeclaredField {
@@ -232,6 +256,7 @@ fn build_schema(
                 Declared {
                     kind: declared.kind,
                     required: declared.required,
+                    assert: declared.assert.clone(),
                 },
             )
         })
@@ -248,6 +273,7 @@ fn build_schema(
                     Declared {
                         kind: declared.kind,
                         required: declared.required,
+                        assert: declared.assert.clone(),
                     },
                 );
             }

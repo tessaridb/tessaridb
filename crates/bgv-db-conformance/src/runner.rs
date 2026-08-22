@@ -244,6 +244,7 @@ fn script_kind(error: &bgv_db_ql::Error) -> &'static str {
         bgv_db_ql::Error::UngroupedProjection { .. } => "UngroupedProjection",
         bgv_db_ql::Error::StarIsOnlyForCount { .. } => "StarIsOnlyForCount",
         bgv_db_ql::Error::SeveralOutsideAComparison { .. } => "SeveralOutsideAComparison",
+        bgv_db_ql::Error::AssertionNotAConstraint { .. } => "AssertionNotAConstraint",
         bgv_db_ql::Error::SeveralInAUniqueIndex { .. } => "SeveralInAUniqueIndex",
         bgv_db_ql::Error::SeveralInAnAnalysedIndex { .. } => "SeveralInAnAnalysedIndex",
         bgv_db_ql::Error::SeveralRoutesInOneIndex { .. } => "SeveralRoutesInOneIndex",
@@ -263,6 +264,7 @@ fn store_kind(error: &bgv_db_storage::Error) -> &'static str {
         bgv_db_storage::Error::SchemaViolation { .. } => "SchemaViolation",
         bgv_db_storage::Error::UndeclaredField { .. } => "UndeclaredField",
         bgv_db_storage::Error::MissingRequiredField { .. } => "MissingRequiredField",
+        bgv_db_storage::Error::AssertionViolation { .. } => "AssertionViolation",
         bgv_db_storage::Error::NoSuchParent { .. } => "NoSuchParent",
         _ => "Unnamed",
     }

@@ -13,12 +13,14 @@ use bgv_db_ql::{
     Select, Source, Span, TableRef,
 };
 use bgv_db_storage::{Catalog, RecordAddress, Transaction};
-use bgv_db_types::{Analyzer, Number, Path, RecordId, RecordRef, TableId, Value, ValueRange};
+use bgv_db_types::{
+    Analyzer, Number, Path, RecordId, RecordRef, TableId, Value, ValueRange, apply,
+};
 
 use crate::aggregate::folds;
 use crate::arithmetic::{arithmetic, negate};
 use crate::call::call;
-use crate::condition::{apply, boolean};
+use crate::condition::boolean;
 use crate::error::{Error, Result};
 use crate::outcome::AccessPath;
 use crate::plan;

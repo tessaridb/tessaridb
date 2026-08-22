@@ -119,6 +119,21 @@ pub enum Error {
         found: &'static str,
     },
 
+    /// A value its field's declaration refuses.
+    ///
+    /// Checked on the apply path beside the type check, and for the same reason:
+    /// the verdict is a pure function of the record and the catalog, so every
+    /// replica reaches it without anything being sent.
+    #[error("record {record} of table {table} holds a {field} its declaration refuses")]
+    AssertionViolation {
+        /// The table whose declaration was violated.
+        table: u32,
+        /// The record that was being written.
+        record: String,
+        /// The field that disagreed.
+        field: String,
+    },
+
     /// A required field that holds nothing.
     ///
     /// "Required" covers both absence and `null`, deliberately: a field that
@@ -208,6 +223,7 @@ impl Error {
             | Self::NoSuchParent { .. }
             | Self::EmptyIndex { .. }
             | Self::UniqueViolation { .. }
+            | Self::AssertionViolation { .. }
             | Self::SchemaViolation { .. }
             | Self::MissingRequiredField { .. }
             | Self::UndeclaredField { .. }

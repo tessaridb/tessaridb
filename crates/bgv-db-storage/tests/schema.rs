@@ -13,7 +13,10 @@ use std::sync::Arc;
 use bgv_db_encoding::encode_payload;
 use bgv_db_kv::{KvBackend, MemoryBackend};
 use bgv_db_storage::{Catalog, Error, FieldShape, RecordAddress, Store, TableShape};
-use bgv_db_types::{DatabaseId, FieldKind, NamespaceId, RecordId, Sequence, TableId, Value};
+use bgv_db_types::{
+    Assertion, BinaryOp, DatabaseId, FieldKind, NamespaceId, Number, RecordId, Sequence, TableId,
+    Value,
+};
 
 struct Fixture {
     store: Store,
@@ -83,6 +86,21 @@ impl Fixture {
                 required: true,
                 default: None,
                 analyzer: None,
+                assert: None,
+            },
+        )?;
+        transaction.commit()
+    }
+
+    fn constrain(&self, name: &str, kind: FieldKind, assert: Assertion) -> Result<Sequence, Error> {
+        let mut transaction = self.store.begin().unwrap();
+        Catalog::new(&mut transaction).create_field(
+            self.table,
+            name,
+            kind,
+            FieldShape {
+                assert: Some(assert),
+                ..FieldShape::default()
             },
         )?;
         transaction.commit()
@@ -516,5 +534,90 @@ fn a_replica_reaches_the_same_verdict_about_a_required_field() {
             .log_records(Sequence::ZERO, 1024)
             .unwrap()
             .len()
+    );
+}
+
+/// `$value >= 0`, the constraint every assertion test below uses.
+fn not_negative() -> Assertion {
+    Assertion::Compare {
+        op: BinaryOp::GreaterOrEqual,
+        against: Value::Number(Number::Integer(0)),
+    }
+}
+
+#[test]
+fn a_value_the_declaration_refuses_never_lands() {
+    let fixture = Fixture::new(false);
+    fixture
+        .constrain("balance", FieldKind::Int, not_negative())
+        .unwrap();
+    fixture
+        .write("a", &[("balance", Value::Number(Number::Integer(1)))])
+        .unwrap();
+    let refused = fixture.write("b", &[("balance", Value::Number(Number::Integer(-1)))]);
+    assert!(
+        matches!(refused, Err(Error::AssertionViolation { .. })),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn an_assertion_constrains_a_present_non_null_value_and_nothing_else() {
+    // The same rule a kind follows. `REQUIRED` is the one constraint about
+    // absence, and an assertion that also implied presence would make `REQUIRED`
+    // mean two things depending on what stood beside it.
+    let fixture = Fixture::new(false);
+    fixture
+        .constrain("balance", FieldKind::Int, not_negative())
+        .unwrap();
+    fixture.write("a", &[("other", Value::from("x"))]).unwrap();
+    fixture.write("b", &[("balance", Value::Null)]).unwrap();
+}
+
+#[test]
+fn declaring_one_over_rows_that_break_it_is_refused_and_writes_nothing() {
+    let fixture = Fixture::new(false);
+    fixture
+        .write("a", &[("balance", Value::Number(Number::Integer(-5)))])
+        .unwrap();
+    let refused = fixture.constrain("balance", FieldKind::Int, not_negative());
+    assert!(
+        matches!(refused, Err(Error::AssertionViolation { .. })),
+        "{refused:?}"
+    );
+    assert!(
+        fixture.declared("balance").is_none(),
+        "a refused declaration left itself behind"
+    );
+}
+
+#[test]
+fn a_replica_reaches_the_same_verdict_because_the_constraint_is_in_the_log() {
+    // The reason the check lives here rather than in the session: the catalog is
+    // itself in the log, so a replica that has applied the log holds the
+    // constraint and refuses the same write — with nothing sent to tell it to.
+    let fixture = Fixture::new(false);
+    fixture
+        .constrain("balance", FieldKind::Int, not_negative())
+        .unwrap();
+    fixture
+        .write("a", &[("balance", Value::Number(Number::Integer(7)))])
+        .unwrap();
+
+    let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    for (sequence, record) in fixture.store.log_records(Sequence::ZERO, 1_000).unwrap() {
+        replica.apply_record(sequence, &record).unwrap();
+    }
+
+    let mut transaction = replica.begin().unwrap();
+    transaction.put(
+        fixture.at("b"),
+        encode_payload(&record(&[("balance", Value::Number(Number::Integer(-1)))])).into_bytes(),
+    );
+    let refused = transaction.commit();
+    assert!(
+        matches!(refused, Err(Error::AssertionViolation { .. })),
+        "the replica did not learn the constraint: {refused:?}"
     );
 }

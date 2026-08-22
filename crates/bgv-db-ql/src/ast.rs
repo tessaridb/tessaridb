@@ -20,7 +20,7 @@
 //!
 //! [`TableId`]: bgv_db_types::TableId
 
-use bgv_db_types::{FieldKind, Filter, Path, RecordId, Value};
+use bgv_db_types::{Assertion, FieldKind, Filter, Path, RecordId, Value};
 
 use crate::function::Function;
 use crate::token::Span;
@@ -140,6 +140,12 @@ pub enum StatementKind {
         /// filling in — which would be a rule about evaluation order nobody
         /// would guess.
         default: Option<Written>,
+        /// What the value must satisfy, beyond its type.
+        ///
+        /// Already lowered, because the **store** checks it: an assertion is a
+        /// closed constraint rather than an expression, so nothing below the
+        /// language has to evaluate bgvQL to enforce a schema.
+        assert: Option<Assertion>,
         /// Whether re-declaring an existing name is accepted.
         if_not_exists: bool,
     },
@@ -570,69 +576,7 @@ impl ArithmeticOp {
     }
 }
 
-/// An operator taking two values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinaryOp {
-    /// `=` — the two values are the same value.
-    Equal,
-    /// `!=` — they are not.
-    NotEqual,
-    /// `<` — below, in the value system's declared order across types.
-    Less,
-    /// `<=` — below or the same.
-    LessOrEqual,
-    /// `>` — above.
-    Greater,
-    /// `>=` — above or the same.
-    GreaterOrEqual,
-    /// `IN` — the collection on the **right** holds the value on the left.
-    ///
-    /// The mirror of [`BinaryOp::Contains`], and both exist because both read
-    /// naturally in different sentences: `'urgent' IN tags` and
-    /// `tags CONTAINS 'urgent'` ask the same question from either end.
-    In,
-    /// `CONTAINS` — the collection on the **left** holds the value on the right.
-    ///
-    /// Membership, not substring — a different question from [`BinaryOp::Like`],
-    /// which is why both exist. `tags CONTAINS 'urgent'` asks whether an array
-    /// or a set holds that element; `body LIKE '%urgent%'` asks whether text
-    /// contains those characters.
-    Contains,
-    /// `LIKE` — the text matches a pattern, as SQL's `LIKE` does.
-    ///
-    /// The pattern covers the **whole** value — which is why a substring search
-    /// is written `'%text%'` — with `%` standing for any run of characters and
-    /// `_` for exactly one.
-    Like,
-    /// The same, ignoring case.
-    Ilike,
-    /// `MATCHES` — the analyzed text holds every term of the query.
-    ///
-    /// A third question, not a special case of the other two: `LIKE` is a
-    /// pattern over the whole value and `CONTAINS` is membership in a
-    /// collection, and neither can ask whether text holds a *word*.
-    Matches,
-}
-
-impl BinaryOp {
-    /// How the operator is written.
-    #[must_use]
-    pub const fn spelling(self) -> &'static str {
-        match self {
-            Self::Equal => "=",
-            Self::NotEqual => "!=",
-            Self::Less => "<",
-            Self::LessOrEqual => "<=",
-            Self::Greater => ">",
-            Self::GreaterOrEqual => ">=",
-            Self::In => "IN",
-            Self::Contains => "CONTAINS",
-            Self::Like => "LIKE",
-            Self::Ilike => "ILIKE",
-            Self::Matches => "MATCHES",
-        }
-    }
-}
+pub use bgv_db_types::BinaryOp;
 
 /// A value written in the source.
 #[derive(Debug, Clone, PartialEq, Eq)]

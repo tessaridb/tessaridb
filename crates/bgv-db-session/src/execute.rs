@@ -66,6 +66,7 @@ impl Session<'_> {
                 required,
                 default,
                 analyzer,
+                assert,
                 if_not_exists,
             } => self.define_field(
                 transaction,
@@ -76,6 +77,7 @@ impl Session<'_> {
                     required: *required,
                     default: default.as_ref().map(|written| written.text.clone()),
                     analyzer: analyzer.as_ref().map(|named| named.text.clone()),
+                    assert: assert.clone(),
                 },
                 *if_not_exists,
             ),
