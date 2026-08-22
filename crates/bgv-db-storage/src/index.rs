@@ -281,7 +281,7 @@ fn build(
     // genuine duplicate still collides.
     let mut claimed = BTreeSet::new();
     for (id, payload) in &rows {
-        if let Some(values) = project(definition, &decode_payload(payload)?) {
+        for values in project(definition, &decode_payload(payload)?) {
             batch = insert(
                 store,
                 batch,
@@ -400,18 +400,25 @@ fn apply_one(
         return Ok(batch);
     }
 
-    // The old entry goes first: a record whose indexed value changed must not
+    // The old entries go first: a record whose indexed value changed must not
     // leave the entry that pointed at its former value behind, and an entry
     // nothing will ever reconcile is the failure mode secondary indexes are
     // known for.
+    //
+    // With a multi-valued route there is one entry per element, so removing an
+    // element has to remove **exactly its own** entry and no other. That holds
+    // because both sides enumerate with the same function: the old record's
+    // entries are deleted and the new record's are written, and the elements the
+    // record kept are written back under the keys they already had. A remove that
+    // reasoned about *what changed* instead is where the orphan would come from.
     if let Some(bytes) = previous {
-        if let Some(values) = project(definition, &decode_payload(bytes)?) {
+        for values in project(definition, &decode_payload(bytes)?) {
             batch = remove(batch, definition, &address, &values, &mutation.id);
         }
     }
 
     if let RecordValue::Present(payload) = &mutation.value {
-        if let Some(values) = project(definition, &decode_payload(payload)?) {
+        for values in project(definition, &decode_payload(payload)?) {
             batch = insert(
                 store,
                 batch,
@@ -660,24 +667,60 @@ fn shift(count: u64, delta: i64) -> u64 {
     }
 }
 
-/// The indexed values of one record, or `None` when the record is not indexed.
+/// The entries one record contributes to an index — none, one, or several.
 ///
-/// A record that is not an object has nothing to project, and a record where one
-/// of the indexed paths reaches nothing has no value to place — both mean "not
-/// in this index" rather than "indexed under nothing".
+/// An empty answer means "not in this index" rather than "indexed under
+/// nothing": a record that is not an object has nothing to project, and a record
+/// where one of the indexed routes reaches nothing has no value to place.
 ///
-/// A path reaching nothing covers more ground than a missing field did: a
+/// A route reaching nothing covers more ground than a missing field did: a
 /// missing intermediate, an object addressed by position, an array addressed by
 /// name. All of them are the same answer, and it is the same answer a missing
 /// top-level field has always given, which is what lets documents of differing
 /// shapes share a table without the index having an opinion about it.
-pub(crate) fn project(definition: &IndexDefinition, value: &Value) -> Option<IndexValues> {
-    let mut projected = Vec::with_capacity(definition.fields.len());
+///
+/// # Several, and why the general shape is the simpler one to be right about
+///
+/// A route holding `[*]` reaches several values, and the record contributes one
+/// entry per value — which is what a multikey index *is*. Written as a product
+/// over the routes, so a route with no `[*]` contributes exactly the one value it
+/// contributes today and the composite case needs no second rule. `DEFINE INDEX`
+/// admits at most one multi-valued route, so the product never actually
+/// multiplies; the code does not need to know that, and a version that did would
+/// be longer and would have a branch nothing exercises.
+///
+/// Entries are **deduplicated**, so `tags: ['dup', 'dup']` is one entry rather
+/// than an entry written twice. The batch would make that idempotent anyway; the
+/// point is that the remove side runs this same function, and two sides that
+/// agree by construction cannot leave an orphan behind.
+pub(crate) fn project(definition: &IndexDefinition, value: &Value) -> Vec<IndexValues> {
+    let mut rows: Vec<Vec<Value>> = vec![Vec::with_capacity(definition.fields.len())];
     for path in &definition.fields {
-        match path.resolve(value) {
-            Some(Value::None) | None => return None,
-            Some(found) => projected.push(found.clone()),
+        let reached: Vec<&Value> = if path.is_several() {
+            path.reach(value)
+        } else {
+            match path.resolve(value) {
+                Some(Value::None) | None => return Vec::new(),
+                Some(found) => vec![found],
+            }
+        };
+        if reached.is_empty() {
+            return Vec::new();
         }
+        rows = rows
+            .iter()
+            .flat_map(|held| {
+                reached.iter().map(|found| {
+                    let mut next = held.clone();
+                    next.push((*found).clone());
+                    next
+                })
+            })
+            .collect();
     }
-    Some(IndexValues::of(&projected))
+    rows.iter()
+        .map(|held| IndexValues::of(held))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }

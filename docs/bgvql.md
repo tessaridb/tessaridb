@@ -203,7 +203,7 @@ three:
 |---|---|
 | a comparison | holds when **any** of the reached values satisfies it |
 | a projection | answers with **all** of them |
-| an index | would keep one entry per element — **not built**, see §8 |
+| an index | keeps **one entry per** element — a multikey index, §4 |
 
 ```
 SELECT tags[*] AS all_tags FROM people;
@@ -229,16 +229,17 @@ value*, and this one has one.
 over the collected values, or the function applied to each of them — and a
 language that picks one silently teaches the other by surprise.
 
-The third context is refused **by name** rather than half-built, and so is every
-position that is not a context at all: a `[*]` in an ordering, a group key, a
-function's argument, a `FETCH` route or an index's fields is an error that says
-`[*]` is what it does not yet handle.
+Every position that is **not** one of the three contexts is refused by name: a
+`[*]` in an ordering, a group key, a function's argument, a `FETCH` route or on
+the right of a comparison is an error that says `[*]` is what it does not handle.
 
-**No index serves a comparison over several.** An ordinary index over `tags`
-holds one entry for the whole array, so answering `tags[*] = 'urgent'` from it
-would answer a question about elements with an answer about arrays — and an index
-in this store changes what a read costs and never what it answers. Such a read
-takes the scan and the access path says so.
+**`tags` and `tags[*]` are different routes, and an index is matched to a
+condition by exact route equality.** An ordinary index over `tags` holds one
+entry for the whole array, so it is never offered for a question about elements —
+it would answer that question with an answer about arrays, and an index in this
+store changes what a read costs and never what it answers. A condition over
+elements takes the scan until a **multikey** index (§4) exists on the same route,
+and the access path says which it took.
 
 **A single value is not an array of one.** `tags[*]` over a record holding
 `tags: 'urgent'` reaches nothing. That is the rule `CONTAINS` already follows,
@@ -269,6 +270,7 @@ DEFINE SPACE sessions;
 DEFINE INDEX by_email ON users FIELDS email UNIQUE;
 DEFINE INDEX by_name ON users FIELDS last, first;
 DEFINE INDEX by_home_city ON users FIELDS address.city;
+DEFINE INDEX by_tag ON users FIELDS tags[*];
 
 DEFINE TABLE accounts SCHEMAFULL;
 DEFINE TABLE follows EDGE;
@@ -402,6 +404,23 @@ refused, and the refusal writes nothing at all, not even the definition.
 
 There is no separate backfill to remember, because an index that is visible and
 empty would answer a query with *fewer* records and raise nothing.
+
+**An index over a route holding `[*]` is a multikey index**: a record contributes
+**one entry per value the route reaches**, so `DEFINE INDEX by_tag ON notes
+FIELDS tags[*]` is what lets `WHERE tags[*] = 'urgent'` be an index read instead
+of a scan. An element added to an array gains an entry, an element removed takes
+exactly its own entry with it, and a repeated element is one entry rather than
+two. A route with no `[*]` is unchanged, and may sit beside one that has it —
+`FIELDS tags[*], city` keeps one entry per tag per record.
+
+Three shapes are refused, each because it has no single meaning rather than
+because it is hard:
+
+| Refused | Why |
+|---|---|
+| `FIELDS tags[*] UNIQUE` | it could mean *no two records share an element* or *a record's own elements are distinct*. They refuse different writes, so a caller who meant one and got the other finds out from a rejected write months later |
+| `FIELDS tags[*] SEARCH` or `VECTOR` | both already decide their own multiplicity — a search index makes as many postings as the text has terms, and a vector index needs exactly one vector per record to place a node |
+| `FIELDS tags[*], aliases[*]` | the entries would be one per *pair* of elements, paid on every write, and "one entry per element" stops having one meaning when there are two sets of elements to be per |
 
 The cost is stated rather than hidden: defining an index reads the whole table
 inside the commit. On a table large enough that the pass outlasts the gap between
@@ -1594,10 +1613,13 @@ has churned**, disproved by `REBUILD INDEX by_embedding ON notes` (§4); a fourt
 `SELECT * FROM users:1->follows->users->follows->users` (§4a) — which left three
 narrower rows behind it, because building the half that was asked for showed
 exactly what the other half would take; and a sixth, a **projection over `[*]`**,
-disproved by `SELECT tags[*] AS all_tags FROM people` (§3). That last row asked
-what an empty reach projects and treated it as an open question; the answer fell
+disproved by `SELECT tags[*] AS all_tags FROM people` (§3) — that row asked what
+an empty reach projects and treated it as an open question, and the answer fell
 out of the denotation rather than being chosen, which is why the row is gone
-rather than answered in place.
+rather than answered in place; and a seventh, a **multikey index**, disproved by
+`DEFINE INDEX by_tag ON people FIELDS tags[*]` (§4), which left two narrower rows
+where it stood — the `UNIQUE` reading and the two-route product, each of which is
+a decision somebody has to make rather than work somebody has to do.
 
 | Absent | Why |
 |---|---|
@@ -1630,7 +1652,8 @@ rather than answered in place.
 | highlighting, fuzzy matching, phrase and proximity queries | each needs postings to carry more than membership — offsets for a highlight or a phrase, an edit automaton for fuzziness — which is a different index rather than a bigger one. Ranking itself is built: see [Ranking](#ranking) |
 | per-index `k1` / `b`, per-field weighting | tuning knobs nobody can yet turn responsibly: this project has no labelled relevance set to measure a different value against, and a knob chosen without one is a guess with a syntax |
 | a **function applied to each reached value** | `array::len(tags[*])` is refused because it has two answers — the function over the collected values, or the function applied to each of them. The second is a mapping operator and deserves its own spelling rather than being what a parenthesis happens to mean. §3 |
-| a **multikey index** over `[*]` | one record produces several entries, so "remove the entry for the value it replaced" becomes "remove the entries", and an element leaving an array must remove exactly its own. `UNIQUE` over one is a second question — no two records sharing an element, or a record's own elements being distinct — and is refused until it is answered. §3 |
+| a **`UNIQUE` multikey index** | two readings — no two records sharing an element, or a record's own elements being distinct — which refuse different writes. It needs a spelling that says which, not a default. §4 |
+| a **multikey index over two multi-valued routes** | the entries would be one per pair of elements, paid on every write. Worth building when somebody has the query that needs it, so the cost is paid for a reason. §4 |
 | `[*]` on the right of a comparison, or twice in one route | the first is the same question written backwards, and a second spelling for one thing is what this language keeps refusing; the second composes two relations and needs a rule for what that means |
 | declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
 | `HAVING` | a filter over groups is a second filter position with its own scoping rule — it sees folds where `WHERE` does not — and is worth its own milestone rather than an afterthought. A fold written in a `WHERE` is refused by name rather than as a stray token, so the message says which of the two the author wanted |
@@ -1716,6 +1739,9 @@ rather than answered in place.
 | A projection over several answers with all of them, in route order, duplicates kept | **contract** — a projection collects; deduplicating or sorting is a different statement |
 | A projection over several always answers, and an empty reach answers `[]` | **contract** — a relation is total, so zero values is an empty collection rather than an absence; an empty array, an absent field and a single value therefore answer alike |
 | `[*]` stands as a whole projected value and not inside a larger expression | **contract** — the alternative has two readings and picking one silently teaches the other by surprise |
+| An index over `[*]` keeps one entry per reached value, and a repeated element is one entry | **contract** — what a multikey index *is* |
+| `tags` and `tags[*]` are different routes, and an index is matched by exact route equality | **contract** — the matching rule is what keeps a whole-array index from answering a question about elements |
+| A record answers once however many of its elements match | **contract** — answers are keyed by record, so twice is wrong rather than verbose |
 | A build is authoritative, so `REBUILD INDEX` is `DEFINE INDEX` run again | **contract** — an index's entries are made to *be* what the rows imply rather than added to what is there, which is why a rebuild needs no second path and no log shape of its own |
 | A rebuild is a statement, never the store's own decision | **contract** — replicas that each rebuilt on their own reckoning would answer one approximate question differently, and differ in silence |
 | A rebuilt index is a function of the rows, not of the order they arrived in | **contract** — the rows are read in record-id order, so two replicas that received them differently still agree |

@@ -229,14 +229,6 @@ impl Parser<'_> {
         while self.eat_punct(Punct::Comma) {
             fields.push(self.field_path()?);
         }
-        // An index over `tags[*]` is a **multikey** index — one entry per
-        // element, with a rule of its own for removing the entries an element
-        // leaves behind. Refused until that rule exists, because an ordinary
-        // index over the same field holds one entry for the whole array and
-        // would answer a question about elements with an answer about arrays.
-        for field in &fields {
-            super::shape::no_several_path(field)?;
-        }
         // **One** marker, and the third is why this changed. `UNIQUE` says how
         // entries collide, `SEARCH` says the entries are terms, `VECTOR` says
         // they are a graph — three different index kinds wearing three flags, of
@@ -269,6 +261,25 @@ impl Parser<'_> {
                 return Err(self.error_here("one index kind, not two"));
             }
             kind = Some(held);
+        }
+        // An index over `tags[*]` is a **multikey** index: one entry per element
+        // rather than one per record. Three shapes are refused, each naming its
+        // own reason — a caller told "unexpected token" would go looking for a
+        // typo in a statement that has none.
+        let mut several = fields.iter().filter(|field| field.path.is_several());
+        if let Some(field) = several.next() {
+            match &kind {
+                Some(Marker::Unique) => {
+                    return Err(Error::SeveralInAUniqueIndex { span: field.span });
+                }
+                Some(Marker::Search | Marker::Vector(_)) => {
+                    return Err(Error::SeveralInAnAnalysedIndex { span: field.span });
+                }
+                None => {}
+            }
+            if let Some(second) = several.next() {
+                return Err(Error::SeveralRoutesInOneIndex { span: second.span });
+            }
         }
         Ok(StatementKind::DefineIndex {
             name,

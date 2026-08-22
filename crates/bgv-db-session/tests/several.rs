@@ -1,13 +1,14 @@
 //! `[*]` — a route that reaches several values.
 //!
 //! The step that turns a path from a **function** into a **relation**. What a
-//! context does with several values is the context's own rule, and two of the
-//! three contexts are built: a comparison holds when **any** reached value
-//! satisfies it, and a projection answers with **all** of them. An index over
-//! several is its own task and is refused by name here rather than half-built —
-//! so a good part of this file is about where `[*]` may *not* stand, which is
-//! the part that would otherwise be discovered by somebody getting a wrong
-//! answer.
+//! context does with several values is the context's own rule, and all three
+//! have one: a comparison holds when **any** reached value satisfies it, a
+//! projection answers with **all** of them, and an index keeps **one entry per**
+//! element. The first two are here; the index has a file of its own
+//! (`multikey.rs`) because it is the one with a storage consequence.
+//!
+//! A good part of this file is about where `[*]` may *not* stand, which is the
+//! part that would otherwise be discovered by somebody getting a wrong answer.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
@@ -206,17 +207,14 @@ fn no_index_serves_a_condition_over_several() {
 }
 
 #[test]
-fn every_position_without_a_rule_yet_is_refused_by_name() {
-    // Half-building the remaining context would be worse than refusing it: an
-    // index over several would answer a question about elements with an answer
-    // about arrays. The same holds for the positions that are not a context at
-    // all — a key, an ordering, a function argument. Each refusal names `[*]`
-    // rather than reporting a stray token.
+fn every_position_without_a_rule_is_refused_by_name() {
+    // All three contexts now have a rule. What is left are the positions that
+    // are not a context at all, and each refusal names `[*]` rather than
+    // reporting a stray token — a caller told "unexpected token" would go
+    // looking for a typo in a statement that has none.
     let store = store();
     let mut session = ready(&store);
     for script in [
-        // An index: SGJ.T3.
-        "DEFINE INDEX by_tag ON notes FIELDS tags[*];",
         // A key and an ordering: both are per record and neither has a rule.
         "SELECT tags[*] AS t, count(*) AS n FROM notes GROUP BY tags[*];",
         "SELECT * FROM notes ORDER BY tags[*];",

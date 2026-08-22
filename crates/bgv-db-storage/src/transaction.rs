@@ -616,12 +616,13 @@ impl<'a> Transaction<'a> {
             return Ok(None);
         };
         let value = decode_payload(&payload)?;
-        let Some(values) = crate::index::project(index, &value) else {
-            return Ok(None);
-        };
-        if values
-            .as_slice()
-            .starts_with(&IndexValues::string_prefix(prefix))
+        let wanted = IndexValues::string_prefix(prefix);
+        // **Any** of the record's entries, because a multi-valued route gives it
+        // several: the question is whether this record belongs in the answer, and
+        // one entry beginning with the prefix is what makes it belong.
+        if crate::index::project(index, &value)
+            .iter()
+            .any(|values| values.as_slice().starts_with(&wanted))
         {
             return Ok(Some(payload));
         }
@@ -671,7 +672,11 @@ impl<'a> Transaction<'a> {
             return Ok(None);
         };
         let value = decode_payload(&payload)?;
-        if crate::index::project(index, &value).as_ref() == Some(wanted) {
+        // The confirmation is what makes an index unable to change an answer: an
+        // entry is a claim about a record, and this asks the record. With a
+        // multi-valued route a record has several entries, so the claim to
+        // confirm is that `wanted` is **among** them.
+        if crate::index::project(index, &value).contains(wanted) {
             return Ok(Some(payload));
         }
         Ok(None)

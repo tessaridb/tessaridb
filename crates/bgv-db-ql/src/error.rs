@@ -226,19 +226,63 @@ pub enum Error {
         span: Span,
     },
 
-    /// `[*]` written where several values have no rule yet.
+    /// `[*]` written where several values have no rule.
     ///
     /// A route holding `[*]` denotes the values it reaches rather than a value,
     /// and each context needs its own rule for what to do with several: a
-    /// comparison holds when any of them satisfies it, a projection would answer
-    /// with all of them, an index would keep one entry per element. Only the
-    /// first is built, so the others are refused **by name** — half-building
-    /// them would answer a question about elements with an answer about arrays.
-    #[error(
-        "`[*]` reaches several values, and only a comparison can ask about several yet (at {span})"
-    )]
+    /// comparison holds when any of them satisfies it, a projection answers with
+    /// all of them, an index keeps one entry per element. Everywhere else — a
+    /// group key, an ordering, a function's argument, a `FETCH` route, either
+    /// side of a comparison but the left — is refused **by name**, because
+    /// half-building one would answer a question about elements with an answer
+    /// about arrays.
+    #[error("`[*]` reaches several values, and nothing here has a rule for several (at {span})")]
     SeveralOutsideAComparison {
         /// Where the route was written.
+        span: Span,
+    },
+
+    /// A `UNIQUE` index over a multi-valued route.
+    ///
+    /// It has two readings and the store must not pick one silently: *no two
+    /// records share an element*, or *a record's own elements are distinct*.
+    /// They refuse different writes, so a caller who meant one and got the other
+    /// finds out from a rejected write months later.
+    #[error(
+        "a UNIQUE index over `[*]` could mean no two records share an element or that \
+         a record's own elements are distinct, and this store will not pick one (at {span})"
+    )]
+    SeveralInAUniqueIndex {
+        /// Where the route was written.
+        span: Span,
+    },
+
+    /// A `SEARCH` or vector index over a multi-valued route.
+    ///
+    /// Both already decide their own multiplicity — a search index turns text
+    /// into as many postings as it has terms, and a vector index needs exactly
+    /// one vector per record to place a node in its graph. `[*]` on top of that
+    /// is a second multiplicity with no stated rule.
+    #[error(
+        "a SEARCH or VECTOR index decides its own multiplicity, so `[*]` has no meaning \
+         in one (at {span})"
+    )]
+    SeveralInAnAnalysedIndex {
+        /// Where the route was written.
+        span: Span,
+    },
+
+    /// More than one multi-valued route in one index.
+    ///
+    /// The entries would be the product of the two reaches — one per pair — paid
+    /// on every write to the record, and "one entry per element" stops having one
+    /// meaning when there are two sets of elements to be per.
+    #[error(
+        "an index may hold one `[*]` route; two would keep an entry per pair of elements \
+         (at {span})"
+    )]
+    SeveralRoutesInOneIndex {
+        /// Where the second route was written.
         span: Span,
     },
 
@@ -380,6 +424,9 @@ impl Error {
             | Self::UngroupedProjection { span, .. }
             | Self::StarIsOnlyForCount { span, .. }
             | Self::SeveralOutsideAComparison { span }
+            | Self::SeveralInAUniqueIndex { span }
+            | Self::SeveralInAnAnalysedIndex { span }
+            | Self::SeveralRoutesInOneIndex { span }
             | Self::FoldInsideAFold { span }
             | Self::FoldInAFilter { span }
             | Self::NoSuchFunction { span, .. }

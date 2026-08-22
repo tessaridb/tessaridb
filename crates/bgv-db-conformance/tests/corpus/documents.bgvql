@@ -135,10 +135,38 @@ SELECT array::len(tags[*]) AS n FROM people;
 SELECT tags[*] FROM people;
 --- expect: error UnnamedProjection
 
---- case: an index over several would be a multikey index, which is not built
-DEFINE INDEX by_tag ON people FIELDS tags[*];
---- expect: error SeveralOutsideAComparison
-
 --- case: an ordering over several has no rule either
 SELECT * FROM people ORDER BY tags[*];
 --- expect: error SeveralOutsideAComparison
+
+# A multikey index: one entry per element rather than one per record, which is
+# what lets an index serve a question about elements without answering it with
+# an answer about arrays.
+
+--- case: an index over several is a multikey index
+DEFINE INDEX by_tag ON people FIELDS tags[*];
+--- expect: ok
+
+--- case: and it answers what the scan answered
+SELECT * FROM people WHERE tags[*] = 'old';
+--- expect: rows 2
+
+--- case: including for the element only one record holds
+SELECT * FROM people WHERE tags[*] = 'urgent';
+--- expect: rows 1
+
+--- case: a value no element holds finds nothing rather than failing
+SELECT * FROM people WHERE tags[*] = 'nothing like this';
+--- expect: rows 0
+
+--- case: a UNIQUE multikey index has two readings and is refused
+DEFINE INDEX by_tag_unique ON people FIELDS tags[*] UNIQUE;
+--- expect: error SeveralInAUniqueIndex
+
+--- case: a search index decides its own multiplicity
+DEFINE INDEX by_tag_search ON people FIELDS tags[*] SEARCH;
+--- expect: error SeveralInAnAnalysedIndex
+
+--- case: and one index holds one multi-valued route
+DEFINE INDEX by_two ON people FIELDS tags[*], aliases[*];
+--- expect: error SeveralRoutesInOneIndex

@@ -132,6 +132,20 @@ impl Fixture {
                     IndexShape::default(),
                 )
                 .unwrap(),
+            // A **multikey** index: one entry per element. It is here rather than
+            // in a test of its own because reclamation is the thing a multikey
+            // index gets wrong, and reclamation is invisible from the outside —
+            // reads confirm every candidate against the record, so an entry left
+            // under an element the array no longer holds changes no answer and
+            // raises nothing. It shows up here and nowhere else.
+            catalog
+                .create_index(
+                    table.id,
+                    "by_tag",
+                    vec![Path::parse("tags[*]").unwrap()],
+                    IndexShape::default(),
+                )
+                .unwrap(),
         ];
         transaction.commit().unwrap();
 
@@ -196,30 +210,37 @@ impl Fixture {
                 "the workload only writes objects"
             );
             for index in &self.indexes {
-                let mut values = Vec::with_capacity(index.fields.len());
+                // One list of values per field, so a multi-valued route
+                // contributes its whole reach and every other route contributes
+                // the one value it has. Absent and `none` are the same answer:
+                // there is no value to place, so the record is not in this index
+                // at all.
+                let mut columns: Vec<Vec<Value>> = Vec::with_capacity(index.fields.len());
                 for path in &index.fields {
-                    // Absent and `none` are the same answer: there is no value to
-                    // place, so the record is not in this index at all.
-                    match walk(&record, path) {
-                        Some(Value::None) | None => {
-                            values.clear();
-                            break;
+                    let reached = if path.is_several() {
+                        reach(&record, path).into_iter().cloned().collect()
+                    } else {
+                        match walk(&record, path) {
+                            Some(Value::None) | None => Vec::new(),
+                            Some(found) => vec![found.clone()],
                         }
-                        Some(found) => values.push(found.clone()),
-                    }
+                    };
+                    columns.push(reached);
                 }
-                if values.len() != index.fields.len() {
+                if columns.iter().any(Vec::is_empty) {
                     continue;
                 }
                 let address =
                     IndexAddress::new(index.namespace, index.database, index.table, index.id);
-                let projected = IndexValues::of(&values);
-                let key = if index.unique {
-                    UniqueIndexKey::new(address, projected).encode()
-                } else {
-                    SecondaryIndexKey::new(address, projected, id.clone()).encode()
-                };
-                expected.insert(key.as_slice().to_vec());
+                for values in product(&columns) {
+                    let projected = IndexValues::of(&values);
+                    let key = if index.unique {
+                        UniqueIndexKey::new(address, projected).encode()
+                    } else {
+                        SecondaryIndexKey::new(address, projected, id.clone()).encode()
+                    };
+                    expected.insert(key.as_slice().to_vec());
+                }
             }
         }
         expected
@@ -249,6 +270,52 @@ fn walk<'v>(record: &'v Value, path: &Path) -> Option<&'v Value> {
     Some(at)
 }
 
+/// Every value a multi-valued route reaches, written out here for the same
+/// reason [`walk`] is: `Path::reach` answers this question and the store projects
+/// entries with it, so calling it would compare a function against itself.
+fn reach<'v>(record: &'v Value, path: &Path) -> Vec<&'v Value> {
+    let Value::Object(fields) = record else {
+        return Vec::new();
+    };
+    let Some(root) = fields.get(path.root()) else {
+        return Vec::new();
+    };
+    let mut at = vec![root];
+    for step in path.steps() {
+        let mut next = Vec::new();
+        for held in at {
+            match (step, held) {
+                (Step::Field(name), Value::Object(fields)) => next.extend(fields.get(name)),
+                (Step::Index(position), Value::Array(items)) => {
+                    next.extend(usize::try_from(*position).ok().and_then(|at| items.get(at)));
+                }
+                (Step::Every, Value::Array(items)) => next.extend(items.iter()),
+                _ => {}
+            }
+        }
+        at = next;
+    }
+    at.into_iter().collect()
+}
+
+/// One tuple per combination, in field order.
+fn product(columns: &[Vec<Value>]) -> BTreeSet<Vec<Value>> {
+    let mut rows = BTreeSet::from([Vec::new()]);
+    for column in columns {
+        rows = rows
+            .iter()
+            .flat_map(|held| {
+                column.iter().map(|found| {
+                    let mut next = held.clone();
+                    next.push(found.clone());
+                    next
+                })
+            })
+            .collect();
+    }
+    rows
+}
+
 /// The address a record claims in the unique index.
 ///
 /// Mostly its own, so records actually land; sometimes one drawn from the small
@@ -260,6 +327,31 @@ fn email(n: u64, rolls: &mut Rolls) -> Value {
         Value::from(format!("shared-e{}", rolls.below(VALUES)))
     } else {
         Value::from(format!("e{n:03}"))
+    }
+}
+
+/// What a record holds under `tags`, across every shape the multikey index has
+/// an answer for.
+///
+/// The array shrinking and growing between writes is the point: an element that
+/// leaves must take exactly its own entry, and one that stays must keep the entry
+/// it already had. Duplicates are in the pool because a repeated element is one
+/// entry rather than two, and the two sides have to agree about that or the
+/// second write leaves half an entry behind.
+fn tags(rolls: &mut Rolls) -> Value {
+    match rolls.below(8) {
+        // Absent from the index for three different reasons: no array, an empty
+        // one, and a value that is not an array at all.
+        0 => Value::None,
+        1 => Value::Array(Vec::new()),
+        2 => Value::from("not an array"),
+        held => {
+            let count = held.saturating_sub(2);
+            let items = (0..count)
+                .map(|_| Value::from(format!("t{}", rolls.below(VALUES))))
+                .collect();
+            Value::Array(items)
+        }
     }
 }
 
@@ -323,6 +415,7 @@ fn step(fixture: &Fixture, rolls: &mut Rolls) {
                     );
                 }
             }
+            fields.insert("tags".to_owned(), tags(rolls));
             transaction.put(address, encode_payload(&Value::Object(fields)).into_bytes());
         }
     }
