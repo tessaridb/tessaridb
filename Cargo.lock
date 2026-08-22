@@ -101,6 +101,7 @@ dependencies = [
  "bgv-db-session",
  "bgv-db-storage",
  "bgv-db-types",
+ "bgv-db-wire",
  "rust_decimal",
 ]
 

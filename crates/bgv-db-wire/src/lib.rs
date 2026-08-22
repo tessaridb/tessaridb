@@ -54,7 +54,7 @@ use std::sync::Arc;
 use bgv_db::Db;
 
 pub use crate::error::{Error, Result};
-pub use crate::message::{Answer, Request, spell};
+pub use crate::message::{Answer, Names, Request, names_for, spell};
 
 /// A node listening for connections.
 pub struct Node {
@@ -111,6 +111,19 @@ impl Node {
 }
 
 /// One connection, from hello to hang-up.
+///
+/// # One session, not one per statement
+///
+/// The session is opened once and lives as long as the connection, because that
+/// is what a connection *is*: `USE NAMESPACE prod;` selects something, and a
+/// selection that does not survive to the next statement is not a selection. A
+/// session per request would make a prompt over this protocol a sequence of
+/// unrelated sessions that happen to share a socket, and every statement would
+/// have to re-say where it was.
+///
+/// It also gives the thread-per-connection cost something to buy. A thread here
+/// holds state a request cannot carry, which is the difference between a
+/// connection and a datagram.
 fn converse(db: &Db, stream: TcpStream) -> Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
@@ -125,6 +138,7 @@ fn converse(db: &Db, stream: TcpStream) -> Result<()> {
         frame::greet(&mut both)?;
     }
 
+    let mut session = db.session();
     while let Some((kind, body)) = frame::read(&mut reader)? {
         if kind != frame::Kind::Request {
             // A client sending an answer is a client this build does not
@@ -132,7 +146,6 @@ fn converse(db: &Db, stream: TcpStream) -> Result<()> {
             return Err(Error::UnknownFrame { tag: kind.tag() });
         }
         let request = Request::decode(&body)?;
-        let mut session = db.session();
         if let Some((name, password)) = &request.credentials
             && let Err(refusal) = session.sign_in(name, password)
         {
@@ -153,7 +166,11 @@ fn converse(db: &Db, stream: TcpStream) -> Result<()> {
                     u32::try_from(outcomes.len()).unwrap_or(u32::MAX),
                 );
                 for outcome in &outcomes {
-                    answer.extend_from_slice(&message::encode_outcome(outcome));
+                    // Resolved here because the catalog is here. `names_in`
+                    // walks the answer first and touches nothing when it holds
+                    // no reference, which is most answers.
+                    let names = message::names_for(db, outcome);
+                    answer.extend_from_slice(&message::encode_outcome(outcome, &names));
                 }
                 frame::write(&mut writer, frame::Kind::Answer, &answer)?;
             }

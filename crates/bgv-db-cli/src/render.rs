@@ -211,8 +211,13 @@ fn is_a_name(text: &str) -> bool {
 }
 
 /// One record of an answer, as `id: value`.
+///
+/// The identity arrives as the text the store spelled rather than as a
+/// `RecordId`, because that is what crosses the wire — and re-parsing it here
+/// would be a second reading of a record id and a second place for the two to
+/// disagree.
 #[must_use]
-pub fn record(id: &bgv_db_types::RecordId, held: &Value, names: &Names) -> String {
+pub fn record(id: &str, held: &Value, names: &Names) -> String {
     format!("{id}: {}", value(held, names))
 }
 

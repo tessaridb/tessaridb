@@ -6,14 +6,22 @@
 //! bgv ./data -e 'SELECT * FROM users;'   one script, then exit
 //! bgv ./data -f setup.bgvql              a file
 //! echo 'SELECT …' | bgv ./data           a pipe
+//! bgv --at 127.0.0.1:7654                a running node, and a prompt
+//! bgv ./data --serve 0.0.0.0:7654        be that node
 //! ```
 //!
-//! # What it is, and what it is not yet
+//! # A path or an address, and the same prompt over either
 //!
-//! It opens the store **in this process**, through the embedded facade. A client
-//! that talks to a running node over HTTP is the other half of this node and is
-//! not built; when it is, it is `--url` beside the path rather than a second
-//! program.
+//! With a path it opens the store **in this process**, through the embedded
+//! facade. With `--at` it talks to a running node over the wire protocol. Both
+//! produce the same answers to the same renderer, so what is printed does not
+//! depend on which one was used — see `store.rs` for why that is the shape of
+//! the code rather than a claim about it.
+//!
+//! It is `--at` and not `--url` because this protocol has no scheme, and calling
+//! an address a URL promises one. It is the same binary and not a second program
+//! for the same reason `--serve` is: what changes is where the store is, and
+//! that is an argument.
 //!
 //! Answers are printed in **bgvQL's own syntax**, so what comes out can be
 //! pasted back in. JSON is what the HTTP endpoint speaks, and it had to decide
@@ -23,56 +31,20 @@
 //! terminal library is a large surface to take for a convenience — so it is
 //! stated in `.help` rather than left to be discovered by pressing up.
 
+mod arguments;
 mod render;
 mod session;
+mod store;
 
 use std::env;
 use std::fs;
 use std::io::{self, BufReader, IsTerminal, Write};
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use bgv_db::Db;
 
+use crate::arguments::{Asked, Source, credentials, parse};
 use crate::session::{Ended, Mode};
-
-const USAGE: &str = "\
-usage: bgv [<path>] [-e <script> | -f <file>]
-
-  <path>          a store on disk; omitted, the store is in memory and is lost
-  -e <script>     run this and exit
-  -f <file>       run this file and exit
-  --backup <file> write the store's log to <file> and exit
-  --restore <file> replay <file> into an empty store and exit
-  --health        say whether the store is well, and exit non-zero if not
-  --help          this
-
-with neither -e nor -f, statements are read from standard input: a prompt when
-that is a terminal, a script when it is a pipe.";
-
-/// What the command line asked for.
-#[derive(Debug)]
-struct Asked {
-    store: Option<PathBuf>,
-    source: Source,
-}
-
-/// Where the statements come from, or what else was asked for.
-#[derive(Debug)]
-enum Source {
-    /// Standard input, prompting or not depending on what it is.
-    Standard,
-    /// One script given on the command line.
-    Inline(String),
-    /// A file.
-    File(PathBuf),
-    /// Write this store's log to a file.
-    Backup(PathBuf),
-    /// Replay a file into this store.
-    Restore(PathBuf),
-    /// Say whether the store is well.
-    Health,
-}
 
 fn main() -> ExitCode {
     let asked = match parse(env::args().skip(1)) {
@@ -93,95 +65,85 @@ fn main() -> ExitCode {
     }
 }
 
-/// Read the arguments, refusing anything unrecognised.
-///
-/// An unknown option is an error rather than something ignored: a session opened
-/// with a misspelled flag that silently used the default is how somebody writes
-/// to the wrong store.
-fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
-    let mut store = None;
-    let mut source = Source::Standard;
-    let mut arguments = arguments;
-    while let Some(argument) = arguments.next() {
-        match argument.as_str() {
-            "--help" | "-h" => return Err(USAGE.to_owned()),
-            "-e" | "--execute" => {
-                let script = arguments
-                    .next()
-                    .ok_or_else(|| "-e wants a script".to_owned())?;
-                source = Source::Inline(script);
-            }
-            "-f" | "--file" => {
-                let path = arguments
-                    .next()
-                    .ok_or_else(|| "-f wants a path".to_owned())?;
-                source = Source::File(PathBuf::from(path));
-            }
-            "--backup" => {
-                let path = arguments
-                    .next()
-                    .ok_or_else(|| "--backup wants a path".to_owned())?;
-                source = Source::Backup(PathBuf::from(path));
-            }
-            "--health" => source = Source::Health,
-            "--restore" => {
-                let path = arguments
-                    .next()
-                    .ok_or_else(|| "--restore wants a path".to_owned())?;
-                source = Source::Restore(PathBuf::from(path));
-            }
-            other if other.starts_with('-') => {
-                return Err(format!("unknown option {other:?}\n\n{USAGE}"));
-            }
-            path if store.is_none() => store = Some(PathBuf::from(path)),
-            extra => {
-                return Err(format!(
-                    "only one store may be opened, and {extra:?} is a second"
-                ));
-            }
-        }
-    }
-    Ok(Asked { store, source })
-}
-
 fn run(asked: Asked) -> Result<Ended, String> {
+    let credentials = credentials(asked.user)?;
+    if let Some(address) = &asked.at {
+        let mut remote = store::Remote::connect(address, credentials)?;
+        let mut out = io::stdout().lock();
+        return statements(&mut remote, &mut out, &asked.source, Where::Node(address));
+    }
+
     let db = match &asked.store {
         Some(path) => Db::open(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
         None => Db::in_memory().map_err(|failure| failure.to_string())?,
     };
-    let mut out = io::stdout().lock();
 
-    let ended = match asked.source {
+    // These are store operations rather than statements, so they never reach a
+    // session at all — and an operator rehearses a restore with a command, which
+    // is what "rehearsed" in the readiness checklist means.
+    match &asked.source {
+        Source::Backup(path) => return backup(&db, path).map(|()| Ended::Fine),
+        Source::Restore(path) => return restore(&db, path).map(|()| Ended::Fine),
+        Source::Health => return health(&db),
+        Source::Serve(address) => return serve(db, address),
+        Source::Standard | Source::Inline(_) | Source::File(_) => {}
+    }
+
+    let mut embedded = store::Embedded::new(&db, credentials.as_ref())?;
+    let mut out = io::stdout().lock();
+    let opened = asked.store.as_deref();
+    statements(&mut embedded, &mut out, &asked.source, Where::Store(opened))
+}
+
+/// What the greeting says was opened.
+#[derive(Debug, Clone, Copy)]
+enum Where<'a> {
+    /// A store in this process, or none when it is in memory.
+    Store(Option<&'a std::path::Path>),
+    /// A node at this address.
+    Node(&'a str),
+}
+
+/// Read statements from wherever they come from and run them.
+///
+/// One function for both, because where the store is changes nothing about
+/// where a statement ends or what a refusal does.
+fn statements(
+    store: &mut dyn store::Store,
+    out: &mut impl Write,
+    source: &Source,
+    opened: Where<'_>,
+) -> Result<Ended, String> {
+    let ended = match source {
         Source::Inline(script) => {
-            let mut input = io::Cursor::new(script.into_bytes());
-            session::run(&db, &mut input, &mut out, Mode::Script)
+            let mut input = io::Cursor::new(script.clone().into_bytes());
+            session::run(store, &mut input, out, Mode::Script)
         }
         Source::File(path) => {
             // Read rather than streamed, so a missing or unreadable file is one
             // clear failure before anything runs instead of a partial script.
             let held =
-                fs::read(&path).map_err(|failure| format!("{}: {failure}", path.display()))?;
+                fs::read(path).map_err(|failure| format!("{}: {failure}", path.display()))?;
             let mut input = io::Cursor::new(held);
-            session::run(&db, &mut input, &mut out, Mode::Script)
+            session::run(store, &mut input, out, Mode::Script)
         }
-        // A backup is a store operation rather than a script, so it does not go
-        // through the session at all — and an operator rehearses a restore with
-        // a command, which is what "rehearsed" in the readiness checklist means.
-        Source::Backup(path) => return backup(&db, &path).map(|()| Ended::Fine),
-        Source::Restore(path) => return restore(&db, &path).map(|()| Ended::Fine),
-        Source::Health => return health(&db),
+        Source::Backup(_) | Source::Restore(_) | Source::Health | Source::Serve(_) => {
+            // Resolved before this function is reached, for the embedded path,
+            // and refused during parsing for a node.
+            return Ok(Ended::Fine);
+        }
         Source::Standard => {
             let stdin = io::stdin();
             // A prompt is for a person. Piped input gets none, so the output is
             // a script's output and not a transcript.
             let mode = if stdin.is_terminal() {
-                greet(&mut out, asked.store.as_deref()).map_err(|failure| failure.to_string())?;
+                greet(out, opened).map_err(|failure| failure.to_string())?;
                 Mode::Interactive
             } else {
                 Mode::Script
             };
             let mut input = BufReader::new(stdin.lock());
-            let ended = session::run(&db, &mut input, &mut out, mode);
+            let ended = session::run(store, &mut input, out, mode);
             if mode == Mode::Interactive && ended.is_ok() {
                 // End-of-input at a prompt leaves the cursor mid-line.
                 drop(writeln!(out));
@@ -190,6 +152,22 @@ fn run(asked: Asked) -> Result<Ended, String> {
         }
     };
     ended.map_err(|failure| failure.to_string())
+}
+
+/// Be the node the other half of this program connects to.
+///
+/// The same binary rather than a second one: what changes is where the store is,
+/// and that is an argument. It serves until it is stopped, so it never returns
+/// on the happy path.
+fn serve(db: Db, address: &str) -> Result<Ended, String> {
+    let node = bgv_db_wire::Node::bind(std::sync::Arc::new(db), address)
+        .map_err(|failure| format!("{address}: {failure}"))?;
+    let bound = node.address().map_err(|failure| failure.to_string())?;
+    // On the error stream, so a node whose output is being piped somewhere still
+    // tells a person at the terminal that it came up and where.
+    eprintln!("bgv — serving on {bound}; there is no TLS, so trust the network");
+    node.serve();
+    Ok(Ended::Fine)
 }
 
 /// Write the store's log to a file.
@@ -257,61 +235,11 @@ fn health(db: &Db) -> Result<Ended, String> {
 
 /// One line saying what was opened, because "which store am I in" is the first
 /// thing anybody wonders at a prompt.
-fn greet(out: &mut impl Write, store: Option<&std::path::Path>) -> io::Result<()> {
-    match store {
-        Some(path) => writeln!(out, "bgv — {}", path.display())?,
-        None => writeln!(out, "bgv — in memory; nothing written here is kept")?,
+fn greet(out: &mut impl Write, opened: Where<'_>) -> io::Result<()> {
+    match opened {
+        Where::Store(Some(path)) => writeln!(out, "bgv — {}", path.display())?,
+        Where::Store(None) => writeln!(out, "bgv — in memory; nothing written here is kept")?,
+        Where::Node(address) => writeln!(out, "bgv — {address}")?,
     }
     writeln!(out, "`.help` for the little there is of it")
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::panic)]
-
-    use super::{Source, parse};
-
-    fn asked(arguments: &[&str]) -> Result<super::Asked, String> {
-        parse(arguments.iter().map(|held| (*held).to_owned()))
-    }
-
-    #[test]
-    fn no_arguments_is_an_in_memory_store_read_from_standard_input() {
-        let held = asked(&[]).expect("defaults");
-        assert!(held.store.is_none());
-        assert!(matches!(held.source, Source::Standard));
-    }
-
-    #[test]
-    fn a_bare_argument_is_the_store() {
-        let held = asked(&["./data"]).expect("a path");
-        assert_eq!(held.store.as_deref(), Some(std::path::Path::new("./data")));
-    }
-
-    #[test]
-    fn a_script_and_a_file_are_told_apart() {
-        assert!(matches!(
-            asked(&["-e", "SELECT * FROM users;"])
-                .expect("a script")
-                .source,
-            Source::Inline(_)
-        ));
-        assert!(matches!(
-            asked(&["-f", "setup.bgvql"]).expect("a file").source,
-            Source::File(_)
-        ));
-    }
-
-    #[test]
-    fn a_misspelled_option_is_refused_rather_than_read_as_a_path() {
-        // Otherwise `--excute 'DELETE …'` opens a store called `--excute`.
-        assert!(asked(&["--excute", "x"]).is_err());
-        assert!(asked(&["-e"]).is_err());
-        assert!(asked(&["-f"]).is_err());
-    }
-
-    #[test]
-    fn a_second_store_is_refused_rather_than_silently_ignored() {
-        assert!(asked(&["./one", "./two"]).is_err());
-    }
 }

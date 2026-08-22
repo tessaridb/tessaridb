@@ -39,7 +39,7 @@ fn a_script_runs_and_answers_one_outcome_per_statement() {
         .unwrap();
     assert_eq!(answers.len(), 7);
     match &answers[6] {
-        Answer::Records { records, path } => {
+        Answer::Records { records, path, .. } => {
             assert_eq!(records.len(), 1);
             assert_eq!(records[0].0, "1");
             assert_eq!(path, "scan");
@@ -107,6 +107,81 @@ fn a_value_crosses_the_network_as_the_value_it_was() {
     // nothing was lost.
     assert_eq!(held.get("absent"), Some(&Value::None));
     assert_eq!(held.get("empty"), Some(&Value::Null));
+}
+
+#[test]
+fn a_connection_remembers_what_it_selected() {
+    // The difference between a connection and a sequence of unrelated sessions
+    // that happen to share a socket. Without this a prompt over this protocol
+    // would have to re-say where it was in every single statement.
+    let (_node, address) = serving(Db::in_memory().unwrap());
+    let mut client = Client::connect(&address).unwrap();
+
+    client.run(READY, None).unwrap();
+    // No `USE` here at all: the selection above is still in force.
+    client.run("DEFINE TABLE users;", None).unwrap();
+    let answers = client
+        .run(
+            "CREATE users:1 = { name: 'ada' }; SELECT * FROM users;",
+            None,
+        )
+        .unwrap();
+
+    let Answer::Records { records, .. } = &answers[1] else {
+        panic!("not records: {:?}", answers[1]);
+    };
+    assert_eq!(records.len(), 1);
+}
+
+#[test]
+fn a_second_connection_starts_where_every_connection_starts() {
+    // The memory above belongs to the connection and not to the store, which is
+    // what makes two clients independent rather than two views of one session.
+    let (_node, address) = serving(Db::in_memory().unwrap());
+    let mut first = Client::connect(&address).unwrap();
+    first.run(READY, None).unwrap();
+    first.run("DEFINE TABLE users;", None).unwrap();
+
+    let mut second = Client::connect(&address).unwrap();
+    let refused = second
+        .run("SELECT * FROM users;", None)
+        .expect_err("no namespace is selected on a fresh connection");
+    assert!(!refused.to_string().is_empty());
+}
+
+#[test]
+fn a_reference_arrives_with_the_name_the_client_could_not_have_looked_up() {
+    // The catalog is on the server. A client rendering from ids alone prints
+    // `<record 3:7>`, which is the one thing a console promising its output
+    // pastes back cannot print.
+    let (_node, address) = serving(Db::in_memory().unwrap());
+    let mut client = Client::connect(&address).unwrap();
+    client
+        .run(
+            &format!("{READY} DEFINE TABLE users; DEFINE TABLE orders;"),
+            None,
+        )
+        .unwrap();
+    let answers = client
+        .run(
+            "CREATE orders:1 = { by: users:7 }; SELECT * FROM orders;",
+            None,
+        )
+        .unwrap();
+
+    let Answer::Records { records, names, .. } = &answers[1] else {
+        panic!("not records: {:?}", answers[1]);
+    };
+    let Value::Object(held) = &records[0].1 else {
+        panic!("not an object: {:?}", records[0].1);
+    };
+    let Some(Value::Record(reference)) = held.get("by") else {
+        panic!("not a reference: {held:?}");
+    };
+    assert_eq!(
+        names.get(&reference.table).map(String::as_str),
+        Some("users")
+    );
 }
 
 #[test]

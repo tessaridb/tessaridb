@@ -13,14 +13,52 @@
 //! store writes records with. Fifteen types out, fifteen types back, nothing to
 //! get wrong at either end.
 
+use std::collections::BTreeMap;
+
 use bgv_db::{AccessPath, Outcome, RecordId, Value};
 use bgv_db_encoding::{decode_payload, encode_payload};
+use bgv_db_types::TableId;
 
 use crate::error::{Error, Result};
 use crate::frame::{put_bytes, put_text, put_u32, take_bytes, take_text, take_u32};
 
+/// What the tables an answer's references point at are called.
+///
+/// A record reference holds a **table id**, and the name the language writes
+/// lives in the catalog — which is on the server. A client cannot resolve one
+/// and has nowhere to look, so a reference would render as `<record 3:7>`: the
+/// one thing a console that promises its output pastes back cannot print. The
+/// server already computes exactly this map for its own rendering, including the
+/// short-circuit that skips the catalog entirely when an answer holds no
+/// reference at all.
+pub type Names = BTreeMap<TableId, String>;
+
+/// The names an outcome's references need, resolved against the catalog.
+///
+/// Public and shared rather than written once in the node and once in whatever
+/// renders an embedded answer: "which answers can hold a reference" is one rule,
+/// and two copies of it drift the first time a third shape gains a value.
+///
+/// `Db::names_in` walks the values before it opens anything, so an answer
+/// holding no reference — which is most of them — costs a walk and no
+/// transaction.
+#[must_use]
+pub fn names_for(db: &bgv_db::Db, outcome: &Outcome) -> Names {
+    match outcome {
+        Outcome::Records { records, .. } => db.names_in(records).unwrap_or_default(),
+        // Wrapped so the same walk finds it. The identity is a placeholder: the
+        // walk reads values and never looks at what they are keyed by.
+        Outcome::Value(held) => db
+            .names_in(&[(RecordId::Int(0), held.clone())])
+            .unwrap_or_default(),
+        // Keys are record identities and hold no values, and the rest hold
+        // nothing at all.
+        _ => Names::new(),
+    }
+}
+
 /// A script to run, and who is running it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Request {
     /// The script.
     pub script: String,
@@ -30,6 +68,29 @@ pub struct Request {
     /// empty one usable; a closed store's refusal comes from the session rather
     /// than from a second rule here.
     pub credentials: Option<(String, String)>,
+}
+
+/// Written by hand rather than derived, because the derived one prints the
+/// password.
+///
+/// Nothing in this build prints a request — but a struct holding a credential
+/// and answering `{:?}` with it is how a password reaches a log line, and the
+/// line that does it is always somewhere else and written later. The name is
+/// shown because knowing *who* a refused request claimed to be is the whole
+/// value of printing one; the secret is not.
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("script", &self.script)
+            .field(
+                "as",
+                &self
+                    .credentials
+                    .as_ref()
+                    .map_or("nobody", |(name, _)| name.as_str()),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl Request {
@@ -89,14 +150,18 @@ mod tag {
 }
 
 /// One statement's answer, on the wire.
+///
+/// `names` covers the references this outcome carries and nothing else; for
+/// every other outcome shape it is unread, because none of them can hold one.
 #[must_use]
-pub fn encode_outcome(outcome: &Outcome) -> Vec<u8> {
+pub fn encode_outcome(outcome: &Outcome, names: &Names) -> Vec<u8> {
     let mut body = Vec::new();
     match outcome {
         Outcome::Done => body.push(tag::DONE),
         Outcome::Records { records, path } => {
             body.push(tag::RECORDS);
             body.push(path_tag(*path));
+            put_names(&mut body, names);
             put_u32(&mut body, u32::try_from(records.len()).unwrap_or(u32::MAX));
             for (id, value) in records {
                 put_text(&mut body, &id.to_string());
@@ -105,6 +170,7 @@ pub fn encode_outcome(outcome: &Outcome) -> Vec<u8> {
         }
         Outcome::Value(held) => {
             body.push(tag::VALUE);
+            put_names(&mut body, names);
             put_bytes(&mut body, encode_payload(held).as_slice());
         }
         Outcome::Keys(keys) => {
@@ -139,9 +205,16 @@ pub enum Answer {
         records: Vec<(String, Value)>,
         /// How, as the store names it.
         path: String,
+        /// What the tables these records reference are called.
+        names: Names,
     },
-    /// One value.
-    Value(Value),
+    /// One value, and the names of the tables it references.
+    Value {
+        /// What was answered.
+        value: Value,
+        /// What the tables it references are called.
+        names: Names,
+    },
     /// Keys, as written.
     Keys(Vec<String>),
     /// How many a conditional delete removed.
@@ -163,6 +236,8 @@ pub fn decode_outcome(body: &[u8], at: usize) -> Result<(Answer, usize)> {
         tag::RECORDS => {
             let path = path_name(body.get(at).copied().ok_or(Error::Malformed)?).to_owned();
             at = at.saturating_add(1);
+            let (names, next) = take_names(body, at)?;
+            at = next;
             let (count, next) = take_u32(body, at)?;
             at = next;
             let mut records = Vec::new();
@@ -172,12 +247,20 @@ pub fn decode_outcome(body: &[u8], at: usize) -> Result<(Answer, usize)> {
                 at = next;
                 records.push((id, decode_payload(&bytes)?));
             }
-            Answer::Records { records, path }
+            Answer::Records {
+                records,
+                path,
+                names,
+            }
         }
         tag::VALUE => {
-            let (bytes, next) = take_bytes(body, at)?;
+            let (names, next) = take_names(body, at)?;
+            let (bytes, next) = take_bytes(body, next)?;
             at = next;
-            Answer::Value(decode_payload(&bytes)?)
+            Answer::Value {
+                value: decode_payload(&bytes)?,
+                names,
+            }
         }
         tag::KEYS => {
             let (count, next) = take_u32(body, at)?;
@@ -201,6 +284,28 @@ pub fn decode_outcome(body: &[u8], at: usize) -> Result<(Answer, usize)> {
         _ => Answer::Unknown,
     };
     Ok((answer, at))
+}
+
+/// The names, as a count and that many pairs.
+fn put_names(body: &mut Vec<u8>, names: &Names) {
+    put_u32(body, u32::try_from(names.len()).unwrap_or(u32::MAX));
+    for (table, name) in names {
+        put_u32(body, table.get());
+        put_text(body, name);
+    }
+}
+
+/// And back.
+fn take_names(body: &[u8], at: usize) -> Result<(Names, usize)> {
+    let (count, mut at) = take_u32(body, at)?;
+    let mut names = Names::new();
+    for _ in 0..count {
+        let (table, next) = take_u32(body, at)?;
+        let (name, next) = take_text(body, next)?;
+        at = next;
+        names.insert(TableId::new(table), name);
+    }
+    Ok((names, at))
 }
 
 /// The access path, as one byte.
@@ -236,8 +341,14 @@ mod tests {
     #![allow(clippy::panic)]
 
     use bgv_db::{AccessPath, Outcome, RecordId, Value};
+    use bgv_db_types::{RecordRef, TableId};
 
-    use super::{Answer, Request, decode_outcome, encode_outcome};
+    use super::{Answer, Names, Request, decode_outcome, encode_outcome};
+
+    /// No answer below carries a reference, so none of them needs a name.
+    fn unnamed() -> Names {
+        Names::new()
+    }
 
     #[test]
     fn a_request_round_trips_with_and_without_credentials() {
@@ -249,6 +360,19 @@ mod tests {
             let read = Request::decode(&held.encode()).expect("a request");
             assert_eq!(read, held);
         }
+    }
+
+    #[test]
+    fn a_request_does_not_print_the_password_it_carries() {
+        // Nothing prints one today. The line that does is always somewhere else
+        // and written later, which is exactly why this is asserted here.
+        let held = Request {
+            script: "SELECT * FROM users;".to_owned(),
+            credentials: Some(("ada".to_owned(), "a long one".to_owned())),
+        };
+        let printed = format!("{held:?}");
+        assert!(!printed.contains("a long one"), "{printed}");
+        assert!(printed.contains("ada"), "{printed}");
     }
 
     #[test]
@@ -280,12 +404,12 @@ mod tests {
             },
         ];
         for outcome in &outcomes {
-            let body = encode_outcome(outcome);
+            let body = encode_outcome(outcome, &unnamed());
             let (answer, used) = decode_outcome(&body, 0).expect("an answer");
             assert_eq!(used, body.len(), "{outcome:?} left bytes unread");
             match (outcome, &answer) {
                 (Outcome::Done, Answer::Done)
-                | (Outcome::Value(_), Answer::Value(_))
+                | (Outcome::Value(_), Answer::Value { .. })
                 | (Outcome::Keys(_), Answer::Keys(_))
                 | (Outcome::Removed { .. }, Answer::Removed(_))
                 | (Outcome::Records { .. }, Answer::Records { .. }) => {}
@@ -302,9 +426,12 @@ mod tests {
         let held = Outcome::Value(Value::Number(bgv_db::Number::Decimal(
             rust_decimal::Decimal::try_from(12.34_f64).expect("a decimal"),
         )));
-        let (answer, _) = decode_outcome(&encode_outcome(&held), 0).expect("an answer");
+        let (answer, _) = decode_outcome(&encode_outcome(&held, &unnamed()), 0).expect("an answer");
         match answer {
-            Answer::Value(Value::Number(bgv_db::Number::Decimal(read))) => {
+            Answer::Value {
+                value: Value::Number(bgv_db::Number::Decimal(read)),
+                ..
+            } => {
                 assert_eq!(read.to_string(), "12.34");
             }
             other => panic!("a decimal came back as {other:?}"),
@@ -312,18 +439,51 @@ mod tests {
     }
 
     #[test]
+    fn a_reference_arrives_with_the_name_a_client_cannot_look_up() {
+        // The catalog is on the server. Without this the client renders
+        // `<record 3:7>`, which is not something anybody can paste back.
+        let table = TableId::new(3);
+        let mut names = Names::new();
+        names.insert(table, "orders".to_owned());
+        let held = Outcome::Records {
+            records: vec![(
+                RecordId::Int(1),
+                Value::Record(RecordRef::new(table, RecordId::Int(7))),
+            )],
+            path: AccessPath::Record,
+        };
+        let (answer, used) = decode_outcome(&encode_outcome(&held, &names), 0).expect("an answer");
+        assert_eq!(used, encode_outcome(&held, &names).len());
+        match answer {
+            Answer::Records { names: read, .. } => {
+                assert_eq!(read.get(&table).map(String::as_str), Some("orders"));
+            }
+            other => panic!("records came back as {other:?}"),
+        }
+    }
+
+    #[test]
     fn several_outcomes_read_back_in_order_from_one_body() {
         let mut body = Vec::new();
-        body.extend_from_slice(&encode_outcome(&Outcome::Done));
-        body.extend_from_slice(&encode_outcome(&Outcome::Removed { count: 3 }));
-        body.extend_from_slice(&encode_outcome(&Outcome::Value(Value::from("last"))));
+        body.extend_from_slice(&encode_outcome(&Outcome::Done, &unnamed()));
+        body.extend_from_slice(&encode_outcome(&Outcome::Removed { count: 3 }, &unnamed()));
+        body.extend_from_slice(&encode_outcome(
+            &Outcome::Value(Value::from("last")),
+            &unnamed(),
+        ));
 
         let (first, at) = decode_outcome(&body, 0).expect("first");
         let (second, at) = decode_outcome(&body, at).expect("second");
         let (third, at) = decode_outcome(&body, at).expect("third");
         assert_eq!(first, Answer::Done);
         assert_eq!(second, Answer::Removed(3));
-        assert_eq!(third, Answer::Value(Value::from("last")));
+        assert_eq!(
+            third,
+            Answer::Value {
+                value: Value::from("last"),
+                names: unnamed(),
+            }
+        );
         assert_eq!(at, body.len());
     }
 }

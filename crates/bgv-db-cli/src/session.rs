@@ -20,9 +20,10 @@
 
 use std::io::{BufRead, Write};
 
-use bgv_db::Db;
+use bgv_db_wire::Answer;
 
 use crate::render;
+use crate::store::Store;
 
 /// Whether input is coming from a person or from a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,12 +50,11 @@ pub enum Ended {
 /// Returns an error only when reading or writing fails. A refused *statement* is
 /// reported through [`Ended`] rather than as an error, because it is an answer.
 pub fn run(
-    db: &Db,
+    store: &mut dyn Store,
     input: &mut impl BufRead,
     out: &mut impl Write,
     mode: Mode,
 ) -> std::io::Result<Ended> {
-    let mut session = db.session();
     let mut pending = String::new();
     let mut ended = Ended::Fine;
 
@@ -93,10 +93,10 @@ pub fn run(
             continue;
         }
 
-        match session.run(&script) {
-            Ok(outcomes) => {
-                for outcome in &outcomes {
-                    report(db, out, outcome)?;
+        match store.run(&script) {
+            Ok(answers) => {
+                for answer in &answers {
+                    report(out, answer)?;
                 }
             }
             Err(refusal) => {
@@ -120,30 +120,28 @@ pub fn run(
 
 /// What one statement answered.
 ///
-/// The table names are resolved once per answer rather than per value, and only
-/// when the answer holds a reference at all — `Db::names_in` walks it first, so
-/// a read of records that carry none never touches the catalog.
-fn report(db: &Db, out: &mut impl Write, outcome: &bgv_db::Outcome) -> std::io::Result<()> {
-    match outcome.records() {
-        Some([]) => writeln!(out, "(no records)"),
-        Some(records) => {
-            let names = db.names_in(records).unwrap_or_default();
+/// The same [`Answer`] whether the store is in this process or across a socket,
+/// which is what makes the two renderings identical by construction rather than
+/// by two code paths agreeing.
+fn report(out: &mut impl Write, answer: &Answer) -> std::io::Result<()> {
+    match answer {
+        Answer::Records { records, .. } if records.is_empty() => writeln!(out, "(no records)"),
+        Answer::Records {
+            records,
+            path,
+            names,
+        } => {
             for (id, held) in records {
-                writeln!(out, "{}", render::record(id, held, &names))?;
+                writeln!(out, "{}", render::record(id, held, names))?;
             }
-            let path = outcome.path().map_or("", bgv_db::AccessPath::name);
             writeln!(out, "({} record(s), via {path})", records.len())
         }
-        None => match outcome.value() {
-            Some(held) => {
-                // One value, wrapped so the same walk finds its references.
-                let held = held.clone();
-                let one = [(bgv_db_types::RecordId::Int(0), held)];
-                let names = db.names_in(&one).unwrap_or_default();
-                writeln!(out, "{}", render::value(&one[0].1, &names))
-            }
-            None => writeln!(out, "ok"),
-        },
+        Answer::Value { value, names } => writeln!(out, "{}", render::value(value, names)),
+        // `Keys` and `Removed` have never had a rendering of their own and keep
+        // the one they had, so the parity test certifies today's output rather
+        // than an output changed in the same commit that gave it a second path.
+        // Q-2026-08-22-52.
+        _ => writeln!(out, "ok"),
     }
 }
 
@@ -188,12 +186,14 @@ mod tests {
     use bgv_db::Db;
 
     use super::{Ended, Mode, closed, run};
+    use crate::store::Embedded;
 
     fn ran(script: &str, mode: Mode) -> (String, Ended) {
         let db = Db::in_memory().expect("a database");
+        let mut store = Embedded::new(&db, None).expect("a session");
         let mut input = Cursor::new(script.as_bytes().to_vec());
         let mut out = Vec::new();
-        let ended = run(&db, &mut input, &mut out, mode).expect("a run");
+        let ended = run(&mut store, &mut input, &mut out, mode).expect("a run");
         (String::from_utf8(out).expect("text"), ended)
     }
 

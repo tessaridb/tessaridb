@@ -140,6 +140,16 @@ clothes. The cost is a thread per *connection*, which will matter when idle
 subscribers outnumber what a thread each is worth, and that is the trigger for
 revisiting it.
 
+A connection holds **one session**, so `USE NAMESPACE prod;` is still in force in
+the next statement — which is what a connection means, and what the thread it
+costs is buying. Two connections are two sessions and share nothing but the
+store.
+
+An answer carrying records also carries the **names of the tables its references
+point at**. A reference holds a table id and the name lives in the catalog, which
+is on the server; without them a client renders `<record 3:7>`, and the point of
+this protocol is that a client decides nothing.
+
 > **There is no TLS here either.** Credentials travel as they were given. This
 > belongs on a trusted network or behind something that terminates TLS, and says
 > so rather than leaving it to be assumed.
@@ -158,6 +168,9 @@ bgv ./data                             a store on disk, and a prompt
 bgv ./data -e 'SELECT * FROM users;'   one script, then exit
 bgv ./data -f setup.bgvql              a file
 echo 'SELECT * FROM users;' | bgv ./data
+
+bgv ./data --serve 127.0.0.1:9080      be a node
+bgv --at 127.0.0.1:9080                a prompt against one
 ```
 
 ```
@@ -176,11 +189,22 @@ A refusal at a prompt prints its message and the next statement runs; in a scrip
 it stops, because carrying on past a failed step is how a half-applied migration
 happens. Either way the exit code says what happened.
 
-Two things it does not do. **There is no line editing or history** — both mean a
-dependency, and a terminal library is a large surface to take for a convenience,
-so `.help` says so rather than leaving it to be found by pressing up. And it
-opens the store **in this process**: the other half — a prompt against a running
-node, over the wire protocol above — is not built yet.
+A path opens the store **in this process**; `--at` talks to a running node over
+the wire protocol above. Both produce the same answers to the same renderer, so
+what is printed does not depend on which was used — a test runs every answer
+shape through both and compares the output character for character, which is the
+claim worth testing rather than asserting. It is `--at` and not `--url` because
+this protocol has no scheme, and calling an address a URL would promise one.
+
+To sign in, `--user <name>`; the password comes from `BGV_PASSWORD` and never
+from an argument, which the process table publishes and the shell history keeps.
+`--backup`, `--restore`, `--health` and `--serve` work on a store this process
+opened, so asking for one over an address is refused rather than quietly run
+against a different store.
+
+**There is no line editing or history** — both mean a dependency, and a terminal
+library is a large surface to take for a convenience, so `.help` says so rather
+than leaving it to be found by pressing up.
 
 ## Is it well
 

@@ -94,11 +94,7 @@ fn every_value_kind_survives_being_printed_and_read_back() {
 
     // And the per-record form the command line actually prints, which puts the
     // id in front of the value.
-    let line = render::record(
-        &bgv_db_types::RecordId::Int(9),
-        &again,
-        &render::Names::new(),
-    );
+    let line = render::record("9", &again, &render::Names::new());
     assert!(line.starts_with("9: {"), "{line}");
 }
 

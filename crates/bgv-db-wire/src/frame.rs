@@ -31,7 +31,13 @@ pub(crate) const HELLO: &[u8; 4] = b"BGVW";
 /// Checked on both sides at the hello, so a mismatch is one clear refusal at the
 /// start rather than a decode failure somewhere in the middle that reads like
 /// corruption.
-pub(crate) const VERSION: u8 = 1;
+///
+/// It moved to 2 when a records answer began carrying the names of the tables
+/// its references point at. That is a change to the layout of a body, which is
+/// exactly the kind of change this byte exists for: a version that does not move
+/// when the layout does teaches a reader that the number is decoration, and the
+/// next mismatch arrives as corruption in the middle of a frame.
+pub(crate) const VERSION: u8 = 2;
 
 /// The largest frame this build will read.
 ///

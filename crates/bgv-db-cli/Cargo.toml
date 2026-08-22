@@ -18,6 +18,7 @@ bgv-db.workspace = true
 bgv-db-backup.workspace = true
 bgv-db-storage.workspace = true
 bgv-db-types.workspace = true
+bgv-db-wire.workspace = true
 
 [dev-dependencies]
 # Already in the tree through `bgv-db-types`; nothing new is fetched, and a test
