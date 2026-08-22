@@ -35,6 +35,7 @@
 
 mod basic;
 mod json;
+mod object;
 mod respond;
 
 use std::sync::Arc;
@@ -133,10 +134,27 @@ fn answer(db: &Db, mut request: Request) {
             405,
             r#"{"error":"that route takes another method"}"#.to_owned(),
         ),
-        _ => Answer::new(404, r#"{"error":"no such route"}"#.to_owned()),
+        (method, url) => match object::target(url) {
+            Some(aimed) => match method {
+                Method::Put | Method::Post => {
+                    let mut body = Vec::new();
+                    match request.as_reader().read_to_end(&mut body) {
+                        Ok(_) => object::put(db, &aimed, body, credentials.as_ref()),
+                        Err(_) => Answer::bad_request("the request body could not be read"),
+                    }
+                }
+                Method::Get | Method::Head => object::get(db, &aimed, credentials.as_ref()),
+                Method::Delete => object::delete(db, &aimed, credentials.as_ref()),
+                _ => Answer::new(
+                    405,
+                    r#"{"error":"that route takes another method"}"#.to_owned(),
+                ),
+            },
+            None => Answer::new(404, r#"{"error":"no such route"}"#.to_owned()),
+        },
     };
 
-    let mut response = Response::from_string(reply.body).with_status_code(reply.status);
+    let mut response = Response::from_data(reply.body).with_status_code(reply.status);
     // A `401` without a challenge is not a `401` a client can act on — RFC 9110
     // requires the header, so it follows from the status rather than from a
     // separate decision at each place that produces one.
@@ -145,9 +163,9 @@ fn answer(db: &Db, mut request: Request) {
     {
         response = response.with_header(header);
     }
-    // Every body here is JSON, so the header is a constant that parses — and if
-    // it somehow did not, an answer without a content type still beats no answer.
-    if let Ok(header) = "Content-Type: application/json".parse::<tiny_http::Header>() {
+    // The answer says what it is. A constant either way, so it parses — and if it
+    // somehow did not, an answer without a content type still beats no answer.
+    if let Ok(header) = format!("Content-Type: {}", reply.kind).parse::<tiny_http::Header>() {
         response = response.with_header(header);
     }
     // A client that hung up mid-answer is not this node's problem, and there is

@@ -38,15 +38,39 @@ use crate::json;
 pub struct Answer {
     /// The HTTP status.
     pub status: u16,
-    /// The body, always JSON.
-    pub body: String,
+    /// The body.
+    pub body: Vec<u8>,
+    /// What the body is, as a `Content-Type`.
+    ///
+    /// JSON for everything the language answers, and octets for a file. A file
+    /// is bytes the store has no opinion about — it did not ask what they were
+    /// when they went in, so it does not claim to know coming out.
+    pub kind: &'static str,
 }
 
+/// What an answer says it is.
+pub(crate) const JSON: &str = "application/json";
+pub(crate) const OCTETS: &str = "application/octet-stream";
+
 impl Answer {
-    /// An answer with this status and body.
+    /// An answer with this status and JSON body.
     #[must_use]
-    pub const fn new(status: u16, body: String) -> Self {
-        Self { status, body }
+    pub fn new(status: u16, body: String) -> Self {
+        Self {
+            status,
+            body: body.into_bytes(),
+            kind: JSON,
+        }
+    }
+
+    /// An answer carrying a file's bytes.
+    #[must_use]
+    pub const fn octets(status: u16, body: Vec<u8>) -> Self {
+        Self {
+            status,
+            body,
+            kind: OCTETS,
+        }
     }
 
     /// A refusal naming what was wrong with the request.
@@ -107,13 +131,45 @@ pub(crate) fn health(db: &Db) -> Answer {
 /// A request against an open store may carry none, which is what keeps an empty
 /// store usable; a request against a closed one that carries none is answered
 /// `401` by the session's own refusal, not by a second rule here.
-pub(crate) fn script(db: &Db, source: &str, credentials: Option<&Credentials>) -> Answer {
+/// A session, signed in when a credential was presented.
+///
+/// Shared by the script route and the object routes rather than written twice,
+/// because "who is asking" must be one answer: two sign-in paths is two places a
+/// refusal can be forgotten.
+pub(crate) fn session_for<'a>(
+    db: &'a Db,
+    credentials: Option<&Credentials>,
+) -> Result<bgv_db::Session<'a>, Answer> {
     let mut session = db.session();
     if let Some(presented) = credentials
         && let Err(error) = session.sign_in(&presented.name, &presented.password)
     {
-        return failure(&error);
+        return Err(failure(&error));
     }
+    Ok(session)
+}
+
+/// A bucket's listing, as the records it answered with.
+pub(crate) fn listing(db: &Db, outcomes: &[Outcome]) -> Answer {
+    let Some(outcome) = outcomes.last() else {
+        return Answer::new(200, r#"{"files":[]}"#.to_owned());
+    };
+    let referenced = match outcome {
+        Outcome::Records { records, .. } => records.clone(),
+        _ => Vec::new(),
+    };
+    let names = db.names_in(&referenced).unwrap_or_default();
+    let mut body = String::from(r#"{"files":["#);
+    encode(&mut body, outcome, &names);
+    body.push_str("]}");
+    Answer::new(200, body)
+}
+
+pub(crate) fn script(db: &Db, source: &str, credentials: Option<&Credentials>) -> Answer {
+    let mut session = match session_for(db, credentials) {
+        Ok(session) => session,
+        Err(answer) => return answer,
+    };
     match session.run(source) {
         Ok(outcomes) => {
             // Resolved once for the whole answer rather than per outcome, and
@@ -201,7 +257,7 @@ const fn name_of(path: AccessPath) -> &'static str {
 }
 
 /// A failure, as the status that says what kind it was.
-fn failure(error: &Error) -> Answer {
+pub(crate) fn failure(error: &Error) -> Answer {
     let status = match error {
         // This node does not know who is asking: no credential against a closed
         // store, or one it refused. Both are answered the same way, because
@@ -209,7 +265,12 @@ fn failure(error: &Error) -> Answer {
         Error::NotSignedIn { .. } | Error::SignInRefused => 401,
         // It knows, and the answer is still no. A different thing entirely, and
         // a client that cannot tell retries a signin that will never help.
-        Error::RoleForbids { .. } | Error::OutsideTenancy { .. } => 403,
+        //
+        // `NotGranted` belongs here for exactly that reason and was reaching the
+        // catch-all instead: a caller whose grants do not cover the table was
+        // being told they had written the request wrongly, which is the one
+        // thing they could not fix.
+        Error::RoleForbids { .. } | Error::OutsideTenancy { .. } | Error::NotGranted { .. } => 403,
         // The caller wrote it wrong, and no amount of changing the data helps.
         Error::Script(_) => 400,
         // The caller wrote it right and the data says no. Retriable after a

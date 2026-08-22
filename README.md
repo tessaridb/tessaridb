@@ -61,6 +61,34 @@ Every way in carries them: `Client::run_with` over the wire, where the values
 travel in the store's own codec, and `bgv --param who='ada' -e '…'` at the
 console, where a value is written as bgvQL and parsed on its own.
 
+## Files
+
+A bucket is a table whose records are files, so everything the language already
+does works on them — listing is a query, linking is a record reference, relating
+is an edge, a grant on the bucket governs the bytes and the metadata together,
+and a backup carries files because a backup carries the log.
+
+```rust
+session.run("DEFINE BUCKET media;")?;
+session.run("PUT media:'/logo.png' = 0x89504e47;")?;
+session.run("READ media:'/logo.png';")?;
+session.run("CREATE users:1 = { name: 'ada', avatar: media:'/logo.png' };")?;
+```
+
+A caller who would rather speak HTTP can:
+
+```text
+PUT    /files/{namespace}/{database}/{bucket}/{path}   the body is the file
+GET    /files/{namespace}/{database}/{bucket}/{path}   the body is the file
+DELETE /files/{namespace}/{database}/{bucket}/{path}
+GET    /files/{namespace}/{database}/{bucket}          what the bucket holds
+```
+
+These run the same statements through the same session, so an identity, a grant
+and a refusal behave identically whichever way a caller comes in. The path
+travels as a **value**, so a file may be called anything at all without any of it
+becoming part of a statement.
+
 ## Talking to one over HTTP
 
 ```rust
