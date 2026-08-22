@@ -292,6 +292,24 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         Ok(found)
     }
 
+    /// Write an index's definition again, unchanged, so its entries are built
+    /// from the table's rows as they now stand.
+    ///
+    /// The whole of `REBUILD INDEX`. A catalog entry is an ordinary record
+    /// (ADR-0009), so writing this one puts a mutation in the log that index
+    /// maintenance already knows how to answer — by building every entry the
+    /// definition implies. Nothing about the definition changes, and nothing
+    /// needs to: the *rows* changed, and the entries are a function of them.
+    ///
+    /// Two properties come from doing it this way rather than with a command of
+    /// its own. Every replica rebuilds at the same sequence, because each one
+    /// applies the same record. And the rebuild is atomic with whatever else the
+    /// transaction does, because it is the same batch.
+    ///
+    pub fn rebuild_index(&mut self, definition: &IndexDefinition) {
+        self.write(system::INDEXES, definition.id.get(), &definition.to_value());
+    }
+
     /// Drop an index's definition and release its name.
     ///
     /// The entries themselves are **not** removed here, for the same reason a

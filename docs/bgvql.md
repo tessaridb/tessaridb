@@ -350,6 +350,33 @@ inside the commit. On a table large enough that the pass outlasts the gap betwee
 concurrent writes, the statement fails with a contention error instead of
 half-building the index.
 
+`REBUILD INDEX by_embedding ON notes` makes an index's entries exactly what its
+table's rows imply, discarding whatever churn left behind:
+
+```
+REBUILD INDEX by_embedding ON notes;
+```
+
+It exists for the one index that gets **worse on its own**. A vector index's
+recall decays as records are removed, because the edges into a removed node are
+left where they are (§5), and nothing in an answer says so. Every other index
+here is repaired as the records change; this one is the reason the statement is
+in the language.
+
+**It is a statement, not something the store decides.** A store that rebuilt on
+its own reckoning would rebuild on each replica at a different moment, and from
+that moment two replicas would answer the same approximate question differently
+— silently, because a slightly different neighbour list looks exactly like a
+right one. Written down, the rebuild is one record in the log that every replica
+applies at one sequence. It is the same reason a retention policy is a statement
+here rather than a job (§8).
+
+A rebuild **cannot change an answer**, for the same reason an index cannot: it is
+the entries being made to say what the rows already say. What changes is how well
+the approximate read does, and what it costs. It reads the whole table inside the
+commit, exactly as `DEFINE INDEX` does, and fails the same way on a table whose
+pass outlasts the gap between writes.
+
 `DROP TABLE` removes the definition. It does not delete the table's records,
 because that is bulk work whose cost belongs where a caller can see it.
 
@@ -682,7 +709,11 @@ of it; the edges *into* it are left, because finding them means reading every no
 that might point there. Correctness is unaffected — an index read is a candidate
 set and each candidate is resolved at the reader's own snapshot, so a removed
 record never reaches an answer — but a graph that has churned heavily walks
-through holes. The remedy is a rebuild, which is not built.
+through holes. Measured on two thousand clustered thirty-two-dimensional vectors,
+removing half of them takes recall of the true ten from **100% to 42%**, and
+nothing in the answer says so.
+
+The remedy is `REBUILD INDEX` — see §4.
 
 ### Following a reference
 
@@ -1432,7 +1463,8 @@ being read. Two rows left on 2026-08-22: a full-text **index**, disproved by
 `DEFINE INDEX by_body ON notes FIELDS body SEARCH` (§4), and a **grant matrix**,
 disproved by `GRANT read, write ON orders TO ada` and its `FIELDS` form (§4).
 Row-level security, which the second row also named, genuinely is absent and now
-says so on its own.
+says so on its own. A third left the same day: **rebuilding a vector index that
+has churned**, disproved by `REBUILD INDEX by_embedding ON notes` (§4).
 
 | Absent | Why |
 |---|---|
@@ -1460,7 +1492,6 @@ says so on its own.
 | phrase queries (`'"ada lovelace"'`) | they need positions in the postings and a second matching rule |
 | layers in the vector index | a hierarchical graph assigns each node a random level, and a random level is what a store whose index entries are *derived rather than logged* cannot have — two replicas would build different graphs from one log. A level derived from a hash of the record id is the right shape when the layers earn their cost; the key already reserves the byte. |
 | a filtered nearest-neighbour read | the graph answers a distance question and knows nothing of a `WHERE`, so combining them needs either over-fetching by an unknown factor or a filtered walk |
-| rebuilding a vector index that has churned | deletion leaves the edges *into* a removed node, so recall decays with churn. Correctness does not — a candidate that does not resolve produces no row. |
 | highlighting, fuzzy matching, phrase and proximity queries | each needs postings to carry more than membership — offsets for a highlight or a phrase, an edit automaton for fuzziness — which is a different index rather than a bigger one. Ranking itself is built: see [Ranking](#ranking) |
 | per-index `k1` / `b`, per-field weighting | tuning knobs nobody can yet turn responsibly: this project has no labelled relevance set to measure a different value against, and a knob chosen without one is a guess with a syntax |
 | `[*]` in a path — "any element of this array" | it turns a path from a function into a relation: the filter becomes existential, a projection returns several values, and the index becomes a multikey one with entries per element and a reclamation rule of its own. Three features wearing one syntax. |
@@ -1537,6 +1568,9 @@ says so on its own.
 | An ordered comparison against `NONE` or `NULL` is false | **contract** — they are the absence of a value, not a small one |
 | `= NONE` and `= NULL` are the two questions `IS NULL` would blur together | **contract** |
 | An index narrows a conjunct; the whole condition still decides | **contract** — what keeps an index from changing an answer |
+| A build is authoritative, so `REBUILD INDEX` is `DEFINE INDEX` run again | **contract** — an index's entries are made to *be* what the rows imply rather than added to what is there, which is why a rebuild needs no second path and no log shape of its own |
+| A rebuild is a statement, never the store's own decision | **contract** — replicas that each rebuilt on their own reckoning would answer one approximate question differently, and differ in silence |
+| A rebuilt index is a function of the rows, not of the order they arrived in | **contract** — the rows are read in record-id order, so two replicas that received them differently still agree |
 | A bare name is a path in a condition and a table in a value position | **contract** |
 | A projection is named by the last step of its path | **contract** — the alternative puts a delimiter inside a field name, which no path can then address |
 | A projected path reaching nothing omits its field rather than answering `none` | **contract** — the same reason `NONE` and `NULL` are different literals |

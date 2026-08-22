@@ -47,6 +47,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DropField { table, .. }
         | StatementKind::DropTable { table }
         | StatementKind::DropIndex { table, .. }
+        | StatementKind::RebuildIndex { table, .. }
         | StatementKind::DeleteWhere { table, .. } => vec![table],
 
         StatementKind::Keys { space, .. } => vec![space],

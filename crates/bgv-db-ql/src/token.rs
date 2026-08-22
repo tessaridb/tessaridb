@@ -218,6 +218,8 @@ pub enum Keyword {
     Define,
     /// `DROP`
     Drop,
+    /// `REBUILD` — make an index's entries what its table's rows imply.
+    Rebuild,
     /// `TABLE`
     Table,
     /// `SPACE`
@@ -347,6 +349,7 @@ impl Keyword {
             Self::Database => "DATABASE",
             Self::Define => "DEFINE",
             Self::Drop => "DROP",
+            Self::Rebuild => "REBUILD",
             Self::Table => "TABLE",
             Self::Space => "SPACE",
             Self::Bucket => "BUCKET",
@@ -415,6 +418,7 @@ impl Keyword {
         Self::Database,
         Self::Define,
         Self::Drop,
+        Self::Rebuild,
         Self::Table,
         Self::Space,
         Self::Bucket,

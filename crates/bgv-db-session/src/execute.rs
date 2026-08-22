@@ -3,14 +3,12 @@
 use bgv_db_encoding::encode_payload;
 use bgv_db_ql::{FieldPath, Name, RecordTarget, Span, StatementKind, TableRef};
 use bgv_db_storage::{
-    Catalog, EDGE_IN, EDGE_OUT, FieldShape, IndexShape, RecordAddress, TableShape, Transaction,
-    VectorDistance,
+    Catalog, EDGE_IN, EDGE_OUT, FieldShape, IndexDefinition, IndexShape, RecordAddress, TableShape,
+    Transaction, VectorDistance,
 };
 use std::collections::BTreeMap;
 
-use bgv_db_types::{
-    Analyzer, FieldId, FieldKind, Filter, IndexId, RecordId, RecordRef, TableId, Value,
-};
+use bgv_db_types::{Analyzer, FieldId, FieldKind, Filter, RecordId, RecordRef, TableId, Value};
 
 use crate::error::{Error, Result};
 use crate::evaluate::{key_bound, within};
@@ -161,7 +159,16 @@ impl Session<'_> {
             StatementKind::DropIndex { name, table } => {
                 let (_, id) = self.resolve_table(transaction, table)?;
                 let index = self.index_named(transaction, id, name)?;
-                Catalog::new(transaction).drop_index(index)?;
+                Catalog::new(transaction).drop_index(index.id)?;
+                Ok(Outcome::Done)
+            }
+            // Writing the definition again is the whole statement: the entries
+            // are derived from it, so a definition arriving in a log record is
+            // what makes them get built — see `Catalog::rebuild_index`.
+            StatementKind::RebuildIndex { name, table } => {
+                let (_, id) = self.resolve_table(transaction, table)?;
+                let index = self.index_named(transaction, id, name)?;
+                Catalog::new(transaction).rebuild_index(&index);
                 Ok(Outcome::Done)
             }
             StatementKind::Create { target, value } => {
@@ -541,17 +548,22 @@ impl Session<'_> {
             })
     }
 
+    /// The definition of the index this table calls `name`.
+    ///
+    /// The definition rather than the id, because a caller that only wants the
+    /// id can take it — and the one caller that wants the whole thing would
+    /// otherwise have to look it up twice and handle a second absence that
+    /// cannot happen.
     fn index_named(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
         name: &Name,
-    ) -> Result<IndexId> {
+    ) -> Result<IndexDefinition> {
         Catalog::new(transaction)
             .indexes_on(table)?
             .into_iter()
             .find(|index| index.name == name.text)
-            .map(|index| index.id)
             .ok_or_else(|| Error::Unknown {
                 entity: "index",
                 name: name.text.clone(),

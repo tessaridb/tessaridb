@@ -70,11 +70,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bgv_db_encoding::{
-    IndexAddress, IndexTarget, IndexValues, LogRecord, Mutation, NoPayload, PostingKey,
+    IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, NoPayload, PostingKey,
     RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, StoreKey, StoreValue,
     UniqueIndexKey, decode_payload,
 };
-use bgv_db_kv::WriteBatch;
+use bgv_db_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use bgv_db_types::{Analyzer, RecordId, TableId, Value};
 
 use crate::catalog::{Catalog, IndexDefinition, defined_index};
@@ -85,11 +85,12 @@ use crate::transaction::{RecordAddress, Transaction};
 
 /// What one log record accumulates while its index writes are built.
 ///
-/// Both fields are facts a single mutation cannot see on its own: the unique
-/// values already claimed *within this batch*, and how each search index's
-/// collection statistics have moved so far. They travel together because they
-/// have the same lifetime and the same reason to exist — the batch is the unit
-/// of atomicity, so it is also the unit these are true of.
+/// Every field is a fact a single mutation cannot see on its own: the unique
+/// values already claimed *within this batch*, how each search index's
+/// collection statistics have moved so far, and which indexes this record
+/// builds outright. They travel together because they have the same lifetime
+/// and the same reason to exist — the batch is the unit of atomicity, so it is
+/// also the unit these are true of.
 #[derive(Debug, Default)]
 struct Pending {
     /// Unique index keys this batch has already written.
@@ -100,6 +101,13 @@ struct Pending {
     claimed: BTreeSet<Vec<u8>>,
     /// How each search index's statistics move, written once at the end.
     moved: BTreeMap<IndexAddress, Delta>,
+    /// Indexes [`build`] wrote whole in this record.
+    ///
+    /// Their statistics are a **total**, not a movement: the build counted every
+    /// row the index has, so adding that to the stored figure would count each
+    /// document a second time. `settle` reads this to know which of the two it
+    /// is holding.
+    built: BTreeSet<IndexAddress>,
 }
 
 /// Add the index writes a log record implies to `batch`.
@@ -170,15 +178,31 @@ pub(crate) fn maintain(
             batch = build(store, batch, &mut view, record, &definition, &mut pending)?;
         }
     }
-    settle(store, batch, &pending.moved)
+    settle(store, batch, &pending.moved, &pending.built)
 }
 
-/// Every entry a newly defined index implies, added to the commit that defines
-/// it.
+/// Every entry an index implies, written into the commit that defines — or
+/// rebuilds — it.
 ///
 /// The rows are the committed ones as of `view`, overlaid with this record's own
 /// mutations for that table — so a script that defines an index and writes to the
 /// table in one transaction indexes both what was there and what it just wrote.
+///
+/// # A build is authoritative, not additive
+///
+/// It makes the index's entries **be** what the rows imply, rather than adding
+/// what the rows imply to whatever is already there. So it clears first, and a
+/// search index's statistics come out as a total rather than a movement.
+///
+/// That is what a *rebuild* is, and it is why rebuilding needs no second path
+/// and no new log shape: `REBUILD INDEX` writes the index's catalog record
+/// again, unchanged, and a catalog record is an ordinary record (ADR-0009), so
+/// this arrives exactly as a definition does. One rule covers both, and there
+/// is no first-time-only branch left to be wrong.
+///
+/// A first build has nothing to clear and no statistics to reset, so the extra
+/// work it pays for is four scans over an empty range — next to reading the
+/// whole table, which it already does.
 fn build(
     store: &Store,
     mut batch: WriteBatch,
@@ -193,6 +217,12 @@ fn build(
         definition.table,
         definition.id,
     );
+    batch = clear(store, batch, &address)?;
+    pending.built.insert(address);
+    // Anything the per-mutation pass moved for this index is discarded with the
+    // entries it described: the rows below include this record's own mutations,
+    // so counting them again is counting them twice.
+    pending.moved.insert(address, Delta::default());
     let mut rows: BTreeMap<RecordId, Vec<u8>> = view
         .scan_table(definition.namespace, definition.database, definition.table)?
         .into_iter()
@@ -244,6 +274,12 @@ fn build(
         return Ok(batch);
     }
 
+    // A claim set of this build's own. The per-mutation pass may have claimed
+    // values in this same index — and those claims describe entries the clear
+    // above has just removed, so honouring them would refuse a rebuild for
+    // colliding with itself. Nothing is lost: every row is seen here, so a
+    // genuine duplicate still collides.
+    let mut claimed = BTreeSet::new();
     for (id, payload) in &rows {
         if let Some(values) = project(definition, &decode_payload(payload)?) {
             batch = insert(
@@ -253,8 +289,41 @@ fn build(
                 &address,
                 &values,
                 id,
-                &mut pending.claimed,
+                &mut claimed,
             )?;
+        }
+    }
+    Ok(batch)
+}
+
+/// Every entry this index currently holds, deleted from the batch.
+///
+/// A build writes what the rows imply; without this it would leave behind
+/// whatever an earlier build left — a node whose neighbour list points at
+/// records that have gone, a posting for text nobody stores any more, an entry
+/// under a value the record no longer holds.
+///
+/// All five index key kinds, because a rebuild has to be safe on any index a
+/// caller may name, and an index whose shape changed is not a case this store
+/// wants to reason about one kind at a time.
+fn clear(store: &Store, mut batch: WriteBatch, address: &IndexAddress) -> Result<WriteBatch> {
+    for kind in [
+        KeyKind::SecondaryIndex,
+        KeyKind::UniqueIndex,
+        KeyKind::Posting,
+        KeyKind::VectorNode,
+        KeyKind::SearchStatistics,
+    ] {
+        let keyspace = kind.keyspace();
+        let prefix = address.prefix(kind);
+        let request = ScanRequest {
+            keyspace,
+            range: KeyRange::prefix(&prefix),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+        for (key, _) in store.backend().scan(&request)? {
+            batch = batch.delete(keyspace, key);
         }
     }
     Ok(batch)
@@ -552,6 +621,7 @@ fn settle(
     store: &Store,
     mut batch: WriteBatch,
     moved: &BTreeMap<IndexAddress, Delta>,
+    built: &BTreeSet<IndexAddress>,
 ) -> Result<WriteBatch> {
     let keyspace = SearchStatisticsKey::keyspace();
     for (address, delta) in moved {
@@ -559,9 +629,18 @@ fn settle(
             continue;
         }
         let key = SearchStatisticsKey::new(*address).encode();
-        let held = match store.backend().get(keyspace, &key)? {
-            Some(bytes) => SearchStatistics::decode(bytes.as_slice())?,
-            None => SearchStatistics::default(),
+        // An index this record **built** was counted whole, so its figure is a
+        // total and starts from nothing. One that was merely updated carries a
+        // movement, and starts from what is stored. Reading the stored figure
+        // for a build would count every document twice — silently, since a
+        // collection statistic has no reader who would notice it drifting.
+        let held = if built.contains(address) {
+            SearchStatistics::default()
+        } else {
+            match store.backend().get(keyspace, &key)? {
+                Some(bytes) => SearchStatistics::decode(bytes.as_slice())?,
+                None => SearchStatistics::default(),
+            }
         };
         let updated = SearchStatistics::new(
             shift(held.documents, delta.documents),

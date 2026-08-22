@@ -37,8 +37,17 @@
 //! it are left, because finding them means reading every node that might point
 //! here. Correctness is unaffected: an index read is a candidate set and each
 //! candidate is resolved at the reader's own snapshot, so a removed record never
-//! reaches an answer. Recall is affected, and decays with churn. The remedy is a
-//! rebuild, which is not built.
+//! reaches an answer. Recall is affected, and decays with churn — measured here
+//! at **100% falling to 42%** when half of two thousand records go.
+//!
+//! The remedy is `REBUILD INDEX`, and it is a statement rather than something
+//! this graph decides for itself. A store that rebuilt on its own reckoning
+//! would rebuild on each replica at a different moment, and from that moment two
+//! replicas would answer the same approximate question differently — the same
+//! failure random levels would cause, arriving by a different road. Written as a
+//! statement, the rebuild is a record in the log that every replica applies at
+//! one sequence, and the rebuilt graph is a function of the rows alone because
+//! `index::build` inserts them in record-id order.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -352,6 +361,20 @@ impl Graph {
     pub(crate) fn remove(&mut self, id: &RecordId) {
         self.nodes.remove(id);
     }
+
+    /// How many edges point at records this graph no longer holds.
+    ///
+    /// The measure of what churn has done. Public to the crate because the
+    /// thing worth testing about a rebuild is not that it ran — it is that the
+    /// dangling edges are gone and the recall came back.
+    #[cfg(test)]
+    pub(crate) fn dangling(&self) -> usize {
+        self.nodes
+            .values()
+            .flat_map(|node| node.neighbours.iter())
+            .filter(|id| !self.nodes.contains_key(id))
+            .count()
+    }
 }
 
 /// The nearest candidate, removed from the list.
@@ -606,5 +629,120 @@ mod tests {
         }
         let recall = hit.saturating_mul(100).checked_div(asked).unwrap_or(0);
         assert!(recall >= 90, "recall was {recall}%");
+    }
+
+    /// The recall of this graph against the exact answer over `live`.
+    fn recall_over(graph: &Graph, live: &[i64], dimensions: usize) -> usize {
+        let mut hit = 0_usize;
+        let mut asked = 0_usize;
+        for q in 0..20 {
+            let query = clustered(100_000_i64.saturating_add(q), dimensions);
+            let mut exact: Vec<(f64, i64)> = live
+                .iter()
+                .map(|n| {
+                    (
+                        separation(
+                            VectorDistance::Euclidean,
+                            &clustered(*n, dimensions),
+                            &query,
+                        ),
+                        *n,
+                    )
+                })
+                .collect();
+            exact.sort_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
+            let truth: Vec<RecordId> = exact
+                .iter()
+                .take(10)
+                .map(|(_, n)| RecordId::Int(*n))
+                .collect();
+            let found = graph.nearest(&query, 10);
+            hit = hit.saturating_add(found.iter().filter(|id| truth.contains(id)).count());
+            asked = asked.saturating_add(truth.len());
+        }
+        hit.saturating_mul(100).checked_div(asked).unwrap_or(0)
+    }
+
+    #[test]
+    fn churn_costs_recall_and_a_rebuild_gets_it_back() {
+        // The failure this whole wave is about, measured on both sides of the
+        // remedy rather than argued. Removing a record takes its node and the
+        // edges *out* of it; the edges *into* it are left, because finding them
+        // means reading every node that might point here. Nothing goes wrong
+        // that anybody can see — a candidate that does not resolve produces no
+        // row — and the search quietly gets worse.
+        const RECORDS: i64 = 2_000;
+        const DIMENSIONS: usize = 32;
+
+        let mut graph = Graph::empty(VectorDistance::Euclidean);
+        for n in 0..RECORDS {
+            graph.insert(&RecordId::Int(n), clustered(n, DIMENSIONS));
+        }
+        // Half of them go, spread across every cluster rather than taken from
+        // one end: deleting a contiguous range would remove whole regions of the
+        // graph, and what is being measured is damage to the *links*, not the
+        // absence of the records.
+        let live: Vec<i64> = (0..RECORDS).filter(|n| n % 2 == 0).collect();
+        for n in (0..RECORDS).filter(|n| n % 2 == 1) {
+            graph.remove(&RecordId::Int(n));
+        }
+
+        let churned = recall_over(&graph, &live, DIMENSIONS);
+        assert!(graph.dangling() > 0, "the fixture did not churn the graph");
+
+        // The rebuild: the same live records, inserted in record-id order.
+        let mut rebuilt = Graph::empty(VectorDistance::Euclidean);
+        for n in &live {
+            rebuilt.insert(&RecordId::Int(*n), clustered(*n, DIMENSIONS));
+        }
+        let after = recall_over(&rebuilt, &live, DIMENSIONS);
+
+        assert_eq!(
+            rebuilt.dangling(),
+            0,
+            "a rebuilt graph still points at gaps"
+        );
+        assert!(after >= 90, "recall after a rebuild was {after}%");
+        assert!(
+            after > churned,
+            "the rebuild did not improve recall: {churned}% then {after}%"
+        );
+    }
+
+    #[test]
+    fn a_rebuilt_graph_is_a_function_of_the_rows_and_not_of_their_order() {
+        // Why a rebuild can be trusted between replicas. The incremental graph
+        // is a function of log order; a rebuild inserts in record-id order,
+        // which is a property of the data — so two stores that received the same
+        // records in different orders rebuild to one graph.
+        const DIMENSIONS: usize = 8;
+        let forwards: Vec<i64> = (0..120).collect();
+        let backwards: Vec<i64> = (0..120).rev().collect();
+
+        let mut first = Graph::empty(VectorDistance::Euclidean);
+        for n in &forwards {
+            first.insert(&RecordId::Int(*n), clustered(*n, DIMENSIONS));
+        }
+        let mut second = Graph::empty(VectorDistance::Euclidean);
+        for n in &backwards {
+            second.insert(&RecordId::Int(*n), clustered(*n, DIMENSIONS));
+        }
+        assert_ne!(
+            first.nodes, second.nodes,
+            "the fixture is not exercising order at all"
+        );
+
+        // Both rebuilt the way `index::build` does it: rows in record-id order.
+        let rebuild = |source: &Graph| {
+            let mut held = Graph::empty(VectorDistance::Euclidean);
+            for id in source.nodes.keys() {
+                let vector = source.nodes.get(id).map(|node| node.vector.clone());
+                if let Some(vector) = vector {
+                    held.insert(id, vector);
+                }
+            }
+            held
+        };
+        assert_eq!(rebuild(&first).nodes, rebuild(&second).nodes);
     }
 }

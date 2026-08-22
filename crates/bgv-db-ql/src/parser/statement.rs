@@ -47,6 +47,7 @@ impl Parser<'_> {
             Some(Keyword::Use) => self.use_statement()?,
             Some(Keyword::Define) => self.define_statement()?,
             Some(Keyword::Drop) => self.drop_statement()?,
+            Some(Keyword::Rebuild) => self.rebuild_statement()?,
             Some(Keyword::Grant) => self.grant_statement(true)?,
             Some(Keyword::Revoke) => self.grant_statement(false)?,
             Some(Keyword::Create) => self.write_statement(Keyword::Create)?,
@@ -390,6 +391,21 @@ impl Parser<'_> {
         };
         self.advance();
         Ok(kind)
+    }
+
+    /// `REBUILD INDEX <name> ON <table>`
+    ///
+    /// `INDEX` is spelled out although nothing else can be rebuilt yet, because
+    /// the alternative reads as though the table were the thing being rebuilt.
+    fn rebuild_statement(&mut self) -> Result<StatementKind> {
+        self.advance();
+        self.expect_keyword(Keyword::Index, "`INDEX` and the index to rebuild")?;
+        let name = self.name()?;
+        self.expect_keyword(Keyword::On, "`ON` and the table the index reads")?;
+        Ok(StatementKind::RebuildIndex {
+            name,
+            table: self.table_ref()?,
+        })
     }
 
     fn drop_statement(&mut self) -> Result<StatementKind> {

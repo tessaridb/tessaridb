@@ -33,6 +33,24 @@ DEFINE TABLE IF NOT EXISTS users;
 DEFINE INDEX IF NOT EXISTS by_email ON users FIELDS email UNIQUE;
 --- expect: ok
 
+--- case: an index is rebuilt from the rows its table holds
+# What a rebuild is for is a vector index, whose recall decays as records churn
+# because the edges *into* a removed node are left where they are. It is spelled
+# as a statement rather than done on the store's own reckoning: two replicas that
+# each rebuilt when they felt like it would answer the same approximate question
+# differently, and would differ in silence.
+CREATE users:1 = { last: 'lovelace', first: 'ada' };
+REBUILD INDEX by_name ON users;
+--- expect: ok
+
+--- case: and the answer is the one it was before, because that is what an index promises
+SELECT * FROM users WHERE last = 'lovelace';
+--- expect: rows 1
+
+--- case: rebuilding something nobody defined names what is missing
+REBUILD INDEX by_nothing ON users;
+--- expect: error Unknown
+
 --- case: an index is removed
 DROP INDEX by_name ON users;
 --- expect: ok

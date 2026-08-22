@@ -240,6 +240,19 @@ pub enum StatementKind {
         /// The table it indexes.
         table: TableRef,
     },
+    /// `REBUILD INDEX by_embedding ON papers`
+    ///
+    /// Makes the index's entries exactly what its table's rows imply, discarding
+    /// whatever churn left behind. It is a statement rather than something the
+    /// store decides for itself because two replicas must rebuild at the same
+    /// point in the log; one that rebuilt on its own reckoning would answer an
+    /// approximate question differently from its peers, and differ silently.
+    RebuildIndex {
+        /// The index's name.
+        name: Name,
+        /// The table it indexes.
+        table: TableRef,
+    },
     /// `CREATE users:1 = { … }`
     Create {
         /// The record to write.

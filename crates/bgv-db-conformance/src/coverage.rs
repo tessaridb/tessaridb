@@ -35,6 +35,7 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::Revoke { .. } => "REVOKE",
         StatementKind::DropTable { .. } => "DROP TABLE",
         StatementKind::DropIndex { .. } => "DROP INDEX",
+        StatementKind::RebuildIndex { .. } => "REBUILD INDEX",
         StatementKind::DropField { .. } => "DROP FIELD",
         StatementKind::Relate { .. } => "RELATE",
         StatementKind::Create { .. } => "CREATE",
@@ -74,6 +75,7 @@ pub const FORMS: &[&str] = &[
     "REVOKE",
     "DROP TABLE",
     "DROP INDEX",
+    "REBUILD INDEX",
     "DROP FIELD",
     "RELATE",
     "CREATE",
@@ -133,6 +135,7 @@ mod tests {
              DEFINE FIELD f ON t TYPE string;\
              DROP TABLE t;\
              DROP INDEX i ON t;\
+             REBUILD INDEX i ON t;\
              DROP FIELD f ON t;\
              DEFINE ANALYZER a FILTERS lowercase;\
              DEFINE USER u ROLE owner PASSWORD 'x';\

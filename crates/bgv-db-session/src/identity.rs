@@ -96,6 +96,20 @@ pub(crate) enum Needs {
 
 impl Needs {
     /// What this statement needs.
+    ///
+    /// # Every statement is named, and there is no catch-all
+    ///
+    /// There used to be one — `_ => Self::Write` — and it read as the safe
+    /// default, which is precisely why it was not. `READ` was added and fell
+    /// through it, so a grant of `read` on a bucket could list the files and not
+    /// open one; the mistake was invisible because the arm was doing exactly
+    /// what it says. A catch-all mis-classifies a new statement *silently*, and
+    /// a permission that is one class too strict looks like a bug in the grant
+    /// rather than a bug here.
+    ///
+    /// So the match is exhaustive, the way `tables_named` and the conformance
+    /// coverage list already are: adding a statement to the language will not
+    /// compile until somebody says what it needs.
     pub(crate) const fn of(kind: &StatementKind) -> Self {
         match kind {
             StatementKind::Select(_)
@@ -118,7 +132,30 @@ impl Needs {
             | StatementKind::DropUser { .. }
             | StatementKind::Grant { .. }
             | StatementKind::Revoke { .. } => Self::Administer,
-            _ => Self::Write,
+            // Everything else changes something: the records, or the structure
+            // they are held in. Defining and dropping sit here rather than under
+            // `Administer` because an `editor` is expected to shape the data
+            // they own; only deciding what *another* person may do is reserved.
+            StatementKind::DefineNamespace { .. }
+            | StatementKind::DefineDatabase { .. }
+            | StatementKind::DefineTable { .. }
+            | StatementKind::DefineSpace { .. }
+            | StatementKind::DefineBucket { .. }
+            | StatementKind::DefineIndex { .. }
+            | StatementKind::DefineField { .. }
+            | StatementKind::DefineAnalyzer { .. }
+            | StatementKind::DropTable { .. }
+            | StatementKind::DropIndex { .. }
+            | StatementKind::RebuildIndex { .. }
+            | StatementKind::DropField { .. }
+            | StatementKind::Relate { .. }
+            | StatementKind::Create { .. }
+            | StatementKind::Update { .. }
+            | StatementKind::Delete { .. }
+            | StatementKind::DeleteWhere { .. }
+            | StatementKind::Set { .. }
+            | StatementKind::Del { .. }
+            | StatementKind::Put { .. } => Self::Write,
         }
     }
 
