@@ -8,6 +8,7 @@
 use core::ops::Bound;
 use std::collections::BTreeMap;
 
+use bgv_db_constants::ORDERED_FILTER_REACH;
 use bgv_db_ql::{
     BinaryOp, Direction, Expr, ExprKind, Function, Hop, Projected, Projection, RecordTarget,
     Select, Source, Span, TableRef,
@@ -571,6 +572,22 @@ impl Session<'_> {
                 let mut expressions: Vec<&Expr> = vec![condition];
                 expressions.extend(shown(select));
                 let searched = self.searched_for(transaction, id, &expressions)?;
+                // The order first, when an index holds it. A filtered read that
+                // narrows and then sorts is correct and costs a sort of
+                // everything the condition matched; taking the records in the
+                // order they are already stored in costs the bound.
+                if let Some(bound) = plan::descending(select)
+                    && let Some(found) = self.descend_matching(
+                        transaction,
+                        context,
+                        id,
+                        &bound,
+                        condition,
+                        &searched,
+                    )?
+                {
+                    return Ok((found, AccessPath::Ordered, searched));
+                }
                 let (candidates, path) =
                     self.candidates(transaction, id, context, condition, &searched)?;
 
@@ -858,6 +875,94 @@ impl Session<'_> {
             return Ok(None);
         };
         self.records_of(found, &visible).map(Some)
+    }
+
+    /// A bounded descending read **under a condition**, taken from the index
+    /// that holds the order.
+    ///
+    /// `None` means the read is not served this way and the caller narrows and
+    /// sorts, which is what it did before this existed.
+    ///
+    /// # The trap, and the whole of why this is not a call site
+    ///
+    /// An index narrows and the **condition decides** — every candidate is
+    /// re-tested against the whole of it above the source. So a walk that filled
+    /// the caller's bound with ten *entries* can answer with fewer than ten
+    /// *records*, because some of them fail that test. Not an error, not a
+    /// crash: real records, fewer of them, returned confidently. That is the
+    /// same failure class as a limit pushed past a clause that changes the
+    /// count, and it is why this asks for more until enough **survive** rather
+    /// than until enough are read.
+    ///
+    /// # Why taking the first `wanted` survivors of the top `k` is the answer
+    ///
+    /// The walk yields records in index order, and that **is** the sort order —
+    /// the index and the sort use one order, the value system's. So no record
+    /// outside the top `k` can rank above one inside it, and the first `wanted`
+    /// survivors of the top `k` are the first `wanted` survivors of the whole
+    /// table.
+    ///
+    /// Absences are the one case that could break that argument and cannot: a
+    /// record with no value for the key has **no index entry** and sorts *last*
+    /// descending, so it is never near the top of the order. That is the same
+    /// fact that makes the unconditioned case descending-only, inherited here
+    /// rather than re-derived.
+    ///
+    /// # The ceiling bounds the cost and never the answer
+    ///
+    /// How far past the bound the walk must go depends on how selective the
+    /// condition is over the order — the distribution statistic this store
+    /// deliberately does not keep. Past [`ORDERED_FILTER_REACH`] multiples of
+    /// the bound, the order is not worth serving from the index and the read
+    /// falls back to the scan it would have taken anyway. Every exit is either
+    /// an ordered answer that filled the bound or the scan; there is no exit
+    /// that answers short.
+    ///
+    /// The answer may be **longer** than the bound, which is correct and
+    /// deliberate: it is in order, and `shape::bounded` takes the window the
+    /// statement asked for, as it does for every other path.
+    fn descend_matching(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: crate::context::Context,
+        table: TableId,
+        wanted: &plan::Bounded<'_>,
+        condition: &Expr,
+        searched: &Searched,
+    ) -> Result<Option<Vec<(RecordId, Value)>>> {
+        let Some((index, visible)) =
+            self.index_serving_order(transaction, context, table, wanted.path)?
+        else {
+            return Ok(None);
+        };
+        let ceiling = wanted.wanted.saturating_mul(ORDERED_FILTER_REACH);
+        let mut asking = wanted.wanted;
+        loop {
+            // `None` is the index unable to fill `asking` — it has run out of
+            // entries, and the records that would fill the rest of the answer
+            // are ones it does not hold. The scan is the read that can find
+            // those.
+            let Some(found) = transaction.records_in_descending_order(&index, asking)? else {
+                return Ok(None);
+            };
+            let mut matched = Vec::new();
+            for (id, record) in self.records_of(found, &visible)? {
+                let held =
+                    self.evaluate_in(transaction, condition, Scope::searching(&record, searched))?;
+                if boolean(&held, condition.span)? {
+                    matched.push((id, record));
+                }
+            }
+            if matched.len() >= wanted.wanted {
+                return Ok(Some(matched));
+            }
+            if asking >= ceiling {
+                return Ok(None);
+            }
+            // Doubling, so reaching the ceiling costs about twice the ceiling in
+            // entries rather than a walk per step.
+            asking = asking.saturating_mul(2).min(ceiling);
+        }
     }
 
     /// The index that may serve this order, if one may — and what the caller may

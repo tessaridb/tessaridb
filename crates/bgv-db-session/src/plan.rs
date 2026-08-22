@@ -959,8 +959,23 @@ impl Session<'_> {
                 }
             }
             Source::Where { table, condition } => {
-                let (_, id) = self.resolve_table(transaction, table)?;
+                let (context, id) = self.resolve_table(transaction, table)?;
                 plan.insert("table".to_owned(), Value::from(table.name.text.as_str()));
+                // Asked before the candidates, because the read asks it before
+                // the candidates — and from the same function, so the two cannot
+                // come to disagree. As in the unconditioned case, whether the
+                // walk will fill the bound is the read's own question and not
+                // one a plan can answer: a condition too unselective for the
+                // order sends the read back to the scan, and this reports the
+                // path the planner chose rather than the one it settled for.
+                if let Some(bound) = descending(select)
+                    && let Some((index, _)) =
+                        self.index_serving_order(transaction, context, id, bound.path)?
+                {
+                    plan.insert("access".to_owned(), Value::from("ordered"));
+                    plan.insert("index".to_owned(), Value::from(index.name.as_str()));
+                    return Ok(crate::outcome::Outcome::Value(Value::Object(plan)));
+                }
                 let searched = self.searched_for(transaction, id, &[condition])?;
                 let declared = Catalog::new(transaction).indexes_on(id)?;
                 let offered = self.enumerate(transaction, condition, &declared, &searched)?;

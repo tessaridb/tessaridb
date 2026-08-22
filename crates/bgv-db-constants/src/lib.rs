@@ -112,3 +112,28 @@ pub const BM25_K1: f64 = 1.2;
 /// ranking order without any statement changing, which is stated in
 /// `docs/bgvql.md` rather than left to be discovered.
 pub const BM25_B: f64 = 0.75;
+
+/// How far past its bound an ordered read under a condition may walk the index
+/// before giving the order up and taking the scan.
+///
+/// Unit: multiples of the bound the statement asked for.
+///
+/// An index-served order under a `WHERE` walks in the sort's order and re-tests
+/// each record against the whole condition, because the index narrows and the
+/// condition decides. So filling a bound of ten may take more than ten entries,
+/// and how many more depends on how selective the condition is over the order —
+/// which is exactly the distribution statistic this store deliberately does not
+/// keep (`docs/bgvql.md` §8).
+///
+/// The ceiling is what turns that unknown into a cost rather than a risk. Past
+/// it the condition is not selective enough for the order to be worth serving
+/// from the index, and the read falls back to the scan it would have taken
+/// anyway. **It bounds the cost and never the answer**: every exit is either an
+/// ordered answer that filled the bound or the scan.
+///
+/// `32` because the retries double, so reaching the ceiling costs about twice
+/// the ceiling in entries — a few hundred for a bound of ten, against a scan of
+/// the whole table. A condition matching one row in thirty-two is still served;
+/// one matching one in a thousand is not, and paying a full scan for it is the
+/// right answer rather than a walk that reads most of the index in batches.
+pub const ORDERED_FILTER_REACH: usize = 32;
