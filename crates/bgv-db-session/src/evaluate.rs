@@ -111,8 +111,34 @@ impl Session<'_> {
                 arithmetic(*op, &held, &other, expr.span)
             }
             ExprKind::Binary { op, left, right } => {
-                let held = self.evaluate_in(transaction, left, scope)?;
                 let other = self.evaluate_in(transaction, right, scope)?;
+                // A route holding `[*]` denotes *the values it reaches* rather
+                // than a value, and what a comparison does with several values
+                // is the comparison's rule: it holds when **any** of them
+                // satisfies it. That is what makes an array queryable at all,
+                // and it is why `[*]` needs no `Value` of its own — several-ness
+                // belongs to the route.
+                //
+                // Nothing reached is `false`, not an error: an empty array, a
+                // field holding a single value, a record with no such field. A
+                // record that does not match is a record that does not match.
+                if let ExprKind::Path(field) = &left.kind
+                    && field.path.is_several()
+                {
+                    let Some(record) = scope.record else {
+                        return Err(Error::NoRecordInScope { span: field.span });
+                    };
+                    let analyzer = scope.analyzer(&field.path);
+                    let held = field.path.reach(record);
+                    return Ok(Value::Bool(held.into_iter().any(|value| {
+                        if *op == BinaryOp::Matches {
+                            matches_terms(analyzer, value, &other)
+                        } else {
+                            apply(*op, value, &other)
+                        }
+                    })));
+                }
+                let held = self.evaluate_in(transaction, left, scope)?;
                 // A term match is the one test that needs the *schema*: which
                 // analyzer turns this field's text into terms is a property of
                 // the field, so that both a scan and an index ask the same

@@ -57,6 +57,19 @@ pub enum Step {
     /// it is a format with a footnote. The narrowing to a slice position happens
     /// at the moment of the lookup, where it is checked.
     Index(u64),
+    /// `[*]` — every element of an array, rather than one of them.
+    ///
+    /// The step that turns a path from a **function** into a **relation**: a
+    /// route holding one denotes not a value but *the values it reaches*, of
+    /// which there may be none, one or many. What a context does with several
+    /// values is the context's own rule — a comparison holds when any of them
+    /// satisfies it, a projection answers with all of them, an index keeps one
+    /// entry per element.
+    ///
+    /// That is why there is no `Value` for "several": the value system's set is
+    /// fixed (ADR-0002), and a record that holds an array already has a way to
+    /// say so. Several-ness belongs to the route.
+    Every,
 }
 
 /// A route from a record to a value inside it.
@@ -115,7 +128,13 @@ impl Path {
         while let Some(character) = characters.next() {
             match character {
                 '.' => steps.push(Step::Field(name(&mut characters)?)),
-                '[' => steps.push(Step::Index(position(&mut characters)?)),
+                '[' => steps.push(match characters.peek() {
+                    Some('*') => {
+                        characters.next();
+                        (characters.next() == Some(']')).then_some(Step::Every)?
+                    }
+                    _ => Step::Index(position(&mut characters)?),
+                }),
                 _ => return None,
             }
         }
@@ -137,10 +156,55 @@ impl Path {
             current = match (step, current) {
                 (Step::Field(name), Value::Object(fields)) => fields.get(name)?,
                 (Step::Index(at), Value::Array(items)) => items.get(usize::try_from(*at).ok()?)?,
+                // A route holding `[*]` has no single value to give, so it has
+                // none here. Answering the first element would be a wrong answer
+                // wearing a convenience's clothes.
                 _ => return None,
             };
         }
         Some(current)
+    }
+
+    /// Whether this route reaches several values rather than one.
+    #[must_use]
+    pub fn is_several(&self) -> bool {
+        self.steps.iter().any(|step| matches!(step, Step::Every))
+    }
+
+    /// Every value this route reaches.
+    ///
+    /// The general form of [`Path::resolve`]: a route with no `[*]` reaches one
+    /// value or none, and the two answer the same thing about the same routes —
+    /// which is what keeps them from disagreeing about which routes exist.
+    ///
+    /// `[*]` over something that is not an array reaches **nothing**, including
+    /// over a single value. A field holding `'urgent'` is not an array of one,
+    /// the same way `name CONTAINS 'ada'` is not `name = 'ada'`: a mistake in a
+    /// query should show as no match rather than as a right-looking answer.
+    #[must_use]
+    pub fn reach<'value>(&self, value: &'value Value) -> Vec<&'value Value> {
+        let Value::Object(fields) = value else {
+            return Vec::new();
+        };
+        let Some(root) = fields.get(&self.root) else {
+            return Vec::new();
+        };
+        let mut current = vec![root];
+        for step in &self.steps {
+            let mut next = Vec::new();
+            for held in current {
+                match (step, held) {
+                    (Step::Field(name), Value::Object(fields)) => next.extend(fields.get(name)),
+                    (Step::Index(at), Value::Array(items)) => {
+                        next.extend(usize::try_from(*at).ok().and_then(|at| items.get(at)));
+                    }
+                    (Step::Every, Value::Array(items)) => next.extend(items.iter()),
+                    _ => {}
+                }
+            }
+            current = next;
+        }
+        current
     }
 
     /// The value this route reaches, so a caller can change it in place.
@@ -179,6 +243,7 @@ impl fmt::Display for Path {
             match step {
                 Step::Field(name) => write!(f, ".{name}")?,
                 Step::Index(at) => write!(f, "[{at}]")?,
+                Step::Every => write!(f, "[*]")?,
             }
         }
         Ok(())

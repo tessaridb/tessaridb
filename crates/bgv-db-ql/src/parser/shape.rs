@@ -266,3 +266,50 @@ pub(super) fn no_fold(expr: &Expr) -> Result<()> {
     }
     Ok(())
 }
+
+/// A route reaching several values stands as the left operand of a comparison,
+/// and nowhere else yet.
+///
+/// The right operand is excluded too: `'urgent' = tags[*]` would be the same
+/// question written backwards, and giving it a second spelling before the first
+/// one has a projection and an index is how a language grows two ways to ask
+/// one thing.
+pub(super) fn check_several(expr: &Expr) -> Result<()> {
+    if let ExprKind::Binary { left, right, .. } = &expr.kind {
+        // The one admitted position. What is under it still has to be checked —
+        // `a[*].b[*]` is two relations composed, and composing them is its own
+        // question.
+        if let ExprKind::Path(field) = &left.kind
+            && field.path.is_several()
+        {
+            return check_several(right);
+        }
+    }
+    no_several(expr)
+}
+
+/// Refuse a route reaching several values anywhere in this expression.
+pub(super) fn no_several(expr: &Expr) -> Result<()> {
+    if let ExprKind::Path(field) = &expr.kind
+        && field.path.is_several()
+    {
+        return Err(Error::SeveralOutsideAComparison { span: field.span });
+    }
+    for child in children(expr) {
+        // A comparison nested inside something else — `NOT tags[*] = 'x'`, or
+        // one side of an `AND` — is still a comparison, so it keeps its rule.
+        check_several(child)?;
+    }
+    Ok(())
+}
+
+/// Refuse a route reaching several values where a bare route is written.
+///
+/// An index's fields, a `FETCH` route, a join key: each would need the rule its
+/// own task will give it.
+pub(super) fn no_several_path(field: &FieldPath) -> Result<()> {
+    if field.path.is_several() {
+        return Err(Error::SeveralOutsideAComparison { span: field.span });
+    }
+    Ok(())
+}

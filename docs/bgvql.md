@@ -187,6 +187,40 @@ A position is a whole number. Counting from the end would need a sign whose
 meaning depends on the array's length, which is a decision about what a path
 *means* rather than how one is written.
 
+**`[*]` is every element rather than one of them**, and it changes what a path
+*is*: a route with a position denotes a value, and a route with `[*]` denotes
+**the values it reaches** — of which there may be none, one or many.
+
+```
+SELECT * FROM people WHERE tags[*] = 'urgent';
+SELECT * FROM orders WHERE items[*].sku = 'b2';
+```
+
+What a context does with several values is the **context's** rule, and there are
+three:
+
+| Context | Rule |
+|---|---|
+| a comparison | holds when **any** of the reached values satisfies it |
+| a projection | would answer with all of them — **not built**, see §8 |
+| an index | would keep one entry per element — **not built**, see §8 |
+
+Only the first exists, and the other two are refused **by name** rather than
+half-built: a `[*]` in a projection, an ordering, a group key, a function's
+argument, a `FETCH` route or an index's fields is an error that says `[*]` is
+what it does not yet handle.
+
+**No index serves a comparison over several.** An ordinary index over `tags`
+holds one entry for the whole array, so answering `tags[*] = 'urgent'` from it
+would answer a question about elements with an answer about arrays — and an index
+in this store changes what a read costs and never what it answers. Such a read
+takes the scan and the access path says so.
+
+**A single value is not an array of one.** `tags[*]` over a record holding
+`tags: 'urgent'` reaches nothing. That is the rule `CONTAINS` already follows,
+and for the same reason: a mistake in a query should show as no match rather than
+as a right-looking answer.
+
 A field whose real name contains `.`, `[` or `]` cannot be addressed by a path.
 Those three characters are what separates one step from the next.
 
@@ -1567,7 +1601,9 @@ showed exactly what the other half would take.
 | a filtered nearest-neighbour read | the graph answers a distance question and knows nothing of a `WHERE`, so combining them needs either over-fetching by an unknown factor or a filtered walk |
 | highlighting, fuzzy matching, phrase and proximity queries | each needs postings to carry more than membership — offsets for a highlight or a phrase, an edit automaton for fuzziness — which is a different index rather than a bigger one. Ranking itself is built: see [Ranking](#ranking) |
 | per-index `k1` / `b`, per-field weighting | tuning knobs nobody can yet turn responsibly: this project has no labelled relevance set to measure a different value against, and a knob chosen without one is a guess with a syntax |
-| `[*]` in a path — "any element of this array" | it turns a path from a function into a relation: the filter becomes existential, a projection returns several values, and the index becomes a multikey one with entries per element and a reclamation rule of its own. Three features wearing one syntax. |
+| a **projection** over `[*]` | it has to answer what an empty reach projects — an absent field or an empty array — and those are different claims about a record. §3 |
+| a **multikey index** over `[*]` | one record produces several entries, so "remove the entry for the value it replaced" becomes "remove the entries", and an element leaving an array must remove exactly its own. `UNIQUE` over one is a second question — no two records sharing an element, or a record's own elements being distinct — and is refused until it is answered. §3 |
+| `[*]` on the right of a comparison, or twice in one route | the first is the same question written backwards, and a second spelling for one thing is what this language keeps refusing; the second composes two relations and needs a rule for what that means |
 | declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
 | `HAVING` | a filter over groups is a second filter position with its own scoping rule — it sees folds where `WHERE` does not — and is worth its own milestone rather than an afterthought. A fold written in a `WHERE` is refused by name rather than as a stray token, so the message says which of the two the author wanted |
 | `DISTINCT` | it is `GROUP BY` over the projection with no fold, and one spelling for one thing |
@@ -1646,6 +1682,9 @@ showed exactly what the other half would take.
 | An ordered comparison against `NONE` or `NULL` is false | **contract** — they are the absence of a value, not a small one |
 | `= NONE` and `= NULL` are the two questions `IS NULL` would blur together | **contract** |
 | An index narrows a conjunct; the whole condition still decides | **contract** — what keeps an index from changing an answer |
+| `[*]` makes a path denote several values, and each context has its own rule for several | **contract** — one denotation, three rules, rather than one syntax with three meanings |
+| A comparison over several holds when any of them does | **contract** |
+| A single value is not an array of one | **contract** — the rule `CONTAINS` already follows |
 | A build is authoritative, so `REBUILD INDEX` is `DEFINE INDEX` run again | **contract** — an index's entries are made to *be* what the rows imply rather than added to what is there, which is why a rebuild needs no second path and no log shape of its own |
 | A rebuild is a statement, never the store's own decision | **contract** — replicas that each rebuilt on their own reckoning would answer one approximate question differently, and differ in silence |
 | A rebuilt index is a function of the rows, not of the order they arrived in | **contract** — the rows are read in record-id order, so two replicas that received them differently still agree |

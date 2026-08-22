@@ -29,8 +29,14 @@ impl Parser<'_> {
             if self.eat_punct(Punct::Dot) {
                 steps.push(Step::Field(self.name()?.text));
             } else if self.eat_punct(Punct::BracketOpen) {
-                steps.push(Step::Index(self.array_position()?));
-                self.expect_punct(Punct::BracketClose, "`]` after a position")?;
+                // `[*]` is every element; `[3]` is one of them.
+                if self.eat_punct(Punct::Star) {
+                    steps.push(Step::Every);
+                    self.expect_punct(Punct::BracketClose, "`]` after `*`")?;
+                } else {
+                    steps.push(Step::Index(self.array_position()?));
+                    self.expect_punct(Punct::BracketClose, "`]` after a position")?;
+                }
             } else {
                 break;
             }
@@ -108,7 +114,12 @@ impl Parser<'_> {
         let text = match path.path.steps().last() {
             None => path.path.root().to_owned(),
             Some(Step::Field(name)) => name.clone(),
-            Some(Step::Index(_)) => return Err(Error::UnnamedProjection { span: value.span }),
+            // A position and `[*]` are both un-nameable, and for the same
+            // reason: every invented spelling — `tags_0`, `tags`, `_0` — is a
+            // convention the author would have to learn from a surprise.
+            Some(Step::Index(_) | Step::Every) => {
+                return Err(Error::UnnamedProjection { span: value.span });
+            }
         };
         let span = value.span;
         Ok(Projected {

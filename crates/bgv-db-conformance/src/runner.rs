@@ -243,6 +243,7 @@ fn script_kind(error: &bgv_db_ql::Error) -> &'static str {
         bgv_db_ql::Error::WrongArity { .. } => "WrongArity",
         bgv_db_ql::Error::UngroupedProjection { .. } => "UngroupedProjection",
         bgv_db_ql::Error::StarIsOnlyForCount { .. } => "StarIsOnlyForCount",
+        bgv_db_ql::Error::SeveralOutsideAComparison { .. } => "SeveralOutsideAComparison",
         bgv_db_ql::Error::FoldInsideAFold { .. } => "FoldInsideAFold",
         bgv_db_ql::Error::FoldInAFilter { .. } => "FoldInAFilter",
         _ => "Unnamed",

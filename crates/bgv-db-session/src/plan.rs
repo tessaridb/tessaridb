@@ -351,6 +351,19 @@ fn seekable(condition: &Expr) -> Vec<Seek<'_>> {
             let ExprKind::Path(field) = &left.kind else {
                 return Vec::new();
             };
+            // A route holding `[*]` reaches several values, so serving it needs
+            // an index with **one entry per element** — a multikey index, which
+            // this store does not have yet (SGJ.T3). Until it does, such a
+            // condition takes the scan.
+            //
+            // This is not a performance note. An ordinary index over the field
+            // holds one entry for the whole array, so offering it would answer a
+            // question about elements with an answer about arrays — and the
+            // store's governing rule is that an index changes what a read costs
+            // and never what it answers.
+            if field.path.is_several() {
+                return Vec::new();
+            }
             if reads_a_record(right) {
                 return Vec::new();
             }

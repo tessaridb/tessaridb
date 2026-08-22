@@ -4,8 +4,8 @@ use super::Parser;
 use bgv_db_types::{FieldKind, Filter, Path, Step};
 
 use crate::ast::{
-    Direction, ExprKind, FieldPath, Hop, RangeExpr, RecordTarget, Select, Source, Statement,
-    StatementKind, TableRef,
+    Direction, ExprKind, FieldPath, Hop, Projection, RangeExpr, RecordTarget, Select, Source,
+    Statement, StatementKind, TableRef,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -65,6 +65,7 @@ impl Parser<'_> {
                     self.expect_keyword(Keyword::Where, "`WHERE` and what to remove")?;
                     let condition = self.condition()?;
                     super::shape::no_fold(&condition)?;
+                    super::shape::check_several(&condition)?;
                     StatementKind::DeleteWhere {
                         table,
                         condition: Box::new(condition),
@@ -227,6 +228,14 @@ impl Parser<'_> {
         let mut fields = vec![self.field_path()?];
         while self.eat_punct(Punct::Comma) {
             fields.push(self.field_path()?);
+        }
+        // An index over `tags[*]` is a **multikey** index — one entry per
+        // element, with a rule of its own for removing the entries an element
+        // leaves behind. Refused until that rule exists, because an ordinary
+        // index over the same field holds one entry for the whole array and
+        // would answer a question about elements with an answer about arrays.
+        for field in &fields {
+            super::shape::no_several_path(field)?;
         }
         // **One** marker, and the third is why this changed. `UNIQUE` says how
         // entries collide, `SEARCH` says the entries are terms, `VECTOR` says
@@ -541,6 +550,32 @@ impl Parser<'_> {
         let approximate = self.eat_word("approximate");
         super::shape::check_grouping(&projection, &group)?;
         super::shape::check_fold_positions(&from, &group, &order)?;
+        // Where `[*]` may stand. A condition admits one on the left of a
+        // comparison; a projection, a key and an ordering do not yet, and each
+        // is refused by name rather than by a stray-token message.
+        if let Projection::Values(values) = &projection {
+            for value in values {
+                super::shape::no_several(&value.value)?;
+            }
+        }
+        for key in &group {
+            super::shape::no_several(key)?;
+        }
+        for ordering in &order {
+            super::shape::no_several(&ordering.key)?;
+        }
+        for route in &fetch {
+            super::shape::no_several_path(route)?;
+        }
+        match &from {
+            Source::Where { condition, .. } => super::shape::check_several(condition)?,
+            Source::Join { condition, .. } => {
+                if let Some(condition) = condition {
+                    super::shape::check_several(condition)?;
+                }
+            }
+            Source::Record(_) | Source::Table(_) | Source::Traverse { .. } => {}
+        }
         Ok(Select {
             projection,
             from,

@@ -226,6 +226,22 @@ pub enum Error {
         span: Span,
     },
 
+    /// `[*]` written where several values have no rule yet.
+    ///
+    /// A route holding `[*]` denotes the values it reaches rather than a value,
+    /// and each context needs its own rule for what to do with several: a
+    /// comparison holds when any of them satisfies it, a projection would answer
+    /// with all of them, an index would keep one entry per element. Only the
+    /// first is built, so the others are refused **by name** — half-building
+    /// them would answer a question about elements with an answer about arrays.
+    #[error(
+        "`[*]` reaches several values, and only a comparison can ask about several yet (at {span})"
+    )]
+    SeveralOutsideAComparison {
+        /// Where the route was written.
+        span: Span,
+    },
+
     /// A fold folding over another fold.
     ///
     /// `mean(sum(price))` has no meaning at one grouping level: the inner fold
@@ -363,6 +379,7 @@ impl Error {
             | Self::DuplicateField { span, .. }
             | Self::UngroupedProjection { span, .. }
             | Self::StarIsOnlyForCount { span, .. }
+            | Self::SeveralOutsideAComparison { span }
             | Self::FoldInsideAFold { span }
             | Self::FoldInAFilter { span }
             | Self::NoSuchFunction { span, .. }
