@@ -1423,7 +1423,16 @@ nothing, and re-running it needs a fresh read, not a repeat.
 
 ## 8. What is deliberately absent from this milestone
 
-Named here rather than merely missing, so each absence reads as a decision:
+Named here rather than merely missing, so each absence reads as a decision.
+
+**A row leaves this table when the thing it names is built**, with the statement
+that disproves it recorded — because a table of absences that keeps rows for
+features that exist is worse than no table: it is a document that has stopped
+being read. Two rows left on 2026-08-22: a full-text **index**, disproved by
+`DEFINE INDEX by_body ON notes FIELDS body SEARCH` (§4), and a **grant matrix**,
+disproved by `GRANT read, write ON orders TO ada` and its `FIELDS` form (§4).
+Row-level security, which the second row also named, genuinely is absent and now
+says so on its own.
 
 | Absent | Why |
 |---|---|
@@ -1446,7 +1455,6 @@ Named here rather than merely missing, so each absence reads as a decision:
 | `FETCH` through something already fetched, and cycles | one level, so the work is one point read per reference and a cycle is impossible rather than handled |
 | traversals longer than one hop, and filters inside a traversal | `a->e->b` is one hop to the edge and one to its far side, which is the shape that makes traversal useful; `->{1..3}`, mid-traversal filters and shortest-path are a language surface to design once |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |
-| a text **index** | `MATCHES` works today over a scan. The index that makes it fast is its own milestone, and the statement will not change when it lands — which is exactly why the analyzer is on the field and not on the index. |
 | stemming | a filter, and one could be added under the rule above; a correct stemmer is a language-specific artefact rather than a hundred lines, and a bad one is worse than none |
 | n-grams, so `MATCHES` never answers a substring question | index size proportional to text length × (max − min), paid on every write; Q-31 holds the measurement that would decide it |
 | phrase queries (`'"ada lovelace"'`) | they need positions in the postings and a second matching rule |
@@ -1473,7 +1481,7 @@ Named here rather than merely missing, so each absence reads as a decision:
 | a descending bounded scan | `ORDER BY` sorts what the range produced; making the scan itself run backwards is a saving that needs the `LIMIT` pushed into it |
 | `BETWEEN` | `a >= x AND a <= y` says it, and one spelling for one thing |
 | three-valued logic | §5 — comparison answers true or false, and `= NONE` / `= NULL` say what `IS NULL` would |
-| a grant matrix, per-table permissions, row-level security | the three roles cover who may read, who may write, and who may declare users. A matrix over verbs and tables needs a `GRANT` statement, a revocation story and a place to put a per-object list — a real feature, and a different one |
+| row-level security — a grant that names *which records* rather than which table and fields | a table grant refuses and a field grant edits; a row grant would have to *filter*, which means every read carries a predicate the caller did not write and every count answers about a set they cannot see. That is a different feature from either, and the one where getting it subtly wrong leaks by arithmetic |
 | tokens, or a session that outlives a request | a token is a second credential with its own lifetime, revocation and storage |
 | `SIGNIN` as a statement | deliberate, and stated above rather than missing |
 | rate-limiting a signin | Argon2 is slow on purpose, which is most of the defence; a lockout policy has its own decisions about who it locks out |
