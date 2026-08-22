@@ -1,13 +1,44 @@
 //! One statement at a time.
 
 use super::Parser;
-use bgv_db_types::{FieldKind, Filter};
+use bgv_db_types::{FieldKind, Filter, Path, Step};
 
 use crate::ast::{
-    Direction, ExprKind, RangeExpr, RecordTarget, Select, Source, Statement, StatementKind,
+    Direction, ExprKind, FieldPath, RangeExpr, RecordTarget, Select, Source, Statement,
+    StatementKind, TableRef,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
+
+/// Which of the two tables a join key names, and the route below it.
+///
+/// The root is the table; what is left is a route into one of its records. A
+/// first step that is a position rather than a field means the author indexed
+/// the table itself, which is not a thing a table is.
+fn side_of(key: &FieldPath, sides: &[String; 2]) -> Result<(usize, FieldPath)> {
+    let Some(side) = sides.iter().position(|name| name == key.path.root()) else {
+        return Err(Error::NotASideOfTheJoin {
+            root: key.path.root().to_owned(),
+            left: sides[0].clone(),
+            right: sides[1].clone(),
+            span: key.span,
+        });
+    };
+    let mut steps = key.path.steps().iter().cloned();
+    let Some(Step::Field(root)) = steps.next() else {
+        return Err(Error::JoinKeyIsNotAField {
+            root: key.path.root().to_owned(),
+            span: key.span,
+        });
+    };
+    Ok((
+        side,
+        FieldPath {
+            path: Path::new(root, steps.collect()),
+            span: key.span,
+        },
+    ))
+}
 
 impl Parser<'_> {
     pub(super) fn statement(&mut self) -> Result<Statement> {
@@ -398,6 +429,8 @@ impl Parser<'_> {
                 Some(direction) => self.traversal(record, direction)?,
                 None => Source::Record(record),
             }
+        } else if self.eat_keyword(Keyword::Join) {
+            self.join(table)?
         } else if self.eat_keyword(Keyword::Where) {
             Source::Where {
                 table,
@@ -433,6 +466,61 @@ impl Parser<'_> {
             start: skip,
             limit,
             span: start.to(self.span_behind()),
+        })
+    }
+
+    /// The rest of `FROM users JOIN orders ON users.id = orders.user`.
+    ///
+    /// # Both sides of `ON` are routes into the joined row
+    ///
+    /// Which is why they are written with the table in front: the row is
+    /// `{ users: { … }, orders: { … } }`, so `users.id` is the path it looks
+    /// like. They may be written either way round — the parser sorts out which
+    /// side is which — because a reader writing the condition is thinking about
+    /// the two fields and not about which table the statement named first.
+    ///
+    /// The root is then stripped, so what the executor holds is a route into a
+    /// *record* on each side. That is what lets the right side be probed through
+    /// an index, which reads records and knows nothing about a composite.
+    fn join(&mut self, left: TableRef) -> Result<Source> {
+        let right = self.table_ref()?;
+        let on = self.span_here();
+        self.expect_keyword(Keyword::On, "`ON` and the two fields to match")?;
+        let first = self.field_path()?;
+        self.expect_punct(Punct::Equals, "`=` between the two sides of the join")?;
+        let second = self.field_path()?;
+
+        if left.name.text == right.name.text {
+            return Err(Error::OneSidedJoin {
+                name: left.name.text.clone(),
+                span: on.to(self.span_behind()),
+            });
+        }
+        let sides = [&left, &right].map(|table| table.name.text.clone());
+        let first_side = side_of(&first, &sides)?;
+        let second_side = side_of(&second, &sides)?;
+        if first_side.0 == second_side.0 {
+            return Err(Error::OneSidedJoin {
+                name: sides[first_side.0].clone(),
+                span: on.to(self.span_behind()),
+            });
+        }
+        let (left_key, right_key) = if first_side.0 == 0 {
+            (first_side.1, second_side.1)
+        } else {
+            (second_side.1, first_side.1)
+        };
+
+        let condition = self
+            .eat_keyword(Keyword::Where)
+            .then(|| self.condition().map(Box::new))
+            .transpose()?;
+        Ok(Source::Join {
+            left,
+            right,
+            left_key,
+            right_key,
+            condition,
         })
     }
 

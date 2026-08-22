@@ -388,6 +388,49 @@ pub enum Source {
         /// What each record must satisfy.
         condition: Box<Expr>,
     },
+    /// Two tables matched on a value neither of them stores a pointer for.
+    ///
+    /// The other kind of join from [`Select::fetch`]: a reference *is* an
+    /// address, so following one is a point read, and this is for the
+    /// relationship nobody wrote an address down for.
+    ///
+    /// # A row is a record with two named sides
+    ///
+    /// The answer is `{ users: { … }, orders: { … } }` rather than the two
+    /// records merged. That is not a shape decision, it is the *naming* decision:
+    /// merged records need a rule for what happens when both carry `name`, and
+    /// every candidate rule — an alias syntax, a prefixing convention, last-wins
+    /// — is something a reader has to learn. Nested, `users.name` and
+    /// `orders.name` were never in danger of colliding, and every path,
+    /// projection, `WHERE`, `ORDER BY` and `GROUP BY` works over it unchanged
+    /// because it is an ordinary object.
+    ///
+    /// The row's identity is the **left** record's, so a left record matching
+    /// two right records answers as two rows carrying one id. A row is not a
+    /// record and this store's answers are keyed by record; a shape for rows is
+    /// a change to the wire, the JSON surface and the console, which is a
+    /// milestone rather than a clause.
+    ///
+    /// # Inner, so that `LEFT` stays additive
+    ///
+    /// A row appears only where both sides match. Decided now because it cannot
+    /// be decided later: if a bare `JOIN` meant *outer*, adding `LEFT`
+    /// afterwards would change what already-written statements answer.
+    Join {
+        /// The side that is read and drives.
+        left: TableRef,
+        /// The side that is probed.
+        right: TableRef,
+        /// The route into a left record whose value is matched.
+        left_key: FieldPath,
+        /// The route into a right record it is matched against.
+        right_key: FieldPath,
+        /// What each joined row must satisfy, when a `WHERE` was written.
+        ///
+        /// Over the **composite**, so it reads `users.name` and `orders.total`
+        /// like everything else does.
+        condition: Option<Box<Expr>>,
+    },
 }
 
 /// An operator producing a number from two numbers.

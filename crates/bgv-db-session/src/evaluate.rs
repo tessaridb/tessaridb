@@ -489,7 +489,139 @@ impl Session<'_> {
                 }
                 Ok((matched, path, searched))
             }
+            Source::Join {
+                left,
+                right,
+                left_key,
+                right_key,
+                condition,
+            } => self.join(
+                transaction,
+                select,
+                left,
+                right,
+                left_key,
+                right_key,
+                condition.as_deref(),
+            ),
         }
+    }
+
+    /// Two tables matched on a value neither of them stores a pointer for.
+    ///
+    /// # The map is ordered, and a hash map here would be a silent bug
+    ///
+    /// [`Value`] derives `Hash` structurally, but its **equality is not
+    /// structural**: `Number`'s `PartialEq` is defined as `cmp() == Equal`, so
+    /// `3` and `3.0` are equal — deliberately, because a comparison that
+    /// disagreed with the order its own index is stored in is the failure this
+    /// store keeps refusing.
+    ///
+    /// Which means `Value` breaks the `Hash`/`Eq` contract: two equal values can
+    /// hash differently. A `HashMap` keyed by one would put `3` and `3.0` in
+    /// different buckets and the join would **miss matches with no error at
+    /// all**. A `BTreeMap` uses `Ord`, which agrees with equality exactly here,
+    /// so the join matches what `=` matches — which is the requirement, since a
+    /// join is spelled with the same operator.
+    ///
+    /// The index path below re-tests for a related reason: an index normalises
+    /// its encoding, so a lookup can offer candidates the condition would not
+    /// accept. Re-testing them is the rule every other index read in this store
+    /// already follows — an index narrows and never answers.
+    ///
+    /// # Which side is read and which is probed
+    ///
+    /// Rule-based, because the store keeps no row counts and SGB.T4 already
+    /// refused a cost model over statistics it would have to invent. An index on
+    /// the right side's key means the left side drives and each of its records
+    /// probes that index; otherwise the right side is read once into the map and
+    /// the left side probes memory. Either way the work is `n + m` rather than
+    /// `n × m`, and what happened is reported through [`AccessPath`].
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every one is a distinct part of the clause, and a struct here                   would be the clause spelled twice"
+    )]
+    fn join(
+        &self,
+        transaction: &mut Transaction<'_>,
+        select: &Select,
+        left: &bgv_db_ql::TableRef,
+        right: &bgv_db_ql::TableRef,
+        left_key: &bgv_db_ql::FieldPath,
+        right_key: &bgv_db_ql::FieldPath,
+        condition: Option<&Expr>,
+    ) -> Result<Reached> {
+        let (left_context, left_id) = self.resolve_table(transaction, left)?;
+        let (right_context, right_id) = self.resolve_table(transaction, right)?;
+        let left_name = left.name.text.clone();
+        let right_name = right.name.text.clone();
+
+        let served = ordered_index_on(transaction, right_id, right_key)?;
+        let mut built = BTreeMap::new();
+        if served.is_none() {
+            for (id, record) in decode_all(transaction.scan_table(
+                right_context.namespace,
+                right_context.database,
+                right_id,
+            )?)? {
+                let Some(key) = right_key.path.resolve(&record).cloned() else {
+                    continue;
+                };
+                built.entry(key).or_insert_with(Vec::new).push((id, record));
+            }
+        }
+
+        let searched = self.searched_for(transaction, left_id, &shown(select))?;
+        let mut rows = Vec::new();
+        for (id, record) in decode_all(transaction.scan_table(
+            left_context.namespace,
+            left_context.database,
+            left_id,
+        )?)? {
+            // A left record with nothing at the key matches nothing: `NONE` is a
+            // value and the right side would have to carry it to match, which is
+            // what an inner join means.
+            let Some(key) = left_key.path.resolve(&record).cloned() else {
+                continue;
+            };
+            let matches = match &served {
+                Some(index) => {
+                    let offered =
+                        transaction.records_by_index(index, core::slice::from_ref(&key))?;
+                    decode_all(offered)?
+                        .into_iter()
+                        .filter(|(_, held)| right_key.path.resolve(held) == Some(&key))
+                        .collect()
+                }
+                None => built.get(&key).cloned().unwrap_or_default(),
+            };
+            for (_, far) in matches {
+                let row = Value::Object(BTreeMap::from([
+                    (left_name.clone(), record.clone()),
+                    (right_name.clone(), far),
+                ]));
+                if let Some(condition) = condition {
+                    let held = self.evaluate_in(
+                        transaction,
+                        condition,
+                        Scope::searching(&row, &searched),
+                    )?;
+                    if !boolean(&held, condition.span)? {
+                        continue;
+                    }
+                }
+                // The left record's id. A row is not a record, and two rows from
+                // one left record carry one id — stated in `Source::Join` rather
+                // than left to be discovered.
+                rows.push((id.clone(), row));
+            }
+        }
+        let path = if served.is_some() {
+            AccessPath::Index
+        } else {
+            AccessPath::Scan
+        };
+        Ok((rows, path, searched))
     }
 
     /// The records worth testing, and how they were reached.
@@ -733,6 +865,28 @@ pub(crate) fn within(id: &RecordId, start: &RecordId, end: &RecordId, inclusive:
 /// The searched context travels with the records because a sort key is an
 /// expression too, and one holding a `MATCHES` or a score must mean the same
 /// thing there as in the `WHERE` that produced them.
+/// The ordered index that serves a join key, when there is one.
+///
+/// Ordered and single-field only. A search index holds terms rather than whole
+/// values and a vector index answers a distance, so neither can answer "which
+/// records hold exactly this"; a composite index answers a question about its
+/// first field and this is not that question unless it is the only field.
+fn ordered_index_on(
+    transaction: &mut Transaction<'_>,
+    table: TableId,
+    key: &bgv_db_ql::FieldPath,
+) -> Result<Option<bgv_db_storage::IndexDefinition>> {
+    Ok(Catalog::new(transaction)
+        .indexes_on(table)?
+        .into_iter()
+        .find(|held| {
+            !held.search
+                && held.vector.is_none()
+                && held.fields.len() == 1
+                && held.fields.first() == Some(&key.path)
+        }))
+}
+
 type Reached = (Vec<(RecordId, Value)>, AccessPath, Searched);
 
 /// What the evaluator can see besides the expression itself.

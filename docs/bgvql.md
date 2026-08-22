@@ -602,6 +602,56 @@ one snapshot and two reads of one address at one snapshot must answer the same
 thing — so a hundred posts by three authors is three reads. Turning many point
 reads into one batched request is a planner decision and is not made here.
 
+### Matching two tables on a value
+
+`FETCH` is the join a *stored* relationship has: a reference is an address, so
+following one is a point read. When nobody wrote an address down, the value is
+all the two sides share, and `JOIN` matches on it:
+
+```
+SELECT * FROM users JOIN orders ON users.name = orders.who;
+
+SELECT users.name AS who, orders.total AS spent
+FROM users JOIN orders ON users.name = orders.who
+WHERE orders.total > 5
+ORDER BY orders.total DESC;
+```
+
+**A row is a record with two named sides**, not the two records merged — a row
+above answers as `{ users: <the user>, orders: <the order> }`.
+
+That is not a shape preference, it is the answer to "what happens when both
+sides carry `name`". Merging needs a rule for that, and every candidate rule —
+an alias syntax, a prefixing convention, last-wins — is something a reader has
+to learn from a surprise. Nested, `users.name` and `orders.name` were never in
+danger of colliding, and every path, projection, `WHERE`, `ORDER BY` and
+`GROUP BY` works over the row unchanged, because it is an ordinary object. It is
+also why the two sides of `ON` are written with the table in front: they are
+routes into the row, exactly as they look. They may be written either way round.
+
+**A bare `JOIN` is inner** — a row appears only where both sides match. Decided
+now rather than later, because it cannot be decided later: if it meant *outer*,
+adding `LEFT` afterwards would change what already-written statements answer.
+
+**The join matches exactly what `=` matches**, which across number kinds means
+`3` matches `3.0` — see [What a comparison means](#what-a-comparison-means),
+where equality is the value system's order. A join that used a different rule
+would answer a different question from the operator it is spelled with.
+
+**What it costs, stated rather than measured later.** An index on the right
+side's key means the left side drives and each of its records probes the index;
+otherwise the right side is read once into an ordered map and the left side
+probes memory. Either way the work is `n + m` rather than `n × m`, and the price
+of the second case is that the right side is held in memory. Which one ran is
+reported as the access path. There is no cap on the answer and there will not be
+one: a cap would let the presence of an index change *what a statement answers*.
+
+**The row's identity is the left record's.** A left record matching two right
+records answers as two rows carrying one id, because this store's answers are
+keyed by record and a row is not a record. A shape for rows is a change to the
+wire, the JSON surface and the console, which is a milestone rather than a
+clause.
+
 ### Reading a range
 
 The four orderings are served by an ordered index, as a bounded scan:
@@ -1210,7 +1260,10 @@ Named here rather than merely missing, so each absence reads as a decision:
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
-| a join between two tables on a predicate | a reference is followed with `FETCH` above, which is what a join on a *stored* relationship looks like. Matching two tables on a value needs four decisions this milestone does not take: a driving side and a join order (the planner chooses an index, not a table), a naming rule when both sides carry `name`, what an unmatched row means (adding `LEFT` later would change what an existing statement answers), and a bound on a nested loop over two unindexed tables |
+| `LEFT`, `RIGHT` and `FULL` joins | a bare `JOIN` is inner, chosen so that these stay purely additive: an outer qualifier added later changes no statement already written |
+| joining a table to itself | two records under one name is not a row anybody can read, and telling them apart needs aliases — a language surface to design once rather than a clause |
+| a join on anything but an equality, or on more than one pair | `ON a.x = b.y` is what an index can serve and what a map can be keyed by; a join predicate that is neither is a nested loop with a filter, which is the shape the equality was chosen to avoid |
+| a join of more than two tables | the row is `{ left: …, right: … }`, so a third side is a shape decision (nest or flatten) and an order decision, and neither is worth taking before something needs it |
 | `FETCH` through something already fetched, and cycles | one level, so the work is one point read per reference and a cycle is impossible rather than handled |
 | traversals longer than one hop, and filters inside a traversal | `a->e->b` is one hop to the edge and one to its far side, which is the shape that makes traversal useful; `->{1..3}`, mid-traversal filters and shortest-path are a language surface to design once |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |

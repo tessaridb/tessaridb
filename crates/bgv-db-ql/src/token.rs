@@ -220,6 +220,8 @@ pub enum Keyword {
     Index,
     /// `ON`
     On,
+    /// `JOIN` — match two tables on a value neither stores a pointer for.
+    Join,
     /// `FIELDS`
     Fields,
     /// `FIELD`
@@ -331,6 +333,7 @@ impl Keyword {
             Self::Space => "SPACE",
             Self::Index => "INDEX",
             Self::On => "ON",
+            Self::Join => "JOIN",
             Self::Fields => "FIELDS",
             Self::Field => "FIELD",
             Self::Type => "TYPE",
@@ -392,6 +395,7 @@ impl Keyword {
         Self::Space,
         Self::Index,
         Self::On,
+        Self::Join,
         Self::Fields,
         Self::Field,
         Self::Type,

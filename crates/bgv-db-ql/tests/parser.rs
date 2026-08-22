@@ -509,14 +509,16 @@ fn statements_need_a_separator_and_the_last_one_may_omit_it() {
 
 #[test]
 fn what_the_specification_leaves_out_is_refused_by_name() {
-    // One row left: the others named features this language now has, and a test
-    // kept alive by softening what it checks stops being evidence.
-    let source = "SELECT * FROM users JOIN orders;";
+    // `JOIN` used to be the row here and now it is built, so the row moved to
+    // what a join still cannot be: outer. A test kept alive by softening what it
+    // checks stops being evidence, so it names the absence rather than the
+    // clause.
+    let source = "SELECT * FROM users LEFT JOIN orders ON users.name = orders.who;";
     let error = parse(source).unwrap_err();
     let Error::Unsupported { feature, .. } = &error else {
         panic!("{source} produced {error}");
     };
-    assert_eq!(*feature, "joins");
+    assert_eq!(*feature, "an outer join");
 }
 
 #[test]

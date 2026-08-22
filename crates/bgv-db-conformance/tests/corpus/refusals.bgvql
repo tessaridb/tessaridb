@@ -9,9 +9,17 @@ DEFINE TABLE users;
 CREATE users:1 = { name: 'ada', email: 'ada@example.com' };
 --- expect: ok
 
---- case: joins
-SELECT * FROM users JOIN orders;
+--- case: a join qualifier
+SELECT * FROM users LEFT JOIN orders ON users.name = orders.who;
 --- expect: error Unsupported
+
+--- case: a join whose ON names a third table
+SELECT * FROM users JOIN orders ON users.name = customers.who;
+--- expect: error NotASideOfTheJoin
+
+--- case: a join whose two sides are one side
+SELECT * FROM users JOIN orders ON users.name = users.email;
+--- expect: error OneSidedJoin
 
 --- case: a grouped read cannot answer with every field
 SELECT * FROM users GROUP BY email;

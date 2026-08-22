@@ -1,0 +1,86 @@
+# Matching two tables on a value neither of them stores a pointer for.
+#
+# The other kind of join from `FETCH`, which follows an address somebody wrote
+# down. Here nobody did, so the value is the only thing the two sides share.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+DEFINE TABLE users;
+DEFINE TABLE orders;
+--- expect: ok
+
+--- case: two users and three orders, one of them for nobody
+CREATE users:1 = { name: 'ada', city: 'london' };
+CREATE users:2 = { name: 'grace', city: 'new york' };
+CREATE orders:1 = { who: 'ada', total: 3 };
+CREATE orders:2 = { who: 'ada', total: 7 };
+CREATE orders:3 = { who: 'nobody', total: 1 };
+--- expect: ok
+
+--- case: a join answers one row per matching pair
+SELECT * FROM users JOIN orders ON users.name = orders.who;
+--- expect: rows 2
+
+--- case: an unmatched row on either side answers with nothing
+# `grace` has no order and `nobody` has no user. Inner is what a bare `JOIN`
+# means, decided now so that adding `LEFT` later changes no existing answer.
+SELECT * FROM users JOIN orders ON users.city = orders.who;
+--- expect: rows 0
+
+--- case: the two sides of ON may be written either way round
+SELECT * FROM users JOIN orders ON orders.who = users.name;
+--- expect: rows 2
+
+--- case: a row is a record with two named sides, so nothing collides
+SELECT users.name AS who, orders.total AS spent
+FROM users JOIN orders ON users.name = orders.who;
+--- expect: rows 2
+
+--- case: a WHERE filters the joined row
+SELECT * FROM users JOIN orders ON users.name = orders.who WHERE orders.total > 5;
+--- expect: rows 1
+
+--- case: ORDER BY and LIMIT work over the composite
+SELECT * FROM users JOIN orders ON users.name = orders.who
+ORDER BY orders.total DESC LIMIT 1;
+--- expect: rows 1
+
+--- case: the join matches exactly what = matches, across number kinds
+# `Number`'s equality is its *order*, so `3` and `3.0` are equal — deliberately,
+# because a comparison that disagreed with the order its own index is stored in
+# is the failure this store keeps refusing. A join is spelled with `=`, so it
+# has to agree: an integer on one side matches a float of the same magnitude on
+# the other. A hash-keyed join would put them in different buckets and miss it
+# with no error at all.
+CREATE users:3 = { name: 'exact', qty: 3 };
+CREATE orders:4 = { who: 'exact', qty: 3.0 };
+SELECT * FROM users JOIN orders ON users.qty = orders.qty;
+--- expect: rows 1
+
+--- case: and one that is not equal does not match
+CREATE users:4 = { name: 'other', qty: 4 };
+SELECT * FROM users JOIN orders ON users.qty = orders.qty;
+--- expect: rows 1
+
+--- case: the same join, immediately before an index exists
+SELECT * FROM users JOIN orders ON users.name = orders.who;
+--- expect: rows 3
+
+--- case: an index on the right key changes the cost and not the answer
+# The pair above and below is the whole assertion: identical statement, identical
+# answer, and the access path is the only thing that moved.
+DEFINE INDEX by_who ON orders FIELDS who;
+SELECT * FROM users JOIN orders ON users.name = orders.who;
+--- expect: rows 3
+
+--- case: and the cross-kind rule still holds through the index
+DEFINE INDEX by_qty ON orders FIELDS qty;
+SELECT * FROM users JOIN orders ON users.qty = orders.qty;
+--- expect: rows 1
+
+--- case: a left record with nothing at the key matches nothing
+SELECT * FROM users JOIN orders ON users.missing = orders.who;
+--- expect: rows 0

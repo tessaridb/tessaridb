@@ -270,9 +270,11 @@ impl Parser<'_> {
 /// the reason instead of complaining about a semicolon.
 fn absent_feature(word: &str) -> Option<&'static str> {
     const ABSENT: &[(&str, &str)] = &[
-        ("join", "joins"),
-        ("inner", "joins"),
-        ("left", "joins"),
+        // `JOIN` is built. `INNER` and `LEFT` are not: a bare `JOIN` is inner,
+        // and `LEFT` is the additive change that default was chosen to leave
+        // room for.
+        ("inner", "a join qualifier — a bare `JOIN` is already inner"),
+        ("left", "an outer join"),
         ("having", "filtering groups"),
         ("offset", "limiting a result"),
         ("search", "a search index"),

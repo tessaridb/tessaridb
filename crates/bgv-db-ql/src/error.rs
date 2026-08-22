@@ -236,6 +236,54 @@ pub enum Error {
         /// Where the projection is.
         span: Span,
     },
+
+    /// A join key that does not name one of the two tables being joined.
+    ///
+    /// The two sides of `ON` are routes into the joined row, and the joined row
+    /// has exactly two names in it. A root that is neither is either a typo or a
+    /// third table nobody asked for.
+    #[error(
+        "`{root}` is not `{left}` or `{right}`, which are the two sides of this join (at {span})"
+    )]
+    NotASideOfTheJoin {
+        /// The root as written.
+        root: String,
+        /// The left table's name.
+        left: String,
+        /// The right table's name.
+        right: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// Both sides of `ON` named the same table.
+    ///
+    /// A join needs two sides to tell apart, and two records under one name is
+    /// not a row anybody can read. Joining a table to itself needs aliases,
+    /// which is a language surface rather than a clause.
+    #[error(
+        "both sides of this `ON` name `{name}`; a join needs one route into each side (at {span})"
+    )]
+    OneSidedJoin {
+        /// The table both sides named.
+        name: String,
+        /// Where the `ON` is.
+        span: Span,
+    },
+
+    /// A join key whose first step is a position rather than a field.
+    ///
+    /// `ON users[0] = …` names the table and then indexes it, and a table is not
+    /// an array. A join key is a route into one record.
+    #[error(
+        "a join key names a field of the record, and `{root}` is followed by a position (at {span})"
+    )]
+    JoinKeyIsNotAField {
+        /// The root as written.
+        root: String,
+        /// Where it was written.
+        span: Span,
+    },
 }
 
 impl Error {
@@ -263,7 +311,10 @@ impl Error {
             | Self::NoSuchFunction { span, .. }
             | Self::WrongArity { span, .. }
             | Self::DuplicateProjection { span, .. }
-            | Self::UnnamedProjection { span } => *span,
+            | Self::UnnamedProjection { span }
+            | Self::NotASideOfTheJoin { span, .. }
+            | Self::OneSidedJoin { span, .. }
+            | Self::JoinKeyIsNotAField { span, .. } => *span,
         }
     }
 }
