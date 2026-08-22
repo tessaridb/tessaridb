@@ -26,6 +26,9 @@ bgv-db-wire.workspace = true
 rust_decimal.workspace = true
 bgv-db-kv.workspace = true
 bgv-db-session.workspace = true
+# Already in the tree through `bgv-db-lsm`; the process-level test needs a
+# directory that cleans itself up when the node it served is killed.
+tempfile = "3"
 
 [lints]
 workspace = true

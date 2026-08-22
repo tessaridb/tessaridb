@@ -1,0 +1,63 @@
+# The vector engine: nearest neighbours, and the one place an index is allowed
+# to change an answer.
+#
+# Every other index in this store may change what a read *costs* and never what
+# it *answers*. A vector index is the exception, because a graph returns the
+# neighbours a walk found and cannot show it missed none — so the exception is
+# written into the statement with `APPROXIMATE` rather than left implicit. A read
+# that does not say the word gets the exact scan.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE atlas;
+USE DATABASE atlas;
+DEFINE TABLE points;
+--- expect: ok
+
+--- case: four points in a plane
+CREATE points:1 = { at: [0.0, 0.0], name: 'origin' };
+CREATE points:2 = { at: [0.1, 0.0], name: 'near' };
+CREATE points:3 = { at: [0.9, 0.9], name: 'far' };
+CREATE points:4 = { at: [1.0, 1.0], name: 'furthest' };
+--- expect: ok
+
+--- case: a distance is an ordinary function, so it sorts like any other
+SELECT * FROM points ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2;
+--- expect: rows 2
+
+--- case: the three distances the engine knows
+SELECT vector::euclidean(at, [0.0, 0.0]) AS d FROM points:1;
+--- expect: rows 1
+
+--- case: cosine
+SELECT vector::cosine(at, [1.0, 1.0]) AS d FROM points:3;
+--- expect: rows 1
+
+--- case: dot
+SELECT vector::dot(at, [1.0, 1.0]) AS d FROM points:4;
+--- expect: rows 1
+
+--- case: a graph is declared with the distance it is built for
+DEFINE INDEX by_at ON points FIELDS at VECTOR euclidean;
+--- expect: ok
+
+--- case: an exact read is still exact once a graph exists
+SELECT * FROM points ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2;
+--- expect: rows 2
+
+--- case: and the same read may be served approximately when it says so
+SELECT * FROM points ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2 APPROXIMATE;
+--- expect: rows 2
+
+--- case: asking approximately of a distance the graph was not built for is exact
+SELECT * FROM points ORDER BY vector::cosine(at, [0.0, 1.0]) LIMIT 2 APPROXIMATE;
+--- expect: rows 2
+
+--- case: a distance the engine does not have is refused by name
+SELECT * FROM points ORDER BY vector::manhattan(at, [0.0, 0.0]) LIMIT 1;
+--- expect: error NoSuchFunction
+
+--- case: a graph declared for a distance the engine does not have is refused
+DEFINE INDEX by_wrong ON points FIELDS at VECTOR manhattan;
+--- expect: error NoSuchDistance

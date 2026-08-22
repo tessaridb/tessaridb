@@ -1,0 +1,69 @@
+# The time-series engine: a time-keyed table, a window, and a retention policy.
+#
+# There is no `TIMESERIES` table kind, and that is the design rather than a
+# shortfall. A time series is an ordinary table with an indexed instant, so
+# every read, every index and every statement the language already has works on
+# it — and the two things it genuinely could not say were a **window** and a
+# **retention policy**. Those are what this file exercises.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE metrics;
+USE DATABASE metrics;
+DEFINE TABLE readings;
+DEFINE INDEX by_at ON readings FIELDS at;
+--- expect: ok
+
+--- case: six readings across three hours, with a gap
+CREATE readings:1 = { at: datetime '2026-03-01T00:05:00Z', level: 1 };
+CREATE readings:2 = { at: datetime '2026-03-01T00:35:00Z', level: 2 };
+CREATE readings:3 = { at: datetime '2026-03-01T00:59:59Z', level: 3 };
+CREATE readings:4 = { at: datetime '2026-03-01T01:00:00Z', level: 4 };
+CREATE readings:5 = { at: datetime '2026-03-01T01:30:00Z', level: 5 };
+CREATE readings:6 = { at: datetime '2026-03-01T03:10:00Z', level: 6 };
+--- expect: ok
+
+--- case: a range over an indexed instant is a bounded read, not a walk
+SELECT * FROM readings
+WHERE at >= datetime '2026-03-01T01:00:00Z' AND at < datetime '2026-03-01T02:00:00Z';
+--- expect: rows 2
+
+--- case: counting per hour — three windows of different sizes, and a gap
+SELECT count(*) AS held, time::bucket(at, 1h) AS window
+FROM readings GROUP BY time::bucket(at, 1h);
+--- expect: rows 3
+
+--- case: a window with no readings has no row, rather than a row nobody wrote
+SELECT count(*) AS held FROM readings
+WHERE at >= datetime '2026-03-01T02:00:00Z' AND at < datetime '2026-03-01T03:00:00Z'
+GROUP BY time::bucket(at, 1h);
+--- expect: rows 0
+
+--- case: windows are anchored at the epoch, so every process agrees on them
+SELECT time::bucket(datetime '2026-03-01T00:59:59Z', 1h) AS w FROM readings:1;
+--- expect: rows 1
+
+--- case: a window of nothing is refused rather than divided by
+SELECT time::bucket(at, 0s) AS w FROM readings:1;
+--- expect: error CallFailed
+
+--- case: a sub-second window is refused rather than rounded
+SELECT time::bucket(at, 500ms) AS w FROM readings:1;
+--- expect: error CallFailed
+
+--- case: an aggregate over the whole series needs no window at all
+SELECT count(*) AS held, max(level) AS peak FROM readings;
+--- expect: rows 1
+
+--- case: a retention policy is a statement, not a declaration
+DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z';
+--- expect: ok
+
+--- case: and it says how many it removed
+SELECT count(*) AS held FROM readings;
+--- expect: rows 1
+
+--- case: what the policy kept is exactly what it was asked to keep
+SELECT * FROM readings;
+--- expect: rows 3
