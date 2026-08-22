@@ -573,6 +573,48 @@ means two edges between the same pair in the same table are one edge with
 properties rather than two records. A caller who needs several distinct edges
 between one pair uses several edge tables, one per relation.
 
+### Walking further than one hop
+
+```
+SELECT * FROM users:1->follows;
+SELECT * FROM users:1->follows->users;
+SELECT * FROM users:1->follows->users->follows->users;
+SELECT * FROM users:1->follows->users->wrote->posts;
+```
+
+A chain is steps written out, and each step is the one-hop read applied to
+everything the previous step landed on. The last step may stop on the **edges**
+rather than their far side, exactly as a single hop may.
+
+**A step that continues must name the node it continues from**, which is what
+keeps `a->e1->e2` unambiguous — that is one step landing on `e2`, and never two
+steps with a gap where a node belongs.
+
+**Every arrow points the same way.** Within a step a mixed pair would read as
+"the edges out of `a`, then whichever record their `out` names", which is `a`
+again for every edge. Across steps a mixed pair asks something real — "who
+follows somebody ada follows" — and §8 keeps it as its own row rather than
+letting it in as a relaxed rule.
+
+**The answer is deduplicated by record.** Two paths reaching one person answer
+with that person once. This store's answers are keyed by record, so twice would
+be a wrong answer rather than a verbose one — a caller counting rows would count
+two followers-of-followers where there is one.
+
+**A cycle is data, not a mistake.** The number of steps is written in the
+statement, so a walk cannot run away, and a walk that arrives back where it
+started answers with where it started. Filtering that out would be the store
+deciding the question was not meant.
+
+**Every table in the chain is asked about.** A grant on the first table does not
+carry a caller into the second: reaching a record through an edge is not a way
+around its table's grant, and that holds at the fourth hop as much as the first.
+
+**What it costs.** Each step reads the edge index once per record the previous
+step landed on, so the work multiplies by the branching factor at each hop. A
+three-hop walk from a well-connected record is not a cheap query, and nothing
+here pretends otherwise.
+
 ## 5. Record statements
 
 ```
@@ -1485,7 +1527,9 @@ has churned**, disproved by `REBUILD INDEX by_embedding ON notes` (§4).
 | a join on anything but an equality, or on more than one pair | `ON a.x = b.y` is what an index can serve and what a map can be keyed by; a join predicate that is neither is a nested loop with a filter, which is the shape the equality was chosen to avoid |
 | a join of more than two tables | the row is `{ left: …, right: … }`, so a third side is a shape decision (nest or flatten) and an order decision, and neither is worth taking before something needs it |
 | `FETCH` through something already fetched, and cycles | one level, so the work is one point read per reference and a cycle is impossible rather than handled |
-| traversals longer than one hop, and filters inside a traversal | `a->e->b` is one hop to the edge and one to its far side, which is the shape that makes traversal useful; `->{1..3}`, mid-traversal filters and shortest-path are a language surface to design once |
+| a variable-length traversal (`->{1..3}`), a filter inside a traversal, shortest path | a written-out chain is a fixed number of steps the reader can count. A bound turns the walk into a search with a termination rule, a frontier and an answer that may or may not include the shorter paths — a language surface to design once rather than a clause |
+| a traversal whose arrows change direction | `a->follows->users<-follows<-users` — "who follows somebody ada follows" — is a real question, and a useful one. It needs a rule for what each step's anchor *is* when the direction turns, and a chain where every arrow reads the same way is the one a reader can follow without one |
+| a traversal that answers with the path rather than its end | the answer would be a list of records rather than a record, which is a shape for rows and not for records — the same wall the join met, and the same milestone |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |
 | stemming | a filter, and one could be added under the rule above; a correct stemmer is a language-specific artefact rather than a hundred lines, and a bad one is worse than none |
 | n-grams, so `MATCHES` never answers a substring question | index size proportional to text length × (max − min), paid on every write; Q-31 holds the measurement that would decide it |
@@ -1529,6 +1573,9 @@ has churned**, disproved by `REBUILD INDEX by_embedding ON notes` (§4).
 | `NONE` and `NULL` are distinct literals | **contract** — the storage layer keeps them apart |
 | An edge is a record, and traversal is an index read | **contract** — no separate graph keyspace, so edges get MVCC, transactions, replication and the schema check without any of them being built again |
 | An edge is identified by its endpoints | fixed for this milestone; an explicit-id form would be additive |
+| A traversal is steps written out, and every arrow points the same way | **contract** — the number of hops is readable from the statement, so a walk cannot run away and a reader can count what it costs |
+| A walk's landing is deduplicated by record | **contract** — answers are keyed by record, so a record two paths reach is one answer |
+| Every table a walk passes through is asked about | **contract** — reaching a record through an edge is not a way around its table's grant, at any hop |
 | A fold answers once per group, and a grouped read answers only with keys and folds | **contract** |
 | `GROUP BY` is optional; folds without one make a single group | **contract** |
 | Every fold but `count(*)` passes over absent and null | **contract** |

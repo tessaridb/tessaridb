@@ -82,17 +82,17 @@ fn in_source(select: &Select) -> Vec<&TableRef> {
     match &select.from {
         Source::Record(target) => vec![&target.table],
         Source::Table(table) | Source::Where { table, .. } => vec![table],
-        // The far side counts. A traversal that could read records in a table
-        // nobody granted, because the edge table was granted, is a way around
-        // the grant rather than a use of it.
-        Source::Traverse {
-            from,
-            edges,
-            target,
-            ..
-        } => {
-            let mut found = vec![&from.table, edges];
-            found.extend(target.as_ref());
+        // **Every** table in the chain counts, not only the first and the last.
+        // A traversal that could read records in a table nobody granted, because
+        // the edge table was granted, is a way around the grant rather than a
+        // use of it — and a walk of several hops passes through several tables,
+        // each of which somebody has to have been granted.
+        Source::Traverse { from, hops, .. } => {
+            let mut found = vec![&from.table];
+            for hop in hops {
+                found.push(&hop.edges);
+                found.extend(hop.target.as_ref());
+            }
             found
         }
         Source::Join { left, right, .. } => vec![left, right],

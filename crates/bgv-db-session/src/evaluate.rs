@@ -9,7 +9,7 @@ use core::ops::Bound;
 use std::collections::BTreeMap;
 
 use bgv_db_ql::{
-    BinaryOp, Direction, Expr, ExprKind, Function, Projectable, Projected, Projection,
+    BinaryOp, Direction, Expr, ExprKind, Function, Hop, Projectable, Projected, Projection,
     RecordTarget, Select, Source, Span, TableRef,
 };
 use bgv_db_storage::{Catalog, RecordAddress, Transaction};
@@ -468,11 +468,9 @@ impl Session<'_> {
             Source::Traverse {
                 from,
                 direction,
-                edges,
-                target,
+                hops,
             } => {
-                let (found, path) =
-                    self.traverse(transaction, from, *direction, edges, target.as_ref())?;
+                let (found, path) = self.traverse(transaction, from, *direction, hops)?;
                 Ok((found, path, Searched::default()))
             }
             Source::Where { table, condition } => {
@@ -760,85 +758,118 @@ impl Session<'_> {
         .map_err(Error::from)
     }
 
-    /// One hop along an edge table, and optionally one more into its far side.
+    /// A walk along one or more edge tables.
     ///
-    /// Both halves are index reads. The edge table was given an index on each
+    /// Every step is an index read. The edge table was given an index on each
     /// endpoint when it was declared, so finding the edges out of a record is
     /// `records_by_index` on `out` — the same call an equality filter makes, with
     /// a record reference standing where any other value would.
     ///
-    /// A dangling far endpoint yields nothing for that hop rather than an error.
-    /// A record can be deleted while an edge still names it, and that is a state
-    /// of the graph, not a failure of the query — the alternative is a read that
-    /// breaks because of a write it has nothing to do with.
+    /// # A chain is one step repeated, and the repetition is where the care is
+    ///
+    /// Each step reads the edges out of **every** anchor it was handed, so a
+    /// walk's cost multiplies by the branching factor at each hop. That is a real
+    /// cost and `docs/bgvql.md` §4a states it rather than leaving it to be found.
+    ///
+    /// **The landing is deduplicated by record id**, which matters from the
+    /// second hop onward and cannot happen on the first: two of ada's follows may
+    /// follow one person, and this store's answers are keyed by record, so
+    /// answering that person twice is a wrong answer rather than a verbose one.
+    ///
+    /// **A cycle is data.** The number of steps is written in the statement, so a
+    /// walk cannot run away; if the walk arrives back where it started, that is
+    /// the true answer to what was asked and not something to filter out.
+    ///
+    /// A dangling far endpoint drops that path rather than raising. A record can
+    /// be deleted while an edge still names it, and that is a state of the graph,
+    /// not a failure of the query — the alternative is a read that breaks because
+    /// of a write it has nothing to do with.
     fn traverse(
         &self,
         transaction: &mut Transaction<'_>,
         from: &RecordTarget,
         direction: Direction,
-        edges: &TableRef,
-        target: Option<&TableRef>,
+        hops: &[Hop],
     ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
-        let (_, edge_table) = self.resolve_table(transaction, edges)?;
-        if !Catalog::new(transaction)
-            .table(edge_table)?
-            .is_some_and(|found| found.edge)
-        {
-            return Err(Error::NotAnEdgeTable {
-                table: edges.name.text.clone(),
-                span: edges.span,
-            });
-        }
-        let Some(index) = self.index_on_path(
-            transaction,
-            edge_table,
-            &Path::field(direction.from_field()),
-        )?
-        else {
-            // An edge table always has both, so reaching here means the catalog
-            // and the flag disagree — which is corruption, not a slow path.
-            return Err(Error::NotAnEdgeTable {
-                table: edges.name.text.clone(),
-                span: edges.span,
-            });
-        };
-
         let (_, start) = self.address(transaction, from)?;
-        let anchor = Value::Record(RecordRef::new(start.table, start.id.clone()));
-        let edge_visible = self.visible_in(transaction, edge_table)?;
-        let offered = transaction.records_by_index(&index, &[anchor])?;
-        let found = self.records_of(offered, &edge_visible)?;
+        let mut anchors = vec![RecordRef::new(start.table, start.id.clone())];
+        let mut answer = Vec::new();
 
-        let Some(target) = target else {
-            return Ok((found, AccessPath::Index));
-        };
+        for hop in hops {
+            let (_, edge_table) = self.resolve_table(transaction, &hop.edges)?;
+            if !Catalog::new(transaction)
+                .table(edge_table)?
+                .is_some_and(|found| found.edge)
+            {
+                return Err(Error::NotAnEdgeTable {
+                    table: hop.edges.name.text.clone(),
+                    span: hop.edges.span,
+                });
+            }
+            let Some(index) = self.index_on_path(
+                transaction,
+                edge_table,
+                &Path::field(direction.from_field()),
+            )?
+            else {
+                // An edge table always has both, so reaching here means the
+                // catalog and the flag disagree — which is corruption, not a
+                // slow path.
+                return Err(Error::NotAnEdgeTable {
+                    table: hop.edges.name.text.clone(),
+                    span: hop.edges.span,
+                });
+            };
 
-        let (context, target_table) = self.resolve_table(transaction, target)?;
-        // The far side is read from its own table, so its own grant applies —
-        // reaching a record through an edge is not a way around one.
-        let far_visible = self.visible_in(transaction, target_table)?;
-        let mut reached = Vec::new();
-        for (_, edge) in found {
-            let Value::Object(fields) = &edge else {
-                continue;
-            };
-            let Some(Value::Record(far)) = fields.get(direction.to_field()) else {
-                continue;
-            };
-            if far.table != target_table {
-                continue;
+            let edge_visible = self.visible_in(transaction, edge_table)?;
+            let mut found = Vec::new();
+            for anchor in &anchors {
+                let value = Value::Record(anchor.clone());
+                let offered = transaction.records_by_index(&index, &[value])?;
+                found.extend(self.records_of(offered, &edge_visible)?);
             }
-            let address = RecordAddress::new(
-                context.namespace,
-                context.database,
-                target_table,
-                far.id.clone(),
-            );
-            if let Some(payload) = transaction.get(&address)? {
-                reached.push((far.id.clone(), self.record_of(&payload, &far_visible)?));
+
+            let Some(target) = hop.target.as_ref() else {
+                // The last step named no node, so the edges themselves are the
+                // answer. The grammar allows this only at the end, so there is
+                // no case here where the walk would have had to continue.
+                answer = found;
+                break;
+            };
+
+            let (context, target_table) = self.resolve_table(transaction, target)?;
+            // The far side is read from its own table, so its own grant applies —
+            // reaching a record through an edge is not a way around one, and that
+            // holds at every hop rather than only at the first.
+            let far_visible = self.visible_in(transaction, target_table)?;
+            let mut reached: BTreeMap<RecordId, Value> = BTreeMap::new();
+            for (_, edge) in found {
+                let Value::Object(fields) = &edge else {
+                    continue;
+                };
+                let Some(Value::Record(far)) = fields.get(direction.to_field()) else {
+                    continue;
+                };
+                if far.table != target_table {
+                    continue;
+                }
+                let address = RecordAddress::new(
+                    context.namespace,
+                    context.database,
+                    target_table,
+                    far.id.clone(),
+                );
+                if let Some(payload) = transaction.get(&address)? {
+                    reached.insert(far.id.clone(), self.record_of(&payload, &far_visible)?);
+                }
             }
+            anchors = reached
+                .keys()
+                .map(|id| RecordRef::new(target_table, id.clone()))
+                .collect();
+            answer = reached.into_iter().collect();
         }
-        Ok((reached, AccessPath::Index))
+        Ok((answer, AccessPath::Index))
     }
 
     /// A read standing where a value stands.

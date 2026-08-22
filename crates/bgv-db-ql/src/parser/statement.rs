@@ -4,7 +4,7 @@ use super::Parser;
 use bgv_db_types::{FieldKind, Filter, Path, Step};
 
 use crate::ast::{
-    Direction, ExprKind, FieldPath, RangeExpr, RecordTarget, Select, Source, Statement,
+    Direction, ExprKind, FieldPath, Hop, RangeExpr, RecordTarget, Select, Source, Statement,
     StatementKind, TableRef,
 };
 use crate::error::{Error, Result};
@@ -606,25 +606,50 @@ impl Parser<'_> {
         })
     }
 
-    /// The rest of `users:1->follows` or `users:1->follows->users`.
+    /// The rest of `users:1->follows`, `users:1->follows->users`, or a chain of
+    /// those: `users:1->follows->users->follows->users`.
     ///
-    /// The second arrow must point the same way as the first. A mixed pair would
-    /// read as "the edges out of `a`, then whichever record their `out` names" —
-    /// which is `a` again, for every edge, and is a query nobody means to write.
+    /// **Every arrow points the same way.** Within a step a mixed pair would read
+    /// as "the edges out of `a`, then whichever record their `out` names" — which
+    /// is `a` again, for every edge, and is a query nobody means to write. Across
+    /// steps a mixed pair asks a real question, and it is a design rather than a
+    /// loosened rule; `docs/bgvql.md` §8 holds it as its own row.
+    ///
+    /// The loop is what keeps `a->e1->e2` unambiguous: a table read after an
+    /// arrow is this step's **node**, and the walk continues only if another
+    /// arrow follows it. So there is never a step with a gap where its node
+    /// should be.
     fn traversal(&mut self, from: RecordTarget, direction: Direction) -> Result<Source> {
-        let edges = self.table_ref()?;
-        let target = match self.arrow() {
-            Some(second) if second == direction => Some(self.table_ref()?),
-            Some(_) => {
-                return Err(self.error_here("a second arrow pointing the same way as the first"));
+        let mut hops = Vec::new();
+        loop {
+            let edges = self.table_ref()?;
+            let Some(second) = self.arrow() else {
+                hops.push(Hop {
+                    edges,
+                    target: None,
+                });
+                break;
+            };
+            if second != direction {
+                return Err(self.error_here("an arrow pointing the same way as the first"));
             }
-            None => None,
-        };
+            let target = self.table_ref()?;
+            hops.push(Hop {
+                edges,
+                target: Some(target),
+            });
+            match self.arrow() {
+                Some(next) if next == direction => {}
+                Some(_) => {
+                    return Err(self.error_here("an arrow pointing the same way as the first"));
+                }
+                None => break,
+            }
+        }
         Ok(Source::Traverse {
             from,
             direction,
-            edges,
-            target,
+            hops,
         })
     }
 

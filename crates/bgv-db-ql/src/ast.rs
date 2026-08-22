@@ -422,6 +422,21 @@ pub struct Projected {
     pub name: Name,
 }
 
+/// One step of a traversal: an edge table, and optionally the table its far
+/// endpoint is read from.
+///
+/// Only the **last** step may leave the target out, and the grammar is what
+/// guarantees that rather than a check: continuing a walk needs a node to
+/// continue from, so `a->e1->e2` is one step landing on `e2` and never two steps
+/// with a gap in the middle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hop {
+    /// The edge table this step walks.
+    pub edges: TableRef,
+    /// The table the far endpoint is read from, when the statement names one.
+    pub target: Option<TableRef>,
+}
+
 /// The three access paths the store has, named by what the statement targets.
 ///
 /// Which one runs is decided here, by the shape of the statement, and not by a
@@ -433,21 +448,24 @@ pub enum Source {
     Record(RecordTarget),
     /// Every record of a table.
     Table(TableRef),
-    /// The far side of one hop along an edge table.
+    /// A walk along one or more edge tables.
     ///
     /// `users:1->follows` reads the edge records themselves;
     /// `users:1->follows->users` resolves one step further and reads the records
-    /// the edges point at. Both are index reads, because an edge table carries
-    /// an index on each endpoint from the moment it is declared.
+    /// the edges point at; `users:1->follows->users->follows->users` does it
+    /// again from there. Every step is an index read, because an edge table
+    /// carries an index on each endpoint from the moment it is declared.
     Traverse {
         /// Where the walk starts.
         from: RecordTarget,
         /// Which way the arrows point.
+        ///
+        /// One direction for the whole walk. A per-hop direction asks a real
+        /// question — "who follows somebody ada follows" — and is a separate
+        /// design rather than a loosened rule; `docs/bgvql.md` §8 holds it.
         direction: Direction,
-        /// The edge table being walked.
-        edges: TableRef,
-        /// The table the far endpoint is read from, when the statement names one.
-        target: Option<TableRef>,
+        /// The steps, in order. Never empty.
+        hops: Vec<Hop>,
     },
     /// The records a condition holds for.
     ///

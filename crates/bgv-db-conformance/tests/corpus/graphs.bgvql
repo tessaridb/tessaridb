@@ -53,6 +53,31 @@ SELECT * FROM users:1->follows->users;
 SELECT * FROM users:1->follows;
 --- expect: rows 2
 
+# Chains. `users:3` was deleted above and its edges remain, so the graph these
+# cases walk is: 1 -> 2, 1 -> 3 (dangling), 2 -> 3 (dangling).
+
+--- case: a graph worth walking more than one hop of
+CREATE users:3 = { handle: 'katherine' };
+CREATE users:4 = { handle: 'dorothy' };
+RELATE users:3->follows->users:4;
+--- expect: ok
+
+--- case: two hops answer with the far side of the second
+SELECT * FROM users:1->follows->users->follows->users;
+--- expect: rows 2
+
+--- case: a chain may stop on the edges of its last step
+SELECT * FROM users:1->follows->users->follows;
+--- expect: rows 2
+
+--- case: three hops are not a special case of two
+SELECT * FROM users:1->follows->users->follows->users->follows->users;
+--- expect: rows 1
+
+--- case: the arrows of a chain all point the same way
+SELECT * FROM users:1->follows->users<-follows<-users;
+--- expect: error UnexpectedToken
+
 --- case: relating through a table that is not an edge table is refused
 RELATE users:1->users->users:2;
 --- expect: error NotAnEdgeTable
