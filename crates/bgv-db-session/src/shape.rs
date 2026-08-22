@@ -8,7 +8,10 @@
 use bgv_db_ql::Ordering;
 use bgv_db_types::{Number, RecordId, Value};
 
-/// The records in the order the statement asked for.
+/// A record travelling through the sort: its keys, its id, and itself.
+type Keyed = (Vec<Value>, RecordId, Value);
+
+/// Which of two records the order puts first.
 ///
 /// **The order is the value system's** (`docs/value-system.md` §3),
 /// including across types and including the absences: `none` sorts below
@@ -21,12 +24,63 @@ use bgv_db_types::{Number, RecordId, Value};
 /// **Ties are broken by the record's id**, which is unique, so the answer is
 /// the same every time whatever access path ran. Without that, adding an
 /// index would reorder equal rows — an answer that changes when an index
-/// appears, which is the shape this store keeps refusing.
-/// The keys are evaluated **once per record** by the caller rather than inside
-/// the comparison, because a sort compares a record many times and an expression
-/// is evaluated every time it is asked for.
+/// appears, which is the shape this store keeps refusing. It is also what makes
+/// the order **total**, which is what lets [`Topmost`] discard a record on the
+/// evidence of the ones it has already seen.
 ///
-/// # Why the keys are projected before they are sorted
+/// One function rather than one per consumer. A bounded collector and an
+/// unbounded sort that each carried their own comparison would be two orders
+/// that agree until somebody edits one of them, and the symptom would be a
+/// statement answering differently with a `LIMIT` than without.
+fn ranked(left: &Keyed, right: &Keyed, order: &[Ordering]) -> core::cmp::Ordering {
+    for (position, key) in order.iter().enumerate() {
+        let Some((held, other)) = left.0.get(position).zip(right.0.get(position)) else {
+            continue;
+        };
+        let ordered = if key.descending {
+            other.cmp(held)
+        } else {
+            held.cmp(other)
+        };
+        if ordered != core::cmp::Ordering::Equal {
+            return ordered;
+        }
+    }
+    left.1.cmp(&right.1)
+}
+
+/// The records an order puts first, without holding the ones it does not.
+///
+/// # Why a bound belongs here and needs no refusal condition
+///
+/// The read applies [`bounded`] to this stage's output on the very next line, so
+/// for any input at all
+///
+/// ```text
+/// bounded(sort(x), start, limit)  ==  keeping(start + limit).offer(x…).finish()
+/// ```
+///
+/// is an identity between two **adjacent** stages, not a judgement about the
+/// statement above them. That is the whole difference from the bound the planner
+/// hands the source (ADR-0013 mechanism 1), which travels past the `FETCH`, the
+/// projection and the grouping — any of which can change how many records exist,
+/// which is why that one is a whitelist of shapes known to preserve the count.
+/// Nothing sits between a sort and its bound, so there is no shape to enumerate
+/// and no clause added later that could quietly shorten an answer. Grouping is
+/// **already applied** when this runs: the records here are the groups, and a
+/// bound on groups is the bound the caller wrote.
+///
+/// # What it costs, and what it does not buy
+///
+/// Sorting fifty thousand records to answer with ten built three vectors over
+/// every record — the keyed one, the projection pass, and the final unkeying —
+/// on top of the source's own. Keeping the top *n* builds none of them: an
+/// ordered limit stopped costing more than the unordered read of the same table.
+/// It does **not** make the read cheap. The source still hands over a vector of
+/// every record it read, and that floor is a question about the source rather
+/// than about the order.
+///
+/// # Why the keys are projected on the way in
 ///
 /// The value system's order across numbers is defined by their decimal
 /// projections, so `Number::cmp` calls `as_decimal()` on **both** sides of every
@@ -45,35 +99,73 @@ use bgv_db_types::{Number, RecordId, Value};
 ///
 /// [`projected`] does the conversion **once per key** and hands the comparator
 /// the same decimals it would have computed. It is not an approximation of the
-/// order; it is the order's own definition, evaluated eagerly.
-pub(crate) fn sorted(
-    keyed: Vec<(Vec<Value>, RecordId, Value)>,
-    order: &[Ordering],
-) -> Vec<(RecordId, Value)> {
-    let mut keyed: Vec<(Vec<Value>, RecordId, Value)> = keyed
-        .into_iter()
-        .map(|(keys, id, record)| (keys.into_iter().map(projected).collect(), id, record))
-        .collect();
-    keyed.sort_by(|left, right| {
-        for (position, key) in order.iter().enumerate() {
-            let Some((held, other)) = left.0.get(position).zip(right.0.get(position)) else {
-                continue;
-            };
-            let ordered = if key.descending {
-                other.cmp(held)
-            } else {
-                held.cmp(other)
-            };
-            if ordered != core::cmp::Ordering::Equal {
-                return ordered;
-            }
+/// order; it is the order's own definition, evaluated eagerly. The keys
+/// themselves are evaluated once per record by the caller rather than inside the
+/// comparison, because an expression is evaluated every time it is asked for and
+/// a sort asks many times.
+pub(crate) struct Topmost<'a> {
+    /// The keys, in the statement's order, with their directions.
+    order: &'a [Ordering],
+    /// How many records survive a compaction, or all of them when unbounded.
+    wanted: Option<usize>,
+    /// How full the buffer is allowed to get before it compacts.
+    ///
+    /// Twice the bound, so a compaction discards about as many records as it
+    /// keeps and the sorting is amortised across them. One is the floor: a
+    /// `LIMIT 0` answers correctly either way, and without the floor it would
+    /// sort a one-record buffer on every record of the table to do it.
+    room: Option<usize>,
+    /// The best seen so far, plus whatever has arrived since the last
+    /// compaction.
+    held: Vec<Keyed>,
+}
+
+impl<'a> Topmost<'a> {
+    /// A collector for `wanted` records, or for all of them when it is `None`.
+    ///
+    /// The buffer is not pre-allocated. `wanted` comes from a `LIMIT` the caller
+    /// wrote, so it can be any number a `u64` holds, and reserving twice an
+    /// absurd one aborts the process to serve a statement that will answer with
+    /// whatever the table happens to hold.
+    pub(crate) fn keeping(order: &'a [Ordering], wanted: Option<usize>) -> Self {
+        Self {
+            order,
+            wanted,
+            room: wanted.map(|wanted| wanted.saturating_mul(2).max(1)),
+            held: Vec::new(),
         }
-        left.1.cmp(&right.1)
-    });
-    keyed
-        .into_iter()
-        .map(|(_, id, record)| (id, record))
-        .collect()
+    }
+
+    /// Offer one record, which is kept only while it may still be in the answer.
+    pub(crate) fn offer(&mut self, keys: Vec<Value>, id: RecordId, record: Value) {
+        self.held
+            .push((keys.into_iter().map(projected).collect(), id, record));
+        if self.room.is_some_and(|room| self.held.len() > room) {
+            self.compact();
+        }
+    }
+
+    /// The records kept, in order.
+    pub(crate) fn finish(mut self) -> Vec<(RecordId, Value)> {
+        self.compact();
+        self.held
+            .into_iter()
+            .map(|(_, id, record)| (id, record))
+            .collect()
+    }
+
+    /// Sort what is held and drop everything that cannot reach the answer.
+    ///
+    /// Sound because the order is total: a record ranked below `wanted` others
+    /// already seen can never rise, since nothing arriving later removes one of
+    /// them.
+    fn compact(&mut self) {
+        let order = self.order;
+        self.held.sort_by(|left, right| ranked(left, right, order));
+        if let Some(wanted) = self.wanted {
+            self.held.truncate(wanted);
+        }
+    }
 }
 
 /// A value with every finite float replaced by the decimal it compares as.
@@ -137,6 +229,7 @@ pub(crate) fn bounded(
 mod tests {
     #![allow(clippy::panic)]
 
+    use bgv_db_ql::{Expr, ExprKind, Ordering as Order, Span};
     use bgv_db_types::{Number, RecordId, Value};
 
     use super::projected;
@@ -208,19 +301,98 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_sort_answers_the_same_order_it_did_before_the_projection() {
-        use bgv_db_ql::{Expr, ExprKind, Ordering as Order, Span};
-
-        let order = vec![Order {
+    /// One sort key, in the given direction. The expression is a placeholder:
+    /// keys reach the sort already evaluated, so only the direction is read.
+    fn by(descending: bool) -> Vec<Order> {
+        vec![Order {
             key: Expr {
                 kind: ExprKind::Literal(Value::None),
                 span: Span::new(0, 1),
             },
-            descending: false,
-        }];
+            descending,
+        }]
+    }
+
+    /// Run a corpus through the collector, bounded or not.
+    fn through(
+        keyed: Vec<(Vec<Value>, RecordId, Value)>,
+        order: &[Order],
+        wanted: Option<usize>,
+    ) -> Vec<(RecordId, Value)> {
+        let mut topmost = super::Topmost::keeping(order, wanted);
+        for (keys, id, record) in keyed {
+            topmost.offer(keys, id, record);
+        }
+        topmost.finish()
+    }
+
+    /// A deterministic corpus built to be awkward: heavy ties, both absences,
+    /// numbers that only compare through their decimal projections, and values
+    /// of several types in one key.
+    ///
+    /// Ties are the point. A collector that discards on a strict comparison
+    /// where the order says equal would drop a record the sort keeps, and a
+    /// corpus of distinct keys never asks.
+    fn corpus(records: usize) -> Vec<(Vec<Value>, RecordId, Value)> {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        (0..records)
+            .map(|n| {
+                seed = seed
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let pick = seed >> 33;
+                let small = i64::try_from(pick % 5).expect("a small number");
+                let key = match pick % 7 {
+                    0 => Value::None,
+                    1 => Value::Null,
+                    2 => Value::Bool(pick % 2 == 0),
+                    3 => Value::Number(Number::from(small)),
+                    4 => Value::Number(Number::float(
+                        f64::from(u32::try_from(small).unwrap_or(0)) / 2.0,
+                    )),
+                    5 => Value::from(if pick % 2 == 0 { "alpha" } else { "beta" }),
+                    _ => Value::Array(vec![Value::Number(Number::from(small))]),
+                };
+                (
+                    vec![key],
+                    RecordId::Int(i64::try_from(n).expect("an id")),
+                    Value::None,
+                )
+            })
+            .collect()
+    }
+
+    /// The order the value system defines, computed without this module.
+    ///
+    /// An oracle, and deliberately not built from [`super::ranked`]: comparing a
+    /// sort against itself proves that it is consistent, not that it is right.
+    /// It compares the keys as they were given, since the projection's own proof
+    /// above is that projecting cannot change a verdict.
+    fn reference(keyed: &[(Vec<Value>, RecordId, Value)], descending: bool) -> Vec<RecordId> {
+        let mut expected: Vec<(Value, RecordId)> = keyed
+            .iter()
+            .map(|(keys, id, _)| (keys[0].clone(), id.clone()))
+            .collect();
+        expected.sort_by(|left, right| {
+            let ordered = if descending {
+                right.0.cmp(&left.0)
+            } else {
+                left.0.cmp(&right.0)
+            };
+            ordered.then_with(|| left.1.cmp(&right.1))
+        });
+        expected.into_iter().map(|(_, id)| id).collect()
+    }
+
+    #[test]
+    fn a_sort_answers_the_same_order_it_did_before_the_projection() {
+        let order = by(false);
+        // **Reversed on the way in.** `awkward()` is written in ascending order,
+        // so feeding it as it stands lets a sort that does nothing at all pass —
+        // which is exactly what a falsification of this wave found it doing.
         let keyed: Vec<(Vec<Value>, RecordId, Value)> = awkward()
             .into_iter()
+            .rev()
             .enumerate()
             .map(|(n, key)| {
                 (
@@ -237,9 +409,95 @@ mod tests {
             .collect();
         expected.sort_by(|left, right| left.0[0].cmp(&right.0[0]).then(left.1.cmp(&right.1)));
 
-        let sorted = super::sorted(keyed, &order);
+        let sorted = through(keyed, &order, None);
         let held: Vec<RecordId> = sorted.into_iter().map(|(id, _)| id).collect();
         let wanted: Vec<RecordId> = expected.into_iter().map(|(_, id)| id).collect();
         assert_eq!(held, wanted);
+    }
+
+    #[test]
+    fn keeping_the_top_answers_what_sorting_everything_and_then_bounding_answers() {
+        // The whole safety argument, asserted as an equality between the two
+        // paths rather than against a hand-written expected order — the same
+        // shape the projection's own proof takes above. A hand-written order
+        // would only test the corpus somebody thought to write down.
+        const RECORDS: usize = 2_000;
+        for descending in [false, true] {
+            let order = by(descending);
+            let whole = reference(&corpus(RECORDS), descending);
+            // The unbounded path first, against the same oracle — otherwise
+            // every equality below could hold with the sort removed entirely,
+            // because both sides would be the same broken collector.
+            let sorted: Vec<RecordId> = through(corpus(RECORDS), &order, None)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            assert_eq!(sorted, whole, "unbounded, descending={descending}");
+            for (start, limit) in [
+                (None, Some(0_u64)),
+                (None, Some(1)),
+                (None, Some(7)),
+                (None, Some(500)),
+                (
+                    None,
+                    u64::try_from(RECORDS).ok().map(|n| n.saturating_add(10)),
+                ),
+                (Some(3), Some(9)),
+                (Some(1_999), Some(5)),
+                (Some(5_000), Some(5)),
+            ] {
+                let wanted = limit.map(|limit| {
+                    usize::try_from(limit.saturating_add(start.unwrap_or(0))).unwrap_or(usize::MAX)
+                });
+                let bounded_after: Vec<RecordId> = super::bounded(
+                    whole.iter().map(|id| (id.clone(), Value::None)).collect(),
+                    start,
+                    limit,
+                )
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+                let kept: Vec<RecordId> =
+                    super::bounded(through(corpus(RECORDS), &order, wanted), start, limit)
+                        .into_iter()
+                        .map(|(id, _)| id)
+                        .collect();
+                assert_eq!(
+                    kept, bounded_after,
+                    "descending={descending} {start:?} {limit:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_bounded_sort_never_holds_more_than_a_small_multiple_of_its_bound() {
+        // C3's own wording: a counted assertion on values retained, made where
+        // the retention happens rather than inferred from a timing or from a
+        // resident-memory figure that cannot attribute.
+        const RECORDS: usize = 50_000;
+        const WANTED: usize = 10;
+        let order = by(false);
+        let mut topmost = super::Topmost::keeping(&order, Some(WANTED));
+        let mut deepest = 0_usize;
+        for (keys, id, record) in corpus(RECORDS) {
+            topmost.offer(keys, id, record);
+            deepest = deepest.max(topmost.held.len());
+        }
+        assert!(
+            deepest <= WANTED.saturating_mul(2).saturating_add(1),
+            "held {deepest} of {RECORDS} records to answer with {WANTED}"
+        );
+        assert_eq!(topmost.finish().len(), WANTED);
+    }
+
+    #[test]
+    fn a_limit_of_zero_terminates_and_answers_with_nothing() {
+        // The buffer's floor. Twice a bound of nothing is nothing, and a
+        // collector whose room is zero would compact on every record forever or
+        // never compact at all, depending on which way the comparison is
+        // written.
+        let order = by(false);
+        assert!(through(corpus(100), &order, Some(0)).is_empty());
     }
 }

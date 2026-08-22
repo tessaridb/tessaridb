@@ -364,7 +364,16 @@ impl Session<'_> {
             for key in &select.order {
                 folded.push(self.folded(transaction, &key.key)?);
             }
-            let mut keyed = Vec::with_capacity(records.len());
+            // The bound the sort may keep to. `bounded` is applied to this
+            // vector on the next line, so keeping only what it will keep is an
+            // identity between two adjacent stages rather than a decision about
+            // the statement — which is why, unlike the bound handed to the
+            // source, this one needs no whitelist of shapes (ADR-0013).
+            let wanted = select.limit.map(|limit| {
+                usize::try_from(limit.saturating_add(select.start.unwrap_or(0)))
+                    .unwrap_or(usize::MAX)
+            });
+            let mut topmost = crate::shape::Topmost::keeping(&select.order, wanted);
             for (id, record) in records {
                 let mut keys = Vec::with_capacity(folded.len());
                 for key in &folded {
@@ -374,9 +383,9 @@ impl Session<'_> {
                         Scope::searching(&record, &searched),
                     )?);
                 }
-                keyed.push((keys, id, record));
+                topmost.offer(keys, id, record);
             }
-            crate::shape::sorted(keyed, &select.order)
+            topmost.finish()
         };
         Ok((
             crate::shape::bounded(records, select.start, select.limit),

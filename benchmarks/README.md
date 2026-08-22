@@ -241,26 +241,37 @@ its access path, and that is not decoration — the first version of this phase
 ordered by an **indexed** field and reported 16 KiB, a real number about a read
 that was already solved.
 
-| the read | peak | answered | served by |
-|---|---|---|---|
-| a plain limit | +11 KiB | 10 | scan |
-| an ordered limit, index-served | +16 KiB | 10 | ordered |
-| an ordered limit, **no index** | **+53 371 KiB** | 10 | scan |
-| the whole table | +45 822 KiB | 50 000 | scan |
+| the read | peak, before | peak, now | answered | served by |
+|---|---|---|---|---|
+| a plain limit | +11 KiB | +11 KiB | 10 | scan |
+| an ordered limit, index-served | +16 KiB | +16 KiB | 10 | ordered |
+| an ordered limit, **no index** | +53 371 KiB | **+45 822 KiB** | 10 | scan |
+| the whole table | +45 822 KiB | +45 822 KiB | 50 000 | scan |
 
-**An ordered limit answering ten records costs more than reading the entire
-table.** It materialises all fifty thousand and then builds a sort key on each,
-to keep ten — so it pays the whole table's cost plus the keys. That inversion is
-the finding, and it names the only case among the four where anything is left to
-win.
+The "before" column is what the same four reads measured on 2026-08-22 before the
+sort learned to keep only what its bound can reach, and it recorded an inversion:
+**an ordered limit answering ten records cost more than reading the entire
+table**, because it materialised all fifty thousand and then built a sort key on
+each, to keep ten.
 
-The other three are already where they can be. The plain limit hands its bound to
-the source, so it touches what it keeps. The index-served order takes its bound
-from the index and never builds the set. And the whole table's peak **is** its
-answer: the caller asked for fifty thousand records and any answer contains fifty
-thousand records, so no collector and no spill can make it smaller while an
-answer is a materialised value. That last row is a stated limit of this store
-rather than an unfinished feature.
+That inversion is gone, and the number it landed on is worth more than the
+saving. An ordered limit now peaks at **exactly** the whole table's figure — the
+same 45 822 KiB, to the kibibyte, across three runs. The ordering stage's own
+retention is twenty-one records, which is below the rounding, so what the read
+costs is now entirely the **source**: `read_source` hands back a vector of every
+record it read before anything above it may look at one. An ordered page is no
+longer worse than the read it is a page of, and it is not yet better.
+
+The other three rows are already where they can be, and for three different
+reasons. The plain limit hands its bound to the source, which stops early, so it
+touches what it keeps. The index-served order takes its bound from the index and
+never builds the set at all — which is why every row here names its access path,
+and why adding the collector had to be checked against that row rather than
+against a timing. And the whole table's peak **is** its answer: the caller asked
+for fifty thousand records and any answer contains fifty thousand records, so no
+collector and no spill can make it smaller while an answer is a materialised
+value. That last row is a stated limit of this store rather than an unfinished
+feature.
 
 ## What is deliberately not measured here
 
