@@ -115,6 +115,33 @@ impl IndexValues {
         Self(writer.finish())
     }
 
+    /// The encoding of the first *k* indexed values, with **no** terminator.
+    ///
+    /// What a **prefix** of an entry's values encodes to, and what makes a
+    /// composite index readable at all: the entries for one `last` are
+    /// contiguous, but a complete [`IndexValues`] ends with a marker that a
+    /// longer key does not have in that position, so the complete form of one
+    /// value is not a byte-prefix of a two-value key.
+    ///
+    /// It is exact rather than approximate, and for a stated reason: every
+    /// value's encoding is **self-delimiting** — a variable-length one ends with
+    /// an escape and a terminator, and the rest are fixed width — so these bytes
+    /// are a byte-prefix of a key exactly when that key's first *k* values are
+    /// these. `enc("ab")` is therefore not a prefix of `enc("abc")`, which is
+    /// what a scan over "every entry whose first value is `ab`" depends on.
+    ///
+    /// For a single value on a single-field index it is the complete form minus
+    /// its marker, and the key it must match still begins with it — which is why
+    /// there is one rule here rather than a partial path beside a complete one.
+    #[must_use]
+    pub fn leading(values: &[bgv_db_types::Value]) -> Vec<u8> {
+        let mut writer = KeyWriter::new();
+        for value in values {
+            index_value::put(&mut writer, value);
+        }
+        writer.finish()
+    }
+
     /// The bytes shared by every entry whose first indexed value is a string
     /// beginning with `prefix`.
     ///

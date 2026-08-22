@@ -405,6 +405,16 @@ refused, and the refusal writes nothing at all, not even the definition.
 There is no separate backfill to remember, because an index that is visible and
 empty would answer a query with *fewer* records and raise nothing.
 
+**An index over several fields serves a condition on its first one.** `FIELDS
+last, first` answers `last = 'lovelace'` and `last > 'l'`, because the key
+encoding puts `last` first and byte order is value order, so the entries for one
+surname are contiguous. It does **not** answer `first = 'ada'` on its own: the
+entries for one forename are scattered across every surname, and an index offered
+for that would be answering about the wrong column.
+
+The order of the fields is therefore a decision about which reads the index can
+serve, not a spelling.
+
 **An index over a route holding `[*]` is a multikey index**: a record contributes
 **one entry per value the route reaches**, so `DEFINE INDEX by_tag ON notes
 FIELDS tags[*]` is what lets `WHERE tags[*] = 'urgent'` be an index read instead
@@ -1800,6 +1810,8 @@ it was first wanted.
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
 | a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the wall a **whole-file** `READ` still meets even now that a ranged one exists, and worth crossing once for both. §7a |
 | a backup of **one namespace** | the file is the log, and the log is the store; selecting part of it means replaying with a filter, which is a different reader and a different restore story. §7a |
+| a **full-tuple seek** on a composite index | `last = 'x' AND first = 'y'` is served through the leading field and the whole condition then decides, which is correct and costs more than it needs to. Using both columns as one lookup means gathering the servable conjuncts *by index* rather than per clause, which is a restructuring of the planner rather than an addition — and without it a `UNIQUE` composite can never promise a ceiling of one. §4 |
+| an index on a **later** field of a composite index, or a range on the second under an equality on the first | each is a different traversal of the same key order, and each is worth building when a read wants it rather than in anticipation. §4 |
 | an **estimated row count** or a cost in a plan | it needs statistics about value distribution — how many records hold `city = 'london'` against `city = 'tromsø'` — which is maintained state whose staleness silently changes plans. A much larger decision than a selection rule, and one that wants a benchmark harness to justify it rather than an intuition. §7b |
 | a digest on a file's metadata | worth having, and it is a *verification* feature: it belongs with the backup verifier rather than half here and half there |
 | a content type on a file | the store holds bytes and has no opinion about them. It becomes worth carrying when something serves them over HTTP, which is where a content type is actually read |
@@ -1893,6 +1905,8 @@ it was first wanted.
 | Several terms mean all of them | **contract** |
 | A field with no analyzer holds no terms and matches nothing | **contract** |
 | `REQUIRED` means present and not null | **contract** |
+| An index over several fields serves a condition on its **first** field, and only that | **contract** — the field order decides which reads it can serve |
+| A `UNIQUE` composite promises no ceiling for a condition that fixes only its first field | **contract** — uniqueness is over the whole tuple |
 | `EXPLAIN` reports the plan that actually runs, and needs the read's own permission | **contract** — a second planner would disagree, and a plan is metadata about a table |
 | A plan carries no number the store cannot know | **contract** — no estimated rows, no cost |
 | `UPDATE` replaces with a value and changes with `SET`, and both touch one record | **contract** |

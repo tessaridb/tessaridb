@@ -314,7 +314,7 @@ impl<'a> Transaction<'a> {
         let start = match lower {
             Some(held) => {
                 let mut bytes = prefix.clone();
-                bytes.extend_from_slice(IndexValues::of(core::slice::from_ref(held)).as_slice());
+                bytes.extend_from_slice(&IndexValues::leading(core::slice::from_ref(held)));
                 bytes
             }
             None => prefix.clone(),
@@ -325,7 +325,7 @@ impl<'a> Transaction<'a> {
         let end = match upper {
             Some(held) => {
                 let mut bytes = prefix.clone();
-                bytes.extend_from_slice(IndexValues::of(core::slice::from_ref(held)).as_slice());
+                bytes.extend_from_slice(&IndexValues::leading(core::slice::from_ref(held)));
                 after(bytes)
             }
             None => after(prefix.clone()),
@@ -496,10 +496,20 @@ impl<'a> Transaction<'a> {
         values: &[Value],
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
-        let wanted = IndexValues::of(values);
+        // The **leading** bytes, not the complete encoding, and one rule for
+        // both cases. A complete encoding ends with a marker a longer key does
+        // not carry in that position, so it is not a byte-prefix of a composite
+        // index's key — which is why a composite index used to be offered for
+        // nothing at all while being maintained on every write.
+        //
+        // For a complete lookup the leading bytes are the complete ones minus
+        // that marker, and since an index has a fixed arity, "the record's entry
+        // begins with these bytes" is equality there and a leading match here.
+        let wanted = IndexValues::leading(values);
+        let complete = values.len() == index.fields.len();
 
         let mut found: BTreeMap<RecordId, Vec<u8>> = BTreeMap::new();
-        for id in self.candidates(index, &address, &wanted)? {
+        for id in self.candidates(index, &address, values, &wanted, complete)? {
             let record = RecordAddress::new(index.namespace, index.database, index.table, id);
             if let Some(payload) = self.confirm(index, &record, &wanted)? {
                 found.insert(record.id, payload);
@@ -630,22 +640,47 @@ impl<'a> Transaction<'a> {
     }
 
     /// The record ids the index entries point at, unconfirmed.
+    ///
+    /// A **complete** lookup on a unique index is a point read, because that is
+    /// what unique means. Everything else is a prefix scan — including a leading
+    /// lookup on a unique composite index, where one value of the first field
+    /// may have many entries and a point read would find none of them.
     fn candidates(
         &self,
         index: &IndexDefinition,
         address: &IndexAddress,
-        wanted: &IndexValues,
+        values: &[Value],
+        wanted: &[u8],
+        complete: bool,
     ) -> Result<Vec<RecordId>> {
         if index.unique {
-            let key = UniqueIndexKey::new(*address, wanted.clone()).encode();
-            let found = self.store.backend().get(UniqueIndexKey::keyspace(), &key)?;
-            return found
-                .map(|bytes| Ok(IndexTarget::decode(bytes.as_slice())?.id))
-                .transpose()
-                .map(Vec::from_iter);
+            if complete {
+                let key = UniqueIndexKey::new(*address, IndexValues::of(values)).encode();
+                let found = self.store.backend().get(UniqueIndexKey::keyspace(), &key)?;
+                return found
+                    .map(|bytes| Ok(IndexTarget::decode(bytes.as_slice())?.id))
+                    .transpose()
+                    .map(Vec::from_iter);
+            }
+            let mut prefix = address.prefix(KeyKind::UniqueIndex);
+            prefix.extend_from_slice(wanted);
+            let request = ScanRequest {
+                keyspace: UniqueIndexKey::keyspace(),
+                range: KeyRange::prefix(&prefix),
+                direction: ScanDirection::Forward,
+                limit: None,
+            };
+            return self
+                .store
+                .backend()
+                .scan(&request)?
+                .into_iter()
+                .map(|(_, value)| Ok(IndexTarget::decode(value.as_slice())?.id))
+                .collect();
         }
 
-        let prefix = SecondaryIndexKey::values_prefix(address, wanted);
+        let mut prefix = address.prefix(KeyKind::SecondaryIndex);
+        prefix.extend_from_slice(wanted);
         let request = ScanRequest {
             keyspace: SecondaryIndexKey::keyspace(),
             range: KeyRange::prefix(&prefix),
@@ -660,23 +695,29 @@ impl<'a> Transaction<'a> {
             .collect()
     }
 
-    /// The record's payload, if it exists at the snapshot and still projects to
-    /// `wanted`.
+    /// The record's payload, if it exists at the snapshot and one of its entries
+    /// begins with `wanted`.
     fn confirm(
         &self,
         index: &IndexDefinition,
         address: &RecordAddress,
-        wanted: &IndexValues,
+        wanted: &[u8],
     ) -> Result<Option<Vec<u8>>> {
         let Some(payload) = self.get(address)? else {
             return Ok(None);
         };
         let value = decode_payload(&payload)?;
         // The confirmation is what makes an index unable to change an answer: an
-        // entry is a claim about a record, and this asks the record. With a
-        // multi-valued route a record has several entries, so the claim to
-        // confirm is that `wanted` is **among** them.
-        if crate::index::project(index, &value).contains(wanted) {
+        // entry is a claim about a record, and this asks the record. Two things
+        // widen it beyond equality and neither loosens it. A multi-valued route
+        // gives a record several entries, so the claim is about **any** of them.
+        // And a leading lookup asks about the first *k* values, so the claim is
+        // that an entry **begins** with them — which for a complete lookup is
+        // equality, because an index has a fixed arity.
+        if crate::index::project(index, &value)
+            .iter()
+            .any(|held| held.as_slice().starts_with(wanted))
+        {
             return Ok(Some(payload));
         }
         Ok(None)

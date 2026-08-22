@@ -233,9 +233,20 @@ impl Session<'_> {
             // A right-hand side that reads the record is not a constant, so it
             // cannot be a bound; `seekable` has already excluded those.
             let bound = self.evaluate(transaction, seek.value)?;
+            // An index serves a condition on its **first** field, whether or not
+            // it has others: the key encoding puts that field first and byte
+            // order is value order, so the entries for one value of it are
+            // contiguous. Until this said `first`, an index with more than one
+            // field matched nothing at all and was maintained on every write for
+            // no read — which cost nothing visible, because a wrong cost never
+            // raises anything.
+            //
+            // Only the first. The entries for one value of a *later* field are
+            // scattered across every value of the ones before it, so an index
+            // offered for that would be answering about the wrong column.
             let Some(index) = declared
                 .iter()
-                .find(|index| index.fields.as_slice() == core::slice::from_ref(seek.path))
+                .find(|index| index.fields.first() == Some(seek.path))
             else {
                 continue;
             };
@@ -245,10 +256,13 @@ impl Session<'_> {
             let (served, rows) = match seek.shape {
                 Shape::Equality if !index.search => (
                     Served::Equality(bound),
-                    // A unique index holds one entry per value, so an equality on
-                    // one produces at most one record. That is the only ceiling
-                    // in this function that costs nothing at all to know.
-                    if index.unique {
+                    // A unique index holds one entry per **whole tuple**, so an
+                    // equality on one produces at most one record only when the
+                    // condition fixes every field. On a composite index this
+                    // fixes the first, and one `last` may have any number of
+                    // `first`s — claiming a ceiling of one there would make the
+                    // planner prefer an index that can return the whole table.
+                    if index.unique && index.fields.len() == 1 {
                         Rows::AtMost(1)
                     } else {
                         Rows::Unknown
@@ -313,9 +327,12 @@ impl Session<'_> {
         }
 
         for (path, (lower, upper)) in bounds {
+            // The same rule the equality match follows, and it has to be the
+            // same one: a range over the first field of a composite index is
+            // exactly the reason its fields are in an order.
             let Some(index) = declared
                 .iter()
-                .find(|index| index.fields.as_slice() == core::slice::from_ref(path))
+                .find(|index| index.fields.first() == Some(path))
             else {
                 continue;
             };
