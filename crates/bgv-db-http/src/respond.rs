@@ -31,6 +31,7 @@
 use std::collections::BTreeMap;
 
 use bgv_db::{AccessPath, Db, Error, Outcome};
+use bgv_db_serve::{Census, Stopping};
 
 use crate::basic::Credentials;
 use crate::json;
@@ -53,6 +54,10 @@ pub struct Answer {
 /// What an answer says it is.
 pub(crate) const JSON: &str = "application/json";
 pub(crate) const OCTETS: &str = "application/octet-stream";
+/// The exposition format's own content type, version and all — a scraper reads
+/// the version to know how to parse, so naming it `text/plain` alone would be a
+/// smaller true statement that costs the reader the useful half.
+pub(crate) const EXPOSITION: &str = "text/plain; version=0.0.4; charset=utf-8";
 
 impl Answer {
     /// An answer with this status and JSON body.
@@ -62,6 +67,16 @@ impl Answer {
             status,
             body: body.into_bytes(),
             kind: JSON,
+        }
+    }
+
+    /// An answer that is text of some other kind than JSON.
+    #[must_use]
+    pub fn text(status: u16, body: String, kind: &'static str) -> Self {
+        Self {
+            status,
+            body: body.into_bytes(),
+            kind,
         }
     }
 
@@ -149,6 +164,103 @@ pub(crate) fn ready(db: &Db, willing: bool) -> Answer {
     } else {
         Answer::new(503, r#"{"status":"leaving"}"#.to_owned())
     }
+}
+
+/// `GET /metrics` — the numbers, in the exposition format every scraper reads.
+///
+/// Plain text with a documented grammar, so it costs a function rather than a
+/// dependency — which is the same trade the rest of this program makes and the
+/// reason this format was chosen over any that needs a library to emit.
+///
+/// `# HELP` and `# TYPE` on every metric, because a scrape that describes itself
+/// is the difference between a dashboard somebody can write and one that sends
+/// them to read this file.
+///
+/// # What is absent, and why absent beats wrong
+///
+/// Without a [`Census`] — a node bound in-process, with no surrounding process
+/// enumerating its surfaces — there is **no uptime line at all**, and the only
+/// counters reported are this surface's own. The alternative would be to time
+/// from this listener's own creation and call it uptime, which makes one metric
+/// name mean two different things depending on how the node was started. A
+/// scraper copes with a series that is missing; it cannot cope with one that
+/// silently changes what it measures.
+pub(crate) fn metrics(db: &Db, census: Option<&Census>, mine: &Stopping) -> Answer {
+    let mut out = String::new();
+
+    if let Some(census) = census {
+        out.push_str("# HELP bgv_uptime_seconds How long this process has been running.\n");
+        out.push_str("# TYPE bgv_uptime_seconds gauge\n");
+        out.push_str(&format!(
+            "bgv_uptime_seconds {:.3}\n",
+            census.uptime().as_secs_f64()
+        ));
+    }
+
+    // The store's own numbers, from the same call `/health` makes. A second way
+    // to ask would be a second answer to drift from.
+    if let Ok(held) = db.store().health() {
+        out.push_str("# HELP bgv_committed_sequence The last sequence the log has committed.\n");
+        out.push_str("# TYPE bgv_committed_sequence counter\n");
+        out.push_str(&format!(
+            "bgv_committed_sequence {}\n",
+            held.committed.get()
+        ));
+        out.push_str("# HELP bgv_background_errors Failures in the engine's own threads.\n");
+        out.push_str("# TYPE bgv_background_errors counter\n");
+        out.push_str(&format!(
+            "bgv_background_errors {}\n",
+            held.background_errors
+        ));
+    }
+
+    out.push_str("# HELP bgv_connections Requests in flight, by surface.\n");
+    out.push_str("# TYPE bgv_connections gauge\n");
+    out.push_str("# HELP bgv_subscriptions Feeds open, by surface.\n");
+    out.push_str("# TYPE bgv_subscriptions gauge\n");
+    out.push_str("# HELP bgv_answers_total Answers written, refusals included.\n");
+    out.push_str("# TYPE bgv_answers_total counter\n");
+    out.push_str("# HELP bgv_refusals_total Answers that were a failure rather than a result.\n");
+    out.push_str("# TYPE bgv_refusals_total counter\n");
+    out.push_str("# HELP bgv_ready Whether the surface will take new work.\n");
+    out.push_str("# TYPE bgv_ready gauge\n");
+
+    match census {
+        Some(census) => {
+            for (name, stopping) in census.surfaces() {
+                surface(&mut out, name, stopping);
+            }
+        }
+        None => surface(&mut out, "http", mine),
+    }
+
+    Answer::text(200, out, EXPOSITION)
+}
+
+/// One surface's five numbers, labelled by which surface it is.
+fn surface(out: &mut String, name: &str, stopping: &Stopping) {
+    // A label value is quoted and the names here are ours rather than a caller's,
+    // so there is nothing to escape and no escaping written that would never run.
+    out.push_str(&format!(
+        "bgv_connections{{surface=\"{name}\"}} {}\n",
+        stopping.requests()
+    ));
+    out.push_str(&format!(
+        "bgv_subscriptions{{surface=\"{name}\"}} {}\n",
+        stopping.feeds()
+    ));
+    out.push_str(&format!(
+        "bgv_answers_total{{surface=\"{name}\"}} {}\n",
+        stopping.answers()
+    ));
+    out.push_str(&format!(
+        "bgv_refusals_total{{surface=\"{name}\"}} {}\n",
+        stopping.refusals()
+    ));
+    out.push_str(&format!(
+        "bgv_ready{{surface=\"{name}\"}} {}\n",
+        u8::from(stopping.ready())
+    ));
 }
 
 /// `POST /script` — run it, and answer with one object per statement.

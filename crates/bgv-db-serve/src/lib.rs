@@ -39,7 +39,7 @@
 #![forbid(unsafe_code)]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// How long to wait between checks while draining.
@@ -60,6 +60,8 @@ pub struct Stopping {
     asked: AtomicBool,
     requests: AtomicUsize,
     feeds: AtomicUsize,
+    answers: AtomicU64,
+    refusals: AtomicU64,
 }
 
 impl Stopping {
@@ -138,6 +140,37 @@ impl Stopping {
         self.feeds.load(Ordering::Acquire)
     }
 
+    /// Record one answer, and whether it was a refusal.
+    ///
+    /// A **refusal** is a request the node answered with a failure instead of a
+    /// result. That is one definition and each surface maps its own vocabulary
+    /// onto it — an HTTP status of 400 or more, a wire frame of the refusal
+    /// kind — so the mapping lives in one place per surface rather than at every
+    /// site that writes an answer.
+    ///
+    /// Deliberately *not* "connections turned away while stopping". That number
+    /// is also interesting and is a different one: an accept loop that has been
+    /// told to stop simply stops, so there is no per-refusal event to count, and
+    /// building one to feed a metric would be the metric wagging the mechanism.
+    pub fn answered(&self, refused: bool) {
+        self.answers.fetch_add(1, Ordering::AcqRel);
+        if refused {
+            self.refusals.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Answers written since this surface started, refusals included.
+    #[must_use]
+    pub fn answers(&self) -> u64 {
+        self.answers.load(Ordering::Acquire)
+    }
+
+    /// How many of those answers were refusals.
+    #[must_use]
+    pub fn refusals(&self) -> u64 {
+        self.refusals.load(Ordering::Acquire)
+    }
+
     /// Stage 2 — wait for in-flight requests, and say whether they finished.
     ///
     /// Waits on requests **only**. Feeds are stage 3 and waiting for them here
@@ -154,6 +187,59 @@ impl Stopping {
             std::thread::park_timeout(GLANCE);
         }
         Drained::Finished
+    }
+}
+
+/// Every surface this process is serving, and when the process started.
+///
+/// # Why one surface cannot report on its own
+///
+/// A metrics route lives on **one** surface but must describe the **process**:
+/// "open connections per surface" includes the wire protocol, whose counters an
+/// HTTP node has never seen. Something has to hold both, and the process already
+/// does — it enumerates every surface to sequence the shutdown. This is that
+/// same list, shared rather than rebuilt, so the numbers a scrape reports and
+/// the numbers a drain waits on cannot drift apart.
+///
+/// The process start is here rather than beside it because it is the same kind
+/// of fact: true of the process, not of any one listener.
+#[derive(Debug)]
+pub struct Census {
+    started: Instant,
+    surfaces: Vec<(&'static str, Arc<Stopping>)>,
+}
+
+impl Census {
+    /// A census of a process that started at `started`.
+    ///
+    /// Taken from the caller rather than read here, because the interesting
+    /// moment is when the **process** began and this is built later — after the
+    /// store is open, which is exactly the interval a restart-detector cares
+    /// about and would be silently excluded.
+    #[must_use]
+    pub const fn since(started: Instant) -> Self {
+        Self {
+            started,
+            surfaces: Vec::new(),
+        }
+    }
+
+    /// Count `name` among this process's surfaces.
+    pub fn counting(&mut self, name: &'static str, stopping: Arc<Stopping>) {
+        self.surfaces.push((name, stopping));
+    }
+
+    /// How long the process has been running.
+    #[must_use]
+    pub fn uptime(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    /// Each surface, by name.
+    pub fn surfaces(&self) -> impl Iterator<Item = (&'static str, &Stopping)> {
+        self.surfaces
+            .iter()
+            .map(|(name, stopping)| (*name, stopping.as_ref()))
     }
 }
 
@@ -302,6 +388,43 @@ mod tests {
         let stopping = Stopping::new();
         stopping.refuse_new();
         assert!(!stopping.ready());
+    }
+
+    #[test]
+    fn refusals_are_counted_among_answers_and_not_beside_them() {
+        // `answers` includes refusals, so a dashboard can show a rate of one
+        // against the other without a third number to keep consistent. Counted
+        // beside each other instead, "how many requests did this node answer"
+        // would need an addition that somebody eventually gets wrong.
+        let stopping = Stopping::new();
+        assert_eq!((stopping.answers(), stopping.refusals()), (0, 0));
+        stopping.answered(false);
+        stopping.answered(true);
+        stopping.answered(false);
+        assert_eq!(
+            (stopping.answers(), stopping.refusals()),
+            (3, 1),
+            "a refusal was not counted as an answer"
+        );
+    }
+
+    #[test]
+    fn a_census_reports_every_surface_and_the_process_that_holds_them() {
+        // The property a metrics route depends on and one surface cannot have:
+        // it describes the process, so it must see counters it did not create.
+        let wire = Stopping::new();
+        let http = Stopping::new();
+        wire.answered(false);
+
+        let mut census = Census::since(Instant::now());
+        census.counting("wire", Arc::clone(&wire));
+        census.counting("http", Arc::clone(&http));
+
+        let seen: Vec<_> = census
+            .surfaces()
+            .map(|(name, counted)| (name, counted.answers()))
+            .collect();
+        assert_eq!(seen, vec![("wire", 1), ("http", 0)]);
     }
 
     #[test]

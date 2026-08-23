@@ -160,6 +160,26 @@ impl Node {
 /// It also gives the thread-per-connection cost something to buy. A thread here
 /// holds state a request cannot carry, which is the difference between a
 /// connection and a datagram.
+/// Write one answer to a request, and count it.
+///
+/// This surface has **three** places that answer a request — an answer, a
+/// refused sign-in and a refused statement — where the HTTP surface has one. So
+/// the mapping from this protocol's vocabulary onto the single word *refusal*
+/// lives here rather than at each of the three, which is what stops the fourth
+/// one from being written without it.
+///
+/// Only replies to requests pass through here. The greeting and a pushed frame
+/// are not answers to anything and are not counted.
+fn reply(
+    writer: &mut impl std::io::Write,
+    counting: &Stopping,
+    kind: frame::Kind,
+    body: &[u8],
+) -> Result<()> {
+    counting.answered(kind == frame::Kind::Refusal);
+    frame::write(writer, kind, body)
+}
+
 fn converse(
     db: &Db,
     committed: &Commits,
@@ -210,8 +230,9 @@ fn converse(
         {
             // The session's own refusal, travelling as one. A second rule here
             // would be a second place for "who may do this" to be decided.
-            frame::write(
+            reply(
                 &mut writer,
+                stopping,
                 frame::Kind::Refusal,
                 refusal.to_string().as_bytes(),
             )?;
@@ -231,7 +252,7 @@ fn converse(
                     let names = message::names_for(db, outcome);
                     answer.extend_from_slice(&message::encode_outcome(outcome, &names));
                 }
-                frame::write(&mut writer, frame::Kind::Answer, &answer)?;
+                reply(&mut writer, stopping, frame::Kind::Answer, &answer)?;
                 // Every commit against this store arrives through some
                 // connection of this node, so this is where a pusher learns
                 // there is something to look at. A statement that wrote nothing
@@ -242,8 +263,9 @@ fn converse(
             }
             // A refusal does not close the connection: a client that mistyped a
             // statement has not stopped being a client.
-            Err(refusal) => frame::write(
+            Err(refusal) => reply(
                 &mut writer,
+                stopping,
                 frame::Kind::Refusal,
                 refusal.to_string().as_bytes(),
             )?,

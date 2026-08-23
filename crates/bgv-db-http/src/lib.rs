@@ -1,8 +1,8 @@
 //! An HTTP surface for bgv-db.
 //!
-//! A route that runs a script, and two that say how the node is: whether it is
-//! alive, and whether it will take work. Not a REST resource tree over tables —
-//! that would be a second query
+//! A route that runs a script, and three that say how the node is: whether it is
+//! alive, whether it will take work, and the numbers behind both. Not a REST
+//! resource tree over tables — that would be a second query
 //! language, expressed in URLs, that can say less than the one this store
 //! already has. **The language is the API.**
 //!
@@ -43,7 +43,7 @@ mod respond;
 use std::sync::Arc;
 
 use bgv_db::Db;
-use bgv_db_serve::Stopping;
+use bgv_db_serve::{Census, Stopping};
 use tiny_http::{Method, Request, Response, Server};
 
 pub use respond::Answer;
@@ -53,6 +53,7 @@ pub struct Node {
     db: Arc<Db>,
     server: Arc<Server>,
     stopping: Arc<Stopping>,
+    census: Option<Arc<Census>>,
 }
 
 /// What ends a node's accept loop from another thread.
@@ -90,7 +91,18 @@ impl Node {
             db,
             server: Arc::new(Server::http(address)?),
             stopping: Stopping::new(),
+            census: None,
         })
+    }
+
+    /// Report on every surface in `census`, not only on this one.
+    ///
+    /// Set after binding rather than taken by [`Node::bind`], because the census
+    /// names surfaces and one of them is this node — a process cannot hand over
+    /// a list it can only finish building once every listener exists. Nothing
+    /// observes the gap: the node is not serving yet.
+    pub fn watching(&mut self, census: Arc<Census>) {
+        self.census = Some(census);
     }
 
     /// The address actually bound, which is what a caller needs when it asked
@@ -133,6 +145,7 @@ impl Node {
             }
             let db = Arc::clone(&self.db);
             let stopping = Arc::clone(&self.stopping);
+            let census = self.census.clone();
             // Counted before the thread starts, not inside it: a shutdown that
             // began between the accept and the spawn would otherwise drain to
             // zero while this request had not started.
@@ -141,7 +154,7 @@ impl Node {
             // thread is what gives that for free.
             std::thread::spawn(move || {
                 let _busy = busy;
-                answer(&db, &stopping, request);
+                answer(&db, &stopping, census.as_deref(), request);
             });
         }
     }
@@ -154,13 +167,13 @@ impl Node {
     pub fn serve_one(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let request = self.server.recv()?;
         let _busy = self.stopping.busy();
-        answer(&self.db, &self.stopping, request);
+        answer(&self.db, &self.stopping, self.census.as_deref(), request);
         Ok(())
     }
 }
 
 /// Route one request and write its answer.
-fn answer(db: &Db, stopping: &Stopping, mut request: Request) {
+fn answer(db: &Db, stopping: &Stopping, census: Option<&Census>, mut request: Request) {
     let route = (request.method().clone(), request.url().to_owned());
     // Read before the body, because `as_reader` borrows the request mutably and
     // the headers are wanted either way.
@@ -179,6 +192,11 @@ fn answer(db: &Db, stopping: &Stopping, mut request: Request) {
         // failure means restart. No credential, for the same reason health
         // needs none.
         (Method::Get, "/ready") => respond::ready(db, stopping.ready()),
+        // Also without a credential, and for the third time the same reason: a
+        // scraper that needs one is a scraper nobody configures. What it carries
+        // is operational — an uptime, a sequence, some counts — with no user
+        // data and no schema in it.
+        (Method::Get, "/metrics") => respond::metrics(db, census, stopping),
         // Split on `?` here rather than reaching for a URL parser: this route
         // takes one optional parameter and a dependency to read it would be a
         // poor trade.
@@ -216,7 +234,7 @@ fn answer(db: &Db, stopping: &Stopping, mut request: Request) {
         }
         // "No such thing" and "not that way" are different answers, and a caller
         // debugging a client needs to know which one it got.
-        (_, "/script" | "/health" | "/ready") => Answer::new(
+        (_, "/script" | "/health" | "/ready" | "/metrics") => Answer::new(
             405,
             r#"{"error":"that route takes another method"}"#.to_owned(),
         ),
@@ -239,6 +257,11 @@ fn answer(db: &Db, stopping: &Stopping, mut request: Request) {
             None => Answer::new(404, r#"{"error":"no such route"}"#.to_owned()),
         },
     };
+
+    // Counted here because this is the one place every answer this surface
+    // writes passes through, which is what keeps "what a refusal is" a single
+    // decision rather than one taken again at each route.
+    stopping.answered(reply.status >= 400);
 
     let mut response = Response::from_data(reply.body).with_status_code(reply.status);
     // A `401` without a challenge is not a `401` a client can act on — RFC 9110

@@ -68,6 +68,10 @@ fn main() -> ExitCode {
 }
 
 fn run(asked: Asked) -> Result<Ended, String> {
+    // Before the store is opened, because opening it is the slow part and a
+    // node recovering a large log would otherwise report an uptime that began
+    // after the interval a restart-detector most wants to see.
+    let started = std::time::Instant::now();
     let credentials = credentials(asked.user)?;
     let parameters = asked.parameters;
     let sequence = asked.at_sequence;
@@ -96,7 +100,7 @@ fn run(asked: Asked) -> Result<Ended, String> {
         Source::Backup(path) => return backup(&db, path, sequence).map(|()| Ended::Fine),
         Source::Restore(path) => return restore(&db, path, sequence).map(|()| Ended::Fine),
         Source::Health => return health(&db),
-        Source::Serve => return serve(db, &asked.serving),
+        Source::Serve => return serve(db, &asked.serving, started),
         Source::Verify(_) | Source::Standard | Source::Inline(_) | Source::File(_) => {}
     }
 
@@ -174,7 +178,7 @@ fn statements(
 /// The same binary rather than a second one: what changes is where the store is,
 /// and that is an argument. It serves until it is stopped, so it never returns
 /// on the happy path.
-fn serve(db: Db, serving: &Serving) -> Result<Ended, String> {
+fn serve(db: Db, serving: &Serving, started: std::time::Instant) -> Result<Ended, String> {
     let db = std::sync::Arc::new(db);
     // Both are bound before either serves, so an address that cannot be taken
     // is a failure to start rather than a surface that quietly went missing
@@ -186,7 +190,7 @@ fn serve(db: Db, serving: &Serving) -> Result<Ended, String> {
         ),
         None => None,
     };
-    let http = match &serving.http {
+    let mut http = match &serving.http {
         Some(address) => Some(
             bgv_db_http::Node::bind(std::sync::Arc::clone(&db), address)
                 .map_err(|failure| format!("{address}: {failure}"))?,
@@ -209,9 +213,15 @@ fn serve(db: Db, serving: &Serving) -> Result<Ended, String> {
     // What the stages will act on, taken before either surface starts serving:
     // `serve` borrows its node for as long as it runs, so a caller that asked
     // afterwards would be asking a node that had already stopped.
+    // The same counters twice over, deliberately shared rather than gathered
+    // separately: what a drain waits on and what a scrape reports must be one
+    // set of numbers, or the two disagree in exactly the situation — a shutdown
+    // — where somebody is reading both.
+    let mut census = bgv_db_serve::Census::since(started);
     let mut surfaces = Vec::new();
     if let Some(node) = &wire {
         let bound = node.address().map_err(|failure| failure.to_string())?;
+        census.counting("wire", node.stopping());
         surfaces.push(shutdown::Surface {
             name: "the wire protocol",
             stopping: node.stopping(),
@@ -224,11 +234,19 @@ fn serve(db: Db, serving: &Serving) -> Result<Ended, String> {
     }
     if let Some(node) = &http {
         let halt = node.halt();
+        census.counting("http", node.stopping());
         surfaces.push(shutdown::Surface {
             name: "http",
             stopping: node.stopping(),
             wake: Box::new(move || halt.wake()),
         });
+    }
+
+    // Installed once the census is complete, which is why it is a setter rather
+    // than an argument to `bind`: one of the surfaces it names is this node.
+    let census = std::sync::Arc::new(census);
+    if let Some(node) = &mut http {
+        node.watching(std::sync::Arc::clone(&census));
     }
 
     // Asked for before anything serves, so a signal arriving during startup is

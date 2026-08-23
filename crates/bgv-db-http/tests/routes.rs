@@ -510,6 +510,95 @@ fn a_leaving_node_is_not_ready_while_it_is_still_answering() {
 }
 
 #[test]
+fn the_metrics_move_and_are_the_stores_own_numbers() {
+    // A metrics route is the easiest thing here to test vacuously: six lines of
+    // zeros pass any check that the route replies. So two claims, neither of
+    // which a constant satisfies — the counter **rises** across two scrapes, and
+    // the committed sequence is the same number `/health` reports.
+    let (_node, address) = node();
+
+    let (status, headers, first) = send(&address, "GET", "/metrics", "", None);
+    assert_eq!(status, 200, "{first}");
+    assert!(
+        headers
+            .iter()
+            .any(|header| header.to_ascii_lowercase().contains("version=0.0.4")),
+        "the exposition format's version was not declared: {headers:?}"
+    );
+    assert!(
+        first.contains("# TYPE bgv_answers_total counter"),
+        "a scrape that does not describe itself sends a dashboard author to read \
+         source: {first}"
+    );
+
+    let before = counter(&first, "bgv_answers_total{surface=\"http\"}");
+
+    // One request that is not a scrape, so the rise cannot be the scrape itself.
+    let (_, _, _) = send(&address, "GET", "/health", "", None);
+
+    let (_, _, second) = send(&address, "GET", "/metrics", "", None);
+    let after = counter(&second, "bgv_answers_total{surface=\"http\"}");
+    assert!(
+        after > before,
+        "the answer counter did not move, so it reports a constant rather than \
+         this node: {before} then {after}"
+    );
+
+    // And the numbers are the store's rather than this route's own idea of them.
+    //
+    // The write is not decoration. An untouched store's committed sequence is
+    // **zero**, so against that fixture "equals the store" and "equals the
+    // literal 0" are the same assertion — and pinning the metric to a constant
+    // passes. Found by injecting exactly that, which is why the precondition is
+    // asserted below rather than assumed.
+    let (_, _, _) = send(&address, "POST", "/script", "DEFINE NAMESPACE prod;", None);
+
+    let (_, _, third) = send(&address, "GET", "/metrics", "", None);
+    let (_, _, health) = send(&address, "GET", "/health", "", None);
+    let committed = counter(&third, "bgv_committed_sequence");
+    assert!(
+        committed > 0,
+        "nothing was committed, so this comparison cannot tell the store's \
+         number from a constant: {third}"
+    );
+    assert!(
+        health.contains(&format!(r#""committed":{committed}"#)),
+        "the scraped sequence and the health route disagree about one store: \
+         {committed} against {health}"
+    );
+}
+
+#[test]
+fn a_node_with_no_census_reports_itself_and_claims_no_uptime() {
+    // Absent beats wrong. This node has no process around it enumerating
+    // surfaces, so the only clock it could call uptime is its own bind time —
+    // and one metric name meaning two things by how the node was started is
+    // worse for a scraper than a series that is simply missing.
+    let (_node, address) = node();
+    let (status, _, body) = send(&address, "GET", "/metrics", "", None);
+    assert_eq!(status, 200);
+    assert!(
+        !body.contains("bgv_uptime_seconds"),
+        "a node with no process behind it reported a process uptime: {body}"
+    );
+    assert!(
+        body.contains("bgv_connections{surface=\"http\"}"),
+        "it should still report the counters it genuinely has: {body}"
+    );
+}
+
+/// One metric's value out of a scrape, by its full name and labels.
+fn counter(scrape: &str, name: &str) -> u64 {
+    scrape
+        .lines()
+        .find_map(|line| line.strip_prefix(name))
+        .unwrap_or_else(|| panic!("no {name} in the scrape:\n{scrape}"))
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+#[test]
 fn a_store_with_a_background_failure_is_taken_out_of_rotation() {
     // The whole of the alerting design: an engine's compaction and flushing run
     // on their own threads, so a failure there surfaces at no call a caller

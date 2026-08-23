@@ -357,6 +357,7 @@ as a crash loop. Run it in the foreground and let the supervisor supervise.
 bgv ./data --health          # exits non-zero when it is not
 curl -s localhost:8000/health   # is this store readable
 curl -s localhost:8000/ready    # will this node take work right now
+curl -s localhost:8000/metrics  # the numbers behind both
 ```
 
 **Two routes because a supervisor acts on them in opposite ways.** A readiness
@@ -371,6 +372,30 @@ one store and it has one opinion about itself. Neither route needs a credential.
 Since `/health` carries that opinion, **it belongs on a rotation check rather
 than on a restart check.** A background failure in the engine is not something a
 restart clears.
+
+`GET /metrics` is the Prometheus text format — plain text with a documented
+grammar, so emitting it costs a function here rather than a dependency. Uptime,
+the committed sequence, background errors, and per surface: connections in
+flight, open subscriptions, answers, refusals and whether it is ready.
+
+```
+bgv_uptime_seconds 1841.402
+bgv_committed_sequence 20418
+bgv_connections{surface="wire"} 3
+bgv_answers_total{surface="wire"} 91204
+bgv_refusals_total{surface="wire"} 17
+bgv_ready{surface="http"} 1
+```
+
+A **refusal** is a request the node answered with a failure instead of a result —
+one definition, mapped by each surface onto its own vocabulary. It is not a
+connection turned away during shutdown; that is a different number and this is
+not it.
+
+Also without a credential, for the third time the same reason: a scraper that
+needs one is a scraper nobody configures. What it exposes is operational, with no
+user data and no schema in it — and this store already says it has no TLS and
+belongs on a network you trust.
 
 An engine does its compaction, its flushing and its write-ahead work on its own
 threads, and a failure there surfaces at **no call a caller makes**: the store

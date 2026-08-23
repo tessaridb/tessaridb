@@ -156,6 +156,21 @@ fn a_node_says_it_is_not_ready_while_it_is_still_answering() {
         "a node that had not been asked to stop did not call itself ready: {willing}"
     );
 
+    // All three of the node's status routes, read from one running process,
+    // which is what F9 asks for — and the third is here for a claim of its own:
+    // the metrics gauge and the readiness route report the **same** state. Two
+    // places answering one question is two places for it to be answered
+    // differently, so they are checked against each other rather than each
+    // against its own idea of the truth.
+    let alive = probing(http, "/health").expect("the health route never answered");
+    assert!(alive.starts_with("HTTP/1.1 200"), "{alive}");
+    let scraped = probing(http, "/metrics").expect("the metrics route never answered");
+    assert!(
+        scraped.contains(r#"bgv_ready{surface="http"} 1"#),
+        "the scrape disagreed with the readiness route about a node that is \
+         ready: {scraped}"
+    );
+
     let signalled = Command::new("kill")
         .args(["-TERM", &node.0.id().to_string()])
         .status()
@@ -184,10 +199,69 @@ fn a_node_says_it_is_not_ready_while_it_is_still_answering() {
     let leaving = leaving.expect("the node went on calling itself ready after being told to stop");
     assert!(leaving.contains(r#""status":"leaving""#), "{leaving}");
 
+    // And the gauge moved with it. A constant satisfies neither half of this:
+    // it was `1` above and must be `0` now.
+    let scraped = probing(http, "/metrics").expect("the metrics route stopped answering");
+    assert!(
+        scraped.contains(r#"bgv_ready{surface="http"} 0"#),
+        "the readiness route said it was leaving and the scrape still reports \
+         it ready, so a dashboard and a load balancer would disagree: {scraped}"
+    );
+
     // Liveness is unmoved. A supervisor that restarted this node now would be
     // restarting one that is shutting down on purpose.
     let alive = probing(http, "/health").expect("the health route stopped answering");
     assert!(alive.starts_with("HTTP/1.1 200"), "{alive}");
+
+    drop(node);
+}
+
+#[test]
+fn a_scrape_describes_the_whole_process_and_not_one_listener() {
+    // The census is what makes this possible and it is the claim: the metrics
+    // route is served by HTTP but must report the **wire** protocol's counters
+    // too, which that surface has never seen. A scrape naming only its own
+    // surface is what this fails on.
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let wire = "127.0.0.1:47861";
+    let http = "127.0.0.1:47862";
+
+    let node = serving_both(&path, wire, http);
+
+    // Traffic on the wire surface, so its counters are not zero for the trivial
+    // reason. A scrape that only ever sees zeros cannot show they are wrong.
+    {
+        let mut client = Client::connect(wire).unwrap();
+        client
+            .run("DEFINE NAMESPACE prod; USE NAMESPACE prod;", None)
+            .unwrap();
+        // And one refusal, which is the other half of the definition.
+        drop(client.run("SELECT * FROM nothing_defined_here;", None));
+    }
+
+    let scraped = probing(http, "/metrics").expect("the metrics route never answered");
+    assert!(scraped.starts_with("HTTP/1.1 200"), "{scraped}");
+    assert!(
+        scraped.contains(r#"bgv_answers_total{surface="wire"}"#)
+            && scraped.contains(r#"bgv_answers_total{surface="http"}"#),
+        "the scrape did not name both surfaces, so it describes a listener \
+         rather than the process: {scraped}"
+    );
+    assert!(
+        scraped.contains("bgv_uptime_seconds"),
+        "a process that knows when it started reported no uptime: {scraped}"
+    );
+
+    // The wire surface answered, and said no at least once.
+    let answered = scraped
+        .lines()
+        .find_map(|line| line.strip_prefix(r#"bgv_answers_total{surface="wire"} "#))
+        .expect("no wire answer count in the scrape");
+    assert!(
+        answered.trim().parse::<u64>().unwrap() > 0,
+        "the wire surface answered requests and the scrape reports none: {scraped}"
+    );
 
     drop(node);
 }
