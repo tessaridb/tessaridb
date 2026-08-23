@@ -197,7 +197,9 @@ A browser cannot set an `Authorization` header on a `WebSocket`, so the follow
 request may carry `user` and `password` instead; the header is used when a
 client can send one. Both are a credential in the clear, which this store
 already says of every route it serves — it has no TLS and belongs on a network
-the operator protects.
+the operator protects. Against a store that has an owner, a follow carrying
+neither is refused in words rather than left following nothing, so a client can
+tell "not permitted" from "nothing has happened yet".
 
 Following takes the connection over: a socket that is pushing is not also
 reading requests. A client that wants both opens two.

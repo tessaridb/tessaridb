@@ -64,16 +64,28 @@ fn head(stream: &mut TcpStream) -> (u16, Vec<String>) {
 
 /// Ask to upgrade, offering everything a browser offers.
 fn upgrade(address: &str) -> (TcpStream, u16, Vec<String>) {
+    upgrade_as(address, None)
+}
+
+/// Ask to upgrade while presenting a credential in the request head.
+///
+/// The arm a browser cannot use: `WebSocket` gives JavaScript no way to set a
+/// header, which is why the follow message carries credentials too. Both arms
+/// end at the same `sign_in`, so what needs its own test is the *selection*.
+fn upgrade_as(address: &str, credential: Option<&str>) -> (TcpStream, u16, Vec<String>) {
     let mut stream = TcpStream::connect(address).unwrap();
     // Without this, a frame the node never sends is not a failing test — it is a
     // test that blocks forever, which in a suite reads as a hang and in CI as a
     // timeout with no message. A falsification proved that the hard way: with the
     // pong suppressed, every socket test stopped reporting anything at all.
     stream.set_read_timeout(Some(PATIENCE)).unwrap();
+    let offered =
+        credential.map_or_else(String::new, |value| format!("Authorization: {value}\r\n"));
     let request = format!(
         "GET /watch HTTP/1.1\r\nHost: {address}\r\nUpgrade: websocket\r\n\
          Connection: keep-alive, Upgrade\r\nSec-WebSocket-Key: {KEY}\r\n\
-         Sec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n"
+         Sec-WebSocket-Version: 13\r\n{offered}\
+         Sec-WebSocket-Extensions: permessage-deflate\r\n\r\n"
     );
     stream.write_all(request.as_bytes()).unwrap();
     stream.flush().unwrap();
@@ -338,11 +350,18 @@ fn the_route_takes_no_other_method() {
 /// somewhere else arrives here, and a helper that shared the socket would prove
 /// nothing about that.
 fn script(address: &str, source: &str) -> u16 {
+    script_as(address, source, None)
+}
+
+/// Run a script as somebody, over a separate connection.
+fn script_as(address: &str, source: &str, credential: Option<&str>) -> u16 {
     let mut stream = TcpStream::connect(address).unwrap();
     stream.set_read_timeout(Some(PATIENCE)).unwrap();
+    let offered =
+        credential.map_or_else(String::new, |value| format!("Authorization: {value}\r\n"));
     write!(
         stream,
-        "POST /script HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{source}",
+        "POST /script HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\n{offered}Connection: close\r\n\r\n{source}",
         source.len()
     )
     .unwrap();
@@ -463,5 +482,165 @@ fn a_namespace_that_could_carry_syntax_is_refused_before_a_statement_exists() {
         ),
         200,
         "the interpolated statement ran and took the table with it"
+    );
+}
+
+// ------------------------------------------------- whose grants the feed uses
+
+// The filtering itself is proven at the core, by `bgv-db-wire/tests/pushing.rs`,
+// which exercises grants, tenancy and field visibility and passed **unchanged**
+// when that middle moved into `bgv_db::feed`. What none of it touches is which
+// *session* this surface hands the core: every socket test above signs in
+// nobody, against an open store.
+//
+// The failure that leaves open is narrow and not imaginary — a socket that
+// signed a user in and then followed with a session that had not actually taken
+// the sign-in would filter perfectly against the wrong identity, and every one
+// of those tests would still pass. A subscription reaches records without ever
+// running a statement, so whatever authorization it gets, it gets here.
+//
+// Three arms can present an identity and each ends at the same `sign_in`, so
+// what is tested below is the *selection*: the follow message, the request head,
+// and neither.
+
+/// Credentials as a client sends them. Written out rather than computed, so a
+/// change to the decoder cannot quietly agree with itself in both directions.
+const OWNER: &str = "Basic cm9vdDpyb290IHNlY3JldA=="; // root:root secret
+const SCOPED: &str = "Basic YWRhOmNvcnJlY3QgaG9yc2UgYmF0dGVyeQ=="; // ada:correct horse battery
+
+/// A node whose store is closed, where `ada` may read `users` and not `ledger`.
+fn granted() -> (Arc<Node>, String) {
+    let (node, address) = node();
+    // The owner is defined last: defining one is what closes the store, so
+    // everything ahead of it in this script still runs without a credential.
+    assert_eq!(
+        script(
+            &address,
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
+             DEFINE DATABASE library; USE DATABASE library; \
+             DEFINE TABLE users; DEFINE TABLE ledger; \
+             DEFINE USER root ROLE owner PASSWORD 'root secret';"
+        ),
+        200,
+        "the fixture did not build"
+    );
+    assert_eq!(
+        script_as(
+            &address,
+            "USE NAMESPACE prod; USE DATABASE library; \
+             DEFINE USER ada ON prod.library ROLE editor PASSWORD 'correct horse battery'; \
+             GRANT read ON users TO ada;",
+            Some(OWNER)
+        ),
+        200,
+        "the scoped user or the grant did not take"
+    );
+    (node, address)
+}
+
+/// Write a record as the owner, and answer whether the node took it.
+fn wrote(address: &str, statement: &str) -> u16 {
+    script_as(
+        address,
+        &format!("USE NAMESPACE prod; USE DATABASE library; {statement}"),
+        Some(OWNER),
+    )
+}
+
+#[test]
+fn a_subscriber_is_told_only_about_the_tables_its_credential_was_granted() {
+    // Q-94. The credential travels in the follow message, which is the arm a
+    // browser has to use: `WebSocket` gives JavaScript no way to set a header.
+    let (_node, address) = granted();
+    let (mut stream, status, _) = upgrade(&address);
+    assert_eq!(status, 101);
+    send(
+        &mut stream,
+        true,
+        1,
+        br#"{"namespace":"prod","database":"library","from":0,"user":"ada","password":"correct horse battery"}"#,
+    );
+
+    // The ungranted table is written FIRST, so a feed that filtered nothing
+    // would deliver it first. That ordering is this test's whole content — with
+    // the writes the other way round it would pass without filtering anything.
+    assert_eq!(wrote(&address, "CREATE ledger:1 = { total: 3 };"), 200);
+    assert_eq!(wrote(&address, "CREATE users:1 = { name: 'ada' };"), 200);
+
+    let (_, opcode, payload) = receive(&mut stream);
+    assert_eq!(opcode, 1, "a change must arrive as a text frame");
+    let text = String::from_utf8(payload).expect("a text frame carries text");
+    assert!(
+        !text.contains("ledger"),
+        "the feed handed this subscriber a table nobody granted it: {text}"
+    );
+    assert!(
+        text.contains(r#""table":"users""#),
+        "the granted table's change did not arrive: {text}"
+    );
+}
+
+#[test]
+fn a_credential_in_the_upgrade_head_is_the_one_the_feed_filters_against() {
+    // The other arm. The follow message below carries no credential at all, so
+    // the request head is the only thing that can have signed anybody in.
+    let (_node, address) = granted();
+    let (mut stream, status, _) = upgrade_as(&address, Some(SCOPED));
+    assert_eq!(status, 101);
+    send(
+        &mut stream,
+        true,
+        1,
+        br#"{"namespace":"prod","database":"library","from":0,"table":"ledger"}"#,
+    );
+
+    let (_, opcode, payload) = receive(&mut stream);
+    assert_eq!(opcode, 1, "the refusal must arrive as text");
+    let text = String::from_utf8(payload).expect("a text frame carries text");
+    // Refused *in the grant's own words*. A header that never reached `sign_in`
+    // would leave an anonymous session, which fails somewhere else and says
+    // something else — so "was it refused at all" is the weaker assertion that
+    // would pass either way.
+    assert!(
+        text.contains("ledger") && text.contains("granted to read"),
+        "the refusal did not come from the grant, so the credential in the \
+         request head never reached the session the feed runs under: {text}"
+    );
+}
+
+#[test]
+fn an_anonymous_subscriber_is_told_nothing_by_a_closed_store() {
+    // `/watch` has no 401 gate of its own — unlike `POST /script`, which the
+    // router guards — so this rests entirely on the session the feed is handed.
+    // The record is written BEFORE the subscribe and the follow starts at 0, so
+    // it is already in the backlog: nothing here depends on timing.
+    let (_node, address) = granted();
+    assert_eq!(wrote(&address, "CREATE users:1 = { name: 'ada' };"), 200);
+
+    let (mut stream, status, _) = upgrade(&address);
+    assert_eq!(status, 101);
+    send(
+        &mut stream,
+        true,
+        1,
+        br#"{"namespace":"prod","database":"library","from":0}"#,
+    );
+
+    let (_, opcode, payload) = receive(&mut stream);
+    assert_eq!(opcode, 1, "the answer must arrive as text");
+    let text = String::from_utf8(payload).expect("a text frame carries text");
+    // The claim that matters, asserted before the cheaper one so a failure of
+    // this one cannot be taken by the other.
+    assert!(
+        !text.contains(r#""became""#),
+        "a subscriber that presented no credential was handed a change out of a \
+         closed store: {text}"
+    );
+    // Delivering nothing would be equally safe, and this deliberately does not
+    // accept it: a feed that goes silent leaves an operator with no way to tell
+    // "not permitted" from "nothing has happened yet".
+    assert!(
+        text.contains("signed-in"),
+        "the subscriber was not told why it is following nothing: {text}"
     );
 }
