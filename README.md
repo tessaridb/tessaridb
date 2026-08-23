@@ -170,6 +170,37 @@ for change in db.poll(&mut watching, 128)? {
 }
 ```
 
+### A browser opens the same subscription at `/watch`
+
+`GET /watch` upgrades to a WebSocket. **The transport is in place; the feed is
+not wired to it yet** — a message sent today is answered with close `1003`, which
+is a stated refusal rather than a silence a client would wait out.
+
+```js
+const socket = new WebSocket("ws://localhost:8080/watch");
+```
+
+The server half of RFC 6455 is written here rather than taken from a crate, and
+the four things a hand-written one usually gets wrong are the four it is tested
+on. A **close** is echoed with the code the client sent, so a clean end is not
+reported as an error. A **ping** is answered with a pong carrying the same
+payload, because an intermediary checks that before deciding the socket is alive.
+A **fragmented** message is reassembled, including when a control frame arrives
+between the pieces — which is legal, and which a loop written as "read until FIN"
+gets wrong. And `permessage-deflate` is **declined** by being left out of the
+answer: an extension neither implemented nor declined is one the client then uses.
+
+A frame's declared length is checked against a ceiling before a byte is reserved
+for it, and the reassembled message is bounded separately — a sender that
+fragments without limit gets past a per-frame ceiling by construction. An
+unmasked frame from a client ends the connection with `1002` rather than being
+accepted, because masking is what stops a socket smuggling chosen bytes past
+something on the path that only reads the start of a stream.
+
+An upgraded socket is counted as a **feed** rather than a request, so a shutdown
+drains what will finish and ends what will not, instead of waiting its full
+deadline for a connection that was never going to close on its own.
+
 ## Talking to one over the wire
 
 ```rust

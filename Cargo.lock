@@ -143,6 +143,7 @@ version = "0.0.0"
 dependencies = [
  "bgv-db",
  "bgv-db-backup",
+ "bgv-db-constants",
  "bgv-db-kv",
  "bgv-db-serve",
  "bgv-db-storage",

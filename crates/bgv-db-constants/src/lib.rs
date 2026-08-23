@@ -140,3 +140,35 @@ pub const BM25_B: f64 = 0.75;
 /// one matching one in a thousand is not, and paying a full scan for it is the
 /// right answer rather than a walk that reads most of the index in batches.
 pub const ORDERED_FILTER_REACH: usize = 32;
+
+/// The largest single WebSocket frame this node will read from a client.
+///
+/// Unit: bytes.
+///
+/// A frame header declares its own payload length before a byte of that payload
+/// arrives, and a reader that believes the declaration allocates whatever a
+/// stranger asked it to. That is a memory-exhaustion bug with a polite name, so
+/// the ceiling is checked against the declared length and the frame is refused
+/// before anything is reserved for it.
+///
+/// Sixty-four kilobytes because of what a client actually sends on this route: a
+/// subscription request naming a position and a table, which is tens of bytes. A
+/// frame three orders of magnitude larger than the only message the protocol
+/// defines is a client fault or an attack, and either way the honest answer is a
+/// close rather than an allocation.
+pub const SOCKET_MAX_FRAME_BYTES: usize = 64 * 1024;
+
+/// The largest reassembled WebSocket message this node will read from a client.
+///
+/// Unit: bytes.
+///
+/// Separate from the frame ceiling because a message may legally arrive as many
+/// fragments, so bounding one frame bounds nothing: a sender can fragment
+/// without limit and a reader that only checks each piece accumulates forever.
+/// The two ceilings answer two different questions and neither implies the
+/// other.
+///
+/// Equal to the frame ceiling at this size, deliberately — the only message this
+/// route defines fits in one frame, so fragmentation here is a proxy's doing
+/// rather than a client's need, and a proxy does not enlarge what it forwards.
+pub const SOCKET_MAX_MESSAGE_BYTES: usize = 64 * 1024;

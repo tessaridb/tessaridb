@@ -39,11 +39,12 @@ mod json;
 mod object;
 mod request;
 mod respond;
+mod websocket;
 
 use std::sync::Arc;
 
 use bgv_db::Db;
-use bgv_db_serve::{Census, Stopping};
+use bgv_db_serve::{Busy, Census, Stopping};
 use tiny_http::{Method, Request, Response, Server};
 
 pub use respond::Answer;
@@ -149,12 +150,11 @@ impl Node {
             // Counted before the thread starts, not inside it: a shutdown that
             // began between the accept and the spawn would otherwise drain to
             // zero while this request had not started.
-            let busy = self.stopping.busy();
+            let mut busy = self.stopping.busy();
             // A panic in one request must not take the listener with it, and a
             // thread is what gives that for free.
             std::thread::spawn(move || {
-                let _busy = busy;
-                answer(&db, &stopping, census.as_deref(), request);
+                answer(&db, &stopping, census.as_deref(), &mut busy, request);
             });
         }
     }
@@ -166,15 +166,37 @@ impl Node {
     /// Returns an error when the listener fails.
     pub fn serve_one(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let request = self.server.recv()?;
-        let _busy = self.stopping.busy();
-        answer(&self.db, &self.stopping, self.census.as_deref(), request);
+        let mut busy = self.stopping.busy();
+        answer(
+            &self.db,
+            &self.stopping,
+            self.census.as_deref(),
+            &mut busy,
+            request,
+        );
         Ok(())
     }
 }
 
 /// Route one request and write its answer.
-fn answer(db: &Db, stopping: &Stopping, census: Option<&Census>, mut request: Request) {
+fn answer(
+    db: &Db,
+    stopping: &Stopping,
+    census: Option<&Census>,
+    busy: &mut Busy,
+    mut request: Request,
+) {
     let route = (request.method().clone(), request.url().to_owned());
+    // Taken before the shared reply path because an upgrade consumes the
+    // request: the socket outlives this function and there is no `Answer` to
+    // hand back. Counted here for the same reason — a route that returns early
+    // past the one place every answer is counted is a route the scrape silently
+    // forgets.
+    if route.0 == Method::Get && route.1 == "/watch" {
+        let refused = websocket::watch(request, busy);
+        stopping.answered(refused);
+        return;
+    }
     // Read before the body, because `as_reader` borrows the request mutably and
     // the headers are wanted either way.
     let credentials = request
@@ -234,7 +256,7 @@ fn answer(db: &Db, stopping: &Stopping, census: Option<&Census>, mut request: Re
         }
         // "No such thing" and "not that way" are different answers, and a caller
         // debugging a client needs to know which one it got.
-        (_, "/script" | "/health" | "/ready" | "/metrics") => Answer::new(
+        (_, "/script" | "/health" | "/ready" | "/metrics" | "/watch") => Answer::new(
             405,
             r#"{"error":"that route takes another method"}"#.to_owned(),
         ),
