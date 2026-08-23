@@ -2,9 +2,10 @@
 //!
 //! # Why this is a crate and not a module in one of the serving crates
 //!
-//! Both surfaces need the same three things — a way to be told to stop
-//! accepting, a count of what is still in flight, and a way to say when that
-//! count has reached zero — and they need them to mean the *same* thing, because
+//! Both surfaces need the same four things — a way to say whether they are still
+//! willing to take work, a way to be told to stop accepting, a count of what is
+//! still in flight, and a way to say when that count has reached zero — and they
+//! need them to mean the *same* thing, because
 //! a shutdown that drains one surface and abandons the other is not a staged
 //! shutdown. Putting this in the wire crate would make the HTTP crate depend on
 //! it for no other reason; a copy in each gives two mechanisms that must agree
@@ -25,6 +26,15 @@
 //! So a connection is counted as a request when it arrives and *moves* to the
 //! feed count if it becomes a subscription — the same connection, a different
 //! promise about whether waiting for it can succeed.
+//!
+//! # Not ready comes before not listening
+//!
+//! Refusing connections and being unwilling to serve are also two states rather
+//! than one, for a reason with the same shape. A readiness route exists so a
+//! load balancer can stop sending work *before* the port goes; if the same flag
+//! did both, the port would close at the instant the answer changed and nothing
+//! could ever observe it. So stage 0 sets [`Stopping::leaving`] and the process
+//! keeps serving for a window, and stage 1 sets the refusal.
 
 #![forbid(unsafe_code)]
 
@@ -46,6 +56,7 @@ const GLANCE: Duration = Duration::from_millis(10);
 /// increment and decrement, the process asks and waits.
 #[derive(Debug, Default)]
 pub struct Stopping {
+    leaving: AtomicBool,
     asked: AtomicBool,
     requests: AtomicUsize,
     feeds: AtomicUsize,
@@ -58,13 +69,39 @@ impl Stopping {
         Arc::new(Self::default())
     }
 
+    /// Stage 0 — say *not ready* while still serving.
+    ///
+    /// Separate from [`Stopping::refuse_new`] because the two are read by
+    /// different things for different reasons: a readiness route reads
+    /// *willingness*, and an accept loop reads *permission*. Collapsing them
+    /// into one flag closes the port at the moment the answer changes, which
+    /// leaves nothing able to connect and ask — and a readiness route nobody
+    /// can reach when it matters is decoration.
+    pub fn leaving(&self) {
+        self.leaving.store(true, Ordering::Release);
+    }
+
+    /// Whether this node still takes new work.
+    ///
+    /// False from stage 0 onwards. Monotone: nothing here becomes ready again,
+    /// because a process on its way out has no state to come back to.
+    #[must_use]
+    pub fn ready(&self) -> bool {
+        !self.leaving.load(Ordering::Acquire)
+    }
+
     /// Stage 1 — refuse new connections.
     ///
     /// Only sets the intent. Waking a listener that is blocked in `accept` is
     /// the surface's own problem, because how you interrupt it depends on what
     /// it is: an HTTP server here has a call for it, and a plain TCP listener is
     /// woken by connecting to it.
+    ///
+    /// Implies stage 0, so a caller that skips the lame-duck window still leaves
+    /// a coherent state behind rather than a node that refuses connections while
+    /// telling anything that can still reach it that it is ready.
     pub fn refuse_new(&self) {
+        self.leaving.store(true, Ordering::Release);
         self.asked.store(true, Ordering::Release);
     }
 
@@ -230,6 +267,41 @@ mod tests {
         );
         drop(working);
         assert_eq!(stopping.drain(patience), Drained::Finished);
+    }
+
+    #[test]
+    fn a_node_stops_being_ready_before_it_stops_accepting() {
+        // The window the readiness route is reached in. If these were one flag
+        // the port would close at the instant the answer changed, and nothing
+        // outside the process could ever see the 503.
+        let stopping = Stopping::new();
+        assert!(stopping.ready());
+        assert!(!stopping.asked());
+
+        stopping.leaving();
+        assert!(
+            !stopping.ready(),
+            "a leaving node still called itself ready"
+        );
+        assert!(
+            !stopping.asked(),
+            "stage 0 closed the port, so the readiness answer it just changed \
+             cannot be reached by anything"
+        );
+
+        stopping.refuse_new();
+        assert!(!stopping.ready());
+        assert!(stopping.asked());
+    }
+
+    #[test]
+    fn refusing_connections_implies_no_longer_being_ready() {
+        // A caller that skips stage 0 must not leave a node refusing new
+        // connections while telling whatever can still reach it that it is
+        // ready to take them.
+        let stopping = Stopping::new();
+        stopping.refuse_new();
+        assert!(!stopping.ready());
     }
 
     #[test]

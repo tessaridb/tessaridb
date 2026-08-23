@@ -481,6 +481,35 @@ fn a_healthy_store_answers_health_with_two_hundred() {
 }
 
 #[test]
+fn a_leaving_node_is_not_ready_while_it_is_still_answering() {
+    // The property the whole readiness route exists for, and it is not "the
+    // route replies": it is that the answer CHANGES while the node is still
+    // reachable. A node that stopped accepting at the same moment would answer
+    // this probe with a refused connection, which tells a load balancer to
+    // retry rather than to route elsewhere.
+    let (node, address) = node();
+
+    let (status, _, body) = send(&address, "GET", "/ready", "", None);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(r#""status":"ok""#), "{body}");
+
+    // Stage 0 only. Nothing is refused, so the next request is served.
+    node.stopping().leaving();
+
+    let (status, _, body) = send(&address, "GET", "/ready", "", None);
+    assert_eq!(
+        status, 503,
+        "a leaving node still told a load balancer to send it work: {body}"
+    );
+    assert!(body.contains(r#""status":"leaving""#), "{body}");
+
+    // And liveness is unmoved, because restarting a node that is shutting down
+    // on purpose is the one thing a supervisor must not do here.
+    let (status, _, body) = send(&address, "GET", "/health", "", None);
+    assert_eq!(status, 200, "{body}");
+}
+
+#[test]
 fn a_store_with_a_background_failure_is_taken_out_of_rotation() {
     // The whole of the alerting design: an engine's compaction and flushing run
     // on their own threads, so a failure there surfaces at no call a caller

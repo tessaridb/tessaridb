@@ -1,7 +1,8 @@
 //! An HTTP surface for bgv-db.
 //!
-//! Two routes: one that runs a script, and one that says whether the node is
-//! alive. Not a REST resource tree over tables — that would be a second query
+//! A route that runs a script, and two that say how the node is: whether it is
+//! alive, and whether it will take work. Not a REST resource tree over tables —
+//! that would be a second query
 //! language, expressed in URLs, that can say less than the one this store
 //! already has. **The language is the API.**
 //!
@@ -131,6 +132,7 @@ impl Node {
                 break;
             }
             let db = Arc::clone(&self.db);
+            let stopping = Arc::clone(&self.stopping);
             // Counted before the thread starts, not inside it: a shutdown that
             // began between the accept and the spawn would otherwise drain to
             // zero while this request had not started.
@@ -139,7 +141,7 @@ impl Node {
             // thread is what gives that for free.
             std::thread::spawn(move || {
                 let _busy = busy;
-                answer(&db, request);
+                answer(&db, &stopping, request);
             });
         }
     }
@@ -152,13 +154,13 @@ impl Node {
     pub fn serve_one(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let request = self.server.recv()?;
         let _busy = self.stopping.busy();
-        answer(&self.db, request);
+        answer(&self.db, &self.stopping, request);
         Ok(())
     }
 }
 
 /// Route one request and write its answer.
-fn answer(db: &Db, mut request: Request) {
+fn answer(db: &Db, stopping: &Stopping, mut request: Request) {
     let route = (request.method().clone(), request.url().to_owned());
     // Read before the body, because `as_reader` borrows the request mutably and
     // the headers are wanted either way.
@@ -172,6 +174,11 @@ fn answer(db: &Db, mut request: Request) {
         // for everyone: a load balancer must not need a credential to tell a
         // live node from a dead one.
         (Method::Get, "/health") => respond::health(db),
+        // A different question, and a supervisor acts on the two in opposite
+        // ways — a readiness failure means stop sending traffic, a liveness
+        // failure means restart. No credential, for the same reason health
+        // needs none.
+        (Method::Get, "/ready") => respond::ready(db, stopping.ready()),
         // Split on `?` here rather than reaching for a URL parser: this route
         // takes one optional parameter and a dependency to read it would be a
         // poor trade.
@@ -209,7 +216,7 @@ fn answer(db: &Db, mut request: Request) {
         }
         // "No such thing" and "not that way" are different answers, and a caller
         // debugging a client needs to know which one it got.
-        (_, "/script" | "/health") => Answer::new(
+        (_, "/script" | "/health" | "/ready") => Answer::new(
             405,
             r#"{"error":"that route takes another method"}"#.to_owned(),
         ),

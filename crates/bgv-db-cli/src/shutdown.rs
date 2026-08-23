@@ -35,6 +35,26 @@ use bgv_db_serve::{Drained, Stopping};
 /// — commonly thirty seconds before it escalates — is not spent here.
 const PATIENCE: Duration = Duration::from_secs(20);
 
+/// How long the node says *not ready* before it stops accepting.
+///
+/// This window is the entire reason a readiness route can be reached when its
+/// answer matters. Refusing connections and being unwilling to serve are two
+/// states here (`Stopping::leaving` before `Stopping::refuse_new`); if they were
+/// one, the port would close at the instant the answer changed and a load
+/// balancer would meet a refused connection where it should have read a `503`
+/// and routed elsewhere.
+///
+/// **Five seconds, and the number is not derivable.** It has to outlast one
+/// probe interval of whatever is watching, and the common defaults disagree —
+/// two seconds for one proxy, ten for an orchestrator's readiness probe, thirty
+/// for a cloud load balancer. Five is the shortest value a common supervisor can
+/// observe at all. A constant that cannot be right for every supervisor is
+/// configuration eventually, and this store's configuration is statements
+/// (ADR-0003), so it belongs in `DEFINE NODE` rather than in a flag.
+///
+/// The cost is real and is paid by every shutdown. A second signal skips it.
+const LAME_DUCK: Duration = Duration::from_secs(5);
+
 /// How often the watcher looks at the counter.
 ///
 /// Parked rather than spun: a process spends its whole life waiting here.
@@ -90,15 +110,36 @@ fn wanted() -> bool {
 ///
 /// # The order is the substance
 ///
-/// New work is refused **before** existing work is interrupted, so a client
-/// mid-request is not punished for a deployment. Subscriptions come **after**
-/// the drain because they never end on their own, and waiting for one in stage
-/// 2 would mean the drain never completes.
+/// The node says **not ready** before it refuses anything, so whatever routes
+/// traffic here can stop doing so while the node is still able to serve — a
+/// refused connection is not an answer a load balancer can act on. New work is
+/// then refused **before** existing work is interrupted, so a client mid-request
+/// is not punished for a deployment. Subscriptions come **after** the drain
+/// because they never end on their own, and waiting for one in stage 2 would
+/// mean the drain never completes.
 pub fn watch(surfaces: &[Surface]) {
     while !wanted() {
         std::thread::park_timeout(GLANCE);
     }
     eprintln!("bgv — stopping; a second signal exits immediately");
+
+    // Stage 0. Say *not ready* and keep serving, so whatever is routing traffic
+    // here learns it before the port goes rather than by a refused connection.
+    // Nothing is refused yet — that is the point.
+    for surface in surfaces {
+        surface.stopping.leaving();
+    }
+    eprintln!(
+        "bgv — not ready; still serving for {}s so a load balancer can notice",
+        LAME_DUCK.as_secs()
+    );
+    // No check for a second signal here: the handler exits the process itself on
+    // the second one, so an operator who does not want to wait out this window
+    // is already gone before this loop could look.
+    let began = std::time::Instant::now();
+    while began.elapsed() < LAME_DUCK {
+        std::thread::park_timeout(GLANCE);
+    }
 
     // Stage 1. The intent is set on every surface first, then each is woken —
     // in that order, or a listener can find nothing set and block again.

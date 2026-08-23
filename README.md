@@ -325,6 +325,8 @@ than leaving it to be found by pressing up.
 
 `SIGTERM` or `SIGINT`, and it stops in stages:
 
+0. the node says **it is not ready** and goes on serving for five seconds, so
+   whatever routes traffic to it can stop doing so while it can still answer,
 1. every surface stops accepting new connections,
 2. requests already in flight are given up to twenty seconds to finish,
 3. subscriptions are ended — after the drain, because they never end on their
@@ -338,6 +340,12 @@ point of the order: a client mid-request is not punished for a deployment. A
 subscriber loses nothing either way — its cursor is a position it holds, so it
 reconnects exactly where it stopped.
 
+Step 0 exists because a refused connection is not an answer. Without it the port
+closes at the instant the node stops wanting work, so a load balancer meets a
+dead socket and retries instead of routing elsewhere — the readiness route would
+have nothing to report to and nobody able to ask. **The five seconds are paid by
+every shutdown**, and a second signal skips them.
+
 **It does not detach.** No fork, no pidfile. A database that daemonises itself
 fights its supervisor: `systemd` loses readiness detection and the main PID,
 Docker's PID 1 exits and takes the container with it, and Kubernetes reads that
@@ -347,8 +355,22 @@ as a crash loop. Run it in the foreground and let the supervisor supervise.
 
 ```
 bgv ./data --health          # exits non-zero when it is not
-curl -s localhost:8000/health
+curl -s localhost:8000/health   # is this store readable
+curl -s localhost:8000/ready    # will this node take work right now
 ```
+
+**Two routes because a supervisor acts on them in opposite ways.** A readiness
+failure means *stop sending traffic*; a liveness failure means *restart it*.
+Wire them the wrong way round and a node that is shutting down on purpose, or
+whose disk has filled, gets restarted into the same state on a loop.
+
+`GET /ready` answers **503** when the node is leaving — step 0 of the shutdown
+above — and otherwise answers exactly what `/health` answers, because there is
+one store and it has one opinion about itself. Neither route needs a credential.
+
+Since `/health` carries that opinion, **it belongs on a rotation check rather
+than on a restart check.** A background failure in the engine is not something a
+restart clears.
 
 An engine does its compaction, its flushing and its write-ahead work on its own
 threads, and a failure there surfaces at **no call a caller makes**: the store

@@ -116,6 +116,82 @@ fn over_http(address: &str, path: &str, body: &str) -> String {
     answered
 }
 
+/// One GET, answered whole — or the reason it could not be asked.
+///
+/// A `Result` rather than a `String`, and that is the point of the helper: the
+/// two ways a readiness probe fails are **it said the wrong thing** and
+/// **nothing was listening**, and they mean opposite things to an operator. The
+/// first is a node lying about itself; the second is a node that closed its
+/// port at the moment its answer changed, which is the failure this whole stage
+/// exists to prevent. Collapsed into one string, the second reads as the first.
+fn probing(address: &str, path: &str) -> std::io::Result<String> {
+    use std::io::{Read, Write};
+
+    let mut socket = TcpStream::connect(address)?;
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n");
+    socket.write_all(request.as_bytes())?;
+    socket.flush()?;
+    let mut answered = String::new();
+    socket.read_to_string(&mut answered)?;
+    Ok(answered)
+}
+
+#[test]
+fn a_node_says_it_is_not_ready_while_it_is_still_answering() {
+    // Readiness and liveness are different questions and a supervisor acts on
+    // them in opposite ways — one says stop sending traffic, the other says
+    // restart. What is asserted here is not that the route replies, which a
+    // constant `200` would satisfy: it is that the answer **changes** while the
+    // node is still reachable to be asked.
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let wire = "127.0.0.1:47851";
+    let http = "127.0.0.1:47852";
+
+    let node = serving_both(&path, wire, http);
+
+    let willing = probing(http, "/ready").expect("the readiness route never answered");
+    assert!(
+        willing.starts_with("HTTP/1.1 200"),
+        "a node that had not been asked to stop did not call itself ready: {willing}"
+    );
+
+    let signalled = Command::new("kill")
+        .args(["-TERM", &node.0.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(signalled.success(), "the signal was not delivered");
+
+    // Bounded by less than the lame-duck window on purpose. Inside it the port
+    // must still be open, so a connection failure here is a real failure and
+    // not the shutdown having simply moved on.
+    let mut leaving = None;
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_secs(4) {
+        match probing(http, "/ready") {
+            Ok(answered) if answered.starts_with("HTTP/1.1 503") => {
+                leaving = Some(answered);
+                break;
+            }
+            Ok(_) => std::thread::yield_now(),
+            Err(why) => panic!(
+                "the node stopped accepting connections before it said it was \
+                 not ready, so nothing routing traffic here could ever read the \
+                 answer: {why}"
+            ),
+        }
+    }
+    let leaving = leaving.expect("the node went on calling itself ready after being told to stop");
+    assert!(leaving.contains(r#""status":"leaving""#), "{leaving}");
+
+    // Liveness is unmoved. A supervisor that restarted this node now would be
+    // restarting one that is shutting down on purpose.
+    let alive = probing(http, "/health").expect("the health route stopped answering");
+    assert!(alive.starts_with("HTTP/1.1 200"), "{alive}");
+
+    drop(node);
+}
+
 #[test]
 fn one_process_answers_on_both_surfaces_over_one_store() {
     // The property is not "two listeners started" — that is also what two

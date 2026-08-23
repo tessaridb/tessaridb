@@ -127,6 +127,30 @@ pub(crate) fn health(db: &Db) -> Answer {
     }
 }
 
+/// `GET /ready` — whether this node will take new work **now**.
+///
+/// A different question from `/health`, and the difference is what a supervisor
+/// acts on: a probe that fails here means *stop sending traffic*, and a probe
+/// that fails on liveness means *restart it*. Those are opposite instructions,
+/// so a node that answers only one of them gets one of them wrong.
+///
+/// Two states make this false. The node is **leaving** — stage 0 of a staged
+/// shutdown, where it is still serving and no longer wants new work. Or the
+/// store is **unwell**, which is [`health`]'s own answer, delegated rather than
+/// re-derived: one store, one opinion about it, and a node that is ready and
+/// unhealthy at the same time would be a bug in the reporting rather than a
+/// state a caller has to understand.
+///
+/// So when nothing is leaving, this answers exactly what `/health` answers. The
+/// routes differ only where they are meant to.
+pub(crate) fn ready(db: &Db, willing: bool) -> Answer {
+    if willing {
+        health(db)
+    } else {
+        Answer::new(503, r#"{"status":"leaving"}"#.to_owned())
+    }
+}
+
 /// `POST /script` — run it, and answer with one object per statement.
 ///
 /// The credential, when there is one, is presented **before** the script runs.
