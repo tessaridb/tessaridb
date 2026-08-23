@@ -405,6 +405,64 @@ pub fn read_until(
     })
 }
 
+/// What a bootstrap left the node holding, and where it must continue from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bootstrapped {
+    /// The build that wrote the prefix.
+    pub written_by: NodeVersion,
+    /// How many log records were applied.
+    pub records: u64,
+    /// The sequence to ask the leader for next.
+    ///
+    /// Taken from the node's **own** committed tail after the replay, never from
+    /// what the prefix said it held — see [`bootstrap`].
+    pub follow_from: Sequence,
+    /// Whether the prefix ended mid-record.
+    ///
+    /// A truncated prefix leaves a node that is a correct copy of an *earlier*
+    /// moment, not a broken one: `follow_from` is where it actually reached, so
+    /// following resumes with nothing missed. Reported because the node is
+    /// further behind than whoever sent the prefix intended.
+    pub truncated: bool,
+}
+
+/// Bring an empty node up from a log prefix, and say where to follow from.
+///
+/// # Why this exists beside [`read`]
+///
+/// A caller could restore and then compute the position itself, and that is the
+/// mistake this function is here to stop being made once per call site. Two
+/// things make it sharper than a convenience.
+///
+/// The position is **one past** the last applied record, because the feed asks
+/// for records *at or after* the position it is given — so following from the
+/// applied tail re-delivers the record already applied, and following from one
+/// past it is the same meaning [`bgv_db_storage::Changes`] already gives `next`.
+///
+/// And the position comes from the **node's own committed tail**, never from the
+/// prefix's header. Those agree only when the whole prefix arrived. A prefix cut
+/// in transit still restores everything before the cut, and a position taken
+/// from the header would then place the node *past records it never received* —
+/// a gap, silently, which is the one thing replication may not do. Taking it
+/// from the store makes the node's claim about itself derive from what it holds.
+///
+/// # Errors
+///
+/// The same as [`read`]: [`Error::NotABackup`] or [`Error::Unsupported`] before
+/// anything is applied, [`Error::WrongBase`] when the node is not standing where
+/// this prefix continues from — which for a bootstrap means *not empty* — and
+/// [`Error::Damaged`] at the first record whose bytes are not the bytes written.
+pub fn bootstrap(store: &Store, input: &mut impl Read) -> Result<Bootstrapped> {
+    let restored = read(store, input)?;
+    let reached = store.committed_tail()?;
+    Ok(Bootstrapped {
+        written_by: restored.written_by,
+        records: restored.records,
+        follow_from: Sequence::new(reached.get().saturating_add(1)),
+        truncated: restored.truncated,
+    })
+}
+
 /// Read a backup without applying any of it.
 ///
 /// What somebody does *before* the day they need it, and what a restore should
