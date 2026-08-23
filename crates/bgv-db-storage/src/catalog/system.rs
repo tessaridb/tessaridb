@@ -139,9 +139,13 @@ mod tests {
 
     #[test]
     fn every_system_table_has_a_distinct_id() {
+        // Every system table, not a sample: an id is only proved distinct if it
+        // is compared against all of them, and a name left out of this list
+        // cannot be found duplicated however wrong it is. `GRANTS` was missing
+        // from here until it was noticed while adding `REPLICAS`.
         let ids = [
             NAMESPACES, DATABASES, TABLES, NAMES, ALLOCATORS, INDEXES, FIELDS, ANALYZERS, USERS,
-            REPLICAS,
+            GRANTS, REPLICAS,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(
