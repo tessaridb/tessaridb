@@ -77,9 +77,11 @@ version = "0.0.0"
 dependencies = [
  "bgv-db-encoding",
  "bgv-db-kv",
+ "bgv-db-lsm",
  "bgv-db-session",
  "bgv-db-storage",
  "bgv-db-types",
+ "tempfile",
  "thiserror",
 ]
 

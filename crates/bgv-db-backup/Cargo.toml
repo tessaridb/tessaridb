@@ -17,7 +17,9 @@ thiserror.workspace = true
 
 [dev-dependencies]
 bgv-db-kv.workspace = true
+bgv-db-lsm.workspace = true
 bgv-db-session.workspace = true
+tempfile = "3"
 
 [lints]
 workspace = true
