@@ -163,7 +163,7 @@ pub(crate) fn delete(db: &Db, target: &Target<'_>, credentials: Option<&Credenti
 /// Deliberately narrower than what the lexer accepts: this is the guard in front
 /// of an interpolation, and a guard that reasons about what the lexer would do
 /// is a guard that has to be re-checked every time the lexer changes.
-fn is_identifier(held: &str) -> bool {
+pub(crate) fn is_identifier(held: &str) -> bool {
     !held.is_empty()
         && held
             .chars()

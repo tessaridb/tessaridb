@@ -172,13 +172,35 @@ for change in db.poll(&mut watching, 128)? {
 
 ### A browser opens the same subscription at `/watch`
 
-`GET /watch` upgrades to a WebSocket. **The transport is in place; the feed is
-not wired to it yet** — a message sent today is answered with close `1003`, which
-is a stated refusal rather than a silence a client would wait out.
+`GET /watch` upgrades to a WebSocket and carries the change feed. Send one
+message saying what to follow, and changes arrive as they happen:
 
 ```js
 const socket = new WebSocket("ws://localhost:8080/watch");
+
+socket.onopen = () => socket.send(JSON.stringify({
+  namespace: "prod", database: "library", table: "users", from: 0,
+}));
+
+socket.onmessage = (event) => {
+  const change = JSON.parse(event.data);
+  // {"sequence":4,"table":"users","id":"1","became":"written","value":{"name":"ada"}}
+};
 ```
+
+`from` is a position in the log, not "from now", so a client that was
+disconnected resumes exactly where it stopped by sending back one more than the
+last `sequence` it handled. `0` is everything the log still holds, and leaving
+`table` out follows every table the session may read.
+
+A browser cannot set an `Authorization` header on a `WebSocket`, so the follow
+request may carry `user` and `password` instead; the header is used when a
+client can send one. Both are a credential in the clear, which this store
+already says of every route it serves — it has no TLS and belongs on a network
+the operator protects.
+
+Following takes the connection over: a socket that is pushing is not also
+reading requests. A client that wants both opens two.
 
 The server half of RFC 6455 is written here rather than taken from a crate, and
 the four things a hand-written one usually gets wrong are the four it is tested

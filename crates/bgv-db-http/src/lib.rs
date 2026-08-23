@@ -44,6 +44,7 @@ mod websocket;
 use std::sync::Arc;
 
 use bgv_db::Db;
+use bgv_db::feed::Commits;
 use bgv_db_serve::{Busy, Census, Stopping};
 use tiny_http::{Method, Request, Response, Server};
 
@@ -55,6 +56,12 @@ pub struct Node {
     server: Arc<Server>,
     stopping: Arc<Stopping>,
     census: Option<Arc<Census>>,
+    /// The wake-up subscribers on this node wait on.
+    ///
+    /// Per node rather than per store: a commit that arrived through a different
+    /// surface does not signal this one, and that costs a subscriber up to one
+    /// wait rather than costing it the change (`bgv_db::feed::Commits`).
+    committed: Arc<Commits>,
 }
 
 /// What ends a node's accept loop from another thread.
@@ -93,6 +100,7 @@ impl Node {
             server: Arc::new(Server::http(address)?),
             stopping: Stopping::new(),
             census: None,
+            committed: Arc::new(Commits::default()),
         })
     }
 
@@ -147,6 +155,7 @@ impl Node {
             let db = Arc::clone(&self.db);
             let stopping = Arc::clone(&self.stopping);
             let census = self.census.clone();
+            let committed = Arc::clone(&self.committed);
             // Counted before the thread starts, not inside it: a shutdown that
             // began between the accept and the spawn would otherwise drain to
             // zero while this request had not started.
@@ -154,7 +163,14 @@ impl Node {
             // A panic in one request must not take the listener with it, and a
             // thread is what gives that for free.
             std::thread::spawn(move || {
-                answer(&db, &stopping, census.as_deref(), &mut busy, request);
+                answer(
+                    &db,
+                    &stopping,
+                    census.as_deref(),
+                    &committed,
+                    &mut busy,
+                    request,
+                );
             });
         }
     }
@@ -171,6 +187,7 @@ impl Node {
             &self.db,
             &self.stopping,
             self.census.as_deref(),
+            &self.committed,
             &mut busy,
             request,
         );
@@ -183,6 +200,7 @@ fn answer(
     db: &Db,
     stopping: &Stopping,
     census: Option<&Census>,
+    committed: &Commits,
     busy: &mut Busy,
     mut request: Request,
 ) {
@@ -193,7 +211,7 @@ fn answer(
     // past the one place every answer is counted is a route the scrape silently
     // forgets.
     if route.0 == Method::Get && route.1 == "/watch" {
-        let refused = websocket::watch(request, busy);
+        let refused = websocket::watch(db, stopping, committed, request, busy);
         stopping.answered(refused);
         return;
     }
@@ -284,6 +302,15 @@ fn answer(
     // writes passes through, which is what keeps "what a refusal is" a single
     // decision rather than one taken again at each route.
     stopping.answered(reply.status >= 400);
+
+    // A statement that succeeded may have committed something, so wake this
+    // node's subscribers rather than leaving them to notice on their next
+    // timeout. Not required for correctness — `Commits::wait` returns anyway —
+    // and the signal is deliberately coarse: it says "look", never what changed,
+    // so it cannot disagree with the log about what actually happened.
+    if route.0 == Method::Post && route.1 == "/script" && reply.status < 400 {
+        committed.signal();
+    }
 
     let mut response = Response::from_data(reply.body).with_status_code(reply.status);
     // A `401` without a challenge is not a `401` a client can act on — RFC 9110

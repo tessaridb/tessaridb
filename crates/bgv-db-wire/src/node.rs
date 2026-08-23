@@ -5,15 +5,16 @@
 
 use std::io::{BufReader, BufWriter};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 
-use bgv_db::{DatabaseId, Db, NamespaceId, Sequence, Watch};
+use bgv_db::feed::{self, Commits, Following};
+use bgv_db::{Db, Sequence};
 use bgv_db_serve::{Busy, Stopping};
 
 use crate::error::{Error, Result};
 use crate::message::Request;
 use crate::push::Follow;
-use crate::{MOUTHFUL, PATIENCE, READING, frame, message, push};
+use crate::{READING, frame, message, push};
 
 /// A node listening for connections.
 pub struct Node {
@@ -21,50 +22,6 @@ pub struct Node {
     db: Arc<Db>,
     committed: Arc<Commits>,
     stopping: Arc<Stopping>,
-}
-
-/// The signal that a commit happened, and nothing else.
-///
-/// Deliberately not a registry of subscribers: it holds a counter, so it knows
-/// how many commits have gone by and nothing at all about who is waiting. The
-/// feed design keeps the store free of subscriber state, and this keeps the node
-/// free of it too.
-///
-/// It lives here rather than in the store because a store is opened by one
-/// process — the file lock proves it — so every commit against this store
-/// arrives through a connection of this node. Putting a condvar in the commit
-/// path would be reaching into the one place the feed design deliberately left
-/// lock-free, to learn something this node already knows.
-#[derive(Default)]
-struct Commits {
-    count: Mutex<u64>,
-    happened: Condvar,
-}
-
-impl Commits {
-    /// Something was committed.
-    fn signal(&self) {
-        if let Ok(mut count) = self.count.lock() {
-            *count = count.saturating_add(1);
-        }
-        self.happened.notify_all();
-    }
-
-    /// Wait for a commit after `seen`, and answer the count now.
-    ///
-    /// Returns after [`PATIENCE`] regardless, so a missed signal delays a change
-    /// rather than losing it.
-    fn wait(&self, seen: u64) -> u64 {
-        let Ok(count) = self.count.lock() else {
-            return seen;
-        };
-        if *count != seen {
-            return *count;
-        }
-        self.happened
-            .wait_timeout(count, PATIENCE)
-            .map_or(seen, |(held, _)| *held)
-    }
 }
 
 impl Node {
@@ -308,120 +265,49 @@ fn follow(
     writer: &mut BufWriter<TcpStream>,
     asked: &Follow,
 ) -> Result<()> {
-    if let Err(refusal) = session.may_read(db.store()) {
-        return refuse(writer, &refusal.to_string());
-    }
-    // The *table* question, which `may_read` does not answer. A grant-governed
-    // subscriber sees what they were granted and nothing else — the same answer
-    // their `SELECT` per table would give. Forgetting this is how a feed hands
-    // somebody a table nobody granted them, which is the shape of hole this
-    // surface has now produced twice.
-    let readable = match session.readable(db.store()) {
-        Ok(readable) => readable,
-        Err(failure) => return refuse(writer, &failure.to_string()),
-    };
-    let (Some(namespace), Some(database)) = (session.namespace(), session.database()) else {
-        return refuse(writer, "no database is selected to follow the changes to");
-    };
-    let Some(tenancy) = tenancy(db, namespace, database) else {
-        return refuse(writer, "that namespace and database are not both there");
-    };
-    let watch = match &asked.table {
-        None => Watch::default(),
-        Some(name) => match db.table_in(namespace, database, name) {
-            Ok(Some(table)) => {
-                // Named explicitly, so the refusal is better than a feed that
-                // silently delivers nothing forever.
-                if readable.as_ref().is_some_and(|held| !held.contains(&table)) {
-                    return refuse(
-                        writer,
-                        &format!("{name:?} is not a table this session has been granted to read"),
-                    );
-                }
-                Watch::table(table)
-            }
-            Ok(None) => return refuse(writer, &format!("no table named {name:?} to watch")),
-            Err(failure) => return refuse(writer, &failure.to_string()),
-        },
-    };
-
     // The socket, not a buffer here, is what a slow subscriber pushes back on —
     // and a client that never reads at all ends its own connection rather than
     // holding this thread until the process stops.
     writer.get_ref().set_write_timeout(Some(READING))?;
 
-    // What a subscriber may see of each table, resolved once per table rather
-    // than once per change. The feed pushes whole records and never passes
-    // through a session's read path, so a field grant reaches it here or not at
-    // all — and "not at all" means pushing a field nobody granted.
-    let mut visible: std::collections::BTreeMap<bgv_db::TableId, bgv_db::Visible> =
-        std::collections::BTreeMap::new();
-    let mut subscription = Db::subscribe(Sequence::new(asked.from), watch);
-    let mut seen = 0;
-    loop {
-        // Stage 3 of a staged shutdown reaches a feed here. A pusher spends its
-        // life blocked in `wait` below, which returns after `PATIENCE` whether
-        // or not anything happened — so the flag is noticed within that, and a
-        // subscription ends by its own loop rather than by its socket being
-        // taken from under it. What a subscriber loses is nothing: the cursor
-        // is a position it holds, so it resumes exactly where it stopped.
-        if stopping.asked() {
-            return Ok(());
-        }
-        let changes = db
-            .poll(&mut subscription, MOUTHFUL)
-            .map_err(|failure| Error::Refused {
-                message: failure.to_string(),
-            })?;
-        for change in &changes {
-            // The log is every tenancy's. `Watch` filters by table and knows
-            // nothing about namespaces, so this is where a subscriber is kept
-            // inside the database it selected.
-            if (change.namespace, change.database) != tenancy {
-                continue;
-            }
-            // And the grant, for a subscriber watching everything. Filtered
-            // rather than refused, because "everything I was granted" is what
-            // the same user's reads answer.
-            if readable
-                .as_ref()
-                .is_some_and(|held| !held.contains(&change.table))
-            {
-                continue;
-            }
-            // A change whose table has been dropped has no name to give, and
-            // inventing one would be worse than not sending it. The cursor has
-            // already moved past it either way.
-            let allowed = match visible.get(&change.table) {
-                Some(held) => held.clone(),
-                None => {
-                    let held = session.visible(db.store(), change.table).unwrap_or(None);
-                    visible.insert(change.table, held.clone());
-                    held
+    // Everything between the request and the bytes — the grant, the tenancy,
+    // the table, the field visibility, the polling — belongs to `bgv_db::feed`
+    // and is shared with the socket surface, so the two cannot disagree about
+    // who may see what. What is left here is this protocol's two ends.
+    let following = Following {
+        from: Sequence::new(asked.from),
+        table: asked.table.as_deref(),
+    };
+    let mut failure = None;
+    let outcome = feed::follow(
+        db,
+        session,
+        &following,
+        committed,
+        &|| stopping.asked(),
+        &mut |change, name, allowed| {
+            let Some(named) = push::named(change, name.map(str::to_owned)) else {
+                // A change whose table has been dropped has no name to give.
+                return true;
+            };
+            match frame::write(writer, frame::Kind::Change, &named.hiding(allowed).encode()) {
+                Ok(()) => true,
+                Err(why) => {
+                    // The connection is gone. Keep the reason so it reaches the
+                    // caller rather than being reported as a clean end.
+                    failure = Some(why);
+                    false
                 }
-            };
-            let Some(named) = push::named(change, db.table_name(change.table).unwrap_or(None))
-            else {
-                continue;
-            };
-            frame::write(
-                writer,
-                frame::Kind::Change,
-                &named.hiding(&allowed).encode(),
-            )?;
-        }
-        if changes.is_empty() {
-            seen = committed.wait(seen);
-        }
+            }
+        },
+    );
+    if let Some(why) = failure {
+        return Err(why);
     }
-}
-
-/// The ids of the namespace and database a session has selected.
-///
-/// `None` when either has gone since the `USE` that named it, which is a
-/// refusal rather than a subscription to nothing.
-fn tenancy(db: &Db, namespace: &str, database: &str) -> Option<(NamespaceId, DatabaseId)> {
-    db.tenancy_in(namespace, database).ok().flatten()
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(refusal) => refuse(writer, &refusal),
+    }
 }
 
 /// The store's own words, travelling as a refusal.

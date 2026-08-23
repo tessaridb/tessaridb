@@ -24,23 +24,41 @@
 //! drain deadline for a socket that was never going to close, which is the defect
 //! the two counts exist to prevent.
 
+mod follow;
 mod frame;
 mod handshake;
 mod sha1;
 
 use std::io::{Read, Write};
 
+use bgv_db::feed::{Commits, Following};
+use bgv_db::{Db, Sequence};
 use bgv_db_constants::SOCKET_MAX_MESSAGE_BYTES;
-use bgv_db_serve::Busy;
+use bgv_db_serve::{Busy, Stopping};
 use tiny_http::{Header, Request, Response};
 
+use crate::basic::{self, Credentials};
 use frame::{Frame, Opcode};
 
 /// Serve one request to the socket route.
 ///
 /// Returns whether the request was refused, which is what the surface counts as
 /// a refusal — the same definition every other route here uses.
-pub(crate) fn watch(request: Request, busy: &mut Busy) -> bool {
+pub(crate) fn watch(
+    db: &Db,
+    stopping: &Stopping,
+    committed: &Commits,
+    request: Request,
+    busy: &mut Busy,
+) -> bool {
+    // Read before the upgrade, because the upgrade consumes the request. A
+    // browser cannot set this header, which is why a follow request may carry a
+    // credential of its own — see `follow.rs`.
+    let presented = request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv("Authorization"))
+        .and_then(|header| basic::read(header.value.as_str()));
     let accept = match handshake::read(request.headers()) {
         Ok(accept) => accept,
         Err(refusal) => {
@@ -65,7 +83,7 @@ pub(crate) fn watch(request: Request, busy: &mut Busy) -> bool {
     // answers.
     busy.became_a_feed();
     let mut socket = request.upgrade("websocket", Response::empty(101).with_header(header));
-    session(&mut socket);
+    session(&mut socket, db, stopping, committed, presented.as_ref());
     false
 }
 
@@ -82,12 +100,18 @@ fn refuse(request: Request, status: u16, body: &str) -> bool {
 }
 
 /// Read frames until the connection ends, answering control frames as they come.
-fn session(socket: &mut (impl Read + Write)) {
-    // The bytes reassembled so far, and nothing else. The kind the first
-    // fragment declared is deliberately not kept: nothing reads it yet, and
-    // storing a value because the next task will want it is how a field arrives
-    // that nobody can explain. SGK.T3 adds it when it has a reader.
-    let mut message: Option<Vec<u8>> = None;
+fn session(
+    socket: &mut (impl Read + Write),
+    db: &Db,
+    stopping: &Stopping,
+    committed: &Commits,
+    presented: Option<&Credentials>,
+) {
+    // The bytes reassembled so far, and the kind the FIRST fragment declared —
+    // which is now read, because a follow request is text and a binary message
+    // is not something this route accepts. Wave 53 deliberately dropped this
+    // field for want of a reader; this is the reader.
+    let mut message: Option<(Opcode, Vec<u8>)> = None;
     loop {
         let Frame {
             fin,
@@ -122,26 +146,145 @@ fn session(socket: &mut (impl Read + Write)) {
             // one is still open. Both are protocol faults rather than something
             // to guess at.
             (None, true) | (Some(_), false) => return end(socket, Some(1002)),
-            (Some(held), true) => held.extend_from_slice(&payload),
-            (None, false) => message = Some(payload),
+            (Some((_, held)), true) => held.extend_from_slice(&payload),
+            (None, false) => message = Some((opcode, payload)),
         }
 
         // Bounded across fragments, not per frame: a sender that fragments
         // without limit gets past a per-frame ceiling by construction.
         if message
             .as_ref()
-            .is_some_and(|held| held.len() > SOCKET_MAX_MESSAGE_BYTES)
+            .is_some_and(|(_, held)| held.len() > SOCKET_MAX_MESSAGE_BYTES)
         {
             return end(socket, Some(1009));
         }
 
         if fin {
-            // SGK.T3 replaces this arm with the subscription. Until it does, the
-            // route says what it cannot do rather than dropping the message and
-            // leaving the client waiting for an answer that is not coming.
-            return end(socket, Some(1003));
+            let Some((kind, held)) = message else {
+                return end(socket, Some(1002));
+            };
+            // A follow request is text. A binary message is refused with the
+            // code that says which kind was wrong rather than a generic fault,
+            // because that is the difference between a client fixing its
+            // encoding and a client guessing.
+            if kind != Opcode::Text {
+                return end(socket, Some(1003));
+            }
+            let Ok(body) = String::from_utf8(held) else {
+                // 1007 is "not the data I said it was" — a text frame whose
+                // bytes are not text.
+                return end(socket, Some(1007));
+            };
+            // Following takes the connection over: a thread that is pushing
+            // cannot also be reading requests, and letting it do both means
+            // multiplexing — a much larger protocol for a case nobody has. A
+            // client that wants both opens two sockets.
+            return feed(socket, db, stopping, committed, presented, &body);
         }
     }
+}
+
+/// Follow changes on this socket until the client goes or the node stops.
+///
+/// The refusals are written **as a frame** before the close rather than only as
+/// a close code: a close code is five bits of meaning, and "you are not granted
+/// that table" and "that table does not exist" are different things a subscriber
+/// must be able to tell apart.
+fn feed(
+    socket: &mut (impl Read + Write),
+    db: &Db,
+    stopping: &Stopping,
+    committed: &Commits,
+    presented: Option<&Credentials>,
+    body: &str,
+) {
+    let asked = match follow::read(body) {
+        Ok(asked) => asked,
+        Err(reason) => return refuse_on(socket, &reason),
+    };
+    // The header's credential when there was one, else the message's. The
+    // header wins, because a client that can set it is not a browser and its
+    // credential did not travel through a message body.
+    let mut session = db.session();
+    let signed = match (presented, asked.credentials.as_ref()) {
+        (Some(held), _) => session.sign_in(&held.name, &held.password),
+        (None, Some((name, secret))) => session.sign_in(name, secret),
+        (None, None) => Ok(()),
+    };
+    if let Err(error) = signed {
+        return refuse_on(socket, &error.to_string());
+    }
+    // A namespace and database reach a statement, so they are guarded by the
+    // same narrow rule the object routes use rather than by a second opinion
+    // about what the lexer would accept.
+    if !crate::object::is_identifier(&asked.namespace)
+        || !crate::object::is_identifier(&asked.database)
+    {
+        return refuse_on(socket, "a namespace and database are plain names");
+    }
+    let selecting = format!(
+        "USE NAMESPACE {} DATABASE {};",
+        asked.namespace, asked.database
+    );
+    if let Err(error) = session.run(&selecting) {
+        return refuse_on(socket, &error.to_string());
+    }
+
+    let following = Following {
+        from: Sequence::new(asked.from),
+        table: asked.table.as_deref(),
+    };
+    let mut broken = false;
+    let outcome = bgv_db::feed::follow(
+        db,
+        &session,
+        &following,
+        committed,
+        &|| stopping.asked(),
+        &mut |change, name, allowed| {
+            let Some(table) = name else {
+                // A change whose table has been dropped has no name to give.
+                return true;
+            };
+            // Only reaches the store when the value actually holds a reference,
+            // and a client that receives `"1:2"` cannot follow it.
+            let names = db
+                .names_in(&[(
+                    change.id.clone(),
+                    match &change.kind {
+                        bgv_db::ChangeKind::Written(held) => held.clone(),
+                        bgv_db::ChangeKind::Removed => bgv_db::Value::Null,
+                    },
+                )])
+                .unwrap_or_default();
+            let text = follow::encode(change, table, allowed, &names);
+            if frame::write(socket, true, Opcode::Text, text.as_bytes()).is_err() {
+                broken = true;
+                return follow::GONE;
+            }
+            true
+        },
+    );
+    if broken {
+        return;
+    }
+    if let Err(reason) = outcome {
+        return refuse_on(socket, &reason);
+    }
+    // The node is stopping. A subscriber loses nothing: the cursor is a position
+    // it holds, so it resumes exactly where it stopped.
+    end(socket, Some(1001));
+}
+
+/// Tell a subscriber why it is not following anything, then end the connection.
+fn refuse_on(socket: &mut (impl Read + Write), reason: &str) {
+    let _ = frame::write(
+        socket,
+        true,
+        Opcode::Text,
+        follow::refusal(reason).as_bytes(),
+    );
+    end(socket, Some(1008));
 }
 
 /// End the connection, telling the client why when there is one left to tell.
@@ -195,12 +338,19 @@ mod tests {
     }
 
     /// Run a session over everything the client sends, and read what came back.
+    ///
+    /// A real store, because the session's job now ends in one. Nothing here
+    /// reaches it: every exchange below is decided by the frame protocol before
+    /// a follow request is ever parsed.
     fn exchange(sent: Vec<u8>) -> Vec<(bool, u8, Vec<u8>)> {
+        let db = bgv_db::Db::in_memory().expect("an in-memory store");
+        let stopping = bgv_db_serve::Stopping::new();
+        let committed = super::Commits::default();
         let mut client = Client {
             sending: std::io::Cursor::new(sent),
             received: Vec::new(),
         };
-        session(&mut client);
+        session(&mut client, &db, &stopping, &committed, None);
         unframe(&client.received)
     }
 
@@ -266,22 +416,32 @@ mod tests {
         sent.extend(client_frame(true, 0, b"{\"from\":0}}"));
         let answers = exchange(sent);
         assert_eq!(
-            answers.len(),
-            2,
-            "expected a pong for the interleaved ping and then one close"
-        );
-        assert_eq!(
             answers[0].1, 10,
             "the ping between fragments was not answered"
         );
+        // The two halves make `{"follow":{"from":0}}`, which is a well-formed
+        // JSON object and *not* a follow request — so what proves the
+        // reassembly happened is that the refusal names the field the joined
+        // text contains. Either fragment alone would not parse at all, and the
+        // wrong join would name something else.
         assert_eq!(
-            answers[1].1, 8,
-            "the reassembled message was not answered at all"
+            answers[1].1, 1,
+            "the reassembled message was not answered in words"
+        );
+        let text = String::from_utf8(answers[1].2.clone()).expect("a text frame carries text");
+        assert!(
+            text.contains("follow"),
+            "the refusal does not quote the field the joined message held, so \
+             the two fragments were not reassembled into one message: {text}"
         );
         assert_eq!(
-            closed_with(&answers[1].2),
-            1003,
-            "a message this route cannot yet consume must be refused out loud"
+            answers[2].1, 8,
+            "the connection was left open after the request was refused"
+        );
+        assert_eq!(
+            closed_with(&answers[2].2),
+            1008,
+            "a request this route understood and rejected is a policy refusal"
         );
     }
 

@@ -81,6 +81,8 @@ pub fn value_of(written: &str) -> core::result::Result<bgv_db_types::Value, Stri
     }
 }
 
+pub mod feed;
+
 pub use bgv_db_lsm::{Durability, StoreConfig};
 pub use bgv_db_session::redact::{Visible, seen};
 pub use bgv_db_session::{AccessPath, Error, Outcome, Parameters, Result, Session};

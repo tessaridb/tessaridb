@@ -58,13 +58,6 @@ pub use crate::message::{Answer, Names, Request, names_for, spell};
 pub use crate::node::Node;
 pub use crate::push::{Became, Follow, Happened};
 
-/// How long a pusher waits for a commit before looking anyway.
-///
-/// A backstop, not the mechanism: a commit wakes a pusher directly, and this
-/// only bounds how long a *missed* signal could hide a change. Short enough that
-/// nobody would notice it and long enough that an idle node is idle.
-const PATIENCE: Duration = Duration::from_millis(250);
-
 /// How long the node will wait for a subscriber to accept a change.
 ///
 /// When a client stops reading, its socket fills and this write blocks. Rather
@@ -72,9 +65,3 @@ const PATIENCE: Duration = Duration::from_millis(250);
 /// nothing is lost by that, and why buffering here instead would rebuild the
 /// queue the feed design removed.
 const READING: Duration = Duration::from_secs(30);
-
-/// How many changes to take from the log at a time.
-///
-/// Bounds the memory one poll holds, not the backlog: what is not taken this
-/// time is taken next time, because the cursor did not move past it.
-const MOUTHFUL: usize = 256;

@@ -87,13 +87,13 @@ pub(crate) fn envelope(body: &str) -> Result<Envelope, String> {
 }
 
 /// A position in the text, and the few things this envelope can hold.
-struct Reader {
+pub(crate) struct Reader {
     held: Vec<char>,
     at: usize,
 }
 
 impl Reader {
-    fn new(source: &str) -> Self {
+    pub(crate) fn new(source: &str) -> Self {
         Self {
             held: source.chars().collect(),
             at: 0,
@@ -104,17 +104,39 @@ impl Reader {
         self.held.get(self.at).copied()
     }
 
-    fn done(&self) -> bool {
+    pub(crate) fn done(&self) -> bool {
         self.at >= self.held.len()
     }
 
-    fn space(&mut self) {
+    /// A non-negative whole number, which is every number this crate's
+    /// envelopes carry.
+    ///
+    /// Deliberately not a general JSON number reader: nothing here holds a
+    /// fraction or an exponent, and accepting a syntax no caller sends is
+    /// surface that can only ever be wrong somewhere nobody looks.
+    pub(crate) fn number(&mut self) -> Result<u64, String> {
+        let start = self.at;
+        while self.peek().is_some_and(|held| held.is_ascii_digit()) {
+            self.at = self.at.saturating_add(1);
+        }
+        if self.at == start {
+            return Err("a whole number was expected".to_owned());
+        }
+        self.held
+            .get(start..self.at)
+            .map(|digits| digits.iter().collect::<String>())
+            .ok_or_else(|| "a whole number was expected".to_owned())?
+            .parse()
+            .map_err(|_| "that number is too large to be a position".to_owned())
+    }
+
+    pub(crate) fn space(&mut self) {
         while matches!(self.peek(), Some(' ' | '\t' | '\n' | '\r')) {
             self.at = self.at.saturating_add(1);
         }
     }
 
-    fn eat(&mut self, wanted: char) -> bool {
+    pub(crate) fn eat(&mut self, wanted: char) -> bool {
         if self.peek() == Some(wanted) {
             self.at = self.at.saturating_add(1);
             return true;
@@ -122,7 +144,7 @@ impl Reader {
         false
     }
 
-    fn expect(&mut self, wanted: char) -> Result<(), String> {
+    pub(crate) fn expect(&mut self, wanted: char) -> Result<(), String> {
         if self.eat(wanted) {
             return Ok(());
         }
@@ -133,7 +155,7 @@ impl Reader {
     }
 
     /// One JSON string, escapes and all.
-    fn string(&mut self) -> Result<String, String> {
+    pub(crate) fn string(&mut self) -> Result<String, String> {
         self.expect('"')?;
         let mut held = String::new();
         loop {

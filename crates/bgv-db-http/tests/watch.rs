@@ -228,11 +228,22 @@ fn a_fragmented_message_is_reassembled_across_a_ping() {
     assert_eq!(opcode, 10, "the ping between fragments went unanswered");
     assert_eq!(payload, b"alive");
 
-    // SGK.T3 replaces this with the feed; until then the message is refused out
-    // loud rather than dropped in silence.
+    // The joined text is `{"follow":{"from":0}}` — well-formed JSON and not a
+    // follow request. What proves the reassembly is that the refusal names the
+    // field the *joined* message held: either fragment alone would not parse,
+    // and a wrong join would name something else.
     let (_, opcode, payload) = receive(&mut stream);
-    assert_eq!(opcode, 8, "the reassembled message got no answer at all");
-    assert_eq!(u16::from_be_bytes([payload[0], payload[1]]), 1003);
+    assert_eq!(opcode, 1, "the reassembled message got no answer in words");
+    let text = String::from_utf8(payload).expect("a text frame carries text");
+    assert!(
+        text.contains("follow"),
+        "the refusal does not quote the field the joined message held, so the \
+         fragments were not reassembled into one message: {text}"
+    );
+
+    let (_, opcode, payload) = receive(&mut stream);
+    assert_eq!(opcode, 8, "the socket stayed open after a refused request");
+    assert_eq!(u16::from_be_bytes([payload[0], payload[1]]), 1008);
 }
 
 #[test]
@@ -318,5 +329,139 @@ fn the_route_takes_no_other_method() {
         status, 405,
         "`no such thing` and `not that way` are different answers and a client \
          debugging itself needs to know which one it got"
+    );
+}
+
+/// Run a script over a **separate** HTTP connection, and answer its status.
+///
+/// Separate on purpose: the point of the test below is that a change made
+/// somewhere else arrives here, and a helper that shared the socket would prove
+/// nothing about that.
+fn script(address: &str, source: &str) -> u16 {
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream.set_read_timeout(Some(PATIENCE)).unwrap();
+    write!(
+        stream,
+        "POST /script HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{source}",
+        source.len()
+    )
+    .unwrap();
+    stream.flush().unwrap();
+    head(&mut stream).0
+}
+
+const READY: &str = "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
+                     DEFINE DATABASE library; USE DATABASE library; DEFINE TABLE users;";
+
+#[test]
+fn a_change_committed_on_another_connection_arrives_as_a_frame_on_this_one() {
+    // Criterion F4, and the whole reason this task exists. A test that only
+    // checked the follow request was accepted would pass with no push at all,
+    // which is precisely the failure this suite keeps finding.
+    let (_node, address) = node();
+    assert_eq!(script(&address, READY), 200, "the fixture did not build");
+
+    let (mut stream, status, _) = upgrade(&address);
+    assert_eq!(status, 101);
+    send(
+        &mut stream,
+        true,
+        1,
+        br#"{"namespace":"prod","database":"library","from":0,"table":"users"}"#,
+    );
+
+    // The commit happens on a different connection, after this socket is
+    // already following.
+    assert_eq!(
+        script(
+            &address,
+            "USE NAMESPACE prod; USE DATABASE library; CREATE users:1 = { name: 'ada' };"
+        ),
+        200,
+        "the write that should have been pushed did not happen"
+    );
+
+    let (_, opcode, payload) = receive(&mut stream);
+    assert_eq!(opcode, 1, "a change must arrive as a text frame");
+    let text = String::from_utf8(payload).expect("a text frame carries text");
+    assert!(
+        text.contains(r#""table":"users""#),
+        "the frame does not name the table that changed: {text}"
+    );
+    assert!(
+        text.contains(r#""became":"written""#),
+        "a creation must arrive as a write: {text}"
+    );
+    assert!(
+        text.contains("ada"),
+        "the change arrived without the value that was written: {text}"
+    );
+}
+
+#[test]
+fn a_follow_request_naming_no_database_is_refused_in_words() {
+    // A close code is five bits of meaning. "you named no database" and "that
+    // table is not yours" are different things a subscriber must tell apart.
+    let (_node, address) = node();
+    let (mut stream, _, _) = upgrade(&address);
+    send(&mut stream, true, 1, br#"{"namespace":"prod"}"#);
+
+    let (_, opcode, payload) = receive(&mut stream);
+    assert_eq!(opcode, 1, "a refusal must arrive as text, not only a close");
+    let text = String::from_utf8(payload).expect("a text frame carries text");
+    assert!(
+        text.contains("database"),
+        "the refusal must say what was missing: {text}"
+    );
+}
+
+#[test]
+fn a_binary_message_is_refused_with_the_code_that_says_which_kind_was_wrong() {
+    // The opcode wave 53 deliberately dropped, now that there is a reader for
+    // it. Without it a binary message would be parsed as if it were text.
+    let (_node, address) = node();
+    let (mut stream, _, _) = upgrade(&address);
+    send(&mut stream, true, 2, b"\x00\x01\x02");
+
+    let (_, opcode, payload) = receive(&mut stream);
+    assert_eq!(opcode, 8, "a binary follow request must end the connection");
+    assert_eq!(
+        u16::from(payload[0]) << 8 | u16::from(payload[1]),
+        1003,
+        "the close must say the kind was wrong, not merely that something was"
+    );
+}
+
+#[test]
+fn a_namespace_that_could_carry_syntax_is_refused_before_a_statement_exists() {
+    // The follow request reaches a `USE`, so it is guarded by the same narrow
+    // rule the object routes use. If it were interpolated, this would run.
+    let (_node, address) = node();
+    assert_eq!(script(&address, READY), 200);
+
+    let (mut stream, _, _) = upgrade(&address);
+    send(
+        &mut stream,
+        true,
+        1,
+        br#"{"namespace":"prod; DROP TABLE users","database":"library"}"#,
+    );
+
+    let (_, opcode, payload) = receive(&mut stream);
+    assert_eq!(opcode, 1, "the refusal must arrive as text");
+    let text = String::from_utf8(payload).expect("a text frame carries text");
+    assert!(
+        text.contains("plain names"),
+        "a namespace carrying syntax must be refused as a name: {text}"
+    );
+
+    // And the table is still there, which is the claim that actually matters.
+    assert_eq!(
+        script(
+            &address,
+            "USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;"
+        ),
+        200,
+        "the interpolated statement ran and took the table with it"
     );
 }
