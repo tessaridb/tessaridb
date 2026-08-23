@@ -212,8 +212,11 @@ impl Parser<'_> {
                 InfoSubject::User(self.name()?)
             }
             _ if self.eat_word("store") => InfoSubject::Store,
+            _ if self.eat_word("node") => InfoSubject::Node,
             _ => {
-                return Err(self.error_here("`STORE`, `NAMESPACE`, `DATABASE`, `TABLE` or `USER`"));
+                return Err(
+                    self.error_here("`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER` or `NODE`")
+                );
             }
         };
         Ok(StatementKind::Info { subject })
@@ -304,10 +307,78 @@ impl Parser<'_> {
             Some(Keyword::Field) => self.define_field(),
             Some(Keyword::Analyzer) => self.define_analyzer(),
             Some(Keyword::User) => self.define_user(),
+            // `NODE` and `REPLICA` are read as contextual words, for the reason
+            // `INFO FOR STORE` gives: reserving a word takes a perfectly good
+            // table and field name away from data that already exists, and
+            // `DEFINE TABLE node` is not a name to spend. Nothing but a subject
+            // can stand after `DEFINE`, so nothing here is ambiguous — and both
+            // arms consume their word, so neither may `advance` again.
+            _ if self.eat_word("node") => self.define_node(),
+            _ if self.eat_word("replica") => self.define_replica(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER` or `USER`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE` or `REPLICA`",
             )),
         }
+    }
+
+    /// `DEFINE NODE ROLES serving, writable ENDPOINTS 'host:9000'`
+    ///
+    /// Either clause, in that order, and at least one of the two. A statement
+    /// naming neither is refused rather than accepted as a no-op: it can only be
+    /// a half-written one, and quietly succeeding is how an operator comes to
+    /// believe a node was configured.
+    ///
+    /// What a clause names **replaces** what was there, and a clause left out
+    /// leaves its field alone. So `DEFINE NODE ENDPOINTS …` is not a silent way
+    /// to drop the roles, and there is no spelling for removing one role —
+    /// which would need a spelling for removing the last one, a question worth
+    /// answering when there is a second node to answer it against.
+    fn define_node(&mut self) -> Result<StatementKind> {
+        let roles = if self.eat_word("roles") {
+            let mut named = vec![self.name()?];
+            while self.eat_punct(Punct::Comma) {
+                named.push(self.name()?);
+            }
+            Some(named)
+        } else {
+            None
+        };
+        let endpoints = if self.eat_word("endpoints") {
+            let (first, _) = self.text("an endpoint, as text")?;
+            let mut found = vec![first];
+            while self.eat_punct(Punct::Comma) {
+                let (endpoint, _) = self.text("an endpoint, as text")?;
+                found.push(endpoint);
+            }
+            Some(found)
+        } else {
+            None
+        };
+        if roles.is_none() && endpoints.is_none() {
+            return Err(self.error_here("`ROLES` or `ENDPOINTS` and what to set"));
+        }
+        Ok(StatementKind::DefineNode { roles, endpoints })
+    }
+
+    /// `DEFINE REPLICA second AT 'host:9001'`
+    ///
+    /// The endpoint is text rather than a name because a host and port is not an
+    /// identifier, and it is stored as written: whether it resolves is a
+    /// question for whoever dials it, and refusing an unreachable address here
+    /// would make the statement's success depend on the network being up at the
+    /// moment it ran.
+    fn define_replica(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        if !self.eat_word("at") {
+            return Err(self.error_here("`AT` and where the peer is reached"));
+        }
+        let (endpoint, _) = self.text("the endpoint, as text")?;
+        Ok(StatementKind::DefineReplica {
+            name,
+            endpoint,
+            if_not_exists,
+        })
     }
 
     /// `DEFINE INDEX by_email ON users FIELDS email, name UNIQUE`

@@ -222,6 +222,15 @@ pub enum Error {
         reason: String,
     },
 
+    /// The store holds no node identity, so there is nothing to configure.
+    ///
+    /// Unreachable through an open store, which resolves the identity before it
+    /// hands one out. Named anyway rather than left to an unwrap, because that
+    /// guarantee lives in another function and a later edit can weaken it there
+    /// without this file changing.
+    #[error("this store holds no node identity, so there is nothing to configure")]
+    NoIdentity,
+
     /// A failure from the key-value substrate.
     #[error(transparent)]
     Kv(#[from] bgv_db_kv::Error),
@@ -253,6 +262,10 @@ impl Error {
             // `Unavailable` names. Not `Internal`: nothing here is a bug in the
             // store, and not `Validation`: no caller supplied anything wrong.
             Self::NoEntropy { .. } => ErrorCategory::Unavailable,
+            // Corruption rather than `Internal`: the store opened, so an
+            // identity was written, and a key that has since gone is the
+            // substrate having lost something it acknowledged.
+            Self::NoIdentity => ErrorCategory::Corruption,
             Self::Kv(inner) => inner.category(),
             Self::Encoding(inner) => inner.category(),
         }

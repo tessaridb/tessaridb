@@ -1864,6 +1864,7 @@ INFO FOR NAMESPACE;
 INFO FOR DATABASE;
 INFO FOR TABLE users;
 INFO FOR USER ada;
+INFO FOR NODE;
 ```
 
 Each answers with an object read **from the catalog**, not from a description
@@ -1894,7 +1895,7 @@ got wrong.
 rule a grant-governed subscription already follows on the change feed, applied
 to a description instead of to records.
 
-So four of the five subjects **narrow** rather than refuse:
+So four of the six subjects **narrow** rather than refuse:
 
 - `INFO FOR STORE` and `INFO FOR NAMESPACE` show a scoped user their own
   tenancy and no other.
@@ -1912,12 +1913,80 @@ and there is no smaller truthful answer about who may do what — a grant list
 with rows quietly removed reads as the whole of what that user can reach. The
 report never carries the password hash, which the stored definition does hold.
 
+`INFO FOR NODE` is the sixth, and it refuses for the same reason in a different
+key: it names no table, so a grant check would pass over it for reasons unrelated
+to permission, and roles and endpoints are this machine's position in a topology
+with no smaller truthful version to hand a viewer. See §7d.
+
 **The catalog's own tenancy is not listed, and not because it is filtered out.**
 It was never created through the language, so it has no definition record to
 find — the same property that makes `USE NAMESPACE` unable to select it. A
 listing that had to remember to exclude it would be one somebody could forget to.
 A bucket's chunk table is absent for the neighbouring reason: its name carries a
 byte no identifier can hold, so nothing can name it and nothing lists it.
+
+## 7d. Configuring the node
+
+There is no configuration file and no environment variable for what a node is
+for or which peers it has. Both are statements, and what they write lives in the
+store:
+
+```
+DEFINE NODE ROLES serving, writable ENDPOINTS 'db-1.internal:9000';
+DEFINE REPLICA second AT 'db-2.internal:9000';
+INFO FOR NODE;
+```
+
+A node configured by a file beside a store configured by statements is **two
+sources of truth for one node** — they agree until the first restore and then do
+not. All three need an owner.
+
+### The two halves, and why the answer names them apart
+
+The two `DEFINE`s write to two different places, and the test deciding which is
+sharp: *what happens when this setting is replayed on another machine — does that
+machine become confused about which one it is?*
+
+| Setting | Where it lives | What a replay of it would do |
+|---|---|---|
+| `ROLES` | this node's local metadata | a replica that inherited `writable` would accept writes it must forward |
+| `ENDPOINTS` | this node's local metadata | peers would be told to reach this machine at the original's address |
+| a peer | the catalog, replicated | every node learns the peer exists, which is the point of declaring one |
+
+So `INFO FOR NODE` reads both and answers them as **two named groups** rather
+than one flat object:
+
+```json
+{"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
+ "version": "0.0.0", "endpoints": ["db-1.internal:9000"],
+ "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000"}]}}
+```
+
+The flat fields would **not** follow a backup; everything under `cluster` would.
+Flattening the two would make that a thing you have to remember, and the day it
+is remembered wrongly is the day last night's backup goes onto a fresh machine
+and two processes claim one identity.
+
+### What each clause does, and what there is no spelling for
+
+Either clause of `DEFINE NODE` may stand alone, and a clause left out **leaves
+its field alone** — so setting the endpoints is not a silent way to strip a node
+of its roles. What a clause does name **replaces** what was there, the same rule
+a grant's field list follows. There is no spelling for removing a single role,
+because that would need a spelling for removing the last one, and that question
+is worth answering when there is a second node to answer it against.
+
+`membership` is reported and cannot be set. It reads `alone` because that is a
+fact about this process; the moment a node joins a cluster, the *name* of that
+cluster is topology and belongs on the other side of the line.
+
+**There is no statement that configures a *remote* node.** You configure a node
+**on** it. A statement that reached across would be a second mechanism for
+something already decided elsewhere, and the two would disagree the first time a
+node was unreachable while its row said otherwise.
+
+`NODE` and `REPLICA` are read as contextual words, so `DEFINE TABLE node` is
+still an ordinary table for data that already uses the name.
 
 ## 8. What is deliberately absent from this milestone
 

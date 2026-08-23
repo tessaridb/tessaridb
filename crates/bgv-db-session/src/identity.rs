@@ -171,6 +171,25 @@ impl Needs {
             StatementKind::Info {
                 subject: InfoSubject::User(_),
             } => Self::Administer,
+            // Asking about **this node** is the `$node` read wearing a
+            // statement's clothes, and it lands here for exactly the reason that
+            // one did: it names no table, so the grant loop passes over it
+            // vacuously, and roles and endpoints are this machine's position in
+            // a topology with no smaller truthful version to hand a `viewer`.
+            //
+            // The peer half of its answer sharpens it rather than softening it:
+            // the list of every machine holding this store's data is not a
+            // description of the caller's own tables.
+            StatementKind::Info {
+                subject: InfoSubject::Node,
+            } => Self::Administer,
+            // Configuring the node is administering it. Not `Write`, which is
+            // where the other `DEFINE`s sit: an `editor` is expected to shape
+            // the data they own, and neither what this machine is for nor which
+            // other machines hold the data is that.
+            StatementKind::DefineNode { .. } | StatementKind::DefineReplica { .. } => {
+                Self::Administer
+            }
             // The other four are reads of the catalog, and what they report is
             // narrowed to what the caller could have found out anyway.
             StatementKind::Info { .. } => Self::Read,

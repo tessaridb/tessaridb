@@ -1,0 +1,55 @@
+# Configuration: the node in the language, not in a file beside it.
+#
+# There is no configuration file and no environment variable for what a node is
+# for or which peers it has. Both are statements, and they write to two
+# different places on purpose (ADR-0018, ADR-0020): what describes THIS machine
+# goes to the local `META` keyspace, which the log does not carry, and what
+# describes the TOPOLOGY is a catalog record, which it does.
+#
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a node reports itself before anything is configured
+INFO FOR NODE;
+--- expect: ok
+
+--- case: roles and endpoints are set by statement
+DEFINE NODE ROLES serving, writable ENDPOINTS 'here:9000';
+--- expect: ok
+
+--- case: either clause stands on its own
+DEFINE NODE ROLES serving;
+--- expect: ok
+
+--- case: a statement that sets nothing is refused
+DEFINE NODE;
+--- expect: error UnexpectedToken
+
+--- case: a role the store does not know is refused rather than stored
+DEFINE NODE ROLES leader;
+--- expect: error Unknown
+
+--- case: a peer is declared by name and address
+DEFINE REPLICA second AT 'there:9001';
+--- expect: ok
+
+--- case: a peer's name is what makes it one peer
+DEFINE REPLICA second AT 'elsewhere:9001';
+--- expect: error NameTaken
+
+--- case: a re-run may say the declaration already stands
+DEFINE REPLICA IF NOT EXISTS second AT 'there:9001';
+--- expect: ok
+
+--- case: both halves are read back by one statement
+INFO FOR NODE;
+--- expect: ok
+
+--- case: node is a contextual word, so it is still a table name
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+DEFINE TABLE node;
+CREATE node:1 = { name: 'ada' };
+SELECT * FROM node;
+--- expect: ok

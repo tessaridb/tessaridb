@@ -24,7 +24,7 @@ use std::io::Read;
 use std::sync::Arc;
 
 use bgv_db_encoding::{
-    NODE_ID_LEN, NodeIdentity, NodeIdentityKey, NodeVersion, StoreKey, StoreValue,
+    NODE_ID_LEN, NodeIdentity, NodeIdentityKey, NodeVersion, Roles, StoreKey, StoreValue,
 };
 use bgv_db_kv::{KvBackend, WriteBatch};
 
@@ -44,7 +44,7 @@ const ENTROPY_SOURCE: &str = "/dev/urandom";
 /// Returns [`Error::NoEntropy`] when the randomness source cannot be read, the
 /// substrate's failure when the write is refused, and a decoding failure when
 /// the stored identity was written by a build this one cannot read.
-pub(crate) fn ensure(backend: &Arc<dyn KvBackend>) -> Result<Arc<NodeIdentity>> {
+pub(crate) fn ensure(backend: &Arc<dyn KvBackend>) -> Result<NodeIdentity> {
     if let Some(mut found) = read(backend)? {
         let running = NodeVersion::current();
         if found.version != running {
@@ -58,7 +58,7 @@ pub(crate) fn ensure(backend: &Arc<dyn KvBackend>) -> Result<Arc<NodeIdentity>> 
             found.version = running;
             write(backend, &found)?;
         }
-        return Ok(Arc::new(found));
+        return Ok(found);
     }
     let fresh = NodeIdentity::alone(generate()?);
     // `Absent` for the same reason the format version uses it: two processes
@@ -73,7 +73,47 @@ pub(crate) fn ensure(backend: &Arc<dyn KvBackend>) -> Result<Arc<NodeIdentity>> 
             fresh.encode(),
         );
     backend.apply(batch)?;
-    Ok(Arc::new(fresh))
+    Ok(fresh)
+}
+
+/// Change what this node says it is for, and where it is reached.
+///
+/// The two settings a statement may move, and the two ADR-0018's replay test
+/// puts on the local side: a replica that inherited `writable` from its source
+/// would accept writes it must forward, and peers told to reach this machine at
+/// the original's address would reach the original.
+///
+/// Absent clauses leave their field alone rather than clearing it, so
+/// `DEFINE NODE ENDPOINTS …` is not a silent way to drop the roles. What each
+/// clause **does** name replaces what was there — a list is the whole story, the
+/// rule a grant's field list already follows — because there is no spelling for
+/// "remove one role" that does not also need a spelling for "remove the last
+/// one", and that question has no answer worth guessing at one node.
+///
+/// # Errors
+///
+/// Returns [`Error::NoIdentity`] when the store has none, and the substrate's
+/// failure when the read or the write is refused.
+pub(crate) fn configure(
+    backend: &Arc<dyn KvBackend>,
+    roles: Option<Roles>,
+    endpoints: Option<Vec<String>>,
+) -> Result<NodeIdentity> {
+    let Some(mut identity) = read(backend)? else {
+        // Unreachable through an open store, which resolves the identity before
+        // it hands one out. Said rather than unwrapped, because "the open path
+        // guarantees it" is a claim about another function that a later edit can
+        // make false without touching this one.
+        return Err(Error::NoIdentity);
+    };
+    if let Some(roles) = roles {
+        identity.roles = roles;
+    }
+    if let Some(endpoints) = endpoints {
+        identity.endpoints = endpoints;
+    }
+    write(backend, &identity)?;
+    Ok(identity)
 }
 
 /// Replace the stored identity.
@@ -140,7 +180,7 @@ mod tests {
         let held = backend();
         assert!(read(&held).unwrap().is_none());
         let made = ensure(&held).unwrap();
-        assert_eq!(read(&held).unwrap().as_ref(), Some(made.as_ref()));
+        assert_eq!(read(&held).unwrap(), Some(made));
     }
 
     #[test]
@@ -177,7 +217,7 @@ mod tests {
             &held,
             &NodeIdentity {
                 version: other,
-                ..(*first).clone()
+                ..first.clone()
             },
         )
         .unwrap();
@@ -185,6 +225,52 @@ mod tests {
         let after = ensure(&held).unwrap();
         assert_eq!(after.version, running);
         assert_eq!(after.id, first.id, "an upgrade is not a new identity");
+    }
+
+    #[test]
+    fn configuring_a_node_moves_what_it_names_and_nothing_else() {
+        let held = backend();
+        let before = ensure(&held).unwrap();
+        let after = configure(
+            &held,
+            Some(Roles::COORDINATING),
+            Some(vec!["here:9000".to_owned()]),
+        )
+        .unwrap();
+
+        assert_eq!(after.roles, Roles::COORDINATING);
+        assert_eq!(after.endpoints, vec!["here:9000".to_owned()]);
+        // The two fields a statement may not move. An identity that changed when
+        // its roles did would be a session token again, and a version rewritten
+        // by anything but a build change would make the upgrade branch in
+        // `ensure` fire for reasons unrelated to an upgrade.
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.version, before.version);
+        assert_eq!(read(&held).unwrap(), Some(after));
+    }
+
+    #[test]
+    fn an_absent_clause_leaves_its_field_where_it_was() {
+        let held = backend();
+        ensure(&held).unwrap();
+        configure(&held, Some(Roles::COORDINATING), None).unwrap();
+        let after = configure(&held, None, Some(vec!["here:9000".to_owned()])).unwrap();
+
+        assert_eq!(
+            after.roles,
+            Roles::COORDINATING,
+            "setting the endpoints cleared the roles"
+        );
+    }
+
+    #[test]
+    fn a_store_with_no_identity_cannot_be_configured() {
+        // Unreachable through an open store. Asserted anyway, because the arm
+        // that says so is a claim about a guarantee living in another function.
+        assert!(matches!(
+            configure(&backend(), Some(Roles::SERVING), None),
+            Err(Error::NoIdentity)
+        ));
     }
 
     #[test]

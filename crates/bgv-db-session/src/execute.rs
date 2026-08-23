@@ -1,6 +1,6 @@
 //! Running one statement against the store.
 
-use bgv_db_encoding::{decode_payload, encode_payload};
+use bgv_db_encoding::{Roles, decode_payload, encode_payload};
 use bgv_db_ql::{Assignment, Edit, FieldPath, Name, RecordTarget, Span, StatementKind, TableRef};
 use bgv_db_storage::{
     Catalog, EDGE_IN, EDGE_OUT, FieldShape, IndexDefinition, IndexShape, RecordAddress, TableShape,
@@ -103,6 +103,14 @@ impl Session<'_> {
                 *if_not_exists,
                 span,
             ),
+            StatementKind::DefineNode { roles, endpoints } => {
+                self.define_node(roles.as_deref(), endpoints.as_deref())
+            }
+            StatementKind::DefineReplica {
+                name,
+                endpoint,
+                if_not_exists,
+            } => self.define_replica(transaction, name, endpoint, *if_not_exists),
             StatementKind::DropUser { name } => self.drop_user(transaction, name),
             StatementKind::Grant {
                 verbs,
@@ -517,6 +525,63 @@ impl Session<'_> {
             return Ok(Outcome::Done);
         }
         Catalog::new(transaction).create_analyzer(&name.text, Analyzer::new(filters.to_vec()))?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DEFINE NODE ROLES … ENDPOINTS …` — the local half of the configuration.
+    ///
+    /// # It does not run in the transaction, and that is not an oversight
+    ///
+    /// The identity lives in the `META` keyspace, which is not the log
+    /// (ADR-0018 §1). A `META` write therefore cannot be part of a log
+    /// transaction, and taking `transaction` here to look symmetrical with
+    /// `DEFINE REPLICA` would be a durability claim the substrate does not
+    /// support — a `CANCEL` afterwards would leave the roles changed while the
+    /// caller believed otherwise. `BACKUP` is store-scoped for the same reason
+    /// and is spelled the same way.
+    ///
+    /// An unknown role is refused here rather than in the grammar, for the
+    /// reason a vector distance is: which roles exist is the store's question,
+    /// and this is where the store knows what it knows.
+    fn define_node(&self, roles: Option<&[Name]>, endpoints: Option<&[String]>) -> Result<Outcome> {
+        let named = roles
+            .map(|named| {
+                named.iter().try_fold(Roles::NONE, |carried, role| {
+                    Roles::parse(&role.text)
+                        .map(|found| carried.and(found))
+                        .ok_or(Error::Unknown {
+                            entity: "role",
+                            name: role.text.clone(),
+                            span: role.span,
+                        })
+                })
+            })
+            .transpose()?;
+        self.store
+            .configure_node(named, endpoints.map(<[String]>::to_vec))?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DEFINE REPLICA second AT '…'` — the replicated half.
+    ///
+    /// This one **does** run in the transaction, because a peer is a catalog
+    /// record: it commits with whatever else the script did and reaches every
+    /// node through the ordinary apply path (ADR-0009).
+    fn define_replica(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        endpoint: &str,
+        if_not_exists: bool,
+    ) -> Result<Outcome> {
+        let declared = Catalog::new(transaction)
+            .replicas()?
+            .into_iter()
+            .any(|found| found.name == name.text);
+        if if_not_exists && declared {
+            return Ok(Outcome::Done);
+        }
+        Catalog::new(transaction).create_replica(&name.text, endpoint)?;
         Ok(Outcome::Done)
     }
 

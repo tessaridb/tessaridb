@@ -9,8 +9,8 @@ use std::ops::Bound;
 use std::sync::Arc;
 
 use bgv_db_encoding::{
-    AppliedPositionKey, FormatVersion, FormatVersionKey, LogKey, LogRecord, NodeIdentity, StoreKey,
-    StoreValue,
+    AppliedPositionKey, FormatVersion, FormatVersionKey, LogKey, LogRecord, NodeIdentity, Roles,
+    StoreKey, StoreValue,
 };
 use bgv_db_kv::{KeyRange, KvBackend, ScanDirection, ScanRequest, WriteBatch};
 use bgv_db_types::Sequence;
@@ -71,11 +71,6 @@ impl Health {
 pub struct Store {
     backend: Arc<dyn KvBackend>,
     snapshots: Arc<Registry>,
-    /// Resolved once at open, because it never changes while the store is open.
-    ///
-    /// Behind an `Arc` so that cloning a store stays the pointer copy it was:
-    /// two handles to one store are not two nodes.
-    identity: Arc<NodeIdentity>,
 }
 
 impl Store {
@@ -97,11 +92,10 @@ impl Store {
             Some(found) => found.check_supported()?,
             None => write_initial_metadata(&backend)?,
         }
-        let identity = crate::node::ensure(&backend)?;
+        crate::node::ensure(&backend)?;
         Ok(Self {
             backend,
             snapshots: Arc::new(Registry::default()),
-            identity,
         })
     }
 
@@ -112,9 +106,45 @@ impl Store {
     /// not in the log and therefore not in a backup — a restore onto a fresh
     /// store produces a different node, which is the whole point of the split
     /// (ADR-0018 §1).
-    #[must_use]
-    pub fn node_identity(&self) -> &NodeIdentity {
-        &self.identity
+    ///
+    /// # Read every time, and deliberately not cached
+    ///
+    /// This used to be resolved once at open, on the reasoning that it never
+    /// changes while the store is open. `DEFINE NODE` makes that false, and a
+    /// cache that is *usually* right is worse here than no cache: the last one
+    /// produced a restore test that compared two handles and passed while the
+    /// bytes on disk were wrong, because the value being asserted on had been
+    /// read before the restore ran. The identity is small, the read is rare —
+    /// `$node` and `INFO FOR NODE` are administrative — and one source of truth
+    /// costs less than a second one that must be kept in step.
+    ///
+    /// # Errors
+    ///
+    /// Returns the substrate's failure, [`Error::NoIdentity`] when the key has
+    /// gone, or a decoding failure when the stored bytes carry a revision, role
+    /// or membership this build does not know.
+    pub fn node_identity(&self) -> Result<NodeIdentity> {
+        crate::node::read(&self.backend)?.ok_or(Error::NoIdentity)
+    }
+
+    /// Change what this node is for, and where it is reached.
+    ///
+    /// Absent arguments leave their field alone. Applied to the `META` keyspace
+    /// immediately rather than through the transaction the statement runs in —
+    /// the shape `BACKUP` already has, and for the same reason: `META` is not the
+    /// log, so a write here cannot be part of a log transaction and pretending
+    /// otherwise would be a durability claim the substrate does not support.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoIdentity`] when the store holds none, and the
+    /// substrate's failure when the write is refused.
+    pub fn configure_node(
+        &self,
+        roles: Option<Roles>,
+        endpoints: Option<Vec<String>>,
+    ) -> Result<NodeIdentity> {
+        crate::node::configure(&self.backend, roles, endpoints)
     }
 
     /// Begin a transaction at the current committed tail.

@@ -178,8 +178,8 @@ fn a_log_replayed_between_two_stores_on_disk_reproduces_them_byte_for_byte() {
         );
     }
     assert_ne!(
-        source.node_identity().id,
-        replica.node_identity().id,
+        source.node_identity().unwrap().id,
+        replica.node_identity().unwrap().id,
         "the replica came up holding the source's identity"
     );
 }

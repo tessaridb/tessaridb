@@ -61,6 +61,13 @@ impl Roles {
     /// Not `COORDINATING`, because there is nothing to coordinate with.
     pub const ALONE: Self = Self(Self::SERVING.0 | Self::WRITABLE.0);
 
+    /// No roles at all.
+    ///
+    /// A real state rather than only a fold's starting point: a node that
+    /// neither answers clients nor accepts writes still holds data, and saying
+    /// so is how an operator drains one without stopping it.
+    pub const NONE: Self = Self(0);
+
     /// Both of these roles, together.
     #[must_use]
     pub const fn and(self, other: Self) -> Self {
@@ -87,17 +94,38 @@ impl Roles {
     #[must_use]
     pub fn names(self) -> Vec<&'static str> {
         let mut found = Vec::new();
-        for (role, name) in [
-            (Self::SERVING, "serving"),
-            (Self::WRITABLE, "writable"),
-            (Self::COORDINATING, "coordinating"),
-        ] {
+        for (role, name) in Self::NAMED {
             if self.has(role) {
                 found.push(name);
             }
         }
         found
     }
+
+    /// One role, from the word a statement wrote.
+    ///
+    /// Nothing here, and no set: `DEFINE NODE ROLES a, b` is a list, and a
+    /// spelling that parsed into a *set* would make `ROLES serving` and
+    /// `ROLES serving, serving` two different statements to reason about.
+    /// The caller folds with [`Roles::and`].
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::NAMED
+            .into_iter()
+            .find(|(_, known)| *known == name)
+            .map(|(role, _)| role)
+    }
+
+    /// Every role this build knows, with its name, in bit order.
+    ///
+    /// One table read in both directions, so a role that can be written can be
+    /// read back by construction rather than because two lists were kept in
+    /// step. A role named in only one of them is the drift this shape removes.
+    const NAMED: [(Self, &'static str); 3] = [
+        (Self::SERVING, "serving"),
+        (Self::WRITABLE, "writable"),
+        (Self::COORDINATING, "coordinating"),
+    ];
 }
 
 /// Which build of the software this node last ran.
@@ -321,6 +349,31 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn every_role_that_can_be_written_can_be_read_back() {
+        // The property the shared table buys, asserted rather than assumed: a
+        // role the answer names is a role a statement can set. Two hand-kept
+        // lists would drift here silently, and the symptom would be an operator
+        // told a role exists and refused when they write it.
+        for name in Roles::SERVING
+            .and(Roles::WRITABLE)
+            .and(Roles::COORDINATING)
+            .names()
+        {
+            let parsed = Roles::parse(name).expect("a reported role must parse");
+            assert_eq!(parsed.names(), vec![name]);
+        }
+        assert!(Roles::parse("leader").is_none());
+        assert!(Roles::parse("Serving").is_none(), "matching is exact");
+    }
+
+    #[test]
+    fn no_roles_is_a_state_and_not_a_missing_answer() {
+        assert!(Roles::NONE.names().is_empty());
+        assert!(!Roles::NONE.has(Roles::SERVING));
+        assert_eq!(Roles::NONE.and(Roles::SERVING), Roles::SERVING);
+    }
 
     #[test]
     fn an_identity_round_trips_through_its_bytes() {

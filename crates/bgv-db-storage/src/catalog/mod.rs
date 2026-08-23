@@ -24,6 +24,7 @@ mod change;
 mod definition;
 mod field;
 mod grant;
+mod replica;
 mod system;
 mod user;
 
@@ -38,6 +39,7 @@ pub use definition::{
 };
 pub use field::{FieldDefinition, FieldShape};
 pub use grant::GrantDefinition;
+pub use replica::ReplicaDefinition;
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 pub use user::{Role, UserDefinition, Verb};
 

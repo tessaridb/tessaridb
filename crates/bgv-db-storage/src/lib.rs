@@ -36,9 +36,9 @@ mod transaction;
 
 pub use catalog::{
     AnalyzerDefinition, Catalog, DatabaseDefinition, EDGE_IN, EDGE_OUT, FieldDefinition,
-    FieldShape, GrantDefinition, IndexDefinition, IndexShape, NamespaceDefinition, Role,
-    SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition, TableShape, UserDefinition, VectorDistance,
-    Verb,
+    FieldShape, GrantDefinition, IndexDefinition, IndexShape, NamespaceDefinition,
+    ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition, TableShape,
+    UserDefinition, VectorDistance, Verb,
 };
 pub use error::{Error, Result};
 pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};

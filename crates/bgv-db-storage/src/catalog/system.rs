@@ -53,6 +53,13 @@ pub const USERS: TableId = TableId::new(9);
 /// Which tables a user may reach, and for what.
 pub const GRANTS: TableId = TableId::new(10);
 
+/// The peers this store knows about, keyed by replica id.
+///
+/// A catalog record rather than a `META` key, and the distinction is the whole
+/// of ADR-0018: who *else* is here must reach every node, so it travels in the
+/// log; who *this node* is must not, so it does not (see `crate::node`).
+pub const REPLICAS: TableId = TableId::new(11);
+
 /// The first id handed out at any level. Zero belongs to the system.
 pub const FIRST_ID: u32 = 1;
 
@@ -79,6 +86,8 @@ pub enum Level {
     Analyzer,
     /// Declared users.
     User,
+    /// Known peers.
+    Replica,
 }
 
 impl Level {
@@ -93,6 +102,7 @@ impl Level {
             Self::Field => "field",
             Self::Analyzer => "analyzer",
             Self::User => "user",
+            Self::Replica => "replica",
         }
     }
 
@@ -111,6 +121,7 @@ impl Level {
             Self::Field => "fd",
             Self::Analyzer => "an",
             Self::User => "us",
+            Self::Replica => "rp",
         }
     }
 }
@@ -130,6 +141,7 @@ mod tests {
     fn every_system_table_has_a_distinct_id() {
         let ids = [
             NAMESPACES, DATABASES, TABLES, NAMES, ALLOCATORS, INDEXES, FIELDS, ANALYZERS, USERS,
+            REPLICAS,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(
@@ -141,12 +153,18 @@ mod tests {
 
     #[test]
     fn levels_have_distinct_counters_and_tags() {
+        // Every level, not a sample: a new one is only proved distinct if it is
+        // compared against all of them, and this list was short of three when
+        // `Replica` was added.
         let levels = [
             Level::Namespace,
             Level::Database,
             Level::Table,
             Level::Index,
             Level::Field,
+            Level::Analyzer,
+            Level::User,
+            Level::Replica,
         ];
         for (index, level) in levels.iter().enumerate() {
             for other in &levels[index.saturating_add(1)..] {

@@ -197,6 +197,44 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `DEFINE NODE ROLES serving, writable ENDPOINTS 'host:9000'`
+    ///
+    /// The settings that describe **this machine**, written to the local `META`
+    /// keyspace where the log cannot carry them (ADR-0018 §1, ADR-0020 §3). A
+    /// replica that inherited `writable` from the node it restored would accept
+    /// writes it is supposed to forward, and peers told to reach it at the
+    /// original's address would reach the original.
+    ///
+    /// There is no `DEFINE NODE <other> …`, and its absence is a decision
+    /// (ADR-0020 §4): you configure a node **on** it, because a statement that
+    /// reached across would be a second mechanism for something the range table
+    /// already decides, disagreeing the first time a node was unreachable while
+    /// its row said otherwise.
+    DefineNode {
+        /// What the node is for, or nothing to leave the roles alone.
+        ///
+        /// Words rather than a parsed set, for the reason a vector distance is
+        /// carried as written: which roles exist is the store's question and not
+        /// the grammar's, so an unknown one is refused where the store knows
+        /// what it knows, with the span the author can see.
+        roles: Option<Vec<Name>>,
+        /// Where peers reach it, or nothing to leave the endpoints alone.
+        endpoints: Option<Vec<String>>,
+    },
+    /// `DEFINE REPLICA second AT 'host:9001'`
+    ///
+    /// The opposite half: a peer is a fact every node must learn, so it is a
+    /// catalog record and it replicates (ADR-0009). This is the statement whose
+    /// effect a backup carries, and the identity above is the one it must not —
+    /// which is why neither test is the criterion on its own.
+    DefineReplica {
+        /// The name the peer is known by.
+        name: Name,
+        /// Where it answers, as written.
+        endpoint: String,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
     /// `DROP USER ada`
     DropUser {
         /// The name to remove.
@@ -395,6 +433,18 @@ pub enum InfoSubject {
     /// *is* the permission system: a partial view of who may do what is worse
     /// than none, since it reads as the whole answer.
     User(Name),
+    /// `INFO FOR NODE` — this node's own settings, and the peers it knows.
+    ///
+    /// The one subject that reads **two stores**: the local `META` keyspace and
+    /// the replicated catalog. It answers them as two named groups rather than
+    /// one flat object, because a reader has to be able to tell which fields
+    /// would follow a backup and which would not — and flattening them would
+    /// make that a thing you have to remember (ADR-0020 §3).
+    ///
+    /// Refuses rather than filters, for `INFO FOR USER`'s reason in a different
+    /// key: it names no table, so a grant check would pass over it vacuously,
+    /// and roles and endpoints have no smaller truthful form to hand a viewer.
+    Node,
 }
 
 /// How an `UPDATE` changes the record it names.

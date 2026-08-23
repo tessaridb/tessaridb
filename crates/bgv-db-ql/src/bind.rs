@@ -127,6 +127,11 @@ fn bind_statement(kind: &mut StatementKind, parameters: &Parameters) -> Result<(
         | StatementKind::DefineField { .. }
         | StatementKind::DefineAnalyzer { .. }
         | StatementKind::DefineUser { .. }
+        // A role and an endpoint are written where they stand. A parameter here
+        // would be a node configured by whatever a caller happened to supply,
+        // which is the file-beside-the-store problem in a different shape.
+        | StatementKind::DefineNode { .. }
+        | StatementKind::DefineReplica { .. }
         | StatementKind::DropUser { .. }
         | StatementKind::Grant { .. }
         | StatementKind::Revoke { .. }

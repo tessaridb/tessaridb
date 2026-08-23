@@ -145,8 +145,8 @@ fn replay_into_an_empty_store_reproduces_it_byte_for_byte() {
         );
     }
     assert_ne!(
-        source.node_identity().id,
-        replica.node_identity().id,
+        source.node_identity().unwrap().id,
+        replica.node_identity().unwrap().id,
         "the replica came up holding the source's identity"
     );
     assert_eq!(

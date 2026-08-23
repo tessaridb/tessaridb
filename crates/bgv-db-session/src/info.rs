@@ -38,8 +38,8 @@ use std::collections::BTreeMap;
 
 use bgv_db_ql::{InfoSubject, Name, Span, TableRef};
 use bgv_db_storage::{
-    Catalog, FieldDefinition, GrantDefinition, IndexDefinition, TableDefinition, Transaction,
-    UserDefinition,
+    Catalog, FieldDefinition, GrantDefinition, IndexDefinition, ReplicaDefinition, TableDefinition,
+    Transaction, UserDefinition,
 };
 use bgv_db_types::{TableId, Value};
 
@@ -62,6 +62,7 @@ impl Session<'_> {
             InfoSubject::Database => self.info_database(transaction, span)?,
             InfoSubject::Table(table) => self.info_table(transaction, table)?,
             InfoSubject::User(name) => self.info_user(transaction, name, span)?,
+            InfoSubject::Node => self.info_node(transaction)?,
         };
         Ok(Outcome::Value(Value::Object(report)))
     }
@@ -244,6 +245,92 @@ impl Session<'_> {
         report.insert("grants".to_owned(), Value::Array(described));
         Ok(report)
     }
+
+    /// This node's own settings, and the peers it knows.
+    ///
+    /// Needs `Administer`, decided by `Needs::of` before this runs, for the
+    /// reason `$node` needs it: the subject names no table, so a grant loop
+    /// passes over it vacuously, and neither half has a smaller truthful form.
+    ///
+    /// # The two groups are the answer, not a formatting choice
+    ///
+    /// The flat fields come from the `META` keyspace and describe **this
+    /// machine**. Everything under `cluster` comes from the catalog and
+    /// describes the **topology**. That is ADR-0018's line, and ADR-0020 §3 puts
+    /// it in the shape of the answer on purpose: a reader has to be able to tell
+    /// which fields would follow a backup and which would not, and flattening
+    /// the two would make that a thing you have to remember rather than a thing
+    /// you can see. The bad day it is remembered wrongly on is the one where
+    /// last night's backup goes onto a fresh machine and two processes claim one
+    /// identity.
+    ///
+    /// `membership` is reported and is deliberately **not** settable. It reads
+    /// `alone` because that is a fact about this process; the moment a node
+    /// joins a cluster, the *name* of that cluster is topology and belongs on
+    /// the other side of the line. Deciding which side in one sentence, with no
+    /// second node to test against, is the mistake ADR-0018 §3 already made once.
+    fn info_node(&self, transaction: &mut Transaction<'_>) -> Result<BTreeMap<String, Value>> {
+        let identity = self.store.node_identity()?;
+        let peers = Catalog::new(transaction)
+            .replicas()?
+            .iter()
+            .map(described_replica)
+            .collect();
+        Ok(BTreeMap::from([
+            (
+                "id".to_owned(),
+                Value::from(identity.record_id().to_string().as_str()),
+            ),
+            (
+                "roles".to_owned(),
+                Value::Array(
+                    identity
+                        .roles
+                        .names()
+                        .into_iter()
+                        .map(Value::from)
+                        .collect(),
+                ),
+            ),
+            (
+                "membership".to_owned(),
+                Value::from(identity.membership.name()),
+            ),
+            (
+                "version".to_owned(),
+                Value::from(identity.version.to_string().as_str()),
+            ),
+            (
+                "endpoints".to_owned(),
+                Value::Array(
+                    identity
+                        .endpoints
+                        .iter()
+                        .map(|endpoint| Value::from(endpoint.as_str()))
+                        .collect(),
+                ),
+            ),
+            (
+                "cluster".to_owned(),
+                Value::Object(BTreeMap::from([("peers".to_owned(), Value::Array(peers))])),
+            ),
+        ]))
+    }
+}
+
+/// One peer, as the catalog holds it.
+///
+/// An object rather than a bare endpoint, because a peer has a name an operator
+/// wrote and an address they may change, and a list of addresses could not say
+/// which one moved.
+fn described_replica(replica: &ReplicaDefinition) -> Value {
+    Value::Object(BTreeMap::from([
+        ("name".to_owned(), Value::from(replica.name.as_str())),
+        (
+            "endpoint".to_owned(),
+            Value::from(replica.endpoint.as_str()),
+        ),
+    ]))
 }
 
 /// A list of names, in name order.

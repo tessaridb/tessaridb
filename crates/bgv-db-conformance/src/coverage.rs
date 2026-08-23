@@ -30,6 +30,8 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DefineField { .. } => "DEFINE FIELD",
         StatementKind::DefineAnalyzer { .. } => "DEFINE ANALYZER",
         StatementKind::DefineUser { .. } => "DEFINE USER",
+        StatementKind::DefineNode { .. } => "DEFINE NODE",
+        StatementKind::DefineReplica { .. } => "DEFINE REPLICA",
         StatementKind::DropUser { .. } => "DROP USER",
         StatementKind::Grant { .. } => "GRANT",
         StatementKind::Revoke { .. } => "REVOKE",
@@ -73,6 +75,8 @@ pub const FORMS: &[&str] = &[
     "DEFINE FIELD",
     "DEFINE ANALYZER",
     "DEFINE USER",
+    "DEFINE NODE",
+    "DEFINE REPLICA",
     "DROP USER",
     "GRANT",
     "REVOKE",
@@ -145,6 +149,8 @@ mod tests {
              DROP FIELD f ON t;\
              DEFINE ANALYZER a FILTERS lowercase;\
              DEFINE USER u ROLE owner PASSWORD 'x';\
+             DEFINE NODE ROLES serving;\
+             DEFINE REPLICA second AT 'host:9001';\
              DROP USER u;\
              GRANT read ON t TO u;\
              REVOKE read ON t FROM u;\
@@ -163,6 +169,7 @@ mod tests {
              BACKUP;\
              EXPLAIN SELECT * FROM t;\
              INFO FOR STORE;\
+             INFO FOR NODE;\
              BEGIN;\
              COMMIT;\
              CANCEL;",

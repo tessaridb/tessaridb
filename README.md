@@ -527,6 +527,39 @@ the previous version is still readable.
 absence of `writable` rather than a flag of its own, which makes "a read-only node
 forwards writes" a rule about roles instead of a second kind of state.
 
+## Configuring it
+
+There is no configuration file and no environment variable for what a node is for
+or which peers it has. Both are statements, and what they write lives in the
+store:
+
+```
+bgv> DEFINE NODE ROLES serving, writable ENDPOINTS 'db-1.internal:9000';
+bgv> DEFINE REPLICA second AT 'db-2.internal:9000';
+bgv> INFO FOR NODE;
+```
+
+```json
+{ "id": "9d3f1a…", "roles": ["serving", "writable"], "membership": "alone",
+  "version": "0.0.0", "endpoints": ["db-1.internal:9000"],
+  "cluster": { "peers": [{ "name": "second", "endpoint": "db-2.internal:9000" }] } }
+```
+
+A node configured by a file beside a store configured by statements is **two
+sources of truth for one node**, and they agree until the first restore.
+
+The answer comes back as **two groups on purpose**. The flat fields describe
+*this machine* and live in its local metadata, which a backup does not carry;
+everything under `cluster` describes the *topology* and is a catalog record,
+which a backup does. So a restore of last night's file onto a fresh machine gives
+it the peer list and **not** the original's identity — and being able to see
+which half a field is in is what stops that from being something you have to
+remember.
+
+Either clause of `DEFINE NODE` may stand alone, and one left out leaves its field
+alone; what a clause names replaces what was there. There is no statement that
+configures a *remote* node — you configure a node on it.
+
 ## Backing up
 
 A backup of this store is its **log**, because the records, the indexes, the

@@ -37,6 +37,12 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DropUser { .. }
         | StatementKind::Grant { .. }
         | StatementKind::Revoke { .. }
+        // Configuring the node names no table either, and here that emptiness is
+        // the `BACKUP` shape again rather than the harmless kind: what a node is
+        // for, and which machines hold its data, are not anybody's tables. Both
+        // are `Needs::Administer`, decided before this list is consulted.
+        | StatementKind::DefineNode { .. }
+        | StatementKind::DefineReplica { .. }
         | StatementKind::Begin
         | StatementKind::Commit
         | StatementKind::Cancel
@@ -56,17 +62,19 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             subject: InfoSubject::Table(table),
         } => vec![table],
 
-        // The other four subjects name **no** table, and that emptiness is the
+        // The remaining subjects name **no** table, and that emptiness is the
         // `BACKUP` shape — a loop reading "every table it names is granted"
-        // passes over an empty list vacuously. It is safe here for a reason that
-        // has to be stated rather than assumed, because the reason is somewhere
-        // else: the executor **filters** each report down to what the caller may
-        // read, so a table they were never granted is not in the answer to be
-        // refused. If that filter is ever removed, this arm is where the hole
-        // opens, and `info::tables` is where it is held shut.
+        // passes over an empty list vacuously. Three of them are safe here for a
+        // reason that has to be stated rather than assumed, because the reason
+        // is somewhere else: the executor **filters** each report down to what
+        // the caller may read, so a table they were never granted is not in the
+        // answer to be refused. If that filter is ever removed, this arm is
+        // where the hole opens, and `info::tables` is where it is held shut.
         //
-        // `INFO FOR USER` is the exception that refuses instead: it needs
-        // `Administer`, decided by `Needs::of` before this list is consulted.
+        // `INFO FOR USER` and `INFO FOR NODE` are the two that refuse instead,
+        // because neither has a smaller truthful form to filter down to. Both
+        // need `Administer`, decided by `Needs::of` before this list is
+        // consulted — so for them this arm is never the check that matters.
         StatementKind::Info { .. } => Vec::new(),
 
         // Declarations *on* a table, which is a table that already exists.

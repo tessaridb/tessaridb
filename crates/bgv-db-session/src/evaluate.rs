@@ -566,7 +566,7 @@ impl Session<'_> {
             // (ADR-0018 §1). It needs no tenancy, so `$node` answers without a
             // `USE` — a node is not in a database.
             Source::Node => Ok((
-                Prepared::Held(vec![node_row(self.store)], AccessPath::Record),
+                Prepared::Held(vec![node_row(self.store)?], AccessPath::Record),
                 Searched::default(),
             )),
             Source::Record(target) => {
@@ -1454,8 +1454,8 @@ enum Prepared<'a> {
 /// The id sits beside the value rather than inside it, which is where a record's
 /// id sits everywhere else in this store — so a caller reads it the same way it
 /// reads any other answer, and no projection has to learn a special field.
-fn node_row(store: &Store) -> (RecordId, Value) {
-    let identity = store.node_identity();
+fn node_row(store: &Store) -> Result<(RecordId, Value)> {
+    let identity = store.node_identity()?;
     let mut fields = BTreeMap::new();
     fields.insert(
         "roles".to_owned(),
@@ -1488,7 +1488,7 @@ fn node_row(store: &Store) -> (RecordId, Value) {
                 .collect(),
         ),
     );
-    (identity.record_id(), Value::Object(fields))
+    Ok((identity.record_id(), Value::Object(fields)))
 }
 
 /// Hand a collection to the consumer, stopping where it says to.
