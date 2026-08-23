@@ -756,6 +756,24 @@ impl Session<'_> {
         Ok(held)
     }
 
+    /// The same fold applied to each key an order sorts by.
+    ///
+    /// One place rather than two, because both the streaming ordering stage and
+    /// the one fed from a collected vector need it, and two copies would be two
+    /// chances for a key to be folded differently from the record it is compared
+    /// against.
+    pub(crate) fn folded_order(
+        &self,
+        transaction: &mut Transaction<'_>,
+        order: &[bgv_db_ql::Ordering],
+    ) -> Result<Vec<Expr>> {
+        let mut folded = Vec::with_capacity(order.len());
+        for key in order {
+            folded.push(self.folded(transaction, &key.key)?);
+        }
+        Ok(folded)
+    }
+
     fn boxed(&self, transaction: &mut Transaction<'_>, expr: &Expr) -> Result<Box<Expr>> {
         Ok(Box::new(self.folded(transaction, expr)?))
     }

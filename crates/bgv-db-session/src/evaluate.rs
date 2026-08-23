@@ -7,7 +7,6 @@
 
 use core::ops::Bound;
 use std::collections::BTreeMap;
-use std::ops::ControlFlow;
 
 use bgv_db_constants::ORDERED_FILTER_REACH;
 use bgv_db_ql::{
@@ -23,6 +22,8 @@ use crate::aggregate::folds;
 use crate::arithmetic::{arithmetic, negate};
 use crate::call::call;
 use crate::condition::boolean;
+use crate::consume::Consumer;
+use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::outcome::AccessPath;
 use crate::plan;
@@ -334,20 +335,48 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         select: &Select,
     ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
-        // The searched context travels with the records because a sort key is
-        // an expression too, and one holding a `MATCHES` or a score must mean
-        // the same thing there as it does in the `WHERE` that produced them.
-        // Collected here, for now, because the stages below still need the
-        // whole set: `follow` batches every reference into one ask (C9), and a
-        // sort key cannot be evaluated until `searched` is known, which the
-        // source reports only once it has chosen its path. ADR-0014 converts the
-        // source's contract; wiring the collector directly to the visitor is the
-        // node after this one, and it is where the peak falls.
-        let mut records: Vec<(RecordId, Value)> = Vec::new();
-        let (path, searched) = self.read_source(transaction, select, &mut |id, record| {
-            records.push((id, record));
-            ControlFlow::Continue(())
-        })?;
+        // The searched context is resolved before the source produces anything,
+        // because a sort key is an expression too and one holding a `MATCHES` or
+        // a score must mean the same thing there as it does in the `WHERE` that
+        // produced them. That is the whole reason the source is split in two: it
+        // knew `searched` before it walked, and only reported it on return, so
+        // the consumer could not be built until every record already existed.
+        let (prepared, searched) = self.prepare_source(transaction, select)?;
+        // The bound the sort may keep to. `bounded` is applied to the ordering
+        // stage's output below, so keeping only what it will keep is an identity
+        // between two adjacent stages rather than a decision about the
+        // statement — which is why, unlike the bound handed to the source, this
+        // one needs no whitelist of shapes (ADR-0013).
+        let bound = order_bound(select);
+
+        if streams(select) {
+            // The projection folded once, above the records rather than per
+            // record: a projection's constant parts are constant across every
+            // record it is applied to.
+            let wanted = match &select.projection {
+                Projection::All => None,
+                Projection::Values(wanted) => Some(self.folded_projection(transaction, wanted)?),
+            };
+            let keys = self.folded_order(transaction, &select.order)?;
+            let mut shaping = crate::consume::Shaping::new(
+                self,
+                wanted,
+                keys,
+                &searched,
+                crate::shape::Topmost::keeping(&select.order, bound),
+            );
+            let path =
+                self.produce_source(transaction, select, prepared, &searched, &mut shaping)?;
+            return Ok((
+                crate::shape::bounded(shaping.finish(), select.start, select.limit),
+                path,
+            ));
+        }
+
+        let mut collecting = crate::consume::Collecting::new();
+        let path =
+            self.produce_source(transaction, select, prepared, &searched, &mut collecting)?;
+        let mut records = collecting.finish();
         // Before anything groups, projects or sorts, so a projection and a sort
         // key both see the record rather than the reference that named it.
         if !select.fetch.is_empty() {
@@ -359,7 +388,7 @@ impl Session<'_> {
         }
         let records = match &select.projection {
             Projection::All => records,
-            Projection::Values(wanted) if folds(wanted) || !select.group.is_empty() => {
+            Projection::Values(wanted) if groups(select) => {
                 self.grouped(transaction, records, wanted, &select.group)?
             }
             Projection::Values(wanted) => {
@@ -384,34 +413,27 @@ impl Session<'_> {
         let records = if select.order.is_empty() {
             records
         } else {
-            // The same fold, for the same reason: `ORDER BY vector::cosine(embedding,
-            // [… 32 numbers])` was rebuilding the query vector for every record.
-            let mut folded = Vec::with_capacity(select.order.len());
-            for key in &select.order {
-                folded.push(self.folded(transaction, &key.key)?);
-            }
-            // The bound the sort may keep to. `bounded` is applied to this
-            // vector on the next line, so keeping only what it will keep is an
-            // identity between two adjacent stages rather than a decision about
-            // the statement — which is why, unlike the bound handed to the
-            // source, this one needs no whitelist of shapes (ADR-0013).
-            let wanted = select.limit.map(|limit| {
-                usize::try_from(limit.saturating_add(select.start.unwrap_or(0)))
-                    .unwrap_or(usize::MAX)
-            });
-            let mut topmost = crate::shape::Topmost::keeping(&select.order, wanted);
+            // The same ordering stage the streaming path uses, fed from a vector
+            // instead of from the source. One implementation rather than two,
+            // because two would be two chances for a `LIMIT` to change which
+            // records an order answers with.
+            //
+            // `None` for the projection: these records have already been through
+            // it, since the barrier that forced this path ran above.
+            let keys = self.folded_order(transaction, &select.order)?;
+            let mut shaping = crate::consume::Shaping::new(
+                self,
+                None,
+                keys,
+                &searched,
+                crate::shape::Topmost::keeping(&select.order, bound),
+            );
             for (id, record) in records {
-                let mut keys = Vec::with_capacity(folded.len());
-                for key in &folded {
-                    keys.push(self.evaluate_in(
-                        transaction,
-                        key,
-                        Scope::searching(&record, &searched),
-                    )?);
+                if shaping.take(transaction, id, record)?.is_break() {
+                    break;
                 }
-                topmost.offer(keys, id, record);
             }
-            topmost.finish()
+            shaping.finish()
         };
         Ok((
             crate::shape::bounded(records, select.start, select.limit),
@@ -431,7 +453,7 @@ impl Session<'_> {
     ///
     /// A computed projection is evaluated against this record, so it is the
     /// same evaluator a `WHERE` uses and cannot disagree with it.
-    fn project(
+    pub(crate) fn project(
         &self,
         transaction: &mut Transaction<'_>,
         record: &Value,
@@ -517,18 +539,27 @@ impl Session<'_> {
         Ok(score(corpus, analyzer, &held, &wanted))
     }
 
-    /// The records a source produces, as they are stored.
+    /// What resolving a source establishes before it produces a record.
+    ///
+    /// Split from producing because the searched context is known **before** the
+    /// walk and used to be reported only after it, which forced every consumer to
+    /// collect: a sort key is an expression, and one holding a `MATCHES` or a
+    /// score means nothing without it. Both table arms compute it from the
+    /// schema, and the schema does not change under a read.
     ///
     /// Takes the whole statement rather than only its source, because what the
     /// searched fields need is decided by every expression the read evaluates —
     /// a `SELECT … ORDER BY search::score(body, 'x') FROM notes` searches a
     /// field its source never mentions.
-    fn read_source(
+    ///
+    /// The access path stays with produce. Which walk serves a table is decided
+    /// by whether one *succeeds*, so a prepare that reported a path would be
+    /// guessing at what the walk is about to find.
+    fn prepare_source<'a>(
         &self,
         transaction: &mut Transaction<'_>,
-        select: &Select,
-        visit: Visit<'_>,
-    ) -> Result<Reached> {
+        select: &'a Select,
+    ) -> Result<(Prepared<'a>, Searched)> {
         match &select.from {
             Source::Record(target) => {
                 let (_, address) = self.address(transaction, target)?;
@@ -539,59 +570,15 @@ impl Session<'_> {
                     }
                     None => Vec::new(),
                 };
-                hand_over(found, visit);
-                Ok((AccessPath::Record, Searched::default()))
+                Ok((
+                    Prepared::Held(found, AccessPath::Record),
+                    Searched::default(),
+                ))
             }
             Source::Table(table) => {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 let searched = self.searched_for(transaction, id, &shown(select))?;
-                // A statement that asked for an approximate ordering, over a
-                // field carrying a graph built for the distance it named, is the
-                // one read in this store an index answers differently from a
-                // scan. Every other shape falls through to the scan below, which
-                // is exact.
-                if let Some(walk) = plan::nearest(select)
-                    && let Some(found) = self.walk(transaction, context, id, &walk)?
-                {
-                    hand_over(found, visit);
-                    return Ok((AccessPath::Index, searched));
-                }
-                // The other shape an index serves without a condition: an order
-                // it is already stored in, and a bound to stop at. Exact — the
-                // records come back for `sorted` and `bounded` to shape, the
-                // same two functions every other answer goes through.
-                if let Some(bound) = plan::ordered(select)
-                    && let Some(found) = self.walk_in_order(transaction, context, id, &bound)?
-                {
-                    hand_over(found, visit);
-                    return Ok((AccessPath::Ordered, searched));
-                }
-                // The bound reaches the source here, and only here, because this
-                // is the one arm where the records the source produces are the
-                // records the answer holds. `plan::bound` returns nothing for
-                // every shape where they differ (ADR-0013).
-                let found = match plan::bound(select) {
-                    Some(wanted) => transaction.first_records_of(
-                        context.namespace,
-                        context.database,
-                        id,
-                        wanted,
-                    )?,
-                    None => transaction.scan_table(context.namespace, context.database, id)?,
-                };
-                let visible = self.visible_in(transaction, id)?;
-                // Decoded one at a time and handed straight over, so the
-                // decoded form of the whole table never exists at once. This is
-                // where the measured cost is: 43 328 KiB of a 45 822 KiB peak
-                // was this vector, and the stored payloads it is decoded from
-                // are a tenth of it (ADR-0014, Q-72).
-                for (found_id, payload) in found {
-                    let record = self.record_of(&payload, &visible)?;
-                    if visit(found_id, record).is_break() {
-                        break;
-                    }
-                }
-                Ok((AccessPath::Scan, searched))
+                Ok((Prepared::Table(context, id), searched))
             }
             Source::Traverse {
                 from,
@@ -599,8 +586,7 @@ impl Session<'_> {
                 hops,
             } => {
                 let (found, path) = self.traverse(transaction, from, *direction, hops)?;
-                hand_over(found, visit);
-                Ok((path, Searched::default()))
+                Ok((Prepared::Held(found, path), Searched::default()))
             }
             Source::Where { table, condition } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
@@ -613,48 +599,7 @@ impl Session<'_> {
                 let mut expressions: Vec<&Expr> = vec![condition];
                 expressions.extend(shown(select));
                 let searched = self.searched_for(transaction, id, &expressions)?;
-                // The order first, when an index holds it. A filtered read that
-                // narrows and then sorts is correct and costs a sort of
-                // everything the condition matched; taking the records in the
-                // order they are already stored in costs the bound.
-                // Descending only. The walk under a condition retries past its
-                // bound, and an ascending retry would read further into values
-                // the answer has already passed rather than further into the
-                // ones it still needs — a different read, not a longer one.
-                if let Some(bound) = plan::ordered(select)
-                    && bound.descending
-                    && let Some(found) = self.descend_matching(
-                        transaction,
-                        context,
-                        id,
-                        &bound,
-                        condition,
-                        &searched,
-                    )?
-                {
-                    hand_over(found, visit);
-                    return Ok((AccessPath::Ordered, searched));
-                }
-                let (candidates, path) =
-                    self.candidates(transaction, id, context, condition, &searched)?;
-
-                // The candidates are tested against the **whole** condition, not
-                // only the conjunct the index answered. That is what makes an
-                // index a narrowing device rather than an answer, and it is why
-                // adding one still cannot change what a query returns.
-                let mut matched = Vec::new();
-                for (id, record) in candidates {
-                    let held = self.evaluate_in(
-                        transaction,
-                        condition,
-                        Scope::searching(&record, &searched),
-                    )?;
-                    if boolean(&held, condition.span)? {
-                        matched.push((id, record));
-                    }
-                }
-                hand_over(matched, visit);
-                Ok((path, searched))
+                Ok((Prepared::Filtered(context, id, condition), searched))
             }
             Source::Join {
                 left,
@@ -672,8 +617,132 @@ impl Session<'_> {
                     right_key,
                     condition.as_deref(),
                 )?;
-                hand_over(found, visit);
-                Ok((path, searched))
+                Ok((Prepared::Held(found, path), searched))
+            }
+        }
+    }
+
+    /// The records a source produces, handed over one at a time.
+    ///
+    /// Returns the path the walk turned out to take. Nothing is returned that a
+    /// consumer could have kept — that is the point of the contract (ADR-0014):
+    /// the source never learns what the consumer keeps, so a bound reaches it
+    /// only through the `Break` the consumer answers with.
+    fn produce_source(
+        &self,
+        transaction: &mut Transaction<'_>,
+        select: &Select,
+        prepared: Prepared<'_>,
+        searched: &Searched,
+        consumer: &mut dyn Consumer,
+    ) -> Result<AccessPath> {
+        match prepared {
+            Prepared::Held(found, path) => {
+                hand_over(found, transaction, consumer)?;
+                Ok(path)
+            }
+            Prepared::Table(context, id) => {
+                // A statement that asked for an approximate ordering, over a
+                // field carrying a graph built for the distance it named, is the
+                // one read in this store an index answers differently from a
+                // scan. Every other shape falls through to the scan below, which
+                // is exact.
+                if let Some(walk) = plan::nearest(select)
+                    && let Some(found) = self.walk(transaction, context, id, &walk)?
+                {
+                    hand_over(found, transaction, consumer)?;
+                    return Ok(AccessPath::Index);
+                }
+                // The other shape an index serves without a condition: an order
+                // it is already stored in, and a bound to stop at. Exact — the
+                // records come back for the ordering stage and `bounded` to
+                // shape, the same two the other answers go through.
+                if let Some(bound) = plan::ordered(select)
+                    && let Some(found) = self.walk_in_order(transaction, context, id, &bound)?
+                {
+                    hand_over(found, transaction, consumer)?;
+                    return Ok(AccessPath::Ordered);
+                }
+                // The bound reaches the source here, and only here, because this
+                // is the one arm where the records the source produces are the
+                // records the answer holds. `plan::bound` returns nothing for
+                // every shape where they differ (ADR-0013).
+                let found = match plan::bound(select) {
+                    Some(wanted) => transaction.first_records_of(
+                        context.namespace,
+                        context.database,
+                        id,
+                        wanted,
+                    )?,
+                    None => transaction.scan_table(context.namespace, context.database, id)?,
+                };
+                let visible = self.visible_in(transaction, id)?;
+                // The one place in the store that knows how many records are
+                // coming before any of them is decoded. A consumer that holds
+                // every record allocates its spine once here instead of doubling
+                // its way there; one that holds a bounded few ignores it.
+                consumer.expecting(found.len());
+                // Decoded one at a time and handed straight over, so the decoded
+                // form of the whole table never exists at once. This is where the
+                // measured cost was: 43 328 KiB of a 45 822 KiB peak was that
+                // vector, and the stored payloads it is decoded from are a tenth
+                // of it (ADR-0014, Q-72).
+                for (found_id, payload) in found {
+                    let record = self.record_of(&payload, &visible)?;
+                    if consumer.take(transaction, found_id, record)?.is_break() {
+                        break;
+                    }
+                }
+                Ok(AccessPath::Scan)
+            }
+            Prepared::Filtered(context, id, condition) => {
+                // The order first, when an index holds it. A filtered read that
+                // narrows and then sorts is correct and costs a sort of
+                // everything the condition matched; taking the records in the
+                // order they are already stored in costs the bound.
+                // Descending only. The walk under a condition retries past its
+                // bound, and an ascending retry would read further into values
+                // the answer has already passed rather than further into the
+                // ones it still needs — a different read, not a longer one.
+                if let Some(bound) = plan::ordered(select)
+                    && bound.descending
+                    && let Some(found) = self.descend_matching(
+                        transaction,
+                        context,
+                        id,
+                        &bound,
+                        condition,
+                        searched,
+                    )?
+                {
+                    hand_over(found, transaction, consumer)?;
+                    return Ok(AccessPath::Ordered);
+                }
+                let (candidates, path) =
+                    self.candidates(transaction, id, context, condition, searched)?;
+
+                // No `expecting` here, deliberately: how many candidates survive
+                // the condition is not known until it has been run, and an
+                // over-estimate would reserve exactly the memory this contract
+                // exists to give back.
+                //
+                // The candidates are tested against the **whole** condition, not
+                // only the conjunct the index answered. That is what makes an
+                // index a narrowing device rather than an answer, and it is why
+                // adding one still cannot change what a query returns.
+                for (id, record) in candidates {
+                    let held = self.evaluate_in(
+                        transaction,
+                        condition,
+                        Scope::searching(&record, searched),
+                    )?;
+                    if boolean(&held, condition.span)?
+                        && consumer.take(transaction, id, record)?.is_break()
+                    {
+                        break;
+                    }
+                }
+                Ok(path)
             }
         }
     }
@@ -1342,14 +1411,6 @@ fn ordered_index_on(
         }))
 }
 
-/// What a source reports about itself, now that it no longer reports its
-/// records: the path it took and the fields a later expression may search.
-///
-/// The records go to the visitor as they are found (ADR-0014). This type shrank
-/// rather than gained a field, which is the point — a source that hands back a
-/// collection is a source that has already paid for the whole answer.
-type Reached = (AccessPath, Searched);
-
 /// What a join produces, which is still a collection.
 ///
 /// A join builds a map of one side and probes it with the other, so its work is
@@ -1358,29 +1419,82 @@ type Reached = (AccessPath, Searched);
 /// rather than resting on a comment.
 type Joined = (Vec<(RecordId, Value)>, AccessPath, Searched);
 
-/// What a source does with each record it finds.
+/// What resolving a source reached, and what producing it still needs.
 ///
-/// `Break` stops the source where it stands. That is the same mechanism a bound
-/// already uses to reach the source (ADR-0013) rather than a second one beside
-/// it, and it is why the source never learns what the consumer keeps.
-type Visit<'v> = &'v mut dyn FnMut(RecordId, Value) -> ControlFlow<()>;
+/// Three cases rather than five, because what matters here is not which clause
+/// was written but whether the records exist yet.
+enum Prepared<'a> {
+    /// A table, resolved to its tenancy. Nothing has been read.
+    Table(Context, TableId),
+    /// A table and the condition its records must satisfy. The condition is
+    /// carried rather than re-matched out of the statement, so producing needs
+    /// no arm that cannot happen.
+    Filtered(Context, TableId, &'a Expr),
+    /// A source whose records exist already, because reaching its context meant
+    /// reading them: one record by identity, a traversal, a join. Each is a
+    /// barrier in its own right — a join builds a map of one side — so producing
+    /// lazily would move the materialisation rather than remove it.
+    Held(Vec<(RecordId, Value)>, AccessPath),
+}
 
-/// Hand a collection to the visitor, stopping where it says to.
+/// Hand a collection to the consumer, stopping where it says to.
 ///
-/// The arms that still build a collection before producing it call this. They
-/// are the ones whose work is not per-record — a join builds a map, a filtered
-/// read tests candidates — and converting them would move the materialisation
-/// rather than remove it. The scan arm, which is where the measured cost is,
-/// decodes straight into the visitor instead.
-fn hand_over(found: Vec<(RecordId, Value)>, visit: Visit<'_>) {
+/// The count is exact here, so it is passed on: these are the arms that had to
+/// build their collection to reach their context, and a consumer that keeps
+/// every record can size itself once instead of doubling its way there.
+fn hand_over(
+    found: Vec<(RecordId, Value)>,
+    transaction: &mut Transaction<'_>,
+    consumer: &mut dyn Consumer,
+) -> Result<()> {
+    consumer.expecting(found.len());
     for (id, record) in found {
-        if visit(id, record).is_break() {
+        if consumer.take(transaction, id, record)?.is_break() {
             // Nothing follows in any arm that calls this, so stopping the loop
-            // is the whole of honouring the break. Returning the `ControlFlow`
-            // would hand every call site a value it has no work left to skip.
+            // is the whole of honouring the break.
             break;
         }
     }
+    Ok(())
+}
+
+/// Whether the stages left between the source and the answer are all per-record.
+///
+/// Two are not, and both keep the collecting path: a `FETCH` batches every
+/// reference into one ask, which needs every record in hand before the first one
+/// is resolved (G004 C9, and ADR-0014 decided that criterion wins); and a
+/// grouping folds many records into one.
+///
+/// A read with no `ORDER BY` keeps it too, and that one is not a barrier — it is
+/// that the ordering stage is where the saving lives, and with no key it would
+/// order by record id instead, which is a different answer from the one a scan
+/// gives.
+fn streams(select: &Select) -> bool {
+    select.fetch.is_empty() && !select.order.is_empty() && !groups(select)
+}
+
+/// Whether the read folds many records into one.
+///
+/// Named once and asked twice — by the test above and by the projection stage —
+/// because the two must not drift apart. A grouping routed to the streaming path
+/// would be a fold evaluated against one record at a time, which is the one
+/// thing a fold is not.
+fn groups(select: &Select) -> bool {
+    match &select.projection {
+        Projection::All => false,
+        Projection::Values(wanted) => folds(wanted) || !select.group.is_empty(),
+    }
+}
+
+/// How many records the ordering stage may keep.
+///
+/// The start is added because `bounded` skips before it truncates, so a record
+/// the start will discard still has to survive the sort to be discarded from the
+/// right place.
+fn order_bound(select: &Select) -> Option<usize> {
+    select.limit.map(|limit| {
+        usize::try_from(limit.saturating_add(select.start.unwrap_or(0))).unwrap_or(usize::MAX)
+    })
 }
 
 /// What the evaluator can see besides the expression itself.
@@ -1419,7 +1533,7 @@ impl<'a> Scope<'a> {
     }
 
     /// A record, and what its searched fields need.
-    const fn searching(record: &'a Value, searched: &'a Searched) -> Self {
+    pub(crate) const fn searching(record: &'a Value, searched: &'a Searched) -> Self {
         Self {
             record: Some(record),
             searched: Some(searched),

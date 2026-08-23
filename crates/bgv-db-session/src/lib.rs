@@ -25,6 +25,7 @@ mod arithmetic;
 mod authorize;
 mod call;
 mod condition;
+mod consume;
 mod context;
 mod error;
 mod evaluate;
