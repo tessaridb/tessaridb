@@ -14,6 +14,7 @@ use bgv_db_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
 use crate::error::Result;
 use crate::kind::KeyKind;
+use crate::node::NodeIdentity;
 use crate::order::{KeyReader, KeyWriter};
 use crate::record_id;
 use crate::value::{FormatVersion, StoreValue};
@@ -247,6 +248,33 @@ impl StoreKey for AppliedPositionKey {
     type Value = Sequence;
 
     const KIND: KeyKind = KeyKind::AppliedPosition;
+
+    fn encode(&self) -> Key {
+        Key::from(vec![Self::KIND.tag()])
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        reader.finish()?;
+        Ok(Self)
+    }
+}
+
+/// Addresses this node's own identity.
+///
+/// A singleton, generated once when absent and read at every open. It is in
+/// `META` and not in the log because a replica reaches its state by replaying
+/// the log: an identity that travelled there would be inherited by whoever
+/// restored a backup, and two processes would then claim to be the same node
+/// (ADR-0018 §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NodeIdentityKey;
+
+impl StoreKey for NodeIdentityKey {
+    type Value = NodeIdentity;
+
+    const KIND: KeyKind = KeyKind::NodeIdentity;
 
     fn encode(&self) -> Key {
         Key::from(vec![Self::KIND.tag()])

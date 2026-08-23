@@ -537,6 +537,17 @@ pub struct Hop {
 /// otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
+    /// This node's own identity.
+    ///
+    /// Its own variant and **not** a table, because its data is not records: it
+    /// lives in the `META` keyspace so that it does not replicate, which is the
+    /// one thing a system table cannot be (ADR-0018 §1, and §3's amendment,
+    /// which corrects the sentence that said otherwise).
+    ///
+    /// It carries no [`TableRef`], and everything that decides permissions from
+    /// the tables a statement names has to answer for that separately rather
+    /// than reading an empty list as "nothing to check".
+    Node,
     /// One record, by its identity.
     Record(RecordTarget),
     /// Every record of a table.

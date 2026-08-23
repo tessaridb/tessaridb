@@ -125,13 +125,30 @@ fn replay_into_an_empty_store_reproduces_it_byte_for_byte() {
         replica.apply_record(sequence, &record).unwrap();
     }
 
+    // The node identity is the one key a replay must **not** reproduce: it is in
+    // `META` precisely so that it does not travel (ADR-0018 §1), because a
+    // replica holding the source's id is a second process answering to one
+    // identity. Excluded here and asserted to differ below — the hole alone
+    // would also cover the key vanishing.
+    let node_identity = Key::from(vec![0x38]);
     for keyspace in Keyspace::ALL {
+        let derived = |backend: &Arc<dyn KvBackend>| {
+            dump(backend, *keyspace)
+                .into_iter()
+                .filter(|(key, _)| *key != node_identity)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            dump(&source_backend, *keyspace),
-            dump(&replica_backend, *keyspace),
+            derived(&source_backend),
+            derived(&replica_backend),
             "keyspace {keyspace} differs after replay"
         );
     }
+    assert_ne!(
+        source.node_identity().id,
+        replica.node_identity().id,
+        "the replica came up holding the source's identity"
+    );
     assert_eq!(
         replica.committed_tail().unwrap(),
         source.committed_tail().unwrap()

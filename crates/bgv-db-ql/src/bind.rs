@@ -191,7 +191,9 @@ fn bind_select(select: &mut Select, parameters: &Parameters) -> Result<()> {
                 bind_expr(condition, parameters)?;
             }
         }
-        Source::Table(_) => {}
+        // Neither names a value a caller could bind: a table is a name, and
+        // this node's identity is not addressed at all.
+        Source::Node | Source::Table(_) => {}
     }
     for key in &mut select.group {
         bind_expr(key, parameters)?;

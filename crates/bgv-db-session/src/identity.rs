@@ -112,6 +112,27 @@ impl Needs {
     /// compile until somebody says what it needs.
     pub(crate) const fn of(kind: &StatementKind) -> Self {
         match kind {
+            // Reading **this node** is administering, and it is the one read
+            // that is. Every other `SELECT` is governed by a grant on the table
+            // it names, and `$node` names none — so left as `Read` it would be
+            // checked by a loop over an empty list, which passes for reasons
+            // unrelated to permission. That is the vacuous shape `tables_named`
+            // already refuses `BACKUP` by name for.
+            //
+            // The answer is also not divisible: roles and endpoints are this
+            // machine's position in a topology, and there is no smaller truthful
+            // version of them to hand a `viewer` — the same reasoning that puts
+            // `INFO FOR USER` here rather than beside the other four subjects.
+            StatementKind::Select(select) if matches!(select.from, bgv_db_ql::Source::Node) => {
+                Self::Administer
+            }
+            // `EXPLAIN` of the same read needs the same permission, for the
+            // reason `tables_named` gives it: a plan that named a source the
+            // caller may not read is a disclosure wearing a diagnostic's
+            // clothes.
+            StatementKind::Explain(select) if matches!(select.from, bgv_db_ql::Source::Node) => {
+                Self::Administer
+            }
             StatementKind::Select(_)
             | StatementKind::Get { .. }
             | StatementKind::Keys { .. }

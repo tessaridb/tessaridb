@@ -245,7 +245,11 @@ pub(super) fn check_fold_positions(
             condition: Some(condition),
             ..
         } => no_fold(condition)?,
-        Source::Record(_) | Source::Table(_) | Source::Traverse { .. } | Source::Join { .. } => {}
+        Source::Node
+        | Source::Record(_)
+        | Source::Table(_)
+        | Source::Traverse { .. }
+        | Source::Join { .. } => {}
     }
     for key in group {
         no_fold(key)?;

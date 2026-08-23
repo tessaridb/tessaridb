@@ -174,6 +174,24 @@ pub enum Error {
         nanos: u32,
     },
 
+    /// A node identity carries a revision, a role or a membership this build
+    /// does not know.
+    ///
+    /// Not corruption: a newer build wrote a node it can describe and this one
+    /// cannot. Carrying on would mean running as a node whose own definition is
+    /// partly unread, which is worse than refusing to open.
+    #[error("node identity carries an unknown {field} 0x{found:02x}")]
+    UnknownNodeIdentity {
+        /// Which part of the identity was not understood.
+        field: &'static str,
+        /// The byte that was found.
+        found: u8,
+    },
+
+    /// A node identity holds an endpoint that is not valid UTF-8.
+    #[error("node identity holds an endpoint that is not valid UTF-8")]
+    InvalidNodeEndpoint,
+
     /// The store's on-disk format version is newer than this build supports.
     #[error("store on-disk format version is {found}, this build supports up to {supported}")]
     UnsupportedFormatVersion {
@@ -203,11 +221,13 @@ impl Error {
             | Self::ValueTruncated { .. }
             | Self::TombstoneWithPayload { .. }
             | Self::InvalidDecimal { .. }
-            | Self::InvalidSubSecond { .. } => ErrorCategory::Corruption,
+            | Self::InvalidSubSecond { .. }
+            | Self::InvalidNodeEndpoint => ErrorCategory::Corruption,
             Self::UnsupportedCodecVersion { .. }
             | Self::ReservedFlags { .. }
             | Self::UnknownValueTag { .. }
             | Self::UnknownIndexTag { .. }
+            | Self::UnknownNodeIdentity { .. }
             | Self::UnsupportedFormatVersion { .. } => ErrorCategory::Incompatible,
         }
     }

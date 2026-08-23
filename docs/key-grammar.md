@@ -89,6 +89,25 @@ because renumbering after data exists is a full rebuild.
 | `0x35` | `IndexCatalog` | `meta` | reserved, unused — see §9 |
 | `0x36` | `IdAllocator` | `meta` | reserved, unused — see §9 |
 | `0x37` | `BackfillWatermark` | `meta` | reserved — SG4 |
+| `0x38` | `NodeIdentity` | `meta` | implemented — see §3b |
+
+### 3b. The node identity, and why it is `meta` rather than a record
+
+Every other kind above is either derived from the log or written into it. This
+one is neither, and that is the point of it.
+
+A node's own identity — its id, its roles, the build it last ran, and where peers
+reach it — is a fact about **this process on this machine**. State in this store
+is a function of the log, so anything written there is reproduced by whoever
+replays it; an identity reproduced that way would be inherited by a machine that
+restored last night's backup, and two processes would then answer to one id with
+nothing reporting the collision.
+
+So it sits beside the format version and the applied position, both of which are
+per-store facts for the same reason, and a backup neither carries it nor restores
+it. The value's own payload begins with a revision byte because it is expected to
+grow: the version field in it is rewritten whenever the binary changes, which is
+what gives an upgrade a place to notice itself.
 
 ### 3a. The edge tag, and why it is unused
 

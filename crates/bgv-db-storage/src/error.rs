@@ -202,6 +202,26 @@ pub enum Error {
         level: &'static str,
     },
 
+    /// The operating system's randomness source could not be read.
+    ///
+    /// The store refuses to open rather than falling back to something
+    /// predictable. A node id that might collide is worse than a node that will
+    /// not start: the collision surfaces as two processes claiming one identity
+    /// and every routing decision made from it being wrong with nothing
+    /// reporting it, while a refusal surfaces here, once, with this message.
+    /// The field is `path` and not `source` because `thiserror` reads a field of
+    /// that name as the underlying error rather than as data.
+    #[error(
+        "cannot read {path}: a node identity must be unpredictable, so this store \
+         will not open without one ({reason})"
+    )]
+    NoEntropy {
+        /// The randomness source that could not be read.
+        path: &'static str,
+        /// What the operating system said.
+        reason: String,
+    },
+
     /// A failure from the key-value substrate.
     #[error(transparent)]
     Kv(#[from] bgv_db_kv::Error),
@@ -229,6 +249,10 @@ impl Error {
             | Self::UndeclaredField { .. }
             | Self::IdSpaceExhausted { .. } => ErrorCategory::Validation,
             Self::CatalogMalformed { .. } => ErrorCategory::Corruption,
+            // A dependency this process needs is not reachable, which is what
+            // `Unavailable` names. Not `Internal`: nothing here is a bug in the
+            // store, and not `Validation`: no caller supplied anything wrong.
+            Self::NoEntropy { .. } => ErrorCategory::Unavailable,
             Self::Kv(inner) => inner.category(),
             Self::Encoding(inner) => inner.category(),
         }

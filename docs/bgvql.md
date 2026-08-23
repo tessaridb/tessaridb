@@ -795,6 +795,31 @@ into the record — `visits + 1` is the record's `visits`, the same reading a
 schema, the defaults, the indexes, the change feed and the grants all apply to it
 without knowing which shape produced it.
 
+### Reading the node itself
+
+```
+SELECT * FROM $node;
+```
+
+The one source that is not a table. It answers a single record — the node's id,
+its roles, its membership, the build it is running, and where peers reach it —
+through the ordinary read path, so every clause a `SELECT` has works over it and
+nothing new is added to the surface.
+
+It is spelled with a sigil rather than reserved as a word, so `node` stays an
+ordinary table and field name for data that already uses one. A parameter is not
+legal where a table name belongs, so this reading takes nothing away from a
+caller: a parameter they supply *called* `node` is still theirs everywhere a
+value belongs, including in the `WHERE` of a read from `$node`'s own neighbours.
+
+It is **not** a system table, and the distinction is not pedantry. A system table
+is records in the log, replicated to every replica; a node's identity is in the
+store's local metadata precisely so that it does **not** replicate — otherwise
+restoring a backup onto a second machine would hand it the first machine's
+identity. So it has no tenancy, needs no `USE`, and only an **owner** is
+answered: unlike a table read, there is no grant that could narrow it, and roles
+and endpoints are a topology rather than data.
+
 ### What a read answers with
 
 `SELECT *` answers with the record as it is stored. A named list answers with

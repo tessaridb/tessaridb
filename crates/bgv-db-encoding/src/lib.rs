@@ -31,6 +31,7 @@ mod index_keys;
 mod index_value;
 mod keys;
 mod kind;
+mod node;
 mod order;
 mod payload;
 mod record_id;
@@ -43,9 +44,11 @@ pub use index_keys::{
     VectorNodeKey,
 };
 pub use keys::{
-    AppliedPositionKey, FormatVersionKey, LogKey, RecordKey, StoreKey, TABLE_PREFIX_LEN,
+    AppliedPositionKey, FormatVersionKey, LogKey, NodeIdentityKey, RecordKey, StoreKey,
+    TABLE_PREFIX_LEN,
 };
 pub use kind::KeyKind;
+pub use node::{Membership, NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};
 pub use order::{KeyReader, KeyWriter};
 pub use payload::{decode as decode_payload, encode as encode_payload};
 pub use value::{CODEC_VERSION, FormatVersion, LogRecord, Mutation, RecordValue, StoreValue};

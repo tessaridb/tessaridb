@@ -27,6 +27,7 @@ mod feed;
 mod graph;
 mod index;
 mod log;
+mod node;
 mod reclaim;
 mod schema;
 mod snapshots;

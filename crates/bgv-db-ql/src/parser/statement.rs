@@ -10,6 +10,12 @@ use crate::ast::{
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
 
+/// The parameter name that reads as this node in a `FROM`.
+///
+/// Spelled with a sigil rather than reserved as a word, so that `node` stays an
+/// ordinary table and field name for data that already uses it.
+const NODE_SOURCE: &str = "node";
+
 /// Which of the two tables a join key names, and the route below it.
 ///
 /// The root is the table; what is left is a route into one of its records. A
@@ -648,6 +654,40 @@ impl Parser<'_> {
         })
     }
 
+    /// What the `FROM` names, resolved to exactly one access path.
+    fn select_source(&mut self) -> Result<Source> {
+        // `$node` before the table, because it is the one source that is not a
+        // name. A parameter is not legal in this position at all — a value
+        // cannot say which table to read — so recognising this one takes nothing
+        // away from a caller, and a parameter they *supply* called `node` stays
+        // theirs, unshadowed, everywhere a value belongs. That is the difference
+        // between a source spelled with a sigil and a reserved parameter name,
+        // which ADR-0018's amendment rejects for exactly the shadowing it would
+        // have introduced.
+        if matches!(self.peek(), Some(Token::Parameter(name)) if name == NODE_SOURCE) {
+            self.advance();
+            return Ok(Source::Node);
+        }
+        let table = self.table_ref()?;
+        if self.peek() == Some(&Token::Punct(Punct::Colon)) {
+            let record = self.record_target_after(table)?;
+            return Ok(match self.arrow() {
+                Some(direction) => self.traversal(record, direction)?,
+                None => Source::Record(record),
+            });
+        }
+        if self.eat_keyword(Keyword::Join) {
+            return self.join(table);
+        }
+        if self.eat_keyword(Keyword::Where) {
+            return Ok(Source::Where {
+                table,
+                condition: Box::new(self.condition()?),
+            });
+        }
+        Ok(Source::Table(table))
+    }
+
     /// `SELECT <projection> FROM …`, resolving to exactly one access path.
     pub(super) fn select_statement(&mut self) -> Result<Select> {
         let start = self.span_here();
@@ -655,23 +695,7 @@ impl Parser<'_> {
         let projection = self.projection()?;
         self.expect_keyword(Keyword::From, "`FROM` and what to read")?;
 
-        let table = self.table_ref()?;
-        let from = if self.peek() == Some(&Token::Punct(Punct::Colon)) {
-            let record = self.record_target_after(table)?;
-            match self.arrow() {
-                Some(direction) => self.traversal(record, direction)?,
-                None => Source::Record(record),
-            }
-        } else if self.eat_keyword(Keyword::Join) {
-            self.join(table)?
-        } else if self.eat_keyword(Keyword::Where) {
-            Source::Where {
-                table,
-                condition: Box::new(self.condition()?),
-            }
-        } else {
-            Source::Table(table)
-        };
+        let from = self.select_source()?;
         // Written in the order it is applied: references are followed before
         // anything groups, projects or sorts, so the clause sits before them.
         // The grammar keeps clause order and application order the same on
@@ -715,7 +739,7 @@ impl Parser<'_> {
                     super::shape::check_several(condition)?;
                 }
             }
-            Source::Record(_) | Source::Table(_) | Source::Traverse { .. } => {}
+            Source::Node | Source::Record(_) | Source::Table(_) | Source::Traverse { .. } => {}
         }
         Ok(Select {
             projection,

@@ -30,7 +30,7 @@
 //! # The format
 //!
 //! ```text
-//! header   "BGVDBLOG" <format:u8> <codec:u8> <from:u64> <tail:u64>
+//! header   "BGVDBLOG" <format:u8> <codec:u8> <writer:u32*3> <from:u64> <tail:u64>
 //! record   <length:u32> <sequence:u64> <crc32:u32> <bytes…>
 //! ```
 //!
@@ -44,6 +44,14 @@
 //! the wrong bytes. It detects **corruption**, which is what happens to files;
 //! it does not detect **tampering**, which needs a key and a threat model this
 //! format does not have.
+//!
+//! `writer` is the build that produced the file, and it is a third version
+//! rather than a repetition of the first two. The framing version says how to
+//! find the records; the codec version says how to decode one; neither says what
+//! the build that wrote them **meant**. A file from an older build restores and
+//! is reported, which is the ordinary case and the reason to record it at all; a
+//! file from a newer one is refused, because a newer writer may have given a
+//! record a meaning this build does not know and the framing cannot see that.
 //!
 //! The header exists so a restore refuses a file it cannot read **before**
 //! applying any of it: a half-applied restore is worse than a refused one,
@@ -64,7 +72,7 @@
 
 use std::io::{Read, Write};
 
-use bgv_db_encoding::{LogRecord, StoreValue};
+use bgv_db_encoding::{LogRecord, NodeVersion, StoreValue};
 use bgv_db_storage::Store;
 use bgv_db_types::Sequence;
 
@@ -82,7 +90,12 @@ const MAGIC: &[u8; 8] = b"BGVDBLOG";
 /// It moved to 2 when the header gained the sequence a file **starts** at and
 /// each record gained a checksum — a layout change, which is exactly what this
 /// byte is for. A version-1 file is refused by name rather than misread.
-const FORMAT: u8 = 2;
+///
+/// It moved to 3 when the header gained the **build that wrote the file**. That
+/// is a third question, separate from both of the versions above: the framing
+/// can be identical and the records can decode perfectly while the build that
+/// produced them meant something this one does not. See [`Head`].
+const FORMAT: u8 = 3;
 
 /// How many log records are read from the store at a time.
 ///
@@ -109,6 +122,25 @@ pub enum Error {
     /// The file does not begin the way one of these does.
     #[error("this is not a bgv-db backup")]
     NotABackup,
+
+    /// The file was written by a build newer than this one.
+    ///
+    /// Refused, and deliberately **not** symmetric with an older file: an older
+    /// backup restoring into a newer build is the ordinary case and the whole
+    /// reason the version is recorded. The other direction is not, for the
+    /// reason a newer on-disk format is refused — a newer writer may have given
+    /// a record a meaning this build does not know, and the framing bytes cannot
+    /// see that, because a newer build writes byte-identical framing.
+    #[error(
+        "this backup was written by version {found}; this build is {supported} \
+         and will not guess at what a newer one meant"
+    )]
+    WrittenByNewer {
+        /// The version that wrote the file.
+        found: String,
+        /// The version reading it.
+        supported: String,
+    },
 
     /// A format or codec version this build does not read.
     ///
@@ -163,11 +195,15 @@ pub struct Written {
     pub from: Sequence,
     /// The sequence the store was at when it was taken.
     pub tail: Sequence,
+    /// The build that wrote it.
+    pub writer: NodeVersion,
 }
 
 /// What a backup turned out to hold, without any of it being applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Verified {
+    /// The build that wrote the file.
+    pub written_by: NodeVersion,
     /// How many records read whole and checked out.
     pub records: u64,
     /// The first sequence the file says it holds.
@@ -186,6 +222,12 @@ pub struct Verified {
 /// What a restore applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Restored {
+    /// The build that wrote the file.
+    ///
+    /// Reported rather than checked against anything beyond "not newer than
+    /// this one": restoring an older backup into a newer build is the case this
+    /// field exists to make visible, not one to refuse.
+    pub written_by: NodeVersion,
     /// How many records were applied.
     pub records: u64,
     /// The sequence the file said it held.
@@ -222,8 +264,15 @@ pub fn write(store: &Store, out: &mut impl Write) -> Result<Written> {
 pub fn write_from(store: &Store, out: &mut impl Write, from: Sequence) -> Result<Written> {
     let start = Sequence::new(from.get().max(1));
     let tail = store.committed_tail()?;
+    let writer = NodeVersion::current();
     out.write_all(MAGIC)?;
     out.write_all(&[FORMAT, bgv_db_encoding::CODEC_VERSION])?;
+    // Beside the other two versions, because it answers a question of the same
+    // kind — and before the bounds, so that everything about *who wrote this* is
+    // read before anything about *what it covers*.
+    out.write_all(&writer.major.to_be_bytes())?;
+    out.write_all(&writer.minor.to_be_bytes())?;
+    out.write_all(&writer.patch.to_be_bytes())?;
     out.write_all(&start.get().to_be_bytes())?;
     out.write_all(&tail.get().to_be_bytes())?;
 
@@ -243,6 +292,7 @@ pub fn write_from(store: &Store, out: &mut impl Write, from: Sequence) -> Result
                     records: written,
                     from: start,
                     tail,
+                    writer,
                 });
             }
             let bytes = record.encode();
@@ -263,6 +313,7 @@ pub fn write_from(store: &Store, out: &mut impl Write, from: Sequence) -> Result
         records: written,
         from: start,
         tail,
+        writer,
     })
 }
 
@@ -319,6 +370,7 @@ pub fn read_until(
         };
         let Some(body) = body else {
             return Ok(Restored {
+                written_by: held.writer,
                 records: applied,
                 tail: held.tail,
                 truncated: true,
@@ -330,6 +382,7 @@ pub fn read_until(
             // Stopped where the caller asked, which is not a truncation: the
             // file is whole and the store is deliberately behind it.
             return Ok(Restored {
+                written_by: held.writer,
                 records: applied,
                 tail: held.tail,
                 truncated: false,
@@ -341,6 +394,7 @@ pub fn read_until(
         last = sequence;
     }
     Ok(Restored {
+        written_by: held.writer,
         records: applied,
         tail: held.tail,
         // A file cut cleanly *between* records ends the way a whole one does, so
@@ -372,6 +426,7 @@ pub fn verify(input: &mut impl Read) -> Result<Verified> {
         };
         let Some(body) = body else {
             return Ok(Verified {
+                written_by: held.writer,
                 records,
                 from: held.from,
                 tail: held.tail,
@@ -387,6 +442,7 @@ pub fn verify(input: &mut impl Read) -> Result<Verified> {
         good_through = sequence;
     }
     Ok(Verified {
+        written_by: held.writer,
         records,
         from: held.from,
         tail: held.tail,
@@ -398,6 +454,8 @@ pub fn verify(input: &mut impl Read) -> Result<Verified> {
 /// What a backup's header says.
 #[derive(Debug, Clone, Copy)]
 struct Head {
+    /// The build that wrote the file.
+    writer: NodeVersion,
     from: Sequence,
     tail: Sequence,
 }
@@ -433,18 +491,42 @@ impl Head {
                 supported: bgv_db_encoding::CODEC_VERSION,
             });
         }
+        let writer = Self::writer(input)?;
+        // Newer is refused; older is not. The asymmetry is the point — see
+        // `Error::WrittenByNewer`.
+        let running = NodeVersion::current();
+        if writer > running {
+            return Err(Error::WrittenByNewer {
+                found: writer.to_string(),
+                supported: running.to_string(),
+            });
+        }
         let mut bounds = [0_u8; 16];
         input
             .read_exact(&mut bounds)
             .map_err(|_| Error::NotABackup)?;
         let (from, tail) = bounds.split_at(8);
         Ok(Self {
+            writer,
             from: Sequence::new(u64::from_be_bytes(
                 from.try_into().map_err(|_| Error::NotABackup)?,
             )),
             tail: Sequence::new(u64::from_be_bytes(
                 tail.try_into().map_err(|_| Error::NotABackup)?,
             )),
+        })
+    }
+
+    /// The three numbers naming the build that wrote the file.
+    fn writer(input: &mut impl Read) -> Result<NodeVersion> {
+        let mut raw = [0_u8; 12];
+        input.read_exact(&mut raw).map_err(|_| Error::NotABackup)?;
+        let (major, rest) = raw.split_at(4);
+        let (minor, patch) = rest.split_at(4);
+        Ok(NodeVersion {
+            major: u32::from_be_bytes(major.try_into().map_err(|_| Error::NotABackup)?),
+            minor: u32::from_be_bytes(minor.try_into().map_err(|_| Error::NotABackup)?),
+            patch: u32::from_be_bytes(patch.try_into().map_err(|_| Error::NotABackup)?),
         })
     }
 }

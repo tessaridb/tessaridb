@@ -1025,6 +1025,11 @@ impl Session<'_> {
     ) -> Result<crate::outcome::Outcome> {
         let mut plan = BTreeMap::new();
         match &select.from {
+            // One value out of `meta`, with no table, no index and no choice.
+            Source::Node => {
+                plan.insert("access".to_owned(), Value::from("record"));
+                plan.insert("source".to_owned(), Value::from("node"));
+            }
             // Straight to one record by its identity: there is nothing to choose.
             Source::Record(target) => {
                 plan.insert("access".to_owned(), Value::from("record"));

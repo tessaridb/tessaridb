@@ -67,11 +67,13 @@ PUT media:'/gone' = 'removed before the backup was taken';\n\
 DELETE media:'/gone';\n\
 DEFINE USER root ROLE owner PASSWORD 'a long one';";
 
-/// The file's own header: magic, two versions, and the two sequences it spans.
+/// The file's own header: magic, two versions, the build that wrote it, and the
+/// two sequences it spans.
 ///
 /// Named rather than spelled as a number at four call sites, because the layout
 /// is the thing these tests are about and a change to it should touch one line.
-const HEADER_LEN: usize = 8 + 1 + 1 + 8 + 8;
+/// It did: the writer's three numbers were added and this is the one line.
+const HEADER_LEN: usize = 8 + 1 + 1 + (4 + 4 + 4) + 8 + 8;
 
 /// One record's frame: its length, its sequence, and its checksum.
 const FRAME_LEN: usize = 4 + 8 + 4;
@@ -168,28 +170,84 @@ fn a_restored_store_answers_exactly_what_the_original_did() {
     }
 }
 
+/// The one key that is deliberately **not** derived from the log.
+///
+/// A node's own identity lives in `META` precisely so that it does not travel in
+/// a backup (ADR-0018 §1): a restore that carried it would hand the restored
+/// machine the original's id, and two processes would then claim to be one node.
+/// So this key is excluded from the byte-for-byte comparison below and is
+/// asserted to **differ** in a test of its own — the exception is stated twice,
+/// once as a hole and once as a claim, because a hole on its own would also
+/// cover the key going missing entirely.
+const NODE_IDENTITY_KEY: &[u8] = &[0x38];
+
 #[test]
 fn every_derived_byte_is_identical_because_it_was_derived() {
     // The claim, stated as bytes. Records, index entries, postings, the search
     // statistics, the vector graph, the catalog — none of them is in the backup,
     // and all of them come back. Anything that did not would be something this
-    // store keeps outside its log, which is the defect this test exists to find.
+    // store keeps outside its log, which is the defect this test exists to find
+    // — and the node identity is the one thing that is outside it **on purpose**.
     let (source, _held, taken) = original();
     let (target, restored) = store();
     bgv_db_backup::read(&restored, &mut taken.as_slice()).unwrap();
 
     for keyspace in Keyspace::ALL.iter().copied() {
-        let expected = dump(&source, keyspace);
-        let found = dump(&target, keyspace);
+        let expected = derived(&source, keyspace);
+        let found = derived(&target, keyspace);
         assert_eq!(
             expected.len(),
             found.len(),
-            "{keyspace:?} holds {} keys and the restore holds {}",
+            "{keyspace:?} holds {} derived keys and the restore holds {}",
             expected.len(),
             found.len()
         );
         assert_eq!(expected, found, "{keyspace:?} differs after a restore");
     }
+}
+
+/// Everything in a keyspace that the log is supposed to produce.
+fn derived(backend: &Arc<dyn KvBackend>, keyspace: Keyspace) -> Vec<(Vec<u8>, Vec<u8>)> {
+    dump(backend, keyspace)
+        .into_iter()
+        .filter(|(key, _)| key.as_slice() != NODE_IDENTITY_KEY)
+        .collect()
+}
+
+#[test]
+fn a_restore_does_not_inherit_the_original_stores_identity() {
+    // The operator's bad day, as a test: last night's backup goes onto a fresh
+    // machine to check that it restores, and both processes start. If the
+    // identity travelled in the log they would now be the same node — both
+    // heartbeating under one id, and every routing decision taken from it wrong
+    // with nothing reporting it. This is the failure the `meta`/log split exists
+    // to prevent, and it is invisible to every other test in this file, because
+    // a store replaying its own log gets its own id back and looks correct.
+    let (_, source, taken) = original();
+    let (target, restored) = store();
+    bgv_db_backup::read(&restored, &mut taken.as_slice()).unwrap();
+
+    // **Re-opened rather than asked directly.** A store resolves its identity
+    // once, at open, so the handle above is holding what it read before the
+    // restore ran — and comparing that would pass even if the restore had
+    // written the original's identity straight onto this store's disk. The
+    // question is what is *on disk* afterwards, so this asks the disk.
+    drop(restored);
+    let reopened = Store::open(Arc::clone(&target)).unwrap();
+    assert_ne!(
+        source.node_identity().id,
+        reopened.node_identity().id,
+        "the restored store inherited the original's identity"
+    );
+    // And the restore did not simply leave the fresh store without one: an
+    // absent identity would also satisfy `!=` while being a different defect.
+    assert_eq!(
+        dump(&target, Keyspace::META)
+            .iter()
+            .filter(|(key, _)| key.as_slice() == NODE_IDENTITY_KEY)
+            .count(),
+        1
+    );
 }
 
 #[test]

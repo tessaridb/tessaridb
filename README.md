@@ -494,6 +494,39 @@ deliberately not a new alerting system — a 503 is taken out of rotation by eve
 load balancer and paged on by every monitor, so the alert is the one that already
 exists rather than a second one written here and exercised never.
 
+## Which node am I talking to
+
+```
+bgv> SELECT * FROM $node;
+```
+
+```json
+{ "id": "9d3f1a…", "roles": ["serving", "writable"],
+  "membership": "alone", "version": "0.0.0", "endpoints": [] }
+```
+
+Through the ordinary read path — no new route, no endpoint, nothing a console is
+handed privately. It needs no `USE`, because a node is not in a database, and
+only an **owner** is answered: roles and endpoints are this machine's position in
+a topology, and there is no smaller truthful version of them to show somebody
+else.
+
+The **id is generated once** and survives every restart, which is what makes it
+an identity rather than a session token. It is sixteen bytes of real operating-
+system randomness, and a store whose randomness source cannot be read **refuses
+to open** rather than falling back to a clock or a process id — an id that might
+collide fails silently, and a node that will not start says so once.
+
+The **version moves**, and it is the only field here that does. It is rewritten
+whenever the binary is replaced, which gives an upgrade a moment at which it is
+visible: after the format is settled and before the store has served anything.
+That moment is where a future data migration runs, and it is the only one where
+the previous version is still readable.
+
+`roles` is a **set**, not a mode, because the real cases combine: read-only is the
+absence of `writable` rather than a flag of its own, which makes "a read-only node
+forwards writes" a rule about roles instead of a second kind of state.
+
 ## Backing up
 
 A backup of this store is its **log**, because the records, the indexes, the
@@ -542,10 +575,26 @@ so on the error stream, because a backup interrupted at record nine thousand is
 still nine thousand records and refusing it outright would throw away what
 somebody is holding in a bad week.
 
+A backup's header names the **build that wrote it**, alongside the framing and
+record-codec versions already there. Those two say how to find a record and how
+to decode one; neither says what the build that produced it *meant*. So an older
+backup restores into a newer binary and the restore reports where the file came
+from — that is the ordinary upgrade and the reason to record a version at all —
+while a file from a **newer** build is refused, because guessing at what a newer
+writer meant produces records nobody wrote, and it does it silently.
+
 **What this makes testable is worth more than the feature.** If a restored store
 differed from the original anywhere, something here would not be derived from the
 log — so the acceptance test restores a store that has exercised every engine and
 compares the two keyspace by keyspace, byte for byte.
+
+**One key is deliberately excluded from that comparison, and it is the
+interesting one.** A node's own identity is not derived from the log and does not
+travel in a backup, so a restore onto a fresh machine produces a *different*
+node. Without that, restoring last night's backup to check that it restores would
+hand the copy the original's identity, and two processes would answer to one id
+with nothing reporting it. It is asserted to differ in a test of its own, because
+a hole in a comparison would also cover the key going missing entirely.
 
 Timed on two thousand records: 0.8 ms to write, 13 ms to replay.
 

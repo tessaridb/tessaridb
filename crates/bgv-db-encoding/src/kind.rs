@@ -53,6 +53,12 @@ pub enum KeyKind {
     IdAllocator,
     /// A resumable index-backfill watermark.
     BackfillWatermark,
+    /// This node's own identity: who it is, not who else is here.
+    ///
+    /// In `META` rather than the log on purpose. A replica reaches its state by
+    /// replaying the log, so an identity that travelled in it would be inherited
+    /// by whoever restored a backup (ADR-0018 §1).
+    NodeIdentity,
 }
 
 impl KeyKind {
@@ -77,6 +83,7 @@ impl KeyKind {
         Self::IndexCatalog,
         Self::IdAllocator,
         Self::BackfillWatermark,
+        Self::NodeIdentity,
     ];
 
     /// The leading byte that identifies this kind on disk.
@@ -104,6 +111,7 @@ impl KeyKind {
             Self::IndexCatalog => 0x35,
             Self::IdAllocator => 0x36,
             Self::BackfillWatermark => 0x37,
+            Self::NodeIdentity => 0x38,
         }
     }
 
@@ -126,7 +134,8 @@ impl KeyKind {
             | Self::TableCatalog
             | Self::IndexCatalog
             | Self::IdAllocator
-            | Self::BackfillWatermark => Keyspace::META,
+            | Self::BackfillWatermark
+            | Self::NodeIdentity => Keyspace::META,
         }
     }
 
@@ -153,6 +162,7 @@ impl KeyKind {
             Self::IndexCatalog => "index-catalog",
             Self::IdAllocator => "id-allocator",
             Self::BackfillWatermark => "backfill-watermark",
+            Self::NodeIdentity => "node-identity",
         }
     }
 
@@ -228,6 +238,7 @@ mod tests {
             (KeyKind::IndexCatalog, 0x35),
             (KeyKind::IdAllocator, 0x36),
             (KeyKind::BackfillWatermark, 0x37),
+            (KeyKind::NodeIdentity, 0x38),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

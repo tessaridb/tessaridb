@@ -9,7 +9,8 @@ use std::ops::Bound;
 use std::sync::Arc;
 
 use bgv_db_encoding::{
-    AppliedPositionKey, FormatVersion, FormatVersionKey, LogKey, LogRecord, StoreKey, StoreValue,
+    AppliedPositionKey, FormatVersion, FormatVersionKey, LogKey, LogRecord, NodeIdentity, StoreKey,
+    StoreValue,
 };
 use bgv_db_kv::{KeyRange, KvBackend, ScanDirection, ScanRequest, WriteBatch};
 use bgv_db_types::Sequence;
@@ -70,6 +71,11 @@ impl Health {
 pub struct Store {
     backend: Arc<dyn KvBackend>,
     snapshots: Arc<Registry>,
+    /// Resolved once at open, because it never changes while the store is open.
+    ///
+    /// Behind an `Arc` so that cloning a store stays the pointer copy it was:
+    /// two handles to one store are not two nodes.
+    identity: Arc<NodeIdentity>,
 }
 
 impl Store {
@@ -84,15 +90,31 @@ impl Store {
     /// Returns an error when the backend fails, when the stored metadata cannot
     /// be decoded, or when the on-disk format is newer than this build.
     pub fn open(backend: Arc<dyn KvBackend>) -> Result<Self> {
-        let store = Self {
+        // The format is settled before anything else is written, the node
+        // identity included: a store this build is about to refuse must not be
+        // modified on the way to refusing it.
+        match read_format_version(&backend)? {
+            Some(found) => found.check_supported()?,
+            None => write_initial_metadata(&backend)?,
+        }
+        let identity = crate::node::ensure(&backend)?;
+        Ok(Self {
             backend,
             snapshots: Arc::new(Registry::default()),
-        };
-        match store.read_format_version()? {
-            Some(found) => found.check_supported()?,
-            None => store.write_initial_metadata()?,
-        }
-        Ok(store)
+            identity,
+        })
+    }
+
+    /// Who this node is.
+    ///
+    /// Generated once into the `META` keyspace and stable across restarts, so an
+    /// id that changed would be a session token rather than an identity. It is
+    /// not in the log and therefore not in a backup — a restore onto a fresh
+    /// store produces a different node, which is the whole point of the split
+    /// (ADR-0018 §1).
+    #[must_use]
+    pub fn node_identity(&self) -> &NodeIdentity {
+        &self.identity
     }
 
     /// Begin a transaction at the current committed tail.
@@ -307,38 +329,43 @@ impl Store {
     pub(crate) fn backend(&self) -> &Arc<dyn KvBackend> {
         &self.backend
     }
+}
 
-    fn read_format_version(&self) -> Result<Option<FormatVersion>> {
-        let key = FormatVersionKey.encode();
-        let stored = self.backend.get(FormatVersionKey::keyspace(), &key)?;
-        match stored {
-            Some(value) => Ok(Some(FormatVersion::decode(value.as_slice())?)),
-            None => Ok(None),
-        }
+/// The format this store was written in, if it has been written at all.
+///
+/// A free function rather than a method because it runs before the store
+/// exists: `open` settles the format before it resolves the node identity, and
+/// the identity is one of the store's own fields.
+fn read_format_version(backend: &Arc<dyn KvBackend>) -> Result<Option<FormatVersion>> {
+    let key = FormatVersionKey.encode();
+    let stored = backend.get(FormatVersionKey::keyspace(), &key)?;
+    match stored {
+        Some(value) => Ok(Some(FormatVersion::decode(value.as_slice())?)),
+        None => Ok(None),
     }
+}
 
-    /// Write the metadata a fresh store needs, refusing if someone raced us.
-    ///
-    /// The `Absent` precondition is what makes two processes opening the same
-    /// new store safe: exactly one of them writes the metadata.
-    fn write_initial_metadata(&self) -> Result<()> {
-        let format_key = FormatVersionKey.encode();
-        let applied_key = AppliedPositionKey.encode();
-        let batch = WriteBatch::new()
-            .expect_absent(FormatVersionKey::keyspace(), format_key.clone())
-            .put(
-                FormatVersionKey::keyspace(),
-                format_key,
-                FormatVersion::CURRENT.encode(),
-            )
-            .put(
-                AppliedPositionKey::keyspace(),
-                applied_key,
-                Sequence::ZERO.encode(),
-            );
-        self.backend.apply(batch)?;
-        Ok(())
-    }
+/// Write the metadata a fresh store needs, refusing if someone raced us.
+///
+/// The `Absent` precondition is what makes two processes opening the same
+/// new store safe: exactly one of them writes the metadata.
+fn write_initial_metadata(backend: &Arc<dyn KvBackend>) -> Result<()> {
+    let format_key = FormatVersionKey.encode();
+    let applied_key = AppliedPositionKey.encode();
+    let batch = WriteBatch::new()
+        .expect_absent(FormatVersionKey::keyspace(), format_key.clone())
+        .put(
+            FormatVersionKey::keyspace(),
+            format_key,
+            FormatVersion::CURRENT.encode(),
+        )
+        .put(
+            AppliedPositionKey::keyspace(),
+            applied_key,
+            Sequence::ZERO.encode(),
+        );
+    backend.apply(batch)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -360,7 +387,7 @@ mod tests {
         let store = Store::open(backend()).unwrap();
         assert_eq!(store.committed_tail().unwrap(), Sequence::ZERO);
         assert_eq!(
-            store.read_format_version().unwrap(),
+            read_format_version(store.backend()).unwrap(),
             Some(FormatVersion::CURRENT)
         );
     }
@@ -372,7 +399,7 @@ mod tests {
         drop(first);
         let second = Store::open(shared).unwrap();
         assert_eq!(
-            second.read_format_version().unwrap(),
+            read_format_version(second.backend()).unwrap(),
             Some(FormatVersion::CURRENT)
         );
     }

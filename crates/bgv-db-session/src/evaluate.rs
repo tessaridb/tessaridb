@@ -13,7 +13,7 @@ use bgv_db_ql::{
     BinaryOp, Direction, Expr, ExprKind, Function, Hop, Projected, Projection, RecordTarget,
     Select, Source, Span, TableRef,
 };
-use bgv_db_storage::{Catalog, RecordAddress, Transaction};
+use bgv_db_storage::{Catalog, RecordAddress, Store, Transaction};
 use bgv_db_types::{
     Analyzer, Number, Path, RecordId, RecordRef, TableId, Value, ValueRange, apply,
 };
@@ -561,6 +561,14 @@ impl Session<'_> {
         select: &'a Select,
     ) -> Result<(Prepared<'a>, Searched)> {
         match &select.from {
+            // Resolved from `meta` rather than read from a table, because that
+            // is where it is: the identity is deliberately outside the log
+            // (ADR-0018 §1). It needs no tenancy, so `$node` answers without a
+            // `USE` — a node is not in a database.
+            Source::Node => Ok((
+                Prepared::Held(vec![node_row(self.store)], AccessPath::Record),
+                Searched::default(),
+            )),
             Source::Record(target) => {
                 let (_, address) = self.address(transaction, target)?;
                 let visible = self.visible_in(transaction, address.table)?;
@@ -1349,7 +1357,11 @@ impl Session<'_> {
     /// rather than the number of rows that happened to match.
     fn read_as_value(&self, transaction: &mut Transaction<'_>, select: &Select) -> Result<Value> {
         let (records, _) = self.read(transaction, select)?;
-        if matches!(select.from, Source::Record(_)) {
+        // `$node` alongside `Source::Record` because it is one record too: a
+        // read of one answers with its own value, and wrapping it in an array of
+        // one would make the shape of the answer follow the source rather than
+        // the question.
+        if matches!(select.from, Source::Record(_) | Source::Node) {
             return Ok(records
                 .into_iter()
                 .next()
@@ -1435,6 +1447,48 @@ enum Prepared<'a> {
     /// barrier in its own right — a join builds a map of one side — so producing
     /// lazily would move the materialisation rather than remove it.
     Held(Vec<(RecordId, Value)>, AccessPath),
+}
+
+/// This node, as the one record `$node` answers.
+///
+/// The id sits beside the value rather than inside it, which is where a record's
+/// id sits everywhere else in this store — so a caller reads it the same way it
+/// reads any other answer, and no projection has to learn a special field.
+fn node_row(store: &Store) -> (RecordId, Value) {
+    let identity = store.node_identity();
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        "roles".to_owned(),
+        Value::Array(
+            identity
+                .roles
+                .names()
+                .into_iter()
+                .map(Value::from)
+                .collect(),
+        ),
+    );
+    fields.insert(
+        "membership".to_owned(),
+        Value::from(identity.membership.name()),
+    );
+    // The one field here that moves. A caller asking what a node is running is
+    // asking the same question an upgrade asks, and this is where both look.
+    fields.insert(
+        "version".to_owned(),
+        Value::from(identity.version.to_string().as_str()),
+    );
+    fields.insert(
+        "endpoints".to_owned(),
+        Value::Array(
+            identity
+                .endpoints
+                .iter()
+                .map(|endpoint| Value::from(endpoint.as_str()))
+                .collect(),
+        ),
+    );
+    (identity.record_id(), Value::Object(fields))
 }
 
 /// Hand a collection to the consumer, stopping where it says to.

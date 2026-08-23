@@ -123,7 +123,7 @@ fn versions_and_the_committed_position_come_back_together_after_a_reopen() {
 fn a_log_replayed_between_two_stores_on_disk_reproduces_them_byte_for_byte() {
     // The log lives above the substrate, not inside a backend. This is what
     // that claim costs to verify: the same replay, on the durable engine.
-    use bgv_db_kv::{KeyRange, Keyspace, ScanRequest};
+    use bgv_db_kv::{Key, KeyRange, Keyspace, ScanRequest};
     use bgv_db_types::Sequence;
 
     let root = tempfile::tempdir().unwrap();
@@ -154,14 +154,34 @@ fn a_log_replayed_between_two_stores_on_disk_reproduces_them_byte_for_byte() {
         replica.apply_record(sequence, &record).unwrap();
     }
 
+    // The node identity is the one key a replay must **not** reproduce. It lives
+    // in `META` precisely so that it does not travel (ADR-0018 §1): a replica
+    // that came up holding the source's id would be a second process claiming
+    // one identity, which is the failure that split exists to prevent. So it is
+    // excluded here and asserted to differ below — a hole on its own would also
+    // cover the key going missing entirely.
+    let node_identity = Key::from(vec![0x38]);
     for keyspace in Keyspace::ALL {
         let request = ScanRequest::new(*keyspace, KeyRange::all());
+        let derived = |backend: &Arc<dyn KvBackend>| {
+            backend
+                .scan(&request)
+                .unwrap()
+                .into_iter()
+                .filter(|(key, _)| *key != node_identity)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            source_backend.scan(&request).unwrap(),
-            replica_backend.scan(&request).unwrap(),
+            derived(&source_backend),
+            derived(&replica_backend),
             "keyspace {keyspace} differs after replay onto disk"
         );
     }
+    assert_ne!(
+        source.node_identity().id,
+        replica.node_identity().id,
+        "the replica came up holding the source's identity"
+    );
 }
 
 #[test]

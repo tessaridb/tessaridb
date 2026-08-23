@@ -114,6 +114,13 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
 /// The tables a read's source names.
 fn in_source(select: &Select) -> Vec<&TableRef> {
     match &select.from {
+        // **No table, and that emptiness is the `BACKUP` shape** — a loop
+        // reading "every table it names is granted" passes over an empty list
+        // for a reason that has nothing to do with permission. So this one is
+        // not governed here at all: `Needs::of` classifies it `Administer`
+        // before this list is consulted, and `within_grants` refuses a
+        // grant-governed user by role rather than by an empty answer.
+        Source::Node => Vec::new(),
         Source::Record(target) => vec![&target.table],
         Source::Table(table) | Source::Where { table, .. } => vec![table],
         // **Every** table in the chain counts, not only the first and the last.
