@@ -25,6 +25,7 @@ bgv-db = { path = "crates/bgv-db" }
 bgv-db-backup = { path = "crates/bgv-db-backup" }
 bgv-db-wire = { path = "crates/bgv-db-wire" }
 bgv-db-http = { path = "crates/bgv-db-http" }
+bgv-db-serve = { path = "crates/bgv-db-serve" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

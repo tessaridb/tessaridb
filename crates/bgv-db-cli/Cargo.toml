@@ -17,6 +17,10 @@ path = "src/main.rs"
 bgv-db.workspace = true
 bgv-db-backup.workspace = true
 bgv-db-http.workspace = true
+bgv-db-serve.workspace = true
+# Installing a signal handler is not expressible in safe Rust and `std` has no
+# signal API. Already in the tree through the engine, so this costs no crate.
+libc = "0.2"
 bgv-db-ql.workspace = true
 bgv-db-storage.workspace = true
 bgv-db-types.workspace = true

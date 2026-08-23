@@ -101,10 +101,12 @@ dependencies = [
  "bgv-db-http",
  "bgv-db-kv",
  "bgv-db-ql",
+ "bgv-db-serve",
  "bgv-db-session",
  "bgv-db-storage",
  "bgv-db-types",
  "bgv-db-wire",
+ "libc",
  "rust_decimal",
  "tempfile",
 ]
@@ -142,6 +144,7 @@ dependencies = [
  "bgv-db",
  "bgv-db-backup",
  "bgv-db-kv",
+ "bgv-db-serve",
  "bgv-db-storage",
  "bgv-db-types",
  "thiserror",
@@ -175,6 +178,10 @@ dependencies = [
  "rust_decimal",
  "thiserror",
 ]
+
+[[package]]
+name = "bgv-db-serve"
+version = "0.0.0"
 
 [[package]]
 name = "bgv-db-session"
@@ -218,6 +225,7 @@ version = "0.0.0"
 dependencies = [
  "bgv-db",
  "bgv-db-encoding",
+ "bgv-db-serve",
  "bgv-db-types",
  "rust_decimal",
  "thiserror",

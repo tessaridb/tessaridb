@@ -321,6 +321,28 @@ opened is worse than one that was refused — nothing tells you which happened.
 library is a large surface to take for a convenience, so `.help` says so rather
 than leaving it to be found by pressing up.
 
+## Stopping it
+
+`SIGTERM` or `SIGINT`, and it stops in stages:
+
+1. every surface stops accepting new connections,
+2. requests already in flight are given up to twenty seconds to finish,
+3. subscriptions are ended — after the drain, because they never end on their
+   own and waiting for one in step 2 would mean the drain never completes,
+4. the store is closed, which flushes it and releases the file lock.
+
+**A second signal exits immediately**, so a drain that hangs is not a trap.
+
+New work is refused *before* existing work is interrupted, which is the whole
+point of the order: a client mid-request is not punished for a deployment. A
+subscriber loses nothing either way — its cursor is a position it holds, so it
+reconnects exactly where it stopped.
+
+**It does not detach.** No fork, no pidfile. A database that daemonises itself
+fights its supervisor: `systemd` loses readiness detection and the main PID,
+Docker's PID 1 exits and takes the container with it, and Kubernetes reads that
+as a crash loop. Run it in the foreground and let the supervisor supervise.
+
 ## Is it well
 
 ```

@@ -1,0 +1,15 @@
+[package]
+name = "bgv-db-serve"
+description = "Stopping a serving process: what is still in flight, and when it is safe to close the store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

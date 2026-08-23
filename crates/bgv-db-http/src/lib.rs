@@ -42,6 +42,7 @@ mod respond;
 use std::sync::Arc;
 
 use bgv_db::Db;
+use bgv_db_serve::Stopping;
 use tiny_http::{Method, Request, Response, Server};
 
 pub use respond::Answer;
@@ -49,7 +50,29 @@ pub use respond::Answer;
 /// A node listening for HTTP requests.
 pub struct Node {
     db: Arc<Db>,
-    server: Server,
+    server: Arc<Server>,
+    stopping: Arc<Stopping>,
+}
+
+/// What ends a node's accept loop from another thread.
+///
+/// Separate from [`Stopping`] because the two answer different questions:
+/// `Stopping` is the shared *intent* every surface reads, and this is the one
+/// mechanical act only this surface can perform. It also keeps `tiny_http` out
+/// of the caller's vocabulary — a caller holding the server directly would be
+/// holding this crate's dependency.
+pub struct Halt {
+    server: Arc<Server>,
+}
+
+impl Halt {
+    /// Wake the accept loop so it can see that stopping was asked for.
+    ///
+    /// Ordering matters and belongs to the caller: set the intent **first**,
+    /// then call this, or the loop can find nothing set and block again.
+    pub fn wake(&self) {
+        self.server.unblock();
+    }
 }
 
 impl Node {
@@ -64,7 +87,8 @@ impl Node {
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         Ok(Self {
             db,
-            server: Server::http(address)?,
+            server: Arc::new(Server::http(address)?),
+            stopping: Stopping::new(),
         })
     }
 
@@ -78,6 +102,23 @@ impl Node {
             .map_or_else(|| "unknown".to_owned(), |found| found.to_string())
     }
 
+    /// What this node counts as in flight, and how it is told to stop.
+    ///
+    /// Taken **before** [`Node::serve`], which borrows the node for as long as
+    /// it runs.
+    #[must_use]
+    pub fn stopping(&self) -> Arc<Stopping> {
+        Arc::clone(&self.stopping)
+    }
+
+    /// The handle that ends this node's accept loop.
+    #[must_use]
+    pub fn halt(&self) -> Halt {
+        Halt {
+            server: Arc::clone(&self.server),
+        }
+    }
+
     /// Serve requests until the process ends.
     ///
     /// Each request is handled on its own thread and in its own session: no
@@ -86,10 +127,18 @@ impl Node {
     /// authentication's problem rather than something to invent half of here.
     pub fn serve(&self) {
         for request in self.server.incoming_requests() {
+            if self.stopping.asked() {
+                break;
+            }
             let db = Arc::clone(&self.db);
+            // Counted before the thread starts, not inside it: a shutdown that
+            // began between the accept and the spawn would otherwise drain to
+            // zero while this request had not started.
+            let busy = self.stopping.busy();
             // A panic in one request must not take the listener with it, and a
             // thread is what gives that for free.
             std::thread::spawn(move || {
+                let _busy = busy;
                 answer(&db, request);
             });
         }
@@ -102,6 +151,7 @@ impl Node {
     /// Returns an error when the listener fails.
     pub fn serve_one(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let request = self.server.recv()?;
+        let _busy = self.stopping.busy();
         answer(&self.db, request);
         Ok(())
     }

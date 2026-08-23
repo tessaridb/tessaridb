@@ -172,6 +172,84 @@ fn one_process_answers_on_both_surfaces_over_one_store() {
 }
 
 #[test]
+fn a_stopping_node_refuses_a_new_connection_and_finishes_the_store() {
+    // The claim is *ordered*, not "the process ends" — a test that only asserted
+    // termination would pass against `abort()`, which is the opposite of a
+    // graceful shutdown. So: the port stops answering, and what was acknowledged
+    // before the signal is still there when the store is reopened, which is what
+    // "it closed the store rather than being killed mid-write" means.
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let wire = "127.0.0.1:47841";
+    let http = "127.0.0.1:47842";
+
+    let node = serving_both(&path, wire, http);
+    {
+        let mut client = Client::connect(wire).unwrap();
+        client
+            .run(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
+                 DEFINE DATABASE orders; USE DATABASE orders; \
+                 DEFINE TABLE users; CREATE users:1 = { who: 'ada' };",
+                None,
+            )
+            .unwrap();
+    }
+
+    // A real signal to a real child, which is the trigger an operator uses.
+    // Sending one to this process instead would end the test harness.
+    let signalled = Command::new("kill")
+        .args(["-TERM", &node.0.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(signalled.success(), "the signal was not delivered");
+
+    // Both ports stop answering. Polled rather than assumed immediate: the
+    // stages run in order and the port closes when stage 1 reaches it, not when
+    // the signal lands.
+    assert!(
+        stopped(wire, Duration::from_secs(20)),
+        "the wire protocol went on accepting connections after being told to stop"
+    );
+    assert!(
+        stopped(http, Duration::from_secs(20)),
+        "http went on accepting connections after being told to stop"
+    );
+
+    // And it let go of the store rather than dying holding it: a second process
+    // opens the same files and finds what the first acknowledged. A node killed
+    // mid-shutdown would still pass the port checks above.
+    drop(node);
+    let reopened = serving_both(&path, wire, http);
+    {
+        let mut client = Client::connect(wire).unwrap();
+        let answers = client
+            .run(
+                "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users;",
+                None,
+            )
+            .unwrap();
+        let Answer::Records { records, .. } = &answers[2] else {
+            panic!("not records: {:?}", answers[2]);
+        };
+        assert_eq!(records.len(), 1, "the store did not come back intact");
+    }
+    drop(reopened);
+}
+
+/// Wait for the node to stop accepting connections, or say it never did.
+fn stopped(address: &str, patience: Duration) -> bool {
+    let began = Instant::now();
+    while began.elapsed() < patience {
+        if TcpStream::connect(address).is_err() {
+            return true;
+        }
+        std::thread::yield_now();
+    }
+    false
+}
+
+#[test]
 fn the_node_is_a_process_that_survives_being_killed() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("store");

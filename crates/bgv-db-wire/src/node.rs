@@ -8,6 +8,7 @@ use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Condvar, Mutex};
 
 use bgv_db::{DatabaseId, Db, NamespaceId, Sequence, Watch};
+use bgv_db_serve::{Busy, Stopping};
 
 use crate::error::{Error, Result};
 use crate::message::Request;
@@ -19,6 +20,7 @@ pub struct Node {
     listener: TcpListener,
     db: Arc<Db>,
     committed: Arc<Commits>,
+    stopping: Arc<Stopping>,
 }
 
 /// The signal that a commit happened, and nothing else.
@@ -76,6 +78,7 @@ impl Node {
             listener: TcpListener::bind(address)?,
             db,
             committed: Arc::new(Commits::default()),
+            stopping: Stopping::new(),
         })
     }
 
@@ -88,20 +91,45 @@ impl Node {
         Ok(self.listener.local_addr()?.to_string())
     }
 
-    /// Serve until the listener fails.
+    /// What this node counts as in flight, and how it is told to stop.
+    ///
+    /// Taken **before** [`Node::serve`], which consumes the node's borrow for
+    /// as long as it runs: a caller that waited until afterwards would be asking
+    /// a node that has already stopped.
+    #[must_use]
+    pub fn stopping(&self) -> Arc<Stopping> {
+        Arc::clone(&self.stopping)
+    }
+
+    /// Serve until the listener fails, or until stopping is asked for.
     ///
     /// One thread per connection — see the module documentation for why that is
     /// the decision rather than the shortfall.
+    ///
+    /// # Ending it
+    ///
+    /// `accept` blocks, and setting the flag does not wake it. A `TcpListener`
+    /// has no equivalent of an unblock, so whoever asks this node to stop makes
+    /// one throwaway connection to the address it printed — that connection is
+    /// accepted, the loop checks the flag before serving it, and both end. The
+    /// flag is set **first** or the loop can check it and block again, which is
+    /// the race this ordering exists to avoid.
     pub fn serve(&self) {
         for stream in self.listener.incoming() {
+            if self.stopping.asked() {
+                break;
+            }
             let Ok(stream) = stream else { continue };
             let db = Arc::clone(&self.db);
             let committed = Arc::clone(&self.committed);
+            let stopping = Arc::clone(&self.stopping);
+            let busy = self.stopping.busy();
             // A connection that goes wrong takes its own thread down and nothing
             // else: a node that could be stopped by one client's malformed frame
             // would be a node anybody can stop.
             drop(std::thread::spawn(move || {
-                drop(converse(&db, &committed, stream));
+                let mut busy = busy;
+                drop(converse(&db, &committed, &stopping, &mut busy, stream));
             }));
         }
     }
@@ -113,7 +141,8 @@ impl Node {
     /// Returns the failure that ended the conversation.
     pub fn serve_one(&self) -> Result<()> {
         let (stream, _) = self.listener.accept()?;
-        converse(&self.db, &self.committed, stream)
+        let mut busy = self.stopping.busy();
+        converse(&self.db, &self.committed, &self.stopping, &mut busy, stream)
     }
 }
 
@@ -131,7 +160,13 @@ impl Node {
 /// It also gives the thread-per-connection cost something to buy. A thread here
 /// holds state a request cannot carry, which is the difference between a
 /// connection and a datagram.
-fn converse(db: &Db, committed: &Commits, stream: TcpStream) -> Result<()> {
+fn converse(
+    db: &Db,
+    committed: &Commits,
+    stopping: &Stopping,
+    busy: &mut Busy,
+    stream: TcpStream,
+) -> Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
     {
@@ -150,9 +185,15 @@ fn converse(db: &Db, committed: &Commits, stream: TcpStream) -> Result<()> {
         if kind == frame::Kind::Subscribe {
             // The connection stops being a conversation and becomes a feed. See
             // `push.rs` for why one connection does one job.
+            // No longer a request. A subscription never ends on its own, so a
+            // shutdown that waited for it would always time out — moving it to
+            // the feed count is what lets the drain finish and the stage after
+            // it end the feeds deliberately.
+            busy.became_a_feed();
             return follow(
                 db,
                 committed,
+                stopping,
                 &session,
                 &mut writer,
                 &Follow::decode(&body)?,
@@ -240,6 +281,7 @@ fn converse(db: &Db, committed: &Commits, stream: TcpStream) -> Result<()> {
 fn follow(
     db: &Db,
     committed: &Commits,
+    stopping: &Stopping,
     session: &bgv_db::Session<'_>,
     writer: &mut BufWriter<TcpStream>,
     asked: &Follow,
@@ -295,6 +337,15 @@ fn follow(
     let mut subscription = Db::subscribe(Sequence::new(asked.from), watch);
     let mut seen = 0;
     loop {
+        // Stage 3 of a staged shutdown reaches a feed here. A pusher spends its
+        // life blocked in `wait` below, which returns after `PATIENCE` whether
+        // or not anything happened — so the flag is noticed within that, and a
+        // subscription ends by its own loop rather than by its socket being
+        // taken from under it. What a subscriber loses is nothing: the cursor
+        // is a position it holds, so it resumes exactly where it stopped.
+        if stopping.asked() {
+            return Ok(());
+        }
         let changes = db
             .poll(&mut subscription, MOUTHFUL)
             .map_err(|failure| Error::Refused {

@@ -35,6 +35,7 @@
 mod arguments;
 mod render;
 mod session;
+mod shutdown;
 mod store;
 
 use std::env;
@@ -205,20 +206,62 @@ fn serve(db: Db, serving: &Serving) -> Result<Ended, String> {
     }
     eprintln!("bgv — there is no TLS, so trust the network");
 
+    // What the stages will act on, taken before either surface starts serving:
+    // `serve` borrows its node for as long as it runs, so a caller that asked
+    // afterwards would be asking a node that had already stopped.
+    let mut surfaces = Vec::new();
+    if let Some(node) = &wire {
+        let bound = node.address().map_err(|failure| failure.to_string())?;
+        surfaces.push(shutdown::Surface {
+            name: "the wire protocol",
+            stopping: node.stopping(),
+            // A `TcpListener` has no unblock. One throwaway connection is
+            // accepted, the loop checks the flag before serving it, and both
+            // end. Its failure is ignored on purpose: a listener that has
+            // already stopped is the outcome this was asking for.
+            wake: Box::new(move || drop(std::net::TcpStream::connect(&bound))),
+        });
+    }
+    if let Some(node) = &http {
+        let halt = node.halt();
+        surfaces.push(shutdown::Surface {
+            name: "http",
+            stopping: node.stopping(),
+            wake: Box::new(move || halt.wake()),
+        });
+    }
+
+    // Asked for before anything serves, so a signal arriving during startup is
+    // counted rather than killing the process where it stands.
+    shutdown::listen();
+
     match (wire, http) {
         // A thread for one and this thread for the other: two listeners, one
-        // store, and no runtime to hold them.
+        // store, and no runtime to hold them. The watcher is a third, and it is
+        // what turns a signal into the stages.
         (Some(wire), Some(http)) => std::thread::scope(|scope| {
+            scope.spawn(|| shutdown::watch(&surfaces));
             scope.spawn(|| http.serve());
             wire.serve();
         }),
-        (Some(wire), None) => wire.serve(),
-        (None, Some(http)) => http.serve(),
+        (Some(wire), None) => std::thread::scope(|scope| {
+            scope.spawn(|| shutdown::watch(&surfaces));
+            wire.serve();
+        }),
+        (None, Some(http)) => std::thread::scope(|scope| {
+            scope.spawn(|| shutdown::watch(&surfaces));
+            http.serve();
+        }),
         // Unreachable through the parser, which sets `Source::Serve` only when
         // an address was given — said here rather than assumed, because the two
         // are far enough apart to drift.
         (None, None) => return Err("--serve or --http wants an address".to_owned()),
     }
+    // Stage 4. Dropping the store is what flushes it and releases the file
+    // lock, and it happens here rather than in the stages because this is what
+    // owns it — the stages know about surfaces, not about a store.
+    drop(db);
+    eprintln!("bgv — stopped");
     Ok(Ended::Fine)
 }
 

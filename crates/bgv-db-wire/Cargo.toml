@@ -11,6 +11,7 @@ publish.workspace = true
 
 [dependencies]
 bgv-db.workspace = true
+bgv-db-serve.workspace = true
 bgv-db-encoding.workspace = true
 bgv-db-types.workspace = true
 thiserror.workspace = true
