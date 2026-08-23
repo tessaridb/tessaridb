@@ -9,6 +9,13 @@ authors.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# On by default, because a database with no interface is the case that needs one
+# most — an operator with no route out gets nothing otherwise. Off costs the
+# binary nothing but the console's bytes, which is why the switch exists at all.
+default = ["console"]
+console = []
+
 [dependencies]
 bgv-db.workspace = true
 bgv-db-constants.workspace = true

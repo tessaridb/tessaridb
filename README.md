@@ -225,6 +225,38 @@ An upgraded socket is counted as a **feed** rather than a request, so a shutdown
 drains what will finish and ends what will not, instead of waiting its full
 deadline for a connection that was never going to close on its own.
 
+### A console at `/`, served by the node itself
+
+`GET /` is a page that runs bgvQL and watches a table. It is **in the binary**,
+not a redirect to something hosted: a node on a private subnet, in a datacentre
+with no route out, or on a laptop on a plane is exactly the case that most needs
+an interface, and it is the case a redirect leaves with nothing.
+
+So the page reaches nothing but the node serving it. No framework, no CDN, no web
+font — a single remote reference would quietly take that property away, which is
+why a test reads the served bytes and requires every URL in them to be
+same-origin and answerable by this process.
+
+It is a **client like any other**, with no route of its own: it runs scripts
+through `POST /script` and follows changes through the `/watch` socket described
+above, signing in with the same credentials `curl` would use. Anything the
+console can do, a `curl` can do — and if a console feature ever cannot be
+expressed against the public API, the API is missing something.
+
+The console is a default-on Cargo feature. A size-sensitive build turns it off
+and carries none of its bytes:
+
+```sh
+cargo build -p bgv-db-http --no-default-features   # `/` answers 404
+```
+
+Two things at v1, because they are the two worth having: run a script and read
+the answer, follow a table and watch changes arrive. Values are rendered as text
+and never as markup, so a record that happens to hold a `<script>` tag is data.
+Credentials travel in the clear here exactly as they do on every other route —
+this store has no TLS and belongs on a network you protect — and the page says so
+rather than leaving it to be discovered.
+
 ## Talking to one over the wire
 
 ```rust

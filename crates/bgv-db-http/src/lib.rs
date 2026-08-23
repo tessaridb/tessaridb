@@ -35,6 +35,21 @@
 #![forbid(unsafe_code)]
 
 mod basic;
+#[cfg(feature = "console")]
+mod console;
+/// Without the `console` feature the binary carries none of the console's bytes,
+/// so every path it would have served falls through to the ordinary 404 — which
+/// is exactly how a build that does not want a console is meant to answer.
+#[cfg(not(feature = "console"))]
+mod console {
+    use tiny_http::Method;
+
+    use crate::respond::Answer;
+
+    pub(crate) const fn asset(_method: &Method, _path: &str) -> Option<Answer> {
+        None
+    }
+}
 mod json;
 mod object;
 mod request;
@@ -294,7 +309,11 @@ fn answer(
                     r#"{"error":"that route takes another method"}"#.to_owned(),
                 ),
             },
-            None => Answer::new(404, r#"{"error":"no such route"}"#.to_owned()),
+            // Last, and deliberately so: the console never shadows a route, it
+            // only fills paths nothing else claimed. With the feature off there
+            // is nothing to fill them with and this is the ordinary 404.
+            None => console::asset(method, url)
+                .unwrap_or_else(|| Answer::new(404, r#"{"error":"no such route"}"#.to_owned())),
         },
     };
 
