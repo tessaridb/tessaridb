@@ -277,6 +277,9 @@ echo 'SELECT * FROM users;' | bgv ./data
 
 bgv ./data --serve 127.0.0.1:9080      be a node
 bgv --at 127.0.0.1:9080                a prompt against one
+
+bgv ./data --serve 127.0.0.1:9080 --http 127.0.0.1:8000
+                                       one process, both surfaces, one store
 ```
 
 ```
@@ -307,6 +310,12 @@ from an argument, which the process table publishes and the shell history keeps.
 `--backup`, `--restore`, `--health` and `--serve` work on a store this process
 opened, so asking for one over an address is refused rather than quietly run
 against a different store.
+
+`--serve` and `--http` name **one address each** rather than sharing one, so a
+single process holds whichever subset you ask for and both listen over the same
+store. Either may be given alone. An address handed to something that is not
+serving is refused rather than ignored, because a port that was named and never
+opened is worse than one that was refused — nothing tells you which happened.
 
 **There is no line editing or history** — both mean a dependency, and a terminal
 library is a large surface to take for a convenience, so `.help` says so rather

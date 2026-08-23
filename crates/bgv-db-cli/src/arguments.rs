@@ -21,6 +21,8 @@ usage: bgv [<path> | --at <host:port>] [-e <script> | -f <file>]
   --user <name>   sign in as this user; the password comes from BGV_PASSWORD,
                   never from an argument, which the process table would publish
   --serve <host:port> serve this store over the wire protocol until stopped
+  --http <host:port> serve this store over HTTP until stopped; may accompany
+                  --serve, and one process then holds both
   --param <name>=<value> bind $name to <value>, written as bgvQL; repeatable
   -e <script>     run this and exit
   -f <file>       run this file and exit
@@ -61,6 +63,30 @@ pub struct Asked {
     /// position in the log — and which one it means is decided by the source it
     /// accompanies, which the parser has already refused to make ambiguous.
     pub at_sequence: Option<u64>,
+    /// The addresses to serve on, when `Source::Serve` was asked for.
+    pub serving: Serving,
+}
+
+/// Where a serving process listens.
+///
+/// One field per surface rather than one address, because a process holds every
+/// surface and any subset of them may be absent. The previous shape — a single
+/// address carried by the source — is what made two surfaces unaskable: not the
+/// implementation, the grammar.
+#[derive(Debug, Default)]
+pub struct Serving {
+    /// The wire protocol: framed TCP carrying values in the store's own codec.
+    pub wire: Option<String>,
+    /// HTTP.
+    pub http: Option<String>,
+}
+
+impl Serving {
+    /// Whether any surface was asked for.
+    #[must_use]
+    pub const fn asked(&self) -> bool {
+        self.wire.is_some() || self.http.is_some()
+    }
 }
 
 /// Where the statements come from, or what else was asked for.
@@ -83,8 +109,8 @@ pub enum Source {
     /// Needs no store, which is the point: a backup that can only be checked by
     /// restoring it is a backup nobody checks.
     Verify(PathBuf),
-    /// Serve this store over the wire protocol.
-    Serve(String),
+    /// Serve this store, on whichever surfaces `Asked::serving` names.
+    Serve,
 }
 
 /// Read the arguments, refusing anything unrecognised.
@@ -97,6 +123,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     let mut at = None;
     let mut user = None;
     let mut source = Source::Standard;
+    let mut serving = Serving::default();
     let mut parameters = Parameters::new();
     let mut sequence = None;
     let mut arguments = arguments;
@@ -161,7 +188,15 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                 let address = arguments
                     .next()
                     .ok_or_else(|| "--serve wants a host:port".to_owned())?;
-                source = Source::Serve(address);
+                serving.wire = Some(address);
+                source = Source::Serve;
+            }
+            "--http" => {
+                let address = arguments
+                    .next()
+                    .ok_or_else(|| "--http wants a host:port".to_owned())?;
+                serving.http = Some(address);
+                source = Source::Serve;
             }
             "--restore" => {
                 let path = arguments
@@ -195,7 +230,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
             Source::Backup(_) => Some("--backup"),
             Source::Restore(_) => Some("--restore"),
             Source::Health => Some("--health"),
-            Source::Serve(_) => Some("--serve"),
+            Source::Serve => Some("--serve"),
             Source::Verify(_) => Some("--verify"),
             Source::Standard | Source::Inline(_) | Source::File(_) => None,
         };
@@ -212,7 +247,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
         Source::Backup(_) => Some("--backup"),
         Source::Restore(_) => Some("--restore"),
         Source::Health => Some("--health"),
-        Source::Serve(_) => Some("--serve"),
+        Source::Serve => Some("--serve"),
         Source::Verify(_) => Some("--verify"),
         Source::Standard | Source::Inline(_) | Source::File(_) => None,
     };
@@ -230,6 +265,13 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     if sequence.is_some() && !matches!(source, Source::Backup(_) | Source::Restore(_)) {
         return Err("--from bounds a --backup and --upto bounds a --restore".to_owned());
     }
+    // An address given alongside something that is not serving would be read,
+    // accepted, and never listened on. Refused for the reason the rest of this
+    // module refuses: a value silently dropped is a value somebody believes was
+    // used, and here what they believe is that a port is open.
+    if serving.asked() && !matches!(source, Source::Serve) {
+        return Err("an address to serve on and something else to do are two programs".to_owned());
+    }
     Ok(Asked {
         store,
         at,
@@ -237,6 +279,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
         source,
         parameters,
         at_sequence: sequence,
+        serving,
     })
 }
 
@@ -386,13 +429,45 @@ mod tests {
 
     #[test]
     fn serving_takes_an_address_of_its_own() {
-        assert!(matches!(
-            asked(&["./data", "--serve", "0.0.0.0:7654"])
-                .expect("an address")
-                .source,
-            Source::Serve(_)
-        ));
+        let held = asked(&["./data", "--serve", "0.0.0.0:7654"]).expect("an address");
+        assert!(matches!(held.source, Source::Serve));
+        assert_eq!(held.serving.wire.as_deref(), Some("0.0.0.0:7654"));
+        assert_eq!(held.serving.http, None);
         assert!(asked(&["--serve"]).is_err());
+    }
+
+    #[test]
+    fn each_surface_takes_its_own_address_and_they_may_be_asked_for_together() {
+        let held = asked(&[
+            "./data",
+            "--serve",
+            "0.0.0.0:7654",
+            "--http",
+            "127.0.0.1:8000",
+        ])
+        .expect("two addresses");
+        assert!(matches!(held.source, Source::Serve));
+        assert_eq!(held.serving.wire.as_deref(), Some("0.0.0.0:7654"));
+        assert_eq!(held.serving.http.as_deref(), Some("127.0.0.1:8000"));
+
+        // Either alone, because a process holds whichever subset was named.
+        let only_http = asked(&["./data", "--http", "127.0.0.1:8000"]).expect("one address");
+        assert_eq!(only_http.serving.wire, None);
+        assert_eq!(only_http.serving.http.as_deref(), Some("127.0.0.1:8000"));
+
+        assert!(asked(&["--http"]).is_err());
+    }
+
+    #[test]
+    fn an_address_next_to_something_that_is_not_serving_is_refused() {
+        // Not ignored. A port that was named and never opened is worse than one
+        // that was refused, because nothing says which happened.
+        let refusal = asked(&["./data", "--http", "127.0.0.1:8000", "-e", "SELECT 1;"])
+            .expect_err("two programs");
+        assert!(
+            refusal.contains("two programs"),
+            "the refusal should say why: {refusal}"
+        );
     }
 
     #[test]

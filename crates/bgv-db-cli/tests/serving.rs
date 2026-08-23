@@ -57,6 +57,120 @@ fn serving(path: &std::path::Path, address: &str) -> Child {
     child
 }
 
+/// A running node that is killed when it goes out of scope, however it does.
+///
+/// A test that panics never reaches its own `kill`, and the child it started
+/// keeps the fixed port — so the *next* run connects to the previous run's
+/// node and fails for a reason that has nothing to do with what it asserts.
+/// That cost an hour of the wrong diagnosis once ("the name ns:prod is already
+/// in use", from a store this run never wrote), which is why it is a guard and
+/// not a discipline.
+struct Running(Child);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        drop(self.0.kill());
+        drop(self.0.wait());
+    }
+}
+
+/// Start the shipped binary serving `path` on **both** surfaces.
+fn serving_both(path: &std::path::Path, wire: &str, http: &str) -> Running {
+    let child = Command::new(BGV)
+        .arg(path)
+        .args(["--serve", wire, "--http", http])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let running = Running(child);
+    assert!(
+        listening(wire, Duration::from_secs(20)),
+        "the wire protocol never accepted a connection"
+    );
+    assert!(
+        listening(http, Duration::from_secs(20)),
+        "http never accepted a connection"
+    );
+    running
+}
+
+/// One HTTP request over a raw socket, answered whole.
+///
+/// Written out rather than taken from a client crate, for the reason the rest of
+/// this program takes no dependency it can spell: a request is four lines of
+/// text, and `Connection: close` makes the answer end at end-of-file so nothing
+/// here has to parse a length.
+fn over_http(address: &str, path: &str, body: &str) -> String {
+    use std::io::{Read, Write};
+
+    let mut socket = TcpStream::connect(address).unwrap();
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    socket.write_all(request.as_bytes()).unwrap();
+    socket.flush().unwrap();
+    let mut answered = String::new();
+    socket.read_to_string(&mut answered).unwrap();
+    answered
+}
+
+#[test]
+fn one_process_answers_on_both_surfaces_over_one_store() {
+    // The property is not "two listeners started" — that is also what two
+    // independent stores look like. It is that a write over one surface is
+    // visible over the other, which only one store can produce.
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    // Fixed rather than zero for the reason the test below gives: the child
+    // prints what it bound, and reading a pipe to learn it would make this test
+    // depend on the banner's wording.
+    let wire = "127.0.0.1:47831";
+    let http = "127.0.0.1:47832";
+
+    let node = serving_both(&path, wire, http);
+
+    // Written over the wire protocol.
+    {
+        let mut client = Client::connect(wire).unwrap();
+        client
+            .run(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
+                 DEFINE DATABASE orders; USE DATABASE orders; \
+                 DEFINE TABLE users; CREATE users:1 = { who: 'ada' };",
+                None,
+            )
+            .unwrap();
+    }
+
+    // Read over HTTP, from the same process.
+    let answered = over_http(
+        http,
+        "/script",
+        "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users;",
+    );
+    // One assertion for one claim, deliberately. Split in two, the cheap status
+    // check sits above the substantive one and catches every failure first —
+    // and a claim nothing can reach is a claim nothing tests. The status is in
+    // the message instead, where it diagnoses without gating.
+    assert!(
+        answered.starts_with("HTTP/1.1 200") && answered.contains("ada"),
+        "http did not answer with the record the wire protocol wrote, \
+         which is what one store behind two surfaces means: {answered}"
+    );
+
+    // And the health route, which needs no credential by design, so a failure
+    // here is the surface being absent rather than a refusal.
+    let alive = over_http(http, "/health", "");
+    assert!(
+        alive.starts_with("HTTP/1.1 200") || alive.starts_with("HTTP/1.1 405"),
+        "http was not serving its own routes: {alive}"
+    );
+
+    drop(node);
+}
+
 #[test]
 fn the_node_is_a_process_that_survives_being_killed() {
     let root = tempfile::tempdir().unwrap();

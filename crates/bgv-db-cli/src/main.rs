@@ -8,6 +8,7 @@
 //! echo 'SELECT …' | bgv ./data           a pipe
 //! bgv --at 127.0.0.1:7654                a running node, and a prompt
 //! bgv ./data --serve 0.0.0.0:7654        be that node
+//! bgv ./data --serve :7654 --http :8000  be that node on both surfaces
 //! ```
 //!
 //! # A path or an address, and the same prompt over either
@@ -43,7 +44,7 @@ use std::process::ExitCode;
 
 use bgv_db::Db;
 
-use crate::arguments::{Asked, Source, credentials, parse};
+use crate::arguments::{Asked, Serving, Source, credentials, parse};
 use crate::session::{Ended, Mode};
 
 fn main() -> ExitCode {
@@ -94,7 +95,7 @@ fn run(asked: Asked) -> Result<Ended, String> {
         Source::Backup(path) => return backup(&db, path, sequence).map(|()| Ended::Fine),
         Source::Restore(path) => return restore(&db, path, sequence).map(|()| Ended::Fine),
         Source::Health => return health(&db),
-        Source::Serve(address) => return serve(db, address),
+        Source::Serve => return serve(db, &asked.serving),
         Source::Verify(_) | Source::Standard | Source::Inline(_) | Source::File(_) => {}
     }
 
@@ -140,7 +141,7 @@ fn statements(
         | Source::Restore(_)
         | Source::Verify(_)
         | Source::Health
-        | Source::Serve(_) => {
+        | Source::Serve => {
             // Resolved before this function is reached, for the embedded path,
             // and refused during parsing for a node.
             return Ok(Ended::Fine);
@@ -172,14 +173,52 @@ fn statements(
 /// The same binary rather than a second one: what changes is where the store is,
 /// and that is an argument. It serves until it is stopped, so it never returns
 /// on the happy path.
-fn serve(db: Db, address: &str) -> Result<Ended, String> {
-    let node = bgv_db_wire::Node::bind(std::sync::Arc::new(db), address)
-        .map_err(|failure| format!("{address}: {failure}"))?;
-    let bound = node.address().map_err(|failure| failure.to_string())?;
+fn serve(db: Db, serving: &Serving) -> Result<Ended, String> {
+    let db = std::sync::Arc::new(db);
+    // Both are bound before either serves, so an address that cannot be taken
+    // is a failure to start rather than a surface that quietly went missing
+    // while the other one answered.
+    let wire = match &serving.wire {
+        Some(address) => Some(
+            bgv_db_wire::Node::bind(std::sync::Arc::clone(&db), address.as_str())
+                .map_err(|failure| format!("{address}: {failure}"))?,
+        ),
+        None => None,
+    };
+    let http = match &serving.http {
+        Some(address) => Some(
+            bgv_db_http::Node::bind(std::sync::Arc::clone(&db), address)
+                .map_err(|failure| format!("{address}: {failure}"))?,
+        ),
+        None => None,
+    };
+
     // On the error stream, so a node whose output is being piped somewhere still
-    // tells a person at the terminal that it came up and where.
-    eprintln!("bgv — serving on {bound}; there is no TLS, so trust the network");
-    node.serve();
+    // tells a person at the terminal that it came up and where. What was *bound*
+    // rather than what was asked for, which is what makes `:0` usable.
+    if let Some(node) = &wire {
+        let bound = node.address().map_err(|failure| failure.to_string())?;
+        eprintln!("bgv — wire protocol on {bound}");
+    }
+    if let Some(node) = &http {
+        eprintln!("bgv — http on {}", node.address());
+    }
+    eprintln!("bgv — there is no TLS, so trust the network");
+
+    match (wire, http) {
+        // A thread for one and this thread for the other: two listeners, one
+        // store, and no runtime to hold them.
+        (Some(wire), Some(http)) => std::thread::scope(|scope| {
+            scope.spawn(|| http.serve());
+            wire.serve();
+        }),
+        (Some(wire), None) => wire.serve(),
+        (None, Some(http)) => http.serve(),
+        // Unreachable through the parser, which sets `Source::Serve` only when
+        // an address was given — said here rather than assumed, because the two
+        // are far enough apart to drift.
+        (None, None) => return Err("--serve or --http wants an address".to_owned()),
+    }
     Ok(Ended::Fine)
 }
 
