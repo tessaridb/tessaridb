@@ -10,10 +10,10 @@ A real-time multi-model database, written in Rust, built for AI agents and the
 products around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-pre--1.0-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.0.1--alpha-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
-[![rust](https://img.shields.io/badge/rust-1.98-6B5FD1?style=flat-square)](rust-toolchain.toml)
-[![conformance](https://img.shields.io/badge/conformance-409%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
+[![conformance](https://img.shields.io/badge/conformance-433%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/TessariDB/TessariDB-protocol) ·
@@ -127,16 +127,18 @@ possible rather than aspirational.
 
 ## Status
 
-**Stage: active development · pre-1.0 · not published to crates.io.** What
+**Stage: active development · `0.0.1-alpha` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 
 - ✅ **Runs:** the embedded library, the `tessaridb` command line, the HTTP and
   WebSocket surface, the binary wire protocol (v1.0, with a published spec and
   conformance corpus), single-node serving with roles, endpoints and graceful
   drain, backup and restore.
-- 🚧 **Partial:** geospatial has its value type, its exact predicate kernel and
-  its ingest boundary; the spatial index is not built yet. Peers are declared
-  and read back, but nothing replicates between them.
+- 🚧 **Partial:** geospatial can store a shape, answer seven predicates over
+  whole shapes, measure geodesic distance and area, and be written as a literal
+  in a script — what it does not have is a **spatial index**, so every geometry
+  question is a scan, and there is no nearest-first read. Peers are declared and
+  read back, but nothing replicates between them.
 - ⛔ **Not there:** sharding, replication, and cluster membership. The language
   has words for them; the engine does not have the machinery yet.
 - ⚠️ **Unstable:** the query language, the wire format and the on-disk format all
@@ -460,7 +462,7 @@ cargo add tessari-wire --no-default-features   # the client, without the node
 The default carries the server, which reaches the storage engine — so a client
 built with it compiles the engine, the serving crate, and a password hasher for
 credentials a client never hashes, in order to send a `SELECT` down a socket.
-Turning the default off is the difference between 42 crates and 17, and nothing a
+Turning the default off is the difference between 43 crates and 17, and nothing a
 client calls lives behind the switch.
 
 A connection holds **one session**, so `USE NAMESPACE prod;` is still in force in
@@ -805,7 +807,9 @@ hand the copy the original's identity, and two processes would answer to one id
 with nothing reporting it. It is asserted to differ in a test of its own, because
 a hole in a comparison would also cover the key going missing entirely.
 
-Timed on two thousand records: 0.8 ms to write, 13 ms to replay.
+Timed on 2 004 records, on the machine and build the [benchmarks](benchmarks)
+record: **1.2 ms to write, 10.4 ms to replay**. A timing with no machine and no
+date beside it is not a measurement, which is why those are here.
 
 ## Who it is for
 

@@ -76,12 +76,22 @@ fn run(asked: Asked) -> Result<Ended, String> {
     let parameters = asked.parameters;
     let sequence = asked.at_sequence;
 
-    // Saying which build this is touches nothing at all, so it comes before
-    // even the address: `--version` has to answer on a machine with no store,
-    // no node to reach and no password to hand over.
-    if matches!(asked.source, Source::Version) {
-        println!("tessaridb {}", tessaridb::BUILD_VERSION);
-        return Ok(Ended::Fine);
+    // Saying which build this is, or what the flags are, touches nothing at
+    // all, so both come before even the address: they have to answer on a
+    // machine with no store, no node to reach and no password to hand over.
+    // Standard output and a successful exit, because both are answers rather
+    // than refusals — a `--help` on standard error with a non-zero status is
+    // one a pipeline cannot read and a packaging check fails on.
+    match asked.source {
+        Source::Version => {
+            println!("tessaridb {}", tessaridb::BUILD_VERSION);
+            return Ok(Ended::Fine);
+        }
+        Source::Help => {
+            println!("{}", crate::arguments::USAGE);
+            return Ok(Ended::Fine);
+        }
+        _ => {}
     }
 
     // Verifying reads a file and touches no store, so it happens before one is
@@ -111,6 +121,7 @@ fn run(asked: Asked) -> Result<Ended, String> {
         Source::Serve => return serve(db, &asked.serving, started),
         Source::Verify(_)
         | Source::Version
+        | Source::Help
         | Source::Standard
         | Source::Inline(_)
         | Source::File(_) => {}
@@ -158,6 +169,7 @@ fn statements(
         | Source::Restore(_)
         | Source::Verify(_)
         | Source::Version
+        | Source::Help
         | Source::Health
         | Source::Serve => {
             // Resolved before this function is reached, for the embedded path,

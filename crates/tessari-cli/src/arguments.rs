@@ -119,6 +119,14 @@ pub enum Source {
     /// what it is, and a version that could only be obtained by opening a store
     /// would be unavailable at exactly that moment.
     Version,
+    /// Print the usage and stop.
+    ///
+    /// A request rather than a refusal, which is the whole reason it is a
+    /// variant instead of an early `Err`: asking a program for its help is not
+    /// an error, and answering on standard error with a non-zero status breaks
+    /// `tessaridb --help | grep serve` and fails any packaging smoke test that
+    /// runs it.
+    Help,
 }
 
 /// Read the arguments, refusing anything unrecognised.
@@ -137,7 +145,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     let mut arguments = arguments;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
-            "--help" | "-h" => return Err(USAGE.to_owned()),
+            "--help" | "-h" => source = Source::Help,
             // Read here rather than short-circuited before parsing, so that
             // `--version` alongside a misspelled flag still complains about the
             // misspelling. This module refuses unrecognised options everywhere
@@ -245,9 +253,14 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
             Source::Health => Some("--health"),
             Source::Serve => Some("--serve"),
             Source::Verify(_) => Some("--verify"),
-            // `--version` names this binary, not the node at the address, so
-            // an address alongside it is neither refused nor consulted.
-            Source::Version | Source::Standard | Source::Inline(_) | Source::File(_) => None,
+            // `--version` and `--help` name this binary, not the node at the
+            // address, so an address alongside them is neither refused nor
+            // consulted.
+            Source::Version
+            | Source::Help
+            | Source::Standard
+            | Source::Inline(_)
+            | Source::File(_) => None,
         };
         if let Some(named) = reached_past_the_session {
             return Err(format!(
@@ -265,6 +278,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
         Source::Serve => Some("--serve"),
         Source::Verify(_) => Some("--verify"),
         Source::Version => Some("--version"),
+        Source::Help => Some("--help"),
         Source::Standard | Source::Inline(_) | Source::File(_) => None,
     };
     if let Some(named) = runs_no_script
@@ -367,6 +381,31 @@ mod tests {
             asked(&["-V"]).expect("-V").source,
             Source::Version
         ));
+    }
+
+    #[test]
+    fn asking_for_the_help_is_a_request_and_not_a_refusal() {
+        // It used to be `Err(USAGE)`, which `main` printed to standard error
+        // with a non-zero status — so `tessaridb --help | grep serve` came back
+        // empty and any packaging check that runs `--help` failed. A parse
+        // *error* is still an error; being asked for the usage is not one.
+        assert!(matches!(
+            asked(&["--help"]).expect("--help").source,
+            Source::Help
+        ));
+        assert!(matches!(asked(&["-h"]).expect("-h").source, Source::Help));
+    }
+
+    #[test]
+    fn a_misspelled_flag_is_still_a_refusal_and_still_carries_the_usage() {
+        // The other half of the split above: the usage text did double duty as
+        // both the answer to `--help` and the body of a parse error, and only
+        // the first of those changed channel.
+        let complaint = asked(&["--nonsense"]).expect_err("a typo");
+        assert!(
+            complaint.contains("--nonsense") && complaint.contains("usage:"),
+            "a refusal that names neither the flag nor the usage: {complaint}"
+        );
     }
 
     #[test]
