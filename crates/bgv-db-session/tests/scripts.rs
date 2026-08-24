@@ -797,10 +797,29 @@ fn a_word_that_is_not_a_type_is_refused_where_a_type_belongs() {
     let store = store();
     let mut session = ready(&store);
     session.run("DEFINE TABLE shapes;").unwrap();
+    // `geometry` used to stand here, and stopped being a counter-example the
+    // moment the value system gained the type. The word chosen now is one no
+    // type is ever likely to claim.
     let error = session
-        .run("DEFINE FIELD outline ON shapes TYPE geometry;")
+        .run("DEFINE FIELD outline ON shapes TYPE parallelogram;")
         .unwrap_err();
     assert!(error.to_string().contains("type name"), "{error}");
+}
+
+#[test]
+fn the_two_types_the_value_system_gained_are_type_names_the_language_accepts() {
+    // The other half of the test above: this is what made `geometry` stop being
+    // a word that is not a type, and pinning it here is what stops the pair from
+    // drifting apart again.
+    let store = store();
+    let mut session = ready(&store);
+    session.run("DEFINE TABLE shapes;").unwrap();
+    session
+        .run("DEFINE FIELD outline ON shapes TYPE geometry;")
+        .expect("geometry is a type");
+    session
+        .run("DEFINE FIELD pattern ON shapes TYPE regex;")
+        .expect("regex is a type");
 }
 
 #[test]

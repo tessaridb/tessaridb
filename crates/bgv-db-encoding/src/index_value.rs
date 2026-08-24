@@ -26,7 +26,7 @@
 //! two tables are separate contracts: neither may be renumbered, and changing
 //! either is a rebuild.
 
-use bgv_db_types::{Number, Value};
+use bgv_db_types::{Geometry, Number, Polygon, Position, Ring, Value};
 use rust_decimal::Decimal;
 
 use crate::error::Result;
@@ -54,6 +54,8 @@ const TAG_ARRAY: u8 = 0x0c;
 const TAG_OBJECT: u8 = 0x0d;
 const TAG_RANGE: u8 = 0x0e;
 const TAG_SET: u8 = 0x0f;
+const TAG_GEOMETRY: u8 = 0x10;
+const TAG_REGEX: u8 = 0x11;
 
 // Where a number sits before its magnitude is consulted. Ordered as bytes, so
 // the declared places of the infinities and of not-a-number are simply their
@@ -69,6 +71,17 @@ const NUMBER_NOT_A_NUMBER: u8 = 0x05;
 const DIGITS_END: u8 = 0x00;
 /// Ends the digit string of a negative number: above every complemented digit.
 const DIGITS_END_NEGATIVE: u8 = 0xff;
+
+/// Ends a sequence inside an ordering key.
+///
+/// A sequence is written as `MORE element MORE element … END`. Because `END` is
+/// below `MORE`, a shorter sequence sorts before a longer one that begins with
+/// it — which is exactly how `Vec` compares, and the reason a count-prefixed
+/// form would be **wrong**: `[b]` would sort before `[a, a]` on the count while
+/// `Vec` puts `[a, a]` first.
+const SEQUENCE_END: u8 = 0;
+/// Introduces one more element of a sequence.
+const SEQUENCE_MORE: u8 = 1;
 
 const BOUND_UNBOUNDED: u8 = 0;
 const BOUND_INCLUDED: u8 = 1;
@@ -87,6 +100,98 @@ pub(crate) fn put_string_prefix(writer: &mut KeyWriter, prefix: &str) {
 }
 
 /// Append `value` in its order-preserving form.
+/// A float as a `u64` whose unsigned order is IEEE-754's **total** order.
+///
+/// Positives get their sign bit set; negatives are inverted whole. That is the
+/// standard transform, and it matches [`f64::total_cmp`] — which is what
+/// `Position` compares by, so the bytes here and the comparison there cannot
+/// disagree. `-0.0` sorts below `0.0` in both.
+const fn orderable(value: f64) -> u64 {
+    let bits = value.to_bits();
+    if bits & (1_u64 << 63) == 0 {
+        bits ^ (1_u64 << 63)
+    } else {
+        !bits
+    }
+}
+
+fn put_position(writer: &mut KeyWriter, position: &Position) {
+    writer
+        .put_u64(orderable(position.longitude))
+        .put_u64(orderable(position.latitude));
+}
+
+fn put_positions(writer: &mut KeyWriter, positions: &[Position]) {
+    for position in positions {
+        writer.put_u8(SEQUENCE_MORE);
+        put_position(writer, position);
+    }
+    writer.put_u8(SEQUENCE_END);
+}
+
+fn put_ring(writer: &mut KeyWriter, ring: &Ring) {
+    put_positions(writer, &ring.0);
+}
+
+fn put_polygon(writer: &mut KeyWriter, polygon: &Polygon) {
+    put_ring(writer, &polygon.exterior);
+    for interior in &polygon.interiors {
+        writer.put_u8(SEQUENCE_MORE);
+        put_ring(writer, interior);
+    }
+    writer.put_u8(SEQUENCE_END);
+}
+
+/// A geometry in its order-preserving form.
+///
+/// The shape's discriminant leads, because `Geometry`'s derived `Ord` compares
+/// variants before contents. Everything after it is written in declaration
+/// order, for the same reason.
+fn put_geometry(writer: &mut KeyWriter, held: &Geometry) {
+    match held {
+        Geometry::Point(position) => {
+            writer.put_u8(0);
+            put_position(writer, position);
+        }
+        Geometry::Line(positions) => {
+            writer.put_u8(1);
+            put_positions(writer, positions);
+        }
+        Geometry::Polygon(polygon) => {
+            writer.put_u8(2);
+            put_polygon(writer, polygon);
+        }
+        Geometry::MultiPoint(positions) => {
+            writer.put_u8(3);
+            put_positions(writer, positions);
+        }
+        Geometry::MultiLine(lines) => {
+            writer.put_u8(4);
+            for line in lines {
+                writer.put_u8(SEQUENCE_MORE);
+                put_positions(writer, line);
+            }
+            writer.put_u8(SEQUENCE_END);
+        }
+        Geometry::MultiPolygon(polygons) => {
+            writer.put_u8(5);
+            for polygon in polygons {
+                writer.put_u8(SEQUENCE_MORE);
+                put_polygon(writer, polygon);
+            }
+            writer.put_u8(SEQUENCE_END);
+        }
+        Geometry::Collection(shapes) => {
+            writer.put_u8(6);
+            for shape in shapes {
+                writer.put_u8(SEQUENCE_MORE);
+                put_geometry(writer, shape);
+            }
+            writer.put_u8(SEQUENCE_END);
+        }
+    }
+}
+
 pub(crate) fn put(writer: &mut KeyWriter, value: &Value) {
     match value {
         Value::None => {
@@ -157,6 +262,13 @@ pub(crate) fn put(writer: &mut KeyWriter, value: &Value) {
             }
             writer.put_u8(END);
         }
+        Value::Geometry(held) => {
+            writer.put_u8(TAG_GEOMETRY);
+            put_geometry(writer, held);
+        }
+        Value::Regex(pattern) => {
+            writer.put_u8(TAG_REGEX).put_variable(pattern.as_bytes());
+        }
     }
 }
 
@@ -165,6 +277,59 @@ pub(crate) fn put(writer: &mut KeyWriter, value: &Value) {
 /// # Errors
 ///
 /// Returns an error when the bytes are truncated or carry an unknown tag.
+/// Step over a sequence written as `MORE element … END`.
+fn skip_sequence(
+    reader: &mut KeyReader<'_>,
+    mut element: impl FnMut(&mut KeyReader<'_>) -> Result<()>,
+) -> Result<()> {
+    loop {
+        match reader.take_u8()? {
+            SEQUENCE_END => return Ok(()),
+            SEQUENCE_MORE => element(reader)?,
+            other => {
+                return Err(crate::error::Error::UnknownIndexTag {
+                    kind: reader.kind(),
+                    tag: other,
+                });
+            }
+        }
+    }
+}
+
+fn skip_position(reader: &mut KeyReader<'_>) -> Result<()> {
+    reader.take_u64()?;
+    reader.take_u64().map(|_| ())
+}
+
+fn skip_positions(reader: &mut KeyReader<'_>) -> Result<()> {
+    skip_sequence(reader, skip_position)
+}
+
+fn skip_polygon(reader: &mut KeyReader<'_>) -> Result<()> {
+    skip_positions(reader)?;
+    skip_sequence(reader, skip_positions)
+}
+
+/// Step over a geometry's ordering form.
+///
+/// The shape byte here is the discriminant [`put_geometry`] writes, not the
+/// payload codec's — the two encodings are separate and neither reads the
+/// other's bytes.
+fn skip_geometry(reader: &mut KeyReader<'_>) -> Result<()> {
+    match reader.take_u8()? {
+        0 => skip_position(reader),
+        1 | 3 => skip_positions(reader),
+        2 => skip_polygon(reader),
+        4 => skip_sequence(reader, skip_positions),
+        5 => skip_sequence(reader, skip_polygon),
+        6 => skip_sequence(reader, skip_geometry),
+        other => Err(crate::error::Error::UnknownIndexTag {
+            kind: reader.kind(),
+            tag: other,
+        }),
+    }
+}
+
 pub(crate) fn skip(reader: &mut KeyReader<'_>) -> Result<()> {
     let tag = reader.take_u8()?;
     match tag {
@@ -188,6 +353,8 @@ pub(crate) fn skip(reader: &mut KeyReader<'_>) -> Result<()> {
             skip_bound(reader)?;
             skip_bound(reader)
         }
+        TAG_GEOMETRY => skip_geometry(reader),
+        TAG_REGEX => reader.take_variable().map(|_| ()),
         other => Err(crate::error::Error::UnknownIndexTag {
             kind: reader.kind(),
             tag: other,

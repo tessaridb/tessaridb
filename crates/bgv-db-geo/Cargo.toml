@@ -1,0 +1,17 @@
+[package]
+name = "bgv-db-geo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "geometry on a fixed integer grid — exact predicates, bounding boxes, spatial keys"
+
+[dependencies]
+bgv-db-types.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

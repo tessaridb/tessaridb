@@ -60,6 +60,10 @@ pub enum FieldKind {
     Range,
     /// A collection with no duplicates.
     Set,
+    /// A shape on the sphere.
+    Geometry,
+    /// A pattern, held rather than executed.
+    Regex,
 }
 
 /// Every kind, in declaration order.
@@ -83,6 +87,8 @@ const ALL: &[FieldKind] = &[
     FieldKind::Object,
     FieldKind::Range,
     FieldKind::Set,
+    FieldKind::Geometry,
+    FieldKind::Regex,
 ];
 
 impl FieldKind {
@@ -110,6 +116,8 @@ impl FieldKind {
             Self::Object => "object",
             Self::Range => "range",
             Self::Set => "set",
+            Self::Geometry => "geometry",
+            Self::Regex => "regex",
         }
     }
 
@@ -165,6 +173,8 @@ impl FieldKind {
             Self::Object => matches!(value, Value::Object(_)),
             Self::Range => matches!(value, Value::Range(_)),
             Self::Set => matches!(value, Value::Set(_)),
+            Self::Geometry => matches!(value, Value::Geometry(_)),
+            Self::Regex => matches!(value, Value::Regex(_)),
         }
     }
 }

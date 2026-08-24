@@ -426,10 +426,40 @@ mod tests {
     fn a_kind_this_binary_does_not_know_is_refused_rather_than_guessed() {
         let mut stored = definition(FieldKind::String).to_value();
         if let Value::Object(fields) = &mut stored {
-            fields.insert(FIELD_KIND.to_owned(), Value::from("geometry"));
+            // The point of the fixture is a kind written by a *newer* binary, so
+            // the word has to be one no `FieldKind` holds. `geometry` stood here
+            // until the value system gained the type and quietly turned this
+            // test into an assertion that a real kind is corruption.
+            fields.insert(FIELD_KIND.to_owned(), Value::from("tesseract"));
         }
         let error = FieldDefinition::from_value(&stored).unwrap_err();
         assert_eq!(error.code(), "corruption");
+    }
+
+    #[test]
+    fn every_kind_this_binary_knows_reads_back_as_itself() {
+        // The other half, and the reason the test above could rot unnoticed:
+        // nothing asserted that the known kinds *are* known, so adding one broke
+        // a negative fixture with no positive one to contradict it.
+        for kind in FieldKind::all() {
+            let stored = definition(*kind).to_value();
+            let read = FieldDefinition::from_value(&stored);
+            assert!(
+                read.is_ok(),
+                "{} did not read back: {:?}",
+                kind.name(),
+                read.as_ref().err()
+            );
+            // The assertion above is what fails the test; this only unwraps what
+            // it has already established, without a `panic!` the lints refuse.
+            let Ok(read) = read else { continue };
+            assert_eq!(
+                read.kind,
+                *kind,
+                "{} read back as another kind",
+                kind.name()
+            );
+        }
     }
 
     #[test]

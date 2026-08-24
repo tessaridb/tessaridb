@@ -21,8 +21,8 @@ use bgv_db_encoding::{
     INDEX_PREFIX_LEN, IndexAddress, IndexValues, SecondaryIndexKey, StoreKey, UniqueIndexKey,
 };
 use bgv_db_types::{
-    DatabaseId, Datetime, Duration, IndexId, NamespaceId, Number, RecordId, RecordRef, TableId,
-    Value, ValueRange,
+    DatabaseId, Datetime, Duration, Geometry, IndexId, NamespaceId, Number, Polygon, Position,
+    RecordId, RecordRef, Ring, TableId, Value, ValueRange,
 };
 use rust_decimal::Decimal;
 
@@ -99,7 +99,67 @@ fn corpus() -> Vec<Value> {
         Value::Set(BTreeSet::new()),
         Value::Set(BTreeSet::from([Value::from("a")])),
         Value::Set(BTreeSet::from([Value::from("a"), Value::from("b")])),
+        // --- geometry ---
+        // A point, and two neighbours differing in one coordinate each, so the
+        // longitude-then-latitude order is exercised in both positions.
+        Value::Geometry(Geometry::Point(Position::new(0.0, 0.0))),
+        Value::Geometry(Geometry::Point(Position::new(1.0, 0.0))),
+        Value::Geometry(Geometry::Point(Position::new(0.0, 1.0))),
+        // Negative zero. `total_cmp` puts it below zero and the bytes must too;
+        // a decimal-style comparison would call them equal and a unique index
+        // would then reject one of two distinct points.
+        Value::Geometry(Geometry::Point(Position::new(-0.0, 0.0))),
+        Value::Geometry(Geometry::Point(Position::new(-1.0, 0.0))),
+        // An empty line, a line, and a line that extends it: the prefix rule.
+        Value::Geometry(Geometry::Line(vec![])),
+        Value::Geometry(Geometry::Line(vec![Position::new(0.0, 0.0)])),
+        Value::Geometry(Geometry::Line(vec![
+            Position::new(0.0, 0.0),
+            Position::new(1.0, 1.0),
+        ])),
+        // THE case a count-prefixed encoding gets wrong. `Vec` compares
+        // lexicographically, so `[a, a]` sorts before `[b]`; a leading count
+        // would sort `[b]` first because one is fewer than two.
+        Value::Geometry(Geometry::Line(vec![Position::new(9.0, 0.0)])),
+        Value::Geometry(Geometry::Line(vec![
+            Position::new(0.0, 0.0),
+            Position::new(0.0, 0.0),
+        ])),
+        // A different variant with identical contents — the discriminant leads.
+        Value::Geometry(Geometry::MultiPoint(vec![Position::new(0.0, 0.0)])),
+        // Polygons: with and without a hole, so the interior sequence's
+        // terminator is exercised.
+        Value::Geometry(Geometry::Polygon(square(0.0))),
+        Value::Geometry(Geometry::Polygon(Polygon {
+            exterior: square(0.0).exterior,
+            interiors: vec![square(0.5).exterior],
+        })),
+        Value::Geometry(Geometry::Polygon(square(1.0))),
+        // Nested, so the recursion is covered rather than assumed.
+        Value::Geometry(Geometry::Collection(vec![])),
+        Value::Geometry(Geometry::Collection(vec![Box::new(Geometry::Point(
+            Position::new(0.0, 0.0),
+        ))])),
+        // --- regex ---
+        Value::Regex(String::new()),
+        Value::Regex("a".to_owned()),
+        Value::Regex("ab".to_owned()),
+        // Holds the escape byte, which is what the variable-length form is for.
+        Value::Regex("a\u{0}b".to_owned()),
     ]
+}
+
+/// A closed unit square with its lower-left corner at `offset`.
+fn square(offset: f64) -> Polygon {
+    Polygon {
+        exterior: Ring(vec![
+            Position::new(offset, offset),
+            Position::new(offset + 1.0, offset),
+            Position::new(offset + 1.0, offset + 1.0),
+            Position::new(offset, offset),
+        ]),
+        interiors: Vec::new(),
+    }
 }
 
 fn address() -> IndexAddress {
@@ -162,7 +222,10 @@ fn the_corpus_covers_every_variant_the_value_system_has() {
     // A corpus that quietly lost a type would keep passing while leaving that
     // type's encoding unchecked.
     let names: BTreeSet<&'static str> = corpus().iter().map(Value::type_name).collect();
-    assert_eq!(names.len(), 15, "covered: {names:?}");
+    // Seventeen since geometry and regex landed. The number is written out
+    // rather than derived, because deriving it from the corpus would make this
+    // test assert that the corpus equals itself.
+    assert_eq!(names.len(), 17, "covered: {names:?}");
 }
 
 #[test]

@@ -34,7 +34,7 @@
 
 use std::collections::BTreeMap;
 
-use bgv_db::{TableId, Value};
+use bgv_db::{Geometry, Polygon, Position, TableId, Value};
 
 /// What a table id is called, for the references an answer carries.
 ///
@@ -43,6 +43,116 @@ use bgv_db::{TableId, Value};
 /// it could follow, and not one. `Db::names_in` builds it once per answer, and
 /// only when the answer holds a reference at all.
 pub(crate) type Names = BTreeMap<TableId, String>;
+
+/// Append a shape as GeoJSON.
+fn geometry(out: &mut String, shape: &Geometry) {
+    out.push_str(r#"{"type":""#);
+    out.push_str(geojson_name(shape));
+    out.push_str(r#"","#);
+    match shape {
+        Geometry::Collection(shapes) => {
+            out.push_str(r#""geometries":["#);
+            for (position, held) in shapes.iter().enumerate() {
+                if position > 0 {
+                    out.push(',');
+                }
+                geometry(out, held);
+            }
+            out.push(']');
+        }
+        Geometry::Point(held) => {
+            out.push_str(r#""coordinates":"#);
+            position(out, held);
+        }
+        Geometry::Line(held) | Geometry::MultiPoint(held) => {
+            out.push_str(r#""coordinates":"#);
+            positions(out, held);
+        }
+        Geometry::Polygon(held) => {
+            out.push_str(r#""coordinates":"#);
+            polygon(out, held);
+        }
+        Geometry::MultiLine(lines) => {
+            out.push_str(r#""coordinates":["#);
+            for (at, line) in lines.iter().enumerate() {
+                if at > 0 {
+                    out.push(',');
+                }
+                positions(out, line);
+            }
+            out.push(']');
+        }
+        Geometry::MultiPolygon(polygons) => {
+            out.push_str(r#""coordinates":["#);
+            for (at, held) in polygons.iter().enumerate() {
+                if at > 0 {
+                    out.push(',');
+                }
+                polygon(out, held);
+            }
+            out.push(']');
+        }
+    }
+    out.push('}');
+}
+
+/// The name RFC 7946 gives each shape, which is not the name this store uses
+/// internally — `LineString` against `line`, and the multi- forms are one word
+/// there and two here.
+const fn geojson_name(shape: &Geometry) -> &'static str {
+    match shape {
+        Geometry::Point(_) => "Point",
+        Geometry::Line(_) => "LineString",
+        Geometry::Polygon(_) => "Polygon",
+        Geometry::MultiPoint(_) => "MultiPoint",
+        Geometry::MultiLine(_) => "MultiLineString",
+        Geometry::MultiPolygon(_) => "MultiPolygon",
+        Geometry::Collection(_) => "GeometryCollection",
+    }
+}
+
+fn position(out: &mut String, held: &Position) {
+    out.push('[');
+    coordinate(out, held.longitude);
+    out.push(',');
+    coordinate(out, held.latitude);
+    out.push(']');
+}
+
+/// One coordinate.
+///
+/// A non-finite coordinate has no JSON spelling — the format has no `NaN` and no
+/// infinity — and `null` is the only honest answer. It cannot arrive from a
+/// well-formed shape; it can arrive from bytes, and this surface reports what it
+/// was given rather than inventing a number.
+fn coordinate(out: &mut String, value: f64) {
+    if value.is_finite() {
+        out.push_str(&format!("{value}"));
+    } else {
+        out.push_str("null");
+    }
+}
+
+fn positions(out: &mut String, held: &[Position]) {
+    out.push('[');
+    for (at, one) in held.iter().enumerate() {
+        if at > 0 {
+            out.push(',');
+        }
+        position(out, one);
+    }
+    out.push(']');
+}
+
+fn polygon(out: &mut String, held: &Polygon) {
+    out.push('[');
+    positions(out, &held.exterior.0);
+    for interior in &held.interiors {
+        out.push(',');
+        positions(out, &interior.0);
+    }
+    out.push(']');
+}
 
 /// Append `value` to `out` as JSON.
 pub(crate) fn write(out: &mut String, value: &Value, names: &Names) {
@@ -64,6 +174,16 @@ pub(crate) fn write(out: &mut String, value: &Value, names: &Names) {
         // Both use the writers that live beside their readers in
         // `bgv_db_types::text`, so what a client receives parses back through
         // the reader that read it from a script.
+        // GeoJSON (RFC 7946), which is what every mapping tool already reads,
+        // so a shape leaves this surface without needing a translation. The one
+        // rule worth restating at the boundary: coordinates are
+        // `[longitude, latitude]`, and the reversed order is the classic silent
+        // geo bug rather than a formatting preference.
+        Value::Geometry(shape) => geometry(out, shape),
+        // The pattern's source, as text. This store does not execute it, and
+        // rendering it as a plain string says exactly that — a client that wants
+        // to run it knows it is a pattern from the field's declared type.
+        Value::Regex(pattern) => string(out, pattern),
         Value::Duration(held) => string(out, &held.to_literal()),
         Value::Datetime(held) => string(out, &held.to_rfc3339()),
         Value::Uuid(_) | Value::Table(_) | Value::Record(_) | Value::Range(_) => {

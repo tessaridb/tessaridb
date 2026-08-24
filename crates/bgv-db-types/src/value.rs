@@ -1,8 +1,18 @@
 //! The value a record holds.
 //!
-//! Fifteen types, fixed by the milestone-1 scope. Three more exist in the wider
-//! design and are deliberately absent here — geometry, file references and
-//! regular expressions — each because nothing in this milestone stores one.
+//! Seventeen types.
+//!
+//! Fifteen were fixed by the milestone-1 scope; `Geometry` and `Regex` were
+//! among three deferred and are now here.
+//!
+//! The third deferral — a **file reference** — was withdrawn rather than
+//! implemented, because it already exists under another name. A bucket is a
+//! table whose records are files (`docs/bgvql.md` §6a), so pointing a record at
+//! a file is an ordinary [`Value::Record`]: `FETCH` follows it, `RELATE` makes
+//! an edge of it, and a grant on the bucket governs metadata and bytes together
+//! because there is one table to grant on. A separate `File` type would be a
+//! second spelling for all of that, and every consumer would have to handle
+//! both.
 //!
 //! # Absent and null are different values
 //!
@@ -30,6 +40,7 @@ use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
+use crate::geometry::Geometry;
 use crate::ids::TableId;
 use crate::number::Number;
 use crate::record_id::RecordId;
@@ -151,6 +162,21 @@ pub enum Value {
     Range(Box<ValueRange>),
     /// A collection with no duplicates and no significant order.
     Set(BTreeSet<Value>),
+    /// A shape on the sphere.
+    ///
+    /// The type stores and returns a shape. Answering `INSIDE`, `INTERSECTS` or
+    /// a distance over one is an **engine**, and a separate thing: a stored
+    /// geometry with no index is already useful, and conflating the two is how
+    /// the work stops being schedulable.
+    Geometry(Geometry),
+    /// A pattern, as its source text.
+    ///
+    /// Held rather than executed. This store has no regular-expression engine,
+    /// so a pattern here round-trips as a pattern — distinguishable from a
+    /// string that happens to spell one — and matching is a later capability
+    /// rather than an implied one. Saying so is the difference between a type
+    /// that is honest about its scope and a type that looks like a feature.
+    Regex(String),
 }
 
 /// Where each type sits when values of different types are compared.
@@ -176,6 +202,11 @@ enum Rank {
     Object,
     Range,
     Set,
+    // Appended, never inserted. The doc comment above says why: a rank's
+    // position is where a value of that type sorts among values of every other
+    // type, so moving one reorders every index holding a mixed column.
+    Geometry,
+    Regex,
 }
 
 impl Value {
@@ -197,6 +228,8 @@ impl Value {
             Self::Object(_) => Rank::Object,
             Self::Range(_) => Rank::Range,
             Self::Set(_) => Rank::Set,
+            Self::Geometry(_) => Rank::Geometry,
+            Self::Regex(_) => Rank::Regex,
         }
     }
 
@@ -219,6 +252,8 @@ impl Value {
             Self::Object(_) => "object",
             Self::Range(_) => "range",
             Self::Set(_) => "set",
+            Self::Geometry(_) => "geometry",
+            Self::Regex(_) => "regex",
         }
     }
 
@@ -258,6 +293,12 @@ impl Ord for Value {
             (Self::Object(left), Self::Object(right)) => left.cmp(right),
             (Self::Range(left), Self::Range(right)) => left.cmp(right),
             (Self::Set(left), Self::Set(right)) => left.cmp(right),
+            // Both of these carry a payload, so both must be compared here. The
+            // wildcard below answers `Equal`, which for a payload-carrying type
+            // means a set keeps one of two distinct values and an `ORDER BY`
+            // does nothing — silently, which is why the arms are not optional.
+            (Self::Geometry(left), Self::Geometry(right)) => left.cmp(right),
+            (Self::Regex(left), Self::Regex(right)) => left.cmp(right),
             // Equal ranks and no pair above means both sides are one of the two
             // types that carry no payload, and those have one value each.
             _ => core::cmp::Ordering::Equal,
@@ -319,6 +360,12 @@ impl fmt::Display for Value {
             Self::Object(fields) => write!(f, "<object of {}>", fields.len()),
             Self::Range(_) => f.write_str("<range>"),
             Self::Set(values) => write!(f, "<set of {}>", values.len()),
+            Self::Geometry(shape) => {
+                write!(f, "<{} of {}>", shape.kind_name(), shape.positions().len())
+            }
+            // The pattern is shown, and quoted so it is legible as data rather
+            // than mistaken for something this store is about to run.
+            Self::Regex(pattern) => write!(f, "regex:{pattern:?}"),
         }
     }
 }

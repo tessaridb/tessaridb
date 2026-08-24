@@ -35,11 +35,24 @@ pub enum Filter {
     /// letters a Latin-script corpus actually carries, and a real
     /// normalisation is a dependency and a decision of its own.
     Ascii,
+    /// Reduce an English word to the form its relatives share, so `running`,
+    /// `runs` and `ran`'s regular cousins become one term.
+    ///
+    /// The other two filters make two *spellings* of one word meet. This is the
+    /// one that makes two *words* meet, which is what a person means by search:
+    /// without it, a collection answers `run` with the documents that happen to
+    /// spell it that way and silently omits the ones that say `running`.
+    ///
+    /// Only lower-case ASCII words are stemmed and everything else passes
+    /// through unchanged, so a chain that wants stemming writes `lowercase`
+    /// before it — see [`stem`](crate::stem) for why half-stemming is worse
+    /// than not stemming.
+    Stemmer,
 }
 
 impl Filter {
     /// Every filter, so a listing cannot drift from the set.
-    pub const ALL: &'static [Self] = &[Self::Lowercase, Self::Ascii];
+    pub const ALL: &'static [Self] = &[Self::Lowercase, Self::Ascii, Self::Stemmer];
 
     /// How the filter is written.
     #[must_use]
@@ -47,6 +60,7 @@ impl Filter {
         match self {
             Self::Lowercase => "lowercase",
             Self::Ascii => "ascii",
+            Self::Stemmer => "stemmer",
         }
     }
 
@@ -64,6 +78,7 @@ impl Filter {
         match self {
             Self::Lowercase => token.to_lowercase(),
             Self::Ascii => token.chars().map(fold).collect(),
+            Self::Stemmer => crate::stemmer::stem(token),
         }
     }
 }
@@ -195,6 +210,30 @@ mod tests {
             assert_eq!(Filter::parse(filter.name()), Some(*filter));
             assert_eq!(Filter::parse(&filter.name().to_uppercase()), Some(*filter));
         }
-        assert_eq!(Filter::parse("stemmer"), None);
+        assert_eq!(Filter::parse("porter"), None);
+    }
+
+    #[test]
+    fn the_chain_that_makes_two_words_rather_than_two_spellings_meet() {
+        // The order is the caller's and it matters: the stemmer is defined over
+        // lower-case words, so `lowercase` has to come first or `Running` is
+        // returned untouched rather than half-stemmed.
+        let full = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii, Filter::Stemmer]);
+        assert_eq!(full.terms("Running quickly"), vec!["run", "quick"]);
+        assert_eq!(full.terms("He runs"), vec!["he", "run"]);
+
+        // Without the stemmer these are two different terms, which is the whole
+        // reason the filter exists.
+        assert_ne!(simple().terms("running"), simple().terms("runs"));
+        assert_eq!(full.terms("running"), full.terms("runs"));
+    }
+
+    #[test]
+    fn a_stemmer_without_lowercase_in_front_of_it_leaves_the_word_alone() {
+        // Stated as a test rather than a comment: half-stemming would produce a
+        // term neither spelling of the word reaches, so the filter declines.
+        let bare = Analyzer::new(vec![Filter::Stemmer]);
+        assert_eq!(bare.terms("Running"), vec!["Running"]);
+        assert_eq!(bare.terms("running"), vec!["run"]);
     }
 }

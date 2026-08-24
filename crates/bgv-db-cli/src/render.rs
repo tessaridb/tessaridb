@@ -61,6 +61,22 @@ fn write(out: &mut String, held: &Value, names: &Names) {
         // Both use the writers that live beside their readers in
         // `bgv_db_types::text`, not `Display` — which writes a debugging form
         // (`5400.000000000s`, `0.000000000`) that the lexer will not read back.
+        // These two break this module's rule — everything else here prints a
+        // form the lexer reads back, and these cannot, because the language has
+        // no literal for either yet. They arrive through a bound parameter and
+        // leave as a description. Printing something that *looked* like a
+        // literal would be worse: a caller would paste it into a script and get
+        // a parse error with no clue why.
+        Value::Geometry(shape) => {
+            out.push_str("<geometry ");
+            out.push_str(shape.kind_name());
+            out.push_str(&format!(" of {}>", shape.positions().len()));
+        }
+        Value::Regex(pattern) => {
+            out.push_str("<regex ");
+            string_into(out, pattern);
+            out.push('>');
+        }
         Value::Duration(held) => out.push_str(&held.to_literal()),
         Value::Datetime(held) => {
             out.push_str("datetime ");
