@@ -9,16 +9,24 @@
 A real-time multi-model database, written in Rust, built for AI agents and the
 products around them.
 
-[![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1)](LICENSE)
-[![rust](https://img.shields.io/badge/rust-1.98-6B5FD1)](rust-toolchain.toml)
-[![conformance](https://img.shields.io/badge/conformance-409%20cases-6B5FD1)](crates/tessari-conformance/tests/corpus)
-[![status](https://img.shields.io/badge/status-pre--1.0-6B5FD1)](#status)
+[![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-pre--1.0-6B5FD1?style=flat-square)](#status)
+[![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
+[![rust](https://img.shields.io/badge/rust-1.98-6B5FD1?style=flat-square)](rust-toolchain.toml)
+[![conformance](https://img.shields.io/badge/conformance-409%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/TessariDB/TessariDB-protocol) ·
 [Rust SDK](https://github.com/TessariDB/TessariDB-sdk-rust)
 
 </div>
+
+> [!WARNING]
+> **TessariDB is under active development and is not ready for production.**
+> It is pre-1.0 and unpublished to crates.io. The query language, the wire format
+> and the on-disk format all change without notice, there is no migration between
+> versions, and several engines are still partial. [**Status**](#status) says what
+> runs today, engine by engine — it is a report, not a roadmap.
 
 ---
 
@@ -88,18 +96,18 @@ services and a consistency problem that lands in the agent's own code.
 Every row is proven by an executable corpus — a script the build runs and
 compares against expected answers, case by case. The counts are those cases.
 
-| Engine | What it gives you | Cases |
-|---|---|---|
-| **Documents** | schemaless or schemafull records, nested objects and arrays, typed fields with defaults | 38 + 59 |
-| **Relational** | declared tables and fields, unique and multi-field indexes, joins whose answer an index may not change | 44 + 14 + 46 |
-| **Graph** | edge tables, `RELATE`, properties on the edge, multi-hop traversal in both directions | 17 |
-| **Key–value** | `SPACE`s — one key, one whole value, ordered range scans with inclusive or exclusive bounds | 12 |
-| **Objects & files** | `BUCKET`s — bytes addressed by path, byte-range reads, writes at an offset, metadata that is an ordinary record | 28 |
-| **Full-text** | per-field analyzers, whole-term search, lowercase · ASCII folding · Porter2 stemming | 34 |
-| **Vector** | cosine, Euclidean and dot distance, kNN ordering, a graph index that declares whether it answered exactly | 12 |
-| **Time-series** | epoch-anchored windows every process agrees on, aggregates per window, retention as a statement that reports what it removed | 12 |
-| **Geospatial** | a geometry type and an exact integer-grid predicate kernel — orientation, containment, intersection | *in progress* |
-| **References** | `FETCH` — follow a reference, an array of them, or a nested route, without a join | 12 |
+| Engine | What it gives you | Cases | State |
+|---|---|---|:--|
+| **Documents** | schemaless or schemafull records, nested objects and arrays, typed fields with defaults | 38 + 59 | ✅ runs |
+| **Relational** | declared tables and fields, unique and multi-field indexes, joins whose answer an index may not change | 44 + 14 + 46 | ✅ runs |
+| **Graph** | edge tables, `RELATE`, properties on the edge, multi-hop traversal in both directions | 17 | ✅ runs |
+| **Key–value** | `SPACE`s — one key, one whole value, ordered range scans with inclusive or exclusive bounds | 12 | ✅ runs |
+| **Objects & files** | `BUCKET`s — bytes addressed by path, byte-range reads, writes at an offset, metadata that is an ordinary record | 28 | ✅ runs |
+| **Full-text** | per-field analyzers, whole-term search, lowercase · ASCII folding · Porter2 stemming | 34 | ✅ runs |
+| **Vector** | cosine, Euclidean and dot distance, kNN ordering, a graph index that declares whether it answered exactly | 12 | ✅ runs |
+| **Time-series** | epoch-anchored windows every process agrees on, aggregates per window, retention as a statement that reports what it removed | 12 | ✅ runs |
+| **References** | `FETCH` — follow a reference, an array of them, or a nested route, without a join | 12 | ✅ runs |
+| **Geospatial** | a geometry type and an exact integer-grid predicate kernel — orientation, containment, intersection | — | 🚧 partial — no spatial index yet |
 
 Underneath all of them, one substrate with two backends: **in memory**, and
 **on disk** on a log-structured merge-tree engine. Everything above the
@@ -119,20 +127,23 @@ possible rather than aspirational.
 
 ## Status
 
-TessariDB is **pre-1.0** and not published to crates.io. What follows is what
-runs today, not a roadmap.
+**Stage: active development · pre-1.0 · not published to crates.io.** What
+follows is what runs today, not a roadmap.
 
-- **Works:** the embedded library, the `tessari` command line, the HTTP and
+- ✅ **Runs:** the embedded library, the `tessari` command line, the HTTP and
   WebSocket surface, the binary wire protocol (v1.0, with a published spec and
   conformance corpus), single-node serving with roles, endpoints and graceful
   drain, backup and restore.
-- **Partial:** geospatial has its value type and its exact predicate kernel; the
-  spatial index is not built yet. Peers are declared and read back, but nothing
-  replicates between them.
-- **Not there:** sharding, replication, and cluster membership. The language has
-  words for them; the engine does not have the machinery yet.
-- **Unstable:** the query language, the wire format and the on-disk format all
-  change without notice before 1.0.
+- 🚧 **Partial:** geospatial has its value type and its exact predicate kernel;
+  the spatial index is not built yet. Peers are declared and read back, but
+  nothing replicates between them.
+- ⛔ **Not there:** sharding, replication, and cluster membership. The language
+  has words for them; the engine does not have the machinery yet.
+- ⚠️ **Unstable:** the query language, the wire format and the on-disk format all
+  change without notice before 1.0, and there is no migration between versions.
+
+Use it for prototypes, evaluation and development. Do not put data you cannot
+lose behind it yet — and if you do run it, pin a commit, because `dev` moves.
 
 ## Opening one
 
