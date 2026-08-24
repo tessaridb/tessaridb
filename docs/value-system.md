@@ -180,7 +180,7 @@ authority disagreeing with the first.
 
 A payload nests without limit: an object holds objects and arrays, and those hold
 more. A **path** is how a value inside one is named — `address.city`, `tags[0]`,
-`history[2].by`. The grammar is in `docs/bgvql.md` §3; what a step *means* over
+`history[2].by`. The grammar is in `docs/tessariql.md` §3; what a step *means* over
 each container is decided here, because it is a property of the value system and
 not of the language that spells it.
 
@@ -205,7 +205,7 @@ a path have exactly one entry per record, the same as an index over a field.
 
 `[*]`, "any element", would break that: it makes a path a relation, and an index
 over one a multikey index with an entry per element. It is named in
-`docs/bgvql.md` §8 as its own decision rather than left as a gap.
+`docs/tessariql.md` §8 as its own decision rather than left as a gap.
 
 A path reaching `none` is distinct from a path reaching nothing, and the walk
 keeps them apart for the same reason §2 keeps absent and null apart. Callers

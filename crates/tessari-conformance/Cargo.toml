@@ -1,0 +1,20 @@
+[package]
+name = "tessari-conformance"
+description = "The executable definition of TessariQL: corpora and the runner that proves them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+tessari-kv.workspace = true
+tessari-ql.workspace = true
+tessari-session.workspace = true
+tessari-storage.workspace = true
+tessari-types.workspace = true
+
+[lints]
+workspace = true

@@ -19,8 +19,8 @@ allow-wildcard-paths = true
 [licenses]
 version = 2
 # Licences acceptable in third-party dependencies. This list governs what may be
-# pulled in as a dependency; it does not describe bgv-db's own licence, which is
-# proprietary and commercial (see LICENSE).
+# pulled in as a dependency; it does not describe TessariDB's own licence,
+# which is the Business Source License 1.1 (see LICENSE).
 allow = [
   "MIT",
   "Apache-2.0",

@@ -1,4 +1,4 @@
-# bgv-db benchmark
+# TessariDB benchmark
 
 - backend: `memory`
 - build: release build

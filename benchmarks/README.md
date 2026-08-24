@@ -1,12 +1,12 @@
 # Benchmarks
 
-Baselines recorded by `bgv-db-bench`. Each file is machine-generated; the harness
+Baselines recorded by `tessari-bench`. Each file is machine-generated; the harness
 writes it and nobody edits it, so a number in one is a number something produced.
 
 ```
-cargo run -p bgv-db-bench --release -- --list
-cargo run -p bgv-db-bench --release -- --baseline benchmarks/<date>-<machine>-memory.md
-cargo run -p bgv-db-bench --release -- --backend disk --baseline benchmarks/<date>-<machine>-disk.md
+cargo run -p tessari-bench --release -- --list
+cargo run -p tessari-bench --release -- --baseline benchmarks/<date>-<machine>-memory.md
+cargo run -p tessari-bench --release -- --backend disk --baseline benchmarks/<date>-<machine>-disk.md
 ```
 
 ## What a baseline is, and what it is not
@@ -112,7 +112,7 @@ hundred bytes. Every record between the bounds is resolved and held before the
 caller sees the first one, and no change inside the storage layer can alter that
 — the condition that asked is re-tested above it, so a limit cannot be pushed
 down without the planner and the executor consuming the answer as it arrives.
-Recorded as an absence in `docs/bgvql.md` §8 with these numbers behind it.
+Recorded as an absence in `docs/tessariql.md` §8 with these numbers behind it.
 
 **The `served by` row exists because the phase can silently stop measuring what
 it claims.** If a planner change stopped serving the range from the index, the
@@ -163,7 +163,7 @@ one unconditionally would put an atomic add on every allocation in every workloa
 and quietly invalidate every timing above.
 
 ```
-cargo run -p bgv-db-bench --release --features counting -- --workload memory
+cargo run -p tessari-bench --release --features counting -- --workload memory
 ```
 
 It counts **requested** bytes, so it under-reports what the process holds: the

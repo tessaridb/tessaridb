@@ -1,0 +1,59 @@
+# What docs/tessariql.md §8 leaves out, refused by name rather than misread.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+DEFINE TABLE users;
+CREATE users:1 = { name: 'ada', email: 'ada@example.com' };
+--- expect: ok
+
+--- case: a join qualifier
+SELECT * FROM users LEFT JOIN orders ON users.name = orders.who;
+--- expect: error Unsupported
+
+--- case: a join whose ON names a third table
+SELECT * FROM users JOIN orders ON users.name = customers.who;
+--- expect: error NotASideOfTheJoin
+
+--- case: a join whose two sides are one side
+SELECT * FROM users JOIN orders ON users.name = users.email;
+--- expect: error OneSidedJoin
+
+--- case: a grouped read cannot answer with every field
+SELECT * FROM users GROUP BY email;
+--- expect: error UngroupedProjection
+
+--- case: a character the grammar never uses
+SELECT * FROM users WHERE email @ 'ada';
+--- expect: error UnexpectedCharacter
+
+--- case: two comparisons in a row, which could mean either of two things
+SELECT * FROM users WHERE 1 < age < 100;
+--- expect: error UnexpectedToken
+
+--- case: a condition that is not a boolean
+SELECT * FROM users WHERE email;
+--- expect: error ConditionNotBoolean
+
+--- case: an object that names one field twice
+CREATE users:2 = { name: 'ada', name: 'grace' };
+--- expect: error DuplicateField
+
+--- case: a float is not a record identity
+DELETE users:1.5;
+--- expect: error InvalidRecordId
+
+--- case: text after a marker that is not the value it marks
+SET users:1 = datetime 'yesterday';
+--- expect: error InvalidDatetime
+
+--- case: a name the catalog does not hold
+SELECT * FROM missing;
+--- expect: error Unknown
+
+--- case: a word that names an absent feature is still a legal name
+DEFINE TABLE order;
+SELECT * FROM order;
+--- expect: rows 0

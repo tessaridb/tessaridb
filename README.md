@@ -1,20 +1,143 @@
-# bgv-db
+<div align="center">
 
-A multi-model database written in Rust.
+<img src="assets/logo/tessaridb-mark-256.png" alt="" width="112" height="112">
 
-`bgv-db` stores documents, graphs, relational tables, vectors, full-text and
-time-series data in one engine, behind one query language — **bgvQL** — over a
-pluggable key–value substrate. It runs as an embedded library, as a single self-hosted
-node, or as a cluster that distributes both data and engine roles across nodes.
+# TessariDB
 
-> **Status: pre-alpha.** Embedded use works today; the node, the network
-> interfaces and the cluster do not exist yet. Interfaces, the query language
-> and the on-disk format are all unstable and will change without notice.
+**Eight data models. One transactional store. One language.**
+
+A real-time multi-model database, written in Rust, built for AI agents and the
+products around them.
+
+[![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1)](LICENSE)
+[![rust](https://img.shields.io/badge/rust-1.98-6B5FD1)](rust-toolchain.toml)
+[![conformance](https://img.shields.io/badge/conformance-409%20cases-6B5FD1)](crates/tessari-conformance/tests/corpus)
+[![status](https://img.shields.io/badge/status-pre--1.0-6B5FD1)](#status)
+
+[tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
+[protocol](https://github.com/TessariDB/TessariDB-protocol) ·
+[Rust SDK](https://github.com/TessariDB/TessariDB-sdk-rust)
+
+</div>
+
+---
+
+Most systems that need more than one data model end up running more than one
+database — a relational store, a vector index, a search cluster, a graph engine,
+an object bucket — and then spend their whole complexity budget keeping those
+copies agreeing with each other. There is no transaction across them, so the
+question is never *whether* they drift, only when somebody notices.
+
+TessariDB takes the other route: **one transactional record store, several
+access models over the same records.** Documents, tables, edges, keys, files,
+terms, vectors, time windows and geometry are not separate systems bolted
+together — they are different ways of reading the same committed bytes, under
+one snapshot, in one language.
+
+```sql
+DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;
+DEFINE FIELD    body      ON notes TYPE string ANALYZER english;
+DEFINE INDEX    by_body   ON notes FIELDS body SEARCH;
+DEFINE INDEX    by_vector ON notes FIELDS embedding VECTOR cosine;
+DEFINE TABLE    cites EDGE;
+
+SELECT * FROM notes
+ WHERE body MATCHES 'lovelace'
+ ORDER BY vector::cosine(embedding, $query)
+ LIMIT 10;
+```
+
+One statement, one snapshot: a full-text term, a vector neighbourhood and the
+records themselves. No fan-out, no reconciliation, no second client library.
+
+## Why this fits AI agents
+
+An agent's working set is not one shape. Inside a single turn it wants the
+document it is editing, the graph of what depends on that document, the vector
+neighbourhood of a memory, the exact phrase somebody typed three weeks ago, the
+file that was attached, and the last handful of events. The usual answer is five
+services and a consistency problem that lands in the agent's own code.
+
+- **One commit, or none.** When an agent writes a memory, its embedding and its
+  edges, either all three land or none do. Split across a database, a vector
+  index and a graph store there is no such guarantee — and a retrieval that
+  silently misses the embedding does not fail, it returns a plausible wrong
+  answer, which is the worst failure an agent can have.
+- **One retrieval, not three round trips.** Hybrid recall — a term, a
+  neighbourhood, a hop, a filter, a time window — is one statement evaluated
+  against one snapshot, not three queries stitched together in application code.
+- **One surface to expose as a tool.** An agent tool is `run(script)` and a
+  result, rather than six client libraries with six auth models. A
+  [typed query builder](crates/tessari-query) is there for when you would rather
+  a model did not write raw text.
+- **Errors a model can act on.** The language refuses what it does not
+  understand *by name* — `NameTaken`, `UnexpectedToken`, `NoSuchFunction` with
+  the function and the argument position — instead of a stack trace an agent can
+  only paste back to you.
+- **Approximation is declared, never assumed.** A vector read says whether it
+  was exact or approximate. An agent that cannot tell the difference will report
+  the wrong neighbour with complete confidence.
+- **Strict where it matters, loose where it does not.** Schemafull and
+  schemaless are per table, so an agent's scratch memory and your ledger can
+  live in the same database without either compromising.
+- **It tells you what changed.** Change subscriptions are first-class, so an
+  agent reacts to the store instead of polling it.
+
+## The engines
+
+Every row is proven by an executable corpus — a script the build runs and
+compares against expected answers, case by case. The counts are those cases.
+
+| Engine | What it gives you | Cases |
+|---|---|---|
+| **Documents** | schemaless or schemafull records, nested objects and arrays, typed fields with defaults | 38 + 59 |
+| **Relational** | declared tables and fields, unique and multi-field indexes, joins whose answer an index may not change | 44 + 14 + 46 |
+| **Graph** | edge tables, `RELATE`, properties on the edge, multi-hop traversal in both directions | 17 |
+| **Key–value** | `SPACE`s — one key, one whole value, ordered range scans with inclusive or exclusive bounds | 12 |
+| **Objects & files** | `BUCKET`s — bytes addressed by path, byte-range reads, writes at an offset, metadata that is an ordinary record | 28 |
+| **Full-text** | per-field analyzers, whole-term search, lowercase · ASCII folding · Porter2 stemming | 34 |
+| **Vector** | cosine, Euclidean and dot distance, kNN ordering, a graph index that declares whether it answered exactly | 12 |
+| **Time-series** | epoch-anchored windows every process agrees on, aggregates per window, retention as a statement that reports what it removed | 12 |
+| **Geospatial** | a geometry type and an exact integer-grid predicate kernel — orientation, containment, intersection | *in progress* |
+| **References** | `FETCH` — follow a reference, an array of them, or a nested route, without a join | 12 |
+
+Underneath all of them, one substrate with two backends: **in memory**, and
+**on disk** on a log-structured merge-tree engine. Everything above the
+key–value layer is written against a single trait, which is what makes the pair
+possible rather than aspirational.
+
+## And around them
+
+| | |
+|---|---|
+| **Transactions** | snapshot isolation on the commit log, `BEGIN` · `COMMIT` · `CANCEL` |
+| **Real-time** | change subscriptions as a first-class feature — over the wire and over a WebSocket |
+| **Multi-tenant** | namespaces and databases, users, roles, `GRANT` and `REVOKE` per database |
+| **Four ways in** | embedded library · `tessari` CLI · HTTP + WebSocket · a framed binary wire protocol |
+| **Operable** | health and readiness endpoints, Prometheus metrics, graceful drain, log-as-backup with replay-as-restore |
+| **Specified** | the wire and value protocol is [published](https://github.com/TessariDB/TessariDB-protocol) with a shared conformance corpus, so a client in any language is written from the spec and not from our source |
+
+## Status
+
+TessariDB is **pre-1.0** and not published to crates.io. What follows is what
+runs today, not a roadmap.
+
+- **Works:** the embedded library, the `tessari` command line, the HTTP and
+  WebSocket surface, the binary wire protocol (v1.0, with a published spec and
+  conformance corpus), single-node serving with roles, endpoints and graceful
+  drain, backup and restore.
+- **Partial:** geospatial has its value type and its exact predicate kernel; the
+  spatial index is not built yet. Peers are declared and read back, but nothing
+  replicates between them.
+- **Not there:** sharding, replication, and cluster membership. The language has
+  words for them; the engine does not have the machinery yet.
+- **Unstable:** the query language, the wire format and the on-disk format all
+  change without notice before 1.0.
 
 ## Opening one
 
 ```rust
-use bgv_db::Db;
+use tessari::Db;
 
 let db = Db::open("./data")?;          // or Db::in_memory()
 let mut session = db.session();
@@ -45,7 +168,7 @@ A caller who has a value does not write it into the script. `$name` stands
 wherever a literal stands, and the value travels beside the script:
 
 ```rust
-use bgv_db::{Parameters, Value};
+use tessari::{Parameters, Value};
 
 let mut given = Parameters::new();
 given.insert("city".to_owned(), Value::String("Paris".to_owned()));
@@ -58,8 +181,8 @@ replaced *after* the script is parsed — so whatever a caller supplies, it cann
 be read as grammar.
 
 Every way in carries them: `Client::run_with` over the wire, where the values
-travel in the store's own codec, and `bgv --param who='ada' -e '…'` at the
-console, where a value is written as bgvQL and parsed on its own.
+travel in the store's own codec, and `tessari --param who='ada' -e '…'` at the
+console, where a value is written as TessariQL and parsed on its own.
 
 ## Files
 
@@ -93,8 +216,8 @@ becoming part of a statement.
 
 ```rust
 use std::sync::Arc;
-use bgv_db::Db;
-use bgv_db_http::Node;
+use tessari::Db;
+use tessari_http::Node;
 
 let db = Arc::new(Db::open("./data")?);
 let node = Node::bind(db, "127.0.0.1:8080")?;
@@ -112,7 +235,7 @@ curl -s localhost:8080/script --data-binary '
 ```
 
 A caller with a **value** to supply sends the script and the values together,
-in a body the `Content-Type` marks as JSON. The value is written in bgvQL rather
+in a body the `Content-Type` marks as JSON. The value is written in TessariQL rather
 than in JSON's own types — one value syntax, the one `--param` already uses, and
 the one an answer prints back:
 
@@ -162,7 +285,7 @@ Following what changes is a cursor over the same log that carries replication,
 so it needs no setup and loses nothing by being slow:
 
 ```rust
-use bgv_db::{Db, Sequence, Watch};
+use tessari::{Db, Sequence, Watch};
 
 let mut watching = Db::subscribe(Sequence::ZERO, Watch::default());
 for change in db.poll(&mut watching, 128)? {
@@ -227,7 +350,7 @@ deadline for a connection that was never going to close on its own.
 
 ### A console at `/`, served by the node itself
 
-`GET /` is a page that runs bgvQL and watches a table. It is **in the binary**,
+`GET /` is a page that runs TessariQL and watches a table. It is **in the binary**,
 not a redirect to something hosted: a node on a private subnet, in a datacentre
 with no route out, or on a laptop on a plane is exactly the case that most needs
 an interface, and it is the case a redirect leaves with nothing.
@@ -247,7 +370,7 @@ The console is a default-on Cargo feature. A size-sensitive build turns it off
 and carries none of its bytes:
 
 ```sh
-cargo build -p bgv-db-http --no-default-features   # `/` answers 404
+cargo build -p tessari-http --no-default-features   # `/` answers 404
 ```
 
 Two things at v1, because they are the two worth having: run a script and read
@@ -261,8 +384,8 @@ rather than leaving it to be discovered.
 
 ```rust
 use std::sync::Arc;
-use bgv_db::Db;
-use bgv_db_wire::{Client, Node};
+use tessari::Db;
+use tessari_wire::{Client, Node};
 
 let node = Node::bind(Arc::new(Db::open("./data")?), "127.0.0.1:9080")?;
 std::thread::spawn(move || node.serve());
@@ -299,7 +422,7 @@ Both ends live in this one crate, so a change to a frame breaks the other end at
 compile time rather than in somebody's deployment. A client takes only its half:
 
 ```sh
-cargo add bgv-db-wire --no-default-features   # the client, without the node
+cargo add tessari-wire --no-default-features   # the client, without the node
 ```
 
 The default carries the server, which reaches the storage engine — so a client
@@ -362,35 +485,35 @@ the session selected. Without that, "watch everything" would mean rather more
 than the caller who typed `USE` meant by it.
 
 A pushed change names its table, for the reason an answer does. `LIVE SELECT` as
-a bgvQL statement would be built on this and is not built.
+a TessariQL statement would be built on this and is not built.
 
 ## From a terminal
 
 ```
-cargo install --path crates/bgv-db-cli    # installs `bgv`
+cargo install --path crates/tessari-cli    # installs `tessari`
 
-bgv                                    an in-memory store, and a prompt
-bgv ./data                             a store on disk, and a prompt
-bgv ./data -e 'SELECT * FROM users;'   one script, then exit
-bgv ./data -f setup.bgvql              a file
-echo 'SELECT * FROM users;' | bgv ./data
+tessari                                    an in-memory store, and a prompt
+tessari ./data                             a store on disk, and a prompt
+tessari ./data -e 'SELECT * FROM users;'   one script, then exit
+tessari ./data -f setup.tql              a file
+echo 'SELECT * FROM users;' | tessari ./data
 
-bgv ./data --serve 127.0.0.1:9080      be a node
-bgv --at 127.0.0.1:9080                a prompt against one
+tessari ./data --serve 127.0.0.1:9080      be a node
+tessari --at 127.0.0.1:9080                a prompt against one
 
-bgv ./data --serve 127.0.0.1:9080 --http 127.0.0.1:8000
+tessari ./data --serve 127.0.0.1:9080 --http 127.0.0.1:8000
                                        one process, both surfaces, one store
 ```
 
 ```
-bgv> CREATE users:1 = { name: 'ada', joined: datetime '2026-01-15T09:30:00Z' };
+tessari> CREATE users:1 = { name: 'ada', joined: datetime '2026-01-15T09:30:00Z' };
 ok
-bgv> SELECT * FROM users;
+tessari> SELECT * FROM users;
 1: { joined: datetime '2026-01-15T09:30:00Z', name: 'ada' }
 (1 record(s), via scan)
 ```
 
-Answers print in **bgvQL's own syntax**, so what comes out can be pasted back in.
+Answers print in **TessariQL's own syntax**, so what comes out can be pasted back in.
 JSON is what the HTTP endpoint speaks, and it had to decide how fifteen types
 become six; a terminal is owed no such compromise.
 
@@ -405,7 +528,7 @@ shape through both and compares the output character for character, which is the
 claim worth testing rather than asserting. It is `--at` and not `--url` because
 this protocol has no scheme, and calling an address a URL would promise one.
 
-To sign in, `--user <name>`; the password comes from `BGV_PASSWORD` and never
+To sign in, `--user <name>`; the password comes from `TESSARI_PASSWORD` and never
 from an argument, which the process table publishes and the shell history keeps.
 `--backup`, `--restore`, `--health` and `--serve` work on a store this process
 opened, so asking for one over an address is refused rather than quietly run
@@ -454,7 +577,7 @@ as a crash loop. Run it in the foreground and let the supervisor supervise.
 ## Is it well
 
 ```
-bgv ./data --health          # exits non-zero when it is not
+tessari ./data --health          # exits non-zero when it is not
 curl -s localhost:8000/health   # is this store readable
 curl -s localhost:8000/ready    # will this node take work right now
 curl -s localhost:8000/metrics  # the numbers behind both
@@ -479,12 +602,12 @@ the committed sequence, background errors, and per surface: connections in
 flight, open subscriptions, answers, refusals and whether it is ready.
 
 ```
-bgv_uptime_seconds 1841.402
-bgv_committed_sequence 20418
-bgv_connections{surface="wire"} 3
-bgv_answers_total{surface="wire"} 91204
-bgv_refusals_total{surface="wire"} 17
-bgv_ready{surface="http"} 1
+tessari_uptime_seconds 1841.402
+tessari_committed_sequence 20418
+tessari_connections{surface="wire"} 3
+tessari_answers_total{surface="wire"} 91204
+tessari_refusals_total{surface="wire"} 17
+tessari_ready{surface="http"} 1
 ```
 
 A **refusal** is a request the node answered with a failure instead of a result —
@@ -510,7 +633,7 @@ exists rather than a second one written here and exercised never.
 ## Which node am I talking to
 
 ```
-bgv> SELECT * FROM $node;
+tessari> SELECT * FROM $node;
 ```
 
 ```json
@@ -547,9 +670,9 @@ or which peers it has. Both are statements, and what they write lives in the
 store:
 
 ```
-bgv> DEFINE NODE ROLES serving, writable ENDPOINTS 'db-1.internal:9000';
-bgv> DEFINE REPLICA second AT 'db-2.internal:9000' ROLES serving, writable;
-bgv> INFO FOR NODE;
+tessari> DEFINE NODE ROLES serving, writable ENDPOINTS 'db-1.internal:9000';
+tessari> DEFINE REPLICA second AT 'db-2.internal:9000' ROLES serving, writable;
+tessari> INFO FOR NODE;
 ```
 
 ```json
@@ -589,12 +712,12 @@ pure function (ADR-0001). So a restore is a replay, through the same code a
 replica runs.
 
 ```
-bgv ./data --backup ./monday.bgvlog
-bgv ./restored --restore ./monday.bgvlog
+tessari ./data --backup ./monday.tessalog
+tessari ./restored --restore ./monday.tessalog
 
-bgv --verify ./monday.bgvlog                       # changes nothing, needs no store
-bgv ./data --backup ./tuesday.bgvlog --from 4001   # only what happened since
-bgv ./restored --restore ./monday.bgvlog --upto 3000
+tessari --verify ./monday.tessalog                       # changes nothing, needs no store
+tessari ./data --backup ./tuesday.tessalog --from 4001   # only what happened since
+tessari ./restored --restore ./monday.tessalog --upto 3000
 ```
 
 `--verify` reads a backup and says what it holds, applying none of it and opening
@@ -652,31 +775,39 @@ a hole in a comparison would also cover the key going missing entirely.
 
 Timed on two thousand records: 0.8 ms to write, 13 ms to replay.
 
-## Why
+## Who it is for
 
-Most systems that need more than one data model end up running more than one
-database — a relational store, a vector index, a search cluster, a graph engine —
-and then spend their complexity budget keeping those copies consistent with each
-other. `bgv-db` takes the other route: one transactional store, several access
-models over the same records.
+- **AI agents and AI products**, whose working set spans documents, a knowledge
+  graph, embeddings, exact text and attached files — and which need all of that
+  to commit together or not at all.
+- **Anyone about to stand up their third datastore.** If the design document
+  says "Postgres for records, a vector index for recall, a search cluster for
+  text, object storage for blobs", that is four operational surfaces, four
+  backup stories, four auth models and zero transactions across them.
+- **Real-time products**, where something has to know what changed the moment it
+  changes, without a polling loop pretending to be a subscription.
+- **Embedded and edge use**, where the same engine that runs as a node also
+  links straight into the binary with no server at all.
 
-The first consumer is [`bgv-ai-memory`](https://github.com/BoogVAr/bgv-ai-memory),
-an agent-memory and project-governance layer that needs documents, a knowledge
-graph, vector retrieval and full-text search over the same data, with live
-subscriptions and real concurrent access. `bgv-db` is not built only for that —
-it is a general-purpose database that happens to have a demanding first user.
+The first consumer is an agent-memory and project-governance layer that needs
+documents, a knowledge graph, vector retrieval and full-text search over the
+same data, with live subscriptions and real concurrent access. TessariDB is not
+built only for that — it is a general-purpose database that happens to have a
+demanding first user.
 
 ## Design goals
 
 | Goal | What it means here |
 |---|---|
-| **Multi-model** | Documents, graph edges, relational tables and columns, vectors, full-text, time-series — over one record store, not bolted together |
-| **One query language** | **bgvQL** — a single surface for every model, including graph traversal and vector search ([the milestone-1 subset](docs/bgvql.md)) |
-| **Pluggable storage** | Everything above the key–value layer is written against one trait, and two backends prove it: in-memory, and durable on a log-structured merge-tree engine |
+| **Multi-model** | Documents, graph edges, relational tables, keys, files, vectors, full-text and time windows — over one record store, not bolted together |
+| **One query language** | **TessariQL** — a single surface for every model, including graph traversal and vector search ([the language reference](docs/tessariql.md)) |
+| **Pluggable storage** | Everything above the key–value layer is written against one trait, and two backends prove it: in memory, and durable on a log-structured merge-tree engine |
 | **Transactional** | Real transactions with a declared isolation level, not best-effort batching |
 | **Real-time** | Change subscriptions as a first-class feature, not polling |
+| **Honest about cost** | An index changes what a read costs and never what it answers — and where that cannot hold, as with an approximate vector search, the read says so in its own result |
+| **Specified, not just implemented** | The wire and value protocol is published with a shared conformance corpus, so a client is written from the spec rather than from our source |
 | **Deployable three ways** | Embedded library · single self-hosted node · multi-node cluster with sharding and replication |
-| **Multiple interfaces** | CLI, REST, and a socket protocol for connection, control and maintenance |
+| **Multiple interfaces** | CLI, HTTP + WebSocket, and a socket protocol for connection, control and maintenance |
 
 ## Non-goals
 
@@ -693,21 +824,24 @@ outward.
 
 ```
 crates/
-  bgv-db-types        leaf   the value system, record ids, newtypes
-  bgv-db-constants    leaf   tunables, each with unit and rationale
-  bgv-db-kv                  key-value contract, atomic conditional batches, in-memory backend
-  bgv-db-lsm                 persistent backend, durability levels, engine options
-  bgv-db-encoding            key grammar and value codec over the KV layer
-  bgv-db-storage             records, transactions, indexes (snapshot isolation on the log)
-  bgv-db-ql                  bgvQL: lexer, parser, AST
-  bgv-db-session             running a script: catalog, planning, execution, permissions
-  bgv-db                     the embedded front door — open, run, follow the changes
-  bgv-db-http                the HTTP surface
-  bgv-db-wire                the wire protocol
-  bgv-db-backup              log as backup, replay as restore
-  bgv-db-conformance         the executable definition of bgvQL: corpora and runner
-  bgv-db-cli          bin    `bgv` — a prompt and a script runner
-  bgv-db-bench        bin    workload harness, exact percentiles, recorded baselines
+  tessari-types        leaf   the value system, record ids, newtypes
+  tessari-constants    leaf   tunables, each with unit and rationale
+  tessari-geo          leaf   geometry on a fixed integer grid: exact predicates, boxes
+  tessari-kv                  key-value contract, atomic conditional batches, in-memory backend
+  tessari-lsm                 persistent backend, durability levels, engine options
+  tessari-encoding            key grammar and value codec over the KV layer
+  tessari-storage             records, transactions, indexes (snapshot isolation on the log)
+  tessari-ql                  TessariQL: lexer, parser, AST
+  tessari-query               a typed query builder that builds the syntax, never the text
+  tessari-session             running a script: catalog, planning, execution, permissions
+  tessari                     the embedded front door — open, run, follow the changes
+  tessari-http                the HTTP and WebSocket surface
+  tessari-wire                the wire protocol
+  tessari-serve               stopping a serving process in the order the stages require
+  tessari-backup              log as backup, replay as restore
+  tessari-conformance         the executable definition of TessariQL: corpora and runner
+  tessari-cli          bin    `tessari` — a prompt and a script runner
+  tessari-bench        bin    workload harness, exact percentiles, recorded baselines
 ```
 
 Cluster membership, sharding and replication have no crate yet; they will be
@@ -728,9 +862,19 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 - `main` — stable branch. Releases and tags come from here.
 - `dev` — integration branch. Feature branches merge here first.
 
+## Clients
+
+The [protocol](https://github.com/TessariDB/TessariDB-protocol) is a repository
+of its own: the wire and HTTP specification plus a conformance corpus that every
+client is tested against. It is Apache-2.0, and a client written from it depends
+on nothing in this repository.
+
+- **Rust** — [TessariDB-sdk-rust](https://github.com/TessariDB/TessariDB-sdk-rust)
+- Other languages: write one from the spec. That is what it is for.
+
 ## Provenance
 
-`bgv-db` is an independent implementation. Its architecture is informed by the
+TessariDB is an independent implementation. Its architecture is informed by the
 published literature on multi-model storage, LSM and B-tree engines, query
 planning, vector and full-text indexing, and distributed transactions — ordinary
 engineering practice. No code, grammar file, test fixture, schema or identifier
@@ -739,13 +883,30 @@ source, and no third-party database is vendored, linked, or derived from here.
 
 ## Licence
 
-**bgv-db ships under its own commercial licence.** It is proprietary software —
-not open source, and not source-available under any public licence. Access to
-this repository does not grant a licence to use it.
+TessariDB is **source-available** under the
+[Business Source License 1.1](LICENSE). The source is public, and on
+**2030-08-24** — or four years after any given version is first published,
+whichever comes first — that version becomes **Apache-2.0** permanently.
 
-Any use, hosting, redistribution or derivative work requires a written
-commercial licence from the copyright holder. Terms, scope and pricing are set
-per agreement. See [LICENSE](LICENSE), and contact the copyright holder to
-obtain one.
+**Free, with no agreement and no charge, for:**
 
-Copyright (c) boogvar. All rights reserved.
+- personal projects,
+- non-profits, education, research, and community or open-source projects,
+- evaluation, prototyping, benchmarking, CI, and internal development, test and
+  staging environments.
+
+**A commercial licence is required** to run TessariDB in production in or behind
+anything that makes money, and to offer it — or a fork of it — to other people
+as a hosted or managed service. Write to
+**[licensing@tessaridb.com](mailto:licensing@tessaridb.com)** or see
+[tessaridb.com/licensing](https://tessaridb.com/licensing); we are
+straightforward to deal with.
+
+The client SDKs and the protocol specification are **Apache-2.0** on purpose:
+whatever licence the server carries, nothing should constrain the applications
+that talk to it, or anyone who wants to write a client in another language.
+
+Contact: [hello@tessaridb.com](mailto:hello@tessaridb.com) ·
+security reports to [security@tessaridb.com](mailto:security@tessaridb.com).
+
+Copyright (c) 2026 boogvar.

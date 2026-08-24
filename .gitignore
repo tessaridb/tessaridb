@@ -22,7 +22,7 @@
 .idea/
 .vscode/
 
-# BGV governance (local only)
+# Local agent-tooling state, never published
 .bgv
 .bgv/
 .githooks/

@@ -59,204 +59,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
-name = "bgv-db"
-version = "0.0.0"
-dependencies = [
- "bgv-db-kv",
- "bgv-db-lsm",
- "bgv-db-ql",
- "bgv-db-session",
- "bgv-db-storage",
- "bgv-db-types",
- "tempfile",
-]
-
-[[package]]
-name = "bgv-db-backup"
-version = "0.0.0"
-dependencies = [
- "bgv-db-encoding",
- "bgv-db-kv",
- "bgv-db-lsm",
- "bgv-db-session",
- "bgv-db-storage",
- "bgv-db-types",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "bgv-db-bench"
-version = "0.0.0"
-dependencies = [
- "bgv-db",
- "bgv-db-backup",
- "bgv-db-types",
-]
-
-[[package]]
-name = "bgv-db-cli"
-version = "0.0.0"
-dependencies = [
- "bgv-db",
- "bgv-db-backup",
- "bgv-db-http",
- "bgv-db-kv",
- "bgv-db-ql",
- "bgv-db-serve",
- "bgv-db-session",
- "bgv-db-storage",
- "bgv-db-types",
- "bgv-db-wire",
- "libc",
- "rust_decimal",
- "tempfile",
-]
-
-[[package]]
-name = "bgv-db-conformance"
-version = "0.0.0"
-dependencies = [
- "bgv-db-kv",
- "bgv-db-ql",
- "bgv-db-session",
- "bgv-db-storage",
- "bgv-db-types",
-]
-
-[[package]]
-name = "bgv-db-constants"
-version = "0.0.0"
-
-[[package]]
-name = "bgv-db-encoding"
-version = "0.0.0"
-dependencies = [
- "bgv-db-kv",
- "bgv-db-types",
- "proptest",
- "rust_decimal",
- "thiserror",
-]
-
-[[package]]
-name = "bgv-db-geo"
-version = "0.0.0"
-dependencies = [
- "bgv-db-types",
- "proptest",
- "thiserror",
-]
-
-[[package]]
-name = "bgv-db-http"
-version = "0.0.0"
-dependencies = [
- "bgv-db",
- "bgv-db-backup",
- "bgv-db-constants",
- "bgv-db-kv",
- "bgv-db-serve",
- "bgv-db-storage",
- "bgv-db-types",
- "thiserror",
- "tiny_http",
-]
-
-[[package]]
-name = "bgv-db-kv"
-version = "0.0.0"
-dependencies = [
- "thiserror",
-]
-
-[[package]]
-name = "bgv-db-lsm"
-version = "0.0.0"
-dependencies = [
- "bgv-db-kv",
- "bgv-db-storage",
- "bgv-db-types",
- "rocksdb",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "bgv-db-ql"
-version = "0.0.0"
-dependencies = [
- "bgv-db-types",
- "rust_decimal",
- "thiserror",
-]
-
-[[package]]
-name = "bgv-db-query"
-version = "0.0.0"
-dependencies = [
- "bgv-db-ql",
- "bgv-db-types",
- "thiserror",
-]
-
-[[package]]
-name = "bgv-db-serve"
-version = "0.0.0"
-
-[[package]]
-name = "bgv-db-session"
-version = "0.0.0"
-dependencies = [
- "argon2",
- "bgv-db-backup",
- "bgv-db-constants",
- "bgv-db-encoding",
- "bgv-db-kv",
- "bgv-db-ql",
- "bgv-db-storage",
- "bgv-db-types",
- "rust_decimal",
- "thiserror",
-]
-
-[[package]]
-name = "bgv-db-storage"
-version = "0.0.0"
-dependencies = [
- "bgv-db-constants",
- "bgv-db-encoding",
- "bgv-db-kv",
- "bgv-db-types",
- "thiserror",
-]
-
-[[package]]
-name = "bgv-db-types"
-version = "0.0.0"
-dependencies = [
- "rust_decimal",
- "serde",
- "thiserror",
-]
-
-[[package]]
-name = "bgv-db-wire"
-version = "0.0.0"
-dependencies = [
- "bgv-db",
- "bgv-db-backup",
- "bgv-db-encoding",
- "bgv-db-ql",
- "bgv-db-serve",
- "bgv-db-session",
- "bgv-db-storage",
- "bgv-db-types",
- "rust_decimal",
- "thiserror",
-]
-
-[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1218,6 +1020,204 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "tessari"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+ "tessari-kv",
+ "tessari-lsm",
+ "tessari-ql",
+ "tessari-session",
+ "tessari-storage",
+ "tessari-types",
+]
+
+[[package]]
+name = "tessari-backup"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+ "tessari-encoding",
+ "tessari-kv",
+ "tessari-lsm",
+ "tessari-session",
+ "tessari-storage",
+ "tessari-types",
+ "thiserror",
+]
+
+[[package]]
+name = "tessari-bench"
+version = "0.0.0"
+dependencies = [
+ "tessari",
+ "tessari-backup",
+ "tessari-types",
+]
+
+[[package]]
+name = "tessari-cli"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "rust_decimal",
+ "tempfile",
+ "tessari",
+ "tessari-backup",
+ "tessari-http",
+ "tessari-kv",
+ "tessari-ql",
+ "tessari-serve",
+ "tessari-session",
+ "tessari-storage",
+ "tessari-types",
+ "tessari-wire",
+]
+
+[[package]]
+name = "tessari-conformance"
+version = "0.0.0"
+dependencies = [
+ "tessari-kv",
+ "tessari-ql",
+ "tessari-session",
+ "tessari-storage",
+ "tessari-types",
+]
+
+[[package]]
+name = "tessari-constants"
+version = "0.0.0"
+
+[[package]]
+name = "tessari-encoding"
+version = "0.0.0"
+dependencies = [
+ "proptest",
+ "rust_decimal",
+ "tessari-kv",
+ "tessari-types",
+ "thiserror",
+]
+
+[[package]]
+name = "tessari-geo"
+version = "0.0.0"
+dependencies = [
+ "proptest",
+ "tessari-types",
+ "thiserror",
+]
+
+[[package]]
+name = "tessari-http"
+version = "0.0.0"
+dependencies = [
+ "tessari",
+ "tessari-backup",
+ "tessari-constants",
+ "tessari-kv",
+ "tessari-serve",
+ "tessari-storage",
+ "tessari-types",
+ "thiserror",
+ "tiny_http",
+]
+
+[[package]]
+name = "tessari-kv"
+version = "0.0.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "tessari-lsm"
+version = "0.0.0"
+dependencies = [
+ "rocksdb",
+ "tempfile",
+ "tessari-kv",
+ "tessari-storage",
+ "tessari-types",
+ "thiserror",
+]
+
+[[package]]
+name = "tessari-ql"
+version = "0.0.0"
+dependencies = [
+ "rust_decimal",
+ "tessari-types",
+ "thiserror",
+]
+
+[[package]]
+name = "tessari-query"
+version = "0.0.0"
+dependencies = [
+ "tessari-ql",
+ "tessari-types",
+ "thiserror",
+]
+
+[[package]]
+name = "tessari-serve"
+version = "0.0.0"
+
+[[package]]
+name = "tessari-session"
+version = "0.0.0"
+dependencies = [
+ "argon2",
+ "rust_decimal",
+ "tessari-backup",
+ "tessari-constants",
+ "tessari-encoding",
+ "tessari-kv",
+ "tessari-ql",
+ "tessari-storage",
+ "tessari-types",
+ "thiserror",
+]
+
+[[package]]
+name = "tessari-storage"
+version = "0.0.0"
+dependencies = [
+ "tessari-constants",
+ "tessari-encoding",
+ "tessari-kv",
+ "tessari-types",
+ "thiserror",
+]
+
+[[package]]
+name = "tessari-types"
+version = "0.0.0"
+dependencies = [
+ "rust_decimal",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "tessari-wire"
+version = "0.0.0"
+dependencies = [
+ "rust_decimal",
+ "tessari",
+ "tessari-backup",
+ "tessari-encoding",
+ "tessari-ql",
+ "tessari-serve",
+ "tessari-session",
+ "tessari-storage",
+ "tessari-types",
+ "thiserror",
 ]
 
 [[package]]

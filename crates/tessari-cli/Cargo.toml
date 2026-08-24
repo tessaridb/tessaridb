@@ -1,0 +1,40 @@
+[package]
+name = "tessari-cli"
+description = "tessari — a command line for TessariDB: open a store, run a statement, read the answer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "tessari"
+path = "src/main.rs"
+
+[dependencies]
+tessari.workspace = true
+tessari-backup.workspace = true
+tessari-http.workspace = true
+tessari-serve.workspace = true
+# Installing a signal handler is not expressible in safe Rust and `std` has no
+# signal API. Already in the tree through the engine, so this costs no crate.
+libc = "0.2"
+tessari-ql.workspace = true
+tessari-storage.workspace = true
+tessari-types.workspace = true
+tessari-wire.workspace = true
+
+[dev-dependencies]
+# Already in the tree through `tessari-types`; nothing new is fetched, and a test
+# that builds a decimal needs the type that holds one.
+rust_decimal.workspace = true
+tessari-kv.workspace = true
+tessari-session.workspace = true
+# Already in the tree through `tessari-lsm`; the process-level test needs a
+# directory that cleans itself up when the node it served is killed.
+tempfile = "3"
+
+[lints]
+workspace = true

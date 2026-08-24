@@ -1,0 +1,33 @@
+[package]
+name = "tessari-http"
+description = "An HTTP surface for TessariDB: run a script, ask whether the node is alive"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# On by default, because a database with no interface is the case that needs one
+# most — an operator with no route out gets nothing otherwise. Off costs the
+# binary nothing but the console's bytes, which is why the switch exists at all.
+default = ["console"]
+console = []
+
+[dependencies]
+tessari.workspace = true
+tessari-constants.workspace = true
+tessari-serve.workspace = true
+tessari-types.workspace = true
+thiserror.workspace = true
+tiny_http = "0.12"
+
+[dev-dependencies]
+tessari-backup.workspace = true
+tessari-kv.workspace = true
+tessari-storage.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "tessari-bench"
+description = "Workload harness for TessariDB: throughput, exact per-phase percentiles, recorded baselines"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# A counting global allocator, for the `memory` workload. Off by default: it
+# would otherwise put an atomic add on every allocation in every workload, and
+# the recorded baselines are timings taken without one.
+counting = []
+
+[dependencies]
+tessari.workspace = true
+tessari-backup.workspace = true
+tessari-types.workspace = true
+
+[lints]
+workspace = true

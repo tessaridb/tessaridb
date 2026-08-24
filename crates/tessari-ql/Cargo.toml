@@ -1,0 +1,24 @@
+[package]
+name = "tessari-ql"
+description = "TessariQL: lexer, parser and abstract syntax for TessariDB"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# Span normalisation for round-trip tests in other crates. Never enabled by a
+# non-dev dependency: it exists so that a test can compare two trees without the
+# production `PartialEq` being changed to serve it.
+test-support = []
+
+[dependencies]
+tessari-types.workspace = true
+rust_decimal.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

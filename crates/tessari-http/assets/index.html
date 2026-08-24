@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tessari console</title>
+    <link rel="stylesheet" href="/console.css" />
+  </head>
+  <body>
+    <header>
+      <h1>tessari</h1>
+      <p id="where">served by this node</p>
+    </header>
+
+    <p class="plain">
+      This page is served by the node it talks to and reaches nothing else.
+      Credentials travel in the clear, exactly as they do for every other route
+      here: this store has no TLS and belongs on a network you protect.
+    </p>
+
+    <section aria-labelledby="identity-heading">
+      <h2 id="identity-heading">Who you are</h2>
+      <p class="note">
+        Leave both empty against a store that has no users yet. The first
+        <code>DEFINE USER</code> closes it, and everything after that needs a
+        name.
+      </p>
+      <div class="row">
+        <label>User <input id="user" type="text" autocomplete="username" /></label>
+        <label>
+          Password
+          <input id="password" type="password" autocomplete="current-password" />
+        </label>
+      </div>
+    </section>
+
+    <section aria-labelledby="script-heading">
+      <h2 id="script-heading">Run a script</h2>
+      <textarea id="script" rows="6" spellcheck="false">
+USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
+      >
+      <div class="row">
+        <button id="run" type="button">Run</button>
+        <span id="script-status" class="status" role="status"></span>
+      </div>
+      <pre id="answer" class="answer"></pre>
+    </section>
+
+    <section aria-labelledby="watch-heading">
+      <h2 id="watch-heading">Watch a table</h2>
+      <p class="note">
+        <code>from</code> is a position in the log rather than a moment in time,
+        so <code>0</code> replays everything the log still holds. Leave the table
+        empty to follow every table you may read.
+      </p>
+      <div class="row">
+        <label>Namespace <input id="namespace" type="text" value="prod" /></label>
+        <label>Database <input id="database" type="text" value="library" /></label>
+        <label>Table <input id="table" type="text" placeholder="every table" /></label>
+        <label>From <input id="from" type="number" value="0" min="0" /></label>
+      </div>
+      <div class="row">
+        <button id="follow" type="button">Follow</button>
+        <button id="stop" type="button" disabled>Stop</button>
+        <span id="watch-status" class="status" role="status"></span>
+      </div>
+      <ol id="changes" class="changes" reversed></ol>
+    </section>
+
+    <script src="/console.js"></script>
+  </body>
+</html>

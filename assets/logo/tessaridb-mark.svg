@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100" role="img" aria-labelledby="t">
+  <title id="t">TessariDB</title>
+  <rect x="8" y="8" width="58" height="58" rx="4" transform="rotate(-6 37 37)" fill="none" stroke="#7F77DD" stroke-width="2.5" opacity="0.8"/>
+  <path fill="#7F77DD" opacity="0.42" fill-rule="evenodd" d="M25 21 H75 A4 4 0 0 1 79 25 V75 A4 4 0 0 1 75 79 H25 A4 4 0 0 1 21 75 V25 A4 4 0 0 1 25 21 Z M 45.73 42.42 L 79.00 45.33 L 79.00 56.37 L 69.67 55.55 L 67.62 79.00 L 55.58 79.00 L 57.72 54.51 L 44.77 53.37 Z"/>
+  <g transform="rotate(5 63 63)"><path fill="#7F77DD" fill-rule="evenodd" d="M38 34 H88 A4 4 0 0 1 92 38 V88 A4 4 0 0 1 88 92 H38 A4 4 0 0 1 34 88 V38 A4 4 0 0 1 38 34 Z M44 44 H82 V55 H69 V82 H57 V55 H44 Z"/></g>
+</svg>

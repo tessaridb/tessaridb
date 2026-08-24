@@ -1,0 +1,588 @@
+//! What can go wrong between a script and the store.
+//!
+//! Every variant that can name a place does. A script is written by hand, and a
+//! failure that cannot point at the words that caused it makes its author read
+//! the whole thing again.
+
+use tessari_ql::{Function, Span};
+
+/// Result alias for every fallible operation in this crate.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// A failure running a script.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum Error {
+    /// The script could not be read.
+    #[error(transparent)]
+    Script(#[from] tessari_ql::Error),
+
+    /// The store refused the work.
+    #[error(transparent)]
+    Store(#[from] tessari_storage::Error),
+
+    /// An assignment into a route the record does not have.
+    ///
+    /// `SET a.b.c = 1` on a record with no `a`. Creating the objects on the way
+    /// would be the store writing structure nobody asked for, which is the same
+    /// call it makes about zero-filling a hole in a file — so the route is named
+    /// and the write is refused.
+    #[error("{route} is not a route this record has, so nothing can be assigned to it (at {span})")]
+    NoSuchRouteToAssign {
+        /// The route as written.
+        route: String,
+        /// Where it was written.
+        span: tessari_ql::Span,
+    },
+
+    /// A ranged write that would leave a gap in a file.
+    ///
+    /// Zero-filling it would be the store inventing bytes nobody wrote, and a
+    /// real hole is a sparse-file feature nobody has asked for — so the write is
+    /// refused and says where the file actually ends.
+    #[error("writing {path} at {at} would leave a hole: the file is {size} bytes (at {span})")]
+    WriteWouldLeaveAHole {
+        /// The file's path.
+        path: String,
+        /// The offset the write asked for.
+        at: usize,
+        /// How long the file is.
+        size: usize,
+        /// Where the statement is.
+        span: tessari_ql::Span,
+    },
+
+    /// A backup could not be written.
+    ///
+    /// Its own variant rather than a wrapped store error, because the failures
+    /// differ in kind: a backup writes into a buffer and reads the log, so what
+    /// goes wrong is the log or the buffer, and a caller reading "the store
+    /// refused the work" would look in the wrong place.
+    #[error("the backup could not be written: {reason}")]
+    BackupFailed {
+        /// What the backup writer said.
+        reason: String,
+    },
+
+    /// A stored value could not be read back.
+    #[error(transparent)]
+    Encoding(#[from] tessari_encoding::Error),
+
+    /// A statement needs a namespace and the session has not selected one.
+    #[error("no namespace selected (at {span}) — say `USE NAMESPACE …` first")]
+    NoNamespaceSelected {
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A statement needs a database and the session has not selected one.
+    ///
+    /// An error rather than a default, because guessing which database a write
+    /// belongs to is the one mistake reading the result cannot undo.
+    #[error("no database selected (at {span}) — say `USE DATABASE …` first")]
+    NoDatabaseSelected {
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A name the catalog does not hold.
+    #[error("no {entity} named {name:?} (at {span})")]
+    Unknown {
+        /// What kind of thing was looked for.
+        entity: &'static str,
+        /// The name as written.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// `BEGIN` inside a transaction that is already open.
+    #[error("a transaction is already open (at {span})")]
+    NestedTransaction {
+        /// Where the second `BEGIN` is.
+        span: Span,
+    },
+
+    /// `COMMIT` or `CANCEL` with nothing open.
+    #[error("no transaction is open (at {span})")]
+    NoOpenTransaction {
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A script that opened a transaction and never closed it.
+    ///
+    /// The work is discarded and this is raised, rather than committed: a script
+    /// that does not say `COMMIT` has not said its work is finished, and
+    /// discarding it silently would hide that it ran at all.
+    #[error("the script ended with a transaction still open (at {span}); its work was discarded")]
+    UnclosedTransaction {
+        /// Where the `BEGIN` was.
+        span: Span,
+    },
+
+    /// `CREATE` over a record that is already there.
+    ///
+    /// Refused rather than replaced: a silent overwrite loses a record with
+    /// nothing anywhere to notice, and `UPDATE` and `SET` both say replacement
+    /// out loud.
+    #[error("record {id} already exists (at {span}) — say `UPDATE` to replace it")]
+    RecordExists {
+        /// The identity as written.
+        id: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// `UPDATE` over a record that is not there.
+    #[error("no record {id} (at {span}) — say `CREATE` to write a new one")]
+    NoSuchRecord {
+        /// The identity as written.
+        id: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A table used as an edge table that was not declared as one.
+    ///
+    /// Refused rather than accommodated: an edge table carries an index on each
+    /// endpoint, and without them a relation would be written that traversal
+    /// could not find. A write nothing can read back is worse than a refusal.
+    #[error("{table} is not an edge table — define it with `EDGE` (at {span})")]
+    NotAnEdgeTable {
+        /// The table as written.
+        table: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// An edge was given properties that are not a set of named fields.
+    ///
+    /// An edge record already carries `out` and `in`; anything else it holds has
+    /// to be named, so there is nowhere for a bare value to go. Refused where it
+    /// is written rather than dropped on the way to the store.
+    #[error("an edge's properties must be an object, not {found} (at {span})")]
+    EdgePropertiesNotAnObject {
+        /// The type that was given instead.
+        found: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A range bound that no record identity can be.
+    #[error("a key range is bounded by record identities (at {span})")]
+    InvalidKeyBound {
+        /// Where the bound was written.
+        span: Span,
+    },
+
+    /// A condition that is not a boolean.
+    ///
+    /// Every operator that composes a condition answers with one, so this only
+    /// happens when a bare path or literal stands where a question was meant.
+    /// `WHERE tags` is not a question with a false answer; it is a question that
+    /// was not finished, and an empty result would hide that.
+    #[error("a condition must be a boolean, not {found} (at {span})")]
+    ConditionNotBoolean {
+        /// The type that stood there instead.
+        found: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// An arithmetic operator applied to something that is not a number.
+    #[error("`{operator}` needs numbers, not {left} and {right} (at {span})")]
+    NotArithmetic {
+        /// The operator as written.
+        operator: &'static str,
+        /// The left operand's type.
+        left: &'static str,
+        /// The right operand's type.
+        right: &'static str,
+        /// Where the operator is.
+        span: Span,
+    },
+
+    /// Arithmetic that has no answer: an overflow, or a division by zero.
+    ///
+    /// A failure rather than a value, because a wrapped integer or an infinity
+    /// written into a record is a number nobody meant, and by the time anyone
+    /// notices it is stored.
+    #[error("`{operator}` has no answer here: {reason} (at {span})")]
+    ArithmeticFailed {
+        /// The operator as written.
+        operator: &'static str,
+        /// Why there is no answer.
+        reason: &'static str,
+        /// Where the operator is.
+        span: Span,
+    },
+
+    /// A function argument holding the wrong kind of value.
+    #[error("{function} wants {expected} as argument {at}, not {found} (at {span})")]
+    WrongArgument {
+        /// The function called.
+        function: Function,
+        /// Which argument, counting from one.
+        at: usize,
+        /// What it wanted.
+        expected: &'static str,
+        /// What it found.
+        found: &'static str,
+        /// Where the call is.
+        span: Span,
+    },
+
+    /// A function that could not answer for a reason of its own.
+    #[error("{function} has no answer here: {reason} (at {span})")]
+    CallFailed {
+        /// The function called.
+        function: Function,
+        /// Why there is no answer.
+        reason: &'static str,
+        /// Where the call is.
+        span: Span,
+    },
+
+    /// A default that cannot satisfy the type its own field declares.
+    ///
+    /// Checked when the declaration is made rather than when it first bites: by
+    /// the time a write failed on it, the declaration would be in the catalog
+    /// and the failure would look like the write's fault.
+    #[error("the default for {field} is {found}, and the field is declared {declared} (at {span})")]
+    DefaultDoesNotMatch {
+        /// The field being declared.
+        field: String,
+        /// The type it declares.
+        declared: &'static str,
+        /// The type its default evaluated to.
+        found: &'static str,
+        /// Where the field was named.
+        span: Span,
+    },
+
+    /// A fold given something it cannot fold.
+    ///
+    /// A silent skip would make a wrong total look like a right one, which is
+    /// the same reason arithmetic refuses a non-number rather than ignoring it.
+    #[error("`{fold}` cannot fold {found} (at {span})")]
+    NotSummable {
+        /// The fold as written.
+        fold: &'static str,
+        /// What it was given, or why it could not answer.
+        found: &'static str,
+        /// Where the fold is.
+        span: Span,
+    },
+
+    /// A statement was run against a closed store with nobody signed in.
+    ///
+    /// "I do not know you" — a different answer from "I know you and no", and a
+    /// client needs to tell them apart to know whether signing in would help.
+    #[error("this store requires a signed-in user (at {span})")]
+    NotSignedIn {
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// The signed-in user's role does not allow the statement.
+    #[error("a {role} may not {needs} (at {span})")]
+    RoleForbids {
+        /// The role the user holds.
+        role: &'static str,
+        /// What the statement needed.
+        needs: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// The statement writes, and this node does not accept writes.
+    ///
+    /// Not a permission failure: the caller may well be allowed to write, and
+    /// on the leader the same script would run. It says *where*, not *who* —
+    /// which is why it is separate from [`Self::RoleForbids`] and why the
+    /// message says the node rather than the user.
+    #[error("this node does not accept writes (at {span})")]
+    NotWritable {
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// Two peers are declared writable, so a forward has no single destination.
+    ///
+    /// A configuration fault rather than a statement fault, which is why it
+    /// carries names instead of a span: nothing about where the statement sits
+    /// would help, and the two names are what an operator has to go and fix.
+    /// Refused rather than resolved by picking one, because choosing between
+    /// them is choosing a leader, and two leaders accepting writes is the split
+    /// brain replication exists to prevent.
+    #[error("two peers are declared writable, `{named}` and `{also}`")]
+    ManyWritablePeers {
+        /// One of them.
+        named: String,
+        /// The other.
+        also: String,
+    },
+
+    /// A signin that did not match.
+    ///
+    /// One message for a wrong name and a wrong password alike: telling them
+    /// apart tells an attacker which half to keep guessing at.
+    #[error("no user of that name and password")]
+    SignInRefused,
+
+    /// A score was asked for where there is no collection to measure against.
+    ///
+    /// Not answered with zero, and not answered against whatever records
+    /// happened to be read: both produce an ordering that looks exactly like a
+    /// ranking and is not one. See `crate::rank` for the argument in full.
+    #[error(
+        "cannot rank by {field:?}: a score measures a record against its collection, \
+         and that needs a search index on the field (at {span})"
+    )]
+    NoSearchIndex {
+        /// The path as written.
+        field: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A vector distance this store does not have.
+    ///
+    /// The distance is declared rather than defaulted, because a default would
+    /// silently decide which queries the index can serve — so a name nobody
+    /// recognises is refused rather than replaced with a guess.
+    #[error("there is no vector distance called {name:?}; try `cosine` or `euclidean` (at {span})")]
+    NoSuchDistance {
+        /// The name as written.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A role this language does not have.
+    #[error("there is no role called {name:?} (at {span})")]
+    NoSuchRole {
+        /// The name as written.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A verb this language does not have.
+    #[error("there is no verb called {name:?}; a grant carries `read` or `write` (at {span})")]
+    NoSuchVerb {
+        /// The name as written.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A grant-governed user reached a table nobody granted them.
+    ///
+    /// Named separately from [`Error::RoleForbids`] because the two send the
+    /// reader to different places: a role is changed by re-declaring the user,
+    /// and a grant by running one more `GRANT`.
+    #[error("{user:?} has not been granted {needs} on {table:?} (at {span})")]
+    NotGranted {
+        /// Who was asking.
+        user: String,
+        /// The table they named.
+        table: String,
+        /// What they needed on it.
+        needs: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A grant-governed user asking for a backup.
+    ///
+    /// A grant names a table, and a backup names none because it reaches every
+    /// one — so no grant could permit it, and an emptiness that read as
+    /// permission would be worse than a refusal that says why.
+    #[error("{user} holds grants, and a backup is every table at once (at {span})")]
+    GrantedUserCannotBackUp {
+        /// The user who asked.
+        user: String,
+        /// Where the statement is.
+        span: tessari_ql::Span,
+    },
+
+    /// A grant-governed user tried to declare structure.
+    ///
+    /// `DEFINE TABLE x` names a table that does not exist, so no grant for it
+    /// can exist either — the statement is unreachable rather than refused by a
+    /// rule, and saying so is better than a refusal that reads like a bug.
+    #[error(
+        "{user:?} is governed by grants, and a grant names a table that already exists — \
+         declaring one is not a scoped activity (at {span})"
+    )]
+    GrantedUserCannotDeclare {
+        /// Who was asking.
+        user: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A field list on a grant that also carries `write`.
+    ///
+    /// A user who cannot see a field but may write the record would overwrite it
+    /// whole and destroy what they cannot see — a data-loss hole created by the
+    /// permission system rather than closed by it.
+    #[error(
+        "`FIELDS` narrows what may be read, and a `write` grant replaces whole records — \
+         so the two together would let somebody destroy what they cannot see (at {span})"
+    )]
+    FieldsOnAWrite {
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A revocation that would have removed a user's last grant.
+    ///
+    /// Which would **widen** them from a named table to every table their role
+    /// allows — the opposite of what somebody running a `REVOKE` is thinking
+    /// about. Widening is done by granting, which is a statement whose name says
+    /// what it does.
+    #[error(
+        "that is {user:?}'s last grant, and taking it away would widen them to every table \
+         their role allows; grant what they should reach instead (at {span})"
+    )]
+    LastGrant {
+        /// Who the grant is for.
+        user: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A password the hasher will not take.
+    #[error("that password cannot be stored (at {span})")]
+    PasswordUnusable {
+        /// Where the declaration is.
+        span: Span,
+    },
+
+    /// A statement reaching outside the tenancy its user belongs to.
+    ///
+    /// The refusal names the tenancy and not the record: one that says whether
+    /// a record exists has answered the question it declined.
+    #[error("{name} is outside this user's namespace and database (at {span})")]
+    OutsideTenancy {
+        /// The tenancy or object as written.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A fold reached the evaluator instead of being replaced by its value.
+    ///
+    /// **Unreachable through the language today**, for the same reason
+    /// [`Error::NoRecordInScope`] is: the parser refuses a fold everywhere
+    /// except a projection, and a projection holding one is answered by the
+    /// grouped path, which computes each fold once per group and substitutes it
+    /// as a literal before anything is evaluated. Kept because the alternative
+    /// arm would be a wildcard answering `none` — a wrong number where a fold
+    /// was asked for, which is the failure this store spends most of its rules
+    /// avoiding.
+    #[error("a fold has no value outside a group (at {span})")]
+    FoldOutsideAGroup {
+        /// Where the fold was written.
+        span: Span,
+    },
+
+    /// A route into a record, written where there is no record.
+    ///
+    /// **Unreachable through the language today**, and kept anyway. Two separate
+    /// mechanisms hold the invariant — the parser only reads a bare name as a
+    /// route inside a condition, and `seekable` refuses to use a right-hand side
+    /// that reads the record as an index bound — and neither is expressed in a
+    /// type. The alternative to this failure is answering `none`, which would be
+    /// a wrong answer rather than a refusal, and a wrong answer from a filter is
+    /// the failure mode this store spends most of its rules avoiding.
+    #[error("there is no record here to read a path from (at {span})")]
+    NoRecordInScope {
+        /// Where the path was written.
+        span: Span,
+    },
+
+    /// A statement that only a bucket answers, aimed at an ordinary table.
+    ///
+    /// Refused rather than writing a record that looks like a file: the two are
+    /// the same shape on disk, so a table that gained file semantics because
+    /// somebody used the wrong verb is a state nothing could later tell apart.
+    #[error("{table} is not a bucket (at {span}) — define it with `DEFINE BUCKET`")]
+    NotABucket {
+        /// The table as written.
+        table: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A record written by hand into a bucket.
+    ///
+    /// A bucket's records describe bytes the store holds. One a caller can write
+    /// is one that can lie — a size that disagrees with the file, a chunk count
+    /// pointing at chunks nobody wrote — and nothing would ever catch it,
+    /// because there is nothing to catch it against.
+    #[error("{table} is a bucket (at {span}) — write a file with `PUT`")]
+    NotWrittenByHand {
+        /// The bucket as written.
+        table: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A `PUT` whose value is neither bytes nor text.
+    #[error("a file is bytes, not {found} (at {span})")]
+    FileIsNotBytes {
+        /// The type that stood there instead.
+        found: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A file addressed by something other than a path.
+    ///
+    /// A file's identity is text, because a chunk's identity is the path
+    /// followed by its ordinal — and an integer identity and the text of that
+    /// integer would produce the same chunk key, which is two files sharing
+    /// bytes.
+    #[error("a file is named by a path, so its identity is text (at {span})")]
+    FileNeedsAPath {
+        /// Where the identity was written.
+        span: Span,
+    },
+
+    /// Metadata promising a chunk the store does not hold.
+    ///
+    /// Unreachable through the statements that write files — the metadata and
+    /// the chunks land in one commit — so this says the store is inconsistent
+    /// rather than answering a file that is quietly short.
+    #[error("{path:?} is missing chunk {ordinal} (at {span})")]
+    FileIsIncomplete {
+        /// The file's path.
+        path: String,
+        /// Which chunk is absent.
+        ordinal: u32,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A parameter in an expression that belongs to no call.
+    ///
+    /// Every parameter in a script is replaced by its value before the first
+    /// statement runs, so this is not reachable from a script. What is reachable
+    /// is a **stored** expression — a field's `DEFAULT` — which is evaluated on
+    /// every write that omits the field and therefore belongs to no particular
+    /// caller. There is nobody to bind it, so it is refused where it is declared
+    /// rather than surprising a write months later.
+    #[error(
+        "the parameter `${name}` at {span} has no value here — a stored expression belongs to no call"
+    )]
+    ParameterHasNoValue {
+        /// The parameter's name, without its marker.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+}

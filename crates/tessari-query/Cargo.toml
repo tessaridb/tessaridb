@@ -1,0 +1,21 @@
+[package]
+name = "tessari-query"
+description = "A typed query builder for TessariQL: builds the syntax, never the text"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+tessari-ql.workspace = true
+tessari-types.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tessari-ql = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

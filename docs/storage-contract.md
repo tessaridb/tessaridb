@@ -5,7 +5,7 @@ not. Both lists are written here, because the second one is the one that gets
 assumed: a missing guarantee that nobody wrote down does not fail at adoption —
 it fails later, as data drift, with no error anywhere.
 
-This document describes the `bgv-db-kv` layer only. Layers above it supply most
+This document describes the `tessari-kv` layer only. Layers above it supply most
 of what is on the second list, and they are named per item.
 
 ## What a backend guarantees
@@ -32,15 +32,15 @@ prove it, so nothing on this list stays an intention.
 | Missing guarantee | Supplied by | Proven by | Status |
 |---|---|---|---|
 | **Sequencing.** The backend assigns no version, timestamp or order to writes | the record store's committed tail; the replication log extends it — ADR-0001 | log replay determinism test | **partial** — the store assigns sequences; the log follows |
-| **Multi-statement transactions.** A batch is atomic; a transaction spanning reads and writes over time is not | the transaction layer, built from batches plus preconditions | isolation test under concurrent writers | **built** — `bgv-db-storage` |
-| **Snapshot isolation.** Concurrent readers and writers get no isolation beyond individual operations | the MVCC layer, keyed on the sequence — ADR-0006 | concurrent read-write consistency test | **built** — `bgv-db-storage` |
+| **Multi-statement transactions.** A batch is atomic; a transaction spanning reads and writes over time is not | the transaction layer, built from batches plus preconditions | isolation test under concurrent writers | **built** — `tessari-storage` |
+| **Snapshot isolation.** Concurrent readers and writers get no isolation beyond individual operations | the MVCC layer, keyed on the sequence — ADR-0006 | concurrent read-write consistency test | **built** — `tessari-storage` |
 | **Serializability.** The declared level is snapshot isolation, so write skew is permitted | not provided — ADR-0006 records the SSI upgrade path, which changes no bytes on disk | write-skew test, which asserts the anomaly **happens** | **deliberately absent** |
 | **Range or predicate locks.** Conflict detection is per record, so phantoms are possible | not provided at snapshot isolation; would arrive with SSI | phantom-read test | **deliberately absent** |
 | **Secondary index maintenance.** Index entries are ordinary keys in the index keyspace; nothing maintains them automatically | the engine, writing index entries in the *same batch* as the record | orphan-index-entry sweep | not built |
 | **Uniqueness.** No constraint exists | the engine, via an `Absent` precondition in the same batch | `absent-precondition-guards-uniqueness` | **proven at this layer** |
 | **Retention or garbage collection.** Delete exists; deciding what and when does not | the engine's GC, over log and MVCC versions | space-reclamation test | not built |
 | **Exactly-once retry.** A timeout is ambiguous, as in every store | the engine, via idempotent request identity | retry-idempotency test | not built |
-| **Durability.** The in-memory backend has none, by construction | the persistent backend's write path | kill-the-writer-and-reopen test | **built** — `bgv-db-lsm` |
+| **Durability.** The in-memory backend has none, by construction | the persistent backend's write path | kill-the-writer-and-reopen test | **built** — `tessari-lsm` |
 | **Cross-process access.** One process owns the store | out of scope until the cluster milestone | second-open test, which asserts the refusal | **enforced** — the second open is refused by name |
 
 ## Durability

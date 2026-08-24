@@ -1,52 +1,121 @@
-bgv-db Commercial License
+Business Source License 1.1
 
-Copyright (c) boogvar. All rights reserved.
+License text copyright (c) 2017 MariaDB Corporation Ab, All Rights Reserved.
+"Business Source License" is a trademark of MariaDB Corporation Ab.
 
-1. Proprietary software
+-----------------------------------------------------------------------------
 
-   bgv-db and its source code are proprietary and confidential. They are
-   licensed, not sold. This repository is not open source and is not made
-   available under any open-source or source-available public licence.
+Parameters
 
-2. Commercial licence required
+Licensor:             boogvar
 
-   Any use of this software — including use, copying, modification, merging,
-   publication, distribution, sublicensing, hosting, offering it as a service,
-   or creating derivative works, in whole or in part — requires a valid
-   commercial licence granted in writing by the copyright holder.
+Licensed Work:        TessariDB
+                      The Licensed Work is (c) 2026 boogvar
 
-   No rights are granted by the mere availability of this source code. Access to
-   the repository does not constitute a licence.
+Additional Use Grant: You may make production use of the Licensed Work, at no
+                      charge, provided your use falls into one of the
+                      following categories:
 
-3. Licence terms
+                      (a) Personal use. Use by an individual, for that
+                          individual's own purposes, and not on behalf of or
+                          funded by an organisation.
 
-   Commercial licences are issued on a per-agreement basis. Scope, term, seat or
-   node counts, redistribution rights, support and pricing are defined in the
-   applicable licence agreement, which prevails over this file where the two
-   differ.
+                      (b) Non-commercial use. Use by a non-profit
+                          organisation, an educational institution, a research
+                          group, or a community or open-source project, where
+                          the Licensed Work is not used to produce revenue.
 
-   To obtain a licence, contact the copyright holder.
+                      (c) Evaluation and development. Testing, prototyping,
+                          benchmarking, continuous integration, and internal
+                          development, test or staging environments.
 
-4. Third-party components
+                      Any other production use requires a commercial licence
+                      from the Licensor. That includes, without limitation,
+                      use in or in support of a product or service that is
+                      sold, licensed, hosted or otherwise monetised, and
+                      offering the Licensed Work or any derivative of it to
+                      third parties as a hosted or managed service.
 
-   Third-party dependencies remain under their own licences. Their terms are not
-   altered by this licence, and this licence does not extend to them.
+                      You may not remove or alter any licence, copyright or
+                      other notice contained in the Licensed Work.
 
-5. Confidentiality
+Change Date:          2030-08-24
 
-   Where this source is disclosed under an agreement, it is disclosed in
-   confidence and may not be published or shared beyond the terms of that
-   agreement.
+Change License:       Apache License, Version 2.0
 
-6. No warranty
+For information about alternative licensing arrangements for the Licensed
+Work, please visit https://tessaridb.com/licensing or write to
+licensing@tessaridb.com.
 
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+-----------------------------------------------------------------------------
 
-7. Limitation of liability
+Notice
 
-   IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
-   OR OTHER DEALINGS IN THE SOFTWARE.
+Business Source License 1.1
+
+Terms
+
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, redistribute, and make non-production use of the Licensed Work. The
+Licensor may make an Additional Use Grant, above, permitting limited
+production use.
+
+Effective on the Change Date, or the fourth anniversary of the first publicly
+available distribution of a specific version of the Licensed Work under this
+License, whichever comes first, the Licensor hereby grants you rights under
+the terms of the Change License, and the rights granted in the paragraph
+above terminate.
+
+If your use of the Licensed Work does not comply with the requirements
+currently in effect as described in this License, you must purchase a
+commercial license from the Licensor, its affiliated entities, or authorized
+resellers, or you must refrain from using the Licensed Work.
+
+All copies of the original and modified Licensed Work, and derivative works
+of the Licensed Work, are subject to this License. This License applies
+separately for each version of the Licensed Work and the Change Date may vary
+for each version of the Licensed Work released by Licensor.
+
+You must conspicuously display this License on each original or modified copy
+of the Licensed Work. If you receive the Licensed Work in original or
+modified form from a third party, the terms and conditions set forth in this
+License apply to your use of that work.
+
+Any use of the Licensed Work in violation of this License will automatically
+terminate your rights under this License for the current and all other
+versions of the Licensed Work.
+
+This License does not grant you any right in any trademark or logo of
+Licensor or its affiliates (provided that you may use a trademark or logo of
+Licensor as expressly required by this Section).
+
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSED WORK IS PROVIDED ON
+AN "AS IS" BASIS. LICENSOR HEREBY DISCLAIMS ALL WARRANTIES AND CONDITIONS,
+EXPRESS OR IMPLIED, INCLUDING (WITHOUT LIMITATION) WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND
+TITLE.
+
+MariaDB hereby grants you permission to use this License's text to license
+your works, and to refer to it using the trademark "Business Source License",
+as long as you comply with the Covenants of Licensor below.
+
+Covenants of Licensor
+
+In consideration of the right to use this License's text and the "Business
+Source License" name and trademark, Licensor covenants to MariaDB, and to all
+other recipients of the licensed work to be provided by Licensor:
+
+1. To specify as the Change License the GPL Version 2.0 or any later version,
+   or a license that is compatible with GPL Version 2.0 or a later version,
+   where "compatible" means that software provided under the Change License
+   can be included in a program with software provided under GPL Version 2.0
+   or a later version. Licensor may specify additional Change Licenses without
+   limitation.
+
+2. To either: (a) specify an additional grant of rights to use that does not
+   impose any additional restriction on the right granted in this License, as
+   the Additional Use Grant; or (b) insert the text "None".
+
+3. To specify a Change Date.
+
+4. Not to modify this License in any other way.

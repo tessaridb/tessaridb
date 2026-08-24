@@ -6,27 +6,27 @@ members = ["crates/*"]
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.85"
-license = "LicenseRef-bgv-db-Commercial"
+license = "BUSL-1.1"
 authors = ["boogvar"]
-repository = "https://github.com/BoogVAr/bgv-db"
+repository = "https://github.com/TessariDB/TessariDB"
 publish = false
 
 [workspace.dependencies]
-bgv-db-types = { path = "crates/bgv-db-types" }
-bgv-db-constants = { path = "crates/bgv-db-constants" }
-bgv-db-kv = { path = "crates/bgv-db-kv" }
-bgv-db-encoding = { path = "crates/bgv-db-encoding" }
-bgv-db-geo = { path = "crates/bgv-db-geo" }
-bgv-db-storage = { path = "crates/bgv-db-storage" }
-bgv-db-lsm = { path = "crates/bgv-db-lsm" }
-bgv-db-ql = { path = "crates/bgv-db-ql" }
-bgv-db-session = { path = "crates/bgv-db-session" }
-bgv-db-conformance = { path = "crates/bgv-db-conformance" }
-bgv-db = { path = "crates/bgv-db" }
-bgv-db-backup = { path = "crates/bgv-db-backup" }
-bgv-db-wire = { path = "crates/bgv-db-wire" }
-bgv-db-http = { path = "crates/bgv-db-http" }
-bgv-db-serve = { path = "crates/bgv-db-serve" }
+tessari-types = { path = "crates/tessari-types" }
+tessari-constants = { path = "crates/tessari-constants" }
+tessari-kv = { path = "crates/tessari-kv" }
+tessari-encoding = { path = "crates/tessari-encoding" }
+tessari-geo = { path = "crates/tessari-geo" }
+tessari-storage = { path = "crates/tessari-storage" }
+tessari-lsm = { path = "crates/tessari-lsm" }
+tessari-ql = { path = "crates/tessari-ql" }
+tessari-session = { path = "crates/tessari-session" }
+tessari-conformance = { path = "crates/tessari-conformance" }
+tessari = { path = "crates/tessari" }
+tessari-backup = { path = "crates/tessari-backup" }
+tessari-wire = { path = "crates/tessari-wire" }
+tessari-http = { path = "crates/tessari-http" }
+tessari-serve = { path = "crates/tessari-serve" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

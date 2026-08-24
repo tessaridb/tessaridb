@@ -1,0 +1,28 @@
+[package]
+name = "tessari-session"
+description = "Executing TessariQL scripts against a TessariDB store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+argon2.workspace = true
+tessari-constants.workspace = true
+tessari-backup.workspace = true
+tessari-encoding.workspace = true
+tessari-ql.workspace = true
+tessari-storage.workspace = true
+tessari-types.workspace = true
+rust_decimal.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tessari-encoding.workspace = true
+tessari-kv.workspace = true
+
+[lints]
+workspace = true
