@@ -4,7 +4,7 @@
 //!
 //! Every other route on this surface is one request that says everything about
 //! itself. A socket is a session, and a feed has to be *inside* a database —
-//! `tessari::feed` refuses one that is not, because a subscription to nothing
+//! `tessaridb::feed` refuses one that is not, because a subscription to nothing
 //! looks exactly like a quiet table. There is no `USE` before this message, so
 //! this message carries what a `USE` would have said.
 //!
@@ -18,8 +18,8 @@
 //! only because this store already states it has no TLS and belongs on a network
 //! the operator protects.
 
-use tessari::feed::Delivered;
-use tessari::{Change, ChangeKind, Value, Visible, seen};
+use tessaridb::feed::Delivered;
+use tessaridb::{Change, ChangeKind, Value, Visible, seen};
 
 use crate::json::{self, Names};
 use crate::request::Reader;

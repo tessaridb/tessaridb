@@ -14,7 +14,7 @@ name = "tessaridb"
 path = "src/main.rs"
 
 [dependencies]
-tessari.workspace = true
+tessaridb.workspace = true
 tessari-backup.workspace = true
 tessari-http.workspace = true
 tessari-serve.workspace = true

@@ -22,7 +22,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 
-use tessari::Db;
+use tessaridb::Db;
 use tessari_http::Node;
 
 /// A node on a loopback port the operating system picked, plus its address.

@@ -1023,19 +1023,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tessari"
-version = "0.0.0"
-dependencies = [
- "tempfile",
- "tessari-kv",
- "tessari-lsm",
- "tessari-ql",
- "tessari-session",
- "tessari-storage",
- "tessari-types",
-]
-
-[[package]]
 name = "tessari-backup"
 version = "0.0.0"
 dependencies = [
@@ -1053,9 +1040,9 @@ dependencies = [
 name = "tessari-bench"
 version = "0.0.0"
 dependencies = [
- "tessari",
  "tessari-backup",
  "tessari-types",
+ "tessaridb",
 ]
 
 [[package]]
@@ -1065,7 +1052,6 @@ dependencies = [
  "libc",
  "rust_decimal",
  "tempfile",
- "tessari",
  "tessari-backup",
  "tessari-http",
  "tessari-kv",
@@ -1075,6 +1061,7 @@ dependencies = [
  "tessari-storage",
  "tessari-types",
  "tessari-wire",
+ "tessaridb",
 ]
 
 [[package]]
@@ -1116,13 +1103,13 @@ dependencies = [
 name = "tessari-http"
 version = "0.0.0"
 dependencies = [
- "tessari",
  "tessari-backup",
  "tessari-constants",
  "tessari-kv",
  "tessari-serve",
  "tessari-storage",
  "tessari-types",
+ "tessaridb",
  "thiserror",
  "tiny_http",
 ]
@@ -1209,7 +1196,6 @@ name = "tessari-wire"
 version = "0.0.0"
 dependencies = [
  "rust_decimal",
- "tessari",
  "tessari-backup",
  "tessari-encoding",
  "tessari-ql",
@@ -1217,7 +1203,21 @@ dependencies = [
  "tessari-session",
  "tessari-storage",
  "tessari-types",
+ "tessaridb",
  "thiserror",
+]
+
+[[package]]
+name = "tessaridb"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+ "tessari-kv",
+ "tessari-lsm",
+ "tessari-ql",
+ "tessari-session",
+ "tessari-storage",
+ "tessari-types",
 ]
 
 [[package]]

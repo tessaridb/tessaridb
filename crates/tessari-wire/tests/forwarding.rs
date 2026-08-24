@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use tessari::{Db, Sequence, Value};
+use tessaridb::{Db, Sequence, Value};
 use tessari_wire::{Answer, Client, Node};
 
 /// A node on a loopback port the operating system picked, plus its address.

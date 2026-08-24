@@ -57,7 +57,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use tessari::Db;
+use tessaridb::Db;
 
 use crate::samples::Report;
 use crate::workload::Workload;

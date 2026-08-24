@@ -30,7 +30,7 @@
 
 use std::collections::BTreeMap;
 
-use tessari::{AccessPath, Db, Error, Outcome};
+use tessaridb::{AccessPath, Db, Error, Outcome};
 use tessari_serve::{Census, Stopping};
 
 use crate::basic::Credentials;
@@ -123,7 +123,7 @@ impl Answer {
 pub(crate) fn health(db: &Db) -> Answer {
     let held = match db.store().health() {
         Ok(held) => held,
-        Err(error) => return failure(&tessari::Error::from(error)),
+        Err(error) => return failure(&tessaridb::Error::from(error)),
     };
     match held.complaint() {
         None => Answer::new(
@@ -281,7 +281,7 @@ fn surface(out: &mut String, name: &str, stopping: &Stopping) {
 pub(crate) fn session_for<'a>(
     db: &'a Db,
     credentials: Option<&Credentials>,
-) -> Result<tessari::Session<'a>, Answer> {
+) -> Result<tessaridb::Session<'a>, Answer> {
     let mut session = db.session();
     if let Some(presented) = credentials
         && let Err(error) = session.sign_in(&presented.name, &presented.password)
@@ -323,7 +323,7 @@ pub(crate) fn backup(db: &Db, query: Option<&str>, credentials: Option<&Credenti
     );
     match session.run(&script) {
         Ok(outcomes) => match outcomes.last() {
-            Some(Outcome::Value(tessari::Value::Bytes(bytes))) => {
+            Some(Outcome::Value(tessaridb::Value::Bytes(bytes))) => {
                 Answer::octets(200, bytes.clone())
             }
             _ => Answer::new(
@@ -369,9 +369,9 @@ pub(crate) fn script(
         Ok(session) => session,
         Err(answer) => return answer,
     };
-    let mut given = tessari::Parameters::new();
+    let mut given = tessaridb::Parameters::new();
     for (name, value) in written {
-        match tessari::value_of(value) {
+        match tessaridb::value_of(value) {
             Ok(held) => {
                 given.insert(name.clone(), held);
             }
@@ -386,12 +386,12 @@ pub(crate) fn script(
             // only when something in it holds a reference: a record reference
             // carries a table id, and a client receiving `"1:2"` cannot follow
             // it. See `Db::names_in`.
-            let referenced: Vec<(tessari::RecordId, tessari::Value)> = outcomes
+            let referenced: Vec<(tessaridb::RecordId, tessaridb::Value)> = outcomes
                 .iter()
                 .flat_map(|outcome| match outcome {
                     Outcome::Records { records, .. } => records.clone(),
                     Outcome::Value(held) => {
-                        vec![(tessari::RecordId::Int(0), held.clone())]
+                        vec![(tessaridb::RecordId::Int(0), held.clone())]
                     }
                     _ => Vec::new(),
                 })

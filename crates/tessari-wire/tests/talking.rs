@@ -11,7 +11,7 @@ use std::io::Write;
 use std::net::TcpStream;
 use std::sync::Arc;
 
-use tessari::{Db, Value};
+use tessaridb::{Db, Value};
 use tessari_wire::{Answer, Client, Node};
 
 /// A node on a loopback port the operating system picked, plus its address.
@@ -85,15 +85,15 @@ fn a_value_crosses_the_network_as_the_value_it_was() {
     // A decimal is a decimal, not a quoted string a client has to decide about.
     assert!(matches!(
         held.get("exact"),
-        Some(Value::Number(tessari::Number::Decimal(_)))
+        Some(Value::Number(tessaridb::Number::Decimal(_)))
     ));
     assert!(matches!(
         held.get("real"),
-        Some(Value::Number(tessari::Number::Float(_)))
+        Some(Value::Number(tessaridb::Number::Float(_)))
     ));
     assert!(matches!(
         held.get("whole"),
-        Some(Value::Number(tessari::Number::Integer(42)))
+        Some(Value::Number(tessaridb::Number::Integer(42)))
     ));
     assert!(matches!(held.get("span"), Some(Value::Duration(_))));
     assert!(matches!(held.get("at"), Some(Value::Datetime(_))));
@@ -331,6 +331,6 @@ fn two_clients_at_once_do_not_interfere() {
     };
     assert_eq!(
         held.get("held"),
-        Some(&Value::Number(tessari::Number::from(40_i64)))
+        Some(&Value::Number(tessaridb::Number::from(40_i64)))
     );
 }

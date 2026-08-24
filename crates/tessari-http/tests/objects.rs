@@ -13,7 +13,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 
-use tessari::Db;
+use tessaridb::Db;
 use tessari_http::Node;
 
 fn node() -> (Arc<Node>, String) {

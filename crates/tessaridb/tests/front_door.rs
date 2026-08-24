@@ -7,7 +7,7 @@
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
-use tessari::{AccessPath, Change, ChangeKind, Db, RecordId, Sequence, Value, Watch};
+use tessaridb::{AccessPath, Change, ChangeKind, Db, RecordId, Sequence, Value, Watch};
 
 /// The script every test starts from, so each one says only what it is about.
 const READY: &str = "DEFINE NAMESPACE prod;\

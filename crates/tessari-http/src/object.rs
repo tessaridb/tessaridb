@@ -23,7 +23,7 @@
 //! before any statement exists — which is the check being *in front of* the
 //! interpolation rather than trusted to be somewhere.
 
-use tessari::{Db, Outcome, Parameters, Value};
+use tessaridb::{Db, Outcome, Parameters, Value};
 
 use crate::basic::Credentials;
 use crate::respond::{Answer, failure, session_for};

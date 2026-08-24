@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use tessari::{Db, Parameters, Value};
+use tessaridb::{Db, Parameters, Value};
 use tessari_wire::{Answer, Client, Node};
 
 fn serving(db: Db) -> (Arc<Node>, String) {

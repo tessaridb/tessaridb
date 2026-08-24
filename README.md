@@ -148,7 +148,7 @@ lose behind it yet — and if you do run it, pin a commit, because `dev` moves.
 ## Opening one
 
 ```rust
-use tessari::Db;
+use tessaridb::Db;
 
 let db = Db::open("./data")?;          // or Db::in_memory()
 let mut session = db.session();
@@ -179,7 +179,7 @@ A caller who has a value does not write it into the script. `$name` stands
 wherever a literal stands, and the value travels beside the script:
 
 ```rust
-use tessari::{Parameters, Value};
+use tessaridb::{Parameters, Value};
 
 let mut given = Parameters::new();
 given.insert("city".to_owned(), Value::String("Paris".to_owned()));
@@ -227,7 +227,7 @@ becoming part of a statement.
 
 ```rust
 use std::sync::Arc;
-use tessari::Db;
+use tessaridb::Db;
 use tessari_http::Node;
 
 let db = Arc::new(Db::open("./data")?);
@@ -296,7 +296,7 @@ Following what changes is a cursor over the same log that carries replication,
 so it needs no setup and loses nothing by being slow:
 
 ```rust
-use tessari::{Db, Sequence, Watch};
+use tessaridb::{Db, Sequence, Watch};
 
 let mut watching = Db::subscribe(Sequence::ZERO, Watch::default());
 for change in db.poll(&mut watching, 128)? {
@@ -395,7 +395,7 @@ rather than leaving it to be discovered.
 
 ```rust
 use std::sync::Arc;
-use tessari::Db;
+use tessaridb::Db;
 use tessari_wire::{Client, Node};
 
 let node = Node::bind(Arc::new(Db::open("./data")?), "127.0.0.1:9080")?;

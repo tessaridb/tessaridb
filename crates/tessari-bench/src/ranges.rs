@@ -39,7 +39,7 @@
 
 use std::time::Instant;
 
-use tessari::{Db, Outcome};
+use tessaridb::{Db, Outcome};
 
 use crate::samples::{Report, Samples};
 use crate::workload::{Failable, resident_bytes};

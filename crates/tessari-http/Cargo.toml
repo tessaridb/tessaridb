@@ -17,7 +17,7 @@ default = ["console"]
 console = []
 
 [dependencies]
-tessari.workspace = true
+tessaridb.workspace = true
 tessari-constants.workspace = true
 tessari-serve.workspace = true
 tessari-types.workspace = true

@@ -7,8 +7,8 @@ use std::io::{BufReader, BufWriter};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 
-use tessari::feed::{self, Commits, Following};
-use tessari::{Db, Sequence};
+use tessaridb::feed::{self, Commits, Following};
+use tessaridb::{Db, Sequence};
 use tessari_serve::{Busy, Stopping};
 
 use crate::error::{Error, Result};
@@ -200,7 +200,7 @@ fn converse(
         // refused (ADR-0019 §2, case *forward*). Matched on the **variant**, not
         // on the message text: a routing decision taken by string comparison
         // changes meaning the day somebody rewords an error.
-        if matches!(ran, Err(tessari::Error::NotWritable { .. })) {
+        if matches!(ran, Err(tessaridb::Error::NotWritable { .. })) {
             match forward(db, &request) {
                 Ok((kind, body)) => reply(&mut writer, stopping, kind, &body)?,
                 // The hop failed, and the client is told that rather than being
@@ -311,7 +311,7 @@ fn forward(db: &Db, request: &Request) -> Result<(frame::Kind, Vec<u8>)> {
 /// Two things therefore have to be asked here, and both are asked by the
 /// session rather than decided again:
 ///
-/// - **May this caller read at all.** [`tessari::Session::may_read`] — on a
+/// - **May this caller read at all.** [`tessaridb::Session::may_read`] — on a
 ///   closed store an anonymous connection is refused, exactly as a `SELECT`
 ///   would be. A client signs in by running a request with credentials first;
 ///   the session is the connection's, so it is still signed in here.
@@ -332,7 +332,7 @@ fn follow(
     db: &Db,
     committed: &Commits,
     stopping: &Stopping,
-    session: &tessari::Session<'_>,
+    session: &tessaridb::Session<'_>,
     writer: &mut BufWriter<TcpStream>,
     asked: &Follow,
 ) -> Result<()> {
@@ -342,7 +342,7 @@ fn follow(
     writer.get_ref().set_write_timeout(Some(READING))?;
 
     // Everything between the request and the bytes — the grant, the tenancy,
-    // the table, the field visibility, the polling — belongs to `tessari::feed`
+    // the table, the field visibility, the polling — belongs to `tessaridb::feed`
     // and is shared with the socket surface, so the two cannot disagree about
     // who may see what. What is left here is this protocol's two ends.
     let following = Following {

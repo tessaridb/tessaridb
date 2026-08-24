@@ -20,7 +20,7 @@
 //! scripts — so they belong to the embedded path alone, and asking for one over
 //! an address is refused in `main` rather than quietly ignored.
 
-use tessari::{Db, Outcome, Parameters, Session};
+use tessaridb::{Db, Outcome, Parameters, Session};
 use tessari_wire::{Answer, Client, Names};
 
 /// Somewhere statements can be run.

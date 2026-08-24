@@ -22,7 +22,7 @@ tessari-lsm = { path = "crates/tessari-lsm" }
 tessari-ql = { path = "crates/tessari-ql" }
 tessari-session = { path = "crates/tessari-session" }
 tessari-conformance = { path = "crates/tessari-conformance" }
-tessari = { path = "crates/tessari" }
+tessaridb = { path = "crates/tessaridb" }
 tessari-backup = { path = "crates/tessari-backup" }
 tessari-wire = { path = "crates/tessari-wire" }
 tessari-http = { path = "crates/tessari-http" }

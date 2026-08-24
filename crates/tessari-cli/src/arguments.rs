@@ -11,7 +11,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use tessari::{Parameters, Value};
+use tessaridb::{Parameters, Value};
 
 pub const USAGE: &str = "\
 usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
@@ -290,7 +290,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
 /// the way an answer is printed closes that loop — `dec 12.34`, `2s` and
 /// `datetime '…'` all say themselves.
 ///
-/// The value is parsed **in isolation** by `tessari::value_of`, so it is a value
+/// The value is parsed **in isolation** by `tessaridb::value_of`, so it is a value
 /// or it is nothing: `--param x="1; DROP TABLE users"` is refused as a literal
 /// rather than smuggled in as a statement. That reader is shared with the HTTP
 /// body's `parameters`, so the two surfaces cannot come to read a supplied value
@@ -303,7 +303,7 @@ fn parameter(given: &str) -> Result<(String, Value), String> {
         return Err("--param wants a name before the `=`".to_owned());
     }
     let name = name.strip_prefix('$').unwrap_or(name);
-    let value = tessari::value_of(written).map_err(|reason| format!("--param {name}: {reason}"))?;
+    let value = tessaridb::value_of(written).map_err(|reason| format!("--param {name}: {reason}"))?;
     Ok((name.to_owned(), value))
 }
 
@@ -325,7 +325,7 @@ pub fn credentials(user: Option<String>) -> Result<Option<(String, String)>, Str
 mod tests {
     #![allow(clippy::panic)]
 
-    use tessari::Number;
+    use tessaridb::Number;
 
     use super::{Asked, PASSWORD, Source, Value, credentials, parse};
 

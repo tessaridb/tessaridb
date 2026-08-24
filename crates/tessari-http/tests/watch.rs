@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 
-use tessari::Db;
+use tessaridb::Db;
 use tessari_http::Node;
 
 /// The key and the answer, both printed in RFC 6455 §1.3.
@@ -489,7 +489,7 @@ fn a_namespace_that_could_carry_syntax_is_refused_before_a_statement_exists() {
 
 // The filtering itself is proven at the core, by `tessari-wire/tests/pushing.rs`,
 // which exercises grants, tenancy and field visibility and passed **unchanged**
-// when that middle moved into `tessari::feed`. What none of it touches is which
+// when that middle moved into `tessaridb::feed`. What none of it touches is which
 // *session* this surface hands the core: every socket test above signs in
 // nobody, against an open store.
 //

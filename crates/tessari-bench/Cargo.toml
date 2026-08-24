@@ -16,7 +16,7 @@ publish.workspace = true
 counting = []
 
 [dependencies]
-tessari.workspace = true
+tessaridb.workspace = true
 tessari-backup.workspace = true
 tessari-types.workspace = true
 

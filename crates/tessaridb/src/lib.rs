@@ -6,7 +6,7 @@
 //! from here.
 //!
 //! ```
-//! use tessari::{Db, Value};
+//! use tessaridb::{Db, Value};
 //!
 //! let db = Db::in_memory()?;
 //! let mut session = db.session();
@@ -22,7 +22,7 @@
 //! let found = session.run("SELECT name FROM users:1;")?;
 //! let records = found[0].records().expect("a read answers with records");
 //! assert_eq!(records.len(), 1);
-//! # Ok::<(), tessari::Error>(())
+//! # Ok::<(), tessaridb::Error>(())
 //! ```
 //!
 //! # Two ways to open, one behaviour

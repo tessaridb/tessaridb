@@ -42,7 +42,7 @@
 
 use std::collections::BTreeMap;
 
-use tessari::{Db, Outcome};
+use tessaridb::{Db, Outcome};
 use tessari_types::{Number, RecordId, Value};
 
 use crate::counting;
@@ -166,7 +166,7 @@ pub fn memory(db: &Db) -> Failable<Vec<Report>> {
 /// to keep ten. That is the case a collector is for, and it is the only one of
 /// the four where anything is left to win.
 fn reads_that_keep_less_than_they_touch(
-    session: &mut tessari::Session<'_>,
+    session: &mut tessaridb::Session<'_>,
 ) -> Failable<Vec<Report>> {
     // `note` carries no index and `n` carries one, deliberately. Ordering by
     // `n DESC` is served from the index by the bounded descending read, so it

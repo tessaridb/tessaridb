@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use tessari::{Db, Value};
+use tessaridb::{Db, Value};
 use tessari_wire::{Became, Client, Follow, Happened, Node};
 
 /// A node on a loopback port the operating system picked, plus its address.
@@ -204,7 +204,7 @@ fn a_pushed_value_is_the_value_it_was_and_not_a_projection() {
     };
     assert!(matches!(
         held.get("owed"),
-        Some(Value::Number(tessari::Number::Decimal(_)))
+        Some(Value::Number(tessaridb::Number::Decimal(_)))
     ));
     assert!(matches!(held.get("waited"), Some(Value::Duration(_))));
     assert!(matches!(held.get("seen"), Some(Value::Datetime(_))));

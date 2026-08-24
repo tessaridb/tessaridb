@@ -51,7 +51,7 @@ pub type Names = BTreeMap<TableId, String>;
 /// a client has neither.
 #[cfg(feature = "server")]
 #[must_use]
-pub fn names_for(db: &tessari::Db, outcome: &Outcome) -> Names {
+pub fn names_for(db: &tessaridb::Db, outcome: &Outcome) -> Names {
     match outcome {
         Outcome::Records { records, .. } => db.names_in(records).unwrap_or_default(),
         // Wrapped so the same walk finds it. The identity is a placeholder: the

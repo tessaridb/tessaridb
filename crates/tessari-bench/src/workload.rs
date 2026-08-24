@@ -17,7 +17,7 @@
 
 use std::time::Instant;
 
-use tessari::Db;
+use tessaridb::Db;
 
 /// What a workload can fail with.
 ///
@@ -543,7 +543,7 @@ fn vector_index(db: &Db) -> Failable<Vec<Report>> {
 }
 
 /// The record ids an answer carried.
-fn ids(outcomes: Vec<tessari::Outcome>) -> Vec<tessari_types::RecordId> {
+fn ids(outcomes: Vec<tessaridb::Outcome>) -> Vec<tessari_types::RecordId> {
     outcomes
         .first()
         .and_then(|outcome| outcome.records())

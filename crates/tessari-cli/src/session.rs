@@ -187,7 +187,7 @@ mod tests {
 
     use std::io::Cursor;
 
-    use tessari::{Db, Parameters};
+    use tessaridb::{Db, Parameters};
 
     use super::{Ended, Mode, closed, run};
     use crate::store::Embedded;

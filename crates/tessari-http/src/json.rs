@@ -34,7 +34,7 @@
 
 use std::collections::BTreeMap;
 
-use tessari::{Geometry, Polygon, Position, TableId, Value};
+use tessaridb::{Geometry, Polygon, Position, TableId, Value};
 
 /// What a table id is called, for the references an answer carries.
 ///
@@ -233,13 +233,13 @@ pub(crate) fn write(out: &mut String, value: &Value, names: &Names) {
 }
 
 /// A number, exact where JSON allows and quoted where it does not.
-fn number_of(out: &mut String, number: &tessari::Number) {
+fn number_of(out: &mut String, number: &tessaridb::Number) {
     match number {
-        tessari::Number::Integer(held) => out.push_str(&held.to_string()),
+        tessaridb::Number::Integer(held) => out.push_str(&held.to_string()),
         // Quoted, because a JSON number is a double and `dec` exists to keep an
         // amount of money from being one.
-        tessari::Number::Decimal(held) => string(out, &held.to_string()),
-        tessari::Number::Float(held) => {
+        tessaridb::Number::Decimal(held) => string(out, &held.to_string()),
+        tessaridb::Number::Float(held) => {
             // JSON has no infinity and no not-a-number. Writing one unquoted
             // produces a document most parsers reject, so they are spelled and
             // quoted — and a distance of `+∞` is a real answer this store gives.
@@ -312,7 +312,7 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use tessari::{Number, Value};
+    use tessaridb::{Number, Value};
 
     use super::{Names, write};
 

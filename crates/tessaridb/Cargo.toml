@@ -1,5 +1,5 @@
 [package]
-name = "tessari"
+name = "tessaridb"
 description = "The embedded front door to TessariDB: open a database, run a script, follow the changes"
 version.workspace = true
 edition.workspace = true

@@ -13,16 +13,16 @@ publish.workspace = true
 # On by default so every existing caller in this workspace is unaffected, and
 # `--no-default-features` gives the half a client needs.
 #
-# The split is not tidiness: `tessari` reaches the storage engine, so a client
+# The split is not tidiness: `tessaridb` reaches the storage engine, so a client
 # built with the server half would compile RocksDB — and a password hasher, and
 # the serving crate — in order to send a SELECT down a socket. Both halves stay
 # in one crate on purpose, so that a change to a frame breaks the other end at
 # compile time rather than in somebody's deployment.
 default = ["server"]
-server = ["dep:tessari", "dep:tessari-serve", "dep:tessari-session", "dep:tessari-storage"]
+server = ["dep:tessaridb", "dep:tessari-serve", "dep:tessari-session", "dep:tessari-storage"]
 
 [dependencies]
-tessari = { workspace = true, optional = true }
+tessaridb = { workspace = true, optional = true }
 tessari-serve = { workspace = true, optional = true }
 tessari-encoding.workspace = true
 tessari-ql.workspace = true

@@ -43,7 +43,7 @@ use std::fs;
 use std::io::{self, BufReader, IsTerminal, Write};
 use std::process::ExitCode;
 
-use tessari::Db;
+use tessaridb::Db;
 
 use crate::arguments::{Asked, Serving, Source, credentials, parse};
 use crate::session::{Ended, Mode};
@@ -291,7 +291,7 @@ fn backup(db: &Db, path: &std::path::Path, from: Option<u64>) -> Result<(), Stri
     let mut out = std::io::BufWriter::new(
         fs::File::create(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
     );
-    let from = tessari::Sequence::new(from.unwrap_or(1));
+    let from = tessaridb::Sequence::new(from.unwrap_or(1));
     let written = tessari_backup::write_from(db.store(), &mut out, from)
         .map_err(|failure| format!("{}: {failure}", path.display()))?;
     out.flush()
@@ -311,7 +311,7 @@ fn restore(db: &Db, path: &std::path::Path, upto: Option<u64>) -> Result<(), Str
     let mut input = std::io::BufReader::new(
         fs::File::open(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
     );
-    let upto = upto.map(tessari::Sequence::new);
+    let upto = upto.map(tessaridb::Sequence::new);
     let held = tessari_backup::read_until(db.store(), &mut input, upto)
         .map_err(|failure| format!("{}: {failure}", path.display()))?;
     println!("{} record(s) from {}", held.records, path.display());

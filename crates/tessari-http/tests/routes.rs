@@ -10,7 +10,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 
-use tessari::Db;
+use tessaridb::Db;
 use tessari_http::Node;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_storage::Store;

@@ -58,8 +58,8 @@ mod websocket;
 
 use std::sync::Arc;
 
-use tessari::Db;
-use tessari::feed::Commits;
+use tessaridb::Db;
+use tessaridb::feed::Commits;
 use tessari_serve::{Busy, Census, Stopping};
 use tiny_http::{Method, Request, Response, Server};
 
@@ -75,7 +75,7 @@ pub struct Node {
     ///
     /// Per node rather than per store: a commit that arrived through a different
     /// surface does not signal this one, and that costs a subscriber up to one
-    /// wait rather than costing it the change (`tessari::feed::Commits`).
+    /// wait rather than costing it the change (`tessaridb::feed::Commits`).
     committed: Arc<Commits>,
 }
 

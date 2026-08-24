@@ -31,8 +31,8 @@ mod sha1;
 
 use std::io::{Read, Write};
 
-use tessari::feed::{Commits, Following};
-use tessari::{Db, Sequence};
+use tessaridb::feed::{Commits, Following};
+use tessaridb::{Db, Sequence};
 use tessari_constants::SOCKET_MAX_MESSAGE_BYTES;
 use tessari_serve::{Busy, Stopping};
 use tiny_http::{Header, Request, Response};
@@ -235,7 +235,7 @@ fn feed(
         table: asked.table.as_deref(),
     };
     let mut broken = false;
-    let outcome = tessari::feed::follow(
+    let outcome = tessaridb::feed::follow(
         db,
         &session,
         &following,
@@ -252,8 +252,8 @@ fn feed(
                 .names_in(&[(
                     change.id.clone(),
                     match &change.kind {
-                        tessari::ChangeKind::Written(held) => held.clone(),
-                        tessari::ChangeKind::Removed => tessari::Value::Null,
+                        tessaridb::ChangeKind::Written(held) => held.clone(),
+                        tessaridb::ChangeKind::Removed => tessaridb::Value::Null,
                     },
                 )])
                 .unwrap_or_default();
@@ -343,7 +343,7 @@ mod tests {
     /// reaches it: every exchange below is decided by the frame protocol before
     /// a follow request is ever parsed.
     fn exchange(sent: Vec<u8>) -> Vec<(bool, u8, Vec<u8>)> {
-        let db = tessari::Db::in_memory().expect("an in-memory store");
+        let db = tessaridb::Db::in_memory().expect("an in-memory store");
         let stopping = tessari_serve::Stopping::new();
         let committed = super::Commits::default();
         let mut client = Client {
