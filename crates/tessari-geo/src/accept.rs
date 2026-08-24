@@ -45,13 +45,13 @@
 //! counter-clockwise, and also tells parsers not to reject rings that do not —
 //! normalising would be a repair, and this boundary does not repair.
 //!
-//! The members of a multi-polygon are not checked against each other for
-//! overlap either, and that one is now **owed**. It used to be harmless: an
-//! overlap was a property of the collection rather than of any shape in it, and
-//! nothing rested on it. [`crate::relate::covers`] does. Its rule that a segment
-//! crossing a ring edge has left the region is exact for a multi-polygon whose
-//! members have disjoint interiors, which is what RFC 7946 asks for and what
-//! this boundary does not yet enforce.
+//! The members of a multi-polygon **are** checked against each other, and that
+//! is the one rule here whose reason lives in another module. It used to be
+//! omitted, harmlessly: an overlap was a property of the collection rather than
+//! of any shape in it, and nothing rested on it. [`crate::relate::covers`] does
+//! — its rule that a segment crossing a ring edge has left the region is exact
+//! for members with disjoint interiors and wrong otherwise — so the invariant is
+//! enforced where the value enters rather than assumed where it is read.
 
 use tessari_types::{Geometry, Polygon, Position, Ring};
 
@@ -59,6 +59,8 @@ use crate::grid::{OffGrid, Snapped};
 use crate::predicate::{
     Containment, ring_contains, segments_cross, segments_meet, twice_signed_area,
 };
+use crate::relate::areas_share_area;
+use crate::shape::Area;
 
 /// Put a shape on the grid, and decide whether the store will hold it.
 ///
@@ -184,6 +186,19 @@ pub enum Defect {
         /// A position in the shared part.
         position: Position,
     },
+    /// Two members of a multi-polygon share area, or share a stretch of edge.
+    ///
+    /// Named by position in the collection rather than by coordinate: what is
+    /// wrong is the pair, and the place where they meet is a rational point
+    /// rather than a grid one, so a coordinate here would be a rounded
+    /// approximation of the complaint.
+    #[error("member {earlier} and member {later} of a multi-polygon share area")]
+    MembersOverlap {
+        /// The earlier of the two, counting from zero.
+        earlier: usize,
+        /// The later of the two.
+        later: usize,
+    },
 }
 
 /// Where in a shape a defect is.
@@ -272,15 +287,17 @@ fn accept_shape(shape: &Geometry) -> Result<Geometry, Refused> {
                 .collect::<Result<Vec<_>, _>>()?,
         ),
         Geometry::Polygon(polygon) => Geometry::Polygon(accept_polygon(polygon)?),
-        Geometry::MultiPolygon(polygons) => Geometry::MultiPolygon(
-            polygons
+        Geometry::MultiPolygon(polygons) => {
+            let members = polygons
                 .iter()
                 .enumerate()
                 .map(|(index, polygon)| {
                     accept_polygon(polygon).map_err(|refused| refused.under(Step::Member(index)))
                 })
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
+                .collect::<Result<Vec<_>, _>>()?;
+            members_are_separate(&members)?;
+            Geometry::MultiPolygon(members)
+        }
         Geometry::Collection(shapes) => Geometry::Collection(
             shapes
                 .iter()
@@ -501,6 +518,49 @@ fn first_crossing(one: &[Snapped], other: &[Snapped]) -> Option<Snapped> {
         }
     }
     None
+}
+
+/// Whether the members of a multi-polygon keep out of each other's way.
+///
+/// # Why this is checked here rather than left to the caller
+///
+/// It used to be left. Wave 98 recorded the omission and named the condition
+/// under which it would matter — "the moment an area or an overlay is computed"
+/// — and wave 99 made it matter one wave later by a route that sentence did not
+/// anticipate: [`crate::relate::covers`] rules that a segment crossing a ring
+/// edge transversally has left the region, which is exact for members with
+/// disjoint interiors and wrong for members that overlap.
+///
+/// So the invariant a predicate rests on is now enforced where the value enters
+/// the store, rather than assumed at the place that reads it.
+///
+/// # What counts as in each other's way
+///
+/// Shared **area**, and also a shared **stretch of edge**. Meeting at a corner
+/// or crossing at a single point is legal and stays legal; RFC 7946 and OGC both
+/// ask members to meet at finitely many points, so a shared line is already
+/// outside the format.
+///
+/// # Errors
+///
+/// Returns [`Defect::MembersOverlap`] naming the two members, by their position
+/// in the collection.
+fn members_are_separate(members: &[Polygon]) -> Result<(), Refused> {
+    let areas = members
+        .iter()
+        .map(Area::of)
+        .collect::<Result<Vec<_>, OffGrid>>()?;
+    for (later, area) in areas.iter().enumerate() {
+        for (earlier, before) in areas.iter().take(later).enumerate() {
+            if areas_share_area(before, area) {
+                return Err(Refused::malformed(
+                    Defect::MembersOverlap { earlier, later },
+                    Site::whole(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------------- the plumbing

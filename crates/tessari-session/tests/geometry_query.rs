@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Parameters, Session};
 use tessari_storage::Store;
-use tessari_types::{Geometry, Polygon, Position, Ring, Value};
+use tessari_types::{Geometry, Number, Polygon, Position, Ring, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
@@ -311,5 +311,109 @@ fn a_geo_predicate_can_be_selected_as_a_field_and_not_only_filtered_on() {
         fields.get("meets"),
         Some(&Value::Bool(true)),
         "the answer should come back as a value, got {fields:?}"
+    );
+}
+
+// ----------------------------------------------------------- measurement
+
+#[test]
+fn distance_answers_in_metres_and_orders_a_bounded_read() {
+    let store = store();
+    let mut session = schemaless(&store);
+    place(&mut session, 1, "near", Geometry::Point(at(0.0, 0.0)));
+    place(&mut session, 2, "far", Geometry::Point(at(0.0, 5.0)));
+    place(&mut session, 3, "middle", Geometry::Point(at(0.0, 1.0)));
+    // A record with no shape at all, which is what the ordering has to survive.
+    session
+        .run("CREATE places:4 = { name: 'nowhere' };")
+        .unwrap();
+
+    let origin = bound("here", Value::Geometry(Geometry::Point(at(0.0, 0.0))));
+    let outcomes = session
+        .run_with(
+            "SELECT * FROM places ORDER BY geo::distance(shape, $here) LIMIT 3;",
+            &origin,
+        )
+        .unwrap();
+    let Some(Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("a select answers with records")
+    };
+    let ordered: Vec<String> = records
+        .iter()
+        .map(|(_, value)| {
+            let Value::Object(fields) = value else {
+                panic!("a record is an object")
+            };
+            match fields.get("name") {
+                Some(Value::String(name)) => name.clone(),
+                other => panic!("expected a name, got {other:?}"),
+            }
+        })
+        .collect();
+    // `nowhere` is infinitely far rather than absent, so it sorts last rather
+    // than first — which is the whole reason a distance answers for an absence.
+    assert_eq!(ordered, vec!["near", "middle", "far"]);
+}
+
+#[test]
+fn a_distance_between_shapes_larger_than_positions_is_refused_by_name() {
+    let store = store();
+    let mut session = schemaless(&store);
+    place(&mut session, 1, "an area", square(0.0, 1.0));
+
+    let refusal = session
+        .run_with(
+            "SELECT geo::distance(shape, $here) AS far FROM places;",
+            &bound("here", Value::Geometry(Geometry::Point(at(5.0, 5.0)))),
+        )
+        .expect_err("a polygon is not a position")
+        .to_string();
+    assert!(refusal.contains("geo::distance"), "{refusal}");
+    assert!(refusal.contains("position"), "{refusal}");
+    assert!(refusal.contains("polygon"), "{refusal}");
+}
+
+#[test]
+fn area_answers_in_square_metres_and_is_zero_without_an_interior() {
+    let store = store();
+    let mut session = schemaless(&store);
+    place(&mut session, 1, "a square", square(0.0, 1.0));
+    place(&mut session, 2, "a position", Geometry::Point(at(3.0, 3.0)));
+
+    let outcomes = session
+        .run("SELECT name, geo::area(shape) AS ground FROM places;")
+        .unwrap();
+    let Some(Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("a select answers with records")
+    };
+    let mut measured: Vec<(String, f64)> = records
+        .iter()
+        .map(|(_, value)| {
+            let Value::Object(fields) = value else {
+                panic!("a record is an object")
+            };
+            let (Some(Value::String(name)), Some(Value::Number(Number::Float(ground)))) =
+                (fields.get("name"), fields.get("ground"))
+            else {
+                panic!("expected a name and a float ground, got {fields:?}")
+            };
+            (name.clone(), *ground)
+        })
+        .collect();
+    measured.sort_by(|one, other| one.0.cmp(&other.0));
+
+    assert_eq!(measured[0].0, "a position");
+    assert_eq!(measured[0].1, 0.0);
+
+    // One degree square at the equator: a shade over twelve thousand square
+    // kilometres. The exact value is the geometry crate's business and is
+    // checked there against a closed form; what this asserts is that the answer
+    // arrived in square metres rather than in degrees, which differ by fourteen
+    // orders of magnitude and would be unmissable.
+    assert_eq!(measured[1].0, "a square");
+    assert!(
+        measured[1].1 > 1.2e10 && measured[1].1 < 1.3e10,
+        "a degree square should be about 1.23e10 m², got {}",
+        measured[1].1
     );
 }

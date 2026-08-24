@@ -1447,7 +1447,7 @@ SELECT * FROM users WHERE string::len(name) = 3;
 | `type` | `of(value)` — the type's name, as §3 spells it |
 | `vector` | `cosine(a, b)` · `euclidean(a, b)` · `dot(a, b)` |
 | `search` | `score(field, 'query')` — see [Ranking](#ranking) |
-| `geo` | `intersects` · `disjoint` · `covers` · `covered_by` · `contains` · `within` · `equals` — see [Shapes](#shapes) |
+| `geo` | `intersects` · `disjoint` · `covers` · `covered_by` · `contains` · `within` · `equals` · `distance(a, b)` · `area(shape)` — see [Shapes](#shapes) |
 
 **What earns a place: a function is here when it cannot be expressed by what the
 language already has.** That is why there is no `array::contains` (`CONTAINS`
@@ -1520,8 +1520,51 @@ when it is stored, once, visibly.
 in a record. A longitude of 181 is a mistake upstream, and answering a question
 about it would be answering about somewhere that is not there.
 
+#### Measuring
+
+Two functions, and both answer in **SI units**:
+
+```
+SELECT name FROM places ORDER BY geo::distance(shape, $me) LIMIT 10;
+SELECT name, geo::area(zone) AS square_metres FROM districts;
+```
+
+`geo::distance(a, b)` is the distance along the ellipsoid between two
+**positions**, in metres. Both arguments must be positions: the distance from a
+position to a *larger* shape is the distance to the nearest part of it, which is
+a different computation and is not written yet — so a polygon is refused by name
+rather than answered about from one of its corners.
+
+**There is no distance in degrees, anywhere.** Not exposed, not labelled, not
+behind a flag. A function returning degrees is a function somebody reads as
+metres, and the mistake is invisible because the number looks reasonable at every
+latitude except the ones where it matters.
+
+A distance to something that is not there is `+∞` rather than `NONE`, for the
+same reason the vector distances answer that way: `NONE` sorts below every value,
+so a bounded nearest-first read would otherwise answer with exactly the records
+that have no shape, in first place.
+
+Two positions on **opposite sides of the world** answer `NONE`. The solution
+does not converge there, and the number it would otherwise return is wrong by an
+amount nobody can bound.
+
+`geo::area(shape)` is how much ground a shape covers, in square metres. Zero for
+anything with no interior. Holes are subtracted; the members of a multi-polygon
+add up, which is why the store refuses a multi-polygon whose members overlap —
+the shared ground would otherwise be counted twice with nothing to say so.
+
+Areas are computed on the sphere with the same total surface as the ellipsoid,
+and edges are the lon–lat straight lines the geometry actually says rather than
+great circles. So a box from 0°N to 60°N is the ground between two **parallels**,
+which is what a reader of the coordinates expects.
+
+#### What is not there yet
+
 A shape reaches a statement as a bound parameter; there is no literal for one
-yet.
+yet. There is no spatial index, so a spatial filter is a scan and refines every
+record it reads. And `geo::touches` is not written — every other predicate here
+is a composition of two algorithms, and that one needs a third.
 
 ### Ranking
 

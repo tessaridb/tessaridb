@@ -46,6 +46,16 @@ pub struct Area {
 }
 
 impl Area {
+    /// Put a polygon on the grid.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OffGrid`] when any position is not finite or lies off the
+    /// sphere.
+    pub fn of(polygon: &Polygon) -> Result<Self, OffGrid> {
+        snap_polygon(polygon)
+    }
+
     /// Every ring of this area, shell first.
     pub fn rings(&self) -> impl Iterator<Item = &Loop> {
         core::iter::once(&self.shell).chain(self.holes.iter())

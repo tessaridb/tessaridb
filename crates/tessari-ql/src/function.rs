@@ -89,6 +89,13 @@ pub enum Function {
     /// `geo::equals(a, b)` — whether the two cover exactly the same positions,
     /// however each was written.
     GeoEquals,
+    /// `geo::distance(a, b)` — how far apart two positions are along the
+    /// ellipsoid, in **metres**. Both arguments must be positions; there is no
+    /// distance between larger shapes yet.
+    GeoDistance,
+    /// `geo::area(shape)` — how much ground a shape covers, in **square
+    /// metres**. Zero for anything with no interior.
+    GeoArea,
 }
 
 impl Function {
@@ -120,6 +127,8 @@ impl Function {
         Self::GeoContains,
         Self::GeoWithin,
         Self::GeoEquals,
+        Self::GeoDistance,
+        Self::GeoArea,
     ];
 
     /// How the function is written, group and name together.
@@ -152,6 +161,8 @@ impl Function {
             Self::GeoContains => "geo::contains",
             Self::GeoWithin => "geo::within",
             Self::GeoEquals => "geo::equals",
+            Self::GeoDistance => "geo::distance",
+            Self::GeoArea => "geo::area",
         }
     }
 
@@ -172,7 +183,8 @@ impl Function {
             | Self::GeoCoveredBy
             | Self::GeoContains
             | Self::GeoWithin
-            | Self::GeoEquals => 2,
+            | Self::GeoEquals
+            | Self::GeoDistance => 2,
             _ => 1,
         }
     }
@@ -193,6 +205,14 @@ impl Function {
     ///   field holds none of the query's words, and a document holding none of
     ///   them scores zero. That is the computed answer and not a stand-in for
     ///   one.
+    ///
+    /// [`Function::GeoDistance`] is in the list for the distance reason and not
+    /// by analogy: `ORDER BY geo::distance(…) LIMIT 10` over a table where some
+    /// records have no shape would otherwise answer with exactly those records,
+    /// in first place, because `NONE` sorts below every value. `geo::area` is
+    /// **not** in the list — an area is not an ordering a bounded read is built
+    /// on in the same way, and an absent shape having no area is a claim this
+    /// store cannot make.
     #[must_use]
     pub const fn answers_for_absence(self) -> bool {
         matches!(
@@ -202,6 +222,7 @@ impl Function {
                 | Self::VectorEuclidean
                 | Self::VectorDot
                 | Self::SearchScore
+                | Self::GeoDistance
         )
     }
 

@@ -60,8 +60,8 @@
 
 use crate::grid::Snapped;
 use crate::predicate::{
-    Containment, Fine, on_segment, on_segment_fine, ring_contains_fine, segments_cross,
-    segments_meet,
+    Containment, Fine, Orientation, on_segment, on_segment_fine, ring_contains_fine,
+    segments_cross, segments_meet,
 };
 use crate::shape::{Area, Shape};
 use crate::witness::inside_ring;
@@ -347,4 +347,91 @@ fn covers_areas(here: &Parts<'_>, other: &Shape) -> bool {
         }
     }
     true
+}
+
+/// Whether two areas share any area at all — as opposed to touching.
+///
+/// # Why this is a separate question from `intersects`
+///
+/// Two areas that meet along an edge or at a corner intersect, and are still
+/// perfectly legal as two members of one multi-polygon. What is not legal, and
+/// what this asks about, is **shared area**: an overlap with a positive extent.
+///
+/// [`crate::accept`] needs the distinction because the containment rule this
+/// module rests on assumes it. ADR-0029 Decision 2 rules that a segment crossing
+/// a ring edge transversally has left the region — which is exact for members
+/// whose interiors are disjoint, and wrong for members that overlap, since a
+/// segment crossing from one member's interior into another's has not left the
+/// shape at all.
+///
+/// A **shared boundary stretch** counts here too, even though it encloses no
+/// area. Two members sharing an edge break the same rule for the same reason,
+/// and OGC asks members to meet at finitely many points rather than along a
+/// line, so refusing it is not a stricter reading than the standard's.
+#[must_use]
+pub fn areas_share_area(one: &Area, other: &Area) -> bool {
+    let (Some(one_box), Some(other_box)) = (ring_bounds(&one.shell), ring_bounds(&other.shell))
+    else {
+        return false;
+    };
+    if !one_box.meets(other_box) {
+        return false;
+    }
+
+    for first in edges_of(one) {
+        for second in edges_of(other) {
+            if segments_cross(first.0, first.1, second.0, second.1)
+                || share_a_stretch(first, second)
+            {
+                return true;
+            }
+        }
+    }
+
+    // With no crossing and no shared stretch the two are nested or apart, and a
+    // nested one has every vertex strictly inside the other.
+    one.shell
+        .iter()
+        .any(|corner| area_holds(other, Fine::of(*corner)) == Containment::Inside)
+        || other
+            .shell
+            .iter()
+            .any(|corner| area_holds(one, Fine::of(*corner)) == Containment::Inside)
+}
+
+fn ring_bounds(ring: &[Snapped]) -> Option<crate::bounds::Bounds> {
+    let mut held: Option<crate::bounds::Bounds> = None;
+    for position in ring {
+        held = Some(match held {
+            None => crate::bounds::Bounds::of_position(*position),
+            Some(bounds) => bounds.widened_to(*position),
+        });
+    }
+    held
+}
+
+fn edges_of(area: &Area) -> impl Iterator<Item = (Snapped, Snapped)> + '_ {
+    area.rings()
+        .flat_map(|ring| ring.windows(2).map(|edge| (edge[0], edge[1])))
+}
+
+/// Whether two segments lie along the same line and overlap over a positive
+/// length — as opposed to meeting at a single point.
+fn share_a_stretch(one: (Snapped, Snapped), other: (Snapped, Snapped)) -> bool {
+    let collinear = |of: Snapped| crate::predicate::orientation(one.0, one.1, of);
+    if collinear(other.0) != Orientation::Collinear || collinear(other.1) != Orientation::Collinear
+    {
+        return false;
+    }
+    // Collinear: they overlap over a stretch when each has an end strictly
+    // inside the other, or when one contains both of the other's ends.
+    let inside_one = |of: Snapped| on_segment(one.0, one.1, of);
+    let inside_other = |of: Snapped| on_segment(other.0, other.1, of);
+    let shared: Vec<Snapped> = [one.0, one.1, other.0, other.1]
+        .into_iter()
+        .filter(|position| inside_one(*position) && inside_other(*position))
+        .collect();
+    shared
+        .iter()
+        .any(|position| shared.iter().any(|another| another != position))
 }
