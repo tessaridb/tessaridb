@@ -14,11 +14,11 @@ use std::path::PathBuf;
 use tessari::{Parameters, Value};
 
 pub const USAGE: &str = "\
-usage: tessari [<path> | --at <host:port>] [-e <script> | -f <file>]
+usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
 
   <path>          a store on disk; omitted, the store is in memory and is lost
   --at <host:port> a running node, instead of a store in this process
-  --user <name>   sign in as this user; the password comes from TESSARI_PASSWORD,
+  --user <name>   sign in as this user; the password comes from TESSARIDB_PASSWORD,
                   never from an argument, which the process table would publish
   --serve <host:port> serve this store over the wire protocol until stopped
   --http <host:port> serve this store over HTTP until stopped; may accompany
@@ -42,7 +42,7 @@ that is a terminal, a script when it is a pipe.";
 /// Not an argument. An argument is in the process table for anybody on the
 /// machine to read and in the shell history afterwards, which is a defect rather
 /// than the convenience it looks like.
-pub const PASSWORD: &str = "TESSARI_PASSWORD";
+pub const PASSWORD: &str = "TESSARIDB_PASSWORD";
 
 /// What the command line asked for.
 #[derive(Debug)]

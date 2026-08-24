@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use tessari_wire::{Answer, Client};
 
 /// The binary this crate builds, which is the one an operator installs.
-const TESSARI: &str = env!("CARGO_BIN_EXE_tessari");
+const TESSARIDB: &str = env!("CARGO_BIN_EXE_tessaridb");
 
 /// Wait for the node to accept connections, or say it never did.
 ///
@@ -43,7 +43,7 @@ fn listening(address: &str, patience: Duration) -> bool {
 
 /// Start the shipped binary serving `path` on `address`.
 fn serving(path: &std::path::Path, address: &str) -> Child {
-    let child = Command::new(TESSARI)
+    let child = Command::new(TESSARIDB)
         .arg(path)
         .args(["--serve", address])
         .stdout(Stdio::null())
@@ -76,7 +76,7 @@ impl Drop for Running {
 
 /// Start the shipped binary serving `path` on **both** surfaces.
 fn serving_both(path: &std::path::Path, wire: &str, http: &str) -> Running {
-    let child = Command::new(TESSARI)
+    let child = Command::new(TESSARIDB)
         .arg(path)
         .args(["--serve", wire, "--http", http])
         .stdout(Stdio::null())
@@ -477,7 +477,7 @@ fn a_second_node_will_not_open_a_store_another_one_holds() {
 
     let mut node = serving(&path, address);
 
-    let second = Command::new(TESSARI)
+    let second = Command::new(TESSARIDB)
         .arg(&path)
         .args(["--serve", "127.0.0.1:47825"])
         .stdout(Stdio::null())
@@ -496,7 +496,7 @@ fn a_second_node_will_not_open_a_store_another_one_holds() {
 fn the_binary_refuses_an_address_and_a_path_together() {
     // The argument rule, asserted against the shipped binary rather than against
     // the parser it happens to use.
-    let mut refused = Command::new(TESSARI)
+    let mut refused = Command::new(TESSARIDB)
         .args(["./data", "--at", "127.0.0.1:1"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

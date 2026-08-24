@@ -57,7 +57,7 @@ use tessari_storage::{RecordAddress, Store};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
 /// Environment variable carrying the store path into the child.
-const STORE_PATH: &str = "TESSARI_DURABILITY_STORE";
+const STORE_PATH: &str = "TESSARIDB_DURABILITY_STORE";
 /// How many acknowledged commits the parent waits for before killing the child.
 const ACKNOWLEDGED_BEFORE_KILL: usize = 20;
 /// Where the child gives up on its own.
@@ -173,7 +173,7 @@ fn an_acknowledged_commit_survives_the_writer_being_killed() {
 }
 
 /// Environment variable carrying the store path into the flushing child.
-const FLUSHED_STORE_PATH: &str = "TESSARI_FLUSHED_STORE";
+const FLUSHED_STORE_PATH: &str = "TESSARIDB_FLUSHED_STORE";
 /// A memtable ceiling low enough that a few hundred commits cross it, and high
 /// enough to stay above the engine's own arena floor.
 ///

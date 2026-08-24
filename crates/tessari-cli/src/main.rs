@@ -1,14 +1,14 @@
-//! `tessari` — a command line for TessariDB.
+//! `tessaridb` — a command line for TessariDB.
 //!
 //! ```text
-//! tessari                                    an in-memory store, and a prompt
-//! tessari ./data                             a store on disk, and a prompt
-//! tessari ./data -e 'SELECT * FROM users;'   one script, then exit
-//! tessari ./data -f setup.tessariql              a file
-//! echo 'SELECT …' | tessari ./data           a pipe
-//! tessari --at 127.0.0.1:7654                a running node, and a prompt
-//! tessari ./data --serve 0.0.0.0:7654        be that node
-//! tessari ./data --serve :7654 --http :8000  be that node on both surfaces
+//! tessaridb                                    an in-memory store, and a prompt
+//! tessaridb ./data                             a store on disk, and a prompt
+//! tessaridb ./data -e 'SELECT * FROM users;'   one script, then exit
+//! tessaridb ./data -f setup.tessariql          a file
+//! echo 'SELECT …' | tessaridb ./data           a pipe
+//! tessaridb --at 127.0.0.1:7654                a running node, and a prompt
+//! tessaridb ./data --serve 0.0.0.0:7654        be that node
+//! tessaridb ./data --serve :7654 --http :8000  be that node on both surfaces
 //! ```
 //!
 //! # A path or an address, and the same prompt over either
@@ -61,7 +61,7 @@ fn main() -> ExitCode {
         // A refusal is an answer, and an exit code is how a shell reads one.
         Ok(Ended::Refused) => ExitCode::FAILURE,
         Err(complaint) => {
-            eprintln!("tessari: {complaint}");
+            eprintln!("tessaridb: {complaint}");
             ExitCode::FAILURE
         }
     }
@@ -203,12 +203,12 @@ fn serve(db: Db, serving: &Serving, started: std::time::Instant) -> Result<Ended
     // rather than what was asked for, which is what makes `:0` usable.
     if let Some(node) = &wire {
         let bound = node.address().map_err(|failure| failure.to_string())?;
-        eprintln!("tessari — wire protocol on {bound}");
+        eprintln!("tessaridb — wire protocol on {bound}");
     }
     if let Some(node) = &http {
-        eprintln!("tessari — http on {}", node.address());
+        eprintln!("tessaridb — http on {}", node.address());
     }
-    eprintln!("tessari — there is no TLS, so trust the network");
+    eprintln!("tessaridb — there is no TLS, so trust the network");
 
     // What the stages will act on, taken before either surface starts serving:
     // `serve` borrows its node for as long as it runs, so a caller that asked
@@ -279,7 +279,7 @@ fn serve(db: Db, serving: &Serving, started: std::time::Instant) -> Result<Ended
     // lock, and it happens here rather than in the stages because this is what
     // owns it — the stages know about surfaces, not about a store.
     drop(db);
-    eprintln!("tessari — stopped");
+    eprintln!("tessaridb — stopped");
     Ok(Ended::Fine)
 }
 
@@ -378,9 +378,9 @@ fn health(db: &Db) -> Result<Ended, String> {
 /// thing anybody wonders at a prompt.
 fn greet(out: &mut impl Write, opened: Where<'_>) -> io::Result<()> {
     match opened {
-        Where::Store(Some(path)) => writeln!(out, "tessari — {}", path.display())?,
-        Where::Store(None) => writeln!(out, "tessari — in memory; nothing written here is kept")?,
-        Where::Node(address) => writeln!(out, "tessari — {address}")?,
+        Where::Store(Some(path)) => writeln!(out, "tessaridb — {}", path.display())?,
+        Where::Store(None) => writeln!(out, "tessaridb — in memory; nothing written here is kept")?,
+        Where::Node(address) => writeln!(out, "tessaridb — {address}")?,
     }
     writeln!(out, "`.help` for the little there is of it")
 }

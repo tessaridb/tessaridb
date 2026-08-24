@@ -64,7 +64,7 @@ pub fn run(
                 out,
                 "{}",
                 if pending.is_empty() {
-                    "tessari> "
+                    "tessaridb> "
                 } else {
                     "   > "
                 }
@@ -240,7 +240,7 @@ mod tests {
         let (prompt, ended) = ran(bad, Mode::Interactive);
         assert_eq!(ended, Ended::Refused, "a refusal still sets the exit code");
         // The second statement ran, which is the difference.
-        assert!(prompt.matches("tessari>").count() >= 2, "{prompt}");
+        assert!(prompt.matches("tessaridb>").count() >= 2, "{prompt}");
         assert!(prompt.contains("ok"), "{prompt}");
     }
 
@@ -263,9 +263,9 @@ mod tests {
     #[test]
     fn a_prompt_is_written_only_when_somebody_is_there_to_read_it() {
         let (script, _) = ran("DEFINE NAMESPACE prod;\n", Mode::Script);
-        assert!(!script.contains("tessari>"), "{script}");
+        assert!(!script.contains("tessaridb>"), "{script}");
         let (prompt, _) = ran("DEFINE NAMESPACE prod;\n", Mode::Interactive);
-        assert!(prompt.contains("tessari>"), "{prompt}");
+        assert!(prompt.contains("tessaridb>"), "{prompt}");
     }
 
     #[test]

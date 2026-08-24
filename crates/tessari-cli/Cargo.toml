@@ -1,6 +1,6 @@
 [package]
 name = "tessari-cli"
-description = "tessari — a command line for TessariDB: open a store, run a statement, read the answer"
+description = "tessaridb — a command line for TessariDB: open a store, run a statement, read the answer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ repository.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "tessari"
+name = "tessaridb"
 path = "src/main.rs"
 
 [dependencies]

@@ -121,7 +121,7 @@ pub fn watch(surfaces: &[Surface]) {
     while !wanted() {
         std::thread::park_timeout(GLANCE);
     }
-    eprintln!("tessari — stopping; a second signal exits immediately");
+    eprintln!("tessaridb — stopping; a second signal exits immediately");
 
     // Stage 0. Say *not ready* and keep serving, so whatever is routing traffic
     // here learns it before the port goes rather than by a refused connection.
@@ -130,7 +130,7 @@ pub fn watch(surfaces: &[Surface]) {
         surface.stopping.leaving();
     }
     eprintln!(
-        "tessari — not ready; still serving for {}s so a load balancer can notice",
+        "tessaridb — not ready; still serving for {}s so a load balancer can notice",
         LAME_DUCK.as_secs()
     );
     // No check for a second signal here: the handler exits the process itself on
@@ -157,7 +157,7 @@ pub fn watch(surfaces: &[Surface]) {
             Drained::Finished => {}
             Drained::Deadline { left } => {
                 eprintln!(
-                    "tessari — {} still had {left} request(s) running after {}s",
+                    "tessaridb — {} still had {left} request(s) running after {}s",
                     surface.name,
                     PATIENCE.as_secs()
                 );

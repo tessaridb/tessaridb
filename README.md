@@ -121,7 +121,7 @@ possible rather than aspirational.
 | **Transactions** | snapshot isolation on the commit log, `BEGIN` · `COMMIT` · `CANCEL` |
 | **Real-time** | change subscriptions as a first-class feature — over the wire and over a WebSocket |
 | **Multi-tenant** | namespaces and databases, users, roles, `GRANT` and `REVOKE` per database |
-| **Four ways in** | embedded library · `tessari` CLI · HTTP + WebSocket · a framed binary wire protocol |
+| **Four ways in** | embedded library · `tessaridb` CLI · HTTP + WebSocket · a framed binary wire protocol |
 | **Operable** | health and readiness endpoints, Prometheus metrics, graceful drain, log-as-backup with replay-as-restore |
 | **Specified** | the wire and value protocol is [published](https://github.com/TessariDB/TessariDB-protocol) with a shared conformance corpus, so a client in any language is written from the spec and not from our source |
 
@@ -130,7 +130,7 @@ possible rather than aspirational.
 **Stage: active development · pre-1.0 · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 
-- ✅ **Runs:** the embedded library, the `tessari` command line, the HTTP and
+- ✅ **Runs:** the embedded library, the `tessaridb` command line, the HTTP and
   WebSocket surface, the binary wire protocol (v1.0, with a published spec and
   conformance corpus), single-node serving with roles, endpoints and graceful
   drain, backup and restore.
@@ -192,7 +192,7 @@ replaced *after* the script is parsed — so whatever a caller supplies, it cann
 be read as grammar.
 
 Every way in carries them: `Client::run_with` over the wire, where the values
-travel in the store's own codec, and `tessari --param who='ada' -e '…'` at the
+travel in the store's own codec, and `tessaridb --param who='ada' -e '…'` at the
 console, where a value is written as TessariQL and parsed on its own.
 
 ## Files
@@ -501,25 +501,25 @@ a TessariQL statement would be built on this and is not built.
 ## From a terminal
 
 ```
-cargo install --path crates/tessari-cli    # installs `tessari`
+cargo install --path crates/tessari-cli      # installs `tessaridb`
 
-tessari                                    an in-memory store, and a prompt
-tessari ./data                             a store on disk, and a prompt
-tessari ./data -e 'SELECT * FROM users;'   one script, then exit
-tessari ./data -f setup.tessariql              a file
-echo 'SELECT * FROM users;' | tessari ./data
+tessaridb                                    an in-memory store, and a prompt
+tessaridb ./data                             a store on disk, and a prompt
+tessaridb ./data -e 'SELECT * FROM users;'   one script, then exit
+tessaridb ./data -f setup.tessariql          a file
+echo 'SELECT * FROM users;' | tessaridb ./data
 
-tessari ./data --serve 127.0.0.1:9080      be a node
-tessari --at 127.0.0.1:9080                a prompt against one
+tessaridb ./data --serve 127.0.0.1:9080      be a node
+tessaridb --at 127.0.0.1:9080                a prompt against one
 
-tessari ./data --serve 127.0.0.1:9080 --http 127.0.0.1:8000
-                                       one process, both surfaces, one store
+tessaridb ./data --serve 127.0.0.1:9080 --http 127.0.0.1:8000
+                                             one process, both surfaces, one store
 ```
 
 ```
-tessari> CREATE users:1 = { name: 'ada', joined: datetime '2026-01-15T09:30:00Z' };
+tessaridb> CREATE users:1 = { name: 'ada', joined: datetime '2026-01-15T09:30:00Z' };
 ok
-tessari> SELECT * FROM users;
+tessaridb> SELECT * FROM users;
 1: { joined: datetime '2026-01-15T09:30:00Z', name: 'ada' }
 (1 record(s), via scan)
 ```
@@ -539,7 +539,7 @@ shape through both and compares the output character for character, which is the
 claim worth testing rather than asserting. It is `--at` and not `--url` because
 this protocol has no scheme, and calling an address a URL would promise one.
 
-To sign in, `--user <name>`; the password comes from `TESSARI_PASSWORD` and never
+To sign in, `--user <name>`; the password comes from `TESSARIDB_PASSWORD` and never
 from an argument, which the process table publishes and the shell history keeps.
 `--backup`, `--restore`, `--health` and `--serve` work on a store this process
 opened, so asking for one over an address is refused rather than quietly run
@@ -588,7 +588,7 @@ as a crash loop. Run it in the foreground and let the supervisor supervise.
 ## Is it well
 
 ```
-tessari ./data --health          # exits non-zero when it is not
+tessaridb ./data --health          # exits non-zero when it is not
 curl -s localhost:8000/health   # is this store readable
 curl -s localhost:8000/ready    # will this node take work right now
 curl -s localhost:8000/metrics  # the numbers behind both
@@ -644,7 +644,7 @@ exists rather than a second one written here and exercised never.
 ## Which node am I talking to
 
 ```
-tessari> SELECT * FROM $node;
+tessaridb> SELECT * FROM $node;
 ```
 
 ```json
@@ -681,9 +681,9 @@ or which peers it has. Both are statements, and what they write lives in the
 store:
 
 ```
-tessari> DEFINE NODE ROLES serving, writable ENDPOINTS 'db-1.internal:9000';
-tessari> DEFINE REPLICA second AT 'db-2.internal:9000' ROLES serving, writable;
-tessari> INFO FOR NODE;
+tessaridb> DEFINE NODE ROLES serving, writable ENDPOINTS 'db-1.internal:9000';
+tessaridb> DEFINE REPLICA second AT 'db-2.internal:9000' ROLES serving, writable;
+tessaridb> INFO FOR NODE;
 ```
 
 ```json
@@ -723,12 +723,12 @@ pure function (ADR-0001). So a restore is a replay, through the same code a
 replica runs.
 
 ```
-tessari ./data --backup ./monday.tessalog
-tessari ./restored --restore ./monday.tessalog
+tessaridb ./data --backup ./monday.tessalog
+tessaridb ./restored --restore ./monday.tessalog
 
-tessari --verify ./monday.tessalog                       # changes nothing, needs no store
-tessari ./data --backup ./tuesday.tessalog --from 4001   # only what happened since
-tessari ./restored --restore ./monday.tessalog --upto 3000
+tessaridb --verify ./monday.tessalog                       # changes nothing, needs no store
+tessaridb ./data --backup ./tuesday.tessalog --from 4001   # only what happened since
+tessaridb ./restored --restore ./monday.tessalog --upto 3000
 ```
 
 `--verify` reads a backup and says what it holds, applying none of it and opening
@@ -845,13 +845,13 @@ crates/
   tessari-ql                  TessariQL: lexer, parser, AST
   tessari-query               a typed query builder that builds the syntax, never the text
   tessari-session             running a script: catalog, planning, execution, permissions
-  tessari                     the embedded front door — open, run, follow the changes
+  tessaridb                     the embedded front door — open, run, follow the changes
   tessari-http                the HTTP and WebSocket surface
   tessari-wire                the wire protocol
   tessari-serve               stopping a serving process in the order the stages require
   tessari-backup              log as backup, replay as restore
   tessari-conformance         the executable definition of TessariQL: corpora and runner
-  tessari-cli          bin    `tessari` — a prompt and a script runner
+  tessari-cli          bin    `tessaridb` — a prompt and a script runner
   tessari-bench        bin    workload harness, exact percentiles, recorded baselines
 ```
 
