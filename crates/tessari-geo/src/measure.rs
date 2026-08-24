@@ -46,7 +46,8 @@
 
 use tessari_types::Position;
 
-use crate::grid::Snapped;
+use crate::bounds::Bounds;
+use crate::grid::{Snapped, units_to_degrees};
 use crate::shape::{Area, Loop, Shape};
 
 /// The semi-major axis of WGS-84, in metres. A defining constant of the datum.
@@ -173,6 +174,133 @@ pub fn distance(one: Snapped, other: Snapped) -> Option<f64> {
 /// The two grid coordinates, in the order that fixes which argument is which.
 const fn grid_order(position: Snapped) -> (i64, i64) {
     (position.longitude_units(), position.latitude_units())
+}
+
+/// A distance from `from` that nothing inside `bounds` can be nearer than, in
+/// metres. Zero when `from` is inside the box.
+///
+/// # What this is for, and the mistake it exists to prevent
+///
+/// A nearest-first traversal orders unexplored regions by how close they could
+/// possibly be, and stops when the best region left is further away than the
+/// worst answer already held. The whole of that argument rests on *could
+/// possibly be*: if the key were ever **larger** than the true distance to
+/// something inside the box, the walk would discard a region holding a nearer
+/// record and answer confidently with the wrong one.
+///
+/// The canonical way to get this wrong is to measure to the box's centre, which
+/// is a distance to one position in the box rather than a floor under all of
+/// them. A centroid key produces an answer that is plausible, ordered, and wrong
+/// — and a test written from the same idea agrees with it.
+///
+/// # Why the number returned is certainly a floor
+///
+/// Two independent floors are computed and the larger is taken, which is a floor
+/// because the maximum of two floors is one.
+///
+/// **Across latitude.** Every position in the box has latitude in
+/// `[south, north]`. If `from` is south of that band, a path to any of them is
+/// continuous in latitude and therefore crosses the parallel `south`, so it is
+/// at least as long as the distance from `from` to that parallel. That distance
+/// is the meridian arc — the distance to a parallel is rotationally invariant
+/// and a meridian is a geodesic meeting it at a right angle — and a meridian arc
+/// over `Δφ` is at least `M_min · Δφ`, since the meridian radius of curvature is
+/// smallest at the equator and larger everywhere else.
+///
+/// **Across longitude.** Every position in the box has longitude in
+/// `[west, east]`, so all of them lie in the wedge swept by the meridian
+/// half-planes over that span — a wedge that contains the spin axis. The
+/// straight-line distance in space from `from` to that wedge is `ρ·sin(Δλ)`,
+/// where `ρ` is `from`'s own distance from the axis, falling back to `ρ` once the
+/// turn passes a right angle and the nearest point of the wedge becomes the axis
+/// itself. A geodesic is a curve joining two points, so it is never shorter than
+/// the straight line between them: a chord is a floor under a surface distance,
+/// exactly and with nothing approximated.
+///
+/// # What it costs
+///
+/// Taking the larger of the two rather than combining them leaves the bound
+/// loose by at most a factor of `√2`, on an approach diagonal to both edges.
+/// That is paid in cells a traversal opens and never in which records it
+/// answers with.
+///
+/// Unlike [`distance`], this **cannot fail**. It is closed form, so there is no
+/// iteration to not converge — which matters, because a bound with no answer has
+/// no safe default: zero would make a traversal read everything, and any other
+/// guess would make it wrong.
+/// A position the box **holds** needs no case of its own: both floors are zero
+/// exactly when the position is inside their own axis's span, so the answer for
+/// a position inside the box falls out of the two of them. An early return here
+/// would be a third statement of the same rule and a fourth place for it to
+/// disagree with itself — and, being unreachable, one no test could hold to
+/// account.
+#[must_use]
+pub fn no_closer_than(from: Snapped, bounds: Bounds) -> f64 {
+    across_latitude(from, bounds).max(across_longitude(from, bounds))
+}
+
+/// The floor that the band of latitudes alone puts under the distance.
+fn across_latitude(from: Snapped, bounds: Bounds) -> f64 {
+    let latitude = units_to_degrees(from.latitude_units());
+    let south = units_to_degrees(bounds.south());
+    let north = units_to_degrees(bounds.north());
+    let turn = if latitude < south {
+        south - latitude
+    } else if latitude > north {
+        latitude - north
+    } else {
+        return 0.0;
+    };
+    least_meridian_radius() * turn.to_radians()
+}
+
+/// The floor that the span of longitudes alone puts under the distance.
+fn across_longitude(from: Snapped, bounds: Bounds) -> f64 {
+    let longitude = units_to_degrees(from.longitude_units());
+    let west = units_to_degrees(bounds.west());
+    let east = units_to_degrees(bounds.east());
+    if west <= longitude && longitude <= east {
+        return 0.0;
+    }
+    // The span is an interval, and the turn to a point inside it is largest at
+    // the antipode rather than smallest, so the nearest longitude in the span is
+    // one of its two ends whenever `from` is outside.
+    let turn = shortest_turn(longitude, west).min(shortest_turn(longitude, east));
+    let axis = distance_from_axis(units_to_degrees(from.latitude_units()));
+    if turn >= 90.0 {
+        axis
+    } else {
+        axis * turn.to_radians().sin()
+    }
+}
+
+/// The angle between two longitudes, taken the short way round, in degrees.
+fn shortest_turn(one: f64, other: f64) -> f64 {
+    let turn = (one - other).abs() % 360.0;
+    if turn > 180.0 { 360.0 - turn } else { turn }
+}
+
+/// How far a position on the ellipsoid stands from the spin axis, in metres.
+fn distance_from_axis(latitude: f64) -> f64 {
+    let (sin, cos) = latitude.to_radians().sin_cos();
+    let prime_vertical = SEMI_MAJOR / (1.0 - squared_eccentricity() * sin * sin).sqrt();
+    prime_vertical * cos
+}
+
+/// The smallest meridian radius of curvature on WGS-84, in metres.
+///
+/// `a(1 − e²)`, which the meridian radius takes at the equator and exceeds at
+/// every other latitude — so it is the multiplier that turns a difference in
+/// latitude into a distance that is certainly not an overestimate.
+fn least_meridian_radius() -> f64 {
+    SEMI_MAJOR * (1.0 - squared_eccentricity())
+}
+
+/// The square of WGS-84's first eccentricity, from the datum's two defining
+/// constants.
+fn squared_eccentricity() -> f64 {
+    let flattening = 1.0 / INVERSE_FLATTENING;
+    flattening * (2.0 - flattening)
 }
 
 /// The radius of the sphere with the same surface area as WGS-84, in metres.

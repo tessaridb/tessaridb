@@ -36,7 +36,7 @@ pub use crate::accept::{Defect, Refused, accept};
 pub use crate::bounds::{Bounds, Relation};
 pub use crate::curve::{Cell, Class, ORDER, covering, hilbert_index, hilbert_point};
 pub use crate::grid::{Axis, OffGrid, SCALE, Snapped};
-pub use crate::measure::{area, authalic_radius, distance};
+pub use crate::measure::{area, authalic_radius, distance, no_closer_than};
 pub use crate::predicate::{
     Containment, Orientation, on_segment, orientation, ring_contains, segments_cross,
     segments_meet, twice_signed_area,

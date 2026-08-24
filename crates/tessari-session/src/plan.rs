@@ -1125,6 +1125,92 @@ pub(crate) fn nearest(select: &Select) -> Option<Nearest<'_>> {
     })
 }
 
+/// A read a spatial index could serve nearest-first, when the statement asks for
+/// one.
+///
+/// Recognised rather than requested, the same way the vector shape is: the
+/// language has no nearest operator because "the ten closest" is an order and a
+/// bound and it already had both.
+///
+/// Unlike the vector walk this one is **exact**, so it does not ask the caller
+/// to accept anything. A best-first traversal ordered by a true floor visits
+/// every record that could rank above the ones it holds, so the records it
+/// answers with are the records a scan answers with — which is why `APPROXIMATE`
+/// is refused here rather than required. That keyword is the vector shape and it
+/// is recognised on its own.
+///
+/// Every other condition below is a way the shape can fail to be the one a walk
+/// answers, and each is a scan rather than a guess — the same list
+/// [`ordered`] refuses for the same reasons:
+///
+/// - more than one sort key, or a descending one: a distance orders ascending,
+///   and a second key orders records the walk never ranked;
+/// - no `LIMIT`, so the read wants every record and a walk has nothing to stop
+///   at;
+/// - a sort key that is not `geo::distance` on a field and something constant;
+/// - `GROUP BY`, which folds the records a walk would have chosen between;
+/// - a projection, because the sort runs after it and may name what the
+///   projection produced rather than what the index holds;
+/// - a `FETCH`, which replaces a reference with the record it names before the
+///   sort sees it.
+pub(crate) struct Closest<'a> {
+    /// The field holding the geometries.
+    pub(crate) path: &'a Path,
+    /// The position measured from, still an expression.
+    pub(crate) query: &'a Expr,
+    /// How many records to walk for, `START` included.
+    pub(crate) wanted: usize,
+}
+
+/// The nearest-first read this statement is, if it is one.
+pub(crate) fn closest(select: &Select) -> Option<Closest<'_>> {
+    if select.approximate || !select.group.is_empty() || !select.fetch.is_empty() {
+        return None;
+    }
+    if !matches!(select.projection, Projection::All) {
+        return None;
+    }
+    let [ordering] = select.order.as_slice() else {
+        return None;
+    };
+    if ordering.descending {
+        return None;
+    }
+    let ExprKind::Call {
+        function,
+        arguments,
+        ..
+    } = &ordering.key.kind
+    else {
+        return None;
+    };
+    if !matches!(function, Function::GeoDistance) {
+        return None;
+    }
+    let [first, second] = arguments.as_slice() else {
+        return None;
+    };
+    // Either argument may hold the field. A distance is symmetric, so unlike the
+    // relate predicates there is nothing to normalise — but a planner that
+    // recognised only `geo::distance(at, here)` would be correct and silently
+    // unindexed for `geo::distance(here, at)`, which is an equally ordinary way
+    // to write the same question and reports nothing when it is slower.
+    let (field, query) = match (&first.kind, &second.kind) {
+        (ExprKind::Path(field), _) if !reads_a_record(second) => (field, second),
+        (_, ExprKind::Path(field)) if !reads_a_record(first) => (field, first),
+        _ => return None,
+    };
+    let limit = select.limit?;
+    // A `START` skips records the walk still has to find, so it is added to what
+    // the walk asks for rather than making the read unservable.
+    let wanted = limit.saturating_add(select.start.unwrap_or(0));
+    Some(Closest {
+        path: &field.path,
+        query,
+        wanted: usize::try_from(wanted).unwrap_or(usize::MAX),
+    })
+}
+
 /// A bounded ordered read an index could serve.
 ///
 /// # An index is already in the order a sort wants
@@ -1319,6 +1405,21 @@ impl Session<'_> {
                     if let Some(name) = named {
                         plan.insert("index".to_owned(), Value::from(name.as_str()));
                     }
+                } else if let Some(place) = closest(select)
+                    && let Some((index, _)) = {
+                        let (context, id) = self.resolve_table(transaction, table)?;
+                        self.index_serving_place(transaction, context, id, place.path)?
+                    }
+                {
+                    // Named `nearest` rather than left inside "ordered", because
+                    // the two answer differently at the bound: a value order
+                    // reads entries already in that order, while this one walks
+                    // cells and ranks what it finds. Same caveat as below — the
+                    // one thing a plan cannot ask is whether the walk will fill
+                    // the bound, so a read whose index runs out reports `scan`.
+                    plan.insert("access".to_owned(), Value::from("ordered"));
+                    plan.insert("shape".to_owned(), Value::from("nearest"));
+                    plan.insert("index".to_owned(), Value::from(index.name.as_str()));
                 } else if let Some(bound) = ordered(select)
                     && let Some((index, _)) = {
                         let (context, id) = self.resolve_table(transaction, table)?;

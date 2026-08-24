@@ -1654,14 +1654,49 @@ true set and raise nothing.
 Under `NOT` or on one side of an `OR`, a geometry filter is a scan for the same
 reasons every other filter is.
 
+#### The nearest few
+
+The same index answers "the closest ones", which is an order and a bound and
+needs no new syntax:
+
+```
+SELECT * FROM stops
+ ORDER BY geo::distance(at, geometry { type: 'Point', coordinates: [2.35, 48.85] })
+ LIMIT 10;
+```
+
+The read walks cells **cheapest first**, keyed by a distance nothing inside the
+cell can be nearer than, and stops as soon as the best cell left is further away
+than the worst answer it already holds. That is exact rather than approximate:
+`APPROXIMATE` is not asked for and is refused here, because a floor that is
+really a floor means no record the walk skipped could have ranked. The answer is
+the scan's answer, in the scan's order, including every record tied at the
+bound.
+
+The place may be either argument, and `START` counts towards what the walk asks
+for. `EXPLAIN` reports the read as access `ordered` with shape `nearest`.
+
+An ordering has nothing to re-test — the entry's position *is* the answer — so
+this read is more careful about when it declines than the filters above are. It
+falls back to the exact scan when the sort is not one a walk produces (a second
+key, a descending one, no `LIMIT`, a projection, a `FETCH`, a `GROUP BY`), when
+the field is not visible to the caller, when this transaction has written to the
+table, when the read is at an older snapshot than the committed tail, and when
+the index runs out before the bound is filled — which is the case where the
+answer needs records with no geometry, since those have no entry and sort last.
+
+`geo::distance` takes positions, so a record holding an area is an error in the
+statement. The walk reports the same error the scan does rather than answering
+around it.
+
 #### What is not there yet
 
 There is no measured tuning of how finely a query is covered — the budget is a
 declared constant, and the candidate-to-result ratio the store measures is what
-will move it. There is no nearest-neighbour read over shapes. `geo::touches` is
-not written — every other predicate here is a composition of two algorithms, and
-that one needs a third. And there is no distance between shapes larger than
-positions.
+will move it. A nearest-first read under a `WHERE` is still a scan. `geo::touches`
+is not written — every other predicate here is a composition of two algorithms,
+and that one needs a third. And there is no distance between shapes larger than
+positions, which is also why the nearest-few read is over positions.
 
 ### Ranking
 

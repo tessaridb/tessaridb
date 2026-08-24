@@ -37,22 +37,26 @@ Around them: snapshot-isolation transactions, change subscriptions, namespaces
 and databases with users and grants, health and readiness endpoints, metrics,
 graceful drain, and log-as-backup with replay-as-restore.
 
-445 conformance cases define the language and run in the build.
+451 conformance cases define the language and run in the build.
 
 ### What is not here
 
 Stated as plainly as the list above, because an alpha that is vague about its
 absences is worse than one that is missing more.
 
-- **No nearest-first read over shapes, and no tuned spatial index.**
+- **The nearest few is over positions, and the spatial index is untuned.**
   `DEFINE INDEX … SPATIAL` is written, maintained and now **read**: six of the
   seven predicates are served by covering the query shape with cells, reading the
   entries under and above them, and rejecting what the stored bounding boxes
   settle before the exact predicate runs. `geo::disjoint` is the complement of a
   region, has no sound box filter, and stays an exact scan by design.
-  What is absent: a nearest-neighbour read over shapes; `geo::touches`, which
-  needs an algorithm the other seven are not built from; and any *measured*
-  choice of how finely a query is covered — the budget is a declared constant,
+  The same index answers `ORDER BY geo::distance(at, …) LIMIT k` by walking
+  cells cheapest-first, keyed by a distance nothing inside the cell can beat —
+  exact rather than approximate, and therefore asking nothing of the statement.
+  What is absent: a distance to a shape larger than a position, which is why
+  that read is over positions; a nearest-first read under a `WHERE`;
+  `geo::touches`, which needs an algorithm the other seven are not built from;
+  and any *measured* choice of how finely a query is covered — the budget is a declared constant,
   and the candidate-to-result ratio the store now measures is what will move it.
 - **No sharding, no replication, no cluster membership.** Peers can be declared
   and read back; nothing replicates between them. The language has words for

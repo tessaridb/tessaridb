@@ -156,6 +156,38 @@ costs refinement — `intersects` filters by box intersection, `within` by the
 query box containing the record's, `contains` by the reverse, `equals` by
 equality. `disjoint` has no such test at all and takes the scan.
 
+#### How a nearest-first read uses it instead
+
+A "closest ten" read asks a different question of the same keys and does not use
+either half above. It walks the **implicit quadtree** of cells from the root,
+keyed by a floor under the distance from the query position to the cell's own
+box, opening the cheapest cell waiting and stopping when the cheapest one left is
+further away than the worst answer already held.
+
+Two properties of the layout carry it. A cell's entries are one fixed-width
+prefix lookup at `(range start, level)`, which is what makes "what is stored
+exactly here" separable from "what is stored below here"; and a cell's whole
+subtree is the one span `[first, last+1)`, which is what lets the walk read a
+sparse region outright instead of descending thirty-two levels through cells that
+exist only because every cell exists. A subtree that comes back short of
+`SPATIAL_WALK_SUBTREE_ENTRIES` was not truncated, so the walk has all of it and
+never splits that cell.
+
+The floor is the whole of the correctness argument and the one thing that must
+not be approximated: a key that could **exceed** the true distance to something
+inside the cell would let the walk discard the cell holding the nearest record
+and answer, in order and with confidence, with the second. It is computed as the
+larger of two independently provable floors — the meridian arc to the cell's
+latitude band, and the straight-line distance in space to the wedge its longitude
+span sweeps, a chord being no longer than any surface path between the same two
+points.
+
+Ranking by an entry's **position** is not the same act as filtering by its
+existence, so this read carries the refusals an ordered read carries and a
+filtered read does not: an uncommitted write, a snapshot behind the committed
+tail, a field the caller cannot see, and an index that runs out before the bound
+is filled all send it to the scan.
+
 ### 3b. The node identity, and why it is `meta` rather than a record
 
 Every other kind above is either derived from the log or written into it. This

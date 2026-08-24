@@ -25,21 +25,21 @@
 //! Both are demonstrated by the test suite rather than described only here.
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::hash::{BuildHasher, Hasher};
 use std::ops::Bound;
 use std::time::Duration;
 
 use tessari_constants::{
     COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS, ORDERED_SCAN_BATCH_ENTRIES,
-    RANGE_SCAN_BATCH_ENTRIES,
+    RANGE_SCAN_BATCH_ENTRIES, SPATIAL_WALK_SUBTREE_ENTRIES,
 };
 use tessari_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, PostingKey, RecordKey,
     RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, SpatialExtent,
     SpatialIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
 };
-use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
+use tessari_kv::{Key, KeyRange, Keyspace, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId, Value};
 
 use crate::catalog::IndexDefinition;
@@ -102,6 +102,97 @@ pub struct Region {
     pub reached: usize,
     /// How many of those the box test admitted.
     pub candidates: usize,
+}
+
+/// A nearest-first answer, and what the walk that produced it cost.
+#[derive(Debug, Clone, Default)]
+pub struct Nearby {
+    /// The records, nearest first, ties broken by identity.
+    pub rows: Vec<StoredRecord>,
+    /// How many index entries the walk read.
+    pub entries: usize,
+    /// How many cells it opened.
+    pub expanded: usize,
+}
+
+/// A cell waiting to be opened, keyed by a distance nothing inside it can beat.
+///
+/// Ordered **backwards** deliberately: [`BinaryHeap`] hands back its greatest
+/// element and this walk wants its cheapest cell, so the smallest bound has to
+/// compare greatest. `total_cmp` rather than `partial_cmp` because a heap needs
+/// a total order, and there is no useful answer to give if two bounds turn out
+/// incomparable.
+#[derive(Debug, Clone, Copy)]
+struct Frontier {
+    bound: f64,
+    cell: tessari_geo::Cell,
+}
+
+impl Ord for Frontier {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.bound.total_cmp(&self.bound)
+    }
+}
+
+impl PartialOrd for Frontier {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Frontier {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Frontier {}
+
+/// A record the walk has placed, ordered by distance with the **worst** at the
+/// head — which is the threshold the stopping test reads.
+#[derive(Debug, Clone)]
+struct Ranked {
+    metres: f64,
+    id: RecordId,
+}
+
+impl Ord for Ranked {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.metres
+            .total_cmp(&other.metres)
+            .then_with(|| self.id.cmp(&other.id))
+    }
+}
+
+impl PartialOrd for Ranked {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Ranked {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Ranked {}
+
+/// The true distance from `target` to a record whose stored box is a single
+/// position, or `None` when the walk must give the read up to the scan.
+///
+/// A box with any extent belongs to a shape rather than a point, and
+/// `geo::distance` takes positions — so that record is an error in the statement
+/// and the scan is the only thing that can say so. A pair the distance refuses
+/// as near-antipodal is given up for a different reason: the value layer turns
+/// that refusal into `none`, which sorts *below* every number, so ranking it
+/// last would put it where the scan does not.
+fn exactly_to(target: tessari_geo::Snapped, bounds: tessari_geo::Bounds) -> Option<f64> {
+    if bounds.west() != bounds.east() || bounds.south() != bounds.north() {
+        return None;
+    }
+    let at = tessari_geo::Snapped::from_units(bounds.west(), bounds.south()).ok()?;
+    tessari_geo::distance(target, at)
 }
 
 /// A record as an index read hands it back: its identity, and its stored bytes.
@@ -793,6 +884,219 @@ impl<'a> Transaction<'a> {
             reached,
             candidates,
         })
+    }
+
+    /// The records nearest to `target`, nearest first, taken from a spatial
+    /// index by a best-first walk over cells.
+    ///
+    /// # The walk, and the one thing it rests on
+    ///
+    /// Cells wait in a queue keyed by [`tessari_geo::no_closer_than`] — a
+    /// distance nothing inside the cell can beat. The cheapest waiting cell is
+    /// opened next, and the walk stops when the cheapest one **left** is further
+    /// away than the worst answer already held. That argument is only sound
+    /// because the key is a floor: a key that could exceed the true distance to
+    /// something inside the cell would let the walk discard the cell holding the
+    /// nearest record and answer with the second.
+    ///
+    /// **The tie group is kept by the cut at the end, not by the stopping test.**
+    /// Two records the same distance away are both in the answer or neither is,
+    /// which is what a scan gives — and that comes from taking every candidate at
+    /// or inside the `wanted`-th distance rather than the first `wanted` of them.
+    /// The stopping test is a strict `>` because that is the correct rule, and it
+    /// is deliberately *not* the thing holding the tie group up: with these two
+    /// floors it cannot differ from `>=`, since both are strictly below any
+    /// positive distance they bound — a meridian arc exceeds `M_min·Δφ` over any
+    /// positive span, and a geodesic exceeds the chord to the wedge. Believing
+    /// otherwise, and leaning the tie group on it, was a mistake the falsification
+    /// pass caught by breaking the test and watching nothing happen.
+    ///
+    /// # Why a cell is read as a subtree before it is split
+    ///
+    /// The tree here is implicit: every cell exists at every level whether or not
+    /// anything was written there, so descending blindly costs a seek per level
+    /// all the way down. A cell is therefore first read whole, limited to one
+    /// entry above [`SPATIAL_WALK_SUBTREE_ENTRIES`]; a short answer means nothing
+    /// was truncated and the walk has the entire subtree in hand without
+    /// descending at all.
+    ///
+    /// # `None` is the scan, and every one of them is a way the answers differ
+    ///
+    /// - **a record whose stored box is not a single position.** Only a point has
+    ///   a degenerate box, and `geo::distance` takes positions — a shape is an
+    ///   error in the statement, which the scan reports and this cannot.
+    /// - **a near-antipodal record.** [`tessari_geo::distance`] refuses those
+    ///   rather than guessing, and the value layer above turns that refusal into
+    ///   `none`, which sorts *below* every number. A walk that ranked it last
+    ///   would put it exactly where the scan does not.
+    /// - **the index ran out before the bound was filled**, which is the answer
+    ///   needing records the index does not hold.
+    ///
+    /// The caller owns the other refusals — an uncommitted write, a snapshot
+    /// behind the committed tail, a field the reader cannot see — because those
+    /// are facts about the session rather than about the index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or an entry cannot be decoded.
+    pub fn records_by_place(
+        &self,
+        index: &IndexDefinition,
+        target: tessari_geo::Snapped,
+        wanted: usize,
+    ) -> Result<Option<Nearby>> {
+        if wanted == 0 {
+            return Ok(Some(Nearby::default()));
+        }
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let keyspace = KeyKind::SpatialIndex.keyspace();
+
+        let mut frontier = BinaryHeap::new();
+        frontier.push(Frontier {
+            bound: 0.0,
+            cell: tessari_geo::Cell::root(),
+        });
+        // Every record the walk has ranked, so an entry reached again through a
+        // second cell of the same record's covering is ranked once.
+        let mut ranked: BTreeMap<RecordId, f64> = BTreeMap::new();
+        // The best `wanted` so far, worst at the head, which is the threshold the
+        // stopping test compares against.
+        let mut best: BinaryHeap<Ranked> = BinaryHeap::new();
+        let mut entries = 0_usize;
+        let mut expanded = 0_usize;
+
+        while let Some(next) = frontier.pop() {
+            if best.len() >= wanted
+                && let Some(worst) = best.peek()
+                && next.bound > worst.metres
+            {
+                break;
+            }
+            expanded = expanded.saturating_add(1);
+            let subtree = self.scan_once(
+                keyspace,
+                SpatialIndexKey::descendants(&address, next.cell),
+                SPATIAL_WALK_SUBTREE_ENTRIES.saturating_add(1),
+            )?;
+            let whole = subtree.len() <= SPATIAL_WALK_SUBTREE_ENTRIES;
+            let read = if whole {
+                subtree
+            } else {
+                // The subtree is too big to take at once, so only what is stored
+                // at this exact cell is ranked here and the rest is left to the
+                // four children, each of which the queue will place on its own
+                // distance rather than on this one's.
+                self.scan_once(
+                    keyspace,
+                    KeyRange::prefix(&SpatialIndexKey::cell_prefix(&address, next.cell)),
+                    usize::MAX,
+                )?
+            };
+            for (key, value) in &read {
+                entries = entries.saturating_add(1);
+                let id = SpatialIndexKey::decode(key.as_slice())?.id;
+                if ranked.contains_key(&id) {
+                    continue;
+                }
+                let Some(metres) =
+                    exactly_to(target, SpatialExtent::decode(value.as_slice())?.bounds)
+                else {
+                    return Ok(None);
+                };
+                ranked.insert(id.clone(), metres);
+                if best.len() < wanted {
+                    best.push(Ranked {
+                        metres,
+                        id: id.clone(),
+                    });
+                } else if best.peek().is_some_and(|worst| metres < worst.metres) {
+                    best.pop();
+                    best.push(Ranked { metres, id });
+                }
+            }
+            if whole {
+                continue;
+            }
+            for child in next.cell.children().into_iter().flatten() {
+                if let Some(extent) = child.extent() {
+                    frontier.push(Frontier {
+                        bound: tessari_geo::no_closer_than(target, extent),
+                        cell: child,
+                    });
+                }
+            }
+        }
+
+        if best.len() < wanted {
+            return Ok(None);
+        }
+        // Sorted by distance and then by identity, which is the order the value
+        // system breaks a tie in, so the answer matches a scan's down to the
+        // records that are exactly the same distance away.
+        let mut placed: Vec<(f64, RecordId)> = ranked
+            .into_iter()
+            .map(|(id, metres)| (metres, id))
+            .collect();
+        placed.sort_by(|(one, left), (other, right)| {
+            one.total_cmp(other).then_with(|| left.cmp(right))
+        });
+        // The tie group at the bound travels with the answer: two records the
+        // same distance away are both in it or neither is.
+        let edge = placed
+            .get(wanted.saturating_sub(1))
+            .map_or(f64::INFINITY, |(metres, _)| *metres);
+        placed.retain(|(metres, _)| *metres <= edge);
+
+        let addresses: Vec<RecordAddress> = placed
+            .iter()
+            .map(|(_, id)| {
+                RecordAddress::new(index.namespace, index.database, index.table, id.clone())
+            })
+            .collect();
+        let rows = addresses
+            .iter()
+            .zip(self.get_each(&addresses)?)
+            .filter_map(|(address, payload)| Some((address.id.clone(), payload?)))
+            .collect();
+        Ok(Some(Nearby {
+            rows,
+            entries,
+            expanded,
+        }))
+    }
+
+    /// One batched scan of a span, up to `limit` entries.
+    ///
+    /// The batching is the backend's request limit rather than the caller's, so a
+    /// caller asking for everything does not ask for it in one allocation.
+    fn scan_once(
+        &self,
+        keyspace: Keyspace,
+        span: KeyRange,
+        limit: usize,
+    ) -> Result<Vec<(Key, tessari_kv::Value)>> {
+        let mut taken = Vec::new();
+        let mut from = match span.start() {
+            Bound::Included(key) => key.as_slice().to_vec(),
+            Bound::Excluded(key) => resuming_after(key.as_slice().to_vec()),
+            Bound::Unbounded => Vec::new(),
+        };
+        while taken.len() < limit {
+            let batch = self.store.backend().scan(&ScanRequest {
+                keyspace,
+                range: KeyRange::from_bounds(Bound::Included(Key::from(from)), span.end().clone()),
+                direction: ScanDirection::Forward,
+                limit: Some(RANGE_SCAN_BATCH_ENTRIES.min(limit.saturating_sub(taken.len()))),
+            })?;
+            let full = batch.len() >= RANGE_SCAN_BATCH_ENTRIES;
+            let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
+            taken.extend(batch);
+            let Some(last) = last.filter(|_| full) else {
+                break;
+            };
+            from = resuming_after(last);
+        }
+        Ok(taken)
     }
 
     /// How far into `entries[at..end]` the tie group `edge` still runs.

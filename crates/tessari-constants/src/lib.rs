@@ -266,3 +266,26 @@ pub const SPATIAL_INDEX_CELLS_PER_RECORD: usize = 16;
 /// coarser cell rather than dropping a finer one, so exhausting the budget costs
 /// candidates to refine and never rows.
 pub const SPATIAL_QUERY_CELLS: usize = 16;
+
+/// How many entries a nearest-first walk will read from a cell's whole subtree
+/// before it descends into that subtree instead.
+///
+/// Unit: index entries.
+///
+/// The walk over cells is best-first, and the tree it walks is **implicit**:
+/// every cell exists at every level whether or not anything was ever written
+/// there. Without a cut-off, reaching one record a kilometre away in an empty
+/// region means opening a cell at each of the thirty-two levels on the way down,
+/// and each of those is a seek that finds one entry or none.
+///
+/// So a cell is first read as a whole subtree, with a limit one above this
+/// number. A short answer means the scan was not truncated — every entry under
+/// that cell is in hand, the walk ranks them all and never descends. Only a
+/// subtree that fills the limit is worth splitting into four.
+///
+/// Sixty-four, because four levels of descent cost four seeks and four scans to
+/// find what one scan of sixty-four entries returns outright, and a region
+/// holding fewer than this many records is not a region a walk needs to be
+/// clever about. Larger wastes reads inside a dense cell that pruning would have
+/// skipped; smaller reinstates the deep chain this exists to cut.
+pub const SPATIAL_WALK_SUBTREE_ENTRIES: usize = 64;

@@ -240,7 +240,7 @@ impl Snapped {
     clippy::cast_precision_loss,
     reason = "every grid point is below 2^53, so the cast is exact"
 )]
-fn units_to_degrees(units: i64) -> f64 {
+pub(crate) fn units_to_degrees(units: i64) -> f64 {
     units as f64 / SCALE
 }
 

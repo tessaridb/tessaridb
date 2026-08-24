@@ -285,3 +285,236 @@ fn the_same_ground_measures_the_same_wherever_it_is_written_from() {
     let there = area(&box_shape(170.0, 40.0, 175.0, 45.0));
     assert!((here - there).abs() / here < 1e-12);
 }
+
+// ---------------------------------------------------------------------------
+// The floor a nearest-first traversal orders its frontier by.
+//
+// `no_closer_than` is not checked against a remembered number or against itself.
+// It is checked against `distance` — a different function, on a different
+// formula — evaluated at many positions inside the box. The claim under test is
+// one-directional and that is the whole point: the bound may be smaller than
+// every distance it bounds, and it may never be larger than one of them.
+// ---------------------------------------------------------------------------
+
+/// Grid units in one degree.
+const DEGREE: i64 = 1_000_000_000;
+
+/// Half the world in longitude, which is also the whole of it in latitude.
+const HALF_WORLD: i64 = 180 * DEGREE;
+
+/// The whole world in longitude.
+const WHOLE_WORLD: i64 = 360 * DEGREE;
+
+fn units(longitude: i64, latitude: i64) -> tessari_geo::Snapped {
+    tessari_geo::Snapped::from_units(longitude, latitude).expect("on the grid")
+}
+
+fn box_of(west: i64, south: i64, east: i64, north: i64) -> tessari_geo::Bounds {
+    tessari_geo::Bounds::of_position(units(west, south)).widened_to(units(east, north))
+}
+
+/// A deterministic sequence, so a failure is reproducible from its own seed.
+struct Rolls(u64);
+
+impl Rolls {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        self.0 >> 33
+    }
+
+    /// A value in `0..span`, or zero for an empty span.
+    fn upto(&mut self, span: u64) -> i64 {
+        let drawn = self.next().checked_rem(span.max(1)).unwrap_or(0);
+        i64::try_from(drawn).unwrap_or(0)
+    }
+
+    /// A box of the given side placed so it stays on the planet, drawn from the
+    /// room **left** after the side is taken rather than drawn freely and
+    /// clamped — clamping would pile every box against the poles, which is the
+    /// one place the bound behaves least like it does everywhere else.
+    fn box_somewhere(&mut self, side: i64) -> tessari_geo::Bounds {
+        let side = side.min(HALF_WORLD / 2);
+        let east_room = u64::try_from(WHOLE_WORLD.saturating_sub(side) / DEGREE).unwrap_or(1);
+        let north_room = u64::try_from(HALF_WORLD.saturating_sub(side) / DEGREE).unwrap_or(1);
+        let west = self
+            .upto(east_room)
+            .saturating_mul(DEGREE)
+            .saturating_sub(HALF_WORLD);
+        let south = self
+            .upto(north_room)
+            .saturating_mul(DEGREE)
+            .saturating_sub(HALF_WORLD / 2);
+        box_of(
+            west,
+            south,
+            west.saturating_add(side),
+            south.saturating_add(side),
+        )
+    }
+
+    fn position_somewhere(&mut self) -> tessari_geo::Snapped {
+        units(
+            self.upto(360)
+                .saturating_mul(DEGREE)
+                .saturating_sub(HALF_WORLD),
+            self.upto(179)
+                .saturating_mul(DEGREE)
+                .saturating_sub(89 * DEGREE),
+        )
+    }
+}
+
+/// Every distance from `from` to a lattice of positions across the box, plus its
+/// corners and the position nearest by coordinate clamping.
+///
+/// Near-antipodal pairs are dropped rather than counted, because `distance`
+/// refuses those by design; the caller asserts that something survived.
+fn probed_distances(from: tessari_geo::Snapped, area: tessari_geo::Bounds) -> Vec<f64> {
+    const STEPS: i64 = 12;
+    let across = area
+        .east()
+        .saturating_sub(area.west())
+        .checked_div(STEPS)
+        .unwrap_or(0);
+    let up = area
+        .north()
+        .saturating_sub(area.south())
+        .checked_div(STEPS)
+        .unwrap_or(0);
+    let mut probes = Vec::new();
+    for step_x in 0..=STEPS {
+        for step_y in 0..=STEPS {
+            probes.push(units(
+                area.west().saturating_add(across.saturating_mul(step_x)),
+                area.south().saturating_add(up.saturating_mul(step_y)),
+            ));
+        }
+    }
+    // The corner or edge point a coordinate clamp lands on — for a box in
+    // longitude and latitude this is where the true nearest position very nearly
+    // is, so a lattice that missed it would make the check weaker than it looks.
+    probes.push(units(
+        from.longitude_units().clamp(area.west(), area.east()),
+        from.latitude_units().clamp(area.south(), area.north()),
+    ));
+    probes
+        .into_iter()
+        .filter_map(|probe| distance(from, probe))
+        .collect()
+}
+
+#[test]
+fn the_bound_is_never_larger_than_a_distance_it_bounds() {
+    // The property the traversal's correctness rests on, over five scales of box
+    // and a spread of query positions. A bound that exceeded a real distance
+    // would let a walk discard the region holding the nearest record.
+    let mut rolls = Rolls(0x9e37_79b9_7f4a_7c15);
+    let mut checked = 0_usize;
+    for side_degrees in [1_i64, 3, 10, 40, 90] {
+        let side = side_degrees * DEGREE;
+        for _ in 0..40 {
+            let area = rolls.box_somewhere(side);
+            let from = rolls.position_somewhere();
+            let bound = tessari_geo::no_closer_than(from, area);
+            let probes = probed_distances(from, area);
+            assert!(
+                !probes.is_empty(),
+                "every probe was refused as near-antipodal, so nothing was checked"
+            );
+            for probe in probes {
+                assert!(
+                    bound <= probe + 1e-6,
+                    "the bound {bound} exceeds a real distance {probe} \
+                     from {from:?} to {area:?} at side {side_degrees}°"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 10_000, "only {checked} probes were compared");
+}
+
+#[test]
+fn a_position_inside_the_box_is_bounded_by_nothing() {
+    // Zero is the only correct answer for a position the box holds, edges and
+    // corners included: the box contains it, so nothing in the box is further
+    // from it than zero.
+    let area = box_of(-10 * DEGREE, 20 * DEGREE, 30 * DEGREE, 50 * DEGREE);
+    for (longitude, latitude) in [
+        (0_i64, 30_i64),
+        (-10, 20),
+        (30, 50),
+        (-10, 50),
+        (30, 20),
+        (-10, 35),
+        (30, 35),
+        (5, 20),
+        (5, 50),
+    ] {
+        let inside = units(longitude * DEGREE, latitude * DEGREE);
+        assert_eq!(
+            tessari_geo::no_closer_than(inside, area),
+            0.0,
+            "the box holds {longitude}°, {latitude}° and must bound it by nothing"
+        );
+    }
+}
+
+#[test]
+fn the_bound_is_tight_where_a_traversal_needs_it() {
+    // A floor that is always zero is a correct floor and a useless one, so the
+    // bound is exercised where a walk actually leans on it — a small box a short
+    // way from the query, which is the situation at the frontier when the answer
+    // is nearly settled. The aggregate is not enough: one slack scale hiding
+    // behind four tight ones is exactly the failure this asserts per scale.
+    let mut rolls = Rolls(0x5ca1_e50d_0e5c_3d00);
+    for side_degrees in [1_i64, 2, 5] {
+        let side = side_degrees * DEGREE;
+        let mut worst = f64::INFINITY;
+        for _ in 0..30 {
+            let area = rolls.box_somewhere(side);
+            // Just outside the box, on the side of it, where the longitude floor
+            // and the latitude floor are each doing most of the work in turn.
+            let from = units(
+                (area.west() - side).max(-180 * DEGREE),
+                area.south() + side / 2,
+            );
+            let bound = tessari_geo::no_closer_than(from, area);
+            let nearest = probed_distances(from, area)
+                .into_iter()
+                .fold(f64::INFINITY, f64::min);
+            assert!(nearest.is_finite() && nearest > 0.0);
+            worst = worst.min(bound / nearest);
+        }
+        assert!(
+            worst > 0.6,
+            "at {side_degrees}° the bound fell to {worst} of the true distance, \
+             which is too loose to prune with"
+        );
+    }
+}
+
+#[test]
+fn the_bound_is_not_the_distance_to_the_middle_of_the_box() {
+    // The canonical way to get this wrong. A centroid distance is a distance to
+    // one position in the box rather than a floor under all of them, and for a
+    // wide box it is larger than the distance to the near edge by thousands of
+    // kilometres — so a traversal keyed on it would discard the box holding the
+    // nearest record and answer with confidence.
+    let area = box_of(0, 0, 60 * DEGREE, 40 * DEGREE);
+    let from = units(-DEGREE, 20 * DEGREE);
+    let to_the_near_edge = distance(from, units(0, 20 * DEGREE)).expect("not antipodal");
+    let to_the_middle = distance(from, units(30 * DEGREE, 20 * DEGREE)).expect("not antipodal");
+    let bound = tessari_geo::no_closer_than(from, area);
+    assert!(
+        to_the_middle > to_the_near_edge * 20.0,
+        "the fixture must make the two answers far apart to mean anything"
+    );
+    assert!(
+        bound <= to_the_near_edge + 1e-6,
+        "the bound {bound} is above the near edge at {to_the_near_edge}"
+    );
+}

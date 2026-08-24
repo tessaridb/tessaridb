@@ -661,6 +661,17 @@ impl Session<'_> {
                     hand_over(found, transaction, consumer)?;
                     return Ok(AccessPath::Index);
                 }
+                // A bounded order by distance from a place, over a field
+                // carrying a spatial index. Exact rather than approximate, and
+                // therefore asking nothing of the statement: a best-first walk
+                // ordered by a floor visits every record that could rank above
+                // the ones it holds.
+                if let Some(closest) = plan::closest(select)
+                    && let Some(found) = self.walk_to_place(transaction, context, id, &closest)?
+                {
+                    hand_over(found, transaction, consumer)?;
+                    return Ok(AccessPath::Ordered);
+                }
                 // The other shape an index serves without a condition: an order
                 // it is already stored in, and a bound to stop at. Exact — the
                 // records come back for the ordering stage and `bounded` to
@@ -952,6 +963,107 @@ impl Session<'_> {
             }
         }
         Ok(Some(rows))
+    }
+
+    /// Walk a spatial index nearest-first, when there is one that answers this
+    /// read.
+    ///
+    /// `None` is the scan, and every `None` here is a way the order a walk
+    /// produces can differ from the order the read must answer in. The first
+    /// four are the same four an ordered walk refuses, and for the same reason:
+    /// an ordering has nothing to re-test, because the entry's **position** is
+    /// the answer rather than a candidate for one.
+    ///
+    /// - **no spatial index on that field.** An ordered index holds values and a
+    ///   vector index holds a graph; neither is stored by place.
+    /// - **the field is not visible to this caller.** A field permission removes
+    ///   the field before anything reads the record, so a caller without it
+    ///   sorts by `none`. An order taken from the index would sort by the
+    ///   geometries themselves — the ordering disclosing what the projection
+    ///   hides, one comparison at a time.
+    /// - **this transaction has written to the table.** Entries are derived at
+    ///   commit, so an uncommitted record has none and the walk cannot place it.
+    /// - **the snapshot is not the committed tail.** Entries hold the current
+    ///   state and carry no version, so a record moved since the snapshot sits
+    ///   in the index at a place this reader cannot see, and the answer comes
+    ///   back in the **wrong order** rather than short.
+    ///
+    /// The query position is the last: `geo::distance` takes positions, so an
+    /// argument that is not one is an error in the statement, and the scan is
+    /// what reports it. [`Transaction::records_by_place`] owns the three
+    /// remaining refusals, which are facts about the records rather than about
+    /// the session.
+    fn walk_to_place(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: crate::context::Context,
+        table: TableId,
+        wanted: &plan::Closest<'_>,
+    ) -> Result<Option<Vec<(RecordId, Value)>>> {
+        let Some((index, visible)) =
+            self.index_serving_place(transaction, context, table, wanted.path)?
+        else {
+            return Ok(None);
+        };
+        let Value::Geometry(tessari_types::Geometry::Point(position)) =
+            self.evaluate(transaction, wanted.query)?
+        else {
+            return Ok(None);
+        };
+        let Ok(target) = tessari_geo::Snapped::of(position) else {
+            return Ok(None);
+        };
+        let Some(nearby) = transaction.records_by_place(&index, target, wanted.wanted)? else {
+            return Ok(None);
+        };
+        self.records_of(nearby.rows, &visible).map(Some)
+    }
+
+    /// The spatial index that may serve an order by distance from this field,
+    /// with the caller's field visibility.
+    ///
+    /// The kind check is not a formality: an index keyed by **values** on the
+    /// same field would let a walk over places loose in a keyspace it has no
+    /// business in, where it would find nothing, answer with no rows, and report
+    /// no error. So the test names what it admits rather than what it rejects,
+    /// and a kind added later is refused by default rather than admitted by
+    /// omission.
+    ///
+    /// Asked here rather than at each call site, so the executor and `EXPLAIN`
+    /// cannot come to disagree about which reads are servable — the same reason
+    /// [`Evaluator::index_serving_order`] gathers its own four.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read.
+    pub(crate) fn index_serving_place(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: crate::context::Context,
+        table: TableId,
+        path: &tessari_types::Path,
+    ) -> Result<Option<(tessari_storage::IndexDefinition, crate::redact::Visible)>> {
+        let Some(index) = Catalog::new(transaction)
+            .indexes_on(table)?
+            .into_iter()
+            .find(|index| index.spatial && index.fields.first() == Some(path))
+        else {
+            return Ok(None);
+        };
+        let visible = self.visible_in(transaction, table)?;
+        if visible
+            .as_ref()
+            .is_some_and(|fields| !fields.contains(path.root()))
+        {
+            return Ok(None);
+        }
+        if transaction.writes_in(context.namespace, context.database, table) {
+            return Ok(None);
+        }
+        if transaction.snapshot() != self.store.committed_tail()? {
+            return Ok(None);
+        }
+        Ok(Some((index, visible)))
     }
 
     /// A bounded descending read, taken from an index that is already in that

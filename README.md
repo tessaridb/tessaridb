@@ -13,7 +13,7 @@ products around them.
 [![version](https://img.shields.io/badge/version-0.0.1--alpha-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-445%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-451%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/TessariDB/TessariDB-protocol) ·
@@ -109,7 +109,7 @@ compares against expected answers, case by case. The counts are those cases.
 | **Vector** | cosine, Euclidean and dot distance, kNN ordering, a graph index that declares whether it answered exactly | 12 | ✅ runs |
 | **Time-series** | epoch-anchored windows every process agrees on, aggregates per window, retention as a statement that reports what it removed | 12 | ✅ runs |
 | **References** | `FETCH` — follow a reference, an array of them, or a nested route, without a join | 12 | ✅ runs |
-| **Geospatial** | a geometry type on an exact integer grid, seven predicates over whole shapes, geodesic distance and area, shapes written as literals, a spatial index six of the seven predicates read through | 34 | 🚧 partial — no nearest-first read over shapes, and `geo::touches` is not written |
+| **Geospatial** | a geometry type on an exact integer grid, seven predicates over whole shapes, geodesic distance and area, shapes written as literals, a spatial index six of the seven predicates read through, and a nearest-first read over positions | 40 | 🚧 partial — the nearest few is over positions rather than whole shapes, and `geo::touches` is not written |
 
 Underneath all of them, one substrate with two backends: **in memory**, and
 **on disk** on a log-structured merge-tree engine. Everything above the
@@ -144,8 +144,14 @@ follows is what runs today, not a roadmap.
   shape is covered by cells of its own, the entries under and above them are
   read, the stored boxes reject what they can, and the exact predicate decides
   the rest. `geo::disjoint` is the complement of a region and stays an exact
-  scan by design. What is missing is a nearest-first read over shapes,
-  `geo::touches`, and any measured tuning of how finely a query is covered.
+  scan by design. The same index answers **the nearest few** —
+  `ORDER BY geo::distance(at, …) LIMIT k` walks cells cheapest-first, keyed by a
+  distance nothing inside the cell can beat, and stops when the best cell left is
+  further than the worst answer held; that is exact rather than approximate, so
+  it asks nothing of the statement. What is missing is a distance to a shape
+  larger than a position (which is why the nearest few is over positions), a
+  nearest-first read under a `WHERE`, `geo::touches`, and any measured tuning of
+  how finely a query is covered.
   Peers are declared and read back, but nothing replicates between them.
 - ⛔ **Not there:** sharding, replication, and cluster membership. The language
   has words for them; the engine does not have the machinery yet.

@@ -198,3 +198,44 @@ SELECT * FROM areas WHERE geo::disjoint(at, geometry { type: 'Polygon', coordina
 --- case: a negated geometry test is not served from one side of itself
 SELECT * FROM areas WHERE NOT geo::intersects(at, geometry { type: 'Point', coordinates: [2.35, 48.85] });
 --- expect: rows 1
+
+--- case: a table of positions, and a spatial index over it
+# `geo::distance` measures between two positions, so a nearest-first read is over
+# a field holding points. The areas above are the filter's corpus; this is the
+# order's.
+DEFINE TABLE stops;
+CREATE stops:'gate' = { at: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
+CREATE stops:'bridge' = { at: geometry { type: 'Point', coordinates: [2.41, 48.79] } };
+CREATE stops:'mill' = { at: geometry { type: 'Point', coordinates: [2.09, 48.93] } };
+CREATE stops:'quay' = { at: geometry { type: 'Point', coordinates: [3.62, 47.48] } };
+CREATE stops:'far' = { at: geometry { type: 'Point', coordinates: [-73.98, 40.75] } };
+DEFINE INDEX by_stop ON stops FIELDS at SPATIAL;
+--- expect: ok
+
+--- case: the nearest few is an order and a bound, and needs no new syntax
+SELECT * FROM stops ORDER BY geo::distance(at, geometry { type: 'Point', coordinates: [2.35, 48.85] }) LIMIT 3;
+--- expect: rows 3
+
+--- case: the place may be written as either argument of a distance
+# A distance is symmetric and both phrasings are ordinary. A store understanding
+# only one would answer both correctly and read the whole table for the other.
+SELECT * FROM stops ORDER BY geo::distance(geometry { type: 'Point', coordinates: [2.35, 48.85] }, at) LIMIT 3;
+--- expect: rows 3
+
+--- case: a bound past every record answers with the records there are
+SELECT * FROM stops ORDER BY geo::distance(at, geometry { type: 'Point', coordinates: [2.35, 48.85] }) LIMIT 40;
+--- expect: rows 5
+
+--- case: a record with no place sorts after every record that has one
+# An absence is unreachably far rather than unknown, so it never takes a place
+# near the front of the order. The index does not hold it, which is why a bound
+# reaching this far is answered by reading everything instead.
+CREATE stops:'nowhere' = { name: 'no place at all' };
+SELECT * FROM stops ORDER BY geo::distance(at, geometry { type: 'Point', coordinates: [2.35, 48.85] }) LIMIT 5;
+--- expect: rows 5
+
+--- case: a distance to something that is not a position is a mistake in the statement
+# `geo::distance` takes two positions. An area is not one, and reporting it as
+# unreachably far would sort the mistake quietly to the end instead of saying so.
+SELECT * FROM areas ORDER BY geo::distance(at, geometry { type: 'Point', coordinates: [2.35, 48.85] }) LIMIT 2;
+--- expect: error WrongArgument
