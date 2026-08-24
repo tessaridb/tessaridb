@@ -296,6 +296,18 @@ pub enum Error {
         span: Span,
     },
 
+    /// The statement writes, and this node does not accept writes.
+    ///
+    /// Not a permission failure: the caller may well be allowed to write, and
+    /// on the leader the same script would run. It says *where*, not *who* —
+    /// which is why it is separate from [`Self::RoleForbids`] and why the
+    /// message says the node rather than the user.
+    #[error("this node does not accept writes (at {span})")]
+    NotWritable {
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A signin that did not match.
     ///
     /// One message for a wrong name and a wrong password alike: telling them
