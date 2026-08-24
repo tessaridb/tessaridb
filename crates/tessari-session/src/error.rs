@@ -68,6 +68,21 @@ pub enum Error {
     #[error(transparent)]
     Encoding(#[from] tessari_encoding::Error),
 
+    /// A shape the store will not hold.
+    ///
+    /// Raised on the way in, never on the way out, and the coordinates it names
+    /// are the **snapped** ones — the store's version of the position rather
+    /// than the caller's. A caller comparing them against what it sent can see
+    /// that quantisation was the cause; quoting the submitted coordinates back
+    /// would describe a shape that was never in question.
+    #[error("a shape was refused: {refused} (at {span})")]
+    GeometryRefused {
+        /// What was wrong with it.
+        refused: tessari_geo::Refused,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A statement needs a namespace and the session has not selected one.
     #[error("no namespace selected (at {span}) — say `USE NAMESPACE …` first")]
     NoNamespaceSelected {

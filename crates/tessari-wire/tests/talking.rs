@@ -11,8 +11,8 @@ use std::io::Write;
 use std::net::TcpStream;
 use std::sync::Arc;
 
-use tessaridb::{Db, Value};
 use tessari_wire::{Answer, Client, Node};
+use tessaridb::{Db, Value};
 
 /// A node on a loopback port the operating system picked, plus its address.
 fn serving(db: Db) -> (Arc<Node>, String) {

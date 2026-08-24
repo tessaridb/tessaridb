@@ -22,10 +22,12 @@
 //! one, so correctness comes from oracles and fixtures rather than from reading
 //! results and finding them plausible.
 
+pub mod accept;
 pub mod bounds;
 pub mod grid;
 pub mod predicate;
 
+pub use crate::accept::{Defect, Refused, accept};
 pub use crate::bounds::Bounds;
 pub use crate::grid::{Axis, OffGrid, SCALE, Snapped};
 pub use crate::predicate::{

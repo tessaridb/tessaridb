@@ -14,6 +14,7 @@ use tessari_types::{
 
 use crate::error::{Error, Result};
 use crate::evaluate::{key_bound, within};
+use crate::geometry::on_the_grid;
 use crate::outcome::Outcome;
 use crate::session::Session;
 
@@ -204,7 +205,7 @@ impl Session<'_> {
                 }
                 let payload = self.evaluate(transaction, value)?;
                 let payload = self.with_defaults(transaction, address.table, payload)?;
-                transaction.put(address, encode_payload(&payload).into_bytes());
+                self.put_record(transaction, address, payload, span)?;
                 Ok(Outcome::Done)
             }
             StatementKind::Update { target, edit } => {
@@ -228,7 +229,7 @@ impl Session<'_> {
                 // "this field always holds a value" even when a caller sets one
                 // to `none`.
                 let payload = self.with_defaults(transaction, address.table, payload)?;
-                transaction.put(address, encode_payload(&payload).into_bytes());
+                self.put_record(transaction, address, payload, span)?;
                 Ok(Outcome::Done)
             }
             // A key-value write replaces whatever was there, which is why it is
@@ -236,7 +237,7 @@ impl Session<'_> {
             StatementKind::Set { target, value } => {
                 let (_, address) = self.writable(transaction, target)?;
                 let payload = self.evaluate(transaction, value)?;
-                transaction.put(address, encode_payload(&payload).into_bytes());
+                self.put_record(transaction, address, payload, span)?;
                 Ok(Outcome::Done)
             }
             StatementKind::Delete { target } | StatementKind::Del { target } => {
@@ -313,6 +314,31 @@ impl Session<'_> {
         }
     }
 
+    /// Write a record, after every shape in it has crossed the geometry boundary.
+    ///
+    /// Every record write in this crate goes through here, which is the point.
+    /// The boundary is not a rule about a field that was declared `TYPE
+    /// geometry` — validity is a property of the value, not of a declaration
+    /// about it, and the store's default table declares nothing at all. So the
+    /// check runs on whatever arrives, wherever it arrives.
+    ///
+    /// It cannot live in the storage layer's schema check instead. That check
+    /// reads an already-encoded payload, so it has no way to snap: snapping is a
+    /// transformation and the payload is downstream of it. It also returns early
+    /// for a table whose schema constrains nothing, which is exactly the table
+    /// most geometry will be written to.
+    fn put_record(
+        &self,
+        transaction: &mut Transaction<'_>,
+        address: RecordAddress,
+        payload: Value,
+        span: Span,
+    ) -> Result<()> {
+        let payload = on_the_grid(payload, span)?;
+        transaction.put(address, encode_payload(&payload).into_bytes());
+        Ok(())
+    }
+
     /// Write an edge between two records.
     ///
     /// The edge is an ordinary record in the edge table, carrying `out` and `in`
@@ -379,7 +405,7 @@ impl Session<'_> {
         // An edge is an ordinary record, so an edge table's declarations apply
         // to it — including their defaults.
         let payload = self.with_defaults(transaction, edge_table, Value::Object(fields))?;
-        transaction.put(address, encode_payload(&payload).into_bytes());
+        self.put_record(transaction, address, payload, edges.span)?;
         Ok(Outcome::Done)
     }
 

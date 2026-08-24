@@ -31,10 +31,10 @@ mod sha1;
 
 use std::io::{Read, Write};
 
-use tessaridb::feed::{Commits, Following};
-use tessaridb::{Db, Sequence};
 use tessari_constants::SOCKET_MAX_MESSAGE_BYTES;
 use tessari_serve::{Busy, Stopping};
+use tessaridb::feed::{Commits, Following};
+use tessaridb::{Db, Sequence};
 use tiny_http::{Header, Request, Response};
 
 use crate::basic::{self, Credentials};

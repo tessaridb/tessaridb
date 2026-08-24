@@ -303,7 +303,8 @@ fn parameter(given: &str) -> Result<(String, Value), String> {
         return Err("--param wants a name before the `=`".to_owned());
     }
     let name = name.strip_prefix('$').unwrap_or(name);
-    let value = tessaridb::value_of(written).map_err(|reason| format!("--param {name}: {reason}"))?;
+    let value =
+        tessaridb::value_of(written).map_err(|reason| format!("--param {name}: {reason}"))?;
     Ok((name.to_owned(), value))
 }
 

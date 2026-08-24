@@ -22,8 +22,8 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 
-use tessaridb::Db;
 use tessari_http::Node;
+use tessaridb::Db;
 
 /// A node on a loopback port the operating system picked, plus its address.
 fn node() -> (Arc<Node>, String) {

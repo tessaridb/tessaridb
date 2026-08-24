@@ -12,8 +12,8 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 
-use tessaridb::Db;
 use tessari_http::Node;
+use tessaridb::Db;
 
 /// The key and the answer, both printed in RFC 6455 §1.3.
 const KEY: &str = "dGhlIHNhbXBsZSBub25jZQ==";

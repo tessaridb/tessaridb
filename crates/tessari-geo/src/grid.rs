@@ -221,14 +221,27 @@ impl Snapped {
 
 /// Grid units back to degrees.
 ///
-/// Split so the conversion runs through `i32`, for which `f64::from` is total
-/// and exact. `units` is bounded by the grid limit, so the quotient is at most
-/// 180 000 and the remainder is under a million — both comfortably inside `i32`,
-/// which is why neither branch can lose a value.
+/// **Invariant the conversion rests on:** `units` is bounded by the grid limit,
+/// so `|units| ≤ 1.8 × 10^11`, which is four orders of magnitude below `2^53`.
+/// Every grid point is therefore exactly representable as an `f64`, the cast
+/// loses nothing, and the single division that follows is correctly rounded —
+/// so the result is the nearest double to `units / 10^9` rather than merely a
+/// close one.
+///
+/// That distinction is not cosmetic here. A position compares **bitwise**
+/// (see `tessari_types::Position`), so it is not enough for the answer to be
+/// within a rounding error of the right degree value: a shape the store hands
+/// back must compare equal to the same shape a caller builds from the same grid
+/// coordinates. An earlier form of this function split the value and recombined
+/// it with a fused multiply-add, which round-tripped correctly but landed one
+/// unit in the last place away from the nearest double for about an eighth of
+/// all grid points — near enough for arithmetic and not near enough for equality.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "every grid point is below 2^53, so the cast is exact"
+)]
 fn units_to_degrees(units: i64) -> f64 {
-    let whole = i32::try_from(units / 1_000_000).unwrap_or_default();
-    let fraction = i32::try_from(units % 1_000_000).unwrap_or_default();
-    f64::from(whole).mul_add(1e-3, f64::from(fraction) / SCALE)
+    units as f64 / SCALE
 }
 
 fn snap(value: f64, axis: Axis, limit: i64, spelling: &'static str) -> Result<i64, OffGrid> {

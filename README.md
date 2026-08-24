@@ -134,9 +134,9 @@ follows is what runs today, not a roadmap.
   WebSocket surface, the binary wire protocol (v1.0, with a published spec and
   conformance corpus), single-node serving with roles, endpoints and graceful
   drain, backup and restore.
-- 🚧 **Partial:** geospatial has its value type and its exact predicate kernel;
-  the spatial index is not built yet. Peers are declared and read back, but
-  nothing replicates between them.
+- 🚧 **Partial:** geospatial has its value type, its exact predicate kernel and
+  its ingest boundary; the spatial index is not built yet. Peers are declared
+  and read back, but nothing replicates between them.
 - ⛔ **Not there:** sharding, replication, and cluster membership. The language
   has words for them; the engine does not have the machinery yet.
 - ⚠️ **Unstable:** the query language, the wire format and the on-disk format all
@@ -144,6 +144,27 @@ follows is what runs today, not a roadmap.
 
 Use it for prototypes, evaluation and development. Do not put data you cannot
 lose behind it yet — and if you do run it, pin a commit, because `dev` moves.
+
+### Two things about geometry that will surprise you if nobody says them
+
+**A stored shape is not always the shape you sent.** Coordinates are snapped at
+ingest to a fixed grid of 10⁻⁹ degrees — about a tenth of a millimetre at the
+equator, far below any measurement this store will hold. Anything finer is
+rounded, once, on the way in. That is what buys exact predicates with no
+tolerance anywhere, and it is what makes a read-modify-write cycle lossless: the
+value you read back is the value a second write produces, unchanged, forever.
+
+**A shape that looks fine can be refused.** Validity is checked *after*
+snapping, because snapping is what can break it: two corners a fraction of a
+nanodegree apart become one corner, and a ring that had area can end up with
+none. Checking before would accept exactly those and write them. So a refusal
+sometimes names coordinates you did not type — they are the store's rounded
+version, quoted deliberately, so you can see that rounding was the cause.
+
+Nothing is repaired silently. An unclosed ring, a ring that crosses itself, a
+hole outside its shell or a coordinate off the sphere is refused, named, and
+located — a longitude of 181 is a mistake upstream, and wrapping it to -179
+would move a point across the world without saying so.
 
 ## Opening one
 

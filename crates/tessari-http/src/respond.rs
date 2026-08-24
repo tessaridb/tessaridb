@@ -30,8 +30,8 @@
 
 use std::collections::BTreeMap;
 
-use tessaridb::{AccessPath, Db, Error, Outcome};
 use tessari_serve::{Census, Stopping};
+use tessaridb::{AccessPath, Db, Error, Outcome};
 
 use crate::basic::Credentials;
 use crate::json;

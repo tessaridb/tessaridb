@@ -13,8 +13,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 
-use tessaridb::Db;
 use tessari_http::Node;
+use tessaridb::Db;
 
 fn node() -> (Arc<Node>, String) {
     let db = Arc::new(Db::in_memory().unwrap());

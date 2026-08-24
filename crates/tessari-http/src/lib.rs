@@ -58,9 +58,9 @@ mod websocket;
 
 use std::sync::Arc;
 
+use tessari_serve::{Busy, Census, Stopping};
 use tessaridb::Db;
 use tessaridb::feed::Commits;
-use tessari_serve::{Busy, Census, Stopping};
 use tiny_http::{Method, Request, Response, Server};
 
 pub use respond::Answer;

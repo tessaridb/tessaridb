@@ -15,8 +15,8 @@
 
 use std::sync::Arc;
 
-use tessaridb::{Db, Parameters, Value};
 use tessari_wire::{Answer, Client, Node};
+use tessaridb::{Db, Parameters, Value};
 
 fn serving(db: Db) -> (Arc<Node>, String) {
     let node = Arc::new(Node::bind(Arc::new(db), "127.0.0.1:0").unwrap());

@@ -24,8 +24,8 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use tessaridb::{Db, Parameters, Value};
 use tessari_wire::Node;
+use tessaridb::{Db, Parameters, Value};
 
 use crate::session::{Mode, run};
 use crate::store::{Embedded, Remote, Store};

@@ -12,8 +12,8 @@
 
 use std::sync::Arc;
 
-use tessaridb::{Db, Sequence, Value};
 use tessari_wire::{Answer, Client, Node};
+use tessaridb::{Db, Sequence, Value};
 
 /// A node on a loopback port the operating system picked, plus its address.
 fn serving(db: &Arc<Db>) -> (Arc<Node>, String) {

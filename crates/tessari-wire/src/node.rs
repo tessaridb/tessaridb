@@ -7,9 +7,9 @@ use std::io::{BufReader, BufWriter};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 
+use tessari_serve::{Busy, Stopping};
 use tessaridb::feed::{self, Commits, Following};
 use tessaridb::{Db, Sequence};
-use tessari_serve::{Busy, Stopping};
 
 use crate::error::{Error, Result};
 use crate::message::Request;

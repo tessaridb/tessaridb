@@ -42,8 +42,8 @@
 
 use std::collections::BTreeMap;
 
-use tessaridb::{Db, Outcome};
 use tessari_types::{Number, RecordId, Value};
+use tessaridb::{Db, Outcome};
 
 use crate::counting;
 use crate::ranges::{NOTE, RECORDS, spans};
