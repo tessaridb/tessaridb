@@ -1447,6 +1447,7 @@ SELECT * FROM users WHERE string::len(name) = 3;
 | `type` | `of(value)` — the type's name, as §3 spells it |
 | `vector` | `cosine(a, b)` · `euclidean(a, b)` · `dot(a, b)` |
 | `search` | `score(field, 'query')` — see [Ranking](#ranking) |
+| `geo` | `intersects` · `disjoint` · `covers` · `covered_by` · `contains` · `within` · `equals` — see [Shapes](#shapes) |
 
 **What earns a place: a function is here when it cannot be expressed by what the
 language already has.** That is why there is no `array::contains` (`CONTAINS`
@@ -1459,6 +1460,68 @@ element" is otherwise unsayable.
 set of functions is known then. What each argument holds is checked when it runs,
 and a wrong one names the function, the position, what was wanted and what was
 there.
+
+**A function of an absence is an absence.** `string::len(name)` on a record with
+no `name` answers `NONE` rather than failing, which is what lets a read over
+records of differing shapes narrow instead of stopping. In a condition that
+absence is a **no**: the record did not answer the question, so it is not one of
+the records that answered it yes.
+
+That is the only kind of non-boolean a condition accepts. `WHERE tags` is still
+refused by the type it found, because a bare path in that position is a question
+somebody did not finish writing, and an empty result would hide it where an
+error does not.
+
+The exceptions, which have a real answer for an absence rather than a
+propagated one, are `type::of` — the type of an absence is `none` — the three
+`vector` distances, which answer `+∞` because a distance to something that is not
+there is unbounded, and `search::score`, which answers `0` because a record
+holding none of the query's words scores zero.
+
+### Shapes
+
+A geometry is a value like any other, so a spatial question is an ordinary
+expression:
+
+```
+SELECT * FROM places WHERE geo::intersects(area, $search_box);
+SELECT name, geo::within(area, $district) AS local FROM places;
+```
+
+Seven predicates, and they are the standard ones rather than invented ones:
+
+| Written | True when |
+|---|---|
+| `geo::intersects(a, b)` | they share any position at all, edges and corners included |
+| `geo::disjoint(a, b)` | they share none |
+| `geo::covers(a, b)` | every position of `b` is in `a` |
+| `geo::covered_by(a, b)` | every position of `a` is in `b` |
+| `geo::contains(a, b)` | `a` covers `b` **and** `b` is not only on `a`'s edge |
+| `geo::within(a, b)` | `b` contains `a` |
+| `geo::equals(a, b)` | they cover exactly the same positions |
+
+**`contains` and `covers` differ on the boundary, and that is the point.** A
+position sitting exactly on a polygon's edge is *covered by* the polygon and is
+not *contained in* it. Both questions get asked in practice — "is this address in
+the delivery zone" and "is this address strictly inside it" are different
+questions — so the language says both rather than picking one and calling it
+containment.
+
+`equals` is about positions, not about text. A square written with a redundant
+vertex halfway along one side equals the same square written without it.
+
+**Every answer is exact.** Positions are held on a fixed integer grid, so a
+predicate is an integer comparison and there is no tolerance anywhere: two
+positions are the same position or they are not. What that costs is stated in
+[the value system](value-system.md) — a coordinate finer than the grid is snapped
+when it is stored, once, visibly.
+
+**A shape that is not on the planet is refused**, in a query argument as much as
+in a record. A longitude of 181 is a mistake upstream, and answering a question
+about it would be answering about somewhere that is not there.
+
+A shape reaches a statement as a bound parameter; there is no literal for one
+yet.
 
 ### Ranking
 

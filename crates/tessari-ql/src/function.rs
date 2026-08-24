@@ -70,6 +70,25 @@ pub enum Function {
     SearchScore,
     /// `time::bucket(instant, 1h)` — the start of the window that instant is in.
     TimeBucket,
+    /// `geo::intersects(a, b)` — whether the two shapes share any position,
+    /// boundaries included.
+    GeoIntersects,
+    /// `geo::disjoint(a, b)` — whether they share none.
+    GeoDisjoint,
+    /// `geo::covers(a, b)` — whether the whole of `b` lies in `a`, its boundary
+    /// counting as part of it.
+    GeoCovers,
+    /// `geo::covered_by(a, b)` — [`Function::GeoCovers`] the other way round.
+    GeoCoveredBy,
+    /// `geo::contains(a, b)` — whether `a` holds the whole of `b` and meets more
+    /// than its edge. The strict half of the pair: a position on a polygon's
+    /// boundary is *covered by* it and not *contained in* it.
+    GeoContains,
+    /// `geo::within(a, b)` — [`Function::GeoContains`] the other way round.
+    GeoWithin,
+    /// `geo::equals(a, b)` — whether the two cover exactly the same positions,
+    /// however each was written.
+    GeoEquals,
 }
 
 impl Function {
@@ -94,6 +113,13 @@ impl Function {
         Self::VectorDot,
         Self::SearchScore,
         Self::TimeBucket,
+        Self::GeoIntersects,
+        Self::GeoDisjoint,
+        Self::GeoCovers,
+        Self::GeoCoveredBy,
+        Self::GeoContains,
+        Self::GeoWithin,
+        Self::GeoEquals,
     ];
 
     /// How the function is written, group and name together.
@@ -119,6 +145,13 @@ impl Function {
             Self::VectorDot => "vector::dot",
             Self::SearchScore => "search::score",
             Self::TimeBucket => "time::bucket",
+            Self::GeoIntersects => "geo::intersects",
+            Self::GeoDisjoint => "geo::disjoint",
+            Self::GeoCovers => "geo::covers",
+            Self::GeoCoveredBy => "geo::covered_by",
+            Self::GeoContains => "geo::contains",
+            Self::GeoWithin => "geo::within",
+            Self::GeoEquals => "geo::equals",
         }
     }
 
@@ -132,7 +165,14 @@ impl Function {
             | Self::VectorEuclidean
             | Self::VectorDot
             | Self::SearchScore
-            | Self::TimeBucket => 2,
+            | Self::TimeBucket
+            | Self::GeoIntersects
+            | Self::GeoDisjoint
+            | Self::GeoCovers
+            | Self::GeoCoveredBy
+            | Self::GeoContains
+            | Self::GeoWithin
+            | Self::GeoEquals => 2,
             _ => 1,
         }
     }

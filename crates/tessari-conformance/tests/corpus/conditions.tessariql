@@ -86,6 +86,17 @@ CREATE audit:1 = { subject: people };
 SELECT * FROM people WHERE name;
 --- expect: error ConditionNotBoolean
 
+--- case: an absence is not a type error in a condition, it is a no
+SELECT * FROM people WHERE NONE;
+--- expect: rows 0
+
+--- case: a function over a field a record does not have narrows the answer
+# Three of the five have no `tags`, so the call answers with an absence for
+# them. Refusing that would make one record missing one field fail the whole
+# read, which is the outcome the absence rule exists to prevent.
+SELECT * FROM people WHERE array::len(tags) > 0;
+--- expect: rows 2
+
 --- case: two comparisons in a row are refused
 SELECT * FROM people WHERE 1 < age < 100;
 --- expect: error UnexpectedToken

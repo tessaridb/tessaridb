@@ -32,6 +32,7 @@ mod error;
 mod evaluate;
 mod execute;
 mod file;
+mod geo;
 mod geometry;
 mod grants;
 mod identity;

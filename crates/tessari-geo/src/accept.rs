@@ -43,16 +43,21 @@
 //!
 //! Ring winding order is not enforced. RFC 7946 asks an exterior ring to run
 //! counter-clockwise, and also tells parsers not to reject rings that do not —
-//! normalising would be a repair, and this boundary does not repair. Nor do the
-//! members of a multi-polygon get checked against each other for overlap; that is
-//! a property of the collection rather than of any shape in it, and no predicate
-//! here rests on it yet.
+//! normalising would be a repair, and this boundary does not repair.
+//!
+//! The members of a multi-polygon are not checked against each other for
+//! overlap either, and that one is now **owed**. It used to be harmless: an
+//! overlap was a property of the collection rather than of any shape in it, and
+//! nothing rested on it. [`crate::relate::covers`] does. Its rule that a segment
+//! crossing a ring edge has left the region is exact for a multi-polygon whose
+//! members have disjoint interiors, which is what RFC 7946 asks for and what
+//! this boundary does not yet enforce.
 
 use tessari_types::{Geometry, Polygon, Position, Ring};
 
 use crate::grid::{OffGrid, Snapped};
 use crate::predicate::{
-    Containment, Orientation, orientation, ring_contains, segments_meet, twice_signed_area,
+    Containment, ring_contains, segments_cross, segments_meet, twice_signed_area,
 };
 
 /// Put a shape on the grid, and decide whether the store will hold it.
@@ -490,29 +495,12 @@ fn first_crossing(one: &[Snapped], other: &[Snapped]) -> Option<Snapped> {
         let (from, to) = edge(one, index);
         for against in 0..other.len().saturating_sub(1) {
             let (other_from, other_to) = edge(other, against);
-            if crosses(from, to, other_from, other_to) {
+            if segments_cross(from, to, other_from, other_to) {
                 return Some(from);
             }
         }
     }
     None
-}
-
-/// Whether two segments cross properly — each strictly straddling the other's line.
-///
-/// Touching at a point does not count, which is what separates a hole escaping
-/// its shell from a hole legitimately resting against it.
-fn crosses(from: Snapped, to: Snapped, other_from: Snapped, other_to: Snapped) -> bool {
-    let sides = [
-        orientation(from, to, other_from),
-        orientation(from, to, other_to),
-        orientation(other_from, other_to, from),
-        orientation(other_from, other_to, to),
-    ];
-    if sides.contains(&Orientation::Collinear) {
-        return false;
-    }
-    sides[0] != sides[1] && sides[2] != sides[3]
 }
 
 // ------------------------------------------------------------- the plumbing

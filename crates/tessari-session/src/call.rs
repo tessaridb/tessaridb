@@ -95,6 +95,24 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
             };
             Ok(crate::vector::distance(function, left, right))
         }
+        // The predicate arrives as a function, so the seven arms differ in one
+        // word each and there is no place for two of them to disagree about how
+        // an argument is read.
+        Function::GeoIntersects => {
+            crate::geo::relate(function, tessari_geo::intersects, arguments, span)
+        }
+        Function::GeoDisjoint => {
+            crate::geo::relate(function, tessari_geo::disjoint, arguments, span)
+        }
+        Function::GeoCovers => crate::geo::relate(function, tessari_geo::covers, arguments, span),
+        Function::GeoCoveredBy => {
+            crate::geo::relate(function, tessari_geo::covered_by, arguments, span)
+        }
+        Function::GeoContains => {
+            crate::geo::relate(function, tessari_geo::contains, arguments, span)
+        }
+        Function::GeoWithin => crate::geo::relate(function, tessari_geo::within, arguments, span),
+        Function::GeoEquals => crate::geo::relate(function, tessari_geo::equals, arguments, span),
         Function::TypeOf => {
             let Some(value) = arguments.first() else {
                 return Err(wrong_type(function, 0, "a value", "nothing", span));

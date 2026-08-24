@@ -26,11 +26,16 @@ pub mod accept;
 pub mod bounds;
 pub mod grid;
 pub mod predicate;
+pub mod relate;
+pub mod shape;
+mod witness;
 
 pub use crate::accept::{Defect, Refused, accept};
 pub use crate::bounds::Bounds;
 pub use crate::grid::{Axis, OffGrid, SCALE, Snapped};
 pub use crate::predicate::{
-    Containment, Orientation, on_segment, orientation, ring_contains, segments_meet,
-    twice_signed_area,
+    Containment, Orientation, on_segment, orientation, ring_contains, segments_cross,
+    segments_meet, twice_signed_area,
 };
+pub use crate::relate::{contains, covered_by, covers, disjoint, equals, intersects, within};
+pub use crate::shape::{Area, Loop, Shape};
