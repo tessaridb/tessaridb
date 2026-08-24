@@ -4,7 +4,7 @@
 # them on. The rule is one sentence: **a user's grants, if they have any, are the
 # whole story, and a user with none is governed by their role.**
 #
-# A corpus file is one anonymous session, the same as `users.tql`, so what
+# A corpus file is one anonymous session, the same as `users.tessariql`, so what
 # these cases pin is the shape of the statements and the refusals reachable
 # before the first `DEFINE USER` closes the store. What a grant *does* to a
 # signed-in session is asserted where a session can sign in —

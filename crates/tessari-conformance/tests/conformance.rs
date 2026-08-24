@@ -19,7 +19,7 @@ fn corpora() -> Vec<(String, String)> {
         .expect("the corpus directory is missing")
         .filter_map(|entry| {
             let path = entry.ok()?.path();
-            if path.extension()?.to_str()? != "tql" {
+            if path.extension()?.to_str()? != "tessariql" {
                 return None;
             }
             let name = path.file_stem()?.to_str()?.to_owned();

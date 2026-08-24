@@ -4,7 +4,7 @@
 //! tessari                                    an in-memory store, and a prompt
 //! tessari ./data                             a store on disk, and a prompt
 //! tessari ./data -e 'SELECT * FROM users;'   one script, then exit
-//! tessari ./data -f setup.tql              a file
+//! tessari ./data -f setup.tessariql              a file
 //! echo 'SELECT …' | tessari ./data           a pipe
 //! tessari --at 127.0.0.1:7654                a running node, and a prompt
 //! tessari ./data --serve 0.0.0.0:7654        be that node

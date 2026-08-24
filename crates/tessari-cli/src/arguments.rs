@@ -355,7 +355,7 @@ mod tests {
             Source::Inline(_)
         ));
         assert!(matches!(
-            asked(&["-f", "setup.tql"]).expect("a file").source,
+            asked(&["-f", "setup.tessariql"]).expect("a file").source,
             Source::File(_)
         ));
     }
