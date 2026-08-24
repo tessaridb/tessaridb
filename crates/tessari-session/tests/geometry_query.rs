@@ -331,7 +331,7 @@ fn distance_answers_in_metres_and_orders_a_bounded_read() {
     let origin = bound("here", Value::Geometry(Geometry::Point(at(0.0, 0.0))));
     let outcomes = session
         .run_with(
-            "SELECT * FROM places ORDER BY geo::distance(shape, $here) LIMIT 3;",
+            "SELECT name FROM places ORDER BY geo::distance(shape, $here) LIMIT 3;",
             &origin,
         )
         .unwrap();

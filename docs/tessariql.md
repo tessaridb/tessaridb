@@ -1291,6 +1291,18 @@ record — and it may also name a **projected** name, so
 `SELECT address.city AS home … ORDER BY home` works and answers the same as
 ordering by the route.
 
+**A key may name a field the projection dropped**, which is what makes a bounded
+nearest-first read writable without projecting the field it measures:
+
+```
+SELECT name FROM places ORDER BY geo::distance(shape, $here) LIMIT 10;
+SELECT title FROM notes ORDER BY vector::cosine(embedding, $q) LIMIT 10;
+```
+
+Where a projected name **shadows** a field of the record, the projected one wins:
+in `SELECT rank AS label … ORDER BY label` the key means the rank, because
+`label` is the name the answer carries.
+
 **The order is the value system's** (`docs/value-system.md` §3), the same one an
 index is stored in, including across types. With one addition that comparison
 does not make: **`NONE` sorts below `NULL` sorts below every present value.** A

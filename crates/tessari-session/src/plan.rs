@@ -652,6 +652,62 @@ fn reads_a_record(expr: &Expr) -> bool {
     }
 }
 
+/// Every top-level field name an expression reads, however deeply nested.
+///
+/// The neighbour of [`reads_a_record`], answering the finer question: not
+/// *whether* the tree touches the record but **which** of its fields. Kept
+/// beside it deliberately — two walks over the same tree that drifted apart
+/// would each still compile, and the disagreement would surface as a read that
+/// silently loses its ordering.
+///
+/// Exhaustive over `ExprKind` with no wildcard, so a new expression kind is a
+/// compile error here rather than a node this walk quietly steps over.
+pub(crate) fn roots_read(expr: &Expr, into: &mut BTreeSet<String>) {
+    match &expr.kind {
+        ExprKind::Path(field) => {
+            into.insert(field.path.root().to_owned());
+        }
+        ExprKind::Not(inner) | ExprKind::Negate(inner) => roots_read(inner, into),
+        ExprKind::And(left, right)
+        | ExprKind::Or(left, right)
+        | ExprKind::Arithmetic { left, right, .. }
+        | ExprKind::Binary { left, right, .. } => {
+            roots_read(left, into);
+            roots_read(right, into);
+        }
+        ExprKind::Call { arguments, .. } => {
+            for argument in arguments {
+                roots_read(argument, into);
+            }
+        }
+        ExprKind::Array(items) | ExprKind::Set(items) => {
+            for item in items {
+                roots_read(item, into);
+            }
+        }
+        ExprKind::Object(fields) => {
+            for field in fields {
+                roots_read(&field.value, into);
+            }
+        }
+        ExprKind::Range(range) => {
+            roots_read(&range.start, into);
+            roots_read(&range.end, into);
+        }
+        ExprKind::Fold { over, .. } => {
+            if let Some(over) = over {
+                roots_read(over, into);
+            }
+        }
+        ExprKind::Literal(_)
+        | ExprKind::Parameter(_)
+        | ExprKind::Table(_)
+        | ExprKind::Record(_)
+        | ExprKind::Get(_)
+        | ExprKind::Select(_) => {}
+    }
+}
+
 /// Evaluate the parts of an expression that do not depend on a record, once.
 ///
 /// # Why this is here and not in the evaluator
