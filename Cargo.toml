@@ -12,21 +12,21 @@ repository = "https://github.com/TessariDB/TessariDB"
 publish = false
 
 [workspace.dependencies]
-tessari-types = { path = "crates/tessari-types" }
-tessari-constants = { path = "crates/tessari-constants" }
-tessari-kv = { path = "crates/tessari-kv" }
-tessari-encoding = { path = "crates/tessari-encoding" }
-tessari-geo = { path = "crates/tessari-geo" }
-tessari-storage = { path = "crates/tessari-storage" }
-tessari-lsm = { path = "crates/tessari-lsm" }
-tessari-ql = { path = "crates/tessari-ql" }
-tessari-session = { path = "crates/tessari-session" }
-tessari-conformance = { path = "crates/tessari-conformance" }
-tessaridb = { path = "crates/tessaridb" }
-tessari-backup = { path = "crates/tessari-backup" }
-tessari-wire = { path = "crates/tessari-wire" }
-tessari-http = { path = "crates/tessari-http" }
-tessari-serve = { path = "crates/tessari-serve" }
+tessari-types = { path = "crates/tessari-types", version = "0.0.1-alpha" }
+tessari-constants = { path = "crates/tessari-constants", version = "0.0.1-alpha" }
+tessari-kv = { path = "crates/tessari-kv", version = "0.0.1-alpha" }
+tessari-encoding = { path = "crates/tessari-encoding", version = "0.0.1-alpha" }
+tessari-geo = { path = "crates/tessari-geo", version = "0.0.1-alpha" }
+tessari-storage = { path = "crates/tessari-storage", version = "0.0.1-alpha" }
+tessari-lsm = { path = "crates/tessari-lsm", version = "0.0.1-alpha" }
+tessari-ql = { path = "crates/tessari-ql", version = "0.0.1-alpha" }
+tessari-session = { path = "crates/tessari-session", version = "0.0.1-alpha" }
+tessari-conformance = { path = "crates/tessari-conformance", version = "0.0.1-alpha" }
+tessaridb = { path = "crates/tessaridb", version = "0.0.1-alpha" }
+tessari-backup = { path = "crates/tessari-backup", version = "0.0.1-alpha" }
+tessari-wire = { path = "crates/tessari-wire", version = "0.0.1-alpha" }
+tessari-http = { path = "crates/tessari-http", version = "0.0.1-alpha" }
+tessari-serve = { path = "crates/tessari-serve", version = "0.0.1-alpha" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
