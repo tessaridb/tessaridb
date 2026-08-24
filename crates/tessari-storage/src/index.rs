@@ -69,11 +69,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use tessari_constants::SPATIAL_INDEX_CELLS_PER_RECORD;
 use tessari_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, NoPayload, PostingKey,
-    RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, StoreKey, StoreValue,
-    UniqueIndexKey, decode_payload,
+    RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, SpatialExtent,
+    SpatialIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
 };
+use tessari_geo::{Bounds, Cell, Shape};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{Analyzer, RecordId, TableId, Value};
 
@@ -256,6 +258,13 @@ fn build(
         return Ok(graph::write(batch, &address, &written));
     }
 
+    if definition.spatial {
+        for (id, payload) in &rows {
+            batch = place(batch, &address, id, &decode_payload(payload)?, definition);
+        }
+        return Ok(batch);
+    }
+
     if definition.search {
         let declared = analyzers_on(view, definition.table)?;
         let analyzer = search_analyzer(definition, &declared);
@@ -303,7 +312,7 @@ fn build(
 /// records that have gone, a posting for text nobody stores any more, an entry
 /// under a value the record no longer holds.
 ///
-/// All five index key kinds, because a rebuild has to be safe on any index a
+/// All six index key kinds, because a rebuild has to be safe on any index a
 /// caller may name, and an index whose shape changed is not a case this store
 /// wants to reason about one kind at a time.
 fn clear(store: &Store, mut batch: WriteBatch, address: &IndexAddress) -> Result<WriteBatch> {
@@ -313,6 +322,7 @@ fn clear(store: &Store, mut batch: WriteBatch, address: &IndexAddress) -> Result
         KeyKind::Posting,
         KeyKind::VectorNode,
         KeyKind::SearchStatistics,
+        KeyKind::SpatialIndex,
     ] {
         let keyspace = kind.keyspace();
         let prefix = address.prefix(kind);
@@ -365,6 +375,34 @@ fn apply_one(
         {
             let touched = graph.insert(&mutation.id, held);
             batch = graph::write(batch, &address, &touched);
+        }
+        return Ok(batch);
+    }
+
+    if definition.spatial {
+        // Both sides enumerate with the same function, so a record that kept its
+        // geometry writes back exactly the keys it already had and a record that
+        // changed it leaves none behind. Reasoning about *what moved* instead is
+        // where an orphan cell would come from — and an orphan here is a record
+        // answering a box it is no longer inside, which no reader would question
+        // because the answer is geographically plausible.
+        if let Some(bytes) = previous {
+            batch = displace(
+                batch,
+                &address,
+                &mutation.id,
+                &decode_payload(bytes)?,
+                definition,
+            );
+        }
+        if let RecordValue::Present(payload) = &mutation.value {
+            batch = place(
+                batch,
+                &address,
+                &mutation.id,
+                &decode_payload(payload)?,
+                definition,
+            );
         }
         return Ok(batch);
     }
@@ -539,6 +577,91 @@ struct Analysed {
     /// How many tokens the text holds, **with** repeats — this is a length, and
     /// a length that collapsed repeats would not be one.
     tokens: u64,
+}
+
+/// Every cell of one record's geometry, written into `batch`.
+///
+/// The record's bounding box travels in each entry's value, and it is computed
+/// **here** — inside the batch that carries the record's own mutation, by the
+/// writer, once. Nothing else may compute it: a box maintained by a background
+/// job or recomputed by a reader can lag the geometry it describes, and a stale
+/// box excludes rows that should have matched with nothing raised anywhere. That
+/// is the one failure direction a spatial filter must not have, and keeping the
+/// computation on this path is the whole of the defence.
+fn place(
+    mut batch: WriteBatch,
+    address: &IndexAddress,
+    id: &RecordId,
+    value: &Value,
+    definition: &IndexDefinition,
+) -> WriteBatch {
+    let Some((bounds, cells)) = covering_of(definition, value) else {
+        return batch;
+    };
+    let extent = SpatialExtent::new(bounds).encode();
+    for cell in cells {
+        batch = batch.put(
+            SpatialIndexKey::keyspace(),
+            SpatialIndexKey::new(*address, cell, id.clone()).encode(),
+            extent.clone(),
+        );
+    }
+    batch
+}
+
+/// Every cell of one record's geometry, deleted from `batch`.
+fn displace(
+    mut batch: WriteBatch,
+    address: &IndexAddress,
+    id: &RecordId,
+    value: &Value,
+    definition: &IndexDefinition,
+) -> WriteBatch {
+    let Some((_, cells)) = covering_of(definition, value) else {
+        return batch;
+    };
+    for cell in cells {
+        batch = batch.delete(
+            SpatialIndexKey::keyspace(),
+            SpatialIndexKey::new(*address, cell, id.clone()).encode(),
+        );
+    }
+    batch
+}
+
+/// The box around one record's geometry, and the cells covering that box.
+///
+/// `None` when the field is absent or holds something that is not a geometry —
+/// the same "not in this index at all" answer an ordered index gives for a
+/// missing field, and the same answer a scan gives for the same record.
+///
+/// A geometry that will not lower to the grid gets the same answer, and cannot
+/// arise for a stored record: positions are snapped at ingest and a geometry off
+/// the sphere is refused there rather than here. Returning "not indexed" for it
+/// keeps this function total without inventing a second refusal path for a case
+/// the write path has already closed.
+///
+/// The cell count is bounded by [`SPATIAL_INDEX_CELLS_PER_RECORD`], and the
+/// covering keeps a coarser cell rather than dropping a finer one when that
+/// bound is reached — so exceeding the budget costs candidates to refine and
+/// never rows.
+fn covering_of(definition: &IndexDefinition, value: &Value) -> Option<(Bounds, Vec<Cell>)> {
+    let path = definition.fields.first()?;
+    let Value::Geometry(geometry) = path.resolve(value)? else {
+        return None;
+    };
+    let bounds = Shape::of(geometry).ok()?.bounds()?;
+    // The class each cell comes with is discarded, and only here: it says
+    // whether the cell lies wholly inside the box it was produced for, which for
+    // a *record's* own box tells a reader nothing. It is a query-side fact — the
+    // reader's box is what decides whether a candidate may skip the predicate —
+    // so keeping it in the entry would store an answer to a question nobody has
+    // asked yet.
+    let cells = tessari_geo::covering(bounds, SPATIAL_INDEX_CELLS_PER_RECORD)
+        .into_iter()
+        .map(|(cell, _)| cell)
+        .collect();
+    Some((bounds, cells))
 }
 
 /// The vector one record contributes to a vector index.

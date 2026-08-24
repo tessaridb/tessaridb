@@ -169,6 +169,32 @@ impl Cell {
         }
     }
 
+    /// The cell of `level` whose range begins at `first`, if one does.
+    ///
+    /// The inverse of [`Cell::range`]'s left end, and the only way to read a cell
+    /// back out of somewhere it was written. A stored cell keeps the **start of
+    /// its range** rather than its index within its level, because that is the
+    /// number that orders: an index is small at a coarse level and large at a
+    /// fine one, so sorting by index would interleave levels rather than
+    /// interleaving space.
+    ///
+    /// `None` when `level` is finer than [`ORDER`] or when `first` is not a
+    /// multiple of the level's span — neither can be produced by [`Cell::range`],
+    /// so both mean the bytes did not come from a cell.
+    #[must_use]
+    pub fn starting_at(level: u32, first: u64) -> Option<Self> {
+        if level > ORDER {
+            return None;
+        }
+        let width = 2_u32.saturating_mul(ORDER.saturating_sub(level));
+        if width >= u64::BITS {
+            // The root, whose range begins at zero and whose index is zero.
+            return (first == 0).then_some(Self::root());
+        }
+        let index = first.checked_shr(width)?;
+        (index.checked_shl(width)? == first).then_some(Self { level, index })
+    }
+
     /// Which level of subdivision this cell belongs to.
     #[must_use]
     pub const fn level(self) -> u32 {
@@ -773,6 +799,52 @@ mod tests {
                 first.checked_rem(expected).unwrap_or(1),
                 0,
                 "a level-{level} cell should begin on a multiple of its own span"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cell_is_recovered_from_the_start_of_its_own_range() {
+        // What a stored cell has to survive. Every level, and a run of indices
+        // at each, because the alignment check is a shift pair and a shift pair
+        // is exactly where an off-by-one level would hide.
+        let mut spread = Spread::from(0x5ce1_1a70);
+        for level in 0..=ORDER {
+            for _ in 0..8 {
+                // A level holds `4^level` cells, so the index is bounded by the
+                // level's own width and not by the span each cell covers — the
+                // two are complements and swapping them is how a generator ends
+                // up producing values the type cannot hold.
+                let bits = 2_u32.saturating_mul(level);
+                let index = match 1_u64.checked_shl(bits) {
+                    Some(count) => spread.next().checked_rem(count).unwrap_or(0),
+                    // Past 2^64 cells every `u64` names one.
+                    None => spread.next(),
+                };
+                let cell = Cell { level, index };
+                assert_eq!(
+                    Cell::starting_at(level, cell.range().0),
+                    Some(cell),
+                    "a level-{level} cell should read back from where its range begins"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_start_that_no_cell_of_that_level_begins_at_is_refused() {
+        // The failure this guards is a decoder that accepts any pair and hands
+        // back a cell describing a square that was never written.
+        assert_eq!(Cell::starting_at(ORDER.saturating_add(1), 0), None);
+        // From level 1: level 0 holds one cell, whose range begins at zero, and
+        // one below zero is still zero.
+        for level in 1..ORDER {
+            let cell = Cell { level, index: 1 };
+            let (first, _) = cell.range();
+            assert_eq!(
+                Cell::starting_at(level, first.saturating_sub(1)),
+                None,
+                "a level-{level} cell does not begin one below its own multiple"
             );
         }
     }

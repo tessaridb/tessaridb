@@ -280,6 +280,7 @@ fn an_index_is_created_on_a_table_and_found_by_it() {
             IndexShape {
                 unique: true,
                 search: false,
+                spatial: false,
                 vector: None,
             },
         )
@@ -351,6 +352,7 @@ fn two_indexes_on_one_table_cannot_share_a_name_but_two_tables_can() {
             IndexShape {
                 unique: true,
                 search: false,
+                spatial: false,
                 vector: None,
             },
         )
@@ -374,6 +376,7 @@ fn two_indexes_on_one_table_cannot_share_a_name_but_two_tables_can() {
             IndexShape {
                 unique: true,
                 search: false,
+                spatial: false,
                 vector: None,
             },
         )

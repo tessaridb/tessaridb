@@ -218,3 +218,27 @@ pub const SOCKET_MAX_FRAME_BYTES: usize = 64 * 1024;
 /// route defines fits in one frame, so fragmentation here is a proxy's doing
 /// rather than a client's need, and a proxy does not enlarge what it forwards.
 pub const SOCKET_MAX_MESSAGE_BYTES: usize = 64 * 1024;
+
+/// How many cells a spatial index writes per record's geometry.
+///
+/// Unit: cells.
+///
+/// A record's covering is one entry per cell, so this is directly the index's
+/// write amplification for a geometry: a point produces one entry whatever the
+/// budget, and a country produces up to this many. It bounds the *store* rather
+/// than the query, and the two want opposite things — more cells approximate the
+/// shape more tightly and cost more to write, so the trade is per workload and
+/// this is the workload-free starting point.
+///
+/// Sixteen because the covering halves its error roughly per level and stops as
+/// soon as the next subdivision would exceed the budget, so a budget of sixteen
+/// buys two full levels of refinement past the first cell that meets the box.
+/// Eight was the alternative and refines one level less, which for an elongated
+/// shape — a river, a road, a coastline, the shapes a bounding box already
+/// serves worst — leaves the covering close to the box it started from.
+///
+/// It is a bound and not a target. A geometry needing fewer cells writes fewer,
+/// and the covering keeps a **coarser** cell rather than dropping a finer one
+/// when the budget runs out, so exceeding it costs candidates to refine and
+/// never rows.
+pub const SPATIAL_INDEX_CELLS_PER_RECORD: usize = 16;

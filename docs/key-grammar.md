@@ -80,6 +80,7 @@ because renumbering after data exists is a full rebuild.
 | `0x13` | `VectorNode` | `index` | implemented — see §6.2c |
 | `0x14` | `Edge` (graph) | `index` | reserved, **not needed** — see §9a |
 | `0x15` | `SearchStatistics` | `index` | implemented — see §3b |
+| `0x16` | `SpatialIndex` | `index` | implemented — see §3c |
 | `0x20` | `LogEntry` | `log` | implemented |
 | `0x30` | `FormatVersion` | `meta` | implemented |
 | `0x31` | `AppliedPosition` | `meta` | implemented |
@@ -90,6 +91,42 @@ because renumbering after data exists is a full rebuild.
 | `0x36` | `IdAllocator` | `meta` | reserved, unused — see §9 |
 | `0x37` | `BackfillWatermark` | `meta` | reserved — SG4 |
 | `0x38` | `NodeIdentity` | `meta` | implemented — see §3b |
+
+### 3c. The spatial entry
+
+```text
+key    <0x16> <namespace:u32> <database:u32> <table:u32> <index:u32> <first:u64> <level:u8> <record-id>
+value  <west:i64> <south:i64> <east:i64> <north:i64>
+```
+
+One entry per cell of the record's covering, so a record whose geometry spans
+several cells has several entries. `first` is the start of the cell's range in
+the Hilbert numbering of the finest level, and `level` says how coarse the cell
+is.
+
+**The range start comes first and the level second, and the order is the whole
+design.** A cell's index within its own level is small at a coarse level and
+large at a fine one, so ordering by it would interleave levels rather than
+space. Ordering by the range start does not:
+
+- every descendant of a cell has its start inside that cell's range, so **the
+  descendants of a cell are one contiguous scan**;
+- an ancestor's start is a truncation of a descendant's, so **the ancestors of a
+  cell are a bounded, computable set** — at most `level` of them.
+
+Both halves are needed by a reader. A record larger than the query box sits at a
+*coarser* cell, whose start lies below the query cell's range, so a scan alone
+never finds it: a reader that only scanned would return fewer rows than exist,
+with nothing raised.
+
+The value carries the record's bounding box so the filter step can reject a
+candidate without decoding the geometry. It is computed in the batch that
+carries the record's own mutation and by nothing else — a box maintained by a
+background job or recomputed by a reader can lag the geometry it describes, and
+a stale box excludes rows that should have matched.
+
+A cell match is a **candidate and never a result**: the cells are coarser than
+the box and the box is coarser than the shape.
 
 ### 3b. The node identity, and why it is `meta` rather than a record
 

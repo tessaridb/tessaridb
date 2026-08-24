@@ -251,6 +251,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             unique: shape.unique,
             search: shape.search,
             vector: shape.vector,
+            spatial: shape.spatial,
         };
         self.write(system::INDEXES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

@@ -35,6 +35,8 @@ pub enum KeyKind {
     Edge,
     /// The collection statistics one search index is ranked against.
     SearchStatistics,
+    /// One cell of one record's covering, in a spatial index.
+    SpatialIndex,
     /// One entry in the ordered log.
     LogEntry,
     /// The store's own on-disk format version.
@@ -74,6 +76,7 @@ impl KeyKind {
         Self::VectorNode,
         Self::Edge,
         Self::SearchStatistics,
+        Self::SpatialIndex,
         Self::LogEntry,
         Self::FormatVersion,
         Self::AppliedPosition,
@@ -102,6 +105,7 @@ impl KeyKind {
             Self::VectorNode => 0x13,
             Self::Edge => 0x14,
             Self::SearchStatistics => 0x15,
+            Self::SpatialIndex => 0x16,
             Self::LogEntry => 0x20,
             Self::FormatVersion => 0x30,
             Self::AppliedPosition => 0x31,
@@ -125,7 +129,8 @@ impl KeyKind {
             | Self::Posting
             | Self::VectorNode
             | Self::Edge
-            | Self::SearchStatistics => Keyspace::INDEX,
+            | Self::SearchStatistics
+            | Self::SpatialIndex => Keyspace::INDEX,
             Self::LogEntry => Keyspace::LOG,
             Self::FormatVersion
             | Self::AppliedPosition
@@ -153,6 +158,7 @@ impl KeyKind {
             Self::VectorNode => "vector-node",
             Self::Edge => "edge",
             Self::SearchStatistics => "search-statistics",
+            Self::SpatialIndex => "spatial-index",
             Self::LogEntry => "log-entry",
             Self::FormatVersion => "format-version",
             Self::AppliedPosition => "applied-position",
@@ -229,6 +235,7 @@ mod tests {
             (KeyKind::VectorNode, 0x13),
             (KeyKind::Edge, 0x14),
             (KeyKind::SearchStatistics, 0x15),
+            (KeyKind::SpatialIndex, 0x16),
             (KeyKind::LogEntry, 0x20),
             (KeyKind::FormatVersion, 0x30),
             (KeyKind::AppliedPosition, 0x31),

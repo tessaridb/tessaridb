@@ -47,6 +47,27 @@ impl Bounds {
         }
     }
 
+    /// A box stated by its four edges, if they are a box.
+    ///
+    /// The way a stored box is read back, and the only constructor that can be
+    /// handed edges the geometry never produced. `None` when an edge runs
+    /// backwards — every box this crate builds has `west ≤ east` and
+    /// `south ≤ north`, so a pair that does not is bytes that did not come from
+    /// one, and admitting it would create a rectangle holding no position while
+    /// still answering `meets` for a strip of the world.
+    #[must_use]
+    pub const fn of_corners(west: i64, south: i64, east: i64, north: i64) -> Option<Self> {
+        if west > east || south > north {
+            return None;
+        }
+        Some(Self {
+            west,
+            south,
+            east,
+            north,
+        })
+    }
+
     /// The box around every position in the sequence.
     ///
     /// `None` for an empty sequence: there is no smallest rectangle around

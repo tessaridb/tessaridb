@@ -414,17 +414,18 @@ impl Parser<'_> {
         while self.eat_punct(Punct::Comma) {
             fields.push(self.field_path()?);
         }
-        // **One** marker, and the third is why this changed. `UNIQUE` says how
-        // entries collide, `SEARCH` says the entries are terms, `VECTOR` says
-        // they are a graph — three different index kinds wearing three flags, of
+        // **One** marker. `UNIQUE` says how entries collide, `SEARCH` says the
+        // entries are terms, `VECTOR` says they are a graph, `SPATIAL` says they
+        // are cells — four different index kinds wearing four flags, of
         // which at most one can be true. Accepting two used to be possible and
         // the first one checked simply won, so `UNIQUE SEARCH` was an index
         // whose uniqueness was silently ignored. Adding a third made that
         // inconsistency a thing to answer rather than inherit.
-        /// Which of the three an index is.
+        /// Which of the four an index is.
         enum Marker {
             Unique,
             Search,
+            Spatial,
             /// With the distance its graph is built for, which is required —
             /// a default would silently decide which queries the index serves.
             Vector(crate::Name),
@@ -435,6 +436,10 @@ impl Parser<'_> {
                 Marker::Unique
             } else if self.eat_keyword(Keyword::Search) {
                 Marker::Search
+            } else if self.eat_word("spatial") {
+                // Contextual for the same reason `vector` is: a field called
+                // `spatial` is not a name to take away from a caller.
+                Marker::Spatial
             } else if self.eat_word("vector") {
                 // Contextual, like `order` and `fetch`: a field called `vector`
                 // in a database of embeddings is not a name to take away.
@@ -457,7 +462,7 @@ impl Parser<'_> {
                 Some(Marker::Unique) => {
                     return Err(Error::SeveralInAUniqueIndex { span: field.span });
                 }
-                Some(Marker::Search | Marker::Vector(_)) => {
+                Some(Marker::Search | Marker::Vector(_) | Marker::Spatial) => {
                     return Err(Error::SeveralInAnAnalysedIndex { span: field.span });
                 }
                 None => {}
@@ -472,6 +477,7 @@ impl Parser<'_> {
             fields,
             unique: matches!(kind, Some(Marker::Unique)),
             search: matches!(kind, Some(Marker::Search)),
+            spatial: matches!(kind, Some(Marker::Spatial)),
             vector: match kind {
                 Some(Marker::Vector(distance)) => Some(distance),
                 _ => None,

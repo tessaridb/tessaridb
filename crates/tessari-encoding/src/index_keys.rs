@@ -84,7 +84,7 @@ impl IndexAddress {
         writer.finish()
     }
 
-    fn read(reader: &mut KeyReader<'_>) -> Result<Self> {
+    pub(crate) fn read(reader: &mut KeyReader<'_>) -> Result<Self> {
         Ok(Self {
             namespace: NamespaceId::new(reader.take_u32()?),
             database: DatabaseId::new(reader.take_u32()?),

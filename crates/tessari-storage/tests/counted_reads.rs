@@ -158,6 +158,7 @@ impl Fixture {
                 IndexShape {
                     unique: false,
                     search: false,
+                    spatial: false,
                     vector: None,
                 },
             )

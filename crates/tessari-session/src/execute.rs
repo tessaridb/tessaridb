@@ -141,6 +141,7 @@ impl Session<'_> {
                 fields,
                 unique,
                 search,
+                spatial,
                 vector,
                 if_not_exists,
             } => self.define_index(
@@ -151,6 +152,7 @@ impl Session<'_> {
                 IndexShape {
                     unique: *unique,
                     search: *search,
+                    spatial: *spatial,
                     vector: match vector {
                         Some(named) => {
                             Some(VectorDistance::parse(&named.text).ok_or_else(|| {

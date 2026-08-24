@@ -424,6 +424,21 @@ exactly its own entry with it, and a repeated element is one entry rather than
 two. A route with no `[*]` is unchanged, and may sit beside one that has it —
 `FIELDS tags[*], city` keeps one entry per tag per record.
 
+**`SPATIAL` indexes a geometry by the cells covering it.** `DEFINE INDEX
+by_where ON places FIELDS location SPATIAL` gives each record one entry per cell
+of its geometry's covering, and each entry carries the record's own bounding box
+— computed in the same commit as the geometry, never afterwards, because a box
+that can lag its geometry excludes rows that should have matched with nothing
+raised. A record whose `location` is absent or is not a geometry is not in the
+index, the same answer every other kind gives for a field it cannot project.
+
+The index is maintained but **not yet chosen by the planner**, so today it
+changes neither the answer nor the cost of any read — `WHERE geo::intersects(…)`
+is still the exact scan. That is stated here rather than left to be discovered:
+an index whose entries are correct and whose reader does not exist is a cost
+without a benefit until the reader lands, and the reader is the next piece of
+work.
+
 Three shapes are refused, each because it has no single meaning rather than
 because it is hard:
 

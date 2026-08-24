@@ -126,3 +126,35 @@ SELECT * FROM marks WHERE geo::distance(m, geometry { type: 'Point', coordinates
 --- case: and the near one is a tenth of that, measured the same way
 SELECT * FROM marks WHERE geo::distance(m, geometry { type: 'Point', coordinates: [0, 1] }) < 20000;
 --- expect: rows 1
+
+--- case: a spatial index is defined over a geometry field
+# The index is maintained but not yet chosen by a reader, so what a corpus case
+# can pin today is the statement and its refusals — that the word is understood,
+# that it reaches the catalog, and that the same query answers the same way with
+# the index present as without it.
+DEFINE TABLE sites;
+CREATE sites:1 = { at: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
+CREATE sites:2 = { at: geometry { type: 'Point', coordinates: [-73.99, 40.75] } };
+DEFINE INDEX by_at ON sites FIELDS at SPATIAL;
+--- expect: ok
+
+--- case: the answer is the same with the index as it was without it
+SELECT * FROM sites WHERE geo::intersects(at, geometry { type: 'Point', coordinates: [2.35, 48.85] });
+--- expect: rows 1
+
+--- case: a record with no geometry is simply not in the index
+CREATE sites:3 = { note: 'no shape here' };
+SELECT * FROM sites;
+--- expect: rows 3
+
+--- case: spatial is contextual, so it is still a field name
+CREATE sites:4 = { spatial: 'a word, not an index kind' };
+--- expect: ok
+
+--- case: an index is one kind and not two
+DEFINE INDEX bad_at ON sites FIELDS at SPATIAL UNIQUE;
+--- expect: error UnexpectedToken
+
+--- case: a route reaching several values has no single box
+DEFINE INDEX bad_spots ON sites FIELDS spots[*] SPATIAL;
+--- expect: error SeveralInAnAnalysedIndex

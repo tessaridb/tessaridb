@@ -25,6 +25,7 @@ const FIELD_FIELDS: &str = "fields";
 const FIELD_UNIQUE: &str = "unique";
 const FIELD_SEARCH: &str = "search";
 const FIELD_VECTOR: &str = "vector";
+const FIELD_SPATIAL: &str = "spatial";
 const FIELD_SCHEMAFULL: &str = "schemafull";
 const FIELD_EDGE: &str = "edge";
 const FIELD_BUCKET: &str = "bucket";
@@ -212,6 +213,8 @@ pub struct IndexShape {
     pub search: bool,
     /// The distance a vector index is built with, when it is one.
     pub vector: Option<VectorDistance>,
+    /// Whether the index holds cells of each record's geometry.
+    pub spatial: bool,
 }
 
 /// Which distance a vector index's graph is built and searched with.
@@ -296,6 +299,17 @@ pub struct IndexDefinition {
     /// to ask for it by name before it may serve one — and why the distance is
     /// declared rather than assumed.
     pub vector: Option<VectorDistance>,
+    /// Whether this index holds the **cells** covering each record's geometry.
+    ///
+    /// One entry per cell rather than one per record, because a geometry is an
+    /// extent and a cell is not: a shape wide enough to need several cells gets
+    /// several entries, and the set of them is what a box query scans. The
+    /// entry's value carries the record's own bounding box, so the filter step
+    /// can reject a candidate without decoding the geometry.
+    ///
+    /// A cell match is therefore a **candidate and never a result** — the cells
+    /// are coarser than the box and the box is coarser than the shape.
+    pub spatial: bool,
 }
 
 impl IndexDefinition {
@@ -319,6 +333,7 @@ impl IndexDefinition {
             ),
             (FIELD_UNIQUE.to_owned(), Value::Bool(self.unique)),
             (FIELD_SEARCH.to_owned(), Value::Bool(self.search)),
+            (FIELD_SPATIAL.to_owned(), Value::Bool(self.spatial)),
             (
                 FIELD_VECTOR.to_owned(),
                 self.vector
@@ -390,6 +405,9 @@ impl IndexDefinition {
                 )?),
                 _ => None,
             },
+            // An index written before spatial indexes existed holds no such
+            // field and is not one, the same reading the two flags above get.
+            spatial: flag(fields, FIELD_SPATIAL, "index")?,
         })
     }
 }
@@ -573,6 +591,7 @@ mod tests {
             ],
             unique: false,
             search: false,
+            spatial: false,
             vector: None,
         };
         assert_eq!(

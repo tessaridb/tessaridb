@@ -1228,6 +1228,7 @@ mod tests {
             search,
             unique,
             vector: None,
+            spatial: false,
         }
     }
 

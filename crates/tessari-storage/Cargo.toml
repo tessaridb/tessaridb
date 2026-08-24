@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 tessari-constants.workspace = true
 tessari-encoding.workspace = true
+tessari-geo.workspace = true
 tessari-kv.workspace = true
 tessari-types.workspace = true
 thiserror.workspace = true

@@ -112,6 +112,8 @@ pub enum StatementKind {
         unique: bool,
         /// Whether the index holds terms rather than whole values.
         search: bool,
+        /// Whether the index holds the cells covering each record's geometry.
+        spatial: bool,
         /// The distance a vector index's graph is built with, when it is one.
         ///
         /// Carried as the word the author wrote rather than as a parsed kind,

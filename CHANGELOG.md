@@ -37,18 +37,21 @@ Around them: snapshot-isolation transactions, change subscriptions, namespaces
 and databases with users and grants, health and readiness endpoints, metrics,
 graceful drain, and log-as-backup with replay-as-restore.
 
-433 conformance cases define the language and run in the build.
+439 conformance cases define the language and run in the build.
 
 ### What is not here
 
 Stated as plainly as the list above, because an alpha that is vague about its
 absences is worse than one that is missing more.
 
-- **No spatial index.** Geometry can be stored, compared with seven predicates,
-  measured geodesically and written as a literal — but every geometry question is
-  a scan, and there is no nearest-first read. Seven is also the whole list:
-  `geo::touches` is not written, because it needs an algorithm the other seven
-  are not built from.
+- **No spatial index a reader uses.** `DEFINE INDEX … SPATIAL` exists and is
+  maintained — each record's geometry contributes the cells covering it, and each
+  entry carries the record's bounding box — but **the planner does not choose
+  it**, so every geometry question is still a scan and there is no nearest-first
+  read. An index whose entries are correct and whose reader does not exist is a
+  write cost with no read benefit, and saying so is the point of this list.
+  Seven predicates is also the whole list: `geo::touches` is not written, because
+  it needs an algorithm the other seven are not built from.
 - **No sharding, no replication, no cluster membership.** Peers can be declared
   and read back; nothing replicates between them. The language has words for
   these; the engine does not have the machinery.
