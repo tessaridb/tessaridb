@@ -58,20 +58,20 @@ fn write(out: &mut String, held: &Value, names: &Names) {
                 out.push_str(&format!("{byte:02x}"));
             }
         }
-        // Both use the writers that live beside their readers in
-        // `tessari_types::text`, not `Display` — which writes a debugging form
-        // (`5400.000000000s`, `0.000000000`) that the lexer will not read back.
-        // These two break this module's rule — everything else here prints a
-        // form the lexer reads back, and these cannot, because the language has
-        // no literal for either yet. They arrive through a bound parameter and
-        // leave as a description. Printing something that *looked* like a
-        // literal would be worse: a caller would paste it into a script and get
-        // a parse error with no clue why.
+        // A shape prints as the literal the language now reads, which is the
+        // rule this module holds everything else to. It was the exception until
+        // the literal existed; the description it printed instead is gone rather
+        // than kept alongside, because two renderings of one value is how a
+        // caller ends up pasting the one that does not parse.
         Value::Geometry(shape) => {
-            out.push_str("<geometry ");
-            out.push_str(shape.kind_name());
-            out.push_str(&format!(" of {}>", shape.positions().len()));
+            out.push_str("geometry ");
+            write(out, &tessari_types::to_geojson(shape), names);
         }
+        // A regex still breaks this module's rule — the language has no literal
+        // for one yet. It arrives through a bound parameter and leaves as a
+        // description. Printing something that *looked* like a literal would be
+        // worse: a caller would paste it into a script and get a parse error
+        // with no clue why.
         Value::Regex(pattern) => {
             out.push_str("<regex ");
             string_into(out, pattern);

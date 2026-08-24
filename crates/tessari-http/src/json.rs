@@ -34,7 +34,7 @@
 
 use std::collections::BTreeMap;
 
-use tessaridb::{Geometry, Polygon, Position, TableId, Value};
+use tessaridb::{Geometry, Polygon, Position, TableId, Value, geojson_name};
 
 /// What a table id is called, for the references an answer carries.
 ///
@@ -94,21 +94,6 @@ fn geometry(out: &mut String, shape: &Geometry) {
         }
     }
     out.push('}');
-}
-
-/// The name RFC 7946 gives each shape, which is not the name this store uses
-/// internally — `LineString` against `line`, and the multi- forms are one word
-/// there and two here.
-const fn geojson_name(shape: &Geometry) -> &'static str {
-    match shape {
-        Geometry::Point(_) => "Point",
-        Geometry::Line(_) => "LineString",
-        Geometry::Polygon(_) => "Polygon",
-        Geometry::MultiPoint(_) => "MultiPoint",
-        Geometry::MultiLine(_) => "MultiLineString",
-        Geometry::MultiPolygon(_) => "MultiPolygon",
-        Geometry::Collection(_) => "GeometryCollection",
-    }
 }
 
 fn position(out: &mut String, held: &Position) {

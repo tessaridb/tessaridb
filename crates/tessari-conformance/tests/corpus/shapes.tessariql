@@ -1,0 +1,128 @@
+# Shapes: geometry, written in the language and asked about in the language.
+# A corpus file is one session against one store, so these run in order.
+#
+# This file exists because until a shape could be written in a script, the
+# geometry half of the language had no executable definition at all — it could
+# only be reached through a bound parameter, which a corpus case cannot use.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE atlas;
+USE NAMESPACE atlas;
+DEFINE DATABASE world;
+USE DATABASE world;
+--- expect: ok
+
+--- case: every one of the seven shapes can be written and stored
+DEFINE TABLE shapes;
+CREATE shapes:1 = { s: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
+CREATE shapes:2 = { s: geometry { type: 'LineString', coordinates: [[0, 0], [1, 1]] } };
+CREATE shapes:3 = { s: geometry { type: 'Polygon', coordinates: [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]] } };
+CREATE shapes:4 = { s: geometry { type: 'MultiPoint', coordinates: [[0, 0], [9, 9]] } };
+CREATE shapes:5 = { s: geometry { type: 'MultiLineString', coordinates: [[[0, 0], [1, 1]]] } };
+CREATE shapes:6 = { s: geometry { type: 'MultiPolygon', coordinates: [[[[0, 0], [1, 0], [1, 1], [0, 0]]]] } };
+CREATE shapes:7 = { s: geometry { type: 'GeometryCollection', geometries: [{ type: 'Point', coordinates: [5, 5] }] } };
+--- expect: ok
+
+--- case: a shape west of Greenwich is written with a minus
+CREATE shapes:8 = { s: geometry { type: 'Point', coordinates: [-73.99, 40.75] } };
+--- expect: ok
+
+--- case: the marker is contextual, so the word is still a table
+DEFINE TABLE geometry;
+CREATE geometry:1 = { note: 'a table may be called that' };
+SELECT * FROM geometry;
+--- expect: rows 1
+
+--- case: and still a field name
+CREATE shapes:9 = { geometry: 'a word, not a shape' };
+--- expect: ok
+
+--- case: a shape that has to be computed is not a literal
+CREATE shapes:10 = { s: geometry { type: 'Point', coordinates: [$east, 0] } };
+--- expect: error ComputedGeometry
+
+--- case: a name that is not one of the seven is refused
+CREATE shapes:10 = { s: geometry { type: 'Circle', coordinates: [0, 0] } };
+--- expect: error MalformedGeometry
+
+--- case: a third coordinate is refused rather than dropped
+CREATE shapes:10 = { s: geometry { type: 'Point', coordinates: [1, 2, 3] } };
+--- expect: error MalformedGeometry
+
+--- case: a ring that does not close is refused when it reaches a record
+CREATE shapes:10 = { s: geometry { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1]]] } };
+--- expect: error GeometryRefused
+
+--- case: a coordinate off the sphere is refused
+CREATE shapes:10 = { s: geometry { type: 'Point', coordinates: [181, 0] } };
+--- expect: error GeometryRefused
+
+--- case: two members of a multi-polygon may not share ground
+CREATE shapes:10 = { s: geometry { type: 'MultiPolygon', coordinates: [
+  [[[0, 0], [6, 0], [6, 6], [0, 6], [0, 0]]],
+  [[[4, 4], [9, 4], [9, 9], [4, 9], [4, 4]]]] } };
+--- expect: error GeometryRefused
+
+--- case: a place inside the query square is found, and one outside is not
+DEFINE TABLE places;
+CREATE places:1 = { name: 'middle', at: geometry { type: 'Point', coordinates: [5, 5] } };
+CREATE places:2 = { name: 'edge',   at: geometry { type: 'Point', coordinates: [2, 5] } };
+CREATE places:3 = { name: 'away',   at: geometry { type: 'Point', coordinates: [20, 20] } };
+SELECT * FROM places WHERE geo::intersects(at, geometry { type: 'Polygon', coordinates: [[[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]] });
+--- expect: rows 2
+
+--- case: disjoint answers with exactly the rest
+SELECT * FROM places WHERE geo::disjoint(at, geometry { type: 'Polygon', coordinates: [[[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]] });
+--- expect: rows 1
+
+--- case: covered_by takes the boundary and within does not
+SELECT * FROM places WHERE geo::covered_by(at, geometry { type: 'Polygon', coordinates: [[[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]] });
+--- expect: rows 2
+
+--- case: the same square, asked the strict way
+SELECT * FROM places WHERE geo::within(at, geometry { type: 'Polygon', coordinates: [[[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]] });
+--- expect: rows 1
+
+--- case: equals is about the ground covered, not about how it was written
+DEFINE TABLE zones;
+CREATE zones:1 = { z: geometry { type: 'Polygon', coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] } };
+CREATE zones:2 = { z: geometry { type: 'Polygon', coordinates: [[[0, 0], [5, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] } };
+CREATE zones:3 = { z: geometry { type: 'Polygon', coordinates: [[[0, 0], [9, 0], [9, 9], [0, 9], [0, 0]]] } };
+SELECT * FROM zones WHERE geo::equals(z, geometry { type: 'Polygon', coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] });
+--- expect: rows 2
+
+--- case: a record with no shape narrows the answer rather than failing the read
+CREATE places:4 = { name: 'nowhere' };
+SELECT * FROM places WHERE geo::intersects(at, geometry { type: 'Point', coordinates: [5, 5] });
+--- expect: rows 1
+
+--- case: a value that is present and is not a shape is a mistake
+CREATE places:5 = { name: 'wrong', at: 'over there' };
+SELECT * FROM places WHERE geo::intersects(at, geometry { type: 'Point', coordinates: [5, 5] });
+--- expect: error WrongArgument
+
+--- case: a distance is between positions and refuses anything larger
+SELECT geo::distance(z, geometry { type: 'Point', coordinates: [0, 0] }) AS far FROM zones;
+--- expect: error WrongArgument
+
+--- case: only a shape with an interior covers any ground
+DEFINE TABLE ground;
+CREATE ground:1 = { g: geometry { type: 'Point', coordinates: [0, 0] } };
+CREATE ground:2 = { g: geometry { type: 'LineString', coordinates: [[0, 0], [1, 1]] } };
+CREATE ground:3 = { g: geometry { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] } };
+SELECT * FROM ground WHERE geo::area(g) > 0;
+--- expect: rows 1
+
+--- case: a distance is in metres, so a degree of latitude runs to six figures
+# A degree of latitude is a hundred and ten kilometres, and the same span read as
+# degrees would be 1. The two differ by five orders of magnitude, so a filter at
+# a hundred kilometres cannot pass by accident.
+DEFINE TABLE marks;
+CREATE marks:1 = { m: geometry { type: 'Point', coordinates: [0, 0] } };
+CREATE marks:2 = { m: geometry { type: 'Point', coordinates: [0, 0.9] } };
+SELECT * FROM marks WHERE geo::distance(m, geometry { type: 'Point', coordinates: [0, 1] }) > 100000;
+--- expect: rows 1
+
+--- case: and the near one is a tenth of that, measured the same way
+SELECT * FROM marks WHERE geo::distance(m, geometry { type: 'Point', coordinates: [0, 1] }) < 20000;
+--- expect: rows 1

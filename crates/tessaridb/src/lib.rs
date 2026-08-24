@@ -89,7 +89,8 @@ pub use tessari_session::{AccessPath, Error, Outcome, Parameters, Result, Sessio
 pub use tessari_storage::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use tessari_types::{
     DatabaseId, Datetime, Duration, FieldKind, Geometry, NamespaceId, Number, Path as FieldPath,
-    Polygon, Position, RecordId, RecordRef, Ring, Sequence, Step, TableId, Value,
+    Polygon, Position, RecordId, RecordRef, Ring, Sequence, Step, TableId, Value, from_geojson,
+    geojson_name, to_geojson,
 };
 
 /// Every table an answer's references point at.

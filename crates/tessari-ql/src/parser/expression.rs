@@ -60,6 +60,20 @@ impl Parser<'_> {
             return self.keyword_value(keyword, span);
         }
         match self.peek() {
+            // A shape is written the way RFC 7946 writes one, behind a marker:
+            // `geometry { type: 'Point', coordinates: [2.35, 48.85] }`.
+            //
+            // The marker is a **contextual** word rather than a reserved one, so
+            // `geometry` stays usable as a table name and as a field name —
+            // reserving it would take a usable name away from data that already
+            // exists. The brace is what makes it unambiguous: a table name is
+            // never followed by an object.
+            Some(Token::Ident(word))
+                if word.eq_ignore_ascii_case("geometry")
+                    && self.follows_with(1, &Token::Punct(Punct::BraceOpen)) =>
+            {
+                self.geometry_literal(span)
+            }
             // The one token whose meaning depends on where it stands: a route
             // into the record in a condition, a table in a value position.
             Some(Token::Ident(_)) if self.reading_paths && !self.record_follows() => {
@@ -225,6 +239,45 @@ impl Parser<'_> {
         Ok(Expr {
             kind: ExprKind::Literal(literal),
             span,
+        })
+    }
+
+    /// `geometry { type: 'Point', coordinates: [2.35, 48.85] }`.
+    ///
+    /// The object is read by the ordinary object parser, so nesting, commas and
+    /// trailing-comma behaviour are the language's and not a second dialect.
+    /// What is added on top is two refusals:
+    ///
+    /// - every part must be **written out**. A shape literal is read at parse
+    ///   time, so a field, a parameter or a call inside one would have to be
+    ///   evaluated — and a shape that could differ per record is not a literal.
+    ///   Such a shape is written with a bound parameter instead, which is a
+    ///   complete path and is what a client uses.
+    /// - the object must actually describe a shape, judged by the same reader
+    ///   the HTTP surface uses, so the refusal a caller reads is the same
+    ///   sentence whichever door they came through.
+    ///
+    /// Validity — closed rings, holes inside their shell — is **not** judged
+    /// here. It is judged when the shape reaches a record, after snapping, and
+    /// judging it twice in two places would eventually be judging it differently.
+    fn geometry_literal(&mut self, span: Span) -> Result<Expr> {
+        self.advance();
+        let open = self.span_here();
+        let object = self.object(open)?;
+        let whole = span.to(object.span);
+        let written = constant(&object).ok_or(Error::ComputedGeometry {
+            found: "a value that has to be computed",
+            span: whole,
+        })?;
+        let shape = tessari_types::from_geojson(&written).map_err(|malformed| {
+            Error::MalformedGeometry {
+                reason: malformed.to_string(),
+                span: whole,
+            }
+        })?;
+        Ok(Expr {
+            kind: ExprKind::Literal(Value::Geometry(shape)),
+            span: whole,
         })
     }
 
@@ -525,5 +578,35 @@ impl Parser<'_> {
             },
             span: whole,
         })
+    }
+}
+
+/// The value an expression already is, when every part of it is written out.
+///
+/// `None` for anything that would have to be evaluated. Used only by the shape
+/// literal, which is read at parse time and therefore cannot wait for a record.
+fn constant(expr: &Expr) -> Option<Value> {
+    match &expr.kind {
+        ExprKind::Literal(value) => Some(value.clone()),
+        ExprKind::Array(items) => items
+            .iter()
+            .map(constant)
+            .collect::<Option<Vec<_>>>()
+            .map(Value::Array),
+        ExprKind::Object(fields) => fields
+            .iter()
+            .map(|field| constant(&field.value).map(|value| (field.name.text.clone(), value)))
+            .collect::<Option<std::collections::BTreeMap<_, _>>>()
+            .map(Value::Object),
+        // A written-out negative number reaches the parser as a negation of a
+        // positive one, and a coordinate west of Greenwich is exactly that.
+        ExprKind::Negate(inner) => match constant(inner)? {
+            Value::Number(Number::Integer(whole)) => {
+                Some(Value::Number(Number::Integer(whole.saturating_neg())))
+            }
+            Value::Number(Number::Float(held)) => Some(Value::Number(Number::float(-held))),
+            _ => None,
+        },
+        _ => None,
     }
 }

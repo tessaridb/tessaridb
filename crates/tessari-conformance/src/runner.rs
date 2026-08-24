@@ -209,6 +209,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::NotArithmetic { .. } => "NotArithmetic",
         Error::ArithmeticFailed { .. } => "ArithmeticFailed",
         Error::WrongArgument { .. } => "WrongArgument",
+        Error::GeometryRefused { .. } => "GeometryRefused",
         Error::CallFailed { .. } => "CallFailed",
         Error::NotABucket { .. } => "NotABucket",
         Error::NotWrittenByHand { .. } => "NotWrittenByHand",
@@ -254,6 +255,8 @@ fn script_kind(error: &tessari_ql::Error) -> &'static str {
         tessari_ql::Error::SeveralRoutesInOneIndex { .. } => "SeveralRoutesInOneIndex",
         tessari_ql::Error::FoldInsideAFold { .. } => "FoldInsideAFold",
         tessari_ql::Error::FoldInAFilter { .. } => "FoldInAFilter",
+        tessari_ql::Error::MalformedGeometry { .. } => "MalformedGeometry",
+        tessari_ql::Error::ComputedGeometry { .. } => "ComputedGeometry",
         _ => "Unnamed",
     }
 }

@@ -75,6 +75,7 @@ literal syntax.
 | `{ name: 'ada' }` | `object` |
 | `1..10`, `1..=10` | `range` |
 | `set [a, b]` | `set` |
+| `geometry { type: 'Point', coordinates: [2.35, 48.85] }` | `geometry` |
 
 Three things this table is saying on purpose:
 
@@ -1571,12 +1572,47 @@ and edges are the lon–lat straight lines the geometry actually says rather tha
 great circles. So a box from 0°N to 60°N is the ground between two **parallels**,
 which is what a reader of the coordinates expects.
 
+#### Writing one
+
+A shape is written the way RFC 7946 writes one, behind a marker:
+
+```
+CREATE places:1 = { name: 'the office',
+  at: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
+
+SELECT * FROM places
+  WHERE geo::intersects(at, geometry { type: 'Polygon', coordinates:
+    [[[2.2, 48.8], [2.4, 48.8], [2.4, 48.9], [2.2, 48.9], [2.2, 48.8]]] });
+```
+
+The seven names are RFC 7946's — `Point`, `LineString`, `Polygon`, `MultiPoint`,
+`MultiLineString`, `MultiPolygon`, `GeometryCollection` — and a collection's
+members are written as plain objects inside `geometries`, as that document does.
+
+**`geometry` is a contextual word, not a reserved one.** A table may be called
+`geometry` and so may a field; what tells the two apart is the brace, since a
+table name is never followed by an object. Reserving the word would have taken a
+usable name away from data that already exists.
+
+**A literal is written out in full.** A parameter, a field or a call inside one
+is refused, because a literal is read when the statement is parsed and a shape
+that could differ per record is not a literal. Such a shape is supplied as a
+**bound parameter** instead, which is the complete path and is what a client
+uses.
+
+**Validity is not judged when the literal is read.** An unclosed ring parses; it
+is refused when it reaches a record, after snapping, because that is the only
+place the shape being judged is the shape that will be stored.
+
+The console prints a shape in exactly this form, so what comes out of a query can
+be pasted back into the next one.
+
 #### What is not there yet
 
-A shape reaches a statement as a bound parameter; there is no literal for one
-yet. There is no spatial index, so a spatial filter is a scan and refines every
-record it reads. And `geo::touches` is not written — every other predicate here
-is a composition of two algorithms, and that one needs a third.
+There is no spatial index, so a spatial filter is a scan and refines every record
+it reads. `geo::touches` is not written — every other predicate here is a
+composition of two algorithms, and that one needs a third. And there is no
+distance between shapes larger than positions.
 
 ### Ranking
 

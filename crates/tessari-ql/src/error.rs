@@ -43,6 +43,32 @@ pub enum Error {
         span: Span,
     },
 
+    /// A shape literal whose object is not a shape.
+    ///
+    /// The reason comes from the geometry reader rather than being reworded
+    /// here, so a caller reading "a position is two numbers, longitude first"
+    /// reads the same sentence whichever surface refused their shape.
+    #[error("{reason}, in the shape at {span}")]
+    MalformedGeometry {
+        /// What the reader said.
+        reason: String,
+        /// Where the literal is.
+        span: Span,
+    },
+
+    /// A shape literal holding something that is not a written-out value.
+    ///
+    /// A literal is read at parse time, so every part of it has to be known
+    /// then. A field, a parameter or a call inside one would have to be
+    /// evaluated, and a shape that could change per record is not a literal.
+    #[error("a shape literal is written out in full, and {found} at {span} is not")]
+    ComputedGeometry {
+        /// What stood where a written-out value belonged.
+        found: &'static str,
+        /// Where it is.
+        span: Span,
+    },
+
     /// A number the language cannot represent.
     #[error("{text:?} at {span} is not a number this store can hold")]
     InvalidNumber {
@@ -469,7 +495,9 @@ impl Error {
             | Self::JoinKeyIsNotAField { span, .. }
             | Self::UnboundParameter { span, .. }
             | Self::NotARecordIdentity { span, .. }
-            | Self::Unrenderable { span, .. } => *span,
+            | Self::Unrenderable { span, .. }
+            | Self::MalformedGeometry { span, .. }
+            | Self::ComputedGeometry { span, .. } => *span,
         }
     }
 }
