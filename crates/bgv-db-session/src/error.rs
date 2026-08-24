@@ -308,6 +308,22 @@ pub enum Error {
         span: Span,
     },
 
+    /// Two peers are declared writable, so a forward has no single destination.
+    ///
+    /// A configuration fault rather than a statement fault, which is why it
+    /// carries names instead of a span: nothing about where the statement sits
+    /// would help, and the two names are what an operator has to go and fix.
+    /// Refused rather than resolved by picking one, because choosing between
+    /// them is choosing a leader, and two leaders accepting writes is the split
+    /// brain replication exists to prevent.
+    #[error("two peers are declared writable, `{named}` and `{also}`")]
+    ManyWritablePeers {
+        /// One of them.
+        named: String,
+        /// The other.
+        also: String,
+    },
+
     /// A signin that did not match.
     ///
     /// One message for a wrong name and a wrong password alike: telling them

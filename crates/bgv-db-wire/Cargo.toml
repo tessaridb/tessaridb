@@ -17,6 +17,10 @@ bgv-db-types.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# Replication is driven explicitly in the forwarding test: nothing pulls on its
+# own yet (Q-83), so "visible on both" is shown by moving the log across rather
+# than by waiting for a driver that does not exist.
+bgv-db-backup.workspace = true
 rust_decimal.workspace = true
 
 [lints]

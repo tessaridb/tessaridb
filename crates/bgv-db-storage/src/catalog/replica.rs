@@ -23,8 +23,8 @@
 
 use std::collections::BTreeMap;
 
-use bgv_db_encoding::decode_payload;
-use bgv_db_types::Value;
+use bgv_db_encoding::{Roles, decode_payload};
+use bgv_db_types::{Number, Value};
 
 use super::definition::{field_id, field_name, number, object};
 use super::{Catalog, Level, qualify, system};
@@ -33,6 +33,7 @@ use crate::error::{Error, Result};
 const FIELD_ID: &str = "id";
 const FIELD_NAME: &str = "name";
 const FIELD_ENDPOINT: &str = "endpoint";
+const FIELD_ROLES: &str = "roles";
 
 const ENTITY: &str = "replica";
 
@@ -54,6 +55,22 @@ pub struct ReplicaDefinition {
     /// unreachable address at declaration time would make the statement's
     /// success depend on the network being up at the moment it ran.
     pub endpoint: String,
+    /// What that peer is for.
+    ///
+    /// The field a forward is looked up by: a node that may not write finds the
+    /// peer whose roles carry [`Roles::WRITABLE`] and sends the statement there.
+    /// ADR-0019 §1 puts the leader in the membership table and ADR-0018 §2 puts
+    /// `roles` on its rows, so this is that row's field arriving rather than a
+    /// new idea — and it is declared by an operator rather than written by the
+    /// peer itself, because a self-maintained row needs a heartbeat, and a
+    /// heartbeat is failure detection, which this milestone deliberately has
+    /// none of.
+    ///
+    /// [`Roles::NONE`] when the declaration did not say, which reads as *this
+    /// peer takes no writes*. That is the safe direction: the cost of being
+    /// wrong is a refusal an operator can see and fix, where the other
+    /// direction commits a write on a follower.
+    pub roles: Roles,
 }
 
 impl ReplicaDefinition {
@@ -67,6 +84,7 @@ impl ReplicaDefinition {
                 FIELD_ENDPOINT.to_owned(),
                 Value::from(self.endpoint.as_str()),
             ),
+            (FIELD_ROLES.to_owned(), number(u32::from(self.roles.bits()))),
         ]))
     }
 
@@ -89,8 +107,38 @@ impl ReplicaDefinition {
             id: field_id(fields, FIELD_ID, ENTITY)?,
             name: field_name(fields, ENTITY)?,
             endpoint: endpoint.clone(),
+            roles: roles_in(fields)?,
         })
     }
+}
+
+/// The roles a stored definition carries.
+///
+/// Absent reads as [`Roles::NONE`], so a peer declared before this field existed
+/// is readable rather than refused — the rule `flag` already sets for every
+/// other property added after the fact. A value of the wrong type or one holding
+/// bits this build has no name for is **refused**, for the same reason `flag`
+/// refuses a non-flag: something wrote a well-formed value that is not roles,
+/// and defaulting it would turn an integrity problem into a routing decision.
+fn roles_in(fields: &BTreeMap<String, Value>) -> Result<Roles> {
+    let Some(found) = fields.get(FIELD_ROLES) else {
+        return Ok(Roles::NONE);
+    };
+    let Value::Number(Number::Integer(bits)) = found else {
+        return Err(Error::CatalogMalformed {
+            entity: ENTITY,
+            field: FIELD_ROLES,
+            found: found.type_name(),
+        });
+    };
+    u8::try_from(*bits)
+        .ok()
+        .and_then(Roles::from_bits)
+        .ok_or(Error::CatalogMalformed {
+            entity: ENTITY,
+            field: FIELD_ROLES,
+            found: "roles",
+        })
 }
 
 impl Catalog<'_, '_> {
@@ -99,7 +147,12 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns [`Error::NameTaken`] when the name is already declared.
-    pub fn create_replica(&mut self, name: &str, endpoint: &str) -> Result<ReplicaDefinition> {
+    pub fn create_replica(
+        &mut self,
+        name: &str,
+        endpoint: &str,
+        roles: Roles,
+    ) -> Result<ReplicaDefinition> {
         let qualified = qualify(Level::Replica, &[], name);
         self.reserve_name(&qualified)?;
         let id = self.allocate(Level::Replica)?;
@@ -107,6 +160,7 @@ impl Catalog<'_, '_> {
             id,
             name: name.to_owned(),
             endpoint: endpoint.to_owned(),
+            roles,
         };
         self.write(system::REPLICAS, id, &definition.to_value());
         self.claim_name(&qualified, id);

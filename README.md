@@ -535,15 +535,23 @@ store:
 
 ```
 bgv> DEFINE NODE ROLES serving, writable ENDPOINTS 'db-1.internal:9000';
-bgv> DEFINE REPLICA second AT 'db-2.internal:9000';
+bgv> DEFINE REPLICA second AT 'db-2.internal:9000' ROLES serving, writable;
 bgv> INFO FOR NODE;
 ```
 
 ```json
 { "id": "9d3f1a…", "roles": ["serving", "writable"], "membership": "alone",
   "version": "0.0.0", "endpoints": ["db-1.internal:9000"],
-  "cluster": { "peers": [{ "name": "second", "endpoint": "db-2.internal:9000" }] } }
+  "cluster": { "peers": [{ "name": "second", "endpoint": "db-2.internal:9000",
+                           "roles": ["serving", "writable"] }] } }
 ```
+
+A peer's `ROLES` is the same field as this node's, written about the other side,
+and it is what a forwarded write is routed by: a node that may not write sends
+the statement to the peer whose roles carry `writable`. Leaving the clause out
+declares a peer with **no** roles, which takes no writes — the safe absence, since
+an operator who forgot it gets a refusal naming the clause rather than a write
+landing on a node nobody said could take one.
 
 A node configured by a file beside a store configured by statements is **two
 sources of truth for one node**, and they agree until the first restore.

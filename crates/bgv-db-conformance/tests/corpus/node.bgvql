@@ -17,7 +17,7 @@ DEFINE NODE ROLES serving, writable ENDPOINTS 'here:9000';
 --- expect: ok
 
 --- case: either clause stands on its own
-DEFINE NODE ROLES serving;
+DEFINE NODE ROLES serving, writable;
 --- expect: ok
 
 --- case: a statement that sets nothing is refused
@@ -52,4 +52,28 @@ USE DATABASE orders;
 DEFINE TABLE node;
 CREATE node:1 = { name: 'ada' };
 SELECT * FROM node;
+--- expect: ok
+
+--- case: a peer may be declared with the roles that say where writes go
+DEFINE REPLICA writer AT 'leader:9001' ROLES serving, writable;
+--- expect: ok
+
+--- case: dropping writable is how a node is drained, and it stays readable
+DEFINE NODE ROLES serving;
+--- expect: ok
+
+--- case: a drained node refuses a write rather than taking it
+CREATE node:2 = { name: 'grace' };
+--- expect: error NotWritable
+
+--- case: it still answers reads
+SELECT * FROM node;
+--- expect: ok
+
+--- case: and the statement that gives the role back is not itself a write
+DEFINE NODE ROLES serving, writable;
+--- expect: ok
+
+--- case: so the node takes writes again
+CREATE node:2 = { name: 'grace' };
 --- expect: ok

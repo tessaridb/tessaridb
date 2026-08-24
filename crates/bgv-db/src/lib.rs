@@ -47,7 +47,7 @@ use std::sync::Arc;
 
 use bgv_db_kv::{KvBackend, MemoryBackend};
 use bgv_db_lsm::LsmBackend;
-use bgv_db_storage::{Catalog, Store};
+use bgv_db_storage::{Catalog, Roles, Store};
 
 /// The value a piece of text denotes, when it denotes one by itself.
 ///
@@ -281,6 +281,47 @@ impl Db {
         Ok(Catalog::new(&mut transaction)
             .table(table)?
             .map(|held| held.name))
+    }
+
+    /// Where the peer that takes writes answers, if one is declared.
+    ///
+    /// The forward's target (ADR-0019 §2, case *forward*). At v1 there is one
+    /// range covering everything, so "the leader of the range this statement
+    /// touches" and "the peer declared writable" are the same peer — which is
+    /// what ADR-0019 §1 means by the same lookup serving both eras, and why this
+    /// answers with the endpoint rather than with a range.
+    ///
+    /// `None` when nothing is declared writable. That is an answer, not a
+    /// failure: a node that may not write and knows of nobody who may is
+    /// correctly configured for a cluster of one that has been drained, and the
+    /// caller says so rather than guessing at an address.
+    ///
+    /// **More than one is refused.** Two peers declared writable is the split
+    /// brain the whole design is arranged to prevent, and picking either one —
+    /// the first, the lowest id, the alphabetically smallest — would be a
+    /// routing decision taken by a sort order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read, and
+    /// [`Error::ManyWritablePeers`] when more than one peer is declared
+    /// writable.
+    pub fn writable_peer(&self) -> Result<Option<String>> {
+        let mut transaction = self.store.begin()?;
+        let mut writable = Catalog::new(&mut transaction)
+            .replicas()?
+            .into_iter()
+            .filter(|peer| peer.roles.has(Roles::WRITABLE));
+        let Some(found) = writable.next() else {
+            return Ok(None);
+        };
+        if let Some(second) = writable.next() {
+            return Err(Error::ManyWritablePeers {
+                named: found.name,
+                also: second.name,
+            });
+        }
+        Ok(Some(found.endpoint))
     }
 
     /// Resolve the namespace and database a session has selected.

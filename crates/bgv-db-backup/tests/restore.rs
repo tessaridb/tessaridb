@@ -65,7 +65,7 @@ PUT media:'/replaced' = 'the long one that gets written over';\n\
 PUT media:'/replaced' = 'short';\n\
 PUT media:'/gone' = 'removed before the backup was taken';\n\
 DELETE media:'/gone';\n\
-DEFINE NODE ROLES serving ENDPOINTS 'original:9000';\n\
+DEFINE NODE ROLES serving, writable ENDPOINTS 'original:9000';\n\
 DEFINE REPLICA second AT 'peer:9001';\n\
 DEFINE USER root ROLE owner PASSWORD 'a long one';";
 

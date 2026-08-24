@@ -86,6 +86,22 @@ impl Roles {
         self.0
     }
 
+    /// Roles back from the bits [`Roles::bits`] wrote.
+    ///
+    /// `None` when a bit outside [`Roles::KNOWN`] is set, on the same reasoning
+    /// the node identity's own decode gives: a role this build does not know is
+    /// not a role to ignore, because the writer knew something about that node
+    /// this process does not. The caller decides what an unreadable set means
+    /// where it sits — this one only refuses to invent it.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Option<Self> {
+        if bits & !Self::KNOWN == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+
     /// The roles present, in a fixed order, named.
     ///
     /// Ordered by bit rather than by insertion so that two nodes holding the

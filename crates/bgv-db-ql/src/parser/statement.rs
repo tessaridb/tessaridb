@@ -360,13 +360,23 @@ impl Parser<'_> {
         Ok(StatementKind::DefineNode { roles, endpoints })
     }
 
-    /// `DEFINE REPLICA second AT 'host:9001'`
+    /// `DEFINE REPLICA second AT 'host:9001' ROLES serving, writable`
     ///
     /// The endpoint is text rather than a name because a host and port is not an
     /// identifier, and it is stored as written: whether it resolves is a
     /// question for whoever dials it, and refusing an unreachable address here
     /// would make the statement's success depend on the network being up at the
     /// moment it ran.
+    ///
+    /// `ROLES` is optional and spelled exactly as `DEFINE NODE`'s is, because it
+    /// is the same field on the same membership row (ADR-0018 §2) seen from the
+    /// other side — one written about a peer, one about this node. Two spellings
+    /// for one set of words would be two things to keep in step.
+    ///
+    /// Left out, the peer is declared with no roles, and a peer with no roles
+    /// takes no writes. That is the safe absence: the operator who forgot the
+    /// clause gets a refusal naming it, where the opposite default would send a
+    /// write to a node nobody said could take one.
     fn define_replica(&mut self) -> Result<StatementKind> {
         let if_not_exists = self.eat_if_not_exists()?;
         let name = self.name()?;
@@ -374,9 +384,19 @@ impl Parser<'_> {
             return Err(self.error_here("`AT` and where the peer is reached"));
         }
         let (endpoint, _) = self.text("the endpoint, as text")?;
+        let roles = if self.eat_word("roles") {
+            let mut named = vec![self.name()?];
+            while self.eat_punct(Punct::Comma) {
+                named.push(self.name()?);
+            }
+            Some(named)
+        } else {
+            None
+        };
         Ok(StatementKind::DefineReplica {
             name,
             endpoint,
+            roles,
             if_not_exists,
         })
     }

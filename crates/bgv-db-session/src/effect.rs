@@ -16,12 +16,24 @@ use bgv_db_ql::{Script, StatementKind};
 
 use crate::error::{Error, Result};
 
-/// Whether running something changes the store.
+/// Where running something has to happen.
+///
+/// **Not "does it change the store"**, which is the neighbouring question and
+/// not the one routing asks. The two part company on the local half (ADR-0020
+/// §3): `DEFINE NODE` changes this store and must still run *here*, because
+/// what it changes is this machine's own identity, and sending it to the leader
+/// would reconfigure the leader instead. A classifier that answered *is this a
+/// change* would forward it, and the operator draining one node would quietly
+/// drain another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Effect {
-    /// Answers from what is there, and leaves it as it was.
+    /// Runs wherever it was asked.
+    ///
+    /// Either it changes nothing, or what it changes is local to this node and
+    /// never travels — both answer "here", which is the only thing routing
+    /// needs from them.
     Read,
-    /// Changes records, structure, or who may reach them.
+    /// Must run where writes are taken, which is the leader of what it touches.
     Write,
 }
 
@@ -90,9 +102,26 @@ impl Effect {
             | StatementKind::Grant { .. }
             | StatementKind::Revoke { .. } => Self::Write,
 
-            // Topology. `DEFINE NODE` writes to `META` rather than the log
-            // (Q-100), which makes it no less a change to this store.
-            StatementKind::DefineNode { .. } | StatementKind::DefineReplica { .. } => Self::Write,
+            // Topology, and the two halves part company here (ADR-0020 §3).
+            //
+            // `DEFINE NODE` writes to `META` rather than the log (Q-100) — it
+            // is a change to this store, and still a `Read` *for routing*,
+            // because what it changes is the local half. Forwarded, it would
+            // reconfigure the leader's identity instead of this node's, so an
+            // operator draining a follower would drain the leader. It is also
+            // the only way back: a node that has just dropped `WRITABLE` must
+            // still be able to take the statement that returns it, and a
+            // classification of `Write` would make read-only a one-way door
+            // with no spelling for reopening it.
+            //
+            // It is safe on a node that may not write for the reason it is not
+            // routable: `META` is not replicated, so this cannot diverge two
+            // stores.
+            StatementKind::DefineNode { .. } => Self::Read,
+            // `DEFINE REPLICA` is the opposite half and stays a write: it is a
+            // catalog record, commits in the transaction that issued it, and
+            // reaches every node through the ordinary apply path (ADR-0009).
+            StatementKind::DefineReplica { .. } => Self::Write,
 
             // Records and files. `UPDATE` and `DELETE … WHERE` read to find
             // their targets and then change them, which is exactly the shape a

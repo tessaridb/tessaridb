@@ -1933,9 +1933,21 @@ store:
 
 ```
 DEFINE NODE ROLES serving, writable ENDPOINTS 'db-1.internal:9000';
-DEFINE REPLICA second AT 'db-2.internal:9000';
+DEFINE REPLICA second AT 'db-2.internal:9000' ROLES serving, writable;
 INFO FOR NODE;
 ```
+
+`DEFINE REPLICA`'s `ROLES` is optional and is spelled exactly as `DEFINE NODE`'s
+is, because it is the same membership field seen from the other side — one
+written about a peer, one about this node, and two spellings for one set of words
+would be two things to keep in step. It is what a forwarded write is routed by: a
+node that may not write sends the statement to the peer whose roles carry
+`writable`. Left out, the peer is declared with no roles and takes no writes,
+which is the safe absence — the operator who forgot the clause gets a refusal
+naming it, where the opposite default would send a write to a node nobody said
+could take one. `INFO FOR NODE` reports each peer's roles for the same reason: a
+setting that decides routing but cannot be read back is one nobody can check
+before the bad day.
 
 A node configured by a file beside a store configured by statements is **two
 sources of truth for one node** — they agree until the first restore and then do

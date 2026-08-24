@@ -232,6 +232,11 @@ pub enum StatementKind {
         name: Name,
         /// Where it answers, as written.
         endpoint: String,
+        /// What that peer is for, as the words a statement wrote.
+        ///
+        /// `None` when the declaration did not say, which reads as no roles: a
+        /// peer nobody has said takes writes does not take them.
+        roles: Option<Vec<Name>>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

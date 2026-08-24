@@ -65,11 +65,17 @@ const CLASSIFIED: &[(&str, Effect)] = &[
     ("DROP USER ada;", Effect::Write),
     ("GRANT read ON users TO nobody;", Effect::Write),
     ("REVOKE read ON users FROM nobody;", Effect::Write),
-    // --- writes: topology --------------------------------------------------
+    // --- topology: the two halves answer differently -------------------------
+    // `DEFINE NODE` changes this store and is still a `Read` for routing: it
+    // writes the *local* half (ADR-0020 §3), so forwarding it would reconfigure
+    // the leader rather than the node the operator addressed. It is also the
+    // only statement that can give `WRITABLE` back to a node that dropped it.
     (
         "DEFINE NODE ROLES serving, writable ENDPOINTS 'here:9000';",
-        Effect::Write,
+        Effect::Read,
     ),
+    // The replicated half, and therefore a write: a peer is a catalog record
+    // that commits in its transaction and travels through the apply path.
     ("DEFINE REPLICA second AT 'there:9001';", Effect::Write),
     // --- writes: records and files -----------------------------------------
     ("CREATE users:1 = { name: 'ada' };", Effect::Write),

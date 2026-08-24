@@ -11,6 +11,7 @@
 use bgv_db_ql::{Parameters, Statement, StatementKind, parse};
 use bgv_db_storage::{Catalog, Store, Transaction};
 
+use crate::effect::{Effect, admits};
 use crate::error::{Error, Result};
 use crate::identity::{self, Identity};
 use crate::outcome::Outcome;
@@ -91,6 +92,20 @@ impl<'a> Session<'a> {
     pub fn run_with(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
         let store = self.store;
         let script = parse(source)?.bind(parameters)?;
+
+        // Where a statement may run, asked once for the whole script and before
+        // any of it runs — a script that writes must not have its first half
+        // committed here and its second half refused.
+        //
+        // **A read pays nothing for the cluster.** The roles live in the store,
+        // so consulting them costs a read, and a node standing alone would pay
+        // it on every `SELECT` for an answer that is always yes. `Effect` is
+        // pure, so asking it first keeps that cost on the writes it belongs to
+        // (ADR-0018's `Alone`, and G008 kill criterion 3).
+        if matches!(Effect::of_script(&script), Effect::Write) {
+            admits(store.node_identity()?.roles, &script)?;
+        }
+
         let mut outcomes = Vec::with_capacity(script.statements.len());
         let mut open: Option<(Transaction<'a>, bgv_db_ql::Span)> = None;
 

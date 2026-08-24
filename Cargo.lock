@@ -227,6 +227,7 @@ name = "bgv-db-wire"
 version = "0.0.0"
 dependencies = [
  "bgv-db",
+ "bgv-db-backup",
  "bgv-db-encoding",
  "bgv-db-serve",
  "bgv-db-types",

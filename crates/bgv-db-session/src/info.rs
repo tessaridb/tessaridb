@@ -330,6 +330,15 @@ fn described_replica(replica: &ReplicaDefinition) -> Value {
             "endpoint".to_owned(),
             Value::from(replica.endpoint.as_str()),
         ),
+        // Reported because it is now *routing*, not decoration: this is the
+        // field that decides where a forwarded write lands, and a setting an
+        // operator can write but cannot read back is one they cannot check
+        // before the bad day. Named the same way `$node` names its own roles,
+        // so the two sides of the membership row read alike.
+        (
+            "roles".to_owned(),
+            Value::Array(replica.roles.names().into_iter().map(Value::from).collect()),
+        ),
     ]))
 }
 

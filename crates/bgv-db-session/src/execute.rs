@@ -109,8 +109,15 @@ impl Session<'_> {
             StatementKind::DefineReplica {
                 name,
                 endpoint,
+                roles,
                 if_not_exists,
-            } => self.define_replica(transaction, name, endpoint, *if_not_exists),
+            } => self.define_replica(
+                transaction,
+                name,
+                endpoint,
+                roles.as_deref(),
+                *if_not_exists,
+            ),
             StatementKind::DropUser { name } => self.drop_user(transaction, name),
             StatementKind::Grant {
                 verbs,
@@ -544,19 +551,7 @@ impl Session<'_> {
     /// reason a vector distance is: which roles exist is the store's question,
     /// and this is where the store knows what it knows.
     fn define_node(&self, roles: Option<&[Name]>, endpoints: Option<&[String]>) -> Result<Outcome> {
-        let named = roles
-            .map(|named| {
-                named.iter().try_fold(Roles::NONE, |carried, role| {
-                    Roles::parse(&role.text)
-                        .map(|found| carried.and(found))
-                        .ok_or(Error::Unknown {
-                            entity: "role",
-                            name: role.text.clone(),
-                            span: role.span,
-                        })
-                })
-            })
-            .transpose()?;
+        let named = roles.map(named_roles).transpose()?;
         self.store
             .configure_node(named, endpoints.map(<[String]>::to_vec))?;
         Ok(Outcome::Done)
@@ -572,6 +567,7 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         name: &Name,
         endpoint: &str,
+        roles: Option<&[Name]>,
         if_not_exists: bool,
     ) -> Result<Outcome> {
         let declared = Catalog::new(transaction)
@@ -581,7 +577,11 @@ impl Session<'_> {
         if if_not_exists && declared {
             return Ok(Outcome::Done);
         }
-        Catalog::new(transaction).create_replica(&name.text, endpoint)?;
+        // The words are read before the name is claimed, so a misspelled role
+        // leaves nothing behind: the statement either declares the peer it was
+        // asked for or declares nothing.
+        let roles = roles.map(named_roles).transpose()?.unwrap_or(Roles::NONE);
+        Catalog::new(transaction).create_replica(&name.text, endpoint, roles)?;
         Ok(Outcome::Done)
     }
 
@@ -764,6 +764,28 @@ impl Session<'_> {
         }
         Ok(record)
     }
+}
+
+/// The roles a list of words names, folded into one set.
+///
+/// Shared by `DEFINE NODE` and `DEFINE REPLICA` because they name the same field
+/// on the same membership row (ADR-0018 §2) from the two sides — this node, and
+/// a peer. A second copy would not fail to compile if it drifted; it would
+/// change which words a peer may be declared with, and only on the side nobody
+/// was looking at.
+///
+/// An unrecognised word is refused rather than skipped: a role this build has no
+/// name for is one the operator believes they set.
+fn named_roles(named: &[Name]) -> Result<Roles> {
+    named.iter().try_fold(Roles::NONE, |carried, role| {
+        Roles::parse(&role.text)
+            .map(|found| carried.and(found))
+            .ok_or(Error::Unknown {
+                entity: "role",
+                name: role.text.clone(),
+                span: role.span,
+            })
+    })
 }
 
 /// Put a value into one field of an object, or take it out.

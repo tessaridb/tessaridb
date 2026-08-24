@@ -119,6 +119,30 @@ impl Client {
         }
     }
 
+    /// Send a request already built, and hand back the reply frame unread.
+    ///
+    /// For a node forwarding a write it may not take (ADR-0019 §2, case
+    /// *forward*). The bytes are **not** decoded and re-encoded: the answer is
+    /// already in the store's own codec, the forwarding node has nothing to add
+    /// to it, and a round trip through `Answer` and back would put a second
+    /// encoder on the path where the two could disagree about a value neither
+    /// node ever looked at.
+    ///
+    /// A refusal relays too, and relays *as* a refusal — the caller asked the
+    /// cluster to run a statement, and the leader's own words about why it would
+    /// not are the truthful answer. Nothing here rewrites them to mention the
+    /// hop, because a client that mistyped a statement is owed the parser's
+    /// message and not a routing story.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Truncated`] when the peer hung up before replying, and
+    /// the stream's failure otherwise.
+    pub(crate) fn relay(&mut self, request: &Request) -> Result<(frame::Kind, Vec<u8>)> {
+        frame::write(&mut self.writer, frame::Kind::Request, &request.encode())?;
+        frame::read(&mut self.reader)?.ok_or(Error::Truncated)
+    }
+
     /// Stop asking, and start being told.
     ///
     /// Consumes the client, because the connection stops being a conversation:

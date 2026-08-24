@@ -215,6 +215,8 @@ fn kind_name(error: &Error) -> &'static str {
         Error::FileNeedsAPath { .. } => "FileNeedsAPath",
         Error::FileIsNotBytes { .. } => "FileIsNotBytes",
         Error::FileIsIncomplete { .. } => "FileIsIncomplete",
+        Error::NotWritable { .. } => "NotWritable",
+        Error::ManyWritablePeers { .. } => "ManyWritablePeers",
         _ => "Unnamed",
     }
 }

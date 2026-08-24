@@ -40,6 +40,9 @@ pub use catalog::{
     ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition, TableShape,
     UserDefinition, VectorDistance, Verb,
 };
+// Re-exported because `ReplicaDefinition` carries one: a caller that can read
+// the field but cannot name its type has a public API it cannot use.
+pub use bgv_db_encoding::Roles;
 pub use error::{Error, Result};
 pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use graph::vector_of;

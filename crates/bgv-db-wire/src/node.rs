@@ -14,7 +14,7 @@ use bgv_db_serve::{Busy, Stopping};
 use crate::error::{Error, Result};
 use crate::message::Request;
 use crate::push::Follow;
-use crate::{READING, frame, message, push};
+use crate::{READING, client, frame, message, push};
 
 /// A node listening for connections.
 pub struct Node {
@@ -195,7 +195,26 @@ fn converse(
             )?;
             continue;
         }
-        match session.run_with(&request.script, &request.parameters) {
+        let ran = session.run_with(&request.script, &request.parameters);
+        // A write that arrived at a node which may not take it is routed, not
+        // refused (ADR-0019 §2, case *forward*). Matched on the **variant**, not
+        // on the message text: a routing decision taken by string comparison
+        // changes meaning the day somebody rewords an error.
+        if matches!(ran, Err(bgv_db::Error::NotWritable { .. })) {
+            match forward(db, &request) {
+                Ok((kind, body)) => reply(&mut writer, stopping, kind, &body)?,
+                // The hop failed, and the client is told that rather than being
+                // told the statement was wrong. It was not.
+                Err(why) => reply(
+                    &mut writer,
+                    stopping,
+                    frame::Kind::Refusal,
+                    why.to_string().as_bytes(),
+                )?,
+            }
+            continue;
+        }
+        match ran {
             Ok(outcomes) => {
                 let mut answer = Vec::new();
                 frame::put_u32(
@@ -229,6 +248,58 @@ fn converse(
         }
     }
     Ok(())
+}
+
+/// Send a write to the peer that may take it, and bring back what it said.
+///
+/// Routing case *forward* (ADR-0019 §2). Three things it deliberately does not
+/// do, each of which is a feature this milestone does not have rather than an
+/// oversight:
+///
+/// - **No retry.** ADR-0019 §2 names "the peer is down mid-request" as this
+///   case's new failure mode. Naming it is the deliverable; a retry that
+///   re-sent a statement whose first attempt may already have committed would
+///   turn one failure into two writes.
+/// - **No connection kept.** One dial per forwarded write, which is a real cost
+///   and a measured one later — a pool is state shared between connections, and
+///   it earns its complexity against a number nobody has yet.
+/// - **No rewriting of the answer.** What the leader said travels back as it
+///   was said, refusals included.
+///
+/// The caller's credentials go with it, so the leader authorises the same user
+/// against its own grants. A forward that signed in as the forwarding node would
+/// make every follower an authority its operator never granted.
+///
+/// # It does not yet detect being sent back to itself
+///
+/// Nothing here compares the target against this node. If the one peer declared
+/// `writable` **is** this node — which an operator produces by draining the
+/// leader, since dropping `WRITABLE` is local and leaves the replica row saying
+/// otherwise — each hop dials this node again and spends another thread and
+/// another connection. It does not recurse on one stack; it exhausts the node.
+///
+/// The endpoint cannot be used to recognise the loop, for the reason the target
+/// is not found by endpoint in the first place (Q-108): a node's own declared
+/// endpoints are empty by default and need not be spelled the way a peer spells
+/// them, so the check would pass in exactly the deployments that need it. The
+/// answer is a hop marker on the request, which is a wire-format change and is
+/// held as **Q-109** rather than approximated here.
+///
+/// Until then this is an operational constraint and is written down as one: a
+/// node being drained has its replica row corrected first, or it is drained
+/// while nothing writes to it.
+fn forward(db: &Db, request: &Request) -> Result<(frame::Kind, Vec<u8>)> {
+    // The store's own words travel verbatim, as `Refused` documents — reading
+    // the peer list can fail by naming two writable peers, and "two leaders are
+    // declared" is precisely what the operator needs to be told.
+    let declared = db.writable_peer().map_err(|why| Error::Refused {
+        message: why.to_string(),
+    })?;
+    let Some(endpoint) = declared else {
+        return Err(Error::NoWritablePeer);
+    };
+    let mut peer = client::Client::connect(endpoint)?;
+    peer.relay(request)
 }
 
 /// Push changes down this connection until it ends.
