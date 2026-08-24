@@ -313,7 +313,17 @@ fn serving<'a>(
 ) -> Vec<&'a IndexDefinition> {
     declared
         .iter()
-        .filter(|index| index.fields.first() == Some(path) && index.search == search)
+        .filter(|index| {
+            index.fields.first() == Some(path)
+                && if search {
+                    index.search
+                } else {
+                    // Not `!index.search`: a vector or spatial index is not a
+                    // search index and is not an ordered one either, and asking
+                    // the negative admitted both. See `IndexDefinition::is_ordered`.
+                    index.is_ordered()
+                }
+        })
         .collect()
 }
 
@@ -333,8 +343,10 @@ fn serving<'a>(
 /// finding them means visiting each run's slice in turn. That is a different
 /// traversal and it is deliberately not built here.
 ///
-/// A vector index holds a distance rather than an order over the value, so a
-/// range over one would be a scan wearing an index's name.
+/// Only an ordered index qualifies at all. A search, vector or spatial index
+/// holds terms, a graph or cells rather than an order over the value, so a range
+/// over one would not be a scan wearing an index's name — it would be a lookup
+/// in a keyspace that is not keyed by the value, answering with fewer rows.
 fn ranged<'a>(
     declared: &'a [IndexDefinition],
     path: &Path,
@@ -342,7 +354,7 @@ fn ranged<'a>(
 ) -> Vec<(&'a IndexDefinition, Vec<Value>)> {
     let mut found = Vec::new();
     for index in declared {
-        if index.search || index.vector.is_some() {
+        if !index.is_ordered() {
             continue;
         }
         let Some(at) = index.fields.iter().position(|field| field == path) else {

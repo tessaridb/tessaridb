@@ -313,6 +313,30 @@ pub struct IndexDefinition {
 }
 
 impl IndexDefinition {
+    /// Whether this index's entries are ordered by the indexed **value**.
+    ///
+    /// The question every reader wanting a lookup, a range or an order is
+    /// actually asking, and it is phrased so the answer is **no by default**.
+    ///
+    /// That phrasing is the point. Each kind writes a different key: an ordered
+    /// index writes the value, a search index writes terms, a vector index
+    /// writes graph nodes, a spatial index writes cells. A reader that asks
+    /// instead which kinds to *exclude* has to name every one of them, and every
+    /// new kind is then a defect in every such site until each is found — the
+    /// site keeps compiling, the plan still says `Index`, and the read returns
+    /// **fewer rows with nothing raised**, because it looked up a value in a
+    /// keyspace that is not keyed by values.
+    ///
+    /// That is not hypothetical. It shipped twice: a vector index made
+    /// `WHERE embedding = [1, 2]` answer zero where the scan answered one, and a
+    /// spatial index did the same for a geometry, each because one enumeration
+    /// of kinds to skip was written before that kind existed. One predicate, and
+    /// a kind that forgets to update it is excluded rather than admitted.
+    #[must_use]
+    pub const fn is_ordered(&self) -> bool {
+        !self.search && !self.spatial && self.vector.is_none()
+    }
+
     /// The value written to the catalog.
     #[must_use]
     pub fn to_value(&self) -> Value {

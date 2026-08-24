@@ -1141,7 +1141,7 @@ impl Session<'_> {
         let Some(index) = self.index_ordering_on_path(transaction, table, path)? else {
             return Ok(None);
         };
-        if index.search || index.vector.is_some() {
+        if !index.is_ordered() {
             return Ok(None);
         }
         // Ascending, the records the index does **not** hold are the ones that
@@ -1416,10 +1416,7 @@ fn ordered_index_on(
         .indexes_on(table)?
         .into_iter()
         .find(|held| {
-            !held.search
-                && held.vector.is_none()
-                && held.fields.len() == 1
-                && held.fields.first() == Some(&key.path)
+            held.is_ordered() && held.fields.len() == 1 && held.fields.first() == Some(&key.path)
         }))
 }
 
