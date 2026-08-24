@@ -157,12 +157,20 @@ fn a_write_ahead_file_the_manifest_recorded_is_refused_when_it_is_gone() {
     // know. It failed twice, days apart, and never on a re-run: exactly what a
     // precondition that is a guess looks like.
     //
-    // The bound is generous and the failure it produces is the same sentence as
-    // before, so an engine that genuinely stopped rotating still says so.
+    // Rotation is detected by the **live file's name changing**, not by two
+    // files being seen at once. The engine reclaims a closed write-ahead file as
+    // soon as its memtable flushes, so "two exist" is a window that a directory
+    // read can pass straight over — and under load it does. A name that has been
+    // superseded is evidence the rotation happened whether or not the older file
+    // has already gone, and the file is grabbed at that moment rather than
+    // looked for again after the store closes, because closing flushes and a
+    // flush is what removes it.
+    let mut closed = None;
     {
         let store = LsmBackend::open(&path, small).unwrap();
+        let mut live = logs(&path).last().cloned();
         let mut n = 0_usize;
-        while logs(&path).len() < 2 && n < 40_000 {
+        while closed.is_none() && n < 40_000 {
             store
                 .apply(WriteBatch::new().put(
                     Keyspace::DATA,
@@ -171,16 +179,30 @@ fn a_write_ahead_file_the_manifest_recorded_is_refused_when_it_is_gone() {
                 ))
                 .unwrap();
             n = n.saturating_add(1);
+            let held = logs(&path);
+            let newest = held.last().cloned();
+            if newest != live {
+                // The previous live file has been superseded. It is the closed,
+                // recorded one this test needs — if the engine has not already
+                // reclaimed it.
+                closed = live.filter(|held| held.exists());
+                live = newest;
+            }
         }
         drop(store);
     }
 
-    let held = logs(&path);
-    assert!(
-        held.len() > 1,
-        "the engine did not rotate its write-ahead file, so there is no recorded one to remove"
-    );
-    fs::remove_file(&held[0]).unwrap();
+    // A precondition that could not be established says so, and says what it
+    // saw. Reporting it as "the engine did not rotate" would blame the engine
+    // for a race in the test, which is how the same failure got tuned twice.
+    let Some(closed) = closed.filter(|held| held.exists()) else {
+        panic!(
+            "no closed write-ahead file could be caught before the engine reclaimed it; \
+             the store now holds {:?}",
+            logs(&path)
+        );
+    };
+    fs::remove_file(&closed).unwrap();
 
     let refused = LsmBackend::open(&path, small);
     assert!(

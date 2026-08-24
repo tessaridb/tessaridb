@@ -2124,9 +2124,17 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.0.0", "endpoints": ["db-1.internal:9000"],
+ "version": "0.0.1", "build": "0.0.1-alpha", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000"}]}}
 ```
+
+`version` and `build` are both here because they answer different questions.
+`version` is three ordered numbers: it is what the node **stored** and what an
+upgrade compares, and comparing is why it has no room for a pre-release suffix.
+`build` is what this binary actually is, suffix included. On a final release the
+two read the same, and the difference only appears when there is one — which is
+exactly when somebody needs to see it. `tessaridb --version` prints the second
+of the two, because a binary is asked what it is before any store is opened.
 
 The flat fields would **not** follow a backup; everything under `cluster` would.
 Flattening the two would make that a thing you have to remember, and the day it

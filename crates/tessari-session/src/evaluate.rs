@@ -13,7 +13,7 @@ use tessari_ql::{
     BinaryOp, Direction, Expr, ExprKind, Function, Hop, Projected, Projection, RecordTarget,
     Select, Source, Span, TableRef,
 };
-use tessari_storage::{Catalog, RecordAddress, Store, Transaction};
+use tessari_storage::{BUILD_VERSION, Catalog, RecordAddress, Store, Transaction};
 use tessari_types::{
     Analyzer, Number, Path, RecordId, RecordRef, TableId, Value, ValueRange, apply,
 };
@@ -1478,6 +1478,12 @@ fn node_row(store: &Store) -> Result<(RecordId, Value)> {
         "version".to_owned(),
         Value::from(identity.version.to_string().as_str()),
     );
+    // Beside it rather than instead of it, because the two answer different
+    // questions. `version` is the stored, ordered form an upgrade compares;
+    // `build` is what this binary actually is, pre-release suffix included. On
+    // a final release they read the same, which is the point — the difference
+    // only appears when there is one.
+    fields.insert("build".to_owned(), Value::from(BUILD_VERSION));
     fields.insert(
         "endpoints".to_owned(),
         Value::Array(

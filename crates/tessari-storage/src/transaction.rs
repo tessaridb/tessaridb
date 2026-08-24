@@ -24,11 +24,15 @@
 //!
 //! Both are demonstrated by the test suite rather than described only here.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{BuildHasher, Hasher};
 use std::ops::Bound;
+use std::time::Duration;
 
 use tessari_constants::{
-    MAX_COMMIT_ATTEMPTS, ORDERED_SCAN_BATCH_ENTRIES, RANGE_SCAN_BATCH_ENTRIES,
+    COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS, ORDERED_SCAN_BATCH_ENTRIES,
+    RANGE_SCAN_BATCH_ENTRIES,
 };
 use tessari_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, PostingKey, RecordKey,
@@ -1370,8 +1374,13 @@ impl<'a> Transaction<'a> {
                 Ok(()) => return Ok(commit_at),
                 // The position moved between reading it and applying, so the
                 // conflict check above was made against a stale state and the
-                // whole attempt is repeated rather than patched up.
-                Err(tessari_kv::Error::Conflict { .. }) => continue,
+                // whole attempt is repeated rather than patched up — after
+                // waiting, so that this attempt does not re-race into the same
+                // instant as every other loser.
+                Err(tessari_kv::Error::Conflict { .. }) => {
+                    back_off(attempt);
+                    continue;
+                }
                 Err(other) => return Err(other.into()),
             }
         }
@@ -1459,5 +1468,179 @@ impl<'a> Transaction<'a> {
 impl Drop for Transaction<'_> {
     fn drop(&mut self) {
         self.store.snapshot_registry().release(self.snapshot);
+    }
+}
+
+/// Wait before re-racing for the committed tail, having lost `attempt` times.
+///
+/// The wait doubles with each loss and is then taken **uniformly at random from
+/// zero up to that bound** rather than used as it stands. Full jitter, and the
+/// randomness is the load-bearing part: writers that lose together and then wait
+/// the same amount arrive together, which reproduces the collision the wait was
+/// meant to break. Spreading them across a widening window is what makes the
+/// second attempt likely to succeed instead of merely later.
+///
+/// Nothing is held across this wait. The commit takes no lock — it races on the
+/// substrate's conditional apply — so a waiting writer blocks only itself.
+fn back_off(attempt: u32) {
+    std::thread::sleep(waiting_for(attempt, jitter()));
+}
+
+/// How long to wait, given the attempt and a number that differs per thread.
+///
+/// Separated from the sleep so that the arithmetic — the doubling, the ceiling,
+/// the reduction of the jitter into the window — can be asserted without a test
+/// that spends the wait it is checking. What is left in [`back_off`] is one
+/// call and one sleep.
+fn waiting_for(attempt: u32, jitter: u64) -> Duration {
+    let window = window_for(attempt);
+    Duration::from_micros(jitter.checked_rem(window.max(1)).unwrap_or(0))
+}
+
+/// The widest this attempt may wait, in microseconds.
+///
+/// Doubling per loss up to the ceiling. Separate from [`waiting_for`] so that
+/// the window can be asserted as itself: reducing a jitter into it is a
+/// different property, and a test that tried to recover the window from a wait
+/// would be asserting a modulo rather than a bound.
+fn window_for(attempt: u32) -> u64 {
+    // `attempt` is capped before the shift because shifting a `u64` by 64 or
+    // more panics in debug and wraps in release — the pair of behaviours this
+    // workspace refuses to leave to chance. The cap sits far above any attempt
+    // the budget allows, so it never fires in practice and is not a knob.
+    let doubling = COMMIT_BACKOFF_STEP.saturating_mul(1_u64 << attempt.min(16));
+    doubling.min(COMMIT_BACKOFF_CEILING)
+}
+
+/// A number that differs between the threads racing to commit.
+///
+/// A per-thread xorshift, seeded once from the standard library's own hasher
+/// keys — which are randomised per process — mixed with the address of the
+/// thread-local itself so that two threads in one process start apart. It is not
+/// cryptographic and does not need to be: nothing here is a secret, and the only
+/// property required is that two writers do not compute the same wait.
+///
+/// A dependency-free source on purpose. The store's other randomness reads
+/// `/dev/urandom`, which is right for a node identity written once and far too
+/// heavy for something consulted on a contended write path.
+fn jitter() -> u64 {
+    thread_local! {
+        static STATE: Cell<u64> = const { Cell::new(0) };
+    }
+    STATE.with(|state| {
+        let mut held = state.get();
+        if held == 0 {
+            let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+            hasher.write_usize(std::ptr::from_ref(state) as usize);
+            // Zero is the "not yet seeded" mark and is also the one value
+            // xorshift cannot leave, so it is replaced rather than accepted.
+            held = hasher.finish() | 1;
+        }
+        held ^= held << 13;
+        held ^= held >> 7;
+        held ^= held << 17;
+        state.set(held);
+        held
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS, jitter, waiting_for,
+        window_for,
+    };
+
+    #[test]
+    fn the_wait_doubles_until_it_reaches_the_ceiling_and_then_stops() {
+        // The property the doubling exists for: the window a loser is spread
+        // across widens with the contention rather than being guessed in
+        // advance. Asserted on the *bound*, by handing in a jitter that always
+        // lands at the top of the window, because the wait itself is random by
+        // design and a test that asserted an exact wait would be asserting the
+        // jitter away.
+        let mut previous = 0;
+        let mut flattened = false;
+        for attempt in 1..=MAX_COMMIT_ATTEMPTS {
+            let now = window_for(attempt);
+            assert!(
+                now >= previous,
+                "attempt {attempt} has a narrower window than the one before it: {now} < {previous}"
+            );
+            assert!(
+                now <= COMMIT_BACKOFF_CEILING,
+                "attempt {attempt} opens a window of {now}, past the ceiling"
+            );
+            if now == previous && attempt > 1 {
+                flattened = true;
+            }
+            previous = now;
+        }
+        assert_eq!(
+            window_for(MAX_COMMIT_ATTEMPTS.saturating_add(4)),
+            COMMIT_BACKOFF_CEILING,
+            "the doubling never reaches the ceiling, so it is not bounded by it"
+        );
+        // Not a fact about the constants so much as a check that they still say
+        // what the doc comment claims: the budget is spent before the ceiling
+        // makes the last attempts indistinguishable. If a future value of
+        // MAX_COMMIT_ATTEMPTS flattens the tail, this says so.
+        assert!(
+            !flattened,
+            "the window flattens before the budget is spent, so the last attempts no longer widen"
+        );
+    }
+
+    #[test]
+    fn the_wait_stays_inside_its_window_whatever_the_jitter_is() {
+        for attempt in 0..64_u32 {
+            for offered in [0, 1, 7, 4_999, u64::MAX / 3, u64::MAX] {
+                let waited = waiting_for(attempt, offered).as_micros();
+                assert!(
+                    waited < u128::from(window_for(attempt).max(1)),
+                    "attempt {attempt} with jitter {offered} waited {waited}, \
+                     outside its own window of {}",
+                    window_for(attempt)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_first_loss_still_waits_rather_than_re_racing_into_the_same_instant() {
+        // The whole point, reduced to one row. A jitter that reduces to zero is
+        // allowed — full jitter includes zero — so the assertion is on the
+        // window rather than on every draw: attempt one must have room to wait.
+        assert!(
+            window_for(1) >= COMMIT_BACKOFF_STEP,
+            "the first retry has no window to spread into"
+        );
+    }
+
+    #[test]
+    fn two_threads_do_not_compute_the_same_wait() {
+        // The jitter is load-bearing rather than decorative: writers that lose
+        // together and wait the same amount arrive together, which rebuilds the
+        // collision the wait exists to break. Drawn many times per thread
+        // because a single pair could coincide by chance, and compared as
+        // sequences because two threads sharing a seed would agree on all of it.
+        let mine: Vec<u64> = (0..32).map(|_| jitter()).collect();
+        let theirs = std::thread::spawn(|| (0..32).map(|_| jitter()).collect::<Vec<u64>>())
+            .join()
+            .expect("the other thread drew its own");
+        assert_ne!(mine, theirs, "two threads drew the same sequence of waits");
+    }
+
+    #[test]
+    fn one_thread_does_not_draw_one_number_forever() {
+        // Guards the seeding: a state left at zero would xorshift to zero for
+        // ever, and every retry would wait exactly nothing — which is the
+        // behaviour being removed, arriving back through the jitter.
+        let drawn: std::collections::BTreeSet<u64> = (0..32).map(|_| jitter()).collect();
+        assert!(drawn.len() > 1, "the jitter is a constant: {drawn:?}");
+        assert!(
+            !drawn.contains(&0),
+            "the jitter state reached zero and stuck"
+        );
     }
 }

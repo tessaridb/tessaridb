@@ -76,6 +76,14 @@ fn run(asked: Asked) -> Result<Ended, String> {
     let parameters = asked.parameters;
     let sequence = asked.at_sequence;
 
+    // Saying which build this is touches nothing at all, so it comes before
+    // even the address: `--version` has to answer on a machine with no store,
+    // no node to reach and no password to hand over.
+    if matches!(asked.source, Source::Version) {
+        println!("tessaridb {}", tessaridb::BUILD_VERSION);
+        return Ok(Ended::Fine);
+    }
+
     // Verifying reads a file and touches no store, so it happens before one is
     // opened — which is what makes it usable on a machine that has nothing but
     // the backup.
@@ -101,7 +109,11 @@ fn run(asked: Asked) -> Result<Ended, String> {
         Source::Restore(path) => return restore(&db, path, sequence).map(|()| Ended::Fine),
         Source::Health => return health(&db),
         Source::Serve => return serve(db, &asked.serving, started),
-        Source::Verify(_) | Source::Standard | Source::Inline(_) | Source::File(_) => {}
+        Source::Verify(_)
+        | Source::Version
+        | Source::Standard
+        | Source::Inline(_)
+        | Source::File(_) => {}
     }
 
     let mut embedded = store::Embedded::new(&db, credentials.as_ref(), parameters)?;
@@ -145,6 +157,7 @@ fn statements(
         Source::Backup(_)
         | Source::Restore(_)
         | Source::Verify(_)
+        | Source::Version
         | Source::Health
         | Source::Serve => {
             // Resolved before this function is reached, for the embedded path,

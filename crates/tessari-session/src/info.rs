@@ -38,8 +38,8 @@ use std::collections::BTreeMap;
 
 use tessari_ql::{InfoSubject, Name, Span, TableRef};
 use tessari_storage::{
-    Catalog, FieldDefinition, GrantDefinition, IndexDefinition, ReplicaDefinition, TableDefinition,
-    Transaction, UserDefinition,
+    BUILD_VERSION, Catalog, FieldDefinition, GrantDefinition, IndexDefinition, ReplicaDefinition,
+    TableDefinition, Transaction, UserDefinition,
 };
 use tessari_types::{TableId, Value};
 
@@ -300,6 +300,10 @@ impl Session<'_> {
                 "version".to_owned(),
                 Value::from(identity.version.to_string().as_str()),
             ),
+            // The exact build beside the ordered version, for the same reason
+            // it sits beside it in `$node`: an operator holding a pre-release
+            // has to be able to see that they are holding one.
+            ("build".to_owned(), Value::from(BUILD_VERSION)),
             (
                 "endpoints".to_owned(),
                 Value::Array(

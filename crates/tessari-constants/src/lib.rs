@@ -20,7 +20,53 @@
 /// Eight is a starting value chosen to absorb ordinary interleaving on an
 /// embedded store while still surfacing sustained contention quickly. It is
 /// provisional until measured under a real write workload.
+///
+/// The budget is a count and not a duration, which only works because the
+/// attempts are spread apart by [`COMMIT_BACKOFF_STEP`]. Re-racing immediately
+/// makes a count budget a measure of how fast the machine is rather than of how
+/// contended the store is — see that constant.
 pub const MAX_COMMIT_ATTEMPTS: u32 = 8;
+
+/// How long a commit waits before re-racing for the committed tail, doubling
+/// each time it loses.
+///
+/// Unit: microseconds.
+///
+/// # Why waiting at all is the point
+///
+/// Losing the race means another commit landed between reading the tail and
+/// applying. Re-reading and re-racing **immediately** is what turns a busy store
+/// into a contended one: every loser retries at once, into the same instant, and
+/// collides with every other loser. The budget above then runs out — not because
+/// the store is saturated, but because nothing ever spread the writers apart.
+///
+/// The failure that shape produces is worse than slow, because it is
+/// **load-dependent**. On an idle machine the interleaving is thin and eight
+/// attempts are plenty; on a busy one, each attempt takes longer, more
+/// competing commits land inside it, and the same code gives up sooner the
+/// busier the host is. A caller then sees a store that refuses writes in
+/// proportion to how much else the machine is doing.
+///
+/// Doubling makes the spread grow to match the contention rather than being
+/// guessed in advance, which is the property a fixed pause does not have.
+///
+/// Fifty microseconds is a starting value: below the cost of the apply it
+/// follows, so an uncontended retry is not noticeably delayed, and far enough
+/// above thread-scheduling granularity to actually separate two racers.
+/// Provisional until measured under a real write workload.
+pub const COMMIT_BACKOFF_STEP: u64 = 50;
+
+/// The longest a commit waits between attempts, however many it has lost.
+///
+/// Unit: microseconds.
+///
+/// Doubling without a ceiling would put the last attempts of a long run several
+/// seconds apart, and a caller blocked that long would rather have been told the
+/// store is contended. With the values here, a commit that loses every attempt
+/// is refused after roughly twenty-five milliseconds of waiting — long enough to
+/// have genuinely tried, short enough that contention is reported while it is
+/// still actionable.
+pub const COMMIT_BACKOFF_CEILING: u64 = 8_000;
 
 /// How many log records a subscription reads at a time while skipping a backlog
 /// it has decided not to receive.

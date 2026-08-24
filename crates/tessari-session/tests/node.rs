@@ -86,6 +86,34 @@ fn a_node_answers_its_identity_through_the_ordinary_read_path() {
 }
 
 #[test]
+fn a_node_names_the_build_it_is_running_and_not_only_the_family_it_belongs_to() {
+    // A pre-release and the release that follows it carry the same three
+    // numbers, so `version` alone cannot tell an operator which one they are
+    // holding. `build` is the field that can, and the two are asserted together
+    // because the failure being prevented is one of them going missing while
+    // the other keeps the test green.
+    let store = closed(&backend());
+    let (_, record) = asked(&store);
+    let Value::Object(fields) = record else {
+        panic!("not an object: {record:?}");
+    };
+
+    let build = fields.get("build").expect("a node names its build");
+    assert_eq!(build, &Value::from(tessari_storage::BUILD_VERSION));
+
+    let Some(Value::String(ordered)) = fields.get("version") else {
+        panic!("a node names its ordered version: {fields:?}");
+    };
+    let Value::String(exact) = build else {
+        panic!("the build is not text: {build:?}");
+    };
+    assert!(
+        exact.starts_with(ordered.as_str()),
+        "the build {exact} and the version {ordered} disagree about the numbers"
+    );
+}
+
+#[test]
 fn the_identity_survives_a_restart() {
     // The criterion itself. Re-*opening* rather than re-reading, because a
     // re-read would pass with the id held in memory and never written down.

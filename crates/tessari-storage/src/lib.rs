@@ -47,5 +47,5 @@ pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use graph::vector_of;
 pub use reclaim::Reclaimed;
 pub use store::{Health, Store};
-pub use tessari_encoding::Roles;
+pub use tessari_encoding::{BUILD_VERSION, Roles};
 pub use transaction::{RecordAddress, StoredRecord, Transaction};
