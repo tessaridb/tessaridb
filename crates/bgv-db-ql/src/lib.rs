@@ -19,6 +19,9 @@ mod error;
 mod function;
 mod lexer;
 mod parser;
+mod render;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 mod token;
 
 pub use ast::{
@@ -32,4 +35,5 @@ pub use error::{Error, Result};
 pub use function::Function;
 pub use lexer::tokenize;
 pub use parser::{parse, parse_expression};
+pub use render::render;
 pub use token::{Keyword, Punct, Span, Spanned, Token};

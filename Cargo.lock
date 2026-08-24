@@ -183,6 +183,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bgv-db-query"
+version = "0.0.0"
+dependencies = [
+ "bgv-db-ql",
+ "bgv-db-types",
+ "thiserror",
+]
+
+[[package]]
 name = "bgv-db-serve"
 version = "0.0.0"
 

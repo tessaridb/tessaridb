@@ -402,6 +402,19 @@ pub enum Error {
         span: Span,
     },
 
+    /// A statement [`crate::render`] does not write back out as text.
+    ///
+    /// The renderer covers `SELECT` at this milestone. Every other form names
+    /// itself here rather than falling into a catch-all, so the boundary is
+    /// something a caller reads in a message instead of discovering as silence.
+    #[error("{statement} is not written back out at this milestone (at {span})")]
+    Unrenderable {
+        /// The statement form, as it is spelled.
+        statement: &'static str,
+        /// Where it sits in the source.
+        span: Span,
+    },
+
     /// A parameter the caller did not supply a value for.
     ///
     /// Refused while binding, which is before the first statement runs — so a
@@ -455,7 +468,8 @@ impl Error {
             | Self::OneSidedJoin { span, .. }
             | Self::JoinKeyIsNotAField { span, .. }
             | Self::UnboundParameter { span, .. }
-            | Self::NotARecordIdentity { span, .. } => *span,
+            | Self::NotARecordIdentity { span, .. }
+            | Self::Unrenderable { span, .. } => *span,
         }
     }
 }

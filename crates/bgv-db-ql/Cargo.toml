@@ -9,6 +9,12 @@ authors.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# Span normalisation for round-trip tests in other crates. Never enabled by a
+# non-dev dependency: it exists so that a test can compare two trees without the
+# production `PartialEq` being changed to serve it.
+test-support = []
+
 [dependencies]
 bgv-db-types.workspace = true
 rust_decimal.workspace = true

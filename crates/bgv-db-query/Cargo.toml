@@ -1,0 +1,21 @@
+[package]
+name = "bgv-db-query"
+description = "A typed query builder for bgvQL: builds the syntax, never the text"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+bgv-db-ql.workspace = true
+bgv-db-types.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+bgv-db-ql = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true
