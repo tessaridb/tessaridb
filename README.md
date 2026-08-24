@@ -27,6 +27,8 @@ products around them.
 > and the on-disk format all change without notice, there is no migration between
 > versions, and several engines are still partial. [**Status**](#status) says what
 > runs today, engine by engine — it is a report, not a roadmap.
+> The [**changelog**](CHANGELOG.md) says what each version is and what it is
+> missing.
 
 ---
 
@@ -99,7 +101,7 @@ compares against expected answers, case by case. The counts are those cases.
 | Engine | What it gives you | Cases | State |
 |---|---|---|:--|
 | **Documents** | schemaless or schemafull records, nested objects and arrays, typed fields with defaults | 38 + 59 | ✅ runs |
-| **Relational** | declared tables and fields, unique and multi-field indexes, joins whose answer an index may not change | 44 + 14 + 46 | ✅ runs |
+| **Relational** | declared tables and fields, unique and multi-field indexes, joins whose answer an index may not change | 44 + 14 + 48 | ✅ runs |
 | **Graph** | edge tables, `RELATE`, properties on the edge, multi-hop traversal in both directions | 17 | ✅ runs |
 | **Key–value** | `SPACE`s — one key, one whole value, ordered range scans with inclusive or exclusive bounds | 12 | ✅ runs |
 | **Objects & files** | `BUCKET`s — bytes addressed by path, byte-range reads, writes at an offset, metadata that is an ordinary record | 28 | ✅ runs |
@@ -107,7 +109,7 @@ compares against expected answers, case by case. The counts are those cases.
 | **Vector** | cosine, Euclidean and dot distance, kNN ordering, a graph index that declares whether it answered exactly | 12 | ✅ runs |
 | **Time-series** | epoch-anchored windows every process agrees on, aggregates per window, retention as a statement that reports what it removed | 12 | ✅ runs |
 | **References** | `FETCH` — follow a reference, an array of them, or a nested route, without a join | 12 | ✅ runs |
-| **Geospatial** | a geometry type and an exact integer-grid predicate kernel — orientation, containment, intersection | — | 🚧 partial — no spatial index yet |
+| **Geospatial** | a geometry type on an exact integer grid, seven predicates over whole shapes, geodesic distance and area, shapes written as literals | 22 | 🚧 partial — no spatial index yet |
 
 Underneath all of them, one substrate with two backends: **in memory**, and
 **on disk** on a log-structured merge-tree engine. Everything above the
@@ -886,12 +888,28 @@ what exists, not a plan.
 
 ## Building
 
+**What you need beyond Rust.** The on-disk backend links a log-structured
+merge-tree engine that is **compiled from C++ source**, and its bindings are
+generated at build time by loading `libclang`. So a first build needs a C++
+toolchain and libclang present, and it takes several minutes — after which they
+are cached and rebuilds are ordinary.
+
+| | |
+|---|---|
+| Rust | 1.85 or newer (`rust-version` in `Cargo.toml`); the toolchain file asks for `stable` |
+| macOS | `xcode-select --install` — the Command Line Tools carry both |
+| Debian · Ubuntu | `apt install build-essential clang libclang-dev` |
+| Fedora · RHEL | `dnf install gcc-c++ clang clang-devel` |
+
 ```sh
 cargo build --workspace
 cargo test --workspace
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
+
+`cargo test --workspace` builds around 110 test binaries. Two of them bind fixed
+ports and must not run beside a second copy of themselves.
 
 ## Branches
 
