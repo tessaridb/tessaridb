@@ -30,8 +30,14 @@
 //! connection does one job; a client that wants both opens two, which the
 //! per-connection session already implies.
 
-use bgv_db::{Change, ChangeKind, Sequence, Value};
 use bgv_db_encoding::{decode_payload, encode_payload};
+// The node reads these from the log to build a `Happened`; a client receives
+// the `Happened` and never sees a `Change`.
+#[cfg(feature = "server")]
+use bgv_db_storage::{Change, ChangeKind};
+#[cfg(feature = "server")]
+use bgv_db_types::Sequence;
+use bgv_db_types::Value;
 
 use crate::error::{Error, Result};
 use crate::frame::{put_bytes, put_text, put_u64, take_bytes, take_text, take_u64};
@@ -133,11 +139,15 @@ impl Happened {
     /// Through the session's own redactor rather than a copy of it: a second
     /// implementation of "what does this user see" is a second answer waiting to
     /// disagree with the first, and the disagreement would be silent.
+    ///
+    /// Server-side: the grant it redacts against is the node's, and a client
+    /// receives what the node already decided it may see.
+    #[cfg(feature = "server")]
     #[must_use]
-    pub fn hiding(self, visible: &bgv_db::Visible) -> Self {
+    pub fn hiding(self, visible: &bgv_db_session::redact::Visible) -> Self {
         match self.became {
             Became::Written(held) => Self {
-                became: Became::Written(bgv_db::seen(held, visible)),
+                became: Became::Written(bgv_db_session::redact::seen(held, visible)),
                 ..self
             },
             // A removal carries no value, so there is nothing in it to hide —
@@ -200,6 +210,7 @@ impl Happened {
 /// no name to give, and inventing one would be worse than not sending it. The
 /// subscription still advances past it, which is why this is a filter rather
 /// than a failure.
+#[cfg(feature = "server")]
 pub(crate) fn named(change: &Change, table: Option<String>) -> Option<Happened> {
     Some(Happened {
         sequence: sequence_of(change.sequence),
@@ -213,15 +224,18 @@ pub(crate) fn named(change: &Change, table: Option<String>) -> Option<Happened> 
 }
 
 /// A sequence as the number a client stores and sends back.
+#[cfg(feature = "server")]
 pub(crate) fn sequence_of(sequence: Sequence) -> u64 {
     sequence.get()
 }
 
-#[cfg(test)]
+// The node's encoding half is what these exercise — `encode_outcome`, the
+// access-path tag, `named` — so they belong to the same feature it does.
+#[cfg(all(test, feature = "server"))]
 mod tests {
     #![allow(clippy::panic)]
 
-    use bgv_db::Value;
+    use bgv_db_types::{Number, Value};
 
     use super::{Became, Follow, Happened};
 
@@ -272,12 +286,12 @@ mod tests {
             sequence: 1,
             table: "prices".to_owned(),
             id: "1".to_owned(),
-            became: Became::Written(Value::Number(bgv_db::Number::Decimal(
+            became: Became::Written(Value::Number(Number::Decimal(
                 rust_decimal::Decimal::try_from(12.34_f64).expect("a decimal"),
             ))),
         };
         match Happened::decode(&held.encode()).expect("a change").became {
-            Became::Written(Value::Number(bgv_db::Number::Decimal(read))) => {
+            Became::Written(Value::Number(Number::Decimal(read))) => {
                 assert_eq!(read.to_string(), "12.34");
             }
             other => panic!("a decimal came back as {other:?}"),

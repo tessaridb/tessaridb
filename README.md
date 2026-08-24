@@ -295,6 +295,19 @@ clothes. The cost is a thread per *connection*, which will matter when idle
 subscribers outnumber what a thread each is worth, and that is the trigger for
 revisiting it.
 
+Both ends live in this one crate, so a change to a frame breaks the other end at
+compile time rather than in somebody's deployment. A client takes only its half:
+
+```sh
+cargo add bgv-db-wire --no-default-features   # the client, without the node
+```
+
+The default carries the server, which reaches the storage engine — so a client
+built with it compiles the engine, the serving crate, and a password hasher for
+credentials a client never hashes, in order to send a `SELECT` down a socket.
+Turning the default off is the difference between 42 crates and 17, and nothing a
+client calls lives behind the switch.
+
 A connection holds **one session**, so `USE NAMESPACE prod;` is still in force in
 the next statement — which is what a connection means, and what the thread it
 costs is buying. Two connections are two sessions and share nothing but the

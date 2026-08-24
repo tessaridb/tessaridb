@@ -9,10 +9,25 @@ authors.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# On by default so every existing caller in this workspace is unaffected, and
+# `--no-default-features` gives the half a client needs.
+#
+# The split is not tidiness: `bgv-db` reaches the storage engine, so a client
+# built with the server half would compile RocksDB — and a password hasher, and
+# the serving crate — in order to send a SELECT down a socket. Both halves stay
+# in one crate on purpose, so that a change to a frame breaks the other end at
+# compile time rather than in somebody's deployment.
+default = ["server"]
+server = ["dep:bgv-db", "dep:bgv-db-serve", "dep:bgv-db-session", "dep:bgv-db-storage"]
+
 [dependencies]
-bgv-db.workspace = true
-bgv-db-serve.workspace = true
+bgv-db = { workspace = true, optional = true }
+bgv-db-serve = { workspace = true, optional = true }
 bgv-db-encoding.workspace = true
+bgv-db-ql.workspace = true
+bgv-db-session = { workspace = true, optional = true }
+bgv-db-storage = { workspace = true, optional = true }
 bgv-db-types.workspace = true
 thiserror.workspace = true
 
@@ -22,6 +37,27 @@ thiserror.workspace = true
 # than by waiting for a driver that does not exist.
 bgv-db-backup.workspace = true
 rust_decimal.workspace = true
+
+# These four drive a node, so without the server half there is nothing for them
+# to drive. Declared as `required-features` rather than gated with an inner
+# `#![cfg]`: that strips the file's own crate documentation too, leaving an empty
+# crate that trips `missing_docs` — a warning in the very configuration a client
+# builds. Here the target simply is not built.
+[[test]]
+name = "binding"
+required-features = ["server"]
+
+[[test]]
+name = "forwarding"
+required-features = ["server"]
+
+[[test]]
+name = "pushing"
+required-features = ["server"]
+
+[[test]]
+name = "talking"
+required-features = ["server"]
 
 [lints]
 workspace = true

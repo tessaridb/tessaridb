@@ -47,21 +47,29 @@ mod client;
 mod error;
 mod frame;
 mod message;
+#[cfg(feature = "server")]
 mod node;
 mod push;
 
+#[cfg(feature = "server")]
 use std::time::Duration;
 
 pub use crate::client::{Client, Feed};
 pub use crate::error::{Error, Result};
-pub use crate::message::{Answer, Names, Request, names_for, spell};
+#[cfg(feature = "server")]
+pub use crate::message::names_for;
+pub use crate::message::{Answer, Names, Request, spell};
+#[cfg(feature = "server")]
 pub use crate::node::Node;
 pub use crate::push::{Became, Follow, Happened};
 
 /// How long the node will wait for a subscriber to accept a change.
 ///
+/// Server-side only, and gated with the rest of it.
+///
 /// When a client stops reading, its socket fills and this write blocks. Rather
 /// than hold a thread forever the connection ends — see `push.rs` for why
 /// nothing is lost by that, and why buffering here instead would rebuild the
 /// queue the feed design removed.
+#[cfg(feature = "server")]
 const READING: Duration = Duration::from_secs(30);

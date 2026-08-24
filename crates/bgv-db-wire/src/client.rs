@@ -8,7 +8,7 @@ use std::io::{BufReader, BufWriter};
 use std::net::{TcpStream, ToSocketAddrs};
 
 use crate::error::{Error, Result};
-use bgv_db::Parameters;
+use bgv_db_ql::Parameters;
 
 use crate::message::{Answer, Request};
 use crate::push::{Follow, Happened};
@@ -138,6 +138,7 @@ impl Client {
     ///
     /// Returns [`Error::Truncated`] when the peer hung up before replying, and
     /// the stream's failure otherwise.
+    #[cfg(feature = "server")]
     pub(crate) fn relay(&mut self, request: &Request) -> Result<(frame::Kind, Vec<u8>)> {
         frame::write(&mut self.writer, frame::Kind::Request, &request.encode())?;
         frame::read(&mut self.reader)?.ok_or(Error::Truncated)

@@ -15,9 +15,13 @@
 
 use std::collections::BTreeMap;
 
-use bgv_db::{AccessPath, Outcome, Parameters, RecordId, Value};
 use bgv_db_encoding::{decode_payload, encode_payload};
-use bgv_db_types::TableId;
+use bgv_db_ql::Parameters;
+// `AccessPath` and `Outcome` are what the node encodes *from*; a client only
+// ever decodes into `Answer`, so neither name reaches the client half.
+#[cfg(feature = "server")]
+use bgv_db_session::{AccessPath, Outcome};
+use bgv_db_types::{RecordId, TableId, Value};
 
 use crate::error::{Error, Result};
 use crate::frame::{put_bytes, put_text, put_u32, take_bytes, take_text, take_u32};
@@ -42,6 +46,10 @@ pub type Names = BTreeMap<TableId, String>;
 /// `Db::names_in` walks the values before it opens anything, so an answer
 /// holding no reference — which is most of them — costs a walk and no
 /// transaction.
+///
+/// Server-side: it takes a `Db`, which is the catalog it resolves against, and
+/// a client has neither.
+#[cfg(feature = "server")]
 #[must_use]
 pub fn names_for(db: &bgv_db::Db, outcome: &Outcome) -> Names {
     match outcome {
@@ -175,6 +183,7 @@ mod tag {
     /// `Outcome` is `#[non_exhaustive]`, so a newer store can answer with
     /// something this encoder has never seen. Saying so is honest; guessing at
     /// its content would not be.
+    #[cfg(feature = "server")]
     pub(super) const UNKNOWN: u8 = 255;
 }
 
@@ -182,6 +191,7 @@ mod tag {
 ///
 /// `names` covers the references this outcome carries and nothing else; for
 /// every other outcome shape it is unread, because none of them can hold one.
+#[cfg(feature = "server")]
 #[must_use]
 pub fn encode_outcome(outcome: &Outcome, names: &Names) -> Vec<u8> {
     let mut body = Vec::new();
@@ -316,6 +326,7 @@ pub fn decode_outcome(body: &[u8], at: usize) -> Result<(Answer, usize)> {
 }
 
 /// The names, as a count and that many pairs.
+#[cfg(feature = "server")]
 fn put_names(body: &mut Vec<u8>, names: &Names) {
     put_u32(body, u32::try_from(names.len()).unwrap_or(u32::MAX));
     for (table, name) in names {
@@ -338,6 +349,7 @@ fn take_names(body: &[u8], at: usize) -> Result<(Names, usize)> {
 }
 
 /// The access path, as one byte.
+#[cfg(feature = "server")]
 const fn path_tag(path: AccessPath) -> u8 {
     match path {
         AccessPath::Record => 0,
@@ -370,12 +382,14 @@ pub fn spell(id: &RecordId) -> String {
     id.to_string()
 }
 
-#[cfg(test)]
+// The node's encoding half is what these exercise — `encode_outcome`, the
+// access-path tag, `named` — so they belong to the same feature it does.
+#[cfg(all(test, feature = "server"))]
 mod tests {
     #![allow(clippy::panic)]
 
-    use bgv_db::{AccessPath, Outcome, Parameters, RecordId, Value};
-    use bgv_db_types::{RecordRef, TableId};
+    use bgv_db_session::{AccessPath, Outcome, Parameters};
+    use bgv_db_types::{Number, RecordId, RecordRef, TableId, Value};
 
     use super::{Answer, Names, Request, decode_outcome, encode_outcome};
 
@@ -462,13 +476,13 @@ mod tests {
         // The whole reason this protocol exists rather than the console reading
         // the HTTP endpoint: a decimal is a decimal and not a quoted string a
         // client has to decide about.
-        let held = Outcome::Value(Value::Number(bgv_db::Number::Decimal(
+        let held = Outcome::Value(Value::Number(Number::Decimal(
             rust_decimal::Decimal::try_from(12.34_f64).expect("a decimal"),
         )));
         let (answer, _) = decode_outcome(&encode_outcome(&held, &unnamed()), 0).expect("an answer");
         match answer {
             Answer::Value {
-                value: Value::Number(bgv_db::Number::Decimal(read)),
+                value: Value::Number(Number::Decimal(read)),
                 ..
             } => {
                 assert_eq!(read.to_string(), "12.34");
