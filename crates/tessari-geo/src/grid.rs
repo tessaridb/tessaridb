@@ -206,6 +206,18 @@ impl Snapped {
         self.latitude
     }
 
+    /// Whether this position is one of the two poles.
+    ///
+    /// At latitude ±90 every longitude names the same place, so a longitude
+    /// there says nothing about where the position is. That is why an edge
+    /// between two positions at one pole is not asked which way round the world
+    /// it goes: both readings are the same degenerate point, and there is no
+    /// direction to state.
+    #[must_use]
+    pub const fn is_at_a_pole(self) -> bool {
+        self.latitude == LATITUDE_LIMIT || self.latitude.saturating_neg() == LATITUDE_LIMIT
+    }
+
     /// The position this grid point represents, in degrees.
     ///
     /// The inverse of [`Snapped::of`] only for positions that were already on

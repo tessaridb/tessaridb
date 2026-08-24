@@ -1619,6 +1619,25 @@ uses.
 is refused when it reaches a record, after snapping, because that is the only
 place the shape being judged is the shape that will be stored.
 
+**A shape crossing the date line is written as two.** An edge more than half the
+world wide in longitude can be joined two ways — the short way across ±180, or
+the long way round everything else — and the coordinates do not say which. Since
+the two are each other's complement, the store keeps neither and says so, rather
+than picking one and being wrong about it in silence. Write the short way as two
+shapes meeting at the meridian, which is what RFC 7946 asks producers to do
+anyway:
+
+```
+CREATE runs:1 = { at: geometry { type: 'MultiPolygon', coordinates: [
+  [[[179, 0], [180, 0], [180, 1], [179, 1], [179, 0]]],
+  [[[-180, 0], [-179, 0], [-179, 1], [-180, 1], [-180, 0]]]] } };
+```
+
+and write the long way by putting a position between the two ends, after which
+no edge reaches half the world and the shape can only mean the one thing. A
+`MultiPoint` is unaffected: a set of positions has no edges, so there is nothing
+in it to read one way or the other.
+
 The console prints a shape in exactly this form, so what comes out of a query can
 be pasted back into the next one.
 

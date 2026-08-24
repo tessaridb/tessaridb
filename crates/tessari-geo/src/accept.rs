@@ -39,6 +39,27 @@
 //! quantisation was the cause; a message quoting the submitted coordinates back
 //! would describe a shape that was never in question.
 //!
+//! # Refused, too, when the coordinates do not say what shape they mean
+//!
+//! Most of the rules here are about a shape being well formed. One is not. An
+//! edge more than half the world wide in longitude can be joined two ways, and
+//! the wrapped one is the shorter — so a polygon written from 179°E to 179°W is
+//! a narrow strip to the person who wrote it and a band round the rest of the
+//! planet to anything reading the coordinates as written.
+//!
+//! The store reads them as written, and its box and its predicates agree with
+//! each other about that reading, so nothing here is inconsistent. What is
+//! missing is the caller's intent, and the two candidates are not near-misses:
+//! one is the complement of the other. Choosing silently would be the failure
+//! this boundary exists to prevent, arriving as a shape nobody wrote.
+//!
+//! So the edge is refused, for the same reason a bowtie is: a shape with two
+//! possible readings has none the store can keep. Both intended shapes remain
+//! sayable — split the geometry at ±180 for the short way, which is what
+//! RFC 7946 asks producers to do anyway, or put one position between the ends
+//! for the long way, after which every edge is under half the world and the
+//! reading is unique.
+//!
 //! # What is deliberately not checked here
 //!
 //! Ring winding order is not enforced. RFC 7946 asks an exterior ring to run
@@ -55,6 +76,7 @@
 
 use tessari_types::{Geometry, Polygon, Position, Ring};
 
+use crate::bounds::Bounds;
 use crate::grid::{OffGrid, Snapped};
 use crate::predicate::{
     Containment, ring_contains, segments_cross, segments_meet, twice_signed_area,
@@ -145,6 +167,26 @@ pub enum Defect {
     RepeatedPosition {
         /// The grid point they both became.
         position: Position,
+    },
+    /// An edge whose direction round the world its own coordinates do not state.
+    ///
+    /// Two positions more than half the world apart in longitude can be joined
+    /// two ways, and the wrapped one is the shorter. Coordinates are read as
+    /// written, so the store would keep the longer path — which for a shape
+    /// meant to cross the antimeridian is the complement of what was asked for,
+    /// with nothing to report it. Neither reading is guessed.
+    #[error(
+        "an edge from longitude {} latitude {} to longitude {} latitude {} spans more than half the world, so which way round it goes is not stated: to cross the antimeridian, split the shape in two at ±180; to mean the long way round, put a position between the two ends",
+        from.longitude,
+        from.latitude,
+        to.longitude,
+        to.latitude
+    )]
+    EdgeSpansHalfTheWorld {
+        /// Where the edge starts.
+        from: Position,
+        /// Where it ends.
+        to: Position,
     },
     /// A ring that closes but encloses nothing.
     #[error("the ring encloses no area")]
@@ -321,6 +363,7 @@ fn accept_line(positions: &[Position]) -> Result<Vec<Snapped>, Refused> {
         ));
     }
     no_repeats(&snapped)?;
+    directions_are_stated(&snapped)?;
     Ok(snapped)
 }
 
@@ -347,10 +390,12 @@ fn accept_polygon(polygon: &Polygon) -> Result<Polygon, Refused> {
 /// The checks a ring passes, in the order that gives the most useful answer.
 ///
 /// Structure first, because a ring that does not close has no other property
-/// worth reporting. Then the repeats snapping creates, then area, then
-/// self-intersection — so a sliver that collapsed under the grid is described as
-/// enclosing nothing rather than as crossing itself, which is the same fact told
-/// the less helpful way.
+/// worth reporting. Then the repeats snapping creates, then the edges whose
+/// direction round the world is not stated, then area, then self-intersection —
+/// so a sliver that collapsed under the grid is described as enclosing nothing
+/// rather than as crossing itself, which is the same fact told the less helpful
+/// way, and a ring reaching the wrong way round the planet is described as
+/// ambiguous rather than by whatever that reading happens to do to its area.
 fn accept_ring(ring: &Ring) -> Result<Vec<Snapped>, Refused> {
     let snapped = snap_all(&ring.0)?;
     if snapped.len() < 4 {
@@ -363,6 +408,7 @@ fn accept_ring(ring: &Ring) -> Result<Vec<Snapped>, Refused> {
         return Err(Refused::malformed(Defect::RingNotClosed, Site::whole()));
     }
     no_repeats(&snapped)?;
+    directions_are_stated(&snapped)?;
     if twice_signed_area(&snapped) == 0 {
         return Err(Refused::malformed(Defect::RingHasNoArea, Site::whole()));
     }
@@ -379,6 +425,52 @@ fn accept_ring(ring: &Ring) -> Result<Vec<Snapped>, Refused> {
 }
 
 // ------------------------------------------------------------ the checks
+
+/// Whether every edge of a path says which way round the world it goes.
+///
+/// The unit is the **edge**, not the box around the shape. The ambiguity is a
+/// property of a pair of consecutive positions, and a box is only a consequence
+/// of them — which is also what lets the refusal name the offending pair, and
+/// what keeps a shape that legitimately spans the world: a cap reaching over the
+/// pole has a box 360° wide and no edge wider than the gap between two of its
+/// own corners.
+fn directions_are_stated(positions: &[Snapped]) -> Result<(), Refused> {
+    for (index, pair) in positions.windows(2).enumerate() {
+        if !direction_is_stated(pair[0], pair[1]) {
+            return Err(Refused::malformed(
+                Defect::EdgeSpansHalfTheWorld {
+                    from: pair[0].to_position(),
+                    to: pair[1].to_position(),
+                },
+                Site::at(Step::Position(index)),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether one edge's own coordinates say which way round the world it goes.
+///
+/// The threshold is **more than** half the world, strictly. Under 180° the
+/// planar reading is the shorter of the two and is the only sensible one. At
+/// exactly 180° the two readings have the same length and the same box, so
+/// nothing a store can observe distinguishes them. Over 180° the planar reading
+/// is the *longer* one, the wrapped reading is shorter, and they are different
+/// shapes with different boxes — so the coordinates no longer state which was
+/// meant.
+///
+/// Two positions at one pole are the exception, because there every longitude
+/// is the same place and both readings are the same degenerate point. That is
+/// the rule's own statement rather than a case bolted onto it, and without it a
+/// polar cap would be unstorable for no correctness gained.
+fn direction_is_stated(from: Snapped, to: Snapped) -> bool {
+    if from.is_at_a_pole() && from.latitude_units() == to.latitude_units() {
+        return true;
+    }
+    !Bounds::of_position(from)
+        .widened_to(to)
+        .spans_more_than_half_the_world()
+}
 
 fn no_repeats(positions: &[Snapped]) -> Result<(), Refused> {
     for (index, pair) in positions.windows(2).enumerate() {

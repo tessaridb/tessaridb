@@ -179,14 +179,17 @@ impl Bounds {
 
     /// Whether the box spans more than half the world in longitude.
     ///
-    /// The symptom of an unsplit antimeridian crossing. A shape from 179°E to
-    /// 179°W is a few kilometres wide, but a naive box around its positions runs
-    /// the other way round the planet — so it becomes a candidate for every
-    /// query in the store, refinement rejects it every single time, and the
-    /// index is silently useless for exactly that row.
+    /// A legitimate property of a stored box, not a defect in one. A cap over
+    /// the pole reaches every longitude, so its box is 360° wide and correct,
+    /// and no rule can make this false for every shape the store holds.
     ///
-    /// The answer is to split the geometry at 180° on ingest. This is what
-    /// notices that it was not.
+    /// It is meaningful about a **single edge**, which is how
+    /// [`crate::accept`] uses it: two positions more than half the world apart
+    /// can be joined two ways, the wrapped one is the shorter, and their own
+    /// coordinates do not say which was meant. The shape is refused there rather
+    /// than kept with a box that may be the complement of what was asked for.
+    /// Applied to a whole shape it answers a different and weaker question,
+    /// since a wide box can arise from many honest narrow edges.
     #[must_use]
     pub const fn spans_more_than_half_the_world(self) -> bool {
         self.east.saturating_sub(self.west) > 180_000_000_000

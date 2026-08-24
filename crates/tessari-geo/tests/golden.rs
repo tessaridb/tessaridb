@@ -6,20 +6,23 @@
 //! is no exception, no NaN and no error, just a plausible shape in a plausible
 //! place — so an engine is never validated by running it and reading the output.
 //!
-//! Two of the entries record an answer that is *not* the one a person wants, and
-//! they are here precisely for that reason. A store that spans the antimeridian
-//! and a store that reaches the pole both get a planar answer today, and a planar
-//! answer over degrees is wrong there in a way nothing reports. Writing the
-//! current answer down is what turns a silent limit into a visible one, and what
-//! makes the wave that fixes it fail this file rather than quietly change
-//! behaviour nobody was watching.
+//! One entry records an answer that is *not* the one a person wants, and it is
+//! here precisely for that reason. A shape reaching the pole gets a planar
+//! answer, and a planar answer over degrees is wrong there in a way nothing
+//! reports. Writing the current answer down is what turns a silent limit into a
+//! visible one, and what makes the wave that fixes it fail this file rather than
+//! quietly change behaviour nobody was watching.
+//!
+//! The antimeridian entry above it used to be the second of those. It is now a
+//! refusal, which is the mechanism working as intended: an entry recording a
+//! limit is what makes the fixing wave land here first.
 //!
 //! The corpus lives as tests rather than as a data file because it has exactly one
 //! consumer. When the index arrives and wants the same shapes, it moves.
 
-use tessari_geo::accept::{Defect, Refused};
+use tessari_geo::accept::{Defect, Refused, Step};
 use tessari_geo::predicate::ring_contains;
-use tessari_geo::{Bounds, Containment, Snapped, accept};
+use tessari_geo::{Containment, Snapped, accept};
 use tessari_types::{Geometry, Polygon, Position, Ring};
 
 fn at(longitude: f64, latitude: f64) -> Position {
@@ -51,30 +54,67 @@ fn on_grid(longitude: f64, latitude: f64) -> Snapped {
 // ------------------------------------------------------ 1. the antimeridian
 
 #[test]
-fn an_antimeridian_crossing_polygon_is_held_and_means_the_long_way_round() {
+fn an_antimeridian_crossing_polygon_is_refused_because_which_way_round_is_not_stated() {
     // A person writing this means a narrow strip across the date line. Read as a
     // plane, it is a band spanning 358 degrees the other way — the complement of
     // what was meant, and both readings are perfectly valid shapes.
+    //
+    // So the coordinates do not say which shape they are. The store keeps
+    // neither, for the same reason it keeps neither interior of a bowtie.
     let strip = polygon(
         &[(179.0, 0.0), (-179.0, 0.0), (-179.0, 1.0), (179.0, 1.0)],
         &[],
     );
 
-    accept(&strip).expect("every coordinate is on the sphere and the ring is simple");
+    match accept(&strip) {
+        Err(Refused::Malformed {
+            defect: Defect::EdgeSpansHalfTheWorld { from, to },
+            at: site,
+        }) => {
+            assert_eq!((from, to), (at(179.0, 0.0), at(-179.0, 0.0)));
+            assert_eq!(
+                site.steps(),
+                [Step::Shell, Step::Position(0)],
+                "the refusal points at the offending edge, not at the shape"
+            );
+        }
+        other => unreachable!("an edge from 179 to -179 has two readings, got {other:?}"),
+    }
+}
 
-    // The recorded limit, and the thing that makes it detectable rather than
-    // silent: the box the store would build for this shape covers most of the
-    // world, which no two-degree strip does.
-    let corners: Vec<Snapped> = [(179.0, 0.0), (-179.0, 0.0), (-179.0, 1.0), (179.0, 1.0)]
-        .iter()
-        .map(|&(longitude, latitude)| on_grid(longitude, latitude))
-        .collect();
-    let box_of_it = Bounds::of_positions(&corners).expect("four corners is enough for a box");
-    assert!(
-        box_of_it.spans_more_than_half_the_world(),
-        "a strip two degrees wide should not produce a box this size — that it \
-         does is the planar reading showing itself"
+#[test]
+fn both_ways_of_saying_what_was_meant_are_held() {
+    // The refusal above costs the caller nothing they cannot express, and this
+    // is the other half of the recorded answer: each intended shape has a
+    // writing whose reading is unique.
+
+    // The short way — two polygons meeting at the meridian, which is what
+    // RFC 7946 asks producers to do anyway.
+    let east = polygon(
+        &[(179.0, 0.0), (180.0, 0.0), (180.0, 1.0), (179.0, 1.0)],
+        &[],
     );
+    let west = polygon(
+        &[(-180.0, 0.0), (-179.0, 0.0), (-179.0, 1.0), (-180.0, 1.0)],
+        &[],
+    );
+    accept(&east).expect("a one-degree strip east of the meridian");
+    accept(&west).expect("a one-degree strip west of it");
+
+    // The long way — one position between the ends, after which every edge is
+    // under half the world and there is nothing left to choose between.
+    let band = polygon(
+        &[
+            (179.0, 0.0),
+            (0.0, 0.0),
+            (-179.0, 0.0),
+            (-179.0, 1.0),
+            (0.0, 1.0),
+            (179.0, 1.0),
+        ],
+        &[],
+    );
+    accept(&band).expect("a band round the world, said so that it can only mean that");
 }
 
 // ------------------------------------------------------------ 2. the pole

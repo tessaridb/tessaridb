@@ -321,6 +321,88 @@ fn a_hole_inside_another_hole_is_refused() {
     assert!(matches!(defect(&nested), Defect::HolesOverlap { .. }));
 }
 
+// ------------------------------------------- which way round the world it goes
+
+#[test]
+fn a_line_edge_spanning_more_than_half_the_world_is_refused() {
+    let across = Geometry::Line(vec![at(179.0, 0.0), at(-179.0, 0.0)]);
+    assert!(matches!(
+        defect(&across),
+        Defect::EdgeSpansHalfTheWorld { .. }
+    ));
+}
+
+#[test]
+fn exactly_half_the_world_is_held() {
+    // The boundary, and it belongs on the accepting side: at 180 degrees the two
+    // readings have the same length and the same box, so nothing the store can
+    // observe distinguishes them and there is no choice being made for anyone.
+    accept(&Geometry::Line(vec![at(-90.0, 0.0), at(90.0, 0.0)]))
+        .expect("half the world is not more than half the world");
+
+    // And one grid unit past it is not.
+    let past = Geometry::Line(vec![at(-90.0, 0.0), at(90.000_000_001, 0.0)]);
+    assert!(matches!(
+        defect(&past),
+        Defect::EdgeSpansHalfTheWorld { .. }
+    ));
+}
+
+#[test]
+fn an_edge_between_two_positions_at_one_pole_is_exempt() {
+    // At latitude 90 every longitude is the same place, so both readings of this
+    // edge are the same degenerate point. Refusing it would cost the polar cap
+    // for no correctness gained.
+    accept(&Geometry::Line(vec![at(-180.0, 90.0), at(180.0, 90.0)]))
+        .expect("there is no direction to state where there is no direction");
+    accept(&Geometry::Line(vec![at(-180.0, -90.0), at(180.0, -90.0)]))
+        .expect("and the same at the other pole");
+}
+
+#[test]
+fn an_edge_from_one_pole_to_the_other_is_not_exempt() {
+    // The exemption is about positions at *one* pole. An edge running between
+    // them passes through every latitude in between, where longitude means what
+    // it usually means, so which way round is a real question again.
+    let meridian_to_meridian = Geometry::Line(vec![at(-179.0, 90.0), at(179.0, -90.0)]);
+    assert!(matches!(
+        defect(&meridian_to_meridian),
+        Defect::EdgeSpansHalfTheWorld { .. }
+    ));
+}
+
+#[test]
+fn the_refusal_names_the_offending_edge_at_any_depth() {
+    let nested = Geometry::MultiLine(vec![
+        vec![at(0.0, 0.0), at(1.0, 1.0)],
+        vec![at(0.0, 0.0), at(10.0, 0.0), at(179.0, 0.0), at(-179.0, 0.0)],
+    ]);
+    match accept(&nested) {
+        Err(Refused::Malformed {
+            defect: Defect::EdgeSpansHalfTheWorld { from, to },
+            at: site,
+        }) => {
+            assert_eq!((from, to), (at(179.0, 0.0), at(-179.0, 0.0)));
+            assert_eq!(
+                site.steps(),
+                &[Step::Member(1), Step::Position(2)],
+                "the third edge of the second line, and the message says so: {site}"
+            );
+        }
+        other => unreachable!("expected the second line's last edge to be refused, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_multi_point_straddling_the_meridian_is_still_held() {
+    // Deliberate, and recorded rather than incidental. A set of points states
+    // its meaning completely — there is no path between them to be read one way
+    // or the other — so there is nothing here for the store to be unsure about.
+    // Its box is loose, which costs refinement and never an answer.
+    accept(&Geometry::MultiPoint(vec![at(179.0, 0.0), at(-179.0, 0.0)]))
+        .expect("points have no edges");
+}
+
 // ------------------------------------------------------- where it went wrong
 
 #[test]

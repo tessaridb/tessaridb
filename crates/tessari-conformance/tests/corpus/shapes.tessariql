@@ -63,6 +63,29 @@ CREATE shapes:10 = { s: geometry { type: 'MultiPolygon', coordinates: [
   [[[4, 4], [9, 4], [9, 9], [4, 9], [4, 4]]]] } };
 --- expect: error GeometryRefused
 
+--- case: a shape whose way round the world is not stated is refused
+# Written this way, a strip across the date line and a band round the rest of
+# the planet are the same six numbers. The store keeps neither rather than
+# picking one, because the two are each other's complement and a wrong pick
+# would look exactly like a right one.
+CREATE shapes:10 = { s: geometry { type: 'Polygon', coordinates: [
+  [[179, 0], [-179, 0], [-179, 1], [179, 1], [179, 0]]] } };
+--- expect: error GeometryRefused
+
+--- case: the short way across the date line is two shapes meeting at the meridian
+# What RFC 7946 asks producers to do, and it says only one thing.
+CREATE shapes:11 = { s: geometry { type: 'MultiPolygon', coordinates: [
+  [[[179, 0], [180, 0], [180, 1], [179, 1], [179, 0]]],
+  [[[-180, 0], [-179, 0], [-179, 1], [-180, 1], [-180, 0]]]] } };
+--- expect: ok
+
+--- case: the long way round is one position between the ends
+# The other intended shape, and it is just as sayable: with a vertex in the
+# middle no edge reaches half the world and the reading is unique.
+CREATE shapes:12 = { s: geometry { type: 'Polygon', coordinates: [
+  [[179, 0], [0, 0], [-179, 0], [-179, 1], [0, 1], [179, 1], [179, 0]]] } };
+--- expect: ok
+
 --- case: a place inside the query square is found, and one outside is not
 DEFINE TABLE places;
 CREATE places:1 = { name: 'middle', at: geometry { type: 'Point', coordinates: [5, 5] } };
