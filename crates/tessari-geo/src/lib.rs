@@ -24,6 +24,7 @@
 
 pub mod accept;
 pub mod bounds;
+pub mod curve;
 pub mod grid;
 pub mod measure;
 pub mod predicate;
@@ -33,6 +34,7 @@ mod witness;
 
 pub use crate::accept::{Defect, Refused, accept};
 pub use crate::bounds::Bounds;
+pub use crate::curve::{Cell, Class, ORDER, covering, hilbert_index, hilbert_point};
 pub use crate::grid::{Axis, OffGrid, SCALE, Snapped};
 pub use crate::measure::{area, authalic_radius, distance};
 pub use crate::predicate::{
