@@ -33,7 +33,7 @@ pub mod shape;
 mod witness;
 
 pub use crate::accept::{Defect, Refused, accept};
-pub use crate::bounds::Bounds;
+pub use crate::bounds::{Bounds, Relation};
 pub use crate::curve::{Cell, Class, ORDER, covering, hilbert_index, hilbert_point};
 pub use crate::grid::{Axis, OffGrid, SCALE, Snapped};
 pub use crate::measure::{area, authalic_radius, distance};

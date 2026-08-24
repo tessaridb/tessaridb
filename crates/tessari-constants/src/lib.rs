@@ -242,3 +242,27 @@ pub const SOCKET_MAX_MESSAGE_BYTES: usize = 64 * 1024;
 /// when the budget runs out, so exceeding it costs candidates to refine and
 /// never rows.
 pub const SPATIAL_INDEX_CELLS_PER_RECORD: usize = 16;
+
+/// How many cells a **query** box is covered by.
+///
+/// Unit: cells.
+///
+/// The other side of the same trade, and it is not the same number for the same
+/// reasons. A record's covering is paid once per record at write time and
+/// forever after in space; a query's is paid once per read and in nothing else,
+/// so a query can afford to be finer. What it cannot afford is unboundedly
+/// finer: each cell of a query covering costs one range scan **plus one lookup
+/// per level above it**, so the read's fixed cost is linear in this number while
+/// the candidates it saves are not.
+///
+/// Sixteen, which is the record budget, and deliberately so until something is
+/// measured. Symmetry is the honest starting point when the only argument for
+/// asymmetry is that a query covering is cheaper — that says the number could be
+/// larger, not what it should be. The candidate-to-result ratio is instrumented
+/// precisely so this can be moved on evidence rather than on the intuition in
+/// this paragraph.
+///
+/// It is a bound and not a target, with the same guarantee: the covering keeps a
+/// coarser cell rather than dropping a finer one, so exhausting the budget costs
+/// candidates to refine and never rows.
+pub const SPATIAL_QUERY_CELLS: usize = 16;

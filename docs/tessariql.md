@@ -1622,12 +1622,46 @@ place the shape being judged is the shape that will be stored.
 The console prints a shape in exactly this form, so what comes out of a query can
 be pasted back into the next one.
 
+#### The index, and which questions it serves
+
+`DEFINE INDEX … SPATIAL` makes six of the seven predicates a narrowed read
+instead of a scan:
+
+```
+DEFINE INDEX by_where ON places FIELDS area SPATIAL;
+```
+
+The index keys each record by the cells covering its geometry and carries the
+record's bounding box alongside. A read covers the **query** shape with cells of
+its own, reads the entries under and above them, and rejects what the stored
+boxes already settle — then the condition tests the survivors against the real
+geometry, exactly as it tests the candidates of every other index here. **A cell
+match is a candidate and never a result**, so declaring the index cannot change
+what a query answers; it changes only what the answer costs.
+
+The field may be either argument. `geo::contains(area, $box)` and
+`geo::within($box, area)` ask the same question and both are served.
+
+`EXPLAIN` reports such a read as shape `region`, with `cells` — how many cells
+the query was covered by, which is how much of the key space the read touches.
+
+**`geo::disjoint` is deliberately not served** and stays an exact scan. It is the
+complement of a region, and a complement has no set of cells: every record whose
+box misses the query is disjoint, and so is every record whose box meets it but
+whose shape does not. Serving it from cells would answer with a fraction of the
+true set and raise nothing.
+
+Under `NOT` or on one side of an `OR`, a geometry filter is a scan for the same
+reasons every other filter is.
+
 #### What is not there yet
 
-There is no spatial index, so a spatial filter is a scan and refines every record
-it reads. `geo::touches` is not written — every other predicate here is a
-composition of two algorithms, and that one needs a third. And there is no
-distance between shapes larger than positions.
+There is no measured tuning of how finely a query is covered — the budget is a
+declared constant, and the candidate-to-result ratio the store measures is what
+will move it. There is no nearest-neighbour read over shapes. `geo::touches` is
+not written — every other predicate here is a composition of two algorithms, and
+that one needs a third. And there is no distance between shapes larger than
+positions.
 
 ### Ranking
 

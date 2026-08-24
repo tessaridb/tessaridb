@@ -43,7 +43,7 @@
 //! raised anywhere.
 
 use tessari_geo::{Bounds, Cell};
-use tessari_kv::{Key, Value};
+use tessari_kv::{Key, KeyRange, Value};
 use tessari_types::RecordId;
 
 use crate::error::{Error, Result};
@@ -79,13 +79,54 @@ impl SpatialIndexKey {
     /// The prefix every entry in one cell shares — a fixed width, so "every
     /// entry in this cell" is a prefix scan the way "every entry of this index"
     /// already is.
-    fn cell_prefix(address: &IndexAddress, cell: Cell) -> Vec<u8> {
+    ///
+    /// This is the **ancestor** half of a lookup. A record larger than the query
+    /// box sits at a coarser cell, and a coarser cell is named exactly, one
+    /// prefix per level, rather than searched for.
+    #[must_use]
+    pub fn cell_prefix(address: &IndexAddress, cell: Cell) -> Vec<u8> {
         let mut bytes = address.prefix(KeyKind::SpatialIndex);
         let mut writer = KeyWriter::with_capacity(CELL_LEN);
         writer.put_u64(cell.range().0).put_u8(level_byte(cell));
         bytes.extend_from_slice(&writer.finish());
         bytes
     }
+
+    /// Every entry at or below one cell, as one span of the key space.
+    ///
+    /// This is the **descendant** half of a lookup, and it is one scan because
+    /// every cell under `cell` has its range start inside `cell`'s range — which
+    /// is the property the key stores a range start for.
+    ///
+    /// The span begins at the cell's own start with nothing after it, so it
+    /// takes in the cell itself at every level that shares that start, and ends
+    /// just past the last number the cell covers. A cell whose range reaches the
+    /// end of the numbering has no such successor; that is the root, and the
+    /// answer for the root is the whole index.
+    #[must_use]
+    pub fn descendants(address: &IndexAddress, cell: Cell) -> KeyRange {
+        let prefix = address.prefix(KeyKind::SpatialIndex);
+        let (first, last) = cell.range();
+        let Some(past) = last.checked_add(1) else {
+            return KeyRange::prefix(&prefix);
+        };
+        // Written through the key writer rather than as bytes, because a bound
+        // that does not agree with the encoder is a scan over the wrong span,
+        // and a scan over the wrong span answers with fewer rows and no error.
+        KeyRange::between(
+            Key::from(at_number(&prefix, first)),
+            Key::from(at_number(&prefix, past)),
+        )
+    }
+}
+
+/// An index prefix followed by one finest-level number, and nothing else.
+fn at_number(prefix: &[u8], number: u64) -> Vec<u8> {
+    let mut bytes = prefix.to_vec();
+    let mut writer = KeyWriter::with_capacity(8);
+    writer.put_u64(number);
+    bytes.extend_from_slice(&writer.finish());
+    bytes
 }
 
 /// A cell's level as one byte.
@@ -175,7 +216,10 @@ impl StoreValue for SpatialExtent {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use core::ops::Bound;
+
     use tessari_geo::{Cell, ORDER, Snapped};
+    use tessari_kv::{Key, KeyRange};
     use tessari_types::{DatabaseId, IndexId, NamespaceId, RecordId, TableId};
 
     use super::{Bounds, SpatialExtent, SpatialIndexKey, StoreKey, StoreValue};
@@ -214,6 +258,27 @@ mod tests {
     fn cell_at(position: Snapped, level: u32) -> Cell {
         let finest = Cell::containing(position);
         Cell::starting_at(level, coarsen(finest.range().0, level)).unwrap()
+    }
+
+    /// Whether a span takes in a key.
+    ///
+    /// Written here rather than taken from [`KeyRange`], deliberately: the span
+    /// under test would otherwise be asked whether it contains something using
+    /// its own idea of containment, which is the encoder agreeing with itself.
+    /// This says what a backend does — start inclusive, end exclusive — in the
+    /// one form the tests below need.
+    fn holds(span: &KeyRange, key: &Key) -> bool {
+        let after_start = match span.start() {
+            Bound::Included(low) => key >= low,
+            Bound::Excluded(low) => key > low,
+            Bound::Unbounded => true,
+        };
+        let before_end = match span.end() {
+            Bound::Included(high) => key <= high,
+            Bound::Excluded(high) => key < high,
+            Bound::Unbounded => true,
+        };
+        after_start && before_end
     }
 
     /// The start of the range of the level-`level` cell holding `first`.
@@ -294,6 +359,117 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_descendant_span_takes_in_every_entry_below_a_cell_and_stops_there() {
+        // The scan half of a lookup, from both sides at once: every entry at or
+        // below the cell must fall inside the span, and an entry under the cell
+        // *next* to it must fall outside. Only the second half can fail when the
+        // upper bound is wrong, and only the first when the lower one is — a
+        // test asserting either alone passes with the span wide open.
+        let mut spread = Spread(0x5c11_0d0e);
+        for _ in 0..16 {
+            let position = at(
+                i64::try_from(spread.next() % 360_000_000_001).unwrap_or(0) - 180_000_000_000,
+                i64::try_from(spread.next() % 180_000_000_001).unwrap_or(0) - 90_000_000_000,
+            );
+            for level in 1..=ORDER {
+                let cell = cell_at(position, level);
+                let span = SpatialIndexKey::descendants(&address(), cell);
+                for below in level..=ORDER {
+                    let entry = SpatialIndexKey::new(
+                        address(),
+                        cell_at(position, below),
+                        RecordId::from("r"),
+                    )
+                    .encode();
+                    assert!(
+                        holds(&span, &entry),
+                        "a level-{below} entry should be inside the span of the level-{level} \
+                         cell above it"
+                    );
+                }
+                // The entry immediately past the cell's own run. It belongs to
+                // whatever cell begins there, which is never this one.
+                let (_, last) = cell.range();
+                if let Some(past) = last.checked_add(1) {
+                    let outside = SpatialIndexKey::new(
+                        address(),
+                        Cell::starting_at(ORDER, past)
+                            .expect("a finest cell begins at every number"),
+                        RecordId::from("r"),
+                    )
+                    .encode();
+                    assert!(
+                        !holds(&span, &outside),
+                        "the first entry past a level-{level} cell's run should be outside its span"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_root_span_is_the_whole_index_and_no_more() {
+        // The one cell whose run reaches the end of the numbering, so the
+        // successor its upper bound would need does not exist. Getting this
+        // wrong gives an empty span, and an empty span answers every
+        // world-scale query with nothing.
+        let span = SpatialIndexKey::descendants(&address(), Cell::root());
+        for level in [0_u32, 1, 16, ORDER] {
+            let entry = SpatialIndexKey::new(
+                address(),
+                Cell::starting_at(level, 0).expect("every level begins at zero"),
+                RecordId::from("r"),
+            )
+            .encode();
+            assert!(
+                holds(&span, &entry),
+                "a level-{level} entry is under the root"
+            );
+        }
+        let farthest = SpatialIndexKey::new(
+            address(),
+            Cell::starting_at(ORDER, u64::MAX).expect("the last finest cell"),
+            RecordId::from("r"),
+        )
+        .encode();
+        assert!(holds(&span, &farthest));
+        // And it stops at this index: a neighbouring index's entries are not the
+        // root's descendants, however the root's own bound is written.
+        let elsewhere = SpatialIndexKey::new(
+            IndexAddress::new(
+                NamespaceId::new(3),
+                DatabaseId::new(4),
+                TableId::new(5),
+                IndexId::new(7),
+            ),
+            Cell::root(),
+            RecordId::from("r"),
+        )
+        .encode();
+        assert!(!holds(&span, &elsewhere));
+    }
+
+    #[test]
+    fn a_cell_prefix_names_one_cell_and_not_the_one_a_level_away() {
+        // The lookup half. The prefix has to pin the level as well as the start,
+        // because a coarse cell and the fine cell at its own first corner share
+        // a range start — they differ only in the byte after it.
+        let position = at(2_350_000_000, 48_850_000_000);
+        for level in 1..ORDER {
+            let cell = cell_at(position, level);
+            let prefix = SpatialIndexKey::cell_prefix(&address(), cell);
+            let here = SpatialIndexKey::new(address(), cell, RecordId::from("r")).encode();
+            assert!(here.as_slice().starts_with(&prefix));
+            let finer = cell_at(position, level.saturating_add(1));
+            let there = SpatialIndexKey::new(address(), finer, RecordId::from("r")).encode();
+            assert!(
+                !there.as_slice().starts_with(&prefix),
+                "a level-{level} prefix should not take in the level below it"
+            );
         }
     }
 

@@ -1222,6 +1222,26 @@ impl Session<'_> {
                 lower,
                 upper,
             } => transaction.records_in_range(&chosen.index, fixed, lower.as_ref(), upper.as_ref()),
+            plan::Served::Region {
+                cells,
+                bounds,
+                relation,
+            } => {
+                // The filter half. What comes back is a **candidate set** — the
+                // cells are coarser than the boxes and the boxes are coarser
+                // than the shapes — and the condition above refines it against
+                // the real geometry, as it does for every other index read here.
+                //
+                // The counts the read measured are dropped on this path and that
+                // is deliberate rather than an oversight: this store has no
+                // statement that runs a read and reports its cost, so there is
+                // nowhere truthful to put them yet. They are returned, asserted
+                // by the tests that gate the query budget, and will surface here
+                // when an analysing `EXPLAIN` exists to carry them.
+                transaction
+                    .records_in_region(&chosen.index, cells, *bounds, *relation)
+                    .map(|region| region.rows)
+            }
             plan::Served::Terms(terms) => {
                 let mut rows = Vec::new();
                 for id in transaction.records_by_terms(&chosen.index, terms)? {

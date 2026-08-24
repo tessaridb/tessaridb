@@ -13,7 +13,7 @@ products around them.
 [![version](https://img.shields.io/badge/version-0.0.1--alpha-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-439%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-445%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/TessariDB/TessariDB-protocol) ·
@@ -109,7 +109,7 @@ compares against expected answers, case by case. The counts are those cases.
 | **Vector** | cosine, Euclidean and dot distance, kNN ordering, a graph index that declares whether it answered exactly | 12 | ✅ runs |
 | **Time-series** | epoch-anchored windows every process agrees on, aggregates per window, retention as a statement that reports what it removed | 12 | ✅ runs |
 | **References** | `FETCH` — follow a reference, an array of them, or a nested route, without a join | 12 | ✅ runs |
-| **Geospatial** | a geometry type on an exact integer grid, seven predicates over whole shapes, geodesic distance and area, shapes written as literals | 28 | 🚧 partial — a spatial index is written and maintained, and no reader uses it yet |
+| **Geospatial** | a geometry type on an exact integer grid, seven predicates over whole shapes, geodesic distance and area, shapes written as literals, a spatial index six of the seven predicates read through | 34 | 🚧 partial — no nearest-first read over shapes, and `geo::touches` is not written |
 
 Underneath all of them, one substrate with two backends: **in memory**, and
 **on disk** on a log-structured merge-tree engine. Everything above the
@@ -138,11 +138,15 @@ follows is what runs today, not a roadmap.
   drain, backup and restore.
 - 🚧 **Partial:** geospatial can store a shape, answer seven predicates over
   whole shapes, measure geodesic distance and area, and be written as a literal
-  in a script. `DEFINE INDEX … SPATIAL` now writes and maintains a **spatial
-  index** — the cells covering each geometry, with the record's bounding box in
-  each entry — but **no reader chooses it yet**, so every geometry question is
-  still a scan and there is no nearest-first read. Peers are declared and read
-  back, but nothing replicates between them.
+  in a script. `DEFINE INDEX … SPATIAL` writes and maintains a **spatial index**
+  — the cells covering each geometry, with the record's bounding box in each
+  entry — and **six of the seven predicates now read through it**: the query
+  shape is covered by cells of its own, the entries under and above them are
+  read, the stored boxes reject what they can, and the exact predicate decides
+  the rest. `geo::disjoint` is the complement of a region and stays an exact
+  scan by design. What is missing is a nearest-first read over shapes,
+  `geo::touches`, and any measured tuning of how finely a query is covered.
+  Peers are declared and read back, but nothing replicates between them.
 - ⛔ **Not there:** sharding, replication, and cluster membership. The language
   has words for them; the engine does not have the machinery yet.
 - ⚠️ **Unstable:** the query language, the wire format and the on-disk format all

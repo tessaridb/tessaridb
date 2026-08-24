@@ -74,6 +74,7 @@
 use core::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
+use tessari_geo::{Bounds, Cell, Relation, Shape as Geometry};
 use tessari_ql::{BinaryOp, Expr, ExprKind, Function, Projected, Projection, Select, Source};
 use tessari_storage::{Catalog, IndexDefinition, Transaction, VectorDistance};
 use tessari_types::{Path, Value};
@@ -102,6 +103,16 @@ pub(crate) enum Shape {
     /// Ranked beside a prefix and for the same reason: both can be the whole
     /// table, and neither's size is knowable without doing the read.
     Range,
+    /// `geo::intersects(<path>, <constant>)`, and the five other relations a box
+    /// test is a superset of — the cells a query box covers.
+    ///
+    /// Last, and conservatively so. A query box can be the world, so like a
+    /// prefix and a range its size is not knowable without the read; unlike
+    /// them, what it produces is a set of **candidates** to refine rather than a
+    /// set of matches, so among shapes that promise equally little it is the one
+    /// doing the most work per row it returns. Ranking it above anything would
+    /// be a claim about selectivity this store keeps no statistics to make.
+    Region,
 }
 
 /// What a chosen candidate hands the executor, ready to run.
@@ -157,6 +168,22 @@ pub(crate) enum Served {
         /// The upper end, when it gave one.
         upper: Option<Value>,
     },
+    /// The cells a query box covers, the box itself, and which box test the
+    /// predicate's semantics allow.
+    ///
+    /// All three travel together because all three are computed once, here,
+    /// while ranking. The cells decide **where** the read looks; the box decides
+    /// which of what it finds is worth fetching; the relation is what makes the
+    /// box test a superset of the predicate rather than a second, subtly
+    /// different predicate.
+    Region {
+        /// The covering of the query box.
+        cells: Vec<Cell>,
+        /// The query box, which the stored boxes are compared against.
+        bounds: Bounds,
+        /// Which comparison the predicate's semantics permit.
+        relation: Relation,
+    },
 }
 
 impl Served {
@@ -167,6 +194,7 @@ impl Served {
             Self::Prefix(_) => Shape::Prefix,
             Self::Terms(_) => Shape::Terms,
             Self::Range { .. } => Shape::Range,
+            Self::Region { .. } => Shape::Region,
         }
     }
 
@@ -182,7 +210,7 @@ impl Served {
     pub(crate) fn fixed(&self) -> usize {
         match self {
             Self::Equality(values) => values.len(),
-            Self::Prefix(_) | Self::Terms(_) => 1,
+            Self::Prefix(_) | Self::Terms(_) | Self::Region { .. } => 1,
             Self::Range { fixed, .. } => fixed.len().saturating_add(1),
         }
     }
@@ -238,6 +266,7 @@ impl Shape {
             Self::Equality => "equality",
             Self::Prefix => "prefix",
             Self::Range => "range",
+            Self::Region => "region",
             Self::Terms => "terms",
         }
     }
@@ -374,6 +403,24 @@ fn ranged<'a>(
     found
 }
 
+/// Every declared spatial index on this path.
+///
+/// Asked **positively**, like [`IndexDefinition::is_ordered`] and for the same
+/// reason: a guard over index kinds that names the ones it skips admits every
+/// kind added after it, and the symptom is a read answering with fewer rows and
+/// no error at all. Asking `index.spatial` cannot go wrong that way — a seventh
+/// kind is excluded here by default, which is slow and correct.
+///
+/// The leading field only, as everywhere else. A spatial index keys by the cells
+/// covering one geometry, so a route that is not the one it was built on is a
+/// question about a different column.
+fn spatial<'a>(declared: &'a [IndexDefinition], path: &Path) -> Vec<&'a IndexDefinition> {
+    declared
+        .iter()
+        .filter(|index| index.spatial && index.fields.first() == Some(path))
+        .collect()
+}
+
 /// The leading run of this index's fields the condition fixes to a value.
 ///
 /// It stops at the first field nothing fixes, so the result is always a genuine
@@ -447,6 +494,14 @@ impl Session<'_> {
             // a term, and a search index cannot answer either of the other two.
             // Asking the wrong one would return the wrong rows rather than none.
             match seek.shape {
+                // `seekable` builds a `Seek` only from a comparison, so a region
+                // never arrives here — it is gathered by `regional` below,
+                // because a geometric relation has no operator to be a `Seek`
+                // about. The arm is written out rather than left to a wildcard:
+                // a wildcard would swallow the next shape somebody adds, and
+                // swallowing it silently is how a kind ends up unserved with
+                // nothing to say so.
+                Shape::Region => continue,
                 Shape::Equality => {
                     // Once per path rather than once per conjunct: the tuple is
                     // gathered from the whole condition, so arriving at the same
@@ -558,7 +613,149 @@ impl Session<'_> {
                 });
             }
         }
+
+        // The geometric conjuncts, gathered separately because a relation is not
+        // a comparison, and offered last so that an equal-ranked tie still falls
+        // through to the order the conjuncts were written — the emitting order
+        // within each kind is what makes a plan predictable from the condition.
+        let mut placed: BTreeSet<&Path> = BTreeSet::new();
+        for reach in regional(condition) {
+            // Once per path, as an equality is. Two relations on one field are
+            // two questions about the same cells, and the second would offer a
+            // candidate the first already covers.
+            if !placed.insert(reach.path) {
+                continue;
+            }
+            let indexes = spatial(declared, reach.path);
+            if indexes.is_empty() {
+                continue;
+            }
+            // The query shape is evaluated here, once, like every other bound —
+            // and for the extra reason that a covering is not cheap enough to
+            // compute per index.
+            let Value::Geometry(geometry) = self.evaluate(transaction, reach.query)? else {
+                continue;
+            };
+            // A query shape off the grid is not stored, so it is not held to the
+            // store's validity rules; it is held to being somewhere on the
+            // planet, and one that is not cannot name cells. The scan answers it
+            // exactly, and `geo::` reports the refusal from the predicate itself.
+            let Some(bounds) = Geometry::of(&geometry)
+                .ok()
+                .and_then(|shape| shape.bounds())
+            else {
+                continue;
+            };
+            let cells: Vec<Cell> =
+                tessari_geo::covering(bounds, tessari_constants::SPATIAL_QUERY_CELLS)
+                    .into_iter()
+                    .map(|(cell, _)| cell)
+                    .collect();
+            for index in indexes {
+                offered.push(Candidate {
+                    served: Served::Region {
+                        cells: cells.clone(),
+                        bounds,
+                        relation: reach.relation,
+                    },
+                    index: index.clone(),
+                    // A query box can hold the whole table and its size is not
+                    // knowable without the read — the same answer a prefix and a
+                    // range give, and for the same reason.
+                    rows: Rows::Unknown,
+                });
+            }
+        }
         Ok(offered)
+    }
+}
+
+/// One `geo::` conjunct a spatial index could narrow with.
+///
+/// Its own walk rather than a fifth [`Shape`] on [`Seek`], because a geometric
+/// relation is not a comparison: it has no [`BinaryOp`], and giving `Seek` an
+/// optional one would put a branch in every arm that reads it which no input can
+/// reach. The store's own rule about [`Served`] applies here too — a shape that
+/// cannot exist without its argument is a sum, not a struct of optional fields.
+struct Regional<'a> {
+    path: &'a Path,
+    /// The other argument, which must be a constant.
+    query: &'a Expr,
+    /// Which box test this predicate's semantics permit, with the record's
+    /// argument already normalised into first position.
+    relation: Relation,
+}
+
+/// The `geo::` conjuncts of a condition a spatial index could serve.
+///
+/// Walks `AND` only, exactly as [`seekable`] does and for the same reasons:
+/// under `OR` neither side alone narrows the answer, and under `NOT` an index
+/// that finds the matching records finds precisely the wrong set.
+fn regional(condition: &Expr) -> Vec<Regional<'_>> {
+    match &condition.kind {
+        ExprKind::And(left, right) => {
+            let mut found = regional(left);
+            found.extend(regional(right));
+            found
+        }
+        ExprKind::Call {
+            function,
+            arguments,
+            ..
+        } => {
+            let [one, other] = arguments.as_slice() else {
+                return Vec::new();
+            };
+            // Which argument names the record, and which is the query. Both
+            // being paths means neither is a constant and there is nothing to
+            // look up; both being constants means the whole call is a constant
+            // and no index is involved either.
+            let (field, query, field_first) = match (&one.kind, &other.kind) {
+                (ExprKind::Path(field), _) if !reads_a_record(other) => (field, other, true),
+                (_, ExprKind::Path(field)) if !reads_a_record(one) => (field, one, false),
+                _ => return Vec::new(),
+            };
+            let Some(relation) = relation_of(*function, field_first) else {
+                return Vec::new();
+            };
+            vec![Regional {
+                path: &field.path,
+                query,
+                relation,
+            }]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Which box test a predicate allows, once it is known which argument is the
+/// record's.
+///
+/// # Why the argument's position changes the answer
+///
+/// `geo::within(at, Q)` asks whether the record lies inside the query, and
+/// `geo::within(Q, at)` asks the opposite. Writing it the second way is ordinary
+/// — it reads as "the query is within the shape" — and a planner that only
+/// understood the first would leave half the natural phrasings on the scan.
+///
+/// # Why `geo::disjoint` is not here
+///
+/// It is the complement of a region, and a complement has no box test that is a
+/// superset of it: every record whose box misses the query is disjoint, and so
+/// is every record whose box *meets* it but whose geometry does not. There is no
+/// set of cells that holds them, so the answer is the scan — which is exact, and
+/// says so. A relation invented for it would drop rows silently, which is the
+/// one thing a filter must never do.
+const fn relation_of(function: Function, field_first: bool) -> Option<Relation> {
+    match (function, field_first) {
+        // Symmetric: which argument is the record does not change the question.
+        (Function::GeoIntersects, _) => Some(Relation::Meets),
+        (Function::GeoEquals, _) => Some(Relation::Same),
+        (Function::GeoWithin | Function::GeoCoveredBy, true)
+        | (Function::GeoContains | Function::GeoCovers, false) => Some(Relation::Inside),
+        (Function::GeoContains | Function::GeoCovers, true)
+        | (Function::GeoWithin | Function::GeoCoveredBy, false) => Some(Relation::Around),
+        _ => None,
     }
 }
 
@@ -1193,6 +1390,22 @@ impl Session<'_> {
                                 i64::try_from(chosen.served.fixed()).unwrap_or(i64::MAX),
                             )),
                         );
+                        // How much of the key space a region read will touch,
+                        // which is the one cost of it a plan can know without
+                        // running it: each cell is a scan plus a lookup per
+                        // level above it. The candidate-to-result ratio is the
+                        // number that says whether the index is *working*, and
+                        // it needs the read to have happened — so it is not
+                        // invented here. A plan carrying a made-up estimate is
+                        // how somebody comes to trust one.
+                        if let Served::Region { cells, .. } = &chosen.served {
+                            plan.insert(
+                                "cells".to_owned(),
+                                Value::Number(tessari_types::Number::Integer(
+                                    i64::try_from(cells.len()).unwrap_or(i64::MAX),
+                                )),
+                            );
+                        }
                         if let Rows::AtMost(held) = chosen.rows {
                             plan.insert(
                                 "at_most".to_owned(),
@@ -1224,6 +1437,7 @@ impl Session<'_> {
 mod tests {
     #![allow(clippy::panic)]
 
+    use tessari_geo::{Bounds, Cell, Relation, Snapped};
     use tessari_storage::IndexDefinition;
     use tessari_types::{DatabaseId, IndexId, NamespaceId, Path, TableId, Value};
 
@@ -1253,6 +1467,13 @@ mod tests {
                 fixed: Vec::new(),
                 lower: Some(Value::from("a")),
                 upper: Some(Value::from("z")),
+            },
+            Shape::Region => Served::Region {
+                cells: vec![Cell::root()],
+                bounds: Bounds::of_position(
+                    Snapped::from_units(0, 0).expect("the origin is on the grid"),
+                ),
+                relation: Relation::Meets,
             },
         };
         Candidate {

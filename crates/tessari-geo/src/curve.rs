@@ -254,6 +254,34 @@ impl Cell {
         ])
     }
 
+    /// The cell of `level` that holds this one.
+    ///
+    /// `None` when `level` is finer than this cell's own — a cell has no
+    /// ancestors below it, and answering with a descendant instead would hand a
+    /// reader a square that does not contain what it asked about.
+    ///
+    /// A cell's own level is an ancestor of itself, which is what makes a walk
+    /// over `0..=level` need no case for the end it starts from.
+    ///
+    /// This is the query side of the layout in `docs/key-grammar.md` §3c. A
+    /// record **larger** than a query box sits at a cell coarser than the query's
+    /// own, whose range begins *below* the query cell's range — so a reader that
+    /// only scanned forward from the query cell would never reach it and would
+    /// answer with fewer rows than exist. There are at most `level` such cells
+    /// and each is one truncation, which is why the second half of a spatial
+    /// lookup is cheap rather than merely necessary.
+    #[must_use]
+    pub fn ancestor(self, level: u32) -> Option<Self> {
+        if level > self.level {
+            return None;
+        }
+        // Two bits per level of subdivision: each step up merges four cells into
+        // one, and the curve numbers children consecutively inside their parent.
+        let width = 2_u32.saturating_mul(self.level.saturating_sub(level));
+        let index = self.index.checked_shr(width).unwrap_or(0);
+        Some(Self { level, index })
+    }
+
     /// Every grid position this cell holds, as a box.
     ///
     /// The inward rectangle, recovered by inverting the placement rather than by
@@ -846,6 +874,72 @@ mod tests {
                 None,
                 "a level-{level} cell does not begin one below its own multiple"
             );
+        }
+    }
+
+    #[test]
+    fn an_ancestor_holds_the_whole_range_of_the_cell_it_is_taken_from() {
+        // The property the query side rests on, stated as containment of ranges
+        // rather than as arithmetic on indices — because the arithmetic is the
+        // thing under test and an assertion written in it would agree with
+        // itself. A cell's ancestor at every level above it must cover the
+        // cell's whole run, and the run must not be merely touched at one end.
+        let mut spread = Spread::from(0x0a17_ce55);
+        for _ in 0..64 {
+            let position = at(
+                i64::try_from(spread.next() % 360_000_000_001).unwrap_or(0) - 180_000_000_000,
+                i64::try_from(spread.next() % 180_000_000_001).unwrap_or(0) - 90_000_000_000,
+            );
+            let cell = Cell::containing(position);
+            let (first, last) = cell.range();
+            for level in 0..=cell.level() {
+                let above = cell.ancestor(level).expect("a level at or above its own");
+                assert_eq!(above.level(), level);
+                let (low, high) = above.range();
+                assert!(
+                    low <= first && last <= high,
+                    "a level-{level} ancestor should hold the whole run of the cell below it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_cell_is_its_own_ancestor_and_has_none_below_it() {
+        // Both ends of the walk, named rather than left to a caller's off-by-one:
+        // `0..=level` needs the self case to be an ancestor, and asking for a
+        // finer level must answer nothing rather than a descendant — a descendant
+        // does not contain what was asked about, so returning one would put a
+        // square in a reader's hands that holds none of its query.
+        let cell = Cell::containing(at(2_350_000_000, 48_850_000_000));
+        assert_eq!(cell.ancestor(cell.level()), Some(cell));
+        assert_eq!(Cell::root().ancestor(0), Some(Cell::root()));
+        assert_eq!(Cell::root().ancestor(1), None);
+        assert_eq!(cell.ancestor(ORDER.saturating_add(1)), None);
+    }
+
+    #[test]
+    fn the_ancestor_of_a_start_is_the_cell_that_start_truncates_to() {
+        // The two halves of the layout agreeing: the key stores the start of a
+        // cell's range, and the ancestor lookups recover a coarser cell by
+        // truncating that start. If `ancestor` and `starting_at` disagreed, the
+        // lookups would be built on keys nothing ever wrote — and would answer
+        // with nothing, silently.
+        let mut spread = Spread::from(0x7ce1_1a90);
+        for _ in 0..64 {
+            let position = at(
+                i64::try_from(spread.next() % 360_000_000_001).unwrap_or(0) - 180_000_000_000,
+                i64::try_from(spread.next() % 180_000_000_001).unwrap_or(0) - 90_000_000_000,
+            );
+            let cell = Cell::containing(position);
+            for level in 0..=cell.level() {
+                let above = cell.ancestor(level).expect("a level at or above its own");
+                assert_eq!(
+                    Cell::starting_at(level, above.range().0),
+                    Some(above),
+                    "an ancestor at level {level} should read back from where its range begins"
+                );
+            }
         }
     }
 

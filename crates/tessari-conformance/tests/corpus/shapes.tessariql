@@ -128,10 +128,10 @@ SELECT * FROM marks WHERE geo::distance(m, geometry { type: 'Point', coordinates
 --- expect: rows 1
 
 --- case: a spatial index is defined over a geometry field
-# The index is maintained but not yet chosen by a reader, so what a corpus case
-# can pin today is the statement and its refusals — that the word is understood,
-# that it reaches the catalog, and that the same query answers the same way with
-# the index present as without it.
+# The index is now chosen by a reader as well as maintained, so what a corpus
+# case pins is the property that matters across every implementation of this
+# language: the same query answers the same way with the index present as
+# without it. An index changes what a read costs and never what it says.
 DEFINE TABLE sites;
 CREATE sites:1 = { at: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
 CREATE sites:2 = { at: geometry { type: 'Point', coordinates: [-73.99, 40.75] } };
@@ -158,3 +158,43 @@ DEFINE INDEX bad_at ON sites FIELDS at SPATIAL UNIQUE;
 --- case: a route reaching several values has no single box
 DEFINE INDEX bad_spots ON sites FIELDS spots[*] SPATIAL;
 --- expect: error SeveralInAnAnalysedIndex
+
+--- case: a query box finds every shape that meets it, at every size
+# The shapes run from a point to a continent and the window is a city block, so
+# the answer includes records far larger than the box asked about. A reader that
+# only scanned forward from the window's own cells would find the small ones and
+# silently lose the large ones — fewer rows and no error.
+DEFINE TABLE areas;
+CREATE areas:'spot' = { at: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
+CREATE areas:'town' = { at: geometry { type: 'Polygon', coordinates: [[[2.2, 48.8], [2.5, 48.8], [2.5, 49.0], [2.2, 49.0], [2.2, 48.8]]] } };
+CREATE areas:'landmass' = { at: geometry { type: 'Polygon', coordinates: [[[-20.0, 30.0], [40.0, 30.0], [40.0, 70.0], [-20.0, 70.0], [-20.0, 30.0]]] } };
+CREATE areas:'away' = { at: geometry { type: 'Point', coordinates: [-73.98, 40.75] } };
+DEFINE INDEX by_at ON areas FIELDS at SPATIAL;
+SELECT * FROM areas WHERE geo::intersects(at, geometry { type: 'Polygon', coordinates: [[[2.3495, 48.8495], [2.3505, 48.8495], [2.3505, 48.8505], [2.3495, 48.8505], [2.3495, 48.8495]]] });
+--- expect: rows 3
+
+--- case: the field may be written as either argument of a relation
+# `geo::contains(at, Q)` and `geo::within(Q, at)` are the same question written
+# two ways, and both are ordinary. A store that understood only the first would
+# answer both correctly and read the whole table for one of them.
+SELECT * FROM areas WHERE geo::within(geometry { type: 'Point', coordinates: [2.35, 48.85] }, at);
+--- expect: rows 3
+
+--- case: a shape wholly inside the window, and nothing larger
+SELECT * FROM areas WHERE geo::within(at, geometry { type: 'Polygon', coordinates: [[[2.0, 48.5], [2.7, 48.5], [2.7, 49.2], [2.0, 49.2], [2.0, 48.5]]] });
+--- expect: rows 2
+
+--- case: a window holding nothing answers with nothing
+SELECT * FROM areas WHERE geo::intersects(at, geometry { type: 'Polygon', coordinates: [[[150.0, -40.0], [155.0, -40.0], [155.0, -35.0], [150.0, -35.0], [150.0, -40.0]]] });
+--- expect: rows 0
+
+--- case: disjoint is the complement of a region and stays exact
+# Every record whose box misses the window is disjoint, and so is every record
+# whose box meets it but whose shape does not. No set of cells holds them, so
+# this is answered by reading everything — correctly.
+SELECT * FROM areas WHERE geo::disjoint(at, geometry { type: 'Polygon', coordinates: [[[2.0, 48.5], [2.7, 48.5], [2.7, 49.2], [2.0, 49.2], [2.0, 48.5]]] });
+--- expect: rows 1
+
+--- case: a negated geometry test is not served from one side of itself
+SELECT * FROM areas WHERE NOT geo::intersects(at, geometry { type: 'Point', coordinates: [2.35, 48.85] });
+--- expect: rows 1

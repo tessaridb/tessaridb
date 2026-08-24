@@ -128,6 +128,34 @@ a stale box excludes rows that should have matched.
 A cell match is a **candidate and never a result**: the cells are coarser than
 the box and the box is coarser than the shape.
 
+#### How a read uses it
+
+The query shape gets a covering of its own, and each of its cells is two reads:
+
+| half | read | why it exists |
+|---|---|---|
+| descendants | one scan of `[first, last+1)` after the index prefix | every cell under it has its range start inside that span |
+| ancestors | one fixed-width prefix lookup per level above it, at `(truncated start, level)` | a record **larger** than the query sits at a coarser cell, whose start lies *below* the span |
+
+**Neither half is optional.** A reader that only scanned would answer small
+questions perfectly and lose exactly the large records, with nothing raised — the
+one failure direction a filter must not have. There are at most `level` ancestors
+and each is one truncation, so the second half is cheap as well as necessary.
+
+Completeness, without appealing to the curve: if a record's geometry meets the
+query box, some position lies in both; a covering holds the cell of every
+position inside its box, so that position's finest cell lies under a record cell
+and under a query cell; two cells containing a common cell are nested. So the
+record's cell is a descendant of a query cell, is one, or is an ancestor of one —
+and those are exactly the two reads above. The curve decides the *order*; the
+monotonicity of the placement decides *inclusion*.
+
+The box test that follows is chosen per predicate rather than shared, because a
+filter narrower than its predicate drops true results while a wider one only
+costs refinement — `intersects` filters by box intersection, `within` by the
+query box containing the record's, `contains` by the reverse, `equals` by
+equality. `disjoint` has no such test at all and takes the scan.
+
 ### 3b. The node identity, and why it is `meta` rather than a record
 
 Every other kind above is either derived from the log or written into it. This
