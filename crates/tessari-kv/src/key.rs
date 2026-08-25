@@ -200,6 +200,29 @@ impl KeyRange {
         &self.end
     }
 
+    /// This range, continued strictly after `last`.
+    ///
+    /// The upper bound is kept and the lower one becomes `last` exclusive, so a
+    /// walk resuming here sees every remaining key of the original range and
+    /// re-reads none of what it already had.
+    ///
+    /// # Why the bound rather than a successor key
+    ///
+    /// The other way to say "after this" is to append a zero byte and include
+    /// it, which is what the LSM backend does internally when it has to hand an
+    /// engine a lower bound. Said here it would be a second implementation of
+    /// byte-order successor arithmetic, in a type that already has an exclusive
+    /// bound meaning exactly this — and the two would have to agree forever. An
+    /// `Excluded` bound is the same statement made once, and each backend
+    /// already translates it.
+    #[must_use]
+    pub fn resuming_after(&self, last: &Key) -> Self {
+        Self {
+            start: Bound::Excluded(last.clone()),
+            end: self.end.clone(),
+        }
+    }
+
     /// Whether the bounds can never contain a key.
     ///
     /// This is a request-shape check, not a lookup: it catches an inverted or
@@ -273,6 +296,32 @@ mod tests {
     fn empty_prefix_runs_to_the_end_of_the_key_space() {
         let range = KeyRange::prefix(b"");
         assert_eq!(range.end(), &Bound::Unbounded);
+    }
+
+    /// A resumed range excludes the key it resumed from, and keeps its end.
+    ///
+    /// # Why this is tested here and not through a walk that uses it
+    ///
+    /// It was tried the other way first, and the test could not fail. Every
+    /// caller of a batched walk in this engine collects into a `BTreeSet` or a
+    /// `BTreeMap` keyed by record identity, so a seam that hands the same entry
+    /// back twice is absorbed before anything observable — an inclusive resume
+    /// produces exactly the right answer, one duplicate per batch more slowly.
+    ///
+    /// A property that the code downstream of it deduplicates cannot be tested
+    /// downstream of that code. It is asserted here, where it is the whole
+    /// content of the method, and where the assertion fails the moment the bound
+    /// stops being exclusive.
+    #[test]
+    fn a_resumed_range_starts_after_the_key_it_stopped_on() {
+        let range = KeyRange::between(Key::from_slice(b"a"), Key::from_slice(b"z"));
+        let resumed = range.resuming_after(&Key::from_slice(b"m"));
+        assert_eq!(
+            resumed.start(),
+            &Bound::Excluded(Key::from_slice(b"m")),
+            "an inclusive resume re-reads the entry the previous batch ended on"
+        );
+        assert_eq!(resumed.end(), range.end(), "the end of the range moved");
     }
 
     #[test]

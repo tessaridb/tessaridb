@@ -6,11 +6,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, PostingKey, SearchStatistics,
     SearchStatisticsKey, SecondaryIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
 };
-use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
+use tessari_kv::{Key, KeyRange, Keyspace, ScanDirection, ScanRequest, Value as KvValue};
 use tessari_types::{RecordId, Value};
 
 use super::{RecordAddress, Transaction};
@@ -18,6 +19,54 @@ use crate::catalog::IndexDefinition;
 use crate::error::Result;
 
 impl Transaction<'_> {
+    /// Hand every pair of a range to `take`, reading it in bounded batches.
+    ///
+    /// # Why the walk is batched and what that does not promise
+    ///
+    /// It bounds the **entries held at once**, which a single `scan` of the
+    /// whole range does not: that one decodes the range into a `Vec` before the
+    /// first pair reaches the caller, so the memory is a function of what is
+    /// stored rather than of what is being built.
+    ///
+    /// It does not bound whatever `take` accumulates. A caller collecting one
+    /// record id per entry still ends up holding one per entry — that is the
+    /// answer's size and a different question. What this removes is the copy of
+    /// the range that existed *beside* the answer, values included, for callers
+    /// that then threw the values away.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's failure, or `take`'s.
+    fn walk_range(
+        &self,
+        keyspace: Keyspace,
+        range: &KeyRange,
+        mut take: impl FnMut(&Key, &KvValue) -> Result<()>,
+    ) -> Result<()> {
+        let mut remaining = range.clone();
+        loop {
+            let request = ScanRequest {
+                keyspace,
+                range: remaining.clone(),
+                direction: ScanDirection::Forward,
+                limit: Some(RANGE_SCAN_BATCH_ENTRIES),
+            };
+            let batch = self.store.backend().scan(&request)?;
+            for (key, value) in &batch {
+                take(key, value)?;
+            }
+            // A short batch is the end of the range: the backend was asked for
+            // a full one and had fewer to give.
+            let Some((last, _)) = batch
+                .last()
+                .filter(|_| batch.len() >= RANGE_SCAN_BATCH_ENTRIES)
+            else {
+                return Ok(());
+            };
+            remaining = remaining.resuming_after(last);
+        }
+    }
+
     /// The records an index says hold `values`, as of this transaction's
     /// snapshot.
     ///
@@ -103,9 +152,11 @@ impl Transaction<'_> {
     /// a number kept beside them — the postings *are* the answer, so a
     /// maintained copy would be a second statement of one fact.
     ///
-    /// The keys are **counted, not decoded**: a term held by a million records
-    /// would otherwise cost a million record-id allocations to answer a question
-    /// about the number one.
+    /// The postings are **counted, never materialised**. This was once a scan
+    /// whose `len()` was read off, which decoded every posting key *and value*
+    /// for the term into a `Vec` to arrive at one integer — memory sized by the
+    /// corpus, once per query term, per query. The count is now asked of the
+    /// backend, which walks the range without copying anything out of it.
     ///
     /// # Errors
     ///
@@ -114,30 +165,25 @@ impl Transaction<'_> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let encoded = IndexValues::of(&[Value::from(term)]);
         let prefix = PostingKey::term_prefix(&address, &encoded);
-        let request = ScanRequest {
-            keyspace: PostingKey::keyspace(),
-            range: KeyRange::prefix(&prefix),
-            direction: ScanDirection::Forward,
-            limit: None,
-        };
-        let found = self.store.backend().scan(&request)?.len();
-        Ok(u64::try_from(found).unwrap_or(u64::MAX))
+        Ok(self
+            .store
+            .backend()
+            .count(PostingKey::keyspace(), &KeyRange::prefix(&prefix))?)
     }
 
     /// The records one term is posted against.
     fn postings(&self, address: &IndexAddress, term: &str) -> Result<BTreeSet<RecordId>> {
         let encoded = IndexValues::of(&[Value::from(term)]);
         let prefix = PostingKey::term_prefix(address, &encoded);
-        let request = ScanRequest {
-            keyspace: PostingKey::keyspace(),
-            range: KeyRange::prefix(&prefix),
-            direction: ScanDirection::Forward,
-            limit: None,
-        };
         let mut found = BTreeSet::new();
-        for (key, _) in self.store.backend().scan(&request)? {
-            found.insert(PostingKey::decode(key.as_slice())?.id);
-        }
+        self.walk_range(
+            PostingKey::keyspace(),
+            &KeyRange::prefix(&prefix),
+            |key, _| {
+                found.insert(PostingKey::decode(key.as_slice())?.id);
+                Ok(())
+            },
+        )?;
         Ok(found)
     }
 
@@ -173,15 +219,8 @@ impl Transaction<'_> {
         };
         let mut bounds = address.prefix(kind);
         bounds.extend_from_slice(&IndexValues::string_prefix(prefix));
-        let request = ScanRequest {
-            keyspace: kind.keyspace(),
-            range: KeyRange::prefix(&bounds),
-            direction: ScanDirection::Forward,
-            limit: None,
-        };
-
         let mut found: BTreeMap<RecordId, Vec<u8>> = BTreeMap::new();
-        for (key, value) in self.store.backend().scan(&request)? {
+        self.walk_range(kind.keyspace(), &KeyRange::prefix(&bounds), |key, value| {
             // A unique entry carries the record it points at in its value; a
             // secondary one carries it in its key.
             let id = if index.unique {
@@ -193,7 +232,8 @@ impl Transaction<'_> {
             if let Some(payload) = self.confirm_prefix(index, &record, prefix)? {
                 found.insert(record.id, payload);
             }
-        }
+            Ok(())
+        })?;
 
         // The same reason as the equality path: a record this transaction wrote
         // has no entry yet, and one it changed still has the entry for its
@@ -267,35 +307,30 @@ impl Transaction<'_> {
             }
             let mut prefix = address.prefix(KeyKind::UniqueIndex);
             prefix.extend_from_slice(wanted);
-            let request = ScanRequest {
-                keyspace: UniqueIndexKey::keyspace(),
-                range: KeyRange::prefix(&prefix),
-                direction: ScanDirection::Forward,
-                limit: None,
-            };
-            return self
-                .store
-                .backend()
-                .scan(&request)?
-                .into_iter()
-                .map(|(_, value)| Ok(IndexTarget::decode(value.as_slice())?.id))
-                .collect();
+            let mut found = Vec::new();
+            self.walk_range(
+                UniqueIndexKey::keyspace(),
+                &KeyRange::prefix(&prefix),
+                |_, value| {
+                    found.push(IndexTarget::decode(value.as_slice())?.id);
+                    Ok(())
+                },
+            )?;
+            return Ok(found);
         }
 
         let mut prefix = address.prefix(KeyKind::SecondaryIndex);
         prefix.extend_from_slice(wanted);
-        let request = ScanRequest {
-            keyspace: SecondaryIndexKey::keyspace(),
-            range: KeyRange::prefix(&prefix),
-            direction: ScanDirection::Forward,
-            limit: None,
-        };
-        self.store
-            .backend()
-            .scan(&request)?
-            .into_iter()
-            .map(|(key, _)| Ok(SecondaryIndexKey::decode(key.as_slice())?.id))
-            .collect()
+        let mut found = Vec::new();
+        self.walk_range(
+            SecondaryIndexKey::keyspace(),
+            &KeyRange::prefix(&prefix),
+            |key, _| {
+                found.push(SecondaryIndexKey::decode(key.as_slice())?.id);
+                Ok(())
+            },
+        )?;
+        Ok(found)
     }
 
     /// The record's payload, if it exists at the snapshot and one of its entries

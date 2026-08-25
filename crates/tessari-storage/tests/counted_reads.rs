@@ -41,14 +41,18 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tessari_constants::ORDERED_SCAN_BATCH_ENTRIES;
+use tessari_constants::{ORDERED_SCAN_BATCH_ENTRIES, RANGE_SCAN_BATCH_ENTRIES};
 use tessari_encoding::encode_payload;
 use tessari_kv::{
     Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
     WriteBatch,
 };
-use tessari_storage::{Catalog, IndexDefinition, IndexShape, RecordAddress, Store, TableShape};
-use tessari_types::{DatabaseId, NamespaceId, Path, RecordId, TableId, Value};
+use tessari_storage::{
+    Catalog, FieldShape, IndexDefinition, IndexShape, RecordAddress, Store, TableShape,
+};
+use tessari_types::{
+    Analyzer, DatabaseId, FieldKind, Filter, NamespaceId, Path, RecordId, TableId, Value,
+};
 
 /// A backend that answers exactly as the one beneath it and says what it was
 /// asked.
@@ -58,6 +62,7 @@ struct Counting {
     entries: AtomicUsize,
     scans: AtomicUsize,
     point_reads: AtomicUsize,
+    largest: AtomicUsize,
 }
 
 impl Counting {
@@ -67,6 +72,7 @@ impl Counting {
             entries: AtomicUsize::new(0),
             scans: AtomicUsize::new(0),
             point_reads: AtomicUsize::new(0),
+            largest: AtomicUsize::new(0),
         })
     }
 
@@ -75,10 +81,22 @@ impl Counting {
         self.entries.store(0, Ordering::Relaxed);
         self.scans.store(0, Ordering::Relaxed);
         self.point_reads.store(0, Ordering::Relaxed);
+        self.largest.store(0, Ordering::Relaxed);
     }
 
     fn entries(&self) -> usize {
         self.entries.load(Ordering::Relaxed)
+    }
+
+    /// The most pairs any single fetch handed back.
+    ///
+    /// A separate quantity from [`Self::entries`], and the distinction is the
+    /// whole point of a batched walk: reading a range of ten thousand entries in
+    /// batches still *examines* ten thousand, and what changes is that it never
+    /// holds more than one batch of them. A cumulative count cannot tell those
+    /// two apart, so it cannot fail when the bound is removed.
+    fn largest_fetch(&self) -> usize {
+        self.largest.load(Ordering::Relaxed)
     }
 
     /// Every question put to the backend: a scan call or a point lookup.
@@ -103,7 +121,21 @@ impl KvBackend for Counting {
         self.scans.fetch_add(1, Ordering::Relaxed);
         let found = self.inner.scan(request)?;
         self.entries.fetch_add(found.len(), Ordering::Relaxed);
+        self.largest.fetch_max(found.len(), Ordering::Relaxed);
         Ok(found)
+    }
+
+    /// Delegated, for the same reason [`Self::first_of_each`] is.
+    ///
+    /// The trait's default answers a count by scanning, so taking it here would
+    /// have this wrapper report entries for a call that, on both real backends,
+    /// returns none — and the test asserting that a count reads no entries would
+    /// be asserting it about the wrapper's own default rather than about the
+    /// backend beneath it. It would then fail while the code under test was
+    /// right, which is the more expensive direction of wrong.
+    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
+        self.scans.fetch_add(1, Ordering::Relaxed);
+        self.inner.count(keyspace, range)
     }
 
     /// Counted as **one** round trip however many ranges it carries.
@@ -172,6 +204,22 @@ impl Fixture {
             table: table.id,
             index,
         }
+    }
+
+    /// `count` records, every one of them holding the same `joined` value.
+    ///
+    /// The distinct-value fixture above cannot exercise a wide equality lookup:
+    /// each value names one entry, so the walk has one entry to walk.
+    fn write_sharing(&self, count: usize, joined: i64) {
+        let mut transaction = self.store.begin().unwrap();
+        for n in 0..count {
+            let id = RecordId::from(format!("u{n:06}").as_str());
+            let at = RecordAddress::new(self.namespace, self.database, self.table, id);
+            let mut fields = BTreeMap::new();
+            fields.insert("joined".to_owned(), Value::from(joined));
+            transaction.put(at, encode_payload(&Value::Object(fields)).into_bytes());
+        }
+        transaction.commit().unwrap();
     }
 
     /// `count` records, each holding a distinct `joined` value.
@@ -383,4 +431,143 @@ fn doubling_the_bound_does_not_double_the_asks() {
         measured[0], measured[1],
         "asks moved with the bound: {measured:?}"
     );
+}
+
+// ------------------------------------------------------------------- F-002
+
+/// An equality lookup over many entries never holds more than one batch.
+///
+/// This is the property the batched walk exists for, and it needs the
+/// **largest single fetch** rather than the cumulative count: a walk that reads
+/// ten thousand entries one batch at a time still examines ten thousand, so a
+/// cumulative assertion here would either be trivially true or fail for the
+/// wrong reason. The number that fails this is the entry count itself — one
+/// fetch that returned the whole list, which is what this call did before the
+/// walk was bounded.
+#[test]
+fn an_equality_lookup_never_holds_more_than_one_batch_of_entries() {
+    let fixture = Fixture::new();
+    let sharing = RANGE_SCAN_BATCH_ENTRIES * 4;
+    fixture.write_sharing(sharing, 7);
+    let transaction = fixture.store.begin().unwrap();
+    fixture.counting.reset();
+    let found = transaction
+        .records_by_index(&fixture.index, &[Value::from(7_i64)])
+        .unwrap();
+    assert_eq!(found.len(), sharing, "the lookup lost records");
+
+    let largest = fixture.counting.largest_fetch();
+    assert!(
+        largest <= RANGE_SCAN_BATCH_ENTRIES,
+        "one fetch returned {largest} entries of {sharing} \
+         (batch {RANGE_SCAN_BATCH_ENTRIES}) — the walk is not bounded"
+    );
+}
+
+/// A document frequency is answered without reading a single posting.
+///
+/// The sharpest case of the finding: this used to scan the term's whole posting
+/// list — every key **and value** decoded into a `Vec` — so that `.len()` could
+/// be read off it, once per query term per query. Asking the backend to count
+/// returns no entries at all, which is what makes the assertion below `0`
+/// rather than a ceiling.
+#[test]
+fn a_document_frequency_reads_no_postings_at_all() {
+    let fixture = SearchFixture::new();
+    let posted = RANGE_SCAN_BATCH_ENTRIES * 4;
+    fixture.write(posted);
+    let transaction = fixture.store.begin().unwrap();
+    fixture.counting.reset();
+    let frequency = transaction
+        .document_frequency(&fixture.index, "lock")
+        .unwrap();
+    assert_eq!(
+        frequency,
+        u64::try_from(posted).unwrap(),
+        "the count is wrong, so the cost below measures nothing"
+    );
+    assert_eq!(
+        fixture.counting.entries(),
+        0,
+        "counting the postings returned entries — it materialised them"
+    );
+}
+
+/// A store whose index posts terms, for the count above.
+struct SearchFixture {
+    counting: Arc<Counting>,
+    store: Store,
+    namespace: NamespaceId,
+    database: DatabaseId,
+    table: TableId,
+    index: IndexDefinition,
+}
+
+impl SearchFixture {
+    fn new() -> Self {
+        let counting = Counting::new();
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+        let mut transaction = store.begin().unwrap();
+        let mut catalog = Catalog::new(&mut transaction);
+        let namespace = catalog.create_namespace("prod").unwrap();
+        let database = catalog.create_database(namespace.id, "shop").unwrap();
+        let table = catalog
+            .create_table(namespace.id, database.id, "notes", TableShape::default())
+            .unwrap();
+        // The analyzer is bound to the **field**, not to the index — so a search
+        // index over a field that declares none posts no terms at all, silently.
+        // The frequency assertion in the test is what catches that, which is why
+        // it is there rather than trusted.
+        catalog
+            .create_analyzer("plain", Analyzer::new(vec![Filter::Lowercase]))
+            .unwrap();
+        catalog
+            .create_field(
+                table.id,
+                "body",
+                FieldKind::String,
+                FieldShape {
+                    required: false,
+                    default: None,
+                    analyzer: Some("plain".to_owned()),
+                    assert: None,
+                },
+            )
+            .unwrap();
+        let index = catalog
+            .create_index(
+                table.id,
+                "by_body",
+                vec![Path::field("body")],
+                IndexShape {
+                    unique: false,
+                    search: true,
+                    spatial: false,
+                    vector: None,
+                },
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+        Self {
+            counting,
+            store,
+            namespace: namespace.id,
+            database: database.id,
+            table: table.id,
+            index,
+        }
+    }
+
+    /// `count` records, every one of them posting the term `lock`.
+    fn write(&self, count: usize) {
+        let mut transaction = self.store.begin().unwrap();
+        for n in 0..count {
+            let id = RecordId::from(format!("n{n:06}").as_str());
+            let at = RecordAddress::new(self.namespace, self.database, self.table, id);
+            let mut fields = BTreeMap::new();
+            fields.insert("body".to_owned(), Value::from("lock contention"));
+            transaction.put(at, encode_payload(&Value::Object(fields)).into_bytes());
+        }
+        transaction.commit().unwrap();
+    }
 }

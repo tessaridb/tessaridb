@@ -187,6 +187,46 @@ fn identities_in_a_prefix_relation_survive_the_seam() {
 }
 
 #[test]
+fn an_equality_lookup_wider_than_a_batch_answers_every_record_holding_the_value() {
+    // A different walk from the one above. `records_in_range` goes through the
+    // ordered read, which has batched since it was written; an **equality**
+    // lookup goes through `candidates`, which read its whole entry list in one
+    // fetch until the scan was bounded. Its seam is therefore newer than every
+    // other seam in this file and is the one most likely to be wrong.
+    //
+    // A batch and one, so the fetch that fills the first batch returns a full
+    // one and the walk cannot tell "full" from "finished" without resuming.
+    //
+    // This catches a **dropped** entry and deliberately does not claim to catch
+    // a repeated one: every caller of the walk collects into a set or a map
+    // keyed by record identity, so a resume that hands back the entry it
+    // stopped on produces the right answer one duplicate per batch more slowly.
+    // That property is asserted where it lives, on `KeyRange::resuming_after`,
+    // because a property the code downstream deduplicates cannot be tested
+    // through that code.
+    let fixture = Fixture::new();
+    let wanted = RANGE_SCAN_BATCH_ENTRIES + 1;
+    fixture.write((0..wanted).map(|n| (RecordId::from(format!("u{n:05}").as_str()), 7)));
+
+    let transaction = fixture.store.begin().unwrap();
+    let found = transaction
+        .records_by_index(&fixture.index, &[Value::from(7_i64)])
+        .unwrap();
+    transaction.rollback();
+
+    assert_eq!(
+        found.len(),
+        wanted,
+        "an equality lookup over {wanted} entries answered {} of them — \
+         the walk dropped or repeated at the seam",
+        found.len()
+    );
+    let identities: std::collections::BTreeSet<RecordId> =
+        found.into_iter().map(|(id, _)| id).collect();
+    assert_eq!(identities.len(), wanted, "an identity came back twice");
+}
+
+#[test]
 fn an_uncommitted_write_is_folded_into_a_range_of_any_width() {
     // The fold over this transaction's own writes happens once, after the walk,
     // and a walk that now runs several times must not have made it run several
