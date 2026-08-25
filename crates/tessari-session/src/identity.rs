@@ -39,7 +39,7 @@
 use argon2::Argon2;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use tessari_ql::{InfoSubject, Name, Span, StatementKind, TableRef};
+use tessari_ql::{InfoSubject, Name, Password, Span, StatementKind, TableRef};
 use tessari_storage::{Catalog, Role, Transaction, UserDefinition};
 
 use crate::error::{Error, Result};
@@ -289,7 +289,7 @@ impl Session<'_> {
         name: &Name,
         scope: Option<&TableRef>,
         role: &Name,
-        password: &str,
+        password: &Password,
         if_not_exists: bool,
         span: Span,
     ) -> Result<Outcome> {
@@ -315,7 +315,7 @@ impl Session<'_> {
                 (Some(context.namespace), Some(context.database))
             }
         };
-        let secret = hash(password, span)?;
+        let secret = hash(password.expose(), span)?;
         Catalog::new(transaction).create_user(&name.text, namespace, database, role, &secret)?;
         Ok(Outcome::Done)
     }

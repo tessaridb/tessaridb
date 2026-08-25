@@ -4,8 +4,8 @@ use super::Parser;
 use tessari_types::{FieldKind, Filter, Path, Step};
 
 use crate::ast::{
-    Assignment, Direction, Edit, ExprKind, FieldPath, Hop, InfoSubject, Projection, RangeExpr,
-    RecordTarget, Select, Source, Statement, StatementKind, TableRef,
+    Assignment, Direction, Edit, ExprKind, FieldPath, Hop, InfoSubject, Password, Projection,
+    RangeExpr, RecordTarget, Select, Source, Statement, StatementKind, TableRef,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -507,7 +507,7 @@ impl Parser<'_> {
             name,
             scope,
             role,
-            password,
+            password: Password::new(password),
             if_not_exists,
         })
     }

@@ -194,8 +194,8 @@ pub enum StatementKind {
         scope: Option<TableRef>,
         /// What the user may do.
         role: Name,
-        /// The password, as written.
-        password: String,
+        /// The password, as written. Prints as `<redacted>`.
+        password: Password,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -1062,6 +1062,46 @@ pub struct Name {
     pub text: String,
     /// Where it sits in the source.
     pub span: Span,
+}
+
+/// A password as written, which prints as `<redacted>` and nothing else.
+///
+/// [`render`](crate::render) refuses to turn `DEFINE USER` back into text, so
+/// that a credential cannot be recovered from a statement the store is holding.
+/// A `String` field inside a derived `Debug` gives it back in one
+/// interpolation, and the line that does it is always somewhere else and
+/// written later — the same reasoning `tessari-wire` writes out over its own
+/// hand-written `Debug` for a request.
+///
+/// The plaintext is reachable only through [`Password::expose`], so every place
+/// that reads it is a place somebody chose to write that name.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Password(String);
+
+impl Password {
+    /// Hold a password the parser has just read.
+    #[must_use]
+    pub const fn new(text: String) -> Self {
+        Self(text)
+    }
+
+    /// The plaintext, for the one caller that hashes it.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Password {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl std::fmt::Display for Password {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
 }
 
 /// Which endpoint of an edge a traversal starts from.

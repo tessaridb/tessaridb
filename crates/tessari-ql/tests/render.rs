@@ -101,3 +101,24 @@ fn an_unrendered_access_path_names_itself() {
     let refused = render(&parsed("SELECT * FROM users:1;")).unwrap_err();
     assert!(format!("{refused}").contains("one record"), "{refused}");
 }
+
+#[test]
+fn the_statement_render_refuses_to_print_is_not_printed_by_debug_either() {
+    // `render` refuses `DEFINE USER` so that a credential cannot be recovered
+    // from a statement the store is holding. A derived `Debug` gave it back in
+    // one interpolation, which is a guard implemented at one of the two places
+    // that stringify the tree. Nothing prints a statement today; the line that
+    // does is always somewhere else and written later.
+    let secret = "correct horse battery staple";
+    let script = parsed(&format!("DEFINE USER ada ROLE editor PASSWORD '{secret}';"));
+
+    assert!(render(&script).is_err(), "render must still refuse it");
+
+    let printed = format!("{script:?}");
+    assert!(!printed.contains(secret), "{printed}");
+    assert!(printed.contains("<redacted>"), "{printed}");
+    assert!(
+        printed.contains("ada"),
+        "the name is the value of printing one: {printed}"
+    );
+}
