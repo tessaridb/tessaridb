@@ -59,7 +59,8 @@ mod websocket;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tessari_serve::{Busy, Census, Stopping};
+use tessari_constants::MAX_CONNECTIONS;
+use tessari_serve::{Admitting, Busy, Census, Stopping};
 use tessaridb::Db;
 use tessaridb::feed::Commits;
 use tiny_http::{Method, Request, Response, Server};
@@ -78,6 +79,7 @@ pub struct Node {
     /// surface does not signal this one, and that costs a subscriber up to one
     /// wait rather than costing it the change (`tessaridb::feed::Commits`).
     committed: Arc<Commits>,
+    door: Arc<Admitting>,
 }
 
 /// What ends a node's accept loop from another thread.
@@ -117,6 +119,7 @@ impl Node {
             stopping: Stopping::new(),
             census: None,
             committed: Arc::new(Commits::default()),
+            door: Admitting::to(MAX_CONNECTIONS),
         })
     }
 
@@ -177,6 +180,36 @@ impl Node {
             // zero while this request had not started.
             let mut busy = self.stopping.busy();
             let id = next_request();
+            // Before the thread, for the reason the wire node gives: the thread
+            // is the resource. A refused request is answered — 503 with a
+            // `Retry-After`, which is what a load balancer acts on — and that
+            // answer costs no thread.
+            let Some(place) = self.door.admit() else {
+                log::warn!(
+                    "request {id} refused: {} already in flight",
+                    self.door.limit()
+                );
+                stopping.answered(true);
+                drop(
+                    request.respond(
+                        Response::from_string(
+                            r#"{"error":"this node is answering as many requests as it will"}"#,
+                        )
+                        .with_status_code(503)
+                        .with_header(
+                            "Retry-After: 1"
+                                .parse::<tiny_http::Header>()
+                                .unwrap_or_else(|()| {
+                                    tiny_http::Header::from_bytes(&b"Retry-After"[..], &b"1"[..])
+                                        .unwrap_or_else(|()| {
+                                            unreachable!("a constant header parses")
+                                        })
+                                }),
+                        ),
+                    ),
+                );
+                continue;
+            };
             log::info!(
                 "request {id} {} {} from {}",
                 request.method(),
@@ -189,6 +222,8 @@ impl Node {
             // A panic in one request must not take the listener with it, and a
             // thread is what gives that for free.
             std::thread::spawn(move || {
+                // Released on drop, panic included.
+                let _place = place;
                 answer(
                     id,
                     &db,

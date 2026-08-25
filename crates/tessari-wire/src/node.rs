@@ -7,8 +7,10 @@ use std::io::{BufReader, BufWriter};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
-use tessari_serve::{Busy, Stopping};
+use tessari_constants::{GREETING_SECONDS, MAX_CONNECTIONS};
+use tessari_serve::{Admitting, Busy, Stopping};
 use tessaridb::feed::{self, Commits, Following};
 use tessaridb::{Db, Sequence};
 
@@ -29,6 +31,20 @@ fn next_connection() -> u64 {
     CONNECTIONS.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Refuse a connection at the door, in the protocol's own words.
+///
+/// Best effort by construction: the client may already be gone, and a node that
+/// is refusing because it is full has no capacity to spend caring. What matters
+/// is that the socket closes here rather than being parked on a thread.
+fn turn_away(stream: TcpStream) {
+    let mut writer = BufWriter::new(stream);
+    drop(frame::write(
+        &mut writer,
+        frame::Kind::Refusal,
+        b"this node is serving as many connections as it will",
+    ));
+}
+
 /// Where a connection came from, for the line that says it arrived.
 fn from_where(stream: &TcpStream) -> String {
     stream.peer_addr().map_or_else(
@@ -43,6 +59,7 @@ pub struct Node {
     db: Arc<Db>,
     committed: Arc<Commits>,
     stopping: Arc<Stopping>,
+    door: Arc<Admitting>,
 }
 
 impl Node {
@@ -57,6 +74,7 @@ impl Node {
             db,
             committed: Arc::new(Commits::default()),
             stopping: Stopping::new(),
+            door: Admitting::to(MAX_CONNECTIONS),
         })
     }
 
@@ -67,6 +85,16 @@ impl Node {
     /// Returns the operating system's failure when the socket cannot say.
     pub fn address(&self) -> Result<String> {
         Ok(self.listener.local_addr()?.to_string())
+    }
+
+    /// The door this node admits connections through.
+    ///
+    /// Exposed so a process can report how many places are taken and how many
+    /// connections have been turned away — the number that says whether the
+    /// ceiling is set right, and the one a refusal is worth nothing without.
+    #[must_use]
+    pub fn door(&self) -> Arc<Admitting> {
+        Arc::clone(&self.door)
     }
 
     /// What this node counts as in flight, and how it is told to stop.
@@ -98,17 +126,33 @@ impl Node {
                 break;
             }
             let Ok(stream) = stream else { continue };
+            let id = next_connection();
+            // Before the thread, because the thread is the resource being
+            // bounded. A refusal costs one frame and a close; admitting first
+            // and checking afterwards would spend exactly what the ceiling
+            // exists to protect.
+            let Some(place) = self.door.admit() else {
+                log::warn!(
+                    "connection {id} refused from {}: {} already open",
+                    from_where(&stream),
+                    self.door.limit()
+                );
+                turn_away(stream);
+                continue;
+            };
             let db = Arc::clone(&self.db);
             let committed = Arc::clone(&self.committed);
             let stopping = Arc::clone(&self.stopping);
             let busy = self.stopping.busy();
-            let id = next_connection();
             log::info!("connection {id} accepted from {}", from_where(&stream));
             // A connection that goes wrong takes its own thread down and nothing
             // else: a node that could be stopped by one client's malformed frame
             // would be a node anybody can stop.
             drop(std::thread::spawn(move || {
                 let mut busy = busy;
+                // Held for the conversation's whole life and released on drop,
+                // panic included.
+                let _place = place;
                 match converse(id, &db, &committed, &stopping, &mut busy, stream) {
                     Ok(()) => log::info!("connection {id} closed"),
                     // Not a warning. A client hanging up mid-frame is the
@@ -129,6 +173,14 @@ impl Node {
         let (stream, _) = self.listener.accept()?;
         let mut busy = self.stopping.busy();
         let id = next_connection();
+        let Some(_place) = self.door.admit() else {
+            log::warn!(
+                "connection {id} refused: {} already open",
+                self.door.limit()
+            );
+            turn_away(stream);
+            return Ok(());
+        };
         log::info!("connection {id} accepted from {}", from_where(&stream));
         converse(
             id,
@@ -183,6 +235,11 @@ fn converse(
     busy: &mut Busy,
     stream: TcpStream,
 ) -> Result<()> {
+    // A client that connects and sends nothing would otherwise hold this thread
+    // for the life of the process, at a cost to it of one socket. The deadline
+    // is cleared below once the greeting has arrived — see `GREETING_SECONDS`
+    // for why it covers the greeting and not the statements after it.
+    stream.set_read_timeout(Some(Duration::from_secs(GREETING_SECONDS)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
     {
@@ -195,6 +252,10 @@ fn converse(
         };
         frame::greet(&mut both)?;
     }
+    // Greeted, so this is a session rather than a stranger. An idle prompt
+    // between two statements is the ordinary case and must not be disconnected;
+    // what bounds it now is the door, not a clock.
+    reader.get_ref().set_read_timeout(None)?;
 
     let mut session = db.session();
     while let Some((kind, body)) = frame::read(&mut reader)? {

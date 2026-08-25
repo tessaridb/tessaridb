@@ -204,6 +204,63 @@ pub const ORDERED_FILTER_REACH: usize = 32;
 /// close rather than an allocation.
 pub const SOCKET_MAX_FRAME_BYTES: usize = 64 * 1024;
 
+/// How many connections one serving surface holds open at once.
+///
+/// Unit: connections.
+///
+/// # Why a ceiling exists at all
+///
+/// A thread per connection is this node's deliberate model, and the paragraph
+/// that justifies it does not bound it. Without a ceiling the node has no point
+/// at which it refuses: it degrades, and then fails to spawn a thread, and the
+/// failure arrives at whichever connection happened to be next rather than at
+/// the one that caused it. A number here turns that into an answer a client can
+/// read.
+///
+/// # Why this number
+///
+/// Each connection costs one operating-system thread, which reserves stack
+/// address space — eight megabytes by default on Linux and macOS — plus a
+/// scheduler slot and whatever the session holds. Four hundred is comfortably
+/// inside what a modest machine runs without the scheduler becoming the cost,
+/// and comfortably above what an embedded caller or a small deployment reaches.
+/// The crate documentation for the wire protocol names the trigger for changing
+/// the *model* — idle subscribers in the tens of thousands — and this constant
+/// is what makes reaching that trigger visible rather than fatal.
+///
+/// It is per **surface** rather than per process: the wire protocol and the HTTP
+/// endpoint each hold their own door, so a flood of one cannot starve the other
+/// of the places it needs to answer a health check.
+///
+/// Provisional in the same sense as [`MAX_COMMIT_ATTEMPTS`] — chosen to be
+/// obviously safe rather than measured, and the refusal count is what a
+/// deployment tunes it from.
+pub const MAX_CONNECTIONS: usize = 400;
+
+/// How long a freshly accepted connection has to send its greeting.
+///
+/// Unit: seconds.
+///
+/// # The attack this closes
+///
+/// `accept` returns, the node blocks reading the greeting, and a client that
+/// sends **nothing at all** holds that thread for the life of the process. It
+/// costs the client one socket and no traffic, which is why it is the cheapest
+/// way to take a thread-per-connection node down, and why it needs no
+/// credential. A deadline on the first read is what makes the cost symmetric.
+///
+/// # Why only the greeting
+///
+/// The deadline is cleared once the greeting arrives, and deliberately so. After
+/// it, the node is reading a *statement*, and a session that is idle between
+/// statements is the ordinary state of an interactive prompt — a deadline there
+/// would disconnect the normal case in order to bound the abnormal one, which
+/// [`MAX_CONNECTIONS`] already bounds.
+///
+/// Ten seconds because a greeting is a handful of bytes and any network that
+/// cannot deliver them in ten seconds cannot carry a query either.
+pub const GREETING_SECONDS: u64 = 10;
+
 /// The largest reassembled WebSocket message this node will read from a client.
 ///
 /// Unit: bytes.

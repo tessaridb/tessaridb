@@ -470,7 +470,10 @@ rather than the shortfall: a commit is a compare-and-set, so an async server ove
 it would be `spawn_blocking` at every call, a thread pool wearing a runtime's
 clothes. The cost is a thread per *connection*, which will matter when idle
 subscribers outnumber what a thread each is worth, and that is the trigger for
-revisiting it.
+revisiting it. That cost is **bounded**: each surface admits at most 400
+connections and refuses beyond it rather than queueing, and a client that
+connects without greeting is let go after ten seconds instead of holding a
+thread for the life of the process.
 
 Both ends live in this one crate, so a change to a frame breaks the other end at
 compile time rather than in somebody's deployment. A client takes only its half:
