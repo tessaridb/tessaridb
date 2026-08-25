@@ -34,6 +34,17 @@
 //!
 //! That list is part of the test. A check that quietly narrows its own scope is
 //! how the last audit came to report `23/23` while never opening four files.
+//!
+//! # Three assertions here are not from that matrix
+//!
+//! `every_crate_carries_the_same_metadata_set`,
+//! `both_documents_state_the_version_this_package_carries` and
+//! `the_documented_node_reports_the_prerelease_beside_the_ordered_version` hold
+//! release criteria rather than enumerated claims, and they **do not** move any
+//! of the fifteen — those still need a subprocess or are asserted by the tests
+//! of the thing itself. The split over the matrix stays 23 and 15; these are in
+//! addition to it, and are recorded here so the next audit does not count them
+//! twice.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
@@ -180,6 +191,47 @@ fn the_version_badge_is_this_package() {
 }
 
 #[test]
+fn both_documents_state_the_version_this_package_carries() {
+    // The badge is one of five places a reader learns the version, and it is the
+    // only one a build had an opinion about. These two are prose, which is the
+    // category that goes stale silently.
+    let version = env!("CARGO_PKG_VERSION");
+    let heading = read("CHANGELOG.md")
+        .lines()
+        .find(|line| line.starts_with("## "))
+        .expect("a release heading in CHANGELOG.md")
+        .to_owned();
+    assert!(
+        heading.starts_with(&format!("## {version} ")),
+        "CHANGELOG.md opens on `{heading}`, and this package is {version}"
+    );
+    assert!(
+        read("README.md").contains(&format!("`{version}`")),
+        "README.md's status stage line no longer names {version}"
+    );
+}
+
+#[test]
+fn the_documented_node_reports_the_prerelease_beside_the_ordered_version() {
+    // ADR-0034: a pre-release is exact where a person reads it and ordered where
+    // it is compared, so a node reports both — `build` with the suffix, `version`
+    // with the three numbers that sort. The running node is asserted by its own
+    // tests; what drifts unnoticed is the example in the language reference,
+    // which is where a reader learns to expect two fields rather than one.
+    let build = env!("CARGO_PKG_VERSION");
+    let ordered = build.split('-').next().expect("a three-number prefix");
+    let docs = read("docs/tessariql.md");
+    assert!(
+        docs.contains(&format!("\"build\": \"{build}\"")),
+        "docs/tessariql.md does not show `build` as {build}"
+    );
+    assert!(
+        docs.contains(&format!("\"version\": \"{ordered}\"")),
+        "docs/tessariql.md does not show `version` as {ordered}"
+    );
+}
+
+#[test]
 fn the_rust_badge_is_the_declared_minimum() {
     let manifest = read("Cargo.toml");
     let declared = manifest
@@ -259,6 +311,56 @@ fn nothing_is_published_and_every_crate_says_so() {
             declared,
             "{name} neither declares nor inherits `publish = false`, which README \
              and CHANGELOG both claim of every crate"
+        );
+    }
+}
+
+/// The metadata every crate takes from the workspace rather than restating.
+///
+/// `publish` is deliberately absent: it has its own assertion above, with a
+/// looser contract — a crate saying `publish = false` outright satisfies the
+/// claim the documents make, and requiring inheritance there would hold the
+/// manifests to something nothing claims of them.
+const INHERITED: [&str; 6] = [
+    "version",
+    "edition",
+    "rust-version",
+    "license",
+    "authors",
+    "repository",
+];
+
+#[test]
+fn every_crate_carries_the_same_metadata_set() {
+    // A registry rejects a crate missing a field, one crate at a time, at the
+    // moment of publishing — which is the worst moment to find out that the
+    // eighteenth manifest was written by hand and the other seventeen were
+    // copied. The set is small, uniform, and nothing checks it.
+    for name in crates_on_disk() {
+        let manifest = read(&format!("crates/{name}/Cargo.toml"));
+        let lines: Vec<&str> = manifest.lines().map(str::trim).collect();
+        for field in INHERITED {
+            let inherited = format!("{field}.workspace = true");
+            assert!(
+                lines.contains(&inherited.as_str()),
+                "crates/{name}/Cargo.toml does not inherit `{field}` from the workspace"
+            );
+        }
+        // Every other field is the same in all eighteen; this is the one each
+        // crate has to say for itself, which makes it the one that gets left out.
+        // The value between the first pair of quotes, rather than the line with
+        // its quotes trimmed off the ends: `description = "" # still to write`
+        // is an empty description with a comment after it, and trimming quotes
+        // from both ends hands back the comment and calls it a description.
+        let described = lines
+            .iter()
+            .find_map(|line| line.strip_prefix("description = "))
+            .and_then(|value| value.trim().strip_prefix('"'))
+            .and_then(|value| value.split('"').next())
+            .unwrap_or_default();
+        assert!(
+            !described.is_empty(),
+            "crates/{name}/Cargo.toml carries no description of its own"
         );
     }
 }
