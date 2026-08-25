@@ -432,12 +432,15 @@ that can lag its geometry excludes rows that should have matched with nothing
 raised. A record whose `location` is absent or is not a geometry is not in the
 index, the same answer every other kind gives for a field it cannot project.
 
-The index is maintained but **not yet chosen by the planner**, so today it
-changes neither the answer nor the cost of any read — `WHERE geo::intersects(…)`
-is still the exact scan. That is stated here rather than left to be discovered:
-an index whose entries are correct and whose reader does not exist is a cost
-without a benefit until the reader lands, and the reader is the next piece of
-work.
+The index is maintained **and read**: the planner covers the query shape with
+cells of its own, scans the entries below each of them and looks up the ones
+above, rejects what the stored bounding boxes settle, and lets the exact
+predicate decide the rest. **Seven of the eight predicates are served this way.**
+`geo::disjoint` is the complement of a region, has no sound set of cells, and
+stays an exact scan by design.
+
+A box match is a candidate and never a result, which is what keeps the index from
+changing an answer: an index may change what a read costs, never what it says.
 
 Three shapes are refused, each because it has no single meaning rather than
 because it is hard:

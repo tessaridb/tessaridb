@@ -150,8 +150,8 @@ follows is what runs today, not a roadmap.
   further than the worst answer held; that is exact rather than approximate, so
   it asks nothing of the statement. What is missing is a distance to a shape
   larger than a position (which is why the nearest few is over positions), a
-  nearest-first read under a `WHERE`, `geo::touches`, and any measured tuning of
-  how finely a query is covered.
+  nearest-first read under a `WHERE`, and any measured tuning of how finely a
+  query is covered.
   Peers are declared and read back, but nothing replicates between them.
 - ⛔ **Not there:** sharding, replication, and cluster membership. The language
   has words for them; the engine does not have the machinery yet.
@@ -476,7 +476,7 @@ cargo add tessari-wire --no-default-features   # the client, without the node
 The default carries the server, which reaches the storage engine — so a client
 built with it compiles the engine, the serving crate, and a password hasher for
 credentials a client never hashes, in order to send a `SELECT` down a socket.
-Turning the default off is the difference between 43 crates and 17, and nothing a
+Turning the default off is the difference between 43 crates and 18, and nothing a
 client calls lives behind the switch.
 
 A connection holds **one session**, so `USE NAMESPACE prod;` is still in force in
@@ -822,7 +822,7 @@ with nothing reporting it. It is asserted to differ in a test of its own, becaus
 a hole in a comparison would also cover the key going missing entirely.
 
 Timed on 2 004 records, on the machine and build the [benchmarks](benchmarks)
-record: **1.2 ms to write, 10.4 ms to replay**. A timing with no machine and no
+record: **1.1 ms to write, 9.8 ms to replay**. A timing with no machine and no
 date beside it is not a measurement, which is why those are here.
 
 ## Who it is for
