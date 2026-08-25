@@ -2,7 +2,8 @@
 //!
 //! # One rule, and it is the corpus's rule
 //!
-//! Input is accumulated until a `;` **outside a string** closes a statement.
+//! Input is accumulated until a `;` **outside a string and outside a comment**
+//! closes a statement.
 //! The conformance corpus had to solve exactly this — its own splitter has a
 //! test called *the statement splitter does not cut a string in half* — and this
 //! is the same rule rather than a second one, because two answers to "where does
@@ -115,7 +116,7 @@ pub fn run(
 
     // Input that ran out mid-statement is worth saying: silently discarding it
     // looks exactly like a statement that ran and answered nothing.
-    if !pending.trim().is_empty() {
+    if scan(&pending).substantial {
         writeln!(out, "error: input ended inside an unfinished statement")?;
         ended = Ended::Refused;
     }
@@ -154,9 +155,47 @@ fn report(out: &mut impl Write, answer: &Answer) -> std::io::Result<()> {
 /// A `;` inside a string does not, which is the whole reason this is a walk
 /// rather than a `contains`.
 fn closed(text: &str) -> bool {
+    scan(text).closed
+}
+
+/// What one pass over partial input found.
+struct Scan {
+    /// A statement ended in this text.
+    closed: bool,
+    /// There is something here besides whitespace and comments.
+    ///
+    /// The difference matters only at end of input, where text that never
+    /// closed is reported as a statement that ran out. A file whose last line
+    /// is a note has nothing unfinished in it.
+    substantial: bool,
+}
+
+/// Reads far enough to find a statement's end, honouring quotes and comments.
+///
+/// Comments run from `--` to the end of their line, which the lexer already
+/// knows and this did not. Both halves of that omission were wrong, and the
+/// second one silently:
+///
+/// - a script ending in a comment left text that never closed, and was reported
+///   as input that ran out mid-statement — sending the reader to look for an
+///   unbalanced quote that is not there;
+/// - a `;` **inside** a comment ended the statement early. `SELECT * FROM users
+///   -- oops; a note` then `WHERE name = 'ada';` split into a read with no
+///   filter and a fragment beginning `WHERE`. The first ran and printed every
+///   record. Nothing reported a fault about the answer, because as far as
+///   everything below here was concerned there was no fault: the wrong question
+///   was asked correctly.
+fn scan(text: &str) -> Scan {
     let mut quote: Option<char> = None;
     let mut escaped = false;
-    for character in text.chars() {
+    let mut commented = false;
+    let mut substantial = false;
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        if commented {
+            commented = character != '\n';
+            continue;
+        }
         if escaped {
             escaped = false;
             continue;
@@ -165,12 +204,29 @@ fn closed(text: &str) -> bool {
             (Some(_), '\\') => escaped = true,
             (Some(open), held) if held == open => quote = None,
             (Some(_), _) => {}
-            (None, '\'' | '"') => quote = Some(character),
-            (None, ';') => return true,
-            (None, _) => {}
+            (None, '\'' | '"') => {
+                substantial = true;
+                quote = Some(character);
+            }
+            // Only a doubled dash opens a comment. A single one is arithmetic,
+            // and `-1` is a number — the lexer draws the same line.
+            (None, '-') if characters.peek() == Some(&'-') => {
+                let _ = characters.next();
+                commented = true;
+            }
+            (None, ';') => {
+                return Scan {
+                    closed: true,
+                    substantial: true,
+                };
+            }
+            (None, held) => substantial = substantial || !held.is_whitespace(),
         }
     }
-    false
+    Scan {
+        closed: false,
+        substantial,
+    }
 }
 
 const HELP: &str = "\
@@ -214,6 +270,62 @@ mod tests {
     fn an_escaped_quote_does_not_close_the_string_it_is_in() {
         assert!(!closed("SET k:1 = 'it\\'s;'"));
         assert!(closed("SET k:1 = 'it\\'s;';"));
+    }
+
+    #[test]
+    fn a_semicolon_inside_a_comment_does_not_end_a_statement() {
+        // The one that returns a **wrong answer** rather than an error. Split
+        // at the semicolon in the comment, the first half is `SELECT * FROM
+        // users` — which parses, runs, and prints every record, because the
+        // `WHERE` that was going to narrow it is now the start of the next
+        // statement. The reader sees a plausible answer to a question they did
+        // not ask, and then an error about `WHERE` that describes none of it.
+        assert!(!closed("SELECT * FROM users -- oops; a note\n"));
+        assert!(closed(
+            "SELECT * FROM users -- oops; a note\nWHERE name = 'ada';"
+        ));
+
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE orders; USE DATABASE orders;\n\
+             DEFINE TABLE users;\n\
+             CREATE users:1 = { name: 'ada' };\n\
+             CREATE users:2 = { name: 'grace' };\n\
+             SELECT * FROM users -- oops; a note\n\
+             WHERE name = 'ada';\n",
+            Mode::Script,
+        );
+        assert_eq!(ended, Ended::Fine, "{out}");
+        assert!(
+            out.contains("(1 record(s)"),
+            "the filter was dropped\n{out}"
+        );
+        assert!(!out.contains("grace"), "the filter was dropped\n{out}");
+    }
+
+    #[test]
+    fn a_script_may_end_with_a_comment() {
+        // A file whose last line is a note is an ordinary file, and reporting
+        // it as input that ran out mid-statement sends somebody looking for an
+        // unbalanced quote that is not there.
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n-- and that is all\n",
+            Mode::Script,
+        );
+        assert_eq!(ended, Ended::Fine, "{out}");
+        assert!(!out.contains("error:"), "{out}");
+    }
+
+    #[test]
+    fn a_comment_does_not_hide_an_unfinished_statement() {
+        // The half that must keep working: text that really did run out
+        // mid-statement is still reported, comment or no comment.
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\nSELECT * FROM users\n-- and then nothing\n",
+            Mode::Script,
+        );
+        assert_eq!(ended, Ended::Refused, "{out}");
+        assert!(out.contains("unfinished statement"), "{out}");
     }
 
     #[test]
