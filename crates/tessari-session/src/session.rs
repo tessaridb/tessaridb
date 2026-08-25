@@ -15,13 +15,30 @@ use crate::effect::{Effect, admits};
 use crate::error::{Error, Result};
 use crate::identity::{self, Identity};
 use crate::outcome::Outcome;
+use crate::throttle;
 
 /// A hash to check a name that does not exist against.
 ///
 /// A refusal for an unknown name must take about as long as one for a wrong
 /// password, or the time itself says which half was wrong. This is a real Argon2
 /// hash of a value nobody knows, kept so the work happens either way.
-const ABSENT_USER_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$    c29tZXNhbHR2YWx1ZXNhbHQ$T8Q9M0Kdc5Cd3nZ3vFCVYD1CkPqmVWmvJcCf7EDlM2c";
+///
+/// # It has to actually parse, and for a while it did not
+///
+/// The value here was hand-written and carried four stray spaces before the
+/// salt, so `PasswordHash::new` rejected it and `verifies` returned before
+/// reaching the hasher. The equalisation this constant exists for had therefore
+/// never happened: a refusal for a missing name cost microseconds and one for a
+/// wrong password cost tens of milliseconds, which is exactly the oracle the
+/// paragraph above says it prevents. Nothing failed, because a sentinel that
+/// does not parse and a password that does not match both come back `false`.
+///
+/// This one is a genuine `hash` of a value nobody kept, produced at the pinned
+/// parameters, and `identity`'s tests hold both halves of that: that it parses,
+/// and that its parameters are still the ones the hasher uses. The parse
+/// assertion is deliberately not written as "verifying against it returns
+/// false", because that passes for the broken sentinel too.
+pub(crate) const ABSENT_USER_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$2vm2xorx4jAz1i0WAEts5w$Lfjcmkrqa+uTeY2uCU3GXJVSDbqhtpTrsPyYTXiTpLA";
 
 /// A connection's worth of state: where statements run, and against what.
 #[derive(Debug)]
@@ -130,18 +147,46 @@ impl<'a> Session<'a> {
     /// Signing in again replaces the identity rather than adding to it, so a
     /// session is one conversation with one user at a time.
     ///
+    /// # What this costs, and what stops it costing that repeatedly
+    ///
+    /// Checking a password is expensive by design — nineteen mebibytes and tens
+    /// of milliseconds — so an unbounded sign-in path is an amplifier a caller
+    /// needs no valid credential to use. Two bounds stand in front of it, both
+    /// **before** the store is read: an identity that has missed too many times
+    /// in a row is made to wait, and this process runs only so many verifications
+    /// at once. See `throttle` for why neither substitutes for the other.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::SignInRefused`] for a wrong name and a wrong password
     /// alike — telling them apart tells an attacker which half to keep guessing
-    /// at — and a substrate failure otherwise.
+    /// at — [`Error::SignInThrottled`] when either bound declined to try, and a
+    /// substrate failure otherwise.
     pub fn sign_in(&mut self, name: &str, password: &str) -> Result<()> {
+        // First, and before the transaction below: a throttled attempt has to
+        // cost a lock and an array index, or the refusal has bounded nothing.
+        if !throttle::attempts().permit(name) {
+            log::warn!("sign-in for {name} refused: too many recent failures");
+            return Err(Error::SignInThrottled);
+        }
         let mut transaction = self.store.begin()?;
         let found = Catalog::new(&mut transaction)
             .users()?
             .into_iter()
             .find(|user| user.name == name);
         transaction.rollback();
+
+        // The place is taken here rather than above, because what it bounds is
+        // the memory the hash below holds. Held across the catalog read it would
+        // be spent on waiting for a disk instead of on hashing, which refuses
+        // callers the memory bound never needed to refuse.
+        let Some(_verifying) = throttle::verifying() else {
+            // The two limits are one answer to the caller and two lines here,
+            // because an operator tuning them needs to know which was reached
+            // and an attacker must not.
+            log::warn!("sign-in for {name} refused: already verifying as many as this node will");
+            return Err(Error::SignInThrottled);
+        };
 
         let Some(user) = found else {
             // The hash is still computed for a name that does not exist, so the
@@ -151,13 +196,19 @@ impl<'a> Session<'a> {
             // the caller is told neither: a log an operator reads is also a log
             // an attacker reads once they are inside.
             log::warn!("sign-in refused for {name}");
+            // Counted against the name that was tried, not against the user that
+            // was not found. Counting only known names would let an attacker
+            // enumerate the catalog by watching which names start to wait.
+            throttle::attempts().failed(name);
             return Err(Error::SignInRefused);
         };
         if !identity::verifies(password, &user.secret) {
             log::warn!("sign-in refused for {name}");
+            throttle::attempts().failed(name);
             return Err(Error::SignInRefused);
         }
         log::info!("signed in as {name}");
+        throttle::attempts().succeeded(name);
         self.identity = Identity::Signed(Box::new(user));
         Ok(())
     }

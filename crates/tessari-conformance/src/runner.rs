@@ -198,6 +198,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::NotSignedIn { .. } => "NotSignedIn",
         Error::RoleForbids { .. } => "RoleForbids",
         Error::SignInRefused => "SignInRefused",
+        Error::SignInThrottled => "SignInThrottled",
         Error::NoSuchRole { .. } => "NoSuchRole",
         Error::NoSuchVerb { .. } => "NoSuchVerb",
         Error::NotGranted { .. } => "NotGranted",

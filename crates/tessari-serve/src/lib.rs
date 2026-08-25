@@ -297,14 +297,21 @@ impl Drop for Busy {
     }
 }
 
-/// How many connections a surface will serve at once.
+/// How many of something a process will hold at once.
 ///
-/// # Why this is here rather than in each surface
+/// Two callers so far, and they are the same shape: how many connections a
+/// surface will serve, and how many password verifications the process will run
+/// — each holding a resource for as long as it lives, each better refused than
+/// queued.
 ///
-/// The same argument the rest of this crate is built on: both surfaces need a
+/// # Why this is here rather than in each caller
+///
+/// The same argument the rest of this crate is built on: the callers need a
 /// ceiling, and they need it to mean the same thing. A process told to serve at
 /// most four hundred connections, whose wire and HTTP halves each counted to
-/// four hundred separately, has been told nothing.
+/// four hundred separately, has been told nothing — and a process told to hold
+/// a hundred and fifty mebibytes of password hashing, counted separately per
+/// surface, has been told less than nothing.
 ///
 /// # Why a refusal and not a queue
 ///
@@ -321,7 +328,7 @@ pub struct Admitting {
 }
 
 impl Admitting {
-    /// A door that will hold `limit` connections open at once.
+    /// A door that will hold `limit` places at once.
     #[must_use]
     pub fn to(limit: usize) -> Arc<Self> {
         Arc::new(Self {

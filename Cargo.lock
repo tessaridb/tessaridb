@@ -1171,6 +1171,7 @@ dependencies = [
  "tessari-geo",
  "tessari-kv",
  "tessari-ql",
+ "tessari-serve",
  "tessari-storage",
  "tessari-types",
  "thiserror",

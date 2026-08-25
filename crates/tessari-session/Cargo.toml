@@ -16,6 +16,7 @@ tessari-backup.workspace = true
 tessari-encoding.workspace = true
 tessari-geo.workspace = true
 tessari-ql.workspace = true
+tessari-serve.workspace = true
 tessari-storage.workspace = true
 tessari-types.workspace = true
 rust_decimal.workspace = true

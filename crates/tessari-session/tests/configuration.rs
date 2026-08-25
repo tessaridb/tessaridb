@@ -26,9 +26,10 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_session::{Outcome, Session};
+use tessari_session::{Error, Outcome, Session};
 use tessari_storage::Store;
 use tessari_types::Value;
 
@@ -52,10 +53,34 @@ fn closed(backend: &Arc<dyn KvBackend>) -> Store {
     store
 }
 
-fn owner(store: &Store) -> Session<'_> {
+/// An owner session, retrying the node's admission bound.
+///
+/// The node verifies only so many passwords at once and **refuses** the rest
+/// rather than queueing them, so that an unauthenticated caller cannot spend the
+/// node's memory by asking. A refusal is therefore an ordinary answer on a busy
+/// node and a real client retries it — this harness, running its cases in
+/// parallel, is exactly such a burst. Retrying here exercises that contract
+/// instead of assuming the burst never happens; unwrapping asserted a promise
+/// the node does not make.
+///
+/// The count is bounded so a broken guard fails this helper rather than hanging
+/// it.
+fn signed_in<'store>(store: &'store Store, name: &str) -> Session<'store> {
     let mut session = Session::new(store);
-    session.sign_in("root", PASSWORD).unwrap();
-    session
+    for _ in 0..1_000 {
+        match session.sign_in(name, PASSWORD) {
+            Ok(()) => return session,
+            // A place is held for as long as a hash takes, so yielding would
+            // spin a thousand times inside one of them and learn nothing.
+            Err(Error::SignInThrottled) => std::thread::sleep(Duration::from_millis(2)),
+            Err(refused) => panic!("sign-in failed for a reason other than load: {refused}"),
+        }
+    }
+    panic!("the node never admitted a sign-in for {name}");
+}
+
+fn owner(store: &Store) -> Session<'_> {
+    signed_in(store, "root")
 }
 
 /// What `INFO FOR NODE` reports, as an owner.
@@ -297,8 +322,7 @@ fn a_viewer_is_refused_all_three_rather_than_passed_over_by_an_empty_grant_check
         ))
         .unwrap();
 
-    let mut viewer = Session::new(&store);
-    viewer.sign_in("ada", PASSWORD).unwrap();
+    let mut viewer = signed_in(&store, "ada");
     for statement in [
         "INFO FOR NODE;",
         "DEFINE NODE ROLES serving;",
@@ -321,8 +345,7 @@ fn an_editor_may_shape_data_and_still_not_configure_the_node() {
         .run(&format!("DEFINE USER e ROLE editor PASSWORD '{PASSWORD}';"))
         .unwrap();
 
-    let mut editor = Session::new(&store);
-    editor.sign_in("e", PASSWORD).unwrap();
+    let mut editor = signed_in(&store, "e");
     editor.run("DEFINE NAMESPACE prod;").unwrap();
     assert!(editor.run("DEFINE NODE ROLES serving;").is_err());
     assert!(

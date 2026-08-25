@@ -346,6 +346,22 @@ pub enum Error {
     #[error("no user of that name and password")]
     SignInRefused,
 
+    /// A signin this node declined to attempt at all.
+    ///
+    /// Either the identity has missed too many times in a row and is waiting, or
+    /// this node is already running as many password verifications as it will.
+    /// One answer for both, because both mean the same thing to a client — come
+    /// back — and separating them would tell an attacker which of the two limits
+    /// they had reached and therefore which one to work around.
+    ///
+    /// Distinct from [`Error::SignInRefused`], and that distinction is
+    /// deliberate: this one says nothing about whether the credential was right,
+    /// so a client can tell "wait" from "wrong" and stop retrying a password that
+    /// will never work. An operator reading the log gets the two apart there,
+    /// where an attacker is not.
+    #[error("this node is not taking a sign-in for that user right now")]
+    SignInThrottled,
+
     /// A score was asked for where there is no collection to measure against.
     ///
     /// Not answered with zero, and not answered against whatever records

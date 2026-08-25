@@ -36,9 +36,10 @@
 //! belongs to the session and permission layer above the store" when it was
 //! logged; this is that layer.
 
-use argon2::Argon2;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::{Algorithm, Argon2, Params, Version};
+use tessari_constants::{PASSWORD_HASH_LANES, PASSWORD_HASH_MEMORY_KIB, PASSWORD_HASH_PASSES};
 use tessari_ql::{InfoSubject, Name, Password, Span, StatementKind, TableRef};
 use tessari_storage::{Catalog, Role, Transaction, UserDefinition};
 
@@ -56,6 +57,42 @@ pub(crate) enum Identity {
     Signed(Box<UserDefinition>),
 }
 
+/// The hasher both sides of a credential use, at parameters this project chose.
+///
+/// # Why not `Argon2::default()`
+///
+/// It was, and the values it gave were the right ones. The rule it broke is not
+/// about the value: **LR-DB-004** says a default is read from the release in use
+/// and recorded with it, because a default nobody read is not evidence. Inherited
+/// from the crate, a `cargo update` that moved `Default` would move this store's
+/// password-hashing posture with nothing in the repository, the decision records
+/// or the tests saying so — and nothing would break, because a PHC string
+/// carries its own parameters and old hashes keep verifying at their old cost.
+/// Silence is the whole failure. The three numbers live in `tessari-constants`
+/// and their reading is ADR-0043.
+///
+/// # Why one constructor and not two call sites
+///
+/// Hashing and verifying must agree, and two literal parameter sets are two
+/// things that can drift. They would drift *quietly*: a verification at the wrong
+/// parameters still succeeds, because the stored PHC string says what to use, so
+/// the only symptom would be that new hashes stopped matching the recorded
+/// intent — which nothing is looking at.
+///
+/// Returns `None` only if the constants are not a valid parameter set, which is
+/// a condition of this repository rather than of any input, and is why
+/// `the_pinned_parameters_are_a_valid_set` exists to fail in CI instead of here.
+fn hasher() -> Option<Argon2<'static>> {
+    Params::new(
+        PASSWORD_HASH_MEMORY_KIB,
+        PASSWORD_HASH_PASSES,
+        PASSWORD_HASH_LANES,
+        None,
+    )
+    .ok()
+    .map(|params| Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
+}
+
 /// Hash a password for storage.
 ///
 /// # Errors
@@ -64,7 +101,8 @@ pub(crate) enum Identity {
 /// it does for a password long enough to be a denial of service by itself.
 pub(crate) fn hash(password: &str, span: Span) -> Result<String> {
     let salt = SaltString::generate(&mut OsRng);
-    Argon2::default()
+    hasher()
+        .ok_or(Error::PasswordUnusable { span })?
         .hash_password(password.as_bytes(), &salt)
         .map(|hashed| hashed.to_string())
         .map_err(|_| Error::PasswordUnusable { span })
@@ -75,11 +113,12 @@ pub(crate) fn hash(password: &str, span: Span) -> Result<String> {
 /// A stored hash that cannot be parsed answers **false** rather than raising:
 /// the alternative is that corrupting one byte of a credential turns a refusal
 /// into a five-hundred, which tells an attacker more than a refusal does.
+/// A hasher this build cannot construct answers **false** for the same reason,
+/// which is the safe direction: no password matches anything until the
+/// parameters are a set again.
 pub(crate) fn verifies(password: &str, stored: &str) -> bool {
     PasswordHash::new(stored).is_ok_and(|parsed| {
-        Argon2::default()
-            .verify_password(password.as_bytes(), &parsed)
-            .is_ok()
+        hasher().is_some_and(|argon| argon.verify_password(password.as_bytes(), &parsed).is_ok())
     })
 }
 
@@ -388,5 +427,55 @@ mod tests {
         let stored = hash("hunter2", Span::new(0, 1)).expect("a hash");
         assert!(!stored.contains("hunter2"), "{stored}");
         assert!(stored.starts_with("$argon2"), "{stored}");
+    }
+
+    #[test]
+    fn a_stored_hash_carries_the_parameters_this_project_pinned() {
+        // The assertion F-008 asks for, and it extends the one above by the part
+        // that matters: `$argon2` says only that some Argon2 produced this. A
+        // dependency upgrade that moved `Default` would keep that prefix and
+        // change everything behind it, which is precisely the silent move
+        // LR-DB-004 exists to catch. Written as the literal string rather than
+        // interpolated from the constants: interpolating would make this test
+        // agree with whatever the constants say, and agreeing with the thing
+        // under test is not a check.
+        let stored = hash("correct horse", Span::new(0, 1)).expect("a hash");
+        assert!(
+            stored.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
+            "the pinned parameter set is not the one that produced this: {stored}"
+        );
+    }
+
+    #[test]
+    fn the_pinned_parameters_are_a_valid_set() {
+        // `hasher` answers `None` rather than panicking on a parameter set the
+        // crate rejects, so a bad constant would otherwise surface as every
+        // sign-in refusing at run time with nothing pointing at the cause. This
+        // is where that fails instead.
+        assert!(super::hasher().is_some());
+    }
+
+    #[test]
+    fn the_hash_a_missing_name_is_checked_against_carries_the_same_parameters() {
+        // The sentinel in `session.rs` exists so a refusal for a name that does
+        // not exist costs the same as one for a wrong password. That only holds
+        // while it is a hash at *these* parameters — pinning `m`, `t` and `p`
+        // and leaving a sentinel at older ones would make the two refusals
+        // measurably different lengths, and the timing equalisation would be
+        // decoration. The two must move together, so this fails when only one
+        // does.
+        assert!(
+            crate::session::ABSENT_USER_HASH.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
+            "the absent-user sentinel is not at the pinned parameters"
+        );
+        // And it must still parse, or the equalisation costs nothing at all
+        // because `verifies` gives up before reaching the hasher. Asserted on
+        // the parse and **not** on `verifies` returning false: a sentinel that
+        // failed to parse would also return false, so that assertion would pass
+        // for the failure it was written to catch.
+        assert!(
+            argon2::password_hash::PasswordHash::new(crate::session::ABSENT_USER_HASH).is_ok(),
+            "the sentinel does not parse, so no work is done for a missing name"
+        );
     }
 }

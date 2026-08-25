@@ -46,6 +46,7 @@ mod reference;
 mod search;
 mod session;
 mod shape;
+mod throttle;
 mod vector;
 
 pub use effect::{Effect, admits};

@@ -473,6 +473,11 @@ pub(crate) fn failure(error: &Error) -> Answer {
         // store, or one it refused. Both are answered the same way, because
         // telling them apart tells an attacker which half to keep guessing at.
         Error::NotSignedIn { .. } | Error::SignInRefused => 401,
+        // It declined to look. Not a 401, because a client told "wrong" retries
+        // with a different password and one told "too many" must retry with the
+        // same one later — and 429 is the status every client library already
+        // backs off on.
+        Error::SignInThrottled => 429,
         // It knows, and the answer is still no. A different thing entirely, and
         // a client that cannot tell retries a signin that will never help.
         //
