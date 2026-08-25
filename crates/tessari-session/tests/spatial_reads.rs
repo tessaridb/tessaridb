@@ -161,6 +161,7 @@ fn every_servable_predicate_answers_what_the_scan_answers() {
         "geo::contains",
         "geo::covers",
         "geo::equals",
+        "geo::touches",
     ] {
         for query in windows() {
             let read = format!("SELECT * FROM places WHERE {predicate}(at, {query});");
@@ -172,7 +173,7 @@ fn every_servable_predicate_answers_what_the_scan_answers() {
             served = served.saturating_add(1);
         }
     }
-    assert!(served >= 36, "every predicate should meet every window");
+    assert!(served >= 42, "every predicate should meet every window");
 }
 
 #[test]

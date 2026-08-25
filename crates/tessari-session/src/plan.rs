@@ -749,7 +749,10 @@ fn regional(condition: &Expr) -> Vec<Regional<'_>> {
 const fn relation_of(function: Function, field_first: bool) -> Option<Relation> {
     match (function, field_first) {
         // Symmetric: which argument is the record does not change the question.
-        (Function::GeoIntersects, _) => Some(Relation::Meets),
+        // `touches` shares the `intersects` test because two shapes that touch
+        // share a position, so their boxes meet — a superset, which is the only
+        // property a filter relation has to have.
+        (Function::GeoIntersects | Function::GeoTouches, _) => Some(Relation::Meets),
         (Function::GeoEquals, _) => Some(Relation::Same),
         (Function::GeoWithin | Function::GeoCoveredBy, true)
         | (Function::GeoContains | Function::GeoCovers, false) => Some(Relation::Inside),

@@ -1516,7 +1516,7 @@ SELECT * FROM places WHERE geo::intersects(area, $search_box);
 SELECT name, geo::within(area, $district) AS local FROM places;
 ```
 
-Seven predicates, and they are the standard ones rather than invented ones:
+Eight predicates, and they are the standard ones rather than invented ones:
 
 | Written | True when |
 |---|---|
@@ -1527,6 +1527,7 @@ Seven predicates, and they are the standard ones rather than invented ones:
 | `geo::contains(a, b)` | `a` covers `b` **and** `b` is not only on `a`'s edge |
 | `geo::within(a, b)` | `b` contains `a` |
 | `geo::equals(a, b)` | they cover exactly the same positions |
+| `geo::touches(a, b)` | they meet, and their **interiors** do not |
 
 **`contains` and `covers` differ on the boundary, and that is the point.** A
 position sitting exactly on a polygon's edge is *covered by* the polygon and is
@@ -1534,6 +1535,15 @@ not *contained in* it. Both questions get asked in practice — "is this address
 the delivery zone" and "is this address strictly inside it" are different
 questions — so the language says both rather than picking one and calling it
 containment.
+
+**`touches` is the one that is about interiors.** Two shapes touch when they
+meet only along their edges: two districts sharing a border touch, and two that
+overlap do not. The interior of a position is the position itself, so **two
+positions never touch** — if they meet at all they meet on the inside. The
+interior of a path is the path minus its two ends, so **a position touches a path
+only at an end**, and a path drawn as a closed loop has no ends and so is touched
+nowhere along its length. The interior of an area is the area minus its rings, so
+a square exactly filling another shape's hole touches it.
 
 `equals` is about positions, not about text. A square written with a redundant
 vertex halfway along one side equals the same square written without it.
@@ -1643,7 +1653,7 @@ be pasted back into the next one.
 
 #### The index, and which questions it serves
 
-`DEFINE INDEX … SPATIAL` makes six of the seven predicates a narrowed read
+`DEFINE INDEX … SPATIAL` makes seven of the eight predicates a narrowed read
 instead of a scan:
 
 ```
@@ -1712,10 +1722,9 @@ around it.
 
 There is no measured tuning of how finely a query is covered — the budget is a
 declared constant, and the candidate-to-result ratio the store measures is what
-will move it. A nearest-first read under a `WHERE` is still a scan. `geo::touches`
-is not written — every other predicate here is a composition of two algorithms,
-and that one needs a third. And there is no distance between shapes larger than
-positions, which is also why the nearest-few read is over positions.
+will move it. A nearest-first read under a `WHERE` is still a scan. And there is
+no distance between shapes larger than positions, which is also why the
+nearest-few read is over positions.
 
 ### Ranking
 

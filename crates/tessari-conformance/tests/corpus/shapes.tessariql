@@ -114,6 +114,24 @@ CREATE zones:3 = { z: geometry { type: 'Polygon', coordinates: [[[0, 0], [9, 0],
 SELECT * FROM zones WHERE geo::equals(z, geometry { type: 'Polygon', coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] });
 --- expect: rows 2
 
+--- case: touching is meeting along an edge and not overlapping
+# `zones:1` is the ten-square and `zones:3` is the nine-square inside it, which
+# overlap; `zones:2` is the ten-square written with a redundant vertex. The
+# square to the east of all three shares only the meridian at x=10.
+SELECT * FROM zones WHERE geo::touches(z, geometry { type: 'Polygon', coordinates: [[[10, 0], [14, 0], [14, 10], [10, 10], [10, 0]]] });
+--- expect: rows 2
+
+--- case: the same square asked with intersects, and the answer differs
+# The whole content of the predicate is where these two part. Overlapping is
+# meeting, and it is not touching.
+SELECT * FROM zones WHERE geo::intersects(z, geometry { type: 'Polygon', coordinates: [[[5, 5], [14, 5], [14, 14], [5, 14], [5, 5]]] });
+--- expect: rows 3
+
+--- case: two positions never touch
+# A position's interior is the position, so meeting at all is meeting inside.
+SELECT * FROM places WHERE geo::touches(at, geometry { type: 'Point', coordinates: [5, 5] });
+--- expect: rows 0
+
 --- case: a record with no shape narrows the answer rather than failing the read
 CREATE places:4 = { name: 'nowhere' };
 SELECT * FROM places WHERE geo::intersects(at, geometry { type: 'Point', coordinates: [5, 5] });

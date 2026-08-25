@@ -37,7 +37,7 @@ Around them: snapshot-isolation transactions, change subscriptions, namespaces
 and databases with users and grants, health and readiness endpoints, metrics,
 graceful drain, and log-as-backup with replay-as-restore.
 
-451 conformance cases define the language and run in the build.
+457 conformance cases define the language and run in the build.
 
 ### What is not here
 
@@ -45,8 +45,8 @@ Stated as plainly as the list above, because an alpha that is vague about its
 absences is worse than one that is missing more.
 
 - **The nearest few is over positions, and the spatial index is untuned.**
-  `DEFINE INDEX … SPATIAL` is written, maintained and now **read**: six of the
-  seven predicates are served by covering the query shape with cells, reading the
+  `DEFINE INDEX … SPATIAL` is written, maintained and now **read**: seven of the
+  eight predicates are served by covering the query shape with cells, reading the
   entries under and above them, and rejecting what the stored bounding boxes
   settle before the exact predicate runs. `geo::disjoint` is the complement of a
   region, has no sound box filter, and stays an exact scan by design.
@@ -55,7 +55,6 @@ absences is worse than one that is missing more.
   exact rather than approximate, and therefore asking nothing of the statement.
   What is absent: a distance to a shape larger than a position, which is why
   that read is over positions; a nearest-first read under a `WHERE`;
-  `geo::touches`, which needs an algorithm the other seven are not built from;
   and any *measured* choice of how finely a query is covered — the budget is a declared constant,
   and the candidate-to-result ratio the store now measures is what will move it.
 - **No sharding, no replication, no cluster membership.** Peers can be declared

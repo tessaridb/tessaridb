@@ -23,7 +23,9 @@
 //! the *whole* segment lands on the tooth. An implementation that tested one
 //! midpoint would call it covered. The right answer is that it is not.
 
-use tessari_geo::{Shape, contains, covered_by, covers, disjoint, equals, intersects, within};
+use tessari_geo::{
+    Shape, contains, covered_by, covers, disjoint, equals, intersects, touches, within,
+};
 use tessari_types::{Geometry, Polygon, Position, Ring};
 
 fn at(longitude: f64, latitude: f64) -> Position {
@@ -382,5 +384,392 @@ fn covering_is_reflexive_and_containing_is_too_for_a_shape_with_an_interior() {
         assert!(covers(&shape, &shape), "a shape covers itself");
         assert!(equals(&shape, &shape));
         assert!(intersects(&shape, &shape));
+    }
+}
+
+// ------------------------------------------------------------------ touches
+
+/// One row of the `touches` table: two shapes, and both answers.
+///
+/// **Both** answers, because `touches` is defined against `intersects` and the
+/// content of the predicate is precisely where the two disagree. A table
+/// carrying only the `touches` column would pass against an implementation that
+/// had quietly become `intersects`, which is the failure this predicate is most
+/// likely to have.
+struct Row {
+    what: &'static str,
+    one: Shape,
+    other: Shape,
+    touching: bool,
+    meeting: bool,
+}
+
+fn row(what: &'static str, one: Shape, other: Shape, touching: bool, meeting: bool) -> Row {
+    Row {
+        what,
+        one,
+        other,
+        touching,
+        meeting,
+    }
+}
+
+/// A closed path — a ring drawn as a line, which has no ends and therefore no
+/// boundary, so every position on it is interior.
+fn ring_as_a_path() -> Shape {
+    line(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)])
+}
+
+/// A collection holding one square, `(0, 0)` to `(4, 4)`.
+///
+/// Its only job is to ask whether the interior question is taken *through* a
+/// collection into its members at all: a collection that is not walked has no
+/// parts, and a shape with no parts has no interior to meet.
+fn square_in_a_collection() -> Shape {
+    lowered(&Geometry::Collection(vec![Box::new(Geometry::Polygon(
+        Polygon {
+            exterior: closed(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]),
+            interiors: vec![],
+        },
+    ))]))
+}
+
+fn touching_table() -> Vec<Row> {
+    vec![
+        // Two positions. Their interiors are themselves, so meeting at all is
+        // meeting on the inside and they can never touch.
+        row(
+            "two positions at one place",
+            point(1.0, 1.0),
+            point(1.0, 1.0),
+            false,
+            true,
+        ),
+        row(
+            "two positions apart",
+            point(1.0, 1.0),
+            point(2.0, 2.0),
+            false,
+            false,
+        ),
+        // A position and a path. Only an end of the path is its boundary.
+        row(
+            "a position at a path's end",
+            point(0.0, 0.0),
+            line(&[(0.0, 0.0), (5.0, 0.0)]),
+            true,
+            true,
+        ),
+        row(
+            "a position mid-path",
+            point(2.0, 0.0),
+            line(&[(0.0, 0.0), (5.0, 0.0)]),
+            false,
+            true,
+        ),
+        row(
+            "a position on a middle vertex",
+            point(5.0, 0.0),
+            line(&[(0.0, 0.0), (5.0, 0.0), (5.0, 5.0)]),
+            false,
+            true,
+        ),
+        row(
+            "a position off the path",
+            point(2.0, 1.0),
+            line(&[(0.0, 0.0), (5.0, 0.0)]),
+            false,
+            false,
+        ),
+        row(
+            "a position on a closed path",
+            point(0.0, 0.0),
+            ring_as_a_path(),
+            false,
+            true,
+        ),
+        // A position and an area.
+        row(
+            "a position on an edge",
+            point(5.0, 0.0),
+            square(0.0, 10.0),
+            true,
+            true,
+        ),
+        row(
+            "a position at a corner",
+            point(0.0, 0.0),
+            square(0.0, 10.0),
+            true,
+            true,
+        ),
+        row(
+            "a position inside",
+            point(5.0, 5.0),
+            square(0.0, 10.0),
+            false,
+            true,
+        ),
+        row(
+            "a position in a hole",
+            point(5.0, 5.0),
+            square_with_hole(),
+            false,
+            false,
+        ),
+        row(
+            "a position on a hole's edge",
+            point(3.0, 5.0),
+            square_with_hole(),
+            true,
+            true,
+        ),
+        // Two paths.
+        row(
+            "two paths end to end",
+            line(&[(0.0, 0.0), (5.0, 0.0)]),
+            line(&[(5.0, 0.0), (9.0, 0.0)]),
+            true,
+            true,
+        ),
+        row(
+            "two paths crossing",
+            line(&[(0.0, 0.0), (6.0, 6.0)]),
+            line(&[(0.0, 6.0), (6.0, 0.0)]),
+            false,
+            true,
+        ),
+        row(
+            "a path ending on another's middle",
+            line(&[(3.0, 3.0), (3.0, 0.0)]),
+            line(&[(0.0, 0.0), (6.0, 0.0)]),
+            true,
+            true,
+        ),
+        row(
+            "two paths sharing a stretch",
+            line(&[(0.0, 0.0), (6.0, 0.0)]),
+            line(&[(3.0, 0.0), (9.0, 0.0)]),
+            false,
+            true,
+        ),
+        row(
+            "two paths apart",
+            line(&[(0.0, 0.0), (5.0, 0.0)]),
+            line(&[(0.0, 3.0), (5.0, 3.0)]),
+            false,
+            false,
+        ),
+        // A path and an area.
+        row(
+            "a path along an edge",
+            line(&[(2.0, 0.0), (8.0, 0.0)]),
+            square(0.0, 10.0),
+            true,
+            true,
+        ),
+        row(
+            "a path meeting an edge at one point",
+            line(&[(5.0, -4.0), (5.0, 0.0)]),
+            square(0.0, 10.0),
+            true,
+            true,
+        ),
+        row(
+            "a path entering the area",
+            line(&[(5.0, -4.0), (5.0, 4.0)]),
+            square(0.0, 10.0),
+            false,
+            true,
+        ),
+        row(
+            "a path ending just inside",
+            line(&[(5.0, -4.0), (5.0, 1.0)]),
+            square(0.0, 10.0),
+            false,
+            true,
+        ),
+        row(
+            "a path wholly inside",
+            line(&[(2.0, 2.0), (8.0, 8.0)]),
+            square(0.0, 10.0),
+            false,
+            true,
+        ),
+        row(
+            "a path across a hole's mouth",
+            line(&[(3.0, 3.0), (7.0, 3.0)]),
+            square_with_hole(),
+            true,
+            true,
+        ),
+        // Two areas. The first row is the one that separates the interior test
+        // from `areas_share_area`, which counts a shared edge as sharing.
+        row(
+            "two squares sharing an edge",
+            square(0.0, 5.0),
+            area(&[(5.0, 0.0), (9.0, 0.0), (9.0, 5.0), (5.0, 5.0)], &[]),
+            true,
+            true,
+        ),
+        row(
+            "two squares at a corner",
+            square(0.0, 5.0),
+            area(&[(5.0, 5.0), (9.0, 5.0), (9.0, 9.0), (5.0, 9.0)], &[]),
+            true,
+            true,
+        ),
+        row(
+            "two squares overlapping",
+            square(0.0, 5.0),
+            square(3.0, 9.0),
+            false,
+            true,
+        ),
+        row(
+            "one square inside another",
+            square(2.0, 4.0),
+            square(0.0, 10.0),
+            false,
+            true,
+        ),
+        row(
+            "a square filling a hole",
+            square(3.0, 7.0),
+            square_with_hole(),
+            true,
+            true,
+        ),
+        row(
+            "two squares apart",
+            square(0.0, 4.0),
+            square(6.0, 9.0),
+            false,
+            false,
+        ),
+        // The three rows below exist because falsification showed the table
+        // could not see three whole cases: each one is the *only* row that
+        // fails when its case is removed from the implementation.
+        //
+        // Two paths whose segments never cross transversally and never overlap
+        // along a stretch, meeting at exactly one grid position that is a
+        // middle vertex of both. Neither of the two geometric cases sees it —
+        // only the direct test of the paths' own positions does. The slopes are
+        // chosen so that no pair of segments is collinear, which would have made
+        // this the overlap case instead.
+        row(
+            "two paths meeting only at a shared middle vertex",
+            line(&[(0.0, 0.0), (2.0, 2.0), (4.0, 0.0)]),
+            line(&[(0.0, 3.0), (2.0, 2.0), (4.0, 3.0)]),
+            false,
+            true,
+        ),
+        // A segment running along the comb's notch floor and on into the solid
+        // tooth. Its own midpoint is `(4, 4)` — a shell corner, and so on the
+        // boundary rather than inside. Only subdividing at the ring corners
+        // that lie on the segment finds the piece from `(4, 4)` to `(6, 4)`,
+        // whose midpoint `(5, 4)` is strictly inside. A whole-segment midpoint
+        // test answers "never reaches inside" and is wrong.
+        row(
+            "a path from a notch floor into the tooth beside it",
+            line(&[(2.0, 4.0), (6.0, 4.0)]),
+            comb(),
+            false,
+            true,
+        ),
+        // A collection is walked into its members, or it has no parts at all —
+        // and a shape with no parts has no interior, which makes `touches`
+        // collapse to `intersects` for every collection ever asked about.
+        row(
+            "a square overlapping a square inside a collection",
+            square(2.0, 6.0),
+            square_in_a_collection(),
+            false,
+            true,
+        ),
+        // Area·area has three tests in order — a transversal boundary crossing,
+        // then a boundary stretch of one lying inside the other, then a
+        // constructed interior witness — and this row is the only one that needs
+        // the middle one.
+        //
+        // A rectangle filling the comb's first notch and pushed one unit through
+        // its floor. Every meeting of the two boundaries is collinear or at a
+        // corner, so nothing crosses transversally. Both constructed witnesses
+        // fail: the rectangle's own centre `(3, 6.5)` sits in the notch, which is
+        // outside the comb, and the comb's witness is not in so narrow a
+        // rectangle. What is left is the rectangle's bottom edge `(2, 3)`–`(4, 3)`,
+        // whose midpoint is strictly inside the comb.
+        row(
+            "a rectangle pushed through a notch floor",
+            area(&[(2.0, 3.0), (4.0, 3.0), (4.0, 10.0), (2.0, 10.0)], &[]),
+            comb(),
+            false,
+            true,
+        ),
+    ]
+}
+
+#[test]
+fn the_touching_table_answers_as_the_definition_says() {
+    for Row {
+        what,
+        one,
+        other,
+        touching,
+        meeting,
+    } in touching_table()
+    {
+        assert_eq!(intersects(&one, &other), meeting, "intersects: {what}");
+        assert_eq!(touches(&one, &other), touching, "touches: {what}");
+    }
+}
+
+#[test]
+fn touching_is_symmetric_on_every_row() {
+    // Asserted rather than assumed: the implementation matches on an ordered
+    // pair of parts, and a pairing written once with its arguments the wrong way
+    // round would answer differently depending on which shape a caller wrote
+    // first — a defect no single-direction table could see.
+    for Row {
+        what, one, other, ..
+    } in touching_table()
+    {
+        assert_eq!(
+            touches(&one, &other),
+            touches(&other, &one),
+            "touches is symmetric: {what}"
+        );
+    }
+}
+
+#[test]
+fn touching_and_meeting_disagree_on_the_rows_that_carry_the_predicate() {
+    // The table's own guard. If these two columns ever agree everywhere,
+    // `touches` has become `intersects` and every row above would still pass.
+    let rows = touching_table();
+    let disagreeing = rows
+        .iter()
+        .filter(|row| row.touching != row.meeting)
+        .count();
+    assert!(
+        disagreeing >= 10,
+        "the table must carry rows where the two predicates part, and it has {disagreeing}"
+    );
+}
+
+#[test]
+fn no_shape_with_ground_touches_itself() {
+    // A shape's interior meets its own, so a shape never touches itself — and
+    // this is the case a witness search can quietly get wrong, because an area
+    // whose shell witness lands in its own hole has to be witnessed elsewhere.
+    for shape in [
+        square(0.0, 10.0),
+        square_with_hole(),
+        comb(),
+        line(&[(0.0, 0.0), (5.0, 0.0)]),
+        ring_as_a_path(),
+        point(1.0, 1.0),
+    ] {
+        assert!(!touches(&shape, &shape), "a shape does not touch itself");
     }
 }

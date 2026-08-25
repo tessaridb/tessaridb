@@ -113,6 +113,7 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         }
         Function::GeoWithin => crate::geo::relate(function, tessari_geo::within, arguments, span),
         Function::GeoEquals => crate::geo::relate(function, tessari_geo::equals, arguments, span),
+        Function::GeoTouches => crate::geo::relate(function, tessari_geo::touches, arguments, span),
         Function::GeoDistance => crate::geo::separation(function, arguments, span),
         Function::GeoArea => crate::geo::ground(function, arguments, span),
         Function::TypeOf => {

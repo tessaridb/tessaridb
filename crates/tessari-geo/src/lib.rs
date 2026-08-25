@@ -41,5 +41,7 @@ pub use crate::predicate::{
     Containment, Orientation, on_segment, orientation, ring_contains, segments_cross,
     segments_meet, twice_signed_area,
 };
-pub use crate::relate::{contains, covered_by, covers, disjoint, equals, intersects, within};
+pub use crate::relate::{
+    contains, covered_by, covers, disjoint, equals, intersects, touches, within,
+};
 pub use crate::shape::{Area, Loop, Shape};

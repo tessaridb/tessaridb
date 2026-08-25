@@ -89,6 +89,9 @@ pub enum Function {
     /// `geo::equals(a, b)` — whether the two cover exactly the same positions,
     /// however each was written.
     GeoEquals,
+    /// `geo::touches(a, b)` — whether they meet and their interiors do not. Two
+    /// positions never touch, and a position touches a path only at an end.
+    GeoTouches,
     /// `geo::distance(a, b)` — how far apart two positions are along the
     /// ellipsoid, in **metres**. Both arguments must be positions; there is no
     /// distance between larger shapes yet.
@@ -127,6 +130,7 @@ impl Function {
         Self::GeoContains,
         Self::GeoWithin,
         Self::GeoEquals,
+        Self::GeoTouches,
         Self::GeoDistance,
         Self::GeoArea,
     ];
@@ -161,6 +165,7 @@ impl Function {
             Self::GeoContains => "geo::contains",
             Self::GeoWithin => "geo::within",
             Self::GeoEquals => "geo::equals",
+            Self::GeoTouches => "geo::touches",
             Self::GeoDistance => "geo::distance",
             Self::GeoArea => "geo::area",
         }
@@ -184,6 +189,7 @@ impl Function {
             | Self::GeoContains
             | Self::GeoWithin
             | Self::GeoEquals
+            | Self::GeoTouches
             | Self::GeoDistance => 2,
             _ => 1,
         }
