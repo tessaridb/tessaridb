@@ -527,7 +527,7 @@ impl PostingKey {
 }
 
 impl StoreKey for PostingKey {
-    type Value = NoPayload;
+    type Value = Posting;
 
     const KIND: KeyKind = KeyKind::Posting;
 
@@ -666,6 +666,82 @@ impl StoreValue for NoPayload {
     }
 }
 
+/// What a term does in one record: how often it occurs, and how long the record
+/// is.
+///
+/// # Why a posting carries the record's length, which is not a property of the
+/// term
+///
+/// A relevance score needs four numbers. Two describe the collection — how many
+/// records there are and how long a typical one is — and are held once, beside
+/// the postings, in [`SearchStatistics`]. The other two describe *this* record:
+/// how often it holds the term, and how long it is.
+///
+/// The frequency plainly belongs here. The length is a property of the record,
+/// so the tidy place for it would be one entry per record — and it is here
+/// instead, repeated once per distinct term. That is deliberate: it makes a
+/// score computable from the postings scan **alone**. A scan of one term's
+/// postings yields the record, the frequency and the length together, so
+/// scoring costs no further read at all, where a separate length entry would
+/// cost one point read per candidate — most of what storing the numbers was
+/// meant to remove.
+///
+/// The redundancy also cannot drift. A record's update already deletes its whole
+/// posting set and writes a new one, so a changed length rewrites exactly the
+/// postings that were being rewritten anyway, by the same code, in the same
+/// batch.
+///
+/// # A posting written before this payload existed
+///
+/// [`Self::Membership`] is what an older format wrote: the header and nothing
+/// after it. It says the term is in the record and no more, which is all
+/// `MATCHES` ever needed — so an index written that way keeps answering
+/// `MATCHES` correctly and only cannot be **scored**. The distinction is carried
+/// by the encoding itself rather than by a declared version, so it cannot
+/// disagree with the data it describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Posting {
+    /// The term is in the record. Written before postings carried a payload.
+    Membership,
+    /// The term is in the record this often, and the record is this long.
+    Counted {
+        /// Occurrences of this term in this record, **with** repeats.
+        frequency: u32,
+        /// Tokens in the record's analysed field, **with** repeats.
+        ///
+        /// The same quantity [`SearchStatistics::terms`] accumulates, so the two
+        /// cannot mean different things by "length".
+        length: u32,
+    },
+}
+
+impl StoreValue for Posting {
+    fn encode(&self) -> Value {
+        let Self::Counted { frequency, length } = *self else {
+            // Byte-identical to `NoPayload`, because it is the same statement.
+            return Value::from(with_header(0, 0));
+        };
+        let mut writer = KeyWriter::new();
+        writer.put_u32(frequency).put_u32(length);
+        let body = writer.finish();
+        let mut buffer = with_header(0, body.len());
+        buffer.extend_from_slice(&body);
+        Value::from(buffer)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let (_, payload) = split_header(bytes, 0)?;
+        if payload.is_empty() {
+            return Ok(Self::Membership);
+        }
+        let mut reader = KeyReader::new(KeyKind::Posting, payload);
+        let frequency = reader.take_u32()?;
+        let length = reader.take_u32()?;
+        reader.finish()?;
+        Ok(Self::Counted { frequency, length })
+    }
+}
+
 /// Walk the field list and keep its bytes verbatim.
 ///
 /// The fields are not decoded — the encoding normalises numbers and so cannot be
@@ -718,6 +794,90 @@ mod tests {
         let encoded = held.encode();
         let read = SearchStatistics::decode(encoded.as_slice()).expect("statistics");
         assert_eq!(read, held);
+    }
+
+    #[test]
+    fn a_counted_posting_survives_the_round_trip() {
+        use super::Posting;
+        for (frequency, length) in [(1_u32, 1_u32), (3, 97), (u32::MAX, u32::MAX), (1, u32::MAX)] {
+            let held = Posting::Counted { frequency, length };
+            let read = Posting::decode(held.encode().as_slice()).expect("a posting");
+            assert_eq!(read, held, "{frequency}/{length}");
+        }
+    }
+
+    #[test]
+    fn a_posting_with_no_payload_is_the_membership_one_an_older_format_wrote() {
+        use super::{NoPayload, Posting};
+        // Byte-identical, because it is the same statement — which is what lets
+        // an index written before postings carried a payload keep answering
+        // `MATCHES` instead of failing to decode.
+        assert_eq!(
+            Posting::Membership.encode().as_slice(),
+            NoPayload.encode().as_slice()
+        );
+        let read = Posting::decode(NoPayload.encode().as_slice()).expect("a posting");
+        assert_eq!(read, Posting::Membership);
+    }
+
+    #[test]
+    fn a_counted_posting_is_not_mistaken_for_a_membership_one() {
+        use super::Posting;
+        // The distinction is carried by the encoding rather than by a declared
+        // version, so it cannot disagree with the data. A zero frequency is
+        // still `Counted`: it is a statement, where `Membership` is the absence
+        // of one.
+        let zero = Posting::Counted {
+            frequency: 0,
+            length: 0,
+        };
+        assert_ne!(
+            zero.encode().as_slice(),
+            Posting::Membership.encode().as_slice()
+        );
+        assert_eq!(
+            Posting::decode(zero.encode().as_slice()).expect("a posting"),
+            zero
+        );
+    }
+
+    #[test]
+    fn a_truncated_posting_payload_is_refused_rather_than_read_short() {
+        use super::Posting;
+        let full = Posting::Counted {
+            frequency: 7,
+            length: 11,
+        };
+        let encoded = full.encode();
+        let bytes = encoded.as_slice();
+        // Every cut between the header and the end: a decoder that read a short
+        // payload as a smaller number would return a plausible wrong score.
+        for cut in 3..bytes.len() {
+            assert!(
+                Posting::decode(&bytes[..cut]).is_err(),
+                "{cut} bytes decoded when it should not"
+            );
+        }
+    }
+
+    #[test]
+    fn a_posting_payload_longer_than_the_format_is_refused() {
+        use super::Posting;
+        // Found by falsification: dropping `reader.finish()` left every other
+        // assertion green, because a short payload is caught by the reads
+        // themselves and nothing here asked about a long one. Trailing bytes
+        // mean the value was written by something this build does not
+        // understand, and reading the prefix of it would be reading two numbers
+        // out of a structure that has more.
+        let mut bytes = Posting::Counted {
+            frequency: 7,
+            length: 11,
+        }
+        .encode()
+        .as_slice()
+        .to_vec();
+        bytes.push(0);
+        assert!(Posting::decode(&bytes).is_err(), "trailing byte accepted");
     }
 
     #[test]

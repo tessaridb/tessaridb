@@ -71,9 +71,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_constants::SPATIAL_INDEX_CELLS_PER_RECORD;
 use tessari_encoding::{
-    IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, NoPayload, PostingKey,
-    RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, SpatialExtent,
-    SpatialIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
+    IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, NoPayload, Posting,
+    PostingKey, RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey,
+    SpatialExtent, SpatialIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
 };
 use tessari_geo::{Bounds, Cell, Shape};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
@@ -272,11 +272,12 @@ fn build(
         for (id, payload) in &rows {
             let analysed = terms_of(definition, analyzer, &decode_payload(payload)?);
             counted.added(analysed.tokens);
-            for term in analysed.postings {
+            let length = analysed.length();
+            for (term, frequency) in analysed.postings {
                 batch = batch.put(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, id.clone()).encode(),
-                    NoPayload.encode(),
+                    Posting::Counted { frequency, length }.encode(),
                 );
             }
         }
@@ -417,7 +418,7 @@ fn apply_one(
         if let Some(bytes) = previous {
             let analysed = terms_of(definition, analyzer, &decode_payload(bytes)?);
             counted.removed(analysed.tokens);
-            for term in analysed.postings {
+            for (term, _) in analysed.postings {
                 batch = batch.delete(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, mutation.id.clone()).encode(),
@@ -427,11 +428,12 @@ fn apply_one(
         if let RecordValue::Present(payload) = &mutation.value {
             let analysed = terms_of(definition, analyzer, &decode_payload(payload)?);
             counted.added(analysed.tokens);
-            for term in analysed.postings {
+            let length = analysed.length();
+            for (term, frequency) in analysed.postings {
                 batch = batch.put(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, mutation.id.clone()).encode(),
-                    NoPayload.encode(),
+                    Posting::Counted { frequency, length }.encode(),
                 );
             }
         }
@@ -570,13 +572,28 @@ fn search_analyzer<'a>(
 /// the shape of drift that gets noticed as a ranking that is subtly wrong.
 #[derive(Debug, Default)]
 struct Analysed {
-    /// One entry per **distinct** term: a word twice in one document is one
-    /// posting, because the question a posting answers is membership and a
-    /// duplicate key would be written twice to say the same thing.
-    postings: Vec<IndexValues>,
+    /// One entry per **distinct** term, with the number of times it occurs.
+    ///
+    /// Still one posting per distinct term — a duplicate key would be written
+    /// twice to say the same thing — but the count is no longer discarded on the
+    /// way there. It is what a relevance score means by *how often*, and it can
+    /// only be taken here, from the same analyzer pass that produced the terms.
+    postings: Vec<(IndexValues, u32)>,
     /// How many tokens the text holds, **with** repeats — this is a length, and
     /// a length that collapsed repeats would not be one.
     tokens: u64,
+}
+
+impl Analysed {
+    /// The record's length as a posting states it.
+    ///
+    /// Narrowed rather than cast: a document of more than four billion tokens
+    /// saturates, and a saturated length makes a score slightly wrong for one
+    /// absurd record where a wrapped one would make it wrong by an arbitrary
+    /// amount for that record and correct-looking for every other.
+    fn length(&self) -> u32 {
+        u32::try_from(self.tokens).unwrap_or(u32::MAX)
+    }
 }
 
 /// Every cell of one record's geometry, written into `batch`.
@@ -690,11 +707,17 @@ fn terms_of(definition: &IndexDefinition, analyzer: Option<&Analyzer>, value: &V
     let mut terms: Vec<String> = analyzer.terms(text);
     let tokens = u64::try_from(terms.len()).unwrap_or(u64::MAX);
     terms.sort_unstable();
-    terms.dedup();
+    // Sorting puts equal terms next to each other, so a run *is* the count. This
+    // replaces a `dedup()` that threw the run length away — the same pass, one
+    // number further.
     Analysed {
         postings: terms
-            .into_iter()
-            .map(|term| IndexValues::of(&[Value::from(term.as_str())]))
+            .chunk_by(|held, next| held == next)
+            .filter_map(|run| {
+                let term = run.first()?;
+                let frequency = u32::try_from(run.len()).unwrap_or(u32::MAX);
+                Some((IndexValues::of(&[Value::from(term.as_str())]), frequency))
+            })
             .collect(),
         tokens,
     }
@@ -846,4 +869,93 @@ pub(crate) fn project(definition: &IndexDefinition, value: &Value) -> Vec<IndexV
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
+    use tessari_types::{Analyzer, DatabaseId, Filter, IndexId, NamespaceId, Path, TableId, Value};
+
+    use super::terms_of;
+    use crate::catalog::IndexDefinition;
+
+    fn definition() -> IndexDefinition {
+        IndexDefinition {
+            id: IndexId::new(1),
+            namespace: NamespaceId::new(1),
+            database: DatabaseId::new(1),
+            table: TableId::new(1),
+            name: "by_body".to_owned(),
+            fields: vec![Path::field("body")],
+            search: true,
+            unique: false,
+            vector: None,
+            spatial: false,
+        }
+    }
+
+    fn record(text: &str) -> Value {
+        Value::Object(
+            [("body".to_owned(), Value::from(text))]
+                .into_iter()
+                .collect(),
+        )
+    }
+
+    /// The frequency of each term, keyed by the term as written.
+    fn analysed(text: &str) -> (Vec<u32>, u64) {
+        let analyzer = Analyzer::new(vec![Filter::Lowercase]);
+        let found = terms_of(&definition(), Some(&analyzer), &record(text));
+        (
+            found.postings.iter().map(|(_, count)| *count).collect(),
+            found.tokens,
+        )
+    }
+
+    #[test]
+    fn a_word_twice_is_one_posting_that_says_twice() {
+        // The whole of what changed here: the terms are still deduplicated into
+        // one posting each, but the run length is no longer thrown away on the
+        // way. `dedup()` discarded exactly this number.
+        let (frequencies, tokens) = analysed("lock lock contention");
+        assert_eq!(frequencies.len(), 2, "two distinct terms");
+        assert_eq!(frequencies.iter().sum::<u32>(), 3, "three tokens posted");
+        assert!(frequencies.contains(&2), "the repeated term says 2");
+        assert_eq!(tokens, 3, "length counts repeats");
+    }
+
+    #[test]
+    fn every_term_of_a_text_with_no_repeats_says_once() {
+        let (frequencies, tokens) = analysed("lock contention here");
+        assert_eq!(frequencies, vec![1, 1, 1]);
+        assert_eq!(tokens, 3);
+    }
+
+    #[test]
+    fn the_frequency_is_taken_after_the_filters_and_not_before() {
+        // `Lock` and `lock` are one term once lowercased, so they are one posting
+        // with a frequency of two. Counting before the filters would report two
+        // postings of one, which is the same mistake as scoring the spelling
+        // rather than the word.
+        let (frequencies, tokens) = analysed("Lock lock");
+        assert_eq!(frequencies, vec![2]);
+        assert_eq!(tokens, 2);
+    }
+
+    #[test]
+    fn a_field_with_no_analyzer_posts_nothing_and_has_no_length() {
+        let found = terms_of(&definition(), None, &record("lock contention"));
+        assert!(found.postings.is_empty());
+        assert_eq!(found.tokens, 0);
+    }
+
+    #[test]
+    fn the_length_a_posting_states_saturates_rather_than_wrapping() {
+        // A wrapped length would make one absurd record's score wrong by an
+        // arbitrary amount while every other record still looked right.
+        let mut found = terms_of(&definition(), None, &record(""));
+        found.tokens = u64::from(u32::MAX) + 1;
+        assert_eq!(found.length(), u32::MAX);
+    }
 }

@@ -40,7 +40,7 @@ mod value;
 
 pub use error::{Error, Result};
 pub use index_keys::{
-    INDEX_PREFIX_LEN, IndexAddress, IndexTarget, IndexValues, NoPayload, PostingKey,
+    INDEX_PREFIX_LEN, IndexAddress, IndexTarget, IndexValues, NoPayload, Posting, PostingKey,
     SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, UniqueIndexKey, VectorNode,
     VectorNodeKey,
 };
