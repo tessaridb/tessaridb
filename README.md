@@ -131,6 +131,7 @@ possible rather than aspirational.
 
 **Stage: active development · `0.0.1-alpha` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
+<!-- absent: published-to-crates-io -->
 
 - ✅ **Runs:** the embedded library, the `tessaridb` command line, the HTTP and
   WebSocket surface, the binary wire protocol (v1.0, with a published spec and
@@ -152,11 +153,16 @@ follows is what runs today, not a roadmap.
   larger than a position (which is why the nearest few is over positions), a
   nearest-first read under a `WHERE`, and any measured tuning of how finely a
   query is covered.
+  <!-- absent: distance-to-a-shape-larger-than-a-position -->
+  <!-- absent: nearest-first-under-a-where -->
+  <!-- absent: measured-covering-budget -->
   Peers are declared and read back, but nothing replicates between them.
 - ⛔ **Not there:** sharding, replication, and cluster membership. The language
   has words for them; the engine does not have the machinery yet.
+  <!-- absent: sharding-replication-cluster-membership -->
 - ⚠️ **Unstable:** the query language, the wire format and the on-disk format all
   change without notice before 1.0, and there is no migration between versions.
+  <!-- absent: migration-between-versions -->
 
 Use it for prototypes, evaluation and development. Do not put data you cannot
 lose behind it yet — and if you do run it, pin a commit, because `dev` moves.

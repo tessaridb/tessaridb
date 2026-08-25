@@ -57,12 +57,18 @@ absences is worse than one that is missing more.
   that read is over positions; a nearest-first read under a `WHERE`;
   and any *measured* choice of how finely a query is covered — the budget is a declared constant,
   and the candidate-to-result ratio the store now measures is what will move it.
+  <!-- absent: distance-to-a-shape-larger-than-a-position -->
+  <!-- absent: nearest-first-under-a-where -->
+  <!-- absent: measured-covering-budget -->
 - **No sharding, no replication, no cluster membership.** Peers can be declared
   and read back; nothing replicates between them. The language has words for
   these; the engine does not have the machinery.
+  <!-- absent: sharding-replication-cluster-membership -->
 - **Not published to crates.io.** Every crate carries `publish = false`. Build it
   from source.
+  <!-- absent: published-to-crates-io -->
 - **No migration between versions**, as above.
+  <!-- absent: migration-between-versions -->
 
 ### Known rough edges
 
