@@ -134,6 +134,7 @@ impl Transaction<'_> {
         loop {
             attempt = attempt.saturating_add(1);
             if attempt > MAX_COMMIT_ATTEMPTS {
+                log::error!("commit gave up after {MAX_COMMIT_ATTEMPTS} attempts");
                 return Err(Error::CommitContention {
                     attempts: MAX_COMMIT_ATTEMPTS,
                 });
@@ -167,6 +168,10 @@ impl Transaction<'_> {
                 // waiting, so that this attempt does not re-race into the same
                 // instant as every other loser.
                 Err(tessari_kv::Error::Conflict { .. }) => {
+                    // At debug: one contended key under load produces this line
+                    // per loser per attempt, and a retry that then succeeds is
+                    // the design working rather than an event.
+                    log::debug!("commit lost attempt {attempt}, retrying");
                     back_off(attempt);
                     continue;
                 }

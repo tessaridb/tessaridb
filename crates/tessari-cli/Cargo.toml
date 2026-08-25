@@ -21,6 +21,7 @@ tessari-serve.workspace = true
 # Installing a signal handler is not expressible in safe Rust and `std` has no
 # signal API. Already in the tree through the engine, so this costs no crate.
 libc = "0.2"
+log.workspace = true
 tessari-ql.workspace = true
 tessari-storage.workspace = true
 tessari-types.workspace = true

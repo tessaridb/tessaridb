@@ -33,6 +33,7 @@
 //! stated in `.help` rather than left to be discovered by pressing up.
 
 mod arguments;
+mod logging;
 mod render;
 mod session;
 mod shutdown;
@@ -49,6 +50,10 @@ use crate::arguments::{Asked, Serving, Source, credentials, parse};
 use crate::session::{Ended, Mode};
 
 fn main() -> ExitCode {
+    // Before anything that could have something to report. A second logger
+    // installed by an embedding caller would already have won, and that is the
+    // right outcome — this one belongs to the binary.
+    drop(logging::install());
     let asked = match parse(env::args().skip(1)) {
         Ok(asked) => asked,
         Err(complaint) => {

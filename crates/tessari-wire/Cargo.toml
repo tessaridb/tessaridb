@@ -19,7 +19,13 @@ publish.workspace = true
 # in one crate on purpose, so that a change to a frame breaks the other end at
 # compile time rather than in somebody's deployment.
 default = ["server"]
-server = ["dep:tessaridb", "dep:tessari-serve", "dep:tessari-session", "dep:tessari-storage"]
+server = [
+    "dep:tessaridb",
+    "dep:tessari-serve",
+    "dep:tessari-session",
+    "dep:tessari-storage",
+    "dep:log",
+]
 
 [dependencies]
 tessaridb = { workspace = true, optional = true }
@@ -29,6 +35,9 @@ tessari-ql.workspace = true
 tessari-session = { workspace = true, optional = true }
 tessari-storage = { workspace = true, optional = true }
 tessari-types.workspace = true
+# Server-side only: a client that logs nothing keeps the crate count the lean
+# build is measured by.
+log = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -57,6 +66,10 @@ required-features = ["server"]
 
 [[test]]
 name = "talking"
+required-features = ["server"]
+
+[[test]]
+name = "reporting"
 required-features = ["server"]
 
 [lints]

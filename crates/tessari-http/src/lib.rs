@@ -57,6 +57,7 @@ mod respond;
 mod websocket;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tessari_serve::{Busy, Census, Stopping};
 use tessaridb::Db;
@@ -175,10 +176,21 @@ impl Node {
             // began between the accept and the spawn would otherwise drain to
             // zero while this request had not started.
             let mut busy = self.stopping.busy();
+            let id = next_request();
+            log::info!(
+                "request {id} {} {} from {}",
+                request.method(),
+                request.url(),
+                request.remote_addr().map_or_else(
+                    || "an address tiny_http would not give".to_owned(),
+                    std::string::ToString::to_string
+                )
+            );
             // A panic in one request must not take the listener with it, and a
             // thread is what gives that for free.
             std::thread::spawn(move || {
                 answer(
+                    id,
                     &db,
                     &stopping,
                     census.as_deref(),
@@ -198,7 +210,9 @@ impl Node {
     pub fn serve_one(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let request = self.server.recv()?;
         let mut busy = self.stopping.busy();
+        let id = next_request();
         answer(
+            id,
             &self.db,
             &self.stopping,
             self.census.as_deref(),
@@ -210,8 +224,22 @@ impl Node {
     }
 }
 
+/// Names one request across every line it produces.
+///
+/// A request rather than a connection, because this surface holds no state
+/// between them: no cookies, no session, no `USE` that outlives one. Following a
+/// client across requests is authentication's job, and this number does not
+/// pretend to do it.
+static REQUESTS: AtomicU64 = AtomicU64::new(0);
+
+/// The next request's name.
+fn next_request() -> u64 {
+    REQUESTS.fetch_add(1, Ordering::Relaxed)
+}
+
 /// Route one request and write its answer.
 fn answer(
+    id: u64,
     db: &Db,
     stopping: &Stopping,
     census: Option<&Census>,
@@ -321,6 +349,17 @@ fn answer(
     // writes passes through, which is what keeps "what a refusal is" a single
     // decision rather than one taken again at each route.
     stopping.answered(reply.status >= 400);
+
+    // Reported at the same single place, and at a level the status decides: a
+    // 404 is traffic and a 500 is an event, and an operator filtering by level
+    // should not have to know which routes produce which.
+    if reply.status >= 500 {
+        log::error!("request {id} answered {}", reply.status);
+    } else if reply.status >= 400 {
+        log::warn!("request {id} answered {}", reply.status);
+    } else {
+        log::info!("request {id} answered {}", reply.status);
+    }
 
     // A statement that succeeded may have committed something, so wake this
     // node's subscribers rather than leaving them to notice on their next

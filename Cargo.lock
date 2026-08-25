@@ -1050,6 +1050,7 @@ name = "tessari-cli"
 version = "0.0.1-alpha"
 dependencies = [
  "libc",
+ "log",
  "rust_decimal",
  "tempfile",
  "tessari-backup",
@@ -1104,6 +1105,7 @@ dependencies = [
 name = "tessari-http"
 version = "0.0.1-alpha"
 dependencies = [
+ "log",
  "tessari-backup",
  "tessari-constants",
  "tessari-kv",
@@ -1161,6 +1163,7 @@ name = "tessari-session"
 version = "0.0.1-alpha"
 dependencies = [
  "argon2",
+ "log",
  "rust_decimal",
  "tessari-backup",
  "tessari-constants",
@@ -1177,6 +1180,7 @@ dependencies = [
 name = "tessari-storage"
 version = "0.0.1-alpha"
 dependencies = [
+ "log",
  "tessari-constants",
  "tessari-encoding",
  "tessari-geo",
@@ -1198,6 +1202,7 @@ dependencies = [
 name = "tessari-wire"
 version = "0.0.1-alpha"
 dependencies = [
+ "log",
  "rust_decimal",
  "tessari-backup",
  "tessari-encoding",

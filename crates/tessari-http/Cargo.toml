@@ -21,6 +21,7 @@ tessaridb.workspace = true
 tessari-constants.workspace = true
 tessari-serve.workspace = true
 tessari-types.workspace = true
+log.workspace = true
 thiserror.workspace = true
 tiny_http = "0.12"
 

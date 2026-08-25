@@ -6,6 +6,7 @@
 use std::io::{BufReader, BufWriter};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tessari_serve::{Busy, Stopping};
 use tessaridb::feed::{self, Commits, Following};
@@ -15,6 +16,26 @@ use crate::error::{Error, Result};
 use crate::message::Request;
 use crate::push::Follow;
 use crate::{READING, client, frame, message, push};
+
+/// Names one connection across every line it produces.
+///
+/// Monotonic within a process and never reused, so two lines carrying the same
+/// number are the same conversation. It says nothing across restarts, which is
+/// all an operator following one client through a refusal needs it to say.
+static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
+
+/// The next connection's name.
+fn next_connection() -> u64 {
+    CONNECTIONS.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Where a connection came from, for the line that says it arrived.
+fn from_where(stream: &TcpStream) -> String {
+    stream.peer_addr().map_or_else(
+        |_| "an address the socket would not give".to_owned(),
+        |at| at.to_string(),
+    )
+}
 
 /// A node listening for connections.
 pub struct Node {
@@ -81,12 +102,20 @@ impl Node {
             let committed = Arc::clone(&self.committed);
             let stopping = Arc::clone(&self.stopping);
             let busy = self.stopping.busy();
+            let id = next_connection();
+            log::info!("connection {id} accepted from {}", from_where(&stream));
             // A connection that goes wrong takes its own thread down and nothing
             // else: a node that could be stopped by one client's malformed frame
             // would be a node anybody can stop.
             drop(std::thread::spawn(move || {
                 let mut busy = busy;
-                drop(converse(&db, &committed, &stopping, &mut busy, stream));
+                match converse(id, &db, &committed, &stopping, &mut busy, stream) {
+                    Ok(()) => log::info!("connection {id} closed"),
+                    // Not a warning. A client hanging up mid-frame is the
+                    // ordinary end of a conversation, and reporting it as a
+                    // problem would make the level useless for finding one.
+                    Err(why) => log::info!("connection {id} ended: {why}"),
+                }
             }));
         }
     }
@@ -99,7 +128,16 @@ impl Node {
     pub fn serve_one(&self) -> Result<()> {
         let (stream, _) = self.listener.accept()?;
         let mut busy = self.stopping.busy();
-        converse(&self.db, &self.committed, &self.stopping, &mut busy, stream)
+        let id = next_connection();
+        log::info!("connection {id} accepted from {}", from_where(&stream));
+        converse(
+            id,
+            &self.db,
+            &self.committed,
+            &self.stopping,
+            &mut busy,
+            stream,
+        )
     }
 }
 
@@ -138,6 +176,7 @@ fn reply(
 }
 
 fn converse(
+    id: u64,
     db: &Db,
     committed: &Commits,
     stopping: &Stopping,
@@ -167,6 +206,7 @@ fn converse(
             // the feed count is what lets the drain finish and the stage after
             // it end the feeds deliberately.
             busy.became_a_feed();
+            log::info!("connection {id} became a subscription");
             return follow(
                 db,
                 committed,
@@ -187,6 +227,7 @@ fn converse(
         {
             // The session's own refusal, travelling as one. A second rule here
             // would be a second place for "who may do this" to be decided.
+            log::warn!("connection {id} refused: {refusal}");
             reply(
                 &mut writer,
                 stopping,

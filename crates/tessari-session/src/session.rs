@@ -147,11 +147,17 @@ impl<'a> Session<'a> {
             // The hash is still computed for a name that does not exist, so the
             // time a refusal takes does not say whether the name did.
             let _ = identity::verifies(password, ABSENT_USER_HASH);
+            // The name is reported and the reason is not, for the same reason
+            // the caller is told neither: a log an operator reads is also a log
+            // an attacker reads once they are inside.
+            log::warn!("sign-in refused for {name}");
             return Err(Error::SignInRefused);
         };
         if !identity::verifies(password, &user.secret) {
+            log::warn!("sign-in refused for {name}");
             return Err(Error::SignInRefused);
         }
+        log::info!("signed in as {name}");
         self.identity = Identity::Signed(Box::new(user));
         Ok(())
     }
