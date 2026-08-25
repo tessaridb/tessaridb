@@ -173,9 +173,34 @@ impl Function {
 
     /// How many arguments it takes.
     #[must_use]
+    /// # Every function is named, and there is no catch-all
+    ///
+    /// There used to be a `_ => 1`, and it is the arm that nearly shipped a
+    /// one-argument `geo::touches`: the variant was added, the compiler named
+    /// only the matches that were already exhaustive, and this one answered
+    /// with a number that was simply wrong. The parser would then have refused
+    /// every correctly written call and accepted a malformed one, and the only
+    /// thing that would have caught it is that somebody wrote the conformance
+    /// case.
+    ///
+    /// So a function added to the language will not compile until somebody says
+    /// how many arguments it takes.
     pub const fn arity(self) -> usize {
         match self {
             Self::TimeNow => 0,
+            Self::StringLen
+            | Self::StringLower
+            | Self::StringUpper
+            | Self::StringTrim
+            | Self::ArrayLen
+            | Self::ArrayFirst
+            | Self::ArrayLast
+            | Self::MathAbs
+            | Self::MathFloor
+            | Self::MathCeil
+            | Self::MathRound
+            | Self::TypeOf
+            | Self::GeoArea => 1,
             Self::StringConcat
             | Self::VectorCosine
             | Self::VectorEuclidean
@@ -191,7 +216,6 @@ impl Function {
             | Self::GeoEquals
             | Self::GeoTouches
             | Self::GeoDistance => 2,
-            _ => 1,
         }
     }
 
