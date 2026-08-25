@@ -116,7 +116,24 @@ pub fn run(
 
     // Input that ran out mid-statement is worth saying: silently discarding it
     // looks exactly like a statement that ran and answered nothing.
-    if scan(&pending).substantial {
+    let remainder = scan(&pending);
+    if remainder.open_transaction {
+        // Hand it over rather than describing it. The store is what discards
+        // the work of a transaction nobody closed, so the store's own wording
+        // is what reports it — the same message `-e` and the conformance
+        // corpus already get for the same input.
+        match store.run(&pending) {
+            Ok(answers) => {
+                for answer in &answers {
+                    report(out, answer)?;
+                }
+            }
+            Err(refusal) => {
+                writeln!(out, "error: {refusal}")?;
+                ended = Ended::Refused;
+            }
+        }
+    } else if remainder.substantial {
         writeln!(out, "error: input ended inside an unfinished statement")?;
         ended = Ended::Refused;
     }
@@ -168,6 +185,18 @@ struct Scan {
     /// closed is reported as a statement that ran out. A file whose last line
     /// is a note has nothing unfinished in it.
     substantial: bool,
+    /// A `BEGIN` in this text has no `COMMIT` or `CANCEL` after it.
+    open_transaction: bool,
+}
+
+/// The three words that move a transaction boundary, recognised only where a
+/// statement begins — so a field called `begin` is a field.
+fn boundary(word: &str, open: &mut bool) {
+    if word.eq_ignore_ascii_case("BEGIN") {
+        *open = true;
+    } else if word.eq_ignore_ascii_case("COMMIT") || word.eq_ignore_ascii_case("CANCEL") {
+        *open = false;
+    }
 }
 
 /// Reads far enough to find a statement's end, honouring quotes and comments.
@@ -190,8 +219,22 @@ fn scan(text: &str) -> Scan {
     let mut escaped = false;
     let mut commented = false;
     let mut substantial = false;
+    let mut open_transaction = false;
+    let mut closed = false;
+    // The first word of a statement is the only place a keyword is a keyword.
+    let mut at_statement_start = true;
+    let mut word = String::new();
     let mut characters = text.chars().peekable();
     while let Some(character) = characters.next() {
+        // A word ends at anything that cannot be inside one.
+        if !character.is_alphanumeric() && character != '_' && !word.is_empty() {
+            if at_statement_start {
+                boundary(&word, &mut open_transaction);
+                at_statement_start = false;
+            }
+            word.clear();
+        }
+
         if commented {
             commented = character != '\n';
             continue;
@@ -206,6 +249,7 @@ fn scan(text: &str) -> Scan {
             (Some(_), _) => {}
             (None, '\'' | '"') => {
                 substantial = true;
+                at_statement_start = false;
                 quote = Some(character);
             }
             // Only a doubled dash opens a comment. A single one is arithmetic,
@@ -215,17 +259,33 @@ fn scan(text: &str) -> Scan {
                 commented = true;
             }
             (None, ';') => {
-                return Scan {
-                    closed: true,
-                    substantial: true,
-                };
+                substantial = true;
+                at_statement_start = true;
+                // A `;` inside a transaction ends a statement and not the group
+                // that has to be submitted together. Closing here is what made a
+                // `BEGIN;` in a file arrive on its own, be discarded for ending
+                // with a transaction open, and leave every statement after it
+                // to commit by itself.
+                if !open_transaction {
+                    closed = true;
+                    break;
+                }
+            }
+            (None, held) if held.is_alphanumeric() || held == '_' => {
+                substantial = true;
+                word.push(held);
             }
             (None, held) => substantial = substantial || !held.is_whitespace(),
         }
     }
+    // A word running up to the end of the text was never terminated above.
+    if at_statement_start && !word.is_empty() {
+        boundary(&word, &mut open_transaction);
+    }
     Scan {
-        closed: false,
+        closed,
         substantial,
+        open_transaction,
     }
 }
 
@@ -301,6 +361,86 @@ mod tests {
             "the filter was dropped\n{out}"
         );
         assert!(!out.contains("grace"), "the filter was dropped\n{out}");
+    }
+
+    #[test]
+    fn a_transaction_read_from_a_file_is_one_transaction() {
+        // The defect this pins was silent and total: split at every `;`, a
+        // `BEGIN;` arrived as a script of its own, was discarded for ending
+        // with a transaction open, and every statement that followed ran as
+        // its own committed write. A migration in a file was therefore not a
+        // migration — it was its statements, applied one at a time, which is
+        // the half-applied state the boundary exists to prevent. It worked
+        // through `-e`, because that path hands the whole string over at once,
+        // so the two ways of running the same script disagreed.
+        assert!(!closed("BEGIN;\n"));
+        assert!(!closed("BEGIN;\nCREATE users:1 = { name: 'ada' };\n"));
+        assert!(closed("BEGIN;\nCREATE users:1 = { name: 'ada' };\nCOMMIT;"));
+        assert!(closed("BEGIN;\nCREATE users:1 = { name: 'ada' };\nCANCEL;"));
+
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE orders; USE DATABASE orders;\n\
+             BEGIN;\n\
+             DEFINE TABLE users;\n\
+             CREATE users:1 = { name: 'ada' };\n\
+             COMMIT;\n\
+             SELECT * FROM users;\n",
+            Mode::Script,
+        );
+        assert_eq!(ended, Ended::Fine, "{out}");
+        assert!(out.contains("(1 record(s)"), "{out}");
+    }
+
+    #[test]
+    fn a_cancelled_transaction_from_a_file_leaves_nothing() {
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE orders; USE DATABASE orders;\n\
+             BEGIN;\n\
+             DEFINE TABLE accounts;\n\
+             CREATE accounts:1 = { balance: 10 };\n\
+             CANCEL;\n\
+             SELECT * FROM accounts;\n",
+            Mode::Script,
+        );
+        // The table was never defined, so the read is refused — which is the
+        // corpus's assertion, and it can only hold if the `CANCEL` undid a
+        // `DEFINE` that was inside the boundary with it.
+        //
+        // Naming the refusal is what makes this test discriminating. Before the
+        // fix it also ended `Refused`, but for an unrelated reason: the `CANCEL`
+        // arrived with nothing open and was itself the refusal, while the
+        // `DEFINE` it was meant to undo had already committed on its own.
+        assert_eq!(ended, Ended::Refused, "{out}");
+        assert!(out.contains(r#"no table named "accounts""#), "{out}");
+        assert!(!out.contains("balance"), "{out}");
+    }
+
+    #[test]
+    fn a_transaction_left_open_is_reported_by_the_store_that_discarded_it() {
+        // Not by a message this module invents. The store is the thing that
+        // discarded the work, so the store's own wording is what says so, and
+        // it is the same wording `-e` and the corpus already get.
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE orders; USE DATABASE orders;\n\
+             DEFINE TABLE users;\n\
+             BEGIN;\n\
+             CREATE users:2 = { name: 'grace' };\n",
+            Mode::Script,
+        );
+        assert_eq!(ended, Ended::Refused, "{out}");
+        assert!(out.contains("transaction still open"), "{out}");
+    }
+
+    #[test]
+    fn a_field_called_begin_does_not_open_one() {
+        // The keyword is only a keyword where a statement starts. A record with
+        // a `begin` field is ordinary data, and reading it as an open boundary
+        // would swallow every statement after it up to the end of the input.
+        assert!(closed("CREATE meetings:1 = { begin: '09:00' };"));
+        assert!(closed("SELECT begin FROM meetings;"));
     }
 
     #[test]
