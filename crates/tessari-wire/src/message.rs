@@ -194,6 +194,21 @@ mod tag {
 #[cfg(feature = "server")]
 #[must_use]
 pub fn encode_outcome(outcome: &Outcome, names: &Names) -> Vec<u8> {
+    let inner = encode_outcome_body(outcome, names);
+    // The length in front is what makes an unknown outcome survivable: a client
+    // that does not recognise the tag reads the length, yields `Unknown`, steps
+    // over the rest and carries on with the next outcome. Without it a newer
+    // node introducing an outcome kind anywhere in an answer breaks every older
+    // client, because the reader has no way to find where the next one starts.
+    let mut body = Vec::with_capacity(inner.len().saturating_add(4));
+    put_u32(&mut body, u32::try_from(inner.len()).unwrap_or(u32::MAX));
+    body.extend_from_slice(&inner);
+    body
+}
+
+/// The outcome itself, from its tag onward — everything the length counts.
+#[cfg(feature = "server")]
+fn encode_outcome_body(outcome: &Outcome, names: &Names) -> Vec<u8> {
     let mut body = Vec::new();
     match outcome {
         Outcome::Done => body.push(tag::DONE),
@@ -268,8 +283,20 @@ pub enum Answer {
 ///
 /// Returns [`Error::Malformed`] when the body does not hold what it claims.
 pub fn decode_outcome(body: &[u8], at: usize) -> Result<(Answer, usize)> {
-    let tag = body.get(at).copied().ok_or(Error::Malformed)?;
-    let mut at = at.saturating_add(1);
+    let (length, start) = take_u32(body, at)?;
+    let length = usize::try_from(length).map_err(|_| Error::Malformed)?;
+    let end = start.checked_add(length).ok_or(Error::Malformed)?;
+    let inner = body.get(start..end).ok_or(Error::Malformed)?;
+    // The next outcome begins where the length said it would, whatever the
+    // decode below consumed. That is the whole point of the length: an outcome
+    // this build has no name for costs it the bytes and not the connection.
+    Ok((decode_outcome_body(inner)?, end))
+}
+
+/// One outcome, from its tag onward, in exactly the bytes its length claimed.
+fn decode_outcome_body(body: &[u8]) -> Result<Answer> {
+    let tag = body.first().copied().ok_or(Error::Malformed)?;
+    let mut at = 1_usize;
     let answer = match tag {
         tag::DONE => Answer::Done,
         tag::RECORDS => {
@@ -322,7 +349,11 @@ pub fn decode_outcome(body: &[u8], at: usize) -> Result<(Answer, usize)> {
         }
         _ => Answer::Unknown,
     };
-    Ok((answer, at))
+    // `at` has done its work inside this outcome; the caller advances by the
+    // declared length instead, so a short read here cannot desynchronise the
+    // stream.
+    let _ = at;
+    Ok(answer)
 }
 
 /// The names, as a count and that many pairs.
