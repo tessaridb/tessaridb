@@ -34,6 +34,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DefineDatabase { .. }
         | StatementKind::DefineAnalyzer { .. }
         | StatementKind::DefineUser { .. }
+        | StatementKind::AlterUser { .. }
         | StatementKind::DropUser { .. }
         | StatementKind::Grant { .. }
         | StatementKind::Revoke { .. }

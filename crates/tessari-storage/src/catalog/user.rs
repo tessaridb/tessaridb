@@ -269,6 +269,17 @@ impl Catalog<'_, '_> {
             .is_empty())
     }
 
+    /// Write a user's declaration back over itself.
+    ///
+    /// The id and the name are what the definition already carries, so the name
+    /// claim and every grant keyed by the id stay exactly where they were. That
+    /// is the whole reason this exists rather than a drop-and-recreate: a new id
+    /// would silently strand the grants, and the catalog refuses to reuse ids
+    /// precisely so that nothing inherits them later.
+    pub fn update_user(&mut self, user: &UserDefinition) {
+        self.write(system::USERS, user.id, &user.to_value());
+    }
+
     /// Remove a user's declaration and release its name.
     ///
     /// # Errors

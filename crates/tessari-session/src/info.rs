@@ -228,6 +228,17 @@ impl Session<'_> {
                 span,
             });
         };
+        // The same boundary the listing draws, drawn again here. A caller who
+        // cannot be *shown* somebody in a list has no business reading their
+        // role, their tenancy and every grant they hold by naming them instead
+        // — and the singular form is the one an operator reaches for when they
+        // already have a name to try.
+        if !self.administers(&user) {
+            return Err(Error::NotYours {
+                user: user.name.clone(),
+                span,
+            });
+        }
         let grants = catalog.grants_for(user.id)?;
         let mut described = Vec::new();
         for grant in &grants {
@@ -266,18 +277,9 @@ impl Session<'_> {
     /// each, and `INFO FOR USER <name>` is where a single subject is examined.
     fn info_users(&self, transaction: &mut Transaction<'_>) -> Result<BTreeMap<String, Value>> {
         let catalog = Catalog::new(transaction);
-        let (namespace, database) = match &self.identity {
-            // An open store has no users to list; a closed one refuses an
-            // anonymous caller long before here. Reaching this with nobody
-            // signed in therefore means the store is open, and an open store
-            // hides nothing from anybody.
-            Identity::Anonymous => (None, None),
-            Identity::Signed(who) => (who.namespace, who.database),
-        };
-
         let mut listed = Vec::new();
         for user in catalog.users()? {
-            if !within(namespace, database, &user) {
+            if !self.administers(&user) {
                 continue;
             }
             let mut described = described_user(&user);
@@ -500,7 +502,25 @@ fn described_index(index: &IndexDefinition) -> Value {
     Value::Object(described)
 }
 
-/// One user, without the secret.
+impl Session<'_> {
+    /// Whether this caller administers the tenancy this user belongs to.
+    ///
+    /// The one place the boundary is computed, so that reading about somebody,
+    /// listing them and changing them cannot come to different answers. They did
+    /// once: the listing filtered and the singular did not, which meant a name
+    /// somebody could not be shown was a name they could still look up.
+    pub(crate) fn administers(&self, user: &UserDefinition) -> bool {
+        match &self.identity {
+            // An open store has no users to hide behind; a closed one refuses an
+            // anonymous caller long before here. Reaching this with nobody
+            // signed in therefore means the store is open, and an open store
+            // hides nothing from anybody.
+            Identity::Anonymous => true,
+            Identity::Signed(who) => within(who.namespace, who.database, user),
+        }
+    }
+}
+
 /// Whether a caller holding this tenancy may be told about this user.
 ///
 /// Containment, not equality, and asymmetric on purpose: the whole store
@@ -518,6 +538,7 @@ fn within(
     }
 }
 
+/// One user, without the secret.
 fn described_user(user: &UserDefinition) -> BTreeMap<String, Value> {
     BTreeMap::from([
         ("user".to_owned(), Value::from(user.name.as_str())),

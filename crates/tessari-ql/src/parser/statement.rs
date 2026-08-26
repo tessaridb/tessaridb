@@ -5,7 +5,7 @@ use tessari_types::{FieldKind, Filter, Path, Step};
 
 use crate::ast::{
     Assignment, Direction, Edit, ExprKind, FieldPath, Hop, InfoSubject, Password, Projection,
-    RangeExpr, RecordTarget, Select, Source, Statement, StatementKind, TableRef,
+    RangeExpr, RecordTarget, Select, Source, Statement, StatementKind, TableRef, UserChange,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -53,6 +53,7 @@ impl Parser<'_> {
             Some(Keyword::Use) => self.use_statement()?,
             Some(Keyword::Define) => self.define_statement()?,
             Some(Keyword::Drop) => self.drop_statement()?,
+            Some(Keyword::Alter) => self.alter_statement()?,
             Some(Keyword::Rebuild) => self.rebuild_statement()?,
             Some(Keyword::Grant) => self.grant_statement(true)?,
             Some(Keyword::Revoke) => self.grant_statement(false)?,
@@ -513,6 +514,34 @@ impl Parser<'_> {
             password: Password::new(password),
             if_not_exists,
         })
+    }
+
+    /// `ALTER USER ada SET PASSWORD '…'` · `ALTER USER ada SET ROLE editor`
+    ///
+    /// `USER` is the only thing this verb takes, and it is still spelled out.
+    /// The alternative — `ALTER ada SET …` — reads as though there were one
+    /// namespace of alterable things, and the first time a table becomes
+    /// alterable that reading is wrong everywhere it was written.
+    fn alter_statement(&mut self) -> Result<StatementKind> {
+        self.advance();
+        if !self.eat_keyword(Keyword::User) {
+            return Err(self.error_here("`USER` and the user to change"));
+        }
+        let name = self.name()?;
+        self.expect_keyword(Keyword::Set, "`SET` and the one thing to change")?;
+        let change = match self.peek_keyword() {
+            Some(Keyword::Password) => {
+                self.advance();
+                let (password, _) = self.text("the new password, as text")?;
+                UserChange::Password(Password::new(password))
+            }
+            Some(Keyword::Role) => {
+                self.advance();
+                UserChange::Role(self.name()?)
+            }
+            _ => return Err(self.error_here("`PASSWORD` or `ROLE`")),
+        };
+        Ok(StatementKind::AlterUser { name, change })
     }
 
     /// `DEFINE ANALYZER simple FILTERS lowercase, ascii`

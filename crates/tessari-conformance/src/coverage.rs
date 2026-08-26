@@ -30,6 +30,7 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DefineField { .. } => "DEFINE FIELD",
         StatementKind::DefineAnalyzer { .. } => "DEFINE ANALYZER",
         StatementKind::DefineUser { .. } => "DEFINE USER",
+        StatementKind::AlterUser { .. } => "ALTER USER",
         StatementKind::DefineNode { .. } => "DEFINE NODE",
         StatementKind::DefineReplica { .. } => "DEFINE REPLICA",
         StatementKind::DropUser { .. } => "DROP USER",

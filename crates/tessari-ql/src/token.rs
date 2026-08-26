@@ -218,6 +218,15 @@ pub enum Keyword {
     Define,
     /// `DROP`
     Drop,
+    /// `ALTER` — changes one thing about something that already exists.
+    ///
+    /// A separate verb from `DEFINE` because it means a different act:
+    /// `DEFINE` brings a user into being and refuses a name already taken,
+    /// while `ALTER` reaches an existing one and touches exactly the field it
+    /// names. Spelling both as `DEFINE` would make a re-declaration either an
+    /// error or a silent whole-record overwrite, and the second is how a
+    /// password rotation quietly resets somebody's role.
+    Alter,
     /// `REBUILD` — make an index's entries what its table's rows imply.
     Rebuild,
     /// `TABLE`
@@ -355,6 +364,7 @@ impl Keyword {
             Self::Database => "DATABASE",
             Self::Define => "DEFINE",
             Self::Drop => "DROP",
+            Self::Alter => "ALTER",
             Self::Rebuild => "REBUILD",
             Self::Table => "TABLE",
             Self::Space => "SPACE",
@@ -427,6 +437,7 @@ impl Keyword {
         Self::Database,
         Self::Define,
         Self::Drop,
+        Self::Alter,
         Self::Rebuild,
         Self::Table,
         Self::Space,

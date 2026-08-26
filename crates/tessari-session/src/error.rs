@@ -391,6 +391,28 @@ pub enum Error {
         span: Span,
     },
 
+    /// An owner reached a user outside the tenancy they own.
+    ///
+    /// Distinct from [`Error::RoleForbids`], which says the caller's role is too
+    /// small: here the role is exactly right and the *reach* is not, and the two
+    /// send an operator to different fixes — one to a role change, the other to
+    /// somebody further up.
+    ///
+    /// It names the user rather than answering "no such user", which would be
+    /// the other way to keep the boundary. A store where `ALTER USER root …`
+    /// says the name is unknown while `DEFINE USER root …` says it is taken is a
+    /// store that lies to the person trying to fix something, and a name is not
+    /// the secret here — the password hash and the grants are, and neither is in
+    /// this message. The disclosure is also bounded: reaching this at all means
+    /// the caller already owns a tenancy of their own.
+    #[error("{user:?} is not in a tenancy you administer (at {span})")]
+    NotYours {
+        /// The user they named.
+        user: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A role this language does not have.
     #[error("there is no role called {name:?} (at {span})")]
     NoSuchRole {

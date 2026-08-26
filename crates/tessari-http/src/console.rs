@@ -76,6 +76,8 @@ pub(crate) fn asset(method: &Method, path: &str) -> Option<Answer> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic)]
+
     use super::ASSETS;
 
     /// The page's own text, which the tests below read rather than assume.
@@ -95,33 +97,56 @@ mod tests {
         // storage crate and not to the page fails here rather than quietly
         // becoming a role nobody can grant from the console.
         let page = page();
-        for role in tessari_storage::Role::ALL {
-            assert!(
-                page.contains(&format!(r#"<option value="{}""#, role.name())),
-                "the page offers no way to choose the {} role",
-                role.name()
-            );
+        // Scoped to the selects that offer roles, rather than to every option on
+        // the page minus a list of exceptions. The exception list was the first
+        // shape and it grew by one every time an unrelated dropdown was added,
+        // which is a check that quietly loosens as the page fills up.
+        for id in ["new-role", "change-role"] {
+            let offered = options(page, id);
+            for role in tessari_storage::Role::ALL {
+                assert!(
+                    offered.iter().any(|value| value == role.name()),
+                    "{id} offers no way to choose the {} role",
+                    role.name()
+                );
+            }
+            // And the other direction: an option the engine has never heard of.
+            // The one exception is `other`, the free-text escape the page offers
+            // on purpose — a role this build refuses is shown refusing, rather
+            // than hidden behind a control that pretends it cannot be asked for.
+            for value in &offered {
+                assert!(
+                    value == "other"
+                        || tessari_storage::Role::ALL
+                            .iter()
+                            .any(|role| role.name() == value),
+                    "{id} offers a {value:?} role and this build has no such thing"
+                );
+            }
         }
-        // And the other direction: an option the engine has never heard of. The
-        // deliberate exception is `other`, which is the free-text escape the
-        // page offers on purpose — a role this build refuses is shown refusing,
-        // rather than being hidden behind a control that pretends it cannot.
-        let offered: Vec<&str> = page
+    }
+
+    /// The `value` of every `<option>` inside one named `<select>`.
+    ///
+    /// Panics when the select is not there, which is the point: a renamed
+    /// control would otherwise turn its cross-check into a loop over nothing,
+    /// and a test that asserts about an empty list passes for the wrong reason.
+    fn options(page: &str, id: &str) -> Vec<String> {
+        let opening = format!(r#"<select id="{id}">"#);
+        let at = page
+            .find(&opening)
+            .unwrap_or_else(|| panic!("the page has no <select id={id:?}>"));
+        let rest = &page[at.saturating_add(opening.len())..];
+        let end = rest
+            .find("</select>")
+            .unwrap_or_else(|| panic!("<select id={id:?}> is never closed"));
+        rest[..end]
             .match_indices(r#"<option value=""#)
-            .filter_map(|(at, _)| {
-                let rest = page.get(at.saturating_add(r#"<option value=""#.len())..)?;
-                rest.split('"').next()
+            .filter_map(|(found, _)| {
+                let after = rest.get(found.saturating_add(r#"<option value=""#.len())..end)?;
+                after.split('"').next().map(str::to_owned)
             })
-            .filter(|value| *value != "other" && *value != "space" && *value != "node")
-            .collect();
-        for value in offered {
-            assert!(
-                tessari_storage::Role::ALL
-                    .iter()
-                    .any(|role| role.name() == value),
-                "the page offers a {value:?} role and this build has no such thing"
-            );
-        }
+            .collect()
     }
 
     #[test]

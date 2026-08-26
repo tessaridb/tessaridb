@@ -40,7 +40,7 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
 use tessari_constants::{PASSWORD_HASH_LANES, PASSWORD_HASH_MEMORY_KIB, PASSWORD_HASH_PASSES};
-use tessari_ql::{InfoSubject, Name, Password, Span, StatementKind, TableRef};
+use tessari_ql::{InfoSubject, Name, Password, Span, StatementKind, TableRef, UserChange};
 use tessari_storage::{Catalog, Role, Transaction, UserDefinition};
 
 use crate::error::{Error, Result};
@@ -192,6 +192,7 @@ impl Needs {
             // Granting is administering: it decides what somebody else may do,
             // which is the same kind of act as declaring them.
             StatementKind::DefineUser { .. }
+            | StatementKind::AlterUser { .. }
             | StatementKind::DropUser { .. }
             | StatementKind::Grant { .. }
             | StatementKind::Revoke { .. } => Self::Administer,
@@ -356,6 +357,60 @@ impl Session<'_> {
         };
         let secret = hash(password.expose(), span)?;
         Catalog::new(transaction).create_user(&name.text, namespace, database, role, &secret)?;
+        Ok(Outcome::Done)
+    }
+
+    /// Change one thing about a user who already exists.
+    ///
+    /// Read the whole definition, replace the single field the statement names,
+    /// write it back. Everything else — the id, the name, the tenancy, and the
+    /// grants keyed by the id — is carried through untouched, which is what
+    /// makes rotating a password unable to quietly reset a role.
+    ///
+    /// The tenancy check is the security half, and it is not the `Administer`
+    /// check that already ran: that one says the caller owns *something*. Without
+    /// this one an owner of a single namespace could set the store owner's
+    /// password and take the node, which is a privilege escalation dressed as
+    /// routine administration.
+    pub(crate) fn alter_user(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        change: &UserChange,
+        span: Span,
+    ) -> Result<Outcome> {
+        let Some(mut user) = Catalog::new(transaction)
+            .users()?
+            .into_iter()
+            .find(|held| held.name == name.text)
+        else {
+            return Err(Error::Unknown {
+                entity: "user",
+                name: name.text.clone(),
+                span,
+            });
+        };
+        if !self.administers(&user) {
+            return Err(Error::NotYours {
+                user: user.name.clone(),
+                span,
+            });
+        }
+        match change {
+            UserChange::Password(password) => {
+                user.secret = hash(password.expose(), span)?;
+            }
+            UserChange::Role(named) => {
+                let Some(role) = Role::parse(&named.text) else {
+                    return Err(Error::NoSuchRole {
+                        name: named.text.clone(),
+                        span: named.span,
+                    });
+                };
+                user.role = role;
+            }
+        }
+        Catalog::new(transaction).update_user(&user);
         Ok(Outcome::Done)
     }
 

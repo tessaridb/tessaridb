@@ -34,7 +34,7 @@
 
 use crate::ast::{
     Edit, Expr, ExprKind, FieldPath, InfoSubject, Name, Projection, RecordTarget, Script, Select,
-    Source, Statement, StatementKind, TableRef, Written,
+    Source, Statement, StatementKind, TableRef, UserChange, Written,
 };
 use crate::token::Span;
 
@@ -122,6 +122,12 @@ fn erase_statement(statement: &mut Statement) {
                 erase_table(scope);
             }
             erase_name(role);
+        }
+        StatementKind::AlterUser { name, change } => {
+            erase_name(name);
+            if let UserChange::Role(role) = change {
+                erase_name(role);
+            }
         }
         StatementKind::DefineNode { roles, .. } => erase_names(roles.as_deref_mut()),
         StatementKind::DefineReplica { name, roles, .. } => {

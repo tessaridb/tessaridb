@@ -55,3 +55,19 @@ DROP USER ada;
 --- case: and the listing is refused once the store is closed, like every read
 INFO FOR USERS;
 --- expect: error NotSignedIn
+
+--- case: altering a user is administering one, so an anonymous caller is refused
+ALTER USER ada SET ROLE viewer;
+--- expect: error NotSignedIn
+
+--- case: and so is changing a password, which is the same act on a different field
+ALTER USER ada SET PASSWORD 'a different horse';
+--- expect: error NotSignedIn
+
+--- case: the verb takes USER and says so rather than guessing what was meant
+ALTER ada SET ROLE viewer;
+--- expect: error UnexpectedToken
+
+--- case: and it changes one named thing, never a whole record at once
+ALTER USER ada SET everything;
+--- expect: error UnexpectedToken

@@ -13,7 +13,7 @@ products around them.
 [![version](https://img.shields.io/badge/version-0.0.1--alpha-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-459%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-463%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/TessariDB/TessariDB-protocol) ·
@@ -357,6 +357,23 @@ tessaridb> INFO FOR USERS;
 
 Grants are not in it. They are per-user detail and stay in `INFO FOR USER
 <name>`, where one subject is examined rather than counted.
+
+`ALTER USER` changes **one** thing about somebody who already exists, and leaves
+everything else exactly where it was:
+
+```
+tessaridb> ALTER USER ada SET PASSWORD 'a longer one';
+tessaridb> ALTER USER ada SET ROLE owner;
+```
+
+There is deliberately no `SET ON`. A reach is fixed at declaration, because
+widening one is the single change an owner of a part could use to reach the
+whole — and the same reasoning bounds who may run either form at all: the
+`owner` role gets you as far as **the tenancy you administer** and no further, so
+an owner of `prod.orders` may rotate their own editor's password and may not
+touch the node's administrator. `DEFINE USER` is not the way to do any of this:
+it refuses a name already taken, so a rotation spelled as a re-declaration fails
+rather than half-succeeding.
 
 > **Defining the first user closes the store mid-script.** Every statement after
 > it in the same request is then refused with `NotSignedIn`, because the request

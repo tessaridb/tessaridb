@@ -199,6 +199,20 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `ALTER USER ada SET PASSWORD '…'` · `ALTER USER ada SET ROLE editor`
+    ///
+    /// Changes **one** thing about a user who already exists, and the tenancy is
+    /// not one of them: there is no `SET ON`, because widening somebody's reach
+    /// is the one change an administrator of a part could use to reach the
+    /// whole. Rotating a password and correcting a role are both things an owner
+    /// of a namespace does for their own people; moving a user out of that
+    /// namespace is not.
+    AlterUser {
+        /// The user being changed.
+        name: Name,
+        /// What about them.
+        change: UserChange,
+    },
     /// `DEFINE NODE ROLES serving, writable ENDPOINTS 'host:9000'`
     ///
     /// The settings that describe **this machine**, written to the local `META`
@@ -1121,6 +1135,23 @@ impl std::fmt::Display for Password {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("<redacted>")
     }
+}
+
+/// The one field an [`AlterUser`](StatementKind::AlterUser) statement changes.
+///
+/// One per statement rather than a record of optional fields, because the
+/// difference matters at the point of writing: a struct of `Option`s makes
+/// "leave the password alone" and "set the password to nothing" the same shape,
+/// and the executor then has to be trusted to tell them apart. Here the
+/// statement carries only what it came to change, and nothing else can be
+/// touched by accident.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserChange {
+    /// `SET PASSWORD '…'` — a new credential, hashed before it is stored.
+    Password(Password),
+    /// `SET ROLE editor` — what the user may do, within the tenancy they
+    /// already hold. The tenancy itself does not move.
+    Role(Name),
 }
 
 /// Which endpoint of an edge a traversal starts from.

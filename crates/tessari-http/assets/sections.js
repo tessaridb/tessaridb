@@ -130,6 +130,11 @@ async function listUsers() {
       // of small tax that makes an operator go back to `curl`.
       row.addEventListener("click", () => {
         at("lookup-name").value = one.user;
+        // Both forms, because a name picked out of a listing is picked in order
+        // to do something to it, and which of the two comes next is not
+        // knowable from the click.
+        at("change-name").value = one.user;
+        shapeTheChange();
         at("lookup").click();
       });
     }
@@ -285,6 +290,91 @@ at("define").addEventListener("click", async () => {
   }
 });
 
+/** The role the change form describes, which may be one typed by hand. */
+function changedRole() {
+  const chosen = at("change-role").value;
+  return chosen === "other" ? at("change-role-other").value.trim() : chosen;
+}
+
+/**
+ * The `ALTER USER` this form describes, or `null` while it is incomplete.
+ *
+ * A password of `''` is a real password and not an empty field, so it is the
+ * one input here with no emptiness check — the statement is complete the moment
+ * a name is present.
+ */
+function alteration() {
+  const name = at("change-name").value.trim();
+  if (name === "") {
+    return null;
+  }
+  if (at("change-what").value === "password") {
+    return "ALTER USER " + name + " SET PASSWORD " + quoted(at("change-password").value) + ";";
+  }
+  const named = changedRole();
+  return named === "" ? null : "ALTER USER " + name + " SET ROLE " + named + ";";
+}
+
+/**
+ * Which field is still empty, named rather than left to be guessed.
+ *
+ * It names only what the chosen change actually needs: a hint that mentions a
+ * role while somebody is typing a password reads as a second missing field, and
+ * they go looking for a control that is not on screen.
+ */
+function changeMissing() {
+  if (at("change-name").value.trim() === "") {
+    return "a name is needed";
+  }
+  return "a role is needed";
+}
+
+/** Show the fields this change needs, and the statement it would run. */
+function shapeTheChange() {
+  const changing = at("change-what").value;
+  at("change-password-field").hidden = changing !== "password";
+  at("change-role-field").hidden = changing !== "role";
+  at("change-role-other-field").hidden =
+    changing !== "role" || at("change-role").value !== "other";
+  const statement = alteration();
+  at("change-preview").textContent =
+    statement === null
+      ? changeMissing()
+      : // Redacted for the same reason the define form redacts: this is the one
+        // place the credential would sit in plain view on somebody's screen, and
+        // a shoulder is a threat a page can actually do something about.
+        statement.replace(/PASSWORD '.*';$/, "PASSWORD '…';");
+}
+
+for (const field of [
+  "change-name",
+  "change-what",
+  "change-password",
+  "change-role",
+  "change-role-other",
+]) {
+  at(field).addEventListener("input", shapeTheChange);
+  at(field).addEventListener("change", shapeTheChange);
+}
+
+at("change").addEventListener("click", async () => {
+  const statement = alteration();
+  if (statement === null) {
+    say("change-status", changeMissing(), true);
+    return;
+  }
+  say("change-status", "running…");
+  try {
+    const answered = await valueOf(statement);
+    say("change-status", answered !== null && answered.kind === "done" ? "ok" : "");
+    // The listing carries the role, so a role change that is not redrawn leaves
+    // the old one on screen looking current.
+    await listUsers();
+  } catch (failure) {
+    say("change-status", failure.message, true);
+  }
+});
+
 // --------------------------------------------------------------------- node
 
 /** One operational route, parsed as JSON, or a reason it could not be. */
@@ -384,3 +474,4 @@ for (const tab of ["tab-node", "tab-cluster"]) {
 }
 
 shapeTheForm();
+shapeTheChange();

@@ -72,6 +72,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DefineField { .. } => Err(unrenderable("DEFINE FIELD", span)),
         StatementKind::DefineAnalyzer { .. } => Err(unrenderable("DEFINE ANALYZER", span)),
         StatementKind::DefineUser { .. } => Err(unrenderable("DEFINE USER", span)),
+        StatementKind::AlterUser { .. } => Err(unrenderable("ALTER USER", span)),
         StatementKind::DefineNode { .. } => Err(unrenderable("DEFINE NODE", span)),
         StatementKind::DefineReplica { .. } => Err(unrenderable("DEFINE REPLICA", span)),
         StatementKind::Explain(_) => Err(unrenderable("EXPLAIN", span)),

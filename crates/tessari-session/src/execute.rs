@@ -119,6 +119,9 @@ impl Session<'_> {
                 roles.as_deref(),
                 *if_not_exists,
             ),
+            StatementKind::AlterUser { name, change } => {
+                self.alter_user(transaction, name, change, span)
+            }
             StatementKind::DropUser { name } => self.drop_user(transaction, name),
             StatementKind::Grant {
                 verbs,

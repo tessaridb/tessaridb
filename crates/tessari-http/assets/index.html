@@ -229,15 +229,79 @@ USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
           </div>
         </div>
 
-        <div class="pane">
-          <div class="pane-head"><h2>What this section cannot do</h2></div>
-          <p class="note">
-            <strong>There is no removal.</strong> The language can define and it
-            cannot undefine — there is no <code>REMOVE</code> statement of any
-            kind yet. A button here would have to reach something no statement
-            reaches, and this console is a client of the same API as everything
-            else.
-          </p>
+        <div class="split">
+          <div class="pane">
+            <div class="pane-head">
+              <h2>Change one</h2>
+              <span id="change-status" class="status" role="status"></span>
+            </div>
+            <p class="note">
+              One field per change, and the other is left exactly as it was: a
+              password rotation does not touch a role, and a role correction does
+              not invalidate a password. A space cannot be changed here at all —
+              widening somebody's reach is the one change an owner of a part
+              could use to reach the whole, so it is not offered.
+            </p>
+            <div class="row">
+              <label>
+                Who <input id="change-name" type="text" placeholder="ada" />
+              </label>
+              <label>
+                What
+                <select id="change-what">
+                  <option value="password">password</option>
+                  <option value="role">role</option>
+                </select>
+              </label>
+              <label id="change-password-field">
+                New password
+                <input
+                  id="change-password"
+                  type="password"
+                  autocomplete="new-password"
+                />
+              </label>
+              <label id="change-role-field" hidden>
+                New role
+                <select id="change-role">
+                  <option value="viewer">viewer</option>
+                  <option value="editor">editor</option>
+                  <option value="owner">owner</option>
+                  <option value="other">something else…</option>
+                </select>
+              </label>
+              <label id="change-role-other-field" hidden>
+                Which
+                <input
+                  id="change-role-other"
+                  type="text"
+                  placeholder="a role this build knows"
+                />
+              </label>
+            </div>
+            <pre id="change-preview" class="answer small"></pre>
+            <div class="row">
+              <button id="change" type="button" class="primary">Run it</button>
+            </div>
+          </div>
+
+          <div class="pane">
+            <div class="pane-head"><h2>What this section does not offer</h2></div>
+            <p class="note">
+              <strong>Removal.</strong> The language has <code>DROP USER</code>
+              and this console does not put it behind a button: it takes the
+              user's grants with it, and one mis-aimed click is not a shape a
+              panel should have. Run it as a script on the Query tab, where you
+              have written out who you mean.
+            </p>
+            <p class="note">
+              <strong>Your own password.</strong> Changing a password is
+              administering a user, and administering a user needs an owner — so
+              this pane is for somebody else's credential. Rotate your own and
+              the browser you are reading this in will keep offering the old one
+              until you sign in again.
+            </p>
+          </div>
         </div>
       </section>
 

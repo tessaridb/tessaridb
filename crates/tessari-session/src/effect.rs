@@ -98,6 +98,7 @@ impl Effect {
             // a grant is a record like any other and must be decided in one
             // place, which is the leader.
             StatementKind::DefineUser { .. }
+            | StatementKind::AlterUser { .. }
             | StatementKind::DropUser { .. }
             | StatementKind::Grant { .. }
             | StatementKind::Revoke { .. } => Self::Write,
