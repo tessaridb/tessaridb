@@ -600,6 +600,25 @@ promise above is the one that matters when the output is going somewhere other
 than a person. A prompt starts in `auto`; a pipe, a file and `-e` start in
 `document`.
 
+The prompt has shorthands, and every one of them **runs a statement you could
+have typed**:
+
+| shorthand      | runs                       |
+| -------------- | -------------------------- |
+| `.ns`          | `INFO FOR STORE;`          |
+| `.db`          | `INFO FOR NAMESPACE;`      |
+| `.tables`      | `INFO FOR DATABASE;`       |
+| `.d <table>`   | `INFO FOR TABLE <table>;`  |
+| `.user <name>` | `INFO FOR USER <name>;`    |
+| `.node`        | `INFO FOR NODE;`           |
+
+`.help` prints that table, so using a shorthand teaches the statement rather than
+hiding it — and a test reads the help and checks each promise against what the
+shorthand actually runs, in that direction, so the help cannot advertise a
+seventh one nobody implemented. `.timing` prints how long each script took,
+round trip included when the store is a node, because that is the number that
+decides whether a query is slow from where you are sitting.
+
 A refusal at a prompt prints its message and the next statement runs; in a script
 it stops, because carrying on past a failed step is how a half-applied migration
 happens. Either way the exit code says what happened.

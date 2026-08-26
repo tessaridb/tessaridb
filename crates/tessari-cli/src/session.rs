@@ -113,6 +113,7 @@ pub fn run(
 ) -> std::io::Result<Ended> {
     let mut pending = String::new();
     let mut ended = Ended::Fine;
+    let mut timing = false;
     // A table cannot be pasted back into a statement, and this program prints
     // TessariQL precisely so that it can be. So the table is for a person at a
     // prompt, and anything piped or scripted keeps the pasteable form — which is
@@ -144,35 +145,45 @@ pub fn run(
 
         // Dot-commands are read only at the start of a statement, so a `.exit`
         // pasted inside an unfinished object is data rather than a command.
-        if pending.is_empty() && trimmed.starts_with('.') {
-            match trimmed.split_once(' ') {
-                Some((".mode", asked)) => match Shape::named(asked.trim()) {
-                    Some(chosen) => shape = chosen,
-                    None => writeln!(
-                        out,
-                        "no such mode: {} — auto, table or document",
-                        asked.trim()
-                    )?,
-                },
-                _ => match trimmed {
-                    ".exit" | ".quit" => break,
-                    ".help" => writeln!(out, "{HELP}")?,
-                    ".mode" => writeln!(out, "{}", shape.name())?,
-                    other => writeln!(out, "no such command: {other}\n{HELP}")?,
-                },
+        let script = if pending.is_empty() && trimmed.starts_with('.') {
+            match shorthand(trimmed) {
+                Some(statement) => statement,
+                None => {
+                    match trimmed.split_once(' ') {
+                        Some((".mode", asked)) => match Shape::named(asked.trim()) {
+                            Some(chosen) => shape = chosen,
+                            None => writeln!(
+                                out,
+                                "no such mode: {} — auto, table or document",
+                                asked.trim()
+                            )?,
+                        },
+                        _ => match trimmed {
+                            ".exit" | ".quit" => break,
+                            ".help" => writeln!(out, "{HELP}")?,
+                            ".mode" => writeln!(out, "{}", shape.name())?,
+                            ".timing" => {
+                                timing = !timing;
+                                writeln!(out, "timing is {}", if timing { "on" } else { "off" })?;
+                            }
+                            other => writeln!(out, "no such command: {other}\n{HELP}")?,
+                        },
+                    }
+                    continue;
+                }
             }
-            continue;
-        }
-
-        pending.push_str(&line);
-        if !closed(&pending) {
-            continue;
-        }
-        let script = core::mem::take(&mut pending);
+        } else {
+            pending.push_str(&line);
+            if !closed(&pending) {
+                continue;
+            }
+            core::mem::take(&mut pending)
+        };
         if script.trim().is_empty() {
             continue;
         }
 
+        let began = std::time::Instant::now();
         match store.run(&script) {
             Ok(answers) => {
                 for answer in &answers {
@@ -186,6 +197,17 @@ pub fn run(
                     return Ok(ended);
                 }
             }
+        }
+        if timing {
+            // Wall clock around the whole script, which is what somebody timing
+            // a statement is asking about. It includes the round trip when the
+            // store is a node, and saying so is the point: that is the number
+            // that decides whether a query is slow from where you are sitting.
+            writeln!(
+                out,
+                "time: {:.3} ms",
+                began.elapsed().as_secs_f64() * 1000.0
+            )?;
         }
     }
 
@@ -372,11 +394,40 @@ fn scan(text: &str) -> Scan {
     }
 }
 
+/// The statement a shorthand stands for, or `None` where it is not one.
+///
+/// Every one of these is a statement anybody can type, and `.help` prints the
+/// statement beside the shorthand so that using one teaches the language rather
+/// than hiding it. That is the line this file will not cross: a shorthand saves
+/// keystrokes, and never reaches anything a statement could not.
+fn shorthand(command: &str) -> Option<String> {
+    let (word, named) = command.split_once(' ').unwrap_or((command, ""));
+    let named = named.trim();
+    Some(match (word, named.is_empty()) {
+        (".ns", true) => "INFO FOR STORE;".to_owned(),
+        (".db", true) => "INFO FOR NAMESPACE;".to_owned(),
+        (".tables", true) => "INFO FOR DATABASE;".to_owned(),
+        (".node", true) => "INFO FOR NODE;".to_owned(),
+        (".d", false) => format!("INFO FOR TABLE {named};"),
+        (".user", false) => format!("INFO FOR USER {named};"),
+        _ => return None,
+    })
+}
+
 const HELP: &str = "\
 statements end with `;` and may span lines
   .help   this
   .mode   how records are drawn: auto (the default), table, document
+  .timing print how long each script took
   .exit   leave (so does Ctrl-D on an empty line)
+
+shorthands — each runs the statement beside it, and nothing a statement cannot:
+  .ns             INFO FOR STORE;
+  .db             INFO FOR NAMESPACE;
+  .tables         INFO FOR DATABASE;
+  .d <table>      INFO FOR TABLE <table>;
+  .user <name>    INFO FOR USER <name>;
+  .node           INFO FOR NODE;
 
 editing:  ← → Home End Delete, and Ctrl-A E B F K U W L
 history:  ↑ ↓ (this session only, never written to disk — statements carry
@@ -391,7 +442,7 @@ mod tests {
 
     use tessaridb::{Db, Parameters};
 
-    use super::{Ended, Given, Lines, Mode, Piped, Write, closed, run};
+    use super::{Ended, Given, HELP, Lines, Mode, Piped, Write, closed, run, shorthand};
     use crate::store::Embedded;
 
     /// A reader that hands over exactly what a test says, in order.
@@ -661,6 +712,55 @@ SELECT * FROM users:1;\n";
 
         let (refused, _) = ran(".mode sideways\n", Mode::Interactive);
         assert!(refused.contains("no such mode: sideways"), "{refused}");
+    }
+
+    #[test]
+    fn a_shorthand_runs_the_statement_the_help_says_it_runs() {
+        // The obligation runs this way round on purpose: `.help` is the contract
+        // and the table has to satisfy it. Reading the table and checking the
+        // help mentions each entry would pass while the help promised a seventh
+        // shorthand nobody implemented.
+        let promised: Vec<(&str, &str)> = HELP
+            .lines()
+            .skip_while(|line| !line.starts_with("shorthands"))
+            .filter_map(|line| line.trim().split_once("  "))
+            .map(|(left, right)| (left.trim(), right.trim()))
+            .filter(|(left, _)| left.starts_with('.'))
+            .collect();
+        assert_eq!(promised.len(), 6, "the help lists {promised:?}");
+
+        for (spelling, statement) in promised {
+            // `.d <table>` in the help is `.d users` at a prompt.
+            let typed = spelling
+                .replace("<table>", "users")
+                .replace("<name>", "ada");
+            let expected = statement
+                .replace("<table>", "users")
+                .replace("<name>", "ada");
+            assert_eq!(
+                shorthand(&typed).as_deref(),
+                Some(expected.as_str()),
+                "`{typed}` does not run what the help says it runs"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shorthand_that_needs_a_name_and_is_given_none_is_not_a_shorthand() {
+        assert!(shorthand(".d").is_none());
+        assert!(shorthand(".user").is_none());
+        // And one that takes none refuses a name rather than ignoring it.
+        assert!(shorthand(".tables users").is_none());
+    }
+
+    #[test]
+    fn timing_is_off_until_it_is_asked_for() {
+        let (quiet, _) = ran("DEFINE NAMESPACE prod;\n", Mode::Interactive);
+        assert!(!quiet.contains("time:"), "{quiet}");
+
+        let (timed, _) = ran(".timing\nDEFINE NAMESPACE prod;\n", Mode::Interactive);
+        assert!(timed.contains("timing is on"), "{timed}");
+        assert!(timed.contains("time:"), "{timed}");
     }
 
     #[test]
