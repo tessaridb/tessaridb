@@ -37,7 +37,8 @@ use tessaridb::feed::{Commits, Following};
 use tessaridb::{Db, Sequence};
 use tiny_http::{Header, Request, Response};
 
-use crate::basic::{self, Credentials};
+use crate::basic::{self, Credentials, Presented};
+use crate::tokens::Tokens;
 use frame::{Frame, Opcode};
 
 /// Serve one request to the socket route.
@@ -48,17 +49,20 @@ pub(crate) fn watch(
     db: &Db,
     stopping: &Stopping,
     committed: &Commits,
+    tokens: &Tokens,
     request: Request,
     busy: &mut Busy,
 ) -> bool {
     // Read before the upgrade, because the upgrade consumes the request. A
     // browser cannot set this header, which is why a follow request may carry a
     // credential of its own — see `follow.rs`.
-    let presented = request
-        .headers()
-        .iter()
-        .find(|header| header.field.equiv("Authorization"))
-        .and_then(|header| basic::read(header.value.as_str()));
+    let presented = basic::presented(
+        request
+            .headers()
+            .iter()
+            .find(|header| header.field.equiv("Authorization"))
+            .map(|header| header.value.as_str()),
+    );
     let accept = match handshake::read(request.headers()) {
         Ok(accept) => accept,
         Err(refusal) => {
@@ -83,7 +87,7 @@ pub(crate) fn watch(
     // answers.
     busy.became_a_feed();
     let mut socket = request.upgrade("websocket", Response::empty(101).with_header(header));
-    session(&mut socket, db, stopping, committed, presented.as_ref());
+    session(&mut socket, db, stopping, committed, tokens, &presented);
     false
 }
 
@@ -105,7 +109,8 @@ fn session(
     db: &Db,
     stopping: &Stopping,
     committed: &Commits,
-    presented: Option<&Credentials>,
+    tokens: &Tokens,
+    presented: &Presented,
 ) {
     // The bytes reassembled so far, and the kind the FIRST fragment declared —
     // which is now read, because a follow request is text and a binary message
@@ -179,7 +184,7 @@ fn session(
             // cannot also be reading requests, and letting it do both means
             // multiplexing — a much larger protocol for a case nobody has. A
             // client that wants both opens two sockets.
-            return feed(socket, db, stopping, committed, presented, &body);
+            return feed(socket, db, stopping, committed, presented, tokens, &body);
         }
     }
 }
@@ -195,25 +200,37 @@ fn feed(
     db: &Db,
     stopping: &Stopping,
     committed: &Commits,
-    presented: Option<&Credentials>,
+    presented: &Presented,
+    tokens: &Tokens,
     body: &str,
 ) {
     let asked = match follow::read(body) {
         Ok(asked) => asked,
         Err(reason) => return refuse_on(socket, &reason),
     };
-    // The header's credential when there was one, else the message's. The
-    // header wins, because a client that can set it is not a browser and its
+    // The header's claim when there was one, else the message's. The header
+    // wins, because a client that can set one is not a browser and its
     // credential did not travel through a message body.
-    let mut session = db.session();
-    let signed = match (presented, asked.credentials.as_ref()) {
-        (Some(held), _) => session.sign_in(&held.name, &held.password),
-        (None, Some((name, secret))) => session.sign_in(name, secret),
-        (None, None) => Ok(()),
+    //
+    // Within the message a token beats a password, for the same reason the rest
+    // of this surface prefers one: it expires, it can be handed back, and a
+    // browser holding it is not holding a password.
+    let claimed = match presented {
+        Presented::Nobody => match (asked.token.clone(), asked.credentials.clone()) {
+            (Some(bearer), _) => Presented::Token(bearer),
+            (None, Some((name, password))) => Presented::Password(Credentials { name, password }),
+            (None, None) => Presented::Nobody,
+        },
+        held => held.clone(),
     };
-    if let Err(error) = signed {
-        return refuse_on(socket, &error.to_string());
-    }
+    // The same function every other route uses, rather than a second sign-in
+    // written here: a subscription reads records, and a feed that authenticated
+    // itself differently from the script route is how this surface grew two
+    // authorization holes once already.
+    let mut session = match crate::respond::session_for(db, tokens, &claimed) {
+        Ok(session) => session,
+        Err(answer) => return refuse_on(socket, &String::from_utf8_lossy(&answer.body)),
+    };
     // A namespace and database reach a statement, so they are guarded by the
     // same narrow rule the object routes use rather than by a second opinion
     // about what the lexer would accept.
@@ -350,7 +367,15 @@ mod tests {
             sending: std::io::Cursor::new(sent),
             received: Vec::new(),
         };
-        session(&mut client, &db, &stopping, &committed, None);
+        let tokens = crate::tokens::Tokens::default();
+        session(
+            &mut client,
+            &db,
+            &stopping,
+            &committed,
+            &tokens,
+            &crate::basic::Presented::Nobody,
+        );
         unframe(&client.received)
     }
 

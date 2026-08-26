@@ -389,6 +389,42 @@ pub const SPATIAL_WALK_SUBTREE_ENTRIES: usize = 64;
 /// refused and retry. That is the trade a bound is.
 pub const MAX_SIGN_IN_VERIFICATIONS: usize = 24;
 
+/// How long a session token stays good for.
+///
+/// Unit: seconds.
+///
+/// Twelve hours, which covers a working day without covering the night after
+/// it. The number is a trade between two costs that pull opposite ways: a short
+/// life sends every client back through the memory-hard sign-in
+/// [`MAX_SIGN_IN_VERIFICATIONS`] exists to bound, and a long one widens the
+/// window in which a token copied off the wire is still worth having.
+///
+/// It bounds the window and not the damage. What actually revokes a token is
+/// the user record changing under it — a rotated password, a corrected role, a
+/// removal — and that takes effect on the very next request rather than at
+/// expiry. This constant is what covers the case nobody noticed and so nobody
+/// revoked.
+pub const SESSION_TOKEN_SECONDS: u64 = 12 * 60 * 60;
+
+/// How many session tokens one node will hold at once.
+///
+/// Unit: tokens.
+///
+/// A bound on memory a caller who *does* hold a valid credential could
+/// otherwise grow without limit: signing in successfully is not throttled — only
+/// failing is — so nothing else stands between one account and an unbounded
+/// table.
+///
+/// Ten per connection slot ([`MAX_CONNECTIONS`]), because a client that
+/// reconnects gets a new connection and may reasonably still hold its old
+/// token. At roughly two hundred bytes an entry the whole table is under a
+/// mebibyte, which is the point: it is cheap enough that the bound can be
+/// generous and still be a bound.
+///
+/// Reaching it **refuses to issue** rather than evicting somebody else's live
+/// token. Eviction would make minting tokens a way to sign other people out.
+pub const MAX_SESSION_TOKENS: usize = MAX_CONNECTIONS * 10;
+
 /// How many times one identity may fail to sign in before it is made to wait.
 ///
 /// Unit: consecutive failures.

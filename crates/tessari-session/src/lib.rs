@@ -47,6 +47,7 @@ mod search;
 mod session;
 mod shape;
 mod throttle;
+mod ticket;
 mod vector;
 
 pub use effect::{Effect, admits};
@@ -54,3 +55,4 @@ pub use error::{Error, Result};
 pub use outcome::{AccessPath, Outcome};
 pub use session::Session;
 pub use tessari_ql::Parameters;
+pub use ticket::Ticket;

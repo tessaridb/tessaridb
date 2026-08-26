@@ -30,11 +30,13 @@
 
 use std::collections::BTreeMap;
 
+use tessari_constants::SESSION_TOKEN_SECONDS;
 use tessari_serve::{Census, Stopping};
 use tessaridb::{AccessPath, Db, Error, Outcome};
 
-use crate::basic::Credentials;
+use crate::basic::Presented;
 use crate::json;
+use crate::tokens::{Refused, Tokens};
 
 /// One answer: a status and a JSON body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,7 +187,12 @@ pub(crate) fn ready(db: &Db, willing: bool) -> Answer {
 /// name mean two different things depending on how the node was started. A
 /// scraper copes with a series that is missing; it cannot cope with one that
 /// silently changes what it measures.
-pub(crate) fn metrics(db: &Db, census: Option<&Census>, mine: &Stopping) -> Answer {
+pub(crate) fn metrics(
+    db: &Db,
+    census: Option<&Census>,
+    mine: &Stopping,
+    tokens: &Tokens,
+) -> Answer {
     let mut out = String::new();
 
     if let Some(census) = census {
@@ -215,6 +222,13 @@ pub(crate) fn metrics(db: &Db, census: Option<&Census>, mine: &Stopping) -> Answ
             held.background_errors
         ));
     }
+
+    // Worth a line of its own because it is the one number that says whether
+    // the token bound is close: a node at `MAX_SESSION_TOKENS` starts refusing
+    // sign-ins while every other counter here still reads healthy.
+    out.push_str("# HELP tessari_sessions Session tokens this node is holding.\n");
+    out.push_str("# TYPE tessari_sessions gauge\n");
+    out.push_str(&format!("tessari_sessions {}\n", tokens.held()));
 
     out.push_str("# HELP tessari_connections Requests in flight, by surface.\n");
     out.push_str("# TYPE tessari_connections gauge\n");
@@ -273,22 +287,105 @@ fn surface(out: &mut String, name: &str, stopping: &Stopping) {
 /// A request against an open store may carry none, which is what keeps an empty
 /// store usable; a request against a closed one that carries none is answered
 /// `401` by the session's own refusal, not by a second rule here.
-/// A session, signed in when a credential was presented.
+/// A session, as whoever the request says it is.
 ///
 /// Shared by the script route and the object routes rather than written twice,
 /// because "who is asking" must be one answer: two sign-in paths is two places a
-/// refusal can be forgotten.
+/// refusal can be forgotten. The token path is a third *claim* and not a third
+/// path — it lands in the same session, established the same way, so a rule
+/// added below binds all three.
+///
+/// A request against an open store may present nothing, which is what keeps an
+/// empty store usable; one against a closed store that presents nothing is
+/// answered `401` by the session's own refusal, not by a second rule here.
 pub(crate) fn session_for<'a>(
     db: &'a Db,
-    credentials: Option<&Credentials>,
+    tokens: &Tokens,
+    presented: &Presented,
 ) -> Result<tessaridb::Session<'a>, Answer> {
     let mut session = db.session();
-    if let Some(presented) = credentials
-        && let Err(error) = session.sign_in(&presented.name, &presented.password)
-    {
-        return Err(failure(&error));
+    match presented {
+        Presented::Nobody => {}
+        Presented::Password(credentials) => {
+            if let Err(error) = session.sign_in(&credentials.name, &credentials.password) {
+                return Err(failure(&error));
+            }
+        }
+        Presented::Token(bearer) => {
+            // A token this node never issued and one whose account has moved are
+            // the same answer, for the same reason a wrong name and a wrong
+            // password are: the difference is only ever useful to somebody
+            // holding a token they should not have.
+            let Some(ticket) = tokens.holder(bearer) else {
+                return Err(failure(&Error::TicketStale));
+            };
+            if let Err(error) = session.resume(&ticket) {
+                // Dropped rather than left to expire. It can never work again —
+                // the record it stands for has moved — so keeping it is holding
+                // a row that exists only to be refused.
+                tokens.forget(bearer);
+                return Err(failure(&error));
+            }
+        }
     }
     Ok(session)
+}
+
+/// `POST /session` — check a password once and hand back a token.
+///
+/// The whole point of the route: a password is verified here and then not
+/// again, so a client's second request costs a hash-map lookup instead of
+/// nineteen mebibytes of Argon2.
+///
+/// Only a password may be exchanged for a token. Presenting a token to get
+/// another one would make the first one's expiry meaningless — a holder could
+/// roll it forward for as long as they kept asking, and the account would never
+/// come back under the control of whoever owns the password.
+pub(crate) fn open_session(db: &Db, presented: &Presented, tokens: &Tokens) -> Answer {
+    let Presented::Password(credentials) = presented else {
+        return Answer::new(
+            401,
+            r#"{"error":"present a name and password to open a session"}"#.to_owned(),
+        );
+    };
+    let mut session = db.session();
+    if let Err(error) = session.sign_in(&credentials.name, &credentials.password) {
+        return failure(&error);
+    }
+    // An open store signs anybody in as nobody, and a token for nobody would
+    // outlive the store's openness: declaring the first user closes the store,
+    // and a token minted before that must not still work after it.
+    let Some(ticket) = session.ticket() else {
+        return Answer::new(
+            401,
+            r#"{"error":"this store has no users, so there is no session to open"}"#.to_owned(),
+        );
+    };
+    match tokens.issue(ticket) {
+        Ok(bearer) => {
+            log::info!("a session was opened for {}", credentials.name);
+            Answer::new(
+                200,
+                format!(r#"{{"token":"{bearer}","expires_in":{SESSION_TOKEN_SECONDS}}}"#),
+            )
+        }
+        Err(Refused::Full) => Answer::new(
+            503,
+            r#"{"error":"this node is holding as many sessions as it will"}"#.to_owned(),
+        ),
+    }
+}
+
+/// `DELETE /session` — forget the token this request carries.
+///
+/// Answers the same whether the token was here or not. Whether a token this
+/// node never issued *existed* is not something the caller presenting it should
+/// be able to learn, and there is nothing useful a client does differently.
+pub(crate) fn close_session(presented: &Presented, tokens: &Tokens) -> Answer {
+    if let Presented::Token(bearer) = presented {
+        tokens.forget(bearer);
+    }
+    Answer::new(200, r#"{"closed":true}"#.to_owned())
 }
 
 /// `GET /backup` — the store's log as a backup file, or `?from=<n>` for the
@@ -300,7 +397,12 @@ pub(crate) fn session_for<'a>(
 /// permission of its own and must not — a backup is every table at once, and an
 /// endpoint that decided that for itself would be a second answer to a question
 /// the language already answers.
-pub(crate) fn backup(db: &Db, query: Option<&str>, credentials: Option<&Credentials>) -> Answer {
+pub(crate) fn backup(
+    db: &Db,
+    query: Option<&str>,
+    tokens: &Tokens,
+    presented: &Presented,
+) -> Answer {
     let from = match query {
         None => None,
         Some(written) => match written.strip_prefix("from=").map(str::parse::<u64>) {
@@ -313,7 +415,7 @@ pub(crate) fn backup(db: &Db, query: Option<&str>, credentials: Option<&Credenti
             }
         },
     };
-    let mut session = match session_for(db, credentials) {
+    let mut session = match session_for(db, tokens, presented) {
         Ok(session) => session,
         Err(answer) => return answer,
     };
@@ -363,9 +465,10 @@ pub(crate) fn script(
     db: &Db,
     source: &str,
     written: &BTreeMap<String, String>,
-    credentials: Option<&Credentials>,
+    tokens: &Tokens,
+    presented: &Presented,
 ) -> Answer {
-    let mut session = match session_for(db, credentials) {
+    let mut session = match session_for(db, tokens, presented) {
         Ok(session) => session,
         Err(answer) => return answer,
     };
@@ -472,7 +575,10 @@ pub(crate) fn failure(error: &Error) -> Answer {
         // This node does not know who is asking: no credential against a closed
         // store, or one it refused. Both are answered the same way, because
         // telling them apart tells an attacker which half to keep guessing at.
-        Error::NotSignedIn { .. } | Error::SignInRefused => 401,
+        // A token whose account has since changed belongs here too, and for the
+        // same reason it is not a 403: the holder was somebody, the store no
+        // longer agrees, and what fixes it is signing in again.
+        Error::NotSignedIn { .. } | Error::SignInRefused | Error::TicketStale => 401,
         // It declined to look. Not a 401, because a client told "wrong" retries
         // with a different password and one told "too many" must retry with the
         // same one later — and 429 is the status every client library already

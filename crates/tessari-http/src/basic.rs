@@ -26,6 +26,54 @@
 //! operator already protects — a loopback bind, or a reverse proxy terminating
 //! TLS. That is stated in the README rather than implied here.
 
+/// What a request's `Authorization` header says about who is sending it.
+///
+/// Three answers rather than two, because a token is not a weaker password: it
+/// is proof that a password was checked *earlier*, which is a different claim
+/// and is verified a different way. Collapsing them would put the two on one
+/// code path and the first thing to go would be the rule that a token stops
+/// working when the account behind it changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Presented {
+    /// No header, or one this node cannot read.
+    ///
+    /// The two are deliberately the same answer: a header this node cannot read
+    /// is a header it does not know the sender by, and treating a malformed one
+    /// as an *attempt* would let a caller learn which malformations parse.
+    Nobody,
+    /// A name and a password, to be checked now.
+    Password(Credentials),
+    /// A token from an earlier sign-in, to be looked up.
+    Token(String),
+}
+
+/// Read an `Authorization` header value, whichever scheme it uses.
+pub(crate) fn presented(header: Option<&str>) -> Presented {
+    let Some(header) = header else {
+        return Presented::Nobody;
+    };
+    if let Some(credentials) = read(header) {
+        return Presented::Password(credentials);
+    }
+    match bearer(header) {
+        Some(token) => Presented::Token(token.to_owned()),
+        None => Presented::Nobody,
+    }
+}
+
+/// The token out of a `Bearer` header value.
+///
+/// Nothing is validated here beyond the scheme and that something followed it.
+/// Whether the text names anything is the token table's question, and answering
+/// it in two places is how the two answers start to disagree.
+fn bearer(header: &str) -> Option<&str> {
+    let token = header
+        .strip_prefix("Bearer ")
+        .or_else(|| header.strip_prefix("bearer "))?
+        .trim();
+    (!token.is_empty()).then_some(token)
+}
+
 /// The name and password a request presents, if it presents any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Credentials {
@@ -112,7 +160,45 @@ fn decode(text: &str) -> Option<Vec<u8>> {
 mod tests {
     #![allow(clippy::panic)]
 
-    use super::{decode, read};
+    use super::{Presented, decode, presented, read};
+
+    #[test]
+    fn each_scheme_is_read_as_the_claim_it_makes() {
+        // "ada:correct horse"
+        assert!(matches!(
+            presented(Some("Basic YWRhOmNvcnJlY3QgaG9yc2U=")),
+            Presented::Password(_)
+        ));
+        assert_eq!(
+            presented(Some("Bearer 0f1e2d")),
+            Presented::Token("0f1e2d".to_owned())
+        );
+        assert_eq!(presented(None), Presented::Nobody);
+    }
+
+    #[test]
+    fn a_header_this_node_cannot_read_is_no_claim_at_all() {
+        // A scheme nobody here implements, a `Basic` payload that is not
+        // base64, and a `Bearer` carrying nothing are all "I do not know who
+        // you are" rather than three different refusals — a caller must not be
+        // able to learn which malformations parse.
+        assert_eq!(presented(Some("Digest nonce=1")), Presented::Nobody);
+        assert_eq!(presented(Some("Basic not base64!")), Presented::Nobody);
+        assert_eq!(presented(Some("Bearer ")), Presented::Nobody);
+        assert_eq!(presented(Some("Bearer")), Presented::Nobody);
+    }
+
+    #[test]
+    fn the_scheme_is_read_without_case_on_both_paths() {
+        assert!(matches!(
+            presented(Some("basic YWRhOmNvcnJlY3QgaG9yc2U=")),
+            Presented::Password(_)
+        ));
+        assert_eq!(
+            presented(Some("bearer 0f1e2d")),
+            Presented::Token("0f1e2d".to_owned())
+        );
+    }
 
     #[test]
     fn a_well_formed_header_yields_the_name_and_password() {

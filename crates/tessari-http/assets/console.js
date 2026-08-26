@@ -16,8 +16,30 @@ const WATCH_ROUTE = "/watch";
 
 const at = (id) => document.getElementById(id);
 
-/** The `Authorization` value for what is typed, or nothing when both are empty. */
+/**
+ * The token this page is holding, or `null`.
+ *
+ * A password is spent once at `POST /session` and this is what comes back. It
+ * lives in a variable and not in `localStorage` deliberately: a bearer token in
+ * storage outlives the tab, survives the reader walking away, and is readable by
+ * anything that ever manages to run script on this origin. Closing the tab
+ * should end the session, and here it does.
+ */
+let held = null;
+
+/** The `Authorization` value to send, or nothing when there is nothing to send. */
 function credential() {
+  // The token wins whenever there is one. It costs the node a hash-map lookup
+  // where a password costs nineteen mebibytes of Argon2, which is the whole
+  // reason `POST /session` exists.
+  if (held !== null) {
+    return "Bearer " + held;
+  }
+  return typed();
+}
+
+/** A `Basic` value for what is in the two fields, or nothing when both are empty. */
+function typed() {
   const user = at("user").value;
   const password = at("password").value;
   if (user === "" && password === "") {
@@ -56,6 +78,15 @@ async function ask(source) {
     // header above; nothing here wants the browser to manage one.
     credentials: "omit",
   });
+  // A token that stopped working stopped for a reason worth acting on: somebody
+  // rotated the password, changed the role, or removed the account. Holding on
+  // to it would make every button afterwards fail with the same refusal and none
+  // of them say why.
+  if (reply.status === 401 && held !== null) {
+    held = null;
+    signedIn();
+    say("identity-status", "this session ended — sign in again", true);
+  }
   return { reply: reply, text: await reply.text() };
 }
 
@@ -103,10 +134,16 @@ window.addEventListener("hashchange", () =>
 
 // --------------------------------------------------------------- identity
 
-/** Keep the collapsed identity control honest about whether there is a name. */
+/** Keep the collapsed identity control honest about whether there is a session. */
 function signedIn() {
   const user = at("user").value;
-  at("signed-in").textContent = user === "" ? "not signed in" : user;
+  if (held !== null && user !== "") {
+    at("signed-in").textContent = user;
+    return;
+  }
+  // A name typed but not yet exchanged for a token is not a session, and saying
+  // so is the difference between "this will work" and "this might".
+  at("signed-in").textContent = user === "" ? "not signed in" : user + " — not yet";
 }
 
 at("user").addEventListener("input", signedIn);
@@ -114,32 +151,50 @@ at("user").addEventListener("input", signedIn);
 /** The disclosure this control lives in, closed by everything that should. */
 const identity = document.querySelector("details.identity");
 
+/** The `error` out of a refusal's body, or the body when it is not one. */
+function reason(text) {
+  try {
+    const body = JSON.parse(text);
+    return typeof body.error === "string" ? body.error : text;
+  } catch (ignored) {
+    // Not JSON, so the text is already the most useful thing there is.
+    return text;
+  }
+}
+
 /**
- * Check the credential and close the sheet, or say why it stayed open.
+ * Spend the password once, keep the token, and close the sheet.
  *
- * There is no session to establish — every request carries the credential — so
- * "sign in" here means *find out now whether this password works*. Without it
- * the first thing a wrong password does is make some unrelated button fail, and
- * the reader blames the button.
+ * This is a real sign-in and not a check any more: the node verifies the
+ * password here and hands back a token, and every request after this one
+ * carries the token instead. The password is then **cleared from the field**,
+ * because there is nothing left that needs it and a credential sitting in a DOM
+ * input is a credential in every screenshot, screen share and browser
+ * extension that reads the page.
  */
 at("sign-in").addEventListener("click", async () => {
-  say("identity-status", "checking…");
+  const offered = typed();
+  if (offered === null) {
+    say("identity-status", "a name and a password, or nothing at all", true);
+    return;
+  }
+  say("identity-status", "signing in…");
   try {
-    // The cheapest statement that a signed-in caller of any role may run. It
-    // reads the catalog and touches no records, so checking a password costs
-    // nothing anybody would notice.
-    const { reply, text } = await ask("INFO FOR STORE;");
+    const reply = await fetch("/session", {
+      method: "POST",
+      headers: { Authorization: offered },
+      // The same reason `ask` omits them: left to itself the browser answers
+      // the node's `401` challenge with its own credential dialog, which this
+      // console did not ask for and cannot clear.
+      credentials: "omit",
+    });
+    const text = await reply.text();
     if (reply.status >= 400) {
-      let said = text;
-      try {
-        const body = JSON.parse(text);
-        said = typeof body.error === "string" ? body.error : text;
-      } catch (ignored) {
-        // Not JSON, so the text is already the most useful thing there is.
-      }
-      say("identity-status", said, true);
+      say("identity-status", reason(text), true);
       return;
     }
+    held = JSON.parse(text).token;
+    at("password").value = "";
     say("identity-status", "");
     signedIn();
     identity.open = false;
@@ -148,7 +203,28 @@ at("sign-in").addEventListener("click", async () => {
   }
 });
 
-at("sign-out").addEventListener("click", () => {
+/**
+ * Hand the token back, then forget it here.
+ *
+ * Told to the node rather than only dropped locally: a token this page forgets
+ * without saying so stays live on the node until it expires, which is the
+ * difference between signing out and closing your eyes.
+ */
+at("sign-out").addEventListener("click", async () => {
+  if (held !== null) {
+    try {
+      await fetch("/session", {
+        method: "DELETE",
+        headers: { Authorization: "Bearer " + held },
+        credentials: "omit",
+      });
+    } catch (ignored) {
+      // The node is unreachable. Forgetting it here is still right — the token
+      // expires on its own, and staying signed in because the network failed is
+      // the wrong way to be wrong.
+    }
+  }
+  held = null;
   at("user").value = "";
   at("password").value = "";
   say("identity-status", "");
@@ -407,14 +483,21 @@ at("follow").addEventListener("click", () => {
     if (table !== "") {
       asked.table = table;
     }
-    // A browser cannot set a header on a `WebSocket`, so the credential travels
-    // in the message when there is one. Both halves or neither: a name without
-    // a password would be asking to be signed in without proof.
-    const user = at("user").value;
-    const password = at("password").value;
-    if (user !== "" || password !== "") {
-      asked.user = user;
-      asked.password = password;
+    // A browser cannot set a header on a `WebSocket`, so whatever authenticates
+    // this travels in the message. A token when there is one — it expires and
+    // can be revoked, which a password does neither of, and it means following
+    // a table does not put a password into a message body.
+    if (held !== null) {
+      asked.token = held;
+    } else {
+      // Both halves or neither: a name without a password would be asking to be
+      // signed in without proof.
+      const user = at("user").value;
+      const password = at("password").value;
+      if (user !== "" || password !== "") {
+        asked.user = user;
+        asked.password = password;
+      }
     }
     socket.send(JSON.stringify({ ...asked }));
     say("watch-status", "following");

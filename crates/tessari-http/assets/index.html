@@ -35,6 +35,12 @@
               <input id="password" type="password" autocomplete="current-password" />
             </label>
           </div>
+          <p class="note">
+            The password is checked once. What this page keeps afterwards is a
+            token, held for as long as the tab is open and no longer — so the
+            password is cleared from the field above, and closing the tab ends
+            the session.
+          </p>
           <p class="note warn">
             Credentials travel in the clear, exactly as they do for every other
             route here: this store has no TLS and belongs on a network you
@@ -325,8 +331,9 @@ USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
               <strong>Your own password.</strong> Changing a password is
               administering a user, and administering a user needs an owner — so
               the pane beside this one is for somebody else's credential. Rotate
-              your own and the browser you are reading this in will keep offering
-              the old one until you sign in again.
+              your own and this page's session ends at once: a token stops
+              standing for anybody the moment their record changes, so you are
+              asked to sign in again rather than carrying the old authority.
             </p>
           </div>
         </div>

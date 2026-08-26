@@ -54,6 +54,7 @@ mod json;
 mod object;
 mod request;
 mod respond;
+mod tokens;
 mod websocket;
 
 use std::sync::Arc;
@@ -80,6 +81,11 @@ pub struct Node {
     /// wait rather than costing it the change (`tessaridb::feed::Commits`).
     committed: Arc<Commits>,
     door: Arc<Admitting>,
+    /// The sessions this node has handed out.
+    ///
+    /// Per node, so a token issued at one surface does not open another, and in
+    /// memory, so a restart invalidates every one of them (`tokens`).
+    tokens: Arc<tokens::Tokens>,
 }
 
 /// What ends a node's accept loop from another thread.
@@ -120,6 +126,7 @@ impl Node {
             census: None,
             committed: Arc::new(Commits::default()),
             door: Admitting::to(MAX_CONNECTIONS),
+            tokens: Arc::new(tokens::Tokens::default()),
         })
     }
 
@@ -175,6 +182,7 @@ impl Node {
             let stopping = Arc::clone(&self.stopping);
             let census = self.census.clone();
             let committed = Arc::clone(&self.committed);
+            let tokens = Arc::clone(&self.tokens);
             // Counted before the thread starts, not inside it: a shutdown that
             // began between the accept and the spawn would otherwise drain to
             // zero while this request had not started.
@@ -226,10 +234,13 @@ impl Node {
                 let _place = place;
                 answer(
                     id,
-                    &db,
-                    &stopping,
-                    census.as_deref(),
-                    &committed,
+                    &Serving {
+                        db: &db,
+                        tokens: &tokens,
+                        stopping: &stopping,
+                        census: census.as_deref(),
+                        committed: &committed,
+                    },
                     &mut busy,
                     request,
                 );
@@ -248,10 +259,13 @@ impl Node {
         let id = next_request();
         answer(
             id,
-            &self.db,
-            &self.stopping,
-            self.census.as_deref(),
-            &self.committed,
+            &Serving {
+                db: &self.db,
+                tokens: &self.tokens,
+                stopping: &self.stopping,
+                census: self.census.as_deref(),
+                committed: &self.committed,
+            },
             &mut busy,
             request,
         );
@@ -272,16 +286,28 @@ fn next_request() -> u64 {
     REQUESTS.fetch_add(1, Ordering::Relaxed)
 }
 
+/// What every request on this node shares.
+///
+/// Gathered into one borrow rather than passed as five, because they are one
+/// thing — the node — and threading them individually is how a sixth gets added
+/// to some call sites and not others.
+struct Serving<'a> {
+    db: &'a Db,
+    tokens: &'a tokens::Tokens,
+    stopping: &'a Stopping,
+    census: Option<&'a Census>,
+    committed: &'a Commits,
+}
+
 /// Route one request and write its answer.
-fn answer(
-    id: u64,
-    db: &Db,
-    stopping: &Stopping,
-    census: Option<&Census>,
-    committed: &Commits,
-    busy: &mut Busy,
-    mut request: Request,
-) {
+fn answer(id: u64, node: &Serving<'_>, busy: &mut Busy, mut request: Request) {
+    let Serving {
+        db,
+        tokens,
+        stopping,
+        census,
+        committed,
+    } = *node;
     let route = (request.method().clone(), request.url().to_owned());
     // Taken before the shared reply path because an upgrade consumes the
     // request: the socket outlives this function and there is no `Answer` to
@@ -289,17 +315,19 @@ fn answer(
     // past the one place every answer is counted is a route the scrape silently
     // forgets.
     if route.0 == Method::Get && route.1 == "/watch" {
-        let refused = websocket::watch(db, stopping, committed, request, busy);
+        let refused = websocket::watch(db, stopping, committed, tokens, request, busy);
         stopping.answered(refused);
         return;
     }
     // Read before the body, because `as_reader` borrows the request mutably and
     // the headers are wanted either way.
-    let credentials = request
-        .headers()
-        .iter()
-        .find(|header| header.field.equiv("Authorization"))
-        .and_then(|header| basic::read(header.value.as_str()));
+    let presented = basic::presented(
+        request
+            .headers()
+            .iter()
+            .find(|header| header.field.equiv("Authorization"))
+            .map(|header| header.value.as_str()),
+    );
     let reply = match (&route.0, route.1.as_str()) {
         // Health carries no data, so it answers a listening socket the same way
         // for everyone: a load balancer must not need a credential to tell a
@@ -314,15 +342,21 @@ fn answer(
         // scraper that needs one is a scraper nobody configures. What it carries
         // is operational — an uptime, a sequence, some counts — with no user
         // data and no schema in it.
-        (Method::Get, "/metrics") => respond::metrics(db, census, stopping),
+        (Method::Get, "/metrics") => respond::metrics(db, census, stopping, tokens),
         // Split on `?` here rather than reaching for a URL parser: this route
         // takes one optional parameter and a dependency to read it would be a
         // poor trade.
         (Method::Get, url) if url == "/backup" || url.starts_with("/backup?") => respond::backup(
             db,
             url.split_once('?').map(|(_, query)| query),
-            credentials.as_ref(),
+            tokens,
+            &presented,
         ),
+        // Where a password is spent, once, for a token that stands in for it
+        // afterwards. Both halves are here rather than only the first: a
+        // credential a client cannot hand back is one it holds until it exits.
+        (Method::Post, "/session") => respond::open_session(db, &presented, tokens),
+        (Method::Delete, "/session") => respond::close_session(&presented, tokens),
         (Method::Post, "/script") => {
             // The body's shape is decided by what the caller says it is, not by
             // sniffing a leading brace: HTTP has a field for this, and a rule
@@ -340,11 +374,11 @@ fn answer(
             match request.as_reader().read_to_string(&mut body) {
                 Err(_) => Answer::bad_request("the request body is not text"),
                 Ok(_) if !json => {
-                    respond::script(db, &body, &Default::default(), credentials.as_ref())
+                    respond::script(db, &body, &Default::default(), tokens, &presented)
                 }
                 Ok(_) => match request::envelope(&body) {
                     Ok(read) => {
-                        respond::script(db, &read.script, &read.parameters, credentials.as_ref())
+                        respond::script(db, &read.script, &read.parameters, tokens, &presented)
                     }
                     Err(reason) => Answer::bad_request(&reason),
                 },
@@ -352,7 +386,7 @@ fn answer(
         }
         // "No such thing" and "not that way" are different answers, and a caller
         // debugging a client needs to know which one it got.
-        (_, "/script" | "/health" | "/ready" | "/metrics" | "/watch") => Answer::new(
+        (_, "/script" | "/session" | "/health" | "/ready" | "/metrics" | "/watch") => Answer::new(
             405,
             r#"{"error":"that route takes another method"}"#.to_owned(),
         ),
@@ -361,12 +395,12 @@ fn answer(
                 Method::Put | Method::Post => {
                     let mut body = Vec::new();
                     match request.as_reader().read_to_end(&mut body) {
-                        Ok(_) => object::put(db, &aimed, body, credentials.as_ref()),
+                        Ok(_) => object::put(db, &aimed, body, tokens, &presented),
                         Err(_) => Answer::bad_request("the request body could not be read"),
                     }
                 }
-                Method::Get | Method::Head => object::get(db, &aimed, credentials.as_ref()),
-                Method::Delete => object::delete(db, &aimed, credentials.as_ref()),
+                Method::Get | Method::Head => object::get(db, &aimed, tokens, &presented),
+                Method::Delete => object::delete(db, &aimed, tokens, &presented),
                 _ => Answer::new(
                     405,
                     r#"{"error":"that route takes another method"}"#.to_owned(),

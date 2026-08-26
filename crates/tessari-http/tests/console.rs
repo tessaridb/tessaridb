@@ -221,7 +221,7 @@ fn the_console_calls_no_route_that_did_not_already_exist() {
     let (_, _, code) = get(&address, "/console.js");
 
     let public = [
-        "/script", "/watch", "/health", "/ready", "/metrics", "/backup",
+        "/script", "/session", "/watch", "/health", "/ready", "/metrics", "/backup",
     ];
     for url in quoted_urls(&code) {
         // The console's own assets are answered above; what matters here is the

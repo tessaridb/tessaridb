@@ -436,6 +436,18 @@ pub enum Error {
         span: Span,
     },
 
+    /// A token whose user has since been changed or removed.
+    ///
+    /// Deliberately one refusal for four different events — a rotated password,
+    /// a corrected role, a moved tenancy, a dropped user. Which one it was is
+    /// the holder's business only insofar as they must sign in again, and
+    /// naming it would tell somebody holding a stolen token what happened to the
+    /// account they stole it from.
+    ///
+    /// Carries no span, because no statement produced it.
+    #[error("this session's token is no longer current; sign in again")]
+    TicketStale,
+
     /// A verb this language does not have.
     #[error("there is no verb called {name:?}; a grant carries `read` or `write` (at {span})")]
     NoSuchVerb {

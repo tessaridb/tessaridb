@@ -37,6 +37,14 @@ pub(crate) struct Asked {
     pub(crate) table: Option<String>,
     /// A credential, when the handshake could not carry one.
     pub(crate) credentials: Option<(String, String)>,
+    /// A token from an earlier sign-in, when the handshake could not carry one.
+    ///
+    /// Preferred over `credentials` by whoever reads this, and it is what a
+    /// browser should send: a `WebSocket` cannot carry a header, so whatever
+    /// authenticates it goes in the message — and a token that expires and can
+    /// be revoked is a better thing to put there than a password that does
+    /// neither.
+    pub(crate) token: Option<String>,
 }
 
 /// Read a follow request.
@@ -54,6 +62,7 @@ pub(crate) fn read(body: &str) -> Result<Asked, String> {
     let mut table = None;
     let mut user = None;
     let mut password = None;
+    let mut token = None;
     at.space();
     if !at.eat('}') {
         loop {
@@ -69,6 +78,7 @@ pub(crate) fn read(body: &str) -> Result<Asked, String> {
                 "table" => table = Some(at.string()?),
                 "user" => user = Some(at.string()?),
                 "password" => password = Some(at.string()?),
+                "token" => token = Some(at.string()?),
                 other => return Err(format!("a follow request has no {other:?} field")),
             }
             at.space();
@@ -95,6 +105,7 @@ pub(crate) fn read(body: &str) -> Result<Asked, String> {
             (Some(name), Some(secret)) => Some((name, secret)),
             _ => None,
         },
+        token,
     })
 }
 
