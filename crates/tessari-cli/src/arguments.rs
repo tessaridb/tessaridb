@@ -36,7 +36,15 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --help          this
 
 with neither -e nor -f, statements are read from standard input: a prompt when
-that is a terminal, a script when it is a pipe.";
+that is a terminal, a script when it is a pipe.
+
+serving a store that has no users yet, TESSARIDB_INITIAL_USER and
+TESSARIDB_INITIAL_PASSWORD declare that user as a store-wide owner and close the
+store. Both or neither: half of them is refused rather than started, because a
+node that came up open because a variable was misspelled looks exactly like one
+that came up correctly. A store that already has users ignores them, so a
+container may carry them on every restart, and they are not a way to reset a
+password.";
 
 /// Where the password is read from.
 ///

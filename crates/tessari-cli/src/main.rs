@@ -33,6 +33,7 @@
 //! Nothing is written to disk, because statements carry passwords.
 
 mod arguments;
+mod bootstrap;
 mod line;
 mod logging;
 mod raw;
@@ -222,6 +223,11 @@ fn statements(
 /// and that is an argument. It serves until it is stopped, so it never returns
 /// on the happy path.
 fn serve(db: Db, serving: &Serving, started: std::time::Instant) -> Result<Ended, String> {
+    // Before anything is bound. A node that came up **open** because its
+    // credentials were misconfigured should never have reached the point of
+    // answering on a network, so this is a failure to start rather than a
+    // warning behind a listening socket.
+    bootstrap::first_user(&db)?;
     let db = std::sync::Arc::new(db);
     // Both are bound before either serves, so an address that cannot be taken
     // is a failure to start rather than a surface that quietly went missing
