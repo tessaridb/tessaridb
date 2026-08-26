@@ -28,12 +28,14 @@
 //! pasted back in. JSON is what the HTTP endpoint speaks, and it had to decide
 //! how fifteen types become six; a terminal is owed no such compromise.
 //!
-//! There is no line editing and no history. Both mean a dependency, and a
-//! terminal library is a large surface to take for a convenience — so it is
-//! stated in `.help` rather than left to be discovered by pressing up.
+//! There is line editing and per-session history, written here rather than
+//! taken as a dependency: `line.rs` says why, and `raw.rs` says what it costs.
+//! Nothing is written to disk, because statements carry passwords.
 
 mod arguments;
+mod line;
 mod logging;
+mod raw;
 mod render;
 mod session;
 mod shutdown;
@@ -159,7 +161,7 @@ fn statements(
 ) -> Result<Ended, String> {
     let ended = match source {
         Source::Inline(script) => {
-            let mut input = io::Cursor::new(script.clone().into_bytes());
+            let mut input = session::Piped::new(io::Cursor::new(script.clone().into_bytes()));
             session::run(store, &mut input, out, Mode::Script)
         }
         Source::File(path) => {
@@ -167,7 +169,7 @@ fn statements(
             // clear failure before anything runs instead of a partial script.
             let held =
                 fs::read(path).map_err(|failure| format!("{}: {failure}", path.display()))?;
-            let mut input = io::Cursor::new(held);
+            let mut input = session::Piped::new(io::Cursor::new(held));
             session::run(store, &mut input, out, Mode::Script)
         }
         Source::Backup(_)
@@ -191,8 +193,18 @@ fn statements(
             } else {
                 Mode::Script
             };
-            let mut input = BufReader::new(stdin.lock());
-            let ended = session::run(store, &mut input, out, mode);
+            // A person gets the editor; a pipe gets the reader it always had.
+            // `attach` answers `None` for anything that is not a terminal, so
+            // the two conditions cannot come apart.
+            let ended = match line::Edited::attach() {
+                Some(mut edited) if mode == Mode::Interactive => {
+                    session::run(store, &mut edited, out, mode)
+                }
+                _ => {
+                    let mut input = session::Piped::new(BufReader::new(stdin.lock()));
+                    session::run(store, &mut input, out, mode)
+                }
+            };
             if mode == Mode::Interactive && ended.is_ok() {
                 // End-of-input at a prompt leaves the cursor mid-line.
                 drop(writeln!(out));

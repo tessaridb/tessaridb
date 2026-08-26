@@ -27,7 +27,7 @@ use std::sync::Arc;
 use tessari_wire::Node;
 use tessaridb::{Db, Parameters, Value};
 
-use crate::session::{Mode, run};
+use crate::session::{Mode, Piped, run};
 use crate::store::{Embedded, Remote, Store};
 
 // A binary has no library target to depend on, and giving it one to make a test
@@ -91,7 +91,7 @@ fn remote(address: &str, script: &str) -> String {
 }
 
 fn said(store: &mut dyn Store, script: &str) -> String {
-    let mut input = Cursor::new(format!("{SELECTED} {script}").into_bytes());
+    let mut input = Piped::new(Cursor::new(format!("{SELECTED} {script}").into_bytes()));
     let mut out = Vec::new();
     run(store, &mut input, &mut out, Mode::Script).expect("a run");
     String::from_utf8(out).expect("text")

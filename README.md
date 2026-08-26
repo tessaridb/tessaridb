@@ -597,9 +597,23 @@ store. Either may be given alone. An address handed to something that is not
 serving is refused rather than ignored, because a port that was named and never
 opened is worse than one that was refused — nothing tells you which happened.
 
-**There is no line editing or history** — both mean a dependency, and a terminal
-library is a large surface to take for a convenience, so `.help` says so rather
-than leaving it to be found by pressing up.
+**The prompt edits.** The arrows, `Home`, `End`, `Delete`, the `readline`
+control keys, per-session history on `↑`/`↓`, and `Ctrl-C` to throw away a
+statement you are halfway through typing without leaving the session. It is
+written here rather than taken as a dependency: a line-editing crate would have
+brought more crates than this whole workspace has, and the only thing the editor
+needs — `libc` — was already here for the signal handler.
+
+History stays **in the session and never reaches disk**, because statements
+carry passwords and a history file is how one ends up on a backup nobody was
+thinking about.
+
+The terminal is handed back the way it was found — on an ordinary exit, and on a
+panic, which needs its own hook because this workspace builds release with
+`panic = "abort"` and `Drop` does not run on the way down. That is asserted
+against a real pty in `crates/tessari-cli/tests/prompt.rs`, which reads the
+terminal's own settings before and after rather than taking the program's word
+for it.
 
 ## Stopping it
 

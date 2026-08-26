@@ -35,6 +35,60 @@ pub enum Mode {
     Script,
 }
 
+/// What a reader produced.
+///
+/// Three cases rather than `Option<String>` because a person at a terminal can
+/// do a third thing: throw away a statement they are halfway through typing. A
+/// sentinel line would have carried that instead, and a sentinel is a value the
+/// language could also produce.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Given {
+    /// A line, with its newline still on it.
+    Line(String),
+    /// Whatever is half-typed should go, and the prompt start over.
+    Abandon,
+    /// There is no more input.
+    Ended,
+}
+
+/// Where a session's lines come from.
+///
+/// The prompt is drawn *by the reader* rather than by the session, because a
+/// reader that owns the terminal has to redraw it on every keystroke and cannot
+/// have somebody else deciding when it appears.
+pub trait Lines {
+    /// The next line, drawing `prompt` when there is one to draw.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when reading or writing fails.
+    fn next(&mut self, prompt: &str, out: &mut dyn Write) -> std::io::Result<Given>;
+}
+
+/// Lines from anything that reads: a file, a pipe, a string.
+pub struct Piped<R>(R);
+
+impl<R: BufRead> Piped<R> {
+    /// Read lines from `source`.
+    pub const fn new(source: R) -> Self {
+        Self(source)
+    }
+}
+
+impl<R: BufRead> Lines for Piped<R> {
+    fn next(&mut self, prompt: &str, out: &mut dyn Write) -> std::io::Result<Given> {
+        if !prompt.is_empty() {
+            write!(out, "{prompt}")?;
+            out.flush()?;
+        }
+        let mut line = String::new();
+        match self.0.read_line(&mut line)? {
+            0 => Ok(Given::Ended),
+            _ => Ok(Given::Line(line)),
+        }
+    }
+}
+
 /// What a run ended as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ended {
@@ -52,7 +106,7 @@ pub enum Ended {
 /// reported through [`Ended`] rather than as an error, because it is an answer.
 pub fn run(
     store: &mut dyn Store,
-    input: &mut impl BufRead,
+    input: &mut dyn Lines,
     out: &mut impl Write,
     mode: Mode,
 ) -> std::io::Result<Ended> {
@@ -60,22 +114,22 @@ pub fn run(
     let mut ended = Ended::Fine;
 
     loop {
-        if mode == Mode::Interactive {
-            write!(
-                out,
-                "{}",
-                if pending.is_empty() {
-                    "tessaridb> "
-                } else {
-                    "   > "
-                }
-            )?;
-            out.flush()?;
-        }
-        let mut line = String::new();
-        if input.read_line(&mut line)? == 0 {
-            break;
-        }
+        let prompt = match (mode, pending.is_empty()) {
+            (Mode::Script, _) => "",
+            (Mode::Interactive, true) => "tessaridb> ",
+            (Mode::Interactive, false) => "   > ",
+        };
+        let line = match input.next(prompt, out)? {
+            Given::Line(line) => line,
+            // Not an error and not an end: the statement goes, and the next
+            // prompt is a first-line prompt again because there is no longer
+            // anything unfinished for it to continue.
+            Given::Abandon => {
+                pending.clear();
+                continue;
+            }
+            Given::Ended => break,
+        };
         let trimmed = line.trim();
 
         // Dot-commands are read only at the start of a statement, so a `.exit`
@@ -292,10 +346,12 @@ fn scan(text: &str) -> Scan {
 const HELP: &str = "\
 statements end with `;` and may span lines
   .help   this
-  .exit   leave (so does end-of-input, Ctrl-D)
+  .exit   leave (so does Ctrl-D on an empty line)
 
-there is no line editing or history: arrow keys will print escape codes.
-that is a dependency not yet taken rather than an oversight.";
+editing:  ← → Home End Delete, and Ctrl-A E B F K U W L
+history:  ↑ ↓ (this session only, never written to disk — statements carry
+          passwords, and a history file is how one reaches a backup)
+Ctrl-C    throw away the statement being typed; the session stays";
 
 #[cfg(test)]
 mod tests {
@@ -305,13 +361,58 @@ mod tests {
 
     use tessaridb::{Db, Parameters};
 
-    use super::{Ended, Mode, closed, run};
+    use super::{Ended, Given, Lines, Mode, Piped, Write, closed, run};
     use crate::store::Embedded;
+
+    /// A reader that hands over exactly what a test says, in order.
+    ///
+    /// The abandon path has no other way in: it is a keystroke, and a keystroke
+    /// cannot be spelt in a `Cursor` full of statements.
+    struct Scripted(std::collections::VecDeque<Given>);
+
+    impl Lines for Scripted {
+        fn next(&mut self, _prompt: &str, _out: &mut dyn Write) -> std::io::Result<Given> {
+            Ok(self.0.pop_front().unwrap_or(Given::Ended))
+        }
+    }
+
+    #[test]
+    fn abandoning_throws_away_the_half_typed_statement_and_nothing_else() {
+        // Ctrl-C at the continuation prompt. What must NOT happen is the
+        // fragment joining the next statement, and what must also not happen is
+        // "input ended inside an unfinished statement" at the end — the input
+        // did not end, it was withdrawn.
+        let db = Db::in_memory().expect("a database");
+        let mut store = Embedded::new(&db, None, Parameters::new()).expect("a session");
+        let mut input = Scripted(
+            [
+                Given::Line("CREATE users:1 = {\n".to_owned()),
+                Given::Abandon,
+                Given::Line("DEFINE NAMESPACE prod;\n".to_owned()),
+                Given::Ended,
+            ]
+            .into(),
+        );
+        let mut out = Vec::new();
+        let ended = run(&mut store, &mut input, &mut out, Mode::Interactive).expect("a run");
+        let said = String::from_utf8(out).expect("text");
+
+        assert_eq!(ended, Ended::Fine, "{said}");
+        assert_eq!(
+            said.trim(),
+            "ok",
+            "the statement after the abandon ran, and it ran alone"
+        );
+        assert!(
+            !said.contains("unfinished"),
+            "the fragment was withdrawn, not left dangling: {said}"
+        );
+    }
 
     fn ran(script: &str, mode: Mode) -> (String, Ended) {
         let db = Db::in_memory().expect("a database");
         let mut store = Embedded::new(&db, None, Parameters::new()).expect("a session");
-        let mut input = Cursor::new(script.as_bytes().to_vec());
+        let mut input = Piped::new(Cursor::new(script.as_bytes().to_vec()));
         let mut out = Vec::new();
         let ended = run(&mut store, &mut input, &mut out, mode).expect("a run");
         (String::from_utf8(out).expect("text"), ended)
