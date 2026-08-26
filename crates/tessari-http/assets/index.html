@@ -4,69 +4,297 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>TessariDB console</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/console.css" />
   </head>
   <body>
-    <header>
-      <h1>TessariDB</h1>
-      <p id="where">served by this node</p>
+    <header class="bar">
+      <div class="who">
+        <span class="mark" aria-hidden="true"></span>
+        <h1>TessariDB</h1>
+        <p id="where" class="faint">served by this node</p>
+      </div>
+
+      <details class="identity">
+        <summary>
+          <span id="signed-in">not signed in</span>
+        </summary>
+        <div class="sheet">
+          <p class="note">
+            Leave both empty against a store that has no users yet. The first
+            <code>DEFINE USER</code> closes it, and everything after that needs a
+            name.
+          </p>
+          <div class="row">
+            <label>
+              User
+              <input id="user" type="text" autocomplete="username" />
+            </label>
+            <label>
+              Password
+              <input id="password" type="password" autocomplete="current-password" />
+            </label>
+          </div>
+          <p class="note warn">
+            Credentials travel in the clear, exactly as they do for every other
+            route here: this store has no TLS and belongs on a network you
+            protect.
+          </p>
+        </div>
+      </details>
     </header>
 
-    <p class="plain">
-      This page is served by the node it talks to and reaches nothing else.
-      Credentials travel in the clear, exactly as they do for every other route
-      here: this store has no TLS and belongs on a network you protect.
-    </p>
-
-    <section aria-labelledby="identity-heading">
-      <h2 id="identity-heading">Who you are</h2>
-      <p class="note">
-        Leave both empty against a store that has no users yet. The first
-        <code>DEFINE USER</code> closes it, and everything after that needs a
-        name.
-      </p>
-      <div class="row">
-        <label>User <input id="user" type="text" autocomplete="username" /></label>
-        <label>
-          Password
-          <input id="password" type="password" autocomplete="current-password" />
-        </label>
+    <nav class="tabs">
+      <div role="tablist" aria-label="Sections">
+        <button
+          type="button"
+          role="tab"
+          id="tab-query"
+          aria-controls="panel-query"
+          aria-selected="true"
+        >
+          Query
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-users"
+          aria-controls="panel-users"
+          aria-selected="false"
+          tabindex="-1"
+        >
+          Users
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-node"
+          aria-controls="panel-node"
+          aria-selected="false"
+          tabindex="-1"
+        >
+          Node
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-cluster"
+          aria-controls="panel-cluster"
+          aria-selected="false"
+          tabindex="-1"
+        >
+          Cluster
+        </button>
       </div>
-    </section>
+    </nav>
 
-    <section aria-labelledby="script-heading">
-      <h2 id="script-heading">Run a script</h2>
-      <textarea id="script" rows="6" spellcheck="false">
-USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
+    <main>
+      <section
+        id="panel-query"
+        role="tabpanel"
+        aria-labelledby="tab-query"
+        tabindex="0"
       >
-      <div class="row">
-        <button id="run" type="button">Run</button>
-        <span id="script-status" class="status" role="status"></span>
-      </div>
-      <pre id="answer" class="answer"></pre>
-    </section>
+        <div class="split">
+          <div class="pane">
+            <div class="pane-head">
+              <h2>Script</h2>
+              <span class="faint">⌘↵ or Ctrl↵ to run</span>
+            </div>
+            <textarea id="script" rows="8" spellcheck="false" aria-label="Script">
+USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
+            >
+            <div class="row spread">
+              <button id="run" type="button" class="primary">Run</button>
+              <span id="script-status" class="status" role="status"></span>
+            </div>
+          </div>
 
-    <section aria-labelledby="watch-heading">
-      <h2 id="watch-heading">Watch a table</h2>
-      <p class="note">
-        <code>from</code> is a position in the log rather than a moment in time,
-        so <code>0</code> replays everything the log still holds. Leave the table
-        empty to follow every table you may read.
-      </p>
-      <div class="row">
-        <label>Namespace <input id="namespace" type="text" value="prod" /></label>
-        <label>Database <input id="database" type="text" value="library" /></label>
-        <label>Table <input id="table" type="text" placeholder="every table" /></label>
-        <label>From <input id="from" type="number" value="0" min="0" /></label>
-      </div>
-      <div class="row">
-        <button id="follow" type="button">Follow</button>
-        <button id="stop" type="button" disabled>Stop</button>
-        <span id="watch-status" class="status" role="status"></span>
-      </div>
-      <ol id="changes" class="changes" reversed></ol>
-    </section>
+          <div class="pane">
+            <div class="pane-head">
+              <h2>Answer</h2>
+              <div class="row tight">
+                <button type="button" class="quiet chosen" data-shape="auto">
+                  Auto
+                </button>
+                <button type="button" class="quiet" data-shape="json">JSON</button>
+              </div>
+            </div>
+            <div id="answer" class="answer" aria-live="polite"></div>
+          </div>
+        </div>
+
+        <div class="pane">
+          <div class="pane-head">
+            <h2>Follow a table</h2>
+            <span id="watch-status" class="status" role="status"></span>
+          </div>
+          <p class="note">
+            <code>from</code> is a position in the log rather than a moment in
+            time, so <code>0</code> replays everything the log still holds. Leave
+            the table empty to follow every table you may read.
+          </p>
+          <div class="row">
+            <label>Namespace <input id="namespace" type="text" value="prod" /></label>
+            <label>Database <input id="database" type="text" value="library" /></label>
+            <label>Table <input id="table" type="text" placeholder="every table" /></label>
+            <label>From <input id="from" type="number" value="0" min="0" /></label>
+          </div>
+          <div class="row">
+            <button id="follow" type="button">Follow</button>
+            <button id="stop" type="button" class="quiet" disabled>Stop</button>
+          </div>
+          <ol id="changes" class="changes" reversed></ol>
+        </div>
+      </section>
+
+      <section
+        id="panel-users"
+        role="tabpanel"
+        aria-labelledby="tab-users"
+        tabindex="0"
+        hidden
+      >
+        <div class="split">
+          <div class="pane">
+            <div class="pane-head">
+              <h2>Look one up</h2>
+              <span id="user-status" class="status" role="status"></span>
+            </div>
+            <div class="row">
+              <label>
+                Name <input id="lookup-name" type="text" placeholder="ada" />
+              </label>
+              <button id="lookup" type="button">Show</button>
+            </div>
+            <div id="user-answer" class="answer small" aria-live="polite"></div>
+          </div>
+
+          <div class="pane">
+            <div class="pane-head">
+              <h2>Define one</h2>
+              <span id="define-status" class="status" role="status"></span>
+            </div>
+            <p class="note">
+              Leave the tenancy empty for a user of the whole store. A password
+              reaches the node and goes no further: what is stored is a hash, so
+              no plaintext reaches the log or any replica.
+            </p>
+            <div class="row">
+              <label>Name <input id="new-name" type="text" placeholder="ada" /></label>
+              <label>
+                Tenancy
+                <input id="new-scope" type="text" placeholder="prod.library" />
+              </label>
+              <label>Role <input id="new-role" type="text" value="editor" /></label>
+              <label>
+                Password
+                <input id="new-password" type="password" autocomplete="new-password" />
+              </label>
+            </div>
+            <pre id="define-preview" class="answer small"></pre>
+            <div class="row">
+              <button id="define" type="button" class="primary">Run it</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="pane">
+          <div class="pane-head"><h2>What this section cannot do</h2></div>
+          <p class="note">
+            <strong>There is no listing.</strong> <code>INFO FOR</code> has five
+            subjects and the user one names a single user, deliberately: a
+            partial view of who may do what reads as the whole answer. So a name
+            you have forgotten cannot be recovered from here, or from anywhere
+            else. It is an open question rather than an oversight.
+          </p>
+          <p class="note">
+            <strong>There is no removal.</strong> The language can define and it
+            cannot undefine — there is no <code>REMOVE</code> statement of any
+            kind yet. A button here would have to reach something no statement
+            reaches, and this console is a client of the same API as everything
+            else.
+          </p>
+        </div>
+      </section>
+
+      <section
+        id="panel-node"
+        role="tabpanel"
+        aria-labelledby="tab-node"
+        tabindex="0"
+        hidden
+      >
+        <div class="pane-head">
+          <h2>This node</h2>
+          <div class="row tight">
+            <span id="node-status" class="status" role="status"></span>
+            <button id="node-refresh" type="button" class="quiet">Refresh</button>
+          </div>
+        </div>
+
+        <div class="split">
+          <div class="pane">
+            <div class="pane-head"><h2>Identity and settings</h2></div>
+            <div id="node-facts" class="answer small" aria-live="polite"></div>
+          </div>
+          <div class="pane">
+            <div class="pane-head"><h2>Health and readiness</h2></div>
+            <div id="node-health" class="answer small" aria-live="polite"></div>
+            <p class="note">
+              They are two answers, not one. A node says <em>not ready</em> and
+              goes on serving for five seconds while it drains, so whatever
+              routes traffic to it can stop doing so while it can still answer.
+            </p>
+          </div>
+        </div>
+
+        <div class="pane">
+          <div class="pane-head"><h2>Metrics</h2></div>
+          <div id="node-metrics" class="answer small" aria-live="polite"></div>
+        </div>
+      </section>
+
+      <section
+        id="panel-cluster"
+        role="tabpanel"
+        aria-labelledby="tab-cluster"
+        tabindex="0"
+        hidden
+      >
+        <div class="pane">
+          <div class="pane-head">
+            <h2>Membership</h2>
+            <span id="cluster-status" class="status" role="status"></span>
+          </div>
+          <div id="cluster-facts" class="answer small" aria-live="polite"></div>
+        </div>
+
+        <div class="pane">
+          <div class="pane-head"><h2>What is not here yet</h2></div>
+          <p class="note">
+            What this section shows is what the node itself knows: its own
+            membership, the peers it has been told about, and the addresses it
+            answers on. That is real, and it is all that is real today.
+          </p>
+          <p class="note warn">
+            <strong>Replication and failover are still being built.</strong>
+            There is no leader, no follower, no automatic promotion and no
+            quorum. A second node is a second store; nothing copies between them
+            yet. The backup and the log replay are the durability story for now,
+            and they are the ones to plan around.
+          </p>
+          <p class="note">
+            This page will grow ranges, leadership and lag when there is
+            something true to put in it. A dashboard drawn ahead of the engine
+            would be the one thing that makes the rest of this console
+            untrustworthy.
+          </p>
+        </div>
+      </section>
+    </main>
 
     <script src="/console.js"></script>
+    <script src="/sections.js"></script>
   </body>
 </html>

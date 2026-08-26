@@ -38,38 +38,244 @@ function say(id, words, failed) {
   line.classList.toggle("failed", failed === true);
 }
 
-// ------------------------------------------------------------- run a script
-
-at("run").addEventListener("click", async () => {
-  const source = at("script").value;
+/** Run a script against the node, and hand back the reply and its text. */
+async function ask(source) {
   const headers = {};
   const offered = credential();
   if (offered !== null) {
     headers["Authorization"] = offered;
   }
+  const reply = await fetch(SCRIPT_ROUTE, {
+    method: "POST",
+    headers: headers,
+    body: source,
+  });
+  return { reply: reply, text: await reply.text() };
+}
+
+// ------------------------------------------------------------------- tabs
+
+// Hash routing, so a section is a link somebody can send and a refresh keeps
+// you where you were. A panel nobody can link to is a panel people describe to
+// each other in words.
+const tabs = () => Array.from(document.querySelectorAll('[role="tab"]'));
+
+function show(name) {
+  const wanted = tabs().some((tab) => tab.id === "tab-" + name) ? name : "query";
+  for (const tab of tabs()) {
+    const chosen = tab.id === "tab-" + wanted;
+    tab.setAttribute("aria-selected", String(chosen));
+    tab.tabIndex = chosen ? 0 : -1;
+    at(tab.getAttribute("aria-controls")).hidden = !chosen;
+  }
+  if (window.location.hash !== "#" + wanted) {
+    window.location.hash = wanted;
+  }
+}
+
+for (const tab of tabs()) {
+  tab.addEventListener("click", () => show(tab.id.replace("tab-", "")));
+  // Arrow keys move between tabs, which is what a tablist owes anybody not
+  // using a mouse — the roles alone promise it and do not provide it.
+  tab.addEventListener("keydown", (event) => {
+    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+    if (step === 0) {
+      return;
+    }
+    event.preventDefault();
+    const all = tabs();
+    const here = all.indexOf(tab);
+    const next = all[(here + step + all.length) % all.length];
+    next.focus();
+    show(next.id.replace("tab-", ""));
+  });
+}
+
+window.addEventListener("hashchange", () =>
+  show(window.location.hash.replace("#", "")),
+);
+
+// --------------------------------------------------------------- identity
+
+/** Keep the collapsed identity control honest about whether there is a name. */
+function signedIn() {
+  const user = at("user").value;
+  at("signed-in").textContent = user === "" ? "not signed in" : user;
+}
+
+at("user").addEventListener("input", signedIn);
+
+// ---------------------------------------------------------- drawing an answer
+
+/** Whether a value belongs in a cell: not an object, not an array. */
+function flat(value) {
+  return value === null || typeof value !== "object";
+}
+
+/**
+ * The fields every record shares, or `null` when they do not share a shape.
+ *
+ * The same rule the terminal follows, and for the same reason. A union of the
+ * field sets with blanks where a record has none would table more answers and
+ * would make *absent* and *empty* look identical — in the rendering, which is
+ * the last place a distinction should be lost.
+ */
+function shape(records) {
+  let agreed = null;
+  for (const record of records) {
+    const held = record.value;
+    if (held === null || typeof held !== "object" || Array.isArray(held)) {
+      return null;
+    }
+    const here = Object.keys(held).sort();
+    if (!here.every((field) => flat(held[field]))) {
+      return null;
+    }
+    if (agreed === null) {
+      agreed = here;
+    } else if (agreed.length !== here.length || !agreed.every((f, i) => f === here[i])) {
+      return null;
+    }
+  }
+  return agreed !== null && agreed.length > 0 ? agreed : null;
+}
+
+/** One cell's text. Numbers stay numbers; everything else is JSON. */
+function cell(value) {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+/** These records as a table element, or `null` if they are not one. */
+function drawn(records) {
+  const fields = shape(records);
+  if (fields === null) {
+    return null;
+  }
+  const numeric = fields.map((field) =>
+    records.every((record) => typeof record.value[field] === "number"),
+  );
+
+  const table = document.createElement("table");
+  const head = table.createTHead().insertRow();
+  for (const name of ["id", ...fields]) {
+    const column = document.createElement("th");
+    column.textContent = name;
+    head.appendChild(column);
+  }
+  const body = table.createTBody();
+  for (const record of records) {
+    const row = body.insertRow();
+    // `textContent` throughout: these values come out of the store, and a record
+    // that happens to hold a `<script>` tag is data, not markup.
+    row.insertCell().textContent = record.id;
+    fields.forEach((field, index) => {
+      const box = row.insertCell();
+      box.textContent = cell(record.value[field]);
+      if (numeric[index]) {
+        box.classList.add("number");
+      }
+    });
+  }
+  return table;
+}
+
+/** How the answer pane is drawing things: by shape, or as the JSON that came. */
+let drawing = "auto";
+
+/** The parsed body of the last answer, so the toggle can redraw without asking. */
+let held = null;
+
+function paint() {
+  const pane = at("answer");
+  pane.textContent = "";
+  if (held === null) {
+    return;
+  }
+  if (drawing === "json" || !Array.isArray(held.results)) {
+    const shown = document.createElement("pre");
+    shown.textContent = JSON.stringify(held, null, 2);
+    pane.appendChild(shown);
+    return;
+  }
+  for (const result of held.results) {
+    if (result.kind === "records" && Array.isArray(result.records)) {
+      const table = result.records.length === 0 ? null : drawn(result.records);
+      if (table === null) {
+        const shown = document.createElement("pre");
+        shown.textContent =
+          result.records.length === 0
+            ? "(no records)"
+            : JSON.stringify(result.records, null, 2);
+        pane.appendChild(shown);
+      } else {
+        pane.appendChild(table);
+      }
+      // The trailer says how many and by which path. A scan should be visible
+      // rather than folklore, which is why the store reports the path at all.
+      const trailer = document.createElement("p");
+      trailer.className = "trailer";
+      trailer.textContent =
+        "(" + result.records.length + " record(s), via " + result.path + ")";
+      pane.appendChild(trailer);
+    } else if (result.kind === "done") {
+      // What the terminal prints for the same answer, and for the same reason:
+      // a script's `USE` and `DEFINE` statements each answer, and three lines of
+      // JSON apiece would bury the result somebody actually ran the script for.
+      const shown = document.createElement("p");
+      shown.className = "trailer";
+      shown.textContent = "ok";
+      pane.appendChild(shown);
+    } else {
+      const shown = document.createElement("pre");
+      shown.textContent = JSON.stringify(result, null, 2);
+      pane.appendChild(shown);
+    }
+  }
+}
+
+for (const button of document.querySelectorAll("[data-shape]")) {
+  button.addEventListener("click", () => {
+    drawing = button.dataset.shape;
+    for (const other of document.querySelectorAll("[data-shape]")) {
+      other.classList.toggle("chosen", other === button);
+    }
+    paint();
+  });
+}
+
+// ------------------------------------------------------------- run a script
+
+async function runScript() {
   say("script-status", "running…");
+  held = null;
   at("answer").textContent = "";
   try {
-    const reply = await fetch(SCRIPT_ROUTE, {
-      method: "POST",
-      headers: headers,
-      body: source,
-    });
-    const text = await reply.text();
-    // Pretty-print when it is JSON and show it as it came when it is not: an
-    // error body is plain text and reformatting it would only hide it.
-    let shown = text;
+    const { reply, text } = await ask(at("script").value);
+    // Parsed when it is JSON and shown as it came when it is not: an error body
+    // is plain text and reformatting it would only hide it.
     try {
-      shown = JSON.stringify(JSON.parse(text), null, 2);
+      held = JSON.parse(text);
     } catch (ignored) {
-      shown = text;
+      held = null;
+      const shown = document.createElement("pre");
+      shown.textContent = text;
+      at("answer").appendChild(shown);
     }
-    at("answer").textContent = shown;
+    paint();
     say("script-status", reply.status + " " + reply.statusText, reply.status >= 400);
   } catch (failure) {
     // A fetch rejects only when the request never got an answer, so this is a
     // connection problem and never a refusal from the node.
     say("script-status", "the node did not answer: " + failure.message, true);
+  }
+}
+
+at("run").addEventListener("click", runScript);
+
+at("script").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault();
+    runScript();
   }
 });
 
@@ -90,22 +296,20 @@ function stopFollowing(words) {
 }
 
 /** Add one change to the top of the list, as text and never as markup. */
-function show(change) {
+function change(what) {
   const line = document.createElement("li");
-  const became = typeof change.became === "string" ? change.became : "";
+  const became = typeof what.became === "string" ? what.became : "";
   line.classList.add(became === "removed" ? "removed" : "written");
-  // `textContent` throughout: these values come out of the store, and a record
-  // that happens to hold a `<script>` tag is data, not markup.
   line.textContent =
     "#" +
-    change.sequence +
+    what.sequence +
     "  " +
-    change.table +
+    what.table +
     ":" +
-    change.id +
+    what.id +
     "  " +
     became +
-    (change.value === undefined ? "" : "  " + JSON.stringify(change.value));
+    (what.value === undefined ? "" : "  " + JSON.stringify(what.value));
   const list = at("changes");
   list.insertBefore(line, list.firstChild);
 }
@@ -151,9 +355,9 @@ at("follow").addEventListener("click", () => {
   });
 
   socket.addEventListener("message", (event) => {
-    let change = null;
+    let what = null;
     try {
-      change = JSON.parse(event.data);
+      what = JSON.parse(event.data);
     } catch (ignored) {
       say("watch-status", "the node sent something this page cannot read", true);
       return;
@@ -161,15 +365,15 @@ at("follow").addEventListener("click", () => {
     // The node answers a request it will not serve in words rather than by
     // going quiet, so an operator can tell "not permitted" from "nothing has
     // happened yet".
-    if (typeof change.refused === "string") {
-      say("watch-status", change.refused, true);
+    if (typeof what.refused === "string") {
+      say("watch-status", what.refused, true);
       return;
     }
-    if (typeof change.error === "string") {
-      say("watch-status", change.error, true);
+    if (typeof what.error === "string") {
+      say("watch-status", what.error, true);
       return;
     }
-    show(change);
+    change(what);
   });
 
   socket.addEventListener("close", (event) => {
@@ -186,3 +390,5 @@ at("follow").addEventListener("click", () => {
 at("stop").addEventListener("click", () => stopFollowing("stopped"));
 
 at("where").textContent = "served by " + window.location.host;
+signedIn();
+show(window.location.hash.replace("#", ""));
