@@ -49,6 +49,12 @@ async function ask(source) {
     method: "POST",
     headers: headers,
     body: source,
+    // Without this the browser handles the node's `401` challenge itself and
+    // opens its own credential dialog on top of the page — a second sign-in
+    // this console did not ask for, cannot read and cannot clear, and which
+    // leaves the page's own request hanging behind it. The credential is in the
+    // header above; nothing here wants the browser to manage one.
+    credentials: "omit",
   });
   return { reply: reply, text: await reply.text() };
 }
@@ -104,6 +110,66 @@ function signedIn() {
 }
 
 at("user").addEventListener("input", signedIn);
+
+/** The disclosure this control lives in, closed by everything that should. */
+const identity = document.querySelector("details.identity");
+
+/**
+ * Check the credential and close the sheet, or say why it stayed open.
+ *
+ * There is no session to establish — every request carries the credential — so
+ * "sign in" here means *find out now whether this password works*. Without it
+ * the first thing a wrong password does is make some unrelated button fail, and
+ * the reader blames the button.
+ */
+at("sign-in").addEventListener("click", async () => {
+  say("identity-status", "checking…");
+  try {
+    // The cheapest statement that a signed-in caller of any role may run. It
+    // reads the catalog and touches no records, so checking a password costs
+    // nothing anybody would notice.
+    const { reply, text } = await ask("INFO FOR STORE;");
+    if (reply.status >= 400) {
+      let said = text;
+      try {
+        const body = JSON.parse(text);
+        said = typeof body.error === "string" ? body.error : text;
+      } catch (ignored) {
+        // Not JSON, so the text is already the most useful thing there is.
+      }
+      say("identity-status", said, true);
+      return;
+    }
+    say("identity-status", "");
+    signedIn();
+    identity.open = false;
+  } catch (failure) {
+    say("identity-status", "the node did not answer: " + failure.message, true);
+  }
+});
+
+at("sign-out").addEventListener("click", () => {
+  at("user").value = "";
+  at("password").value = "";
+  say("identity-status", "");
+  signedIn();
+  identity.open = false;
+});
+
+// A sheet that hangs over the page until something else is clicked is the
+// complaint this control earned. Escape and a click outside both close it,
+// which is what every other disclosure on the web does.
+identity.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    identity.open = false;
+  }
+});
+
+document.addEventListener("click", (event) => {
+  if (identity.open && !identity.contains(event.target)) {
+    identity.open = false;
+  }
+});
 
 // ---------------------------------------------------------- drawing an answer
 

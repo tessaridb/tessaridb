@@ -438,7 +438,8 @@ at("remove").addEventListener("click", async () => {
 
 /** One operational route, parsed as JSON, or a reason it could not be. */
 async function scrape(route) {
-  const reply = await fetch(route);
+  // Same reason as `ask`: no browser-managed credential, no native dialog.
+  const reply = await fetch(route, { credentials: "omit" });
   const text = await reply.text();
   try {
     return { status: reply.status, body: JSON.parse(text) };
