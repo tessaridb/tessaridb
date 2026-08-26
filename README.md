@@ -963,16 +963,16 @@ TessariDB is **source-available** under the
 **2030-08-24** — or four years after any given version is first published,
 whichever comes first — that version becomes **Apache-2.0** permanently.
 
-**Free, with no agreement and no charge, for:**
+**Free, with no agreement and no charge**, for any use — including production,
+including inside a commercial organisation, and including inside a product you
+sell.
 
-- personal projects,
-- non-profits, education, research, and community or open-source projects,
-- evaluation, prototyping, benchmarking, CI, and internal development, test and
-  staging environments.
-
-**A commercial licence is required** to run TessariDB in production in or behind
-anything that makes money, and to offer it — or a fork of it — to other people
-as a hosted or managed service. Write to
+**One restriction.** You may not provide TessariDB to third parties as a
+**database service**: a product, service or platform in which TessariDB, or a
+derivative of it, gives database functionality to people other than your own
+employees and contractors, where those people can create, manage or control
+namespaces, databases, tables or schemas. That needs a commercial licence or
+written permission. Write to
 **[licensing@tessaridb.com](mailto:licensing@tessaridb.com)** or see
 [tessaridb.com/licensing](https://tessaridb.com/licensing); we are
 straightforward to deal with.

@@ -13,28 +13,22 @@ Licensed Work:        TessariDB
                       The Licensed Work is (c) 2026 boogvar
 
 Additional Use Grant: You may make production use of the Licensed Work, at no
-                      charge, provided your use falls into one of the
-                      following categories:
+                      charge, including use by and within a commercial
+                      organisation, provided that you do not provide the
+                      Licensed Work to third parties as a Database Service.
 
-                      (a) Personal use. Use by an individual, for that
-                          individual's own purposes, and not on behalf of or
-                          funded by an organisation.
+                      "Database Service" means any product, service, platform
+                      or other commercial offering in which the Licensed Work,
+                      or any derivative of it, is used to provide database
+                      functionality to third parties — that is, to parties
+                      other than your own employees and the contractors
+                      working on your behalf — where those parties are able to
+                      create, manage or control namespaces, databases, tables
+                      or schemas.
 
-                      (b) Non-commercial use. Use by a non-profit
-                          organisation, an educational institution, a research
-                          group, or a community or open-source project, where
-                          the Licensed Work is not used to produce revenue.
-
-                      (c) Evaluation and development. Testing, prototyping,
-                          benchmarking, continuous integration, and internal
-                          development, test or staging environments.
-
-                      Any other production use requires a commercial licence
-                      from the Licensor. That includes, without limitation,
-                      use in or in support of a product or service that is
-                      sold, licensed, hosted or otherwise monetised, and
-                      offering the Licensed Work or any derivative of it to
-                      third parties as a hosted or managed service.
+                      Providing a Database Service requires a commercial
+                      licence from the Licensor, or the Licensor's written
+                      permission.
 
                       You may not remove or alter any licence, copyright or
                       other notice contained in the Licensed Work.
