@@ -39,6 +39,8 @@ mod render;
 mod session;
 #[path = "../src/store.rs"]
 mod store;
+#[path = "../src/table.rs"]
+mod table;
 
 /// Enough of a store to answer every shape, written the same way twice.
 const SEED: &str = "\

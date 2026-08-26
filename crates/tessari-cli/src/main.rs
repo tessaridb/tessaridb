@@ -40,6 +40,7 @@ mod render;
 mod session;
 mod shutdown;
 mod store;
+mod table;
 
 use std::env;
 use std::fs;

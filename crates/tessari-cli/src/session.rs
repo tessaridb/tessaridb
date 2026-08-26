@@ -25,6 +25,7 @@ use tessari_wire::Answer;
 
 use crate::render;
 use crate::store::Store;
+use crate::table::Shape;
 
 /// Whether input is coming from a person or from a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +113,15 @@ pub fn run(
 ) -> std::io::Result<Ended> {
     let mut pending = String::new();
     let mut ended = Ended::Fine;
+    // A table cannot be pasted back into a statement, and this program prints
+    // TessariQL precisely so that it can be. So the table is for a person at a
+    // prompt, and anything piped or scripted keeps the pasteable form — which is
+    // also the one a `diff` against a recorded answer expects. `.mode` overrides
+    // either way.
+    let mut shape = match mode {
+        Mode::Interactive => Shape::Auto,
+        Mode::Script => Shape::Document,
+    };
 
     loop {
         let prompt = match (mode, pending.is_empty()) {
@@ -135,10 +145,21 @@ pub fn run(
         // Dot-commands are read only at the start of a statement, so a `.exit`
         // pasted inside an unfinished object is data rather than a command.
         if pending.is_empty() && trimmed.starts_with('.') {
-            match trimmed {
-                ".exit" | ".quit" => break,
-                ".help" => writeln!(out, "{HELP}")?,
-                other => writeln!(out, "no such command: {other}\n{HELP}")?,
+            match trimmed.split_once(' ') {
+                Some((".mode", asked)) => match Shape::named(asked.trim()) {
+                    Some(chosen) => shape = chosen,
+                    None => writeln!(
+                        out,
+                        "no such mode: {} — auto, table or document",
+                        asked.trim()
+                    )?,
+                },
+                _ => match trimmed {
+                    ".exit" | ".quit" => break,
+                    ".help" => writeln!(out, "{HELP}")?,
+                    ".mode" => writeln!(out, "{}", shape.name())?,
+                    other => writeln!(out, "no such command: {other}\n{HELP}")?,
+                },
             }
             continue;
         }
@@ -155,7 +176,7 @@ pub fn run(
         match store.run(&script) {
             Ok(answers) => {
                 for answer in &answers {
-                    report(out, answer)?;
+                    report(out, answer, shape)?;
                 }
             }
             Err(refusal) => {
@@ -179,7 +200,7 @@ pub fn run(
         match store.run(&pending) {
             Ok(answers) => {
                 for answer in &answers {
-                    report(out, answer)?;
+                    report(out, answer, shape)?;
                 }
             }
             Err(refusal) => {
@@ -199,7 +220,7 @@ pub fn run(
 /// The same [`Answer`] whether the store is in this process or across a socket,
 /// which is what makes the two renderings identical by construction rather than
 /// by two code paths agreeing.
-fn report(out: &mut impl Write, answer: &Answer) -> std::io::Result<()> {
+fn report(out: &mut impl Write, answer: &Answer, shape: Shape) -> std::io::Result<()> {
     match answer {
         Answer::Records { records, .. } if records.is_empty() => writeln!(out, "(no records)"),
         Answer::Records {
@@ -207,8 +228,16 @@ fn report(out: &mut impl Write, answer: &Answer) -> std::io::Result<()> {
             path,
             names,
         } => {
-            for (id, held) in records {
-                writeln!(out, "{}", render::record(id, held, names))?;
+            // The trailer is the same either way, and deliberately so: how many
+            // and by which path is the part an operator reads for the answer
+            // behind the answer, and it should not move when the drawing does.
+            match shape.drawn(records, names) {
+                Some(drawn) => write!(out, "{drawn}")?,
+                None => {
+                    for (id, held) in records {
+                        writeln!(out, "{}", render::record(id, held, names))?;
+                    }
+                }
             }
             writeln!(out, "({} record(s), via {path})", records.len())
         }
@@ -346,6 +375,7 @@ fn scan(text: &str) -> Scan {
 const HELP: &str = "\
 statements end with `;` and may span lines
   .help   this
+  .mode   how records are drawn: auto (the default), table, document
   .exit   leave (so does Ctrl-D on an empty line)
 
 editing:  ← → Home End Delete, and Ctrl-A E B F K U W L
@@ -581,6 +611,56 @@ mod tests {
         );
         assert_eq!(ended, Ended::Fine, "{out}");
         assert!(out.contains("name: 'ada'"), "{out}");
+    }
+
+    /// A store with one flat record in it, ready to be selected from.
+    const ONE_RECORD: &str = "\
+DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+DEFINE DATABASE orders; USE DATABASE orders;\n\
+DEFINE TABLE users;\n\
+CREATE users:1 = { name: 'ada' };\n\
+SELECT * FROM users:1;\n";
+
+    #[test]
+    fn a_prompt_draws_a_table_and_a_script_draws_what_pastes_back() {
+        // The property being protected is not the table. It is that a piped run
+        // still prints TessariQL, because that is what this program promises its
+        // output is — and a table is not something a statement can be fed.
+        let (at_prompt, _) = ran(ONE_RECORD, Mode::Interactive);
+        let (in_script, _) = ran(ONE_RECORD, Mode::Script);
+
+        assert!(
+            at_prompt.contains("| name"),
+            "no table at a prompt:\n{at_prompt}"
+        );
+        assert!(
+            in_script.contains("name: 'ada'"),
+            "a script lost the pasteable form:\n{in_script}"
+        );
+        assert!(
+            !in_script.contains("| name"),
+            "a script drew a table:\n{in_script}"
+        );
+    }
+
+    #[test]
+    fn dot_mode_turns_the_table_off_and_reports_what_it_is() {
+        let (asked, _) = ran(
+            &format!(".mode document\n{ONE_RECORD}.mode\n"),
+            Mode::Interactive,
+        );
+        assert!(
+            !asked.contains("| name"),
+            "`.mode document` still drew a table:\n{asked}"
+        );
+        assert!(asked.contains("name: 'ada'"), "{asked}");
+        assert!(
+            asked.lines().any(|line| line.ends_with("> document")),
+            "`.mode` did not say which mode it is in:\n{asked}"
+        );
+
+        let (refused, _) = ran(".mode sideways\n", Mode::Interactive);
+        assert!(refused.contains("no such mode: sideways"), "{refused}");
     }
 
     #[test]

@@ -563,16 +563,42 @@ tessaridb ./data --serve 127.0.0.1:9080 --http 127.0.0.1:8000
 ```
 
 ```
-tessaridb> CREATE users:1 = { name: 'ada', joined: datetime '2026-01-15T09:30:00Z' };
-ok
 tessaridb> SELECT * FROM users;
-1: { joined: datetime '2026-01-15T09:30:00Z', name: 'ada' }
-(1 record(s), via scan)
+ id | active | name       | visits
+----+--------+------------+--------
+ 1  | true   | 'ada'      |     12
+ 2  | false  | 'grace'    |      3
+ 3  | true   | 'margaret' |   1204
+(3 record(s), via scan)
 ```
 
-Answers print in **TessariQL's own syntax**, so what comes out can be pasted back in.
-JSON is what the HTTP endpoint speaks, and it had to decide how fifteen types
-become six; a terminal is owed no such compromise.
+**The shape of the answer decides how it is drawn.** Records that share one flat
+set of fields become an aligned table, with numbers to the right so a column can
+be scanned for the large one. Anything else — a nested object, an array, or
+records that disagree about their fields — prints as documents:
+
+```
+tessaridb> SELECT * FROM users:1;
+1: { joined: datetime '2026-01-15T09:30:00Z', name: 'ada', tags: ['founder'] }
+(1 record(s), via record)
+```
+
+That is a rule rather than a preference. A union of field sets with blanks where
+a record has none would table more results and would make *absent* and *empty*
+look identical, in the rendering, where a distinction should never be lost. And
+a nested value has no honest column: truncating it, inlining it, or showing a
+placeholder are all worse than printing the document. `.mode auto|table|document`
+overrides in either direction.
+
+Answers print in **TessariQL's own syntax**, so what comes out can be pasted back
+in — strings keep their quotes, because in a schemaless store `'12'` and `12` are
+different answers. JSON is what the HTTP endpoint speaks, and it had to decide how
+fifteen types become six; a terminal is owed no such compromise.
+
+**A script never gets a table**, because a table cannot be pasted back and the
+promise above is the one that matters when the output is going somewhere other
+than a person. A prompt starts in `auto`; a pipe, a file and `-e` start in
+`document`.
 
 A refusal at a prompt prints its message and the next statement runs; in a script
 it stops, because carrying on past a failed step is how a half-applied migration
