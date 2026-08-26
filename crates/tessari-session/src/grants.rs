@@ -132,6 +132,22 @@ impl Session<'_> {
                 name: user.text.clone(),
                 span,
             })?;
+        // The table is already bounded — `resolve_table` cannot reach outside
+        // the granting session's tenancy — but the **user** was not, and a grant
+        // is a change to the user rather than to the table. It NARROWS them: the
+        // store's own rule is that a user with even one grant is reduced to
+        // exactly what they were granted. So an owner of one database could aim
+        // a grant at the store's owner and take away everything else they had.
+        // Measured before it was closed: after one `GRANT read ON t TO root`,
+        // `BACKUP` answered "root holds grants, and a backup is every table at
+        // once" — an owner of a part had disabled the whole store's only
+        // recovery path, from below, with a statement that reads as generosity.
+        if !self.administers(&held) {
+            return Err(Error::NotYours {
+                user: held.name.clone(),
+                span,
+            });
+        }
         Ok(((asked, id), held))
     }
 }

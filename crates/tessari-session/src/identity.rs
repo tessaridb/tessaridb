@@ -355,6 +355,20 @@ impl Session<'_> {
                 (Some(context.namespace), Some(context.database))
             }
         };
+        // You may not declare somebody who reaches further than you do. Without
+        // this, an owner of one database declares an owner of the **whole node**
+        // — no `ON`, so no tenancy, so no bound — and then signs in as them.
+        // Every other check on a user becomes decorative at that point, because
+        // the way past them all is to mint a wider identity rather than to touch
+        // an existing one. Measured before it was closed: `nina`, an owner of
+        // `prod.shop`, created `mallory` with no tenancy and `mallory` could
+        // list the store.
+        if !self.may_reach(namespace, database) {
+            return Err(Error::WiderThanYou {
+                user: name.text.clone(),
+                span,
+            });
+        }
         let secret = hash(password.expose(), span)?;
         Catalog::new(transaction).create_user(&name.text, namespace, database, role, &secret)?;
         Ok(Outcome::Done)
@@ -418,16 +432,31 @@ impl Session<'_> {
     ///
     /// Dropping one that is not there is not an error: the statement asks for a
     /// store without that user, and a store without that user is what it leaves.
+    ///
+    /// Dropping one you do not administer **is**, and this is the most costly
+    /// place that check was missing. There is deliberately no way to re-open a
+    /// closed store from outside, so an owner of one database removing the
+    /// store's owner does not merely exceed their authority — it locks that
+    /// account out permanently, and the grants go with it. A takeover and a
+    /// denial of service in one statement, and every log of it reads as routine
+    /// administration.
     pub(crate) fn drop_user(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
+        span: Span,
     ) -> Result<Outcome> {
         let found = Catalog::new(transaction)
             .users()?
             .into_iter()
             .find(|user| user.name == name.text);
         if let Some(user) = found {
+            if !self.administers(&user) {
+                return Err(Error::NotYours {
+                    user: user.name.clone(),
+                    span,
+                });
+            }
             // The grants go with the user. Leaving them would let a later user
             // allocated the same id inherit permissions nobody gave them, which
             // is the same shape of bug as a reused table id resolving a stale

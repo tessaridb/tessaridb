@@ -122,7 +122,7 @@ impl Session<'_> {
             StatementKind::AlterUser { name, change } => {
                 self.alter_user(transaction, name, change, span)
             }
-            StatementKind::DropUser { name } => self.drop_user(transaction, name),
+            StatementKind::DropUser { name } => self.drop_user(transaction, name, span),
             StatementKind::Grant {
                 verbs,
                 table,

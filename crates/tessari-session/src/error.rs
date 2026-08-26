@@ -413,6 +413,20 @@ pub enum Error {
         span: Span,
     },
 
+    /// Declaring somebody who would reach further than the declarer.
+    ///
+    /// Separate from [`Error::NotYours`], which is about a user who already
+    /// exists: this one is about a reach being *asked for*, and the two send an
+    /// operator to different places — one to somebody further up, the other to
+    /// the `ON` clause they left off.
+    #[error("{user:?} would reach further than you do; name a tenancy inside your own (at {span})")]
+    WiderThanYou {
+        /// The name they tried to declare.
+        user: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A role this language does not have.
     #[error("there is no role called {name:?} (at {span})")]
     NoSuchRole {

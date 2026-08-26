@@ -232,3 +232,133 @@ fn looking_a_user_up_stops_at_the_same_boundary_the_listing_does() {
 
     nina.run("INFO FOR USER ada;").expect("her own editor");
 }
+
+#[test]
+fn a_database_owner_cannot_drop_the_store_owner() {
+    // The costliest instance of the same boundary, and the one that was missing
+    // longest. A closed store has no back door, so removing the store's owner
+    // is not "exceeding your authority and being caught" — it is permanent. The
+    // account is gone, its grants are gone, and nothing can put either back.
+    let store = store();
+    peopled(&store);
+
+    let mut nina = signed_in(&store, "nina");
+    let refused = nina
+        .run("DROP USER root;")
+        .expect_err("a database owner does not administer the store owner");
+    assert!(
+        refused.to_string().contains("not in a tenancy"),
+        "{refused}"
+    );
+
+    // The refusal is not the claim. Still being able to sign in is.
+    assert!(signs_in(&store, "root", PASSWORD), "root is still there");
+}
+
+#[test]
+fn a_database_owner_may_drop_their_own_people() {
+    let store = store();
+    peopled(&store);
+
+    let mut nina = signed_in(&store, "nina");
+    nina.run("DROP USER vic;").unwrap();
+    assert!(!signs_in(&store, "vic", PASSWORD), "vic is gone");
+    // And the ones she may not touch are untouched by the same statement's
+    // neighbours running fine.
+    assert!(signs_in(&store, "ada", PASSWORD), "ada is not");
+}
+
+#[test]
+fn dropping_somebody_who_is_not_there_is_still_not_an_error() {
+    // The pre-existing contract, which the new check must not have changed: the
+    // statement asks for a store without that name, and it already is one. The
+    // check fires on a user that EXISTS and is out of reach, which is a
+    // different question from one that does not exist at all.
+    let store = store();
+    peopled(&store);
+
+    let mut nina = signed_in(&store, "nina");
+    nina.run("DROP USER nobody;")
+        .expect("no such user, no error");
+}
+
+#[test]
+fn an_editor_may_not_drop_anybody() {
+    let store = store();
+    peopled(&store);
+
+    let mut ada = signed_in(&store, "ada");
+    let refused = ada
+        .run("DROP USER vic;")
+        .expect_err("an editor may not administer");
+    assert!(refused.to_string().contains("administer"), "{refused}");
+    assert!(signs_in(&store, "vic", PASSWORD), "vic is still there");
+}
+
+#[test]
+fn a_database_owner_cannot_declare_somebody_wider_than_themselves() {
+    // The hole that made the other four checks decorative. `nina` may not touch
+    // `root`, but if she may *declare* an owner with no tenancy she simply signs
+    // in as them and does whatever she likes. Bounding the statements that
+    // change an existing user, without bounding the one that creates one, closes
+    // every door in a room with no walls.
+    let store = store();
+    peopled(&store);
+
+    let mut nina = signed_in(&store, "nina");
+    let refused = nina
+        .run("DEFINE USER mallory ROLE owner PASSWORD 'correct horse battery';")
+        .expect_err("a database owner may not declare a node administrator");
+    assert!(
+        refused.to_string().contains("further than you"),
+        "{refused}"
+    );
+    assert!(!signs_in(&store, "mallory", PASSWORD), "and none was made");
+
+    // Inside her own tenancy she may, which is the half that must keep working.
+    nina.run("DEFINE USER junior ON prod.shop ROLE viewer PASSWORD 'correct horse battery';")
+        .expect("her own space is hers");
+    assert!(signs_in(&store, "junior", PASSWORD), "junior exists");
+}
+
+#[test]
+fn a_grant_cannot_be_aimed_at_somebody_you_do_not_administer() {
+    // A grant reads as generosity and acts as a narrowing: the store's rule is
+    // that a user with even one grant is reduced to exactly what they were
+    // granted. So aiming one upwards is how an owner of a part takes authority
+    // away from the owner of the whole — and `BACKUP`, the store's only recovery
+    // path, is the first thing to go.
+    let store = store();
+    peopled(&store);
+
+    let mut nina = signed_in(&store, "nina");
+    let refused = nina
+        .run("GRANT read ON orders TO root;")
+        .expect_err("root is not in nina's tenancy");
+    assert!(
+        refused.to_string().contains("not in a tenancy"),
+        "{refused}"
+    );
+
+    // The proof is not the refusal. It is that root's authority is intact.
+    let mut root = signed_in(&store, "root");
+    root.run("BACKUP;")
+        .expect("root can still back the store up");
+
+    // Downwards, within her own tenancy, a grant still works.
+    nina.run("GRANT read ON orders TO ada;")
+        .expect("ada is hers to narrow");
+}
+
+#[test]
+fn the_first_user_of_an_empty_store_may_still_be_a_store_wide_owner() {
+    // The one moment the reach check must NOT fire. Nobody is signed in, the
+    // store is open, and if an anonymous session could not declare an owner with
+    // no tenancy then no store could ever be closed at all.
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run("DEFINE NAMESPACE prod; DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
+        .expect("the first owner closes the store");
+    assert!(signs_in(&store, "root", PASSWORD), "root exists");
+}

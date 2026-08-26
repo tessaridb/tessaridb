@@ -134,7 +134,11 @@ async function listUsers() {
         // to do something to it, and which of the two comes next is not
         // knowable from the click.
         at("change-name").value = one.user;
+        at("remove-name").value = one.user;
         shapeTheChange();
+        // Deliberately NOT the confirmation field: a click that filled
+        // both would arm the destructive button by itself.
+        shapeTheRemoval();
         at("lookup").click();
       });
     }
@@ -375,6 +379,61 @@ at("change").addEventListener("click", async () => {
   }
 });
 
+/**
+ * The `DROP USER` this form describes, or `null` while it is not confirmed.
+ *
+ * The name must be typed twice and match. A single click is the wrong shape for
+ * this one: the grants go with the user, a new user of the same name inherits
+ * none of them, and if it was the last owner of the whole node there is no way
+ * back in at all. Typing the name is the cheapest control that makes the reader
+ * name who they mean.
+ */
+function removal() {
+  const name = at("remove-name").value.trim();
+  const again = at("remove-confirm").value.trim();
+  return name !== "" && name === again ? "DROP USER " + name + ";" : null;
+}
+
+/** Keep the button and the preview honest about whether the two names agree. */
+function shapeTheRemoval() {
+  const statement = removal();
+  at("remove").disabled = statement === null;
+  const name = at("remove-name").value.trim();
+  at("remove-preview").textContent =
+    statement !== null
+      ? statement
+      : name === ""
+        ? "a name is needed"
+        : "type the same name again to confirm";
+}
+
+for (const field of ["remove-name", "remove-confirm"]) {
+  at(field).addEventListener("input", shapeTheRemoval);
+}
+
+at("remove").addEventListener("click", async () => {
+  const statement = removal();
+  if (statement === null) {
+    say("remove-status", "the two names do not match", true);
+    return;
+  }
+  say("remove-status", "running…");
+  try {
+    const answered = await valueOf(statement);
+    say("remove-status", answered !== null && answered.kind === "done" ? "removed" : "");
+    // Cleared only on success, so a refusal leaves the name on screen to be
+    // read — and never leaves a confirmed form one click from firing again.
+    at("remove-name").value = "";
+    at("remove-confirm").value = "";
+    shapeTheRemoval();
+    await listUsers();
+  } catch (failure) {
+    // The node's own words. A refusal here is the permission system working,
+    // and paraphrasing it would hide which of the several reasons it was.
+    say("remove-status", failure.message, true);
+  }
+});
+
 // --------------------------------------------------------------------- node
 
 /** One operational route, parsed as JSON, or a reason it could not be. */
@@ -475,3 +534,4 @@ for (const tab of ["tab-node", "tab-cluster"]) {
 
 shapeTheForm();
 shapeTheChange();
+shapeTheRemoval();

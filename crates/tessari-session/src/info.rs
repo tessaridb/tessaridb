@@ -506,35 +506,58 @@ impl Session<'_> {
     /// Whether this caller administers the tenancy this user belongs to.
     ///
     /// The one place the boundary is computed, so that reading about somebody,
-    /// listing them and changing them cannot come to different answers. They did
-    /// once: the listing filtered and the singular did not, which meant a name
-    /// somebody could not be shown was a name they could still look up.
+    /// listing them, changing them, removing them and granting to them cannot
+    /// come to different answers. They did: the listing filtered and the lookup
+    /// did not, so a name nobody would show you was a name you could still read
+    /// every grant of — and three further statements had no check at all.
     pub(crate) fn administers(&self, user: &UserDefinition) -> bool {
+        self.may_reach(user.namespace, user.database)
+    }
+
+    /// Whether this caller may act on something held at that tenancy.
+    ///
+    /// Takes the pair rather than a user, because the question is asked about a
+    /// tenancy that **does not exist yet** as well as about one that does:
+    /// `DEFINE USER` names a reach for somebody who is about to be created, and
+    /// bounding only the statements that change an existing user leaves the
+    /// obvious way round — mint a wider user, then be them. An owner of one
+    /// database was able to declare an owner of the whole node, which made every
+    /// other check on this page decorative.
+    pub(crate) fn may_reach(
+        &self,
+        namespace: Option<NamespaceId>,
+        database: Option<DatabaseId>,
+    ) -> bool {
         match &self.identity {
             // An open store has no users to hide behind; a closed one refuses an
             // anonymous caller long before here. Reaching this with nobody
             // signed in therefore means the store is open, and an open store
-            // hides nothing from anybody.
+            // hides nothing from anybody. It is also how the **first** user is
+            // declared, which is the one moment nobody is signed in and a
+            // store-wide owner must be creatable.
             Identity::Anonymous => true,
-            Identity::Signed(who) => within(who.namespace, who.database, user),
+            Identity::Signed(who) => within(who.namespace, who.database, namespace, database),
         }
     }
 }
 
-/// Whether a caller holding this tenancy may be told about this user.
+/// Whether a caller holding the first tenancy may act on the second.
 ///
 /// Containment, not equality, and asymmetric on purpose: the whole store
 /// contains every namespace, a namespace contains its databases, and nothing
-/// contains a sibling.
+/// contains a sibling. `None` on the left is the node's administrator and
+/// contains everything; `None` on the right is the whole store and is contained
+/// by nobody but them.
 fn within(
     namespace: Option<NamespaceId>,
     database: Option<DatabaseId>,
-    user: &UserDefinition,
+    their_namespace: Option<NamespaceId>,
+    their_database: Option<DatabaseId>,
 ) -> bool {
     match (namespace, database) {
         (None, _) => true,
-        (Some(held), None) => user.namespace == Some(held),
-        (Some(held), Some(under)) => user.namespace == Some(held) && user.database == Some(under),
+        (Some(held), None) => their_namespace == Some(held),
+        (Some(held), Some(under)) => their_namespace == Some(held) && their_database == Some(under),
     }
 }
 

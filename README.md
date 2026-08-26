@@ -655,13 +655,14 @@ have typed**:
 | `.db`          | `INFO FOR NAMESPACE;`      |
 | `.tables`      | `INFO FOR DATABASE;`       |
 | `.d <table>`   | `INFO FOR TABLE <table>;`  |
+| `.users`       | `INFO FOR USERS;`          |
 | `.user <name>` | `INFO FOR USER <name>;`    |
 | `.node`        | `INFO FOR NODE;`           |
 
 `.help` prints that table, so using a shorthand teaches the statement rather than
 hiding it — and a test reads the help and checks each promise against what the
-shorthand actually runs, in that direction, so the help cannot advertise a
-seventh one nobody implemented. `.timing` prints how long each script took,
+shorthand actually runs, in that direction, so the help cannot advertise an
+eighth one nobody implemented. `.timing` prints how long each script took,
 round trip included when the store is a node, because that is the number that
 decides whether a query is slow from where you are sitting.
 

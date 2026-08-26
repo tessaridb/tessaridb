@@ -409,6 +409,7 @@ fn shorthand(command: &str) -> Option<String> {
         (".tables", true) => "INFO FOR DATABASE;".to_owned(),
         (".node", true) => "INFO FOR NODE;".to_owned(),
         (".d", false) => format!("INFO FOR TABLE {named};"),
+        (".users", true) => "INFO FOR USERS;".to_owned(),
         (".user", false) => format!("INFO FOR USER {named};"),
         _ => return None,
     })
@@ -426,6 +427,7 @@ shorthands — each runs the statement beside it, and nothing a statement cannot
   .db             INFO FOR NAMESPACE;
   .tables         INFO FOR DATABASE;
   .d <table>      INFO FOR TABLE <table>;
+  .users          INFO FOR USERS;
   .user <name>    INFO FOR USER <name>;
   .node           INFO FOR NODE;
 
@@ -727,7 +729,7 @@ SELECT * FROM users:1;\n";
             .map(|(left, right)| (left.trim(), right.trim()))
             .filter(|(left, _)| left.starts_with('.'))
             .collect();
-        assert_eq!(promised.len(), 6, "the help lists {promised:?}");
+        assert_eq!(promised.len(), 7, "the help lists {promised:?}");
 
         for (spelling, statement) in promised {
             // `.d <table>` in the help is `.d users` at a prompt.
@@ -751,6 +753,10 @@ SELECT * FROM users:1;\n";
         assert!(shorthand(".user").is_none());
         // And one that takes none refuses a name rather than ignoring it.
         assert!(shorthand(".tables users").is_none());
+        assert!(shorthand(".users ada").is_none());
+        // The plural and the singular are separate words to the
+        // splitter, so neither can be reached by mistyping the other.
+        assert_eq!(shorthand(".users").as_deref(), Some("INFO FOR USERS;"));
     }
 
     #[test]

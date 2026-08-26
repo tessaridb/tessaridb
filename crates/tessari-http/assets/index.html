@@ -286,20 +286,40 @@ USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
           </div>
 
           <div class="pane">
-            <div class="pane-head"><h2>What this section does not offer</h2></div>
-            <p class="note">
-              <strong>Removal.</strong> The language has <code>DROP USER</code>
-              and this console does not put it behind a button: it takes the
-              user's grants with it, and one mis-aimed click is not a shape a
-              panel should have. Run it as a script on the Query tab, where you
-              have written out who you mean.
+            <div class="pane-head">
+              <h2>Remove one</h2>
+              <span id="remove-status" class="status" role="status"></span>
+            </div>
+            <p class="note warn">
+              <strong>This does not come back.</strong> The user's grants go with
+              them, and a new user of the same name is a different user with none
+              of them. If it is the last owner of the whole node, nothing can let
+              anybody back in — a closed store has no door from outside, and the
+              way back is a restore from backup.
             </p>
+            <p class="note">
+              You may only remove somebody in the tenancy you administer. The node
+              refuses the rest, and what it says is shown here as it said it.
+            </p>
+            <div class="row">
+              <label>
+                Who <input id="remove-name" type="text" placeholder="ada" />
+              </label>
+              <label>
+                Type the name again
+                <input id="remove-confirm" type="text" placeholder="ada" />
+              </label>
+            </div>
+            <pre id="remove-preview" class="answer small"></pre>
+            <div class="row">
+              <button id="remove" type="button" disabled>Remove</button>
+            </div>
             <p class="note">
               <strong>Your own password.</strong> Changing a password is
               administering a user, and administering a user needs an owner — so
-              this pane is for somebody else's credential. Rotate your own and
-              the browser you are reading this in will keep offering the old one
-              until you sign in again.
+              the pane beside this one is for somebody else's credential. Rotate
+              your own and the browser you are reading this in will keep offering
+              the old one until you sign in again.
             </p>
           </div>
         </div>
