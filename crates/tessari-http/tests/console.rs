@@ -161,6 +161,15 @@ fn every_url_the_console_references_is_served_by_this_process() {
             continue;
         }
         seen.push(url.clone());
+        // A `data:` URI is not a place; it is the bytes themselves, written
+        // where a reference would go. It satisfies F6 by construction rather
+        // than by being fetched from this process — so it is the one form of
+        // reference that is checked by *not* being followed. Excluding it is not
+        // a hole in the property: a page made entirely of them would still work
+        // with the network cut, which is the whole thing being protected.
+        if url.starts_with("data:") {
+            continue;
+        }
         assert!(
             !url.contains("://"),
             "the console references {url:?}, which is somewhere else — the page \
