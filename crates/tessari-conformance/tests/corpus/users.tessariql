@@ -27,6 +27,10 @@ DEFINE TABLE notes;
 CREATE notes:1 = { body: 'before there were users' };
 --- expect: ok
 
+--- case: an open store answers the listing, and the list is empty
+INFO FOR USERS;
+--- expect: ok
+
 --- case: a user is declared like anything else, and its tenancy is resolved
 DEFINE USER ada ON prod.orders ROLE editor PASSWORD 'correct horse';
 --- expect: ok
@@ -45,4 +49,9 @@ DEFINE USER grace ROLE viewer PASSWORD 'x';
 
 --- case: and so is dropping one, so a store cannot be re-opened from outside
 DROP USER ada;
+--- expect: error NotSignedIn
+
+
+--- case: and the listing is refused once the store is closed, like every read
+INFO FOR USERS;
 --- expect: error NotSignedIn

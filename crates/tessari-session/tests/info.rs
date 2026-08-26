@@ -317,6 +317,89 @@ fn asking_about_a_user_needs_an_owner() {
 }
 
 #[test]
+fn listing_users_needs_an_owner_and_refuses_rather_than_narrowing() {
+    // The same rule as the singular subject, and it is the whole reason a
+    // listing was safe to add: a list narrowed to what an `editor` may see would
+    // be a partial account of who may do what, and a partial account reads as
+    // the whole one.
+    let store = store();
+    governed(&store);
+    let mut ada = signed_in(&store, "ada");
+    let refused = ada
+        .run("INFO FOR USERS;")
+        .expect_err("an editor may not read the permission system");
+    assert!(refused.to_string().contains("administer"), "{refused}");
+}
+
+#[test]
+fn a_database_owner_is_listed_their_own_tenancy_and_not_the_store_owner() {
+    // The property the containment rule exists for, and the one that would leak
+    // quietly if it were equality or nothing: passing the permission check says
+    // somebody administers *something*, and it does not say they administer the
+    // whole store. A tenancy owner must not learn who owns the store.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run("DEFINE USER dbowner ON prod.shop ROLE owner PASSWORD 'correct horse battery';")
+        .unwrap();
+
+    let mut owner = signed_in(&store, "dbowner");
+    let named = |held: &Value| -> Vec<String> {
+        let Value::Object(fields) = held else {
+            panic!("expected an object");
+        };
+        let Some(Value::Array(users)) = fields.get("users") else {
+            panic!("expected a user list");
+        };
+        users
+            .iter()
+            .map(|user| {
+                let Value::Object(one) = user else {
+                    panic!("expected an object per user");
+                };
+                match one.get("user") {
+                    Some(Value::String(name)) => name.clone(),
+                    other => panic!("expected a name, found {other:?}"),
+                }
+            })
+            .collect()
+    };
+
+    let mut seen = named(&report(&mut owner, "INFO FOR USERS;"));
+    seen.sort();
+    assert_eq!(seen, vec!["ada".to_owned(), "dbowner".to_owned()]);
+
+    // And the store owner sees all three, so the absence above is the rule
+    // working rather than the listing being empty for some other reason.
+    let mut root = signed_in(&store, "root");
+    let mut everyone = named(&report(&mut root, "INFO FOR USERS;"));
+    everyone.sort();
+    assert_eq!(
+        everyone,
+        vec!["ada".to_owned(), "dbowner".to_owned(), "root".to_owned()]
+    );
+}
+
+#[test]
+fn a_listing_carries_no_password_hash_and_no_grants() {
+    // Two absences for two reasons. The hash for `a_user_report_never_carries_
+    // the_password_hash`'s reason. The grants because they are per-user detail
+    // and belong to the subject that examines one user rather than counts them —
+    // an assertion here is what stops that decision being undone by accident.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run("GRANT read ON orders FIELDS total TO ada;")
+        .unwrap();
+
+    let mut root = signed_in(&store, "root");
+    let listing = format!("{:?}", report(&mut root, "INFO FOR USERS;"));
+    assert!(!listing.contains("argon2"), "{listing}");
+    assert!(!listing.contains("$"), "{listing}");
+    assert!(!listing.contains("grants"), "{listing}");
+}
+
+#[test]
 fn an_owner_reads_a_users_role_tenancy_and_grants() {
     let store = store();
     governed(&store);

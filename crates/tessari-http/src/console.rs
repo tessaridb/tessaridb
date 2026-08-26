@@ -87,6 +87,44 @@ mod tests {
     }
 
     #[test]
+    fn the_roles_the_page_offers_are_the_roles_this_build_has() {
+        // The page hard-codes three roles, which is the only way it can offer a
+        // list without a statement to ask for one. So the list is pinned to the
+        // engine's own `Role::ALL` — the constant that exists, in its own words,
+        // "so a listing cannot drift from the set". A fourth role added to the
+        // storage crate and not to the page fails here rather than quietly
+        // becoming a role nobody can grant from the console.
+        let page = page();
+        for role in tessari_storage::Role::ALL {
+            assert!(
+                page.contains(&format!(r#"<option value="{}""#, role.name())),
+                "the page offers no way to choose the {} role",
+                role.name()
+            );
+        }
+        // And the other direction: an option the engine has never heard of. The
+        // deliberate exception is `other`, which is the free-text escape the
+        // page offers on purpose — a role this build refuses is shown refusing,
+        // rather than being hidden behind a control that pretends it cannot.
+        let offered: Vec<&str> = page
+            .match_indices(r#"<option value=""#)
+            .filter_map(|(at, _)| {
+                let rest = page.get(at.saturating_add(r#"<option value=""#.len())..)?;
+                rest.split('"').next()
+            })
+            .filter(|value| *value != "other" && *value != "space" && *value != "node")
+            .collect();
+        for value in offered {
+            assert!(
+                tessari_storage::Role::ALL
+                    .iter()
+                    .any(|role| role.name() == value),
+                "the page offers a {value:?} role and this build has no such thing"
+            );
+        }
+    }
+
+    #[test]
     fn every_tab_names_a_panel_that_exists_and_every_panel_has_a_tab() {
         // Both directions, because each catches a different half-finished edit:
         // a tab whose panel was never added is a section that shows nothing, and

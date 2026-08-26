@@ -158,12 +158,23 @@ USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
         <div class="split">
           <div class="pane">
             <div class="pane-head">
-              <h2>Look one up</h2>
-              <span id="user-status" class="status" role="status"></span>
+              <h2>Who there is</h2>
+              <div class="row tight">
+                <span id="user-status" class="status" role="status"></span>
+                <button id="list" type="button" class="quiet">Refresh</button>
+              </div>
             </div>
+            <p class="note">
+              What you are shown is the tenancy you administer. An owner of a
+              space sees that space; an <strong>admin</strong> — an owner with no
+              space at all — sees the whole node. It refuses rather than
+              narrowing, so a short list is a short tenancy and never a filtered
+              one.
+            </p>
+            <div id="user-list" class="answer small" aria-live="polite"></div>
             <div class="row">
               <label>
-                Name <input id="lookup-name" type="text" placeholder="ada" />
+                Detail for <input id="lookup-name" type="text" placeholder="ada" />
               </label>
               <button id="lookup" type="button">Show</button>
             </div>
@@ -176,22 +187,41 @@ USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
               <span id="define-status" class="status" role="status"></span>
             </div>
             <p class="note">
-              Leave the tenancy empty for a user of the whole store. A password
-              reaches the node and goes no further: what is stored is a hash, so
-              no plaintext reaches the log or any replica.
+              A password reaches the node and goes no further: what is stored is
+              a hash, so no plaintext reaches the log or any replica.
             </p>
             <div class="row">
               <label>Name <input id="new-name" type="text" placeholder="ada" /></label>
               <label>
-                Tenancy
+                Reach
+                <select id="new-reach">
+                  <option value="space">one space</option>
+                  <option value="node">the whole node — an admin</option>
+                </select>
+              </label>
+              <label id="scope-field">
+                Space
                 <input id="new-scope" type="text" placeholder="prod.library" />
               </label>
-              <label>Role <input id="new-role" type="text" value="editor" /></label>
+              <label>
+                Role
+                <select id="new-role">
+                  <option value="viewer">viewer</option>
+                  <option value="editor" selected>editor</option>
+                  <option value="owner">owner</option>
+                  <option value="other">something else…</option>
+                </select>
+              </label>
+              <label id="role-other-field" hidden>
+                Which
+                <input id="new-role-other" type="text" placeholder="a role this build knows" />
+              </label>
               <label>
                 Password
                 <input id="new-password" type="password" autocomplete="new-password" />
               </label>
             </div>
+            <p id="role-says" class="note"></p>
             <pre id="define-preview" class="answer small"></pre>
             <div class="row">
               <button id="define" type="button" class="primary">Run it</button>
@@ -201,13 +231,6 @@ USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
 
         <div class="pane">
           <div class="pane-head"><h2>What this section cannot do</h2></div>
-          <p class="note">
-            <strong>There is no listing.</strong> <code>INFO FOR</code> has five
-            subjects and the user one names a single user, deliberately: a
-            partial view of who may do what reads as the whole answer. So a name
-            you have forgotten cannot be recovered from here, or from anywhere
-            else. It is an open question rather than an oversight.
-          </p>
           <p class="note">
             <strong>There is no removal.</strong> The language can define and it
             cannot undefine — there is no <code>REMOVE</code> statement of any

@@ -13,7 +13,7 @@ products around them.
 [![version](https://img.shields.io/badge/version-0.0.1--alpha-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-457%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-459%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/TessariDB/TessariDB-protocol) ·
@@ -333,6 +333,35 @@ will never help.
 > address or put a reverse proxy in front of it. Note too that a store cannot be
 > re-opened from outside by dropping its last user — a lost owner password is a
 > restore from backup, not a recovery.
+
+**Authority is a role and a reach, not a role alone.** The three roles are
+`viewer`, `editor` and `owner`, and each is held *over* something: a user
+declared `ON prod.orders` holds it there, and a user declared with no tenancy at
+all holds it over the whole node. So the node's administrator is not a fourth
+role — it is an **owner with no tenancy**, and a second spelling of that
+authority is exactly what this store does not have.
+
+`INFO FOR USERS` lists them, and it lists **the tenancy the caller administers**:
+an owner of a database sees that database's users, an owner of the whole node
+sees everyone. Like `INFO FOR USER <name>` and `INFO FOR NODE`, it **refuses
+rather than narrowing** for a caller who administers nothing — a listing filtered
+down to what an `editor` may see would be a partial account of who may do what,
+and a partial account reads as the whole one.
+
+```
+tessaridb> INFO FOR USERS;
+{ users: [
+  { user: 'root', role: 'owner' },
+  { user: 'ada', role: 'editor', namespace: 'prod', database: 'orders' } ] }
+```
+
+Grants are not in it. They are per-user detail and stay in `INFO FOR USER
+<name>`, where one subject is examined rather than counted.
+
+> **Defining the first user closes the store mid-script.** Every statement after
+> it in the same request is then refused with `NotSignedIn`, because the request
+> was placed by nobody and there is now somebody to be. Bootstrap in two
+> requests: declare the first user, then sign in as them for the rest.
 
 
 Following what changes is a cursor over the same log that carries replication,

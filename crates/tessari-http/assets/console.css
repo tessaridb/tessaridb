@@ -98,6 +98,19 @@
   --bar-height: 3.25rem;
   --radius: 6px;
   --radius-small: 4px;
+
+  /* The chevron a `<select>` draws for itself, drawn by us instead — inline, so
+     it is still a page that needs nothing from the network. `%23` is a `#`: a
+     bare one would start the fragment of the data URI. */
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%238f8aa3' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+/* One line, and it does more for the dark panel than any rule below: it tells
+   the browser this page is dark, so the parts it draws itself — the dropdown a
+   `<select>` opens, the scrollbars, the number spinners, the focus rings — stop
+   arriving white. */
+:root {
+  color-scheme: dark;
 }
 
 /* ───────────────────────────────────────────────────────────────── base ── */
@@ -327,7 +340,8 @@ label {
 }
 
 input,
-textarea {
+textarea,
+select {
   font-family: var(--mono);
   font-size: var(--t-13);
   color: var(--text);
@@ -338,8 +352,39 @@ textarea {
 }
 
 input:focus,
-textarea:focus {
+textarea:focus,
+select:focus {
   border-color: var(--accent-edge);
+}
+
+select {
+  appearance: none;
+  /* Room for the chevron, which is drawn in the padding rather than over the
+     text — a long option should run out of room before it runs under it. */
+  padding-right: var(--s-6);
+  background-image: var(--chevron);
+  background-repeat: no-repeat;
+  background-position: right var(--s-3) center;
+  background-size: 10px 7px;
+  cursor: pointer;
+  /* Native width is the widest option, which makes one long label stretch a
+     control that holds three short ones. */
+  max-width: 22rem;
+}
+
+select:hover {
+  border-color: var(--accent-edge);
+}
+
+/* macOS draws the open list itself and `color-scheme` above is what makes it
+   dark; these two are for the platforms that let the page say. */
+option {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+label[hidden] {
+  display: none;
 }
 
 textarea {

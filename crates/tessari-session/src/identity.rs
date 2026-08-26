@@ -208,7 +208,7 @@ impl Needs {
             // answer about who may do what, and a partial one reads as the whole
             // answer. So it refuses, and only an owner is answered.
             StatementKind::Info {
-                subject: InfoSubject::User(_),
+                subject: InfoSubject::User(_) | InfoSubject::Users,
             } => Self::Administer,
             // Asking about **this node** is the `$node` read wearing a
             // statement's clothes, and it lands here for exactly the reason that

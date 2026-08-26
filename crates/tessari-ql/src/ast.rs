@@ -440,6 +440,25 @@ pub enum InfoSubject {
     /// *is* the permission system: a partial view of who may do what is worse
     /// than none, since it reads as the whole answer.
     User(Name),
+    /// `INFO FOR USERS` — the users of the tenancy the caller administers.
+    ///
+    /// The sixth subject, and it exists because the fifth cannot answer the
+    /// question an operator actually has: `INFO FOR USER <name>` needs a name,
+    /// and a name you have forgotten was, until this, unrecoverable from the
+    /// store by any route at all.
+    ///
+    /// It **refuses rather than filters**, exactly as [`InfoSubject::User`] and
+    /// [`InfoSubject::Node`] do. That is the whole reason it is safe to add: a
+    /// listing narrowed to what a `viewer` may see would be a partial account of
+    /// who may do what, and a partial account reads as the whole one. So it is
+    /// answered only to a caller who administers the tenancy — and then it is
+    /// answered in full for that tenancy, which is a different claim from a
+    /// filtered view across tenancies the caller does not hold.
+    ///
+    /// It carries each user's name, role and tenancy, and **not their grants**.
+    /// Grants are per-user detail and stay in `INFO FOR USER <name>`, where one
+    /// subject is being examined rather than counted.
+    Users,
     /// `INFO FOR NODE` — this node's own settings, and the peers it knows.
     ///
     /// The one subject that reads **two stores**: the local `META` keyspace and

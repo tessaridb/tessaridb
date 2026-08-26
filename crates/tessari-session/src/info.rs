@@ -41,9 +41,10 @@ use tessari_storage::{
     BUILD_VERSION, Catalog, FieldDefinition, GrantDefinition, IndexDefinition, ReplicaDefinition,
     TableDefinition, Transaction, UserDefinition,
 };
-use tessari_types::{TableId, Value};
+use tessari_types::{DatabaseId, NamespaceId, TableId, Value};
 
 use crate::error::{Error, Result};
+use crate::identity::Identity;
 use crate::outcome::Outcome;
 use crate::redact::Visible;
 use crate::session::Session;
@@ -62,6 +63,7 @@ impl Session<'_> {
             InfoSubject::Database => self.info_database(transaction, span)?,
             InfoSubject::Table(table) => self.info_table(transaction, table)?,
             InfoSubject::User(name) => self.info_user(transaction, name, span)?,
+            InfoSubject::Users => self.info_users(transaction)?,
             InfoSubject::Node => self.info_node(transaction)?,
         };
         Ok(Outcome::Value(Value::Object(report)))
@@ -244,6 +246,54 @@ impl Session<'_> {
         }
         report.insert("grants".to_owned(), Value::Array(described));
         Ok(report)
+    }
+
+    /// Every user of the tenancy this caller administers.
+    ///
+    /// Needs `Administer`, decided by `Needs::of` before this runs, which is why
+    /// there is no permission check in the body. What the body does instead is
+    /// bound the answer to the caller's **own** tenancy: passing the check says
+    /// somebody administers something, and it does not say they administer the
+    /// whole store.
+    ///
+    /// The three cases are the three tenancies a user can hold, and the rule is
+    /// containment rather than equality — a store owner sees everyone, a
+    /// namespace owner sees that namespace, a database owner sees that database.
+    /// A user of a *different* tenancy at the same depth is not visible to
+    /// either, which is the case that would otherwise leak quietly.
+    ///
+    /// Grants are deliberately absent: they are per-user detail, one catalog read
+    /// each, and `INFO FOR USER <name>` is where a single subject is examined.
+    fn info_users(&self, transaction: &mut Transaction<'_>) -> Result<BTreeMap<String, Value>> {
+        let catalog = Catalog::new(transaction);
+        let (namespace, database) = match &self.identity {
+            // An open store has no users to list; a closed one refuses an
+            // anonymous caller long before here. Reaching this with nobody
+            // signed in therefore means the store is open, and an open store
+            // hides nothing from anybody.
+            Identity::Anonymous => (None, None),
+            Identity::Signed(who) => (who.namespace, who.database),
+        };
+
+        let mut listed = Vec::new();
+        for user in catalog.users()? {
+            if !within(namespace, database, &user) {
+                continue;
+            }
+            let mut described = described_user(&user);
+            if let Some(id) = user.namespace
+                && let Some(found) = catalog.namespace(id)?
+            {
+                described.insert("namespace".to_owned(), Value::from(found.name.as_str()));
+            }
+            if let Some(id) = user.database
+                && let Some(found) = catalog.database(id)?
+            {
+                described.insert("database".to_owned(), Value::from(found.name.as_str()));
+            }
+            listed.push(Value::Object(described));
+        }
+        Ok(BTreeMap::from([("users".to_owned(), Value::Array(listed))]))
     }
 
     /// This node's own settings, and the peers it knows.
@@ -451,6 +501,23 @@ fn described_index(index: &IndexDefinition) -> Value {
 }
 
 /// One user, without the secret.
+/// Whether a caller holding this tenancy may be told about this user.
+///
+/// Containment, not equality, and asymmetric on purpose: the whole store
+/// contains every namespace, a namespace contains its databases, and nothing
+/// contains a sibling.
+fn within(
+    namespace: Option<NamespaceId>,
+    database: Option<DatabaseId>,
+    user: &UserDefinition,
+) -> bool {
+    match (namespace, database) {
+        (None, _) => true,
+        (Some(held), None) => user.namespace == Some(held),
+        (Some(held), Some(under)) => user.namespace == Some(held) && user.database == Some(under),
+    }
+}
+
 fn described_user(user: &UserDefinition) -> BTreeMap<String, Value> {
     BTreeMap::from([
         ("user".to_owned(), Value::from(user.name.as_str())),

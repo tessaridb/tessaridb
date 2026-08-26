@@ -108,6 +108,7 @@ fn erase_statement(statement: &mut Statement) {
             InfoSubject::Store
             | InfoSubject::Namespace
             | InfoSubject::Database
+            | InfoSubject::Users
             | InfoSubject::Node => {}
             InfoSubject::Table(table) => erase_table(table),
             InfoSubject::User(name) => erase_name(name),

@@ -87,6 +87,68 @@ async function valueOf(source) {
 
 // -------------------------------------------------------------------- users
 
+/** Everybody the caller is allowed to be told about. */
+async function listUsers() {
+  say("user-status", "asking…");
+  try {
+    const answered = await valueOf("INFO FOR USERS;");
+    const held =
+      answered !== null && answered.kind === "value" && answered.value !== undefined
+        ? answered.value.users
+        : [];
+    const pane = at("user-list");
+    pane.textContent = "";
+    if (!Array.isArray(held) || held.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "trailer";
+      empty.textContent = "(no users — this store is open to anybody)";
+      pane.appendChild(empty);
+      say("user-status", "");
+      return;
+    }
+    const table = document.createElement("table");
+    const head = table.createTHead().insertRow();
+    for (const column of ["user", "role", "reach"]) {
+      const cell = document.createElement("th");
+      cell.textContent = column;
+      head.appendChild(cell);
+    }
+    const body = table.createTBody();
+    for (const one of held) {
+      const row = body.insertRow();
+      row.insertCell().textContent = one.user;
+      // An owner with no space is the node's administrator. The listing says so
+      // in the word people use, rather than leaving it to be inferred from an
+      // empty cell — which is what the panel did before, and nobody inferred it.
+      row.insertCell().textContent =
+        one.role === "owner" && one.namespace === undefined ? "owner · admin" : one.role;
+      row.insertCell().textContent =
+        one.namespace === undefined
+          ? "the whole node"
+          : one.namespace + (one.database === undefined ? "" : "." + one.database);
+      // A name in a listing is there to be clicked; typing it again is the kind
+      // of small tax that makes an operator go back to `curl`.
+      row.addEventListener("click", () => {
+        at("lookup-name").value = one.user;
+        at("lookup").click();
+      });
+    }
+    pane.appendChild(table);
+    say("user-status", "");
+  } catch (failure) {
+    at("user-list").textContent = "";
+    say("user-status", failure.message, true);
+  }
+}
+
+at("list").addEventListener("click", listUsers);
+
+at("tab-users").addEventListener("click", () => {
+  if (at("user-list").textContent === "") {
+    listUsers();
+  }
+});
+
 at("lookup").addEventListener("click", async () => {
   const name = at("lookup-name").value.trim();
   if (name === "") {
@@ -108,20 +170,53 @@ at("lookup").addEventListener("click", async () => {
   }
 });
 
+/** What each role means, said beside the control rather than inside it. */
+const MEANS = {
+  viewer: "reads what the space holds, and nothing else.",
+  editor: "reads and writes records, and declares structure.",
+  owner: "everything in the space, users included.",
+  other:
+    "a role this build may not know. It will be sent as typed, and the node's" +
+    " refusal is what you will see if it does not exist.",
+};
+
+/**
+ * The tenancy the form describes: a space, or none at all.
+ *
+ * `null` means the form is asking for a space and has not been given one. It is
+ * distinct from `""`, which means the whole node — and conflating the two is how
+ * an empty field silently produces an administrator of everything. That is the
+ * exact failure this form was split in two to prevent, and it happened here
+ * before this returned three answers instead of two.
+ */
+function reach() {
+  if (at("new-reach").value === "node") {
+    return "";
+  }
+  const space = at("new-scope").value.trim();
+  return space === "" ? null : space;
+}
+
+/** The role the form describes, which may be one this build has never heard of. */
+function role() {
+  const chosen = at("new-role").value;
+  return chosen === "other" ? at("new-role-other").value.trim() : chosen;
+}
+
 /** The statement the form describes, shown before it is run and never after. */
 function definition() {
   const name = at("new-name").value.trim();
-  const scope = at("new-scope").value.trim();
-  const role = at("new-role").value.trim();
-  if (name === "" || role === "") {
+  const named = role();
+  const space = reach();
+  if (name === "" || named === "" || space === null) {
     return null;
   }
   return (
     "DEFINE USER " +
     name +
-    (scope === "" ? "" : " ON " + scope) +
+    (space === "" ? "" : " ON " + space) +
     " ROLE " +
-    role +
+    named +
     " PASSWORD " +
     quoted(at("new-password").value) +
     ";"
@@ -131,9 +226,10 @@ function definition() {
 /** Keep the preview current, with the password shown as the store shows it. */
 function preview() {
   const statement = definition();
+  at("role-says").textContent = MEANS[at("new-role").value] ?? "";
   at("define-preview").textContent =
     statement === null
-      ? "a name and a role are needed"
+      ? missing()
       : // The preview is the one place the password would appear in plain view
         // on somebody's screen, and a shoulder is a threat this page can
         // actually do something about. The statement that runs carries the real
@@ -141,14 +237,40 @@ function preview() {
         statement.replace(/PASSWORD '.*';$/, "PASSWORD '…';");
 }
 
-for (const field of ["new-name", "new-scope", "new-role", "new-password"]) {
-  at(field).addEventListener("input", preview);
+/** Which field is still empty, named rather than left to be guessed. */
+function missing() {
+  if (at("new-name").value.trim() === "") {
+    return "a name is needed";
+  }
+  if (role() === "") {
+    return "a role is needed";
+  }
+  return "a space is needed — or choose the whole node, which is not the same thing";
+}
+
+/** Show only the fields the chosen reach and role actually need. */
+function shapeTheForm() {
+  at("scope-field").hidden = at("new-reach").value === "node";
+  at("role-other-field").hidden = at("new-role").value !== "other";
+  preview();
+}
+
+for (const field of [
+  "new-name",
+  "new-scope",
+  "new-role",
+  "new-role-other",
+  "new-password",
+  "new-reach",
+]) {
+  at(field).addEventListener("input", shapeTheForm);
+  at(field).addEventListener("change", shapeTheForm);
 }
 
 at("define").addEventListener("click", async () => {
   const statement = definition();
   if (statement === null) {
-    say("define-status", "a name and a role are needed", true);
+    say("define-status", missing(), true);
     return;
   }
   say("define-status", "running…");
@@ -261,4 +383,4 @@ for (const tab of ["tab-node", "tab-cluster"]) {
   });
 }
 
-preview();
+shapeTheForm();

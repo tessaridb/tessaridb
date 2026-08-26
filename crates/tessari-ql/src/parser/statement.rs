@@ -211,12 +211,15 @@ impl Parser<'_> {
                 self.advance();
                 InfoSubject::User(self.name()?)
             }
+            // Before the `Keyword::User` arm cannot reach it: `USERS` is a word
+            // and `USER` is a keyword, so the two never collide at the lexer.
+            _ if self.eat_word("users") => InfoSubject::Users,
             _ if self.eat_word("store") => InfoSubject::Store,
             _ if self.eat_word("node") => InfoSubject::Node,
             _ => {
-                return Err(
-                    self.error_here("`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER` or `NODE`")
-                );
+                return Err(self.error_here(
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS` or `NODE`",
+                ));
             }
         };
         Ok(StatementKind::Info { subject })

@@ -37,7 +37,7 @@ Around them: snapshot-isolation transactions, change subscriptions, namespaces
 and databases with users and grants, health and readiness endpoints, metrics,
 graceful drain, and log-as-backup with replay-as-restore.
 
-457 conformance cases define the language and run in the build.
+459 conformance cases define the language and run in the build.
 
 ### What is not here
 
