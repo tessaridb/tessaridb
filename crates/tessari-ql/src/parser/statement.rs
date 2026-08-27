@@ -1195,6 +1195,11 @@ impl Parser<'_> {
         // and contextual like the rest: a field called `approximate` stays a
         // field.
         let approximate = self.eat_word("approximate");
+        // After everything, because it is an assertion *about* the read rather
+        // than part of it — nothing below the parser reads it to decide
+        // anything. Contextual like the rest, so a field called `using` stays a
+        // field.
+        let using = self.using()?;
         super::shape::check_grouping(&projection, &group)?;
         super::shape::check_fold_positions(&from, &group, &order)?;
         // Where `[*]` may stand. A condition admits one on the left of a
@@ -1241,6 +1246,7 @@ impl Parser<'_> {
             approximate,
             start: skip,
             limit,
+            using,
             span: start.to(self.span_behind()),
         })
     }

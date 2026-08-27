@@ -34,6 +34,53 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// A `USING` naming a word that is not an access path.
+    ///
+    /// Almost always a typo, and refused before the read rather than after it:
+    /// running a scan to then report that `inedx` is not a word would be the
+    /// worst of both answers.
+    #[error("`USING {named}` names no access path — this store reports {known} (at {span})")]
+    NoSuchAccessPath {
+        /// The word as written.
+        named: String,
+        /// The words that exist, comma-separated.
+        known: String,
+        /// Where it was written.
+        span: tessari_ql::Span,
+    },
+
+    /// A `USING <path>` the read did not satisfy.
+    ///
+    /// The whole point of the clause. It is checked against what the read
+    /// **did**, so an ordered index that could not fill the bound and handed the
+    /// read to the scan is caught here — which is precisely the case an
+    /// assertion checked against the planner's *intention* would have passed.
+    #[error("this read was asked to take the {expected} path and took the {took} path (at {span})")]
+    PathNotTaken {
+        /// The path the statement named.
+        expected: String,
+        /// The path the read reported.
+        took: String,
+        /// Where the assertion was written.
+        span: tessari_ql::Span,
+    },
+
+    /// A `USING INDEX <name>` the read did not satisfy.
+    ///
+    /// Separate from [`Self::PathNotTaken`] because it is a different question:
+    /// `USING index` asks whether *an* index answered and this asks *which*, and
+    /// a read served by the wrong index is a plan regression that the path word
+    /// alone cannot see.
+    #[error("this read was asked to use the index {expected} and used {took} (at {span})")]
+    IndexNotUsed {
+        /// The index the statement named.
+        expected: String,
+        /// What served it instead — an index by name, or `no index`.
+        took: String,
+        /// Where the assertion was written.
+        span: tessari_ql::Span,
+    },
+
     /// A join whose two sides hold different kinds of value at their keys.
     ///
     /// Equality across two kinds is false, so such a join can only ever answer

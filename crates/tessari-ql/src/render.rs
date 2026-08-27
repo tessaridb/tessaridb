@@ -26,7 +26,7 @@
 
 use crate::ast::{
     Expr, ExprKind, FieldPath, Ordering, Projected, Projection, Script, Select, Source, Statement,
-    StatementKind, TableRef,
+    StatementKind, TableRef, Using,
 };
 use crate::error::{Error, Result};
 use crate::token::Span;
@@ -113,7 +113,8 @@ const fn unrenderable(statement: &'static str, span: Span) -> Error {
     Error::Unrenderable { statement, span }
 }
 
-/// `SELECT … FROM … [FETCH …] [GROUP BY …] [ORDER BY …] [START n] [LIMIT n] [APPROXIMATE]`
+/// `SELECT … FROM … [FETCH …] [GROUP BY …] [ORDER BY …] [START n] [LIMIT n]
+///  [APPROXIMATE] [USING …]`
 ///
 /// Clause order is the parser's, which is also application order — the grammar
 /// keeps the two the same on purpose, so there is nothing to choose here.
@@ -157,6 +158,17 @@ fn write_select(out: &mut String, select: &Select) -> Result<()> {
     }
     if select.approximate {
         out.push_str(" APPROXIMATE");
+    }
+    match &select.using {
+        Some(Using::Path(name)) => {
+            out.push_str(" USING ");
+            out.push_str(&name.text);
+        }
+        Some(Using::Index(name)) => {
+            out.push_str(" USING INDEX ");
+            out.push_str(&name.text);
+        }
+        None => {}
     }
     Ok(())
 }

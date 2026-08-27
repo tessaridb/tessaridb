@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 543 conformance cases define the language and run in the build.
+Unreleased. 560 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -148,6 +148,25 @@ Unreleased. 543 conformance cases define the language and run in the build.
   the `path` word. The binary protocol still carries the access path alone; an
   older client reads an unknown path tag as the scan, which is the one path that
   promises nothing, so the widened vocabulary degrades rather than breaking.
+
+- **`USING <path>` and `USING INDEX <name>`** let a read state which path it
+  expects and be refused when it took another. A refusal, never a router: it does
+  not choose a path and cannot make a read faster. It exists because the worst
+  failure mode an indexed store has is the query that quietly stops using its
+  index and starts scanning — the answer stays correct and the only symptom is a
+  latency graph somebody has to be watching.
+
+  Checked against what the read **did**, not what the planner chose. A descending
+  ordered index that cannot fill the bound hands the read to the scan, and an
+  assertion satisfied by the planner's intention would pass in exactly the case
+  it was written to catch — so `USING ordered` is refused there and `USING scan`
+  is permitted. The cost of a refused statement is the read it already did, which
+  follows from the same rule.
+
+  `USING INDEX` asks what the path word cannot: `index` says *an* index answered,
+  `USING INDEX by_city` says which. An unrecognised word is refused before the
+  read runs, naming the words that exist. An assertion inside a materialised
+  source is about the inner read.
 
 ### Changed — breaking
 

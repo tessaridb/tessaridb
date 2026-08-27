@@ -229,6 +229,10 @@ impl Select<Sourced> {
             approximate: false,
             start: self.start,
             limit: self.limit,
+            // The builder states no expectation about the path. An assertion is
+            // something an author writes on purpose, and a builder that carried
+            // one by default would refuse reads nobody asked it to police.
+            using: None,
             span: BUILT,
         };
         Ok(Query {

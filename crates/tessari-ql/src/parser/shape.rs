@@ -12,9 +12,9 @@
 use tessari_types::Number;
 
 use super::Parser;
-use crate::ast::{DeleteBound, Expr, ExprKind, FieldPath, Ordering, Projection, Source};
+use crate::ast::{DeleteBound, Expr, ExprKind, FieldPath, Ordering, Projection, Source, Using};
 use crate::error::{Error, Result};
-use crate::token::{Punct, Span, Token};
+use crate::token::{Keyword, Punct, Span, Token};
 
 impl Parser<'_> {
     /// `GROUP BY city, address.country`, when it is there.
@@ -96,6 +96,34 @@ impl Parser<'_> {
         let count = u64::try_from(*count).map_err(|_| self.error_here(expected))?;
         self.advance();
         Ok(Some(count))
+    }
+
+    /// `USING <path>` or `USING INDEX <name>`, when it is there.
+    ///
+    /// The path word is taken as written and is **not** checked here. The set of
+    /// words belongs to the store that reports them, and a copy of it in the
+    /// grammar would be a second vocabulary of exactly the kind one plan
+    /// structure exists to remove — so an unrecognised word is refused where the
+    /// words live, before the read runs, naming the ones that exist.
+    pub(super) fn using(&mut self) -> Result<Option<Using>> {
+        if !self.eat_word("using") {
+            return Ok(None);
+        }
+        // `index` is both a path word and the keyword that introduces a named
+        // index, so the two forms are told apart by what follows: a name means
+        // `USING INDEX by_email`, and anything else means the path word. One
+        // token of lookahead, and no spelling has to be given up — `USING index`
+        // asks whether *an* index answered, `USING INDEX by_email` asks which.
+        if self.peek_keyword() == Some(Keyword::Index)
+            && matches!(self.peek_ahead(1), Some(Token::Ident(_)))
+        {
+            self.advance();
+            return Ok(Some(Using::Index(self.name()?)));
+        }
+        // `word_or_name`, because several path words are also keywords —
+        // `index`, `join`, `record` — and a clause that accepted only the ones
+        // that happen not to be would be a vocabulary decided by the lexer.
+        Ok(Some(Using::Path(self.word_or_name()?)))
     }
 
     /// The bound a conditional delete must carry: `LIMIT 100` or `LIMIT ALL`.

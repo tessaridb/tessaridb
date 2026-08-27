@@ -179,6 +179,46 @@ impl Note {
 }
 
 impl AccessPath {
+    /// Every path, so the words can be listed and looked up.
+    ///
+    /// Rust cannot enumerate an enum's variants, so this is written out and a
+    /// test pins its length against the count. A variant missing from here would
+    /// not be *wrong* — it would be unassertable by `USING` and unlistable in
+    /// the refusal that names the words, which is the quiet kind of gap.
+    pub const ALL: [Self; 8] = [
+        Self::Record,
+        Self::Index,
+        Self::Ordered,
+        Self::Scan,
+        Self::Approximate,
+        Self::Graph,
+        Self::Join,
+        Self::Materialised,
+    ];
+
+    /// The path a word names, if it names one.
+    ///
+    /// Case-insensitive, because a statement writing `USING SCAN` in the case of
+    /// its keywords is saying the same thing. Read through [`Self::name`] rather
+    /// than through a second list of spellings: there is one vocabulary and this
+    /// is the direction that reads it backwards.
+    #[must_use]
+    pub fn named(word: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|path| path.name().eq_ignore_ascii_case(word))
+    }
+
+    /// The words that exist, in the order [`Self::ALL`] lists them.
+    #[must_use]
+    pub fn known() -> String {
+        Self::ALL
+            .iter()
+            .map(|path| path.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// A short stable name, for logs and for a client that shows the cost.
     #[must_use]
     pub const fn name(self) -> &'static str {

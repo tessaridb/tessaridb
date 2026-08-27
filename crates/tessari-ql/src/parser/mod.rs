@@ -140,6 +140,13 @@ impl Parser<'_> {
         self.tokens.get(self.position).map(|spanned| &spanned.token)
     }
 
+    /// The token `offset` places past the cursor, when there is one.
+    fn peek_ahead(&self, offset: usize) -> Option<&Token> {
+        self.tokens
+            .get(self.position.saturating_add(offset))
+            .map(|spanned| &spanned.token)
+    }
+
     /// Whether the token `offset` places past the cursor is this one.
     fn follows_with(&self, offset: usize, token: &Token) -> bool {
         self.tokens

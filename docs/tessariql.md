@@ -2467,6 +2467,45 @@ be a metadata disclosure wearing a diagnostic's clothes.
 Only a read has a plan to describe. A write's cost is its index maintenance,
 which is a different report rather than this one wearing the same word.
 
+## 7b″. Saying which path you expect
+
+```
+SELECT * FROM users WHERE city = 'Paris' USING index;
+SELECT * FROM users WHERE city = 'Paris' USING INDEX by_city;
+SELECT * FROM events USING scan;               -- yes, I mean the scan
+```
+
+`USING` is **optional** and is a **refusal, never a router**. It does not choose
+a path and cannot make a read faster; it fails the statement when the path taken
+is not the one named. That converts the worst failure mode an indexed store has —
+the query that quietly stops using its index and starts scanning — from something
+you find out from a latency graph into something the statement says out loud. It
+also makes a read self-documenting without duplicating anything, because the
+assertion is *checked*.
+
+`USING <path>` takes one of the access-path words (§7b): `record`, `index`,
+`ordered`, `scan`, `approximate`, `graph`, `join`, `materialised`. A word that is
+none of them is refused before the read runs, listing the ones that exist.
+
+`USING INDEX <name>` asks the question the path word cannot: `index` says *an*
+index answered, this says **which**. A read served by the wrong index is a plan
+regression the path word alone cannot see.
+
+**It is checked against what the read did, not against what the planner chose**,
+and that is the whole design. A descending ordered index that cannot fill the
+bound hands the read to the scan (§7b); an assertion satisfied by the planner's
+intention would pass in exactly that case — the one it was written to catch. So
+`USING ordered` is refused there and `USING scan` is permitted, because the scan
+is what honestly happened.
+
+The cost of a refused statement is the read it already did. That follows from the
+same rule and is not an oversight: the assertion is about what happened, so it
+cannot be settled before anything has.
+
+An assertion inside a materialised source is about the **inner** read. The outer
+statement is `materialised` whatever the inner one did, so the two are about
+different reads and both hold at once.
+
 ## 7b′. What the answer says without being asked
 
 `EXPLAIN` answers a question you have to know to ask. A **note** is the other

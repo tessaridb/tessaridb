@@ -844,8 +844,42 @@ pub struct Select {
     pub start: Option<u64>,
     /// How many to answer with at most.
     pub limit: Option<u64>,
+    /// What the author expects the read to have done, when they said.
+    ///
+    /// `None` is the ordinary case: the statement asks a question and the store
+    /// answers it however it can.
+    pub using: Option<Using>,
     /// Where the statement sits in the source.
     pub span: Span,
+}
+
+/// An assertion about how a read was served.
+///
+/// **A refusal, never a router.** It does not choose a path — nothing here
+/// reaches the planner — it fails the statement when the path taken is not the
+/// one named. That turns the worst failure mode an indexed store has, the query
+/// that quietly stops using its index and starts scanning, from a thing you find
+/// out from a latency graph into a thing the statement says out loud.
+///
+/// It is checked against what the read **did**, not against what the planner
+/// chose, and the difference matters: an ordered index that could not fill the
+/// bound sends the read to the scan, and an assertion satisfied by the planner's
+/// intention would pass exactly where the scan it was written to catch happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Using {
+    /// `USING <path>` — the access path the read is expected to report.
+    ///
+    /// Carried as written rather than as a checked variant, because the set of
+    /// path words belongs to the store that reports them and duplicating it in
+    /// the grammar would be a second vocabulary of exactly the kind one plan
+    /// structure exists to remove. An unrecognised word is refused before the
+    /// read runs, naming the ones that exist.
+    Path(Name),
+    /// `USING INDEX <name>` — the index the read is expected to have used.
+    ///
+    /// Stronger than a path word and often what is actually meant: `index` says
+    /// *an* index answered, this says *which*.
+    Index(Name),
 }
 
 /// One sort key, and which way it runs.

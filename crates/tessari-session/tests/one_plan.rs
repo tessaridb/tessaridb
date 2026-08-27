@@ -95,45 +95,78 @@ fn answered(session: &mut Session<'_>, read: &str) -> (Value, Vec<Note>) {
 
 /// Every shape of read the store has an access path for, except the one that
 /// falls back — which has its own test below.
-const SHAPES: &[&str] = &[
+///
+/// Each row carries the word it is *expected* to answer under, and the test
+/// asserts it. Without that the list is a claim about coverage rather than a
+/// check on it: two rows here quietly degraded to `scan` when they were first
+/// written — the vector read for want of `APPROXIMATE`, and both sides agreed on
+/// `scan`, so the equality passed while covering nothing.
+const SHAPES: &[(&str, &str)] = &[
     // A table with nothing to narrow it.
-    "SELECT * FROM users;",
+    ("SELECT * FROM users;", "scan"),
     // One record by identity.
-    "SELECT * FROM users:1;",
+    ("SELECT * FROM users:1;", "record"),
     // This node, out of `meta` — no table, no index, no choice.
-    "SELECT * FROM $node;",
-    // A unique index answering an equality, which is the one candidate that
-    // can promise a ceiling for free.
-    "SELECT * FROM users WHERE email = 'ada@example.com';",
+    ("SELECT * FROM $node;", "record"),
+    // A unique index answering an equality, which is the one candidate that can
+    // promise a ceiling for free.
+    (
+        "SELECT * FROM users WHERE email = 'ada@example.com';",
+        "index",
+    ),
     // A secondary index answering an equality, which cannot.
-    "SELECT * FROM users WHERE city = 'Paris';",
+    ("SELECT * FROM users WHERE city = 'Paris';", "index"),
     // A range, over the same index.
-    "SELECT * FROM users WHERE joined > 1;",
+    ("SELECT * FROM users WHERE joined > 1;", "index"),
     // A condition no index serves.
-    "SELECT * FROM users WHERE name = 'ada';",
+    ("SELECT * FROM users WHERE name = 'ada';", "scan"),
     // An order an index holds, with a bound it can fill.
-    "SELECT * FROM users ORDER BY joined DESC LIMIT 2;",
+    (
+        "SELECT * FROM users ORDER BY joined DESC LIMIT 2;",
+        "ordered",
+    ),
     // A walk, which reads an index per step and chooses none of them.
-    "SELECT * FROM users:1->follows->users;",
+    ("SELECT * FROM users:1->follows->users;", "graph"),
     // Two reads brought together on a key.
-    "SELECT * FROM users JOIN orders ON users.name = orders.who;",
+    (
+        "SELECT * FROM users JOIN orders ON users.name = orders.who;",
+        "join",
+    ),
     // A read standing where a table stands.
-    "SELECT * FROM (SELECT * FROM users LIMIT 2);",
+    (
+        "SELECT * FROM (SELECT * FROM users LIMIT 2);",
+        "materialised",
+    ),
     // A spatial index walked nearest-first — exact, and its own shape.
-    "SELECT * FROM stops ORDER BY geo::distance(at, \
-     geometry { type: 'Point', coordinates: [2.3, 48.8] }) LIMIT 1;",
+    (
+        "SELECT * FROM stops ORDER BY geo::distance(at, \
+         geometry { type: 'Point', coordinates: [2.3, 48.8] }) LIMIT 1;",
+        "ordered",
+    ),
     // A vector index, the one read an index answers differently from a scan.
-    "SELECT * FROM items ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 1;",
+    // `APPROXIMATE` is what admits it: without the word the read is exact and
+    // this row would silently be another scan.
+    (
+        "SELECT * FROM items ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 1 APPROXIMATE;",
+        "approximate",
+    ),
 ];
 
 #[test]
 fn every_shape_of_read_explains_as_it_answers() {
     let store = store();
     let mut session = ready(&store);
-    for read in SHAPES {
+    for (read, word) in SHAPES {
         let plan = explained(&mut session, read);
         let (took, notes) = answered(&mut session, read);
         assert_eq!(plan, took, "{read}");
+        // The row covers the path it says it covers, so the equality above is a
+        // check on thirteen shapes rather than on however many of them happened
+        // to fall through to the same one.
+        let Value::Object(fields) = &took else {
+            panic!("a plan rendered as {took:?}");
+        };
+        assert_eq!(fields.get("access"), Some(&Value::from(*word)), "{read}");
         // None of these shapes falls back, so the agreement above is the whole
         // story rather than a difference the notes were covering for.
         assert!(

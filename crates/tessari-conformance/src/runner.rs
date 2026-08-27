@@ -230,6 +230,9 @@ fn kind_name(error: &Error) -> &'static str {
         Error::MergeIsNotAnObject { .. } => "MergeIsNotAnObject",
         Error::Thrown { .. } => "Thrown",
         Error::JoinKeysDiffer { .. } => "JoinKeysDiffer",
+        Error::NoSuchAccessPath { .. } => "NoSuchAccessPath",
+        Error::PathNotTaken { .. } => "PathNotTaken",
+        Error::IndexNotUsed { .. } => "IndexNotUsed",
         _ => "Unnamed",
     }
 }

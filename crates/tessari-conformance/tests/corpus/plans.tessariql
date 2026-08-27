@@ -1,0 +1,90 @@
+# Plans: what a read says it will do, what it says it did, and the clause that
+# holds the two to each other.
+#
+# `EXPLAIN` answers a question you have to know to ask. The plan on the answer
+# says the same thing about the read that actually ran. `USING` is the third
+# piece and the only one with teeth: it is a refusal, never a router — it does
+# not choose a path, it fails the statement when the path taken is not the one
+# named. That turns the worst failure mode an indexed store has, the query that
+# quietly stops using its index and starts scanning, from a latency graph
+# somebody has to be watching into a statement that says so.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+DEFINE TABLE users;
+DEFINE TABLE orders;
+DEFINE TABLE follows EDGE;
+CREATE users:1 = { email: 'ada@example.com', city: 'Paris', name: 'ada' };
+CREATE users:2 = { email: 'grace@example.com', city: 'Paris', name: 'grace' };
+CREATE orders:1 = { who: 'ada', total: 12 };
+RELATE users:1->follows->users:2;
+--- expect: ok
+
+--- case: a read with nothing to narrow it is a scan, and says so
+SELECT * FROM users USING scan;
+--- expect: rows 2
+
+--- case: and is refused when it is told it should have been an index
+SELECT * FROM users USING index;
+--- expect: error PathNotTaken
+
+--- case: an index that exists is used, and the statement may say it expects that
+DEFINE INDEX by_email ON users FIELDS email UNIQUE;
+SELECT * FROM users WHERE email = 'ada@example.com' USING index;
+--- expect: rows 1
+
+--- case: the index may be named, which is the question `index` cannot ask
+SELECT * FROM users WHERE email = 'ada@example.com' USING INDEX by_email;
+--- expect: rows 1
+
+--- case: and naming the wrong one is refused even though an index did answer
+DEFINE INDEX by_city ON users FIELDS city;
+SELECT * FROM users WHERE email = 'ada@example.com' USING INDEX by_city;
+--- expect: error IndexNotUsed
+
+--- case: naming an index on a read that used none says so
+SELECT * FROM users USING INDEX by_city;
+--- expect: error IndexNotUsed
+
+--- case: a word that is not a path is refused before the read runs
+SELECT * FROM users USING inedx;
+--- expect: error NoSuchAccessPath
+
+--- case: the word may be written in the case of a keyword
+SELECT * FROM users USING SCAN;
+--- expect: rows 2
+
+--- case: one record by identity is its own path
+SELECT * FROM users:1 USING record;
+--- expect: rows 1
+
+--- case: a walk is a graph read and not an index read
+SELECT * FROM users:1->follows->users USING graph;
+--- expect: rows 1
+
+--- case: a join is a join, whichever way its sides were read
+SELECT * FROM users JOIN orders ON users.name = orders.who USING join;
+--- expect: rows 1
+
+--- case: a materialised source performed no access of its own
+SELECT * FROM (SELECT * FROM users LIMIT 2) USING materialised;
+--- expect: rows 2
+
+--- case: and the inner read states its own expectation, about itself
+SELECT * FROM (SELECT * FROM users WHERE email = 'ada@example.com' LIMIT 1 USING index) USING materialised;
+--- expect: rows 1
+
+--- case: EXPLAIN answers with the plan rather than the records
+EXPLAIN SELECT * FROM users WHERE email = 'ada@example.com';
+--- expect: value { access: 'index', at_most: 1, columns: 1, index: 'by_email', shape: 'equality', table: 'users' }
+
+--- case: an assertion changes nothing about what a read answers
+SELECT * FROM users WHERE city = 'Paris';
+--- expect: rows 2
+
+--- case: the same read, asserted, answers the same
+SELECT * FROM users WHERE city = 'Paris' USING INDEX by_city;
+--- expect: rows 2

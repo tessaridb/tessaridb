@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use tessari_constants::ORDERED_FILTER_REACH;
 use tessari_ql::{
     BinaryOp, DeleteBound, Direction, Expr, ExprKind, Function, Hop, JoinSide, Projected,
-    Projection, RecordTarget, Select, Source, Span, TableRef,
+    Projection, RecordTarget, Select, Source, Span, TableRef, Using,
 };
 use tessari_storage::{BUILD_VERSION, Catalog, RecordAddress, Store, Transaction};
 use tessari_types::{
@@ -430,6 +430,7 @@ impl Session<'_> {
                 &mut shaping,
                 &mut notes,
             )?;
+            asserted(select, &plan)?;
             return Ok(Answered {
                 records: crate::shape::bounded(shaping.finish(), select.start, select.limit),
                 plan,
@@ -505,6 +506,7 @@ impl Session<'_> {
             }
             shaping.finish()
         };
+        asserted(select, &plan)?;
         Ok(Answered {
             records: crate::shape::bounded(records, select.start, select.limit),
             plan,
@@ -1915,6 +1917,61 @@ fn ceiling_reached(read: &Select, held: usize) -> Option<Note> {
     u64::try_from(held)
         .is_ok_and(|held| held >= ceiling)
         .then_some(Note::SubqueryCeiling { rows: ceiling })
+}
+
+/// Whether the read did what the statement said it expected.
+///
+/// A refusal and never a router: nothing here reaches the planner, and a read
+/// with no `USING` is not touched. It is compared against the plan the read
+/// **took**, not the one the planner chose, which is the whole difference — an
+/// ordered index that could not fill the bound hands the read to the scan, and
+/// an assertion checked against the intention would pass in exactly the case it
+/// was written to catch.
+///
+/// The cost of a refused statement is the read it already did. That is the
+/// honest semantics and not an oversight: the assertion is about what happened,
+/// so it cannot be settled before anything has. Refusing early where the
+/// planner's own choice already contradicts the assertion is a real improvement
+/// and a separate one (Q-203), because the planner may name a path the read then
+/// falls back from.
+fn asserted(select: &Select, plan: &Plan) -> Result<()> {
+    match &select.using {
+        None => Ok(()),
+        Some(Using::Path(named)) => {
+            let Some(wanted) = AccessPath::named(&named.text) else {
+                return Err(Error::NoSuchAccessPath {
+                    named: named.text.clone(),
+                    known: AccessPath::known(),
+                    span: named.span,
+                });
+            };
+            if wanted == plan.access {
+                return Ok(());
+            }
+            Err(Error::PathNotTaken {
+                expected: wanted.name().to_owned(),
+                took: plan.access.name().to_owned(),
+                span: named.span,
+            })
+        }
+        Some(Using::Index(named)) => {
+            if plan.index.as_deref() == Some(named.text.as_str()) {
+                return Ok(());
+            }
+            Err(Error::IndexNotUsed {
+                expected: named.text.clone(),
+                // Named rather than described, because "used `by_city`" is what
+                // an author has to see to know what went wrong; "no index" is
+                // the other thing that can be true and reads as a sentence in
+                // the same slot.
+                took: plan
+                    .index
+                    .clone()
+                    .map_or_else(|| "no index".to_owned(), |index| format!("`{index}`")),
+                span: named.span,
+            })
+        }
+    }
 }
 
 /// What an index-served walk came back with.
