@@ -56,7 +56,7 @@ fn answered(
     let outcomes = session.run_with(script, parameters).unwrap();
     let last = outcomes.last().unwrap();
     match last {
-        Outcome::Records { records, path } => (records.clone(), *path),
+        Outcome::Records { records, path, .. } => (records.clone(), *path),
         other => panic!("not records: {other:?}"),
     }
 }

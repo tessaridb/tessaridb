@@ -366,7 +366,7 @@ fn a_write_in_the_same_transaction_gives_the_order_up() {
             READS[0]
         ))
         .unwrap();
-    let Some(Outcome::Records { records, path }) = outcomes
+    let Some(Outcome::Records { records, path, .. }) = outcomes
         .iter()
         .find(|outcome| matches!(outcome, Outcome::Records { .. }))
     else {

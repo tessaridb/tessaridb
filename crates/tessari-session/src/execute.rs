@@ -412,8 +412,12 @@ impl Session<'_> {
                 Ok(Outcome::Value(self.read_key(transaction, target)?))
             }
             StatementKind::Select(select) => {
-                let (records, path) = self.read(transaction, select)?;
-                Ok(Outcome::Records { records, path })
+                let answered = self.read(transaction, select)?;
+                Ok(Outcome::Records {
+                    records: answered.records,
+                    path: answered.path,
+                    notes: answered.notes,
+                })
             }
             StatementKind::Explain(select) => self.explain(transaction, select),
             StatementKind::Info { subject } => self.info(transaction, subject, span),

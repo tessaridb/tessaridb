@@ -101,7 +101,35 @@ Unreleased. 543 conformance cases define the language and run in the build.
   ignored — what a diff of an array should look like is a design question, not a
   missing line.
 
+- **A read now says what it did, on the answer, without being asked.** An
+  outcome carrying records carries **notes** beside them — `fell-back` when an
+  index held the order and could not fill the bound, `approximate` when the
+  answer is the best a graph found rather than provably the best there is, and
+  `subquery-ceiling` when a materialised source reached the `LIMIT` it stated and
+  the outer statement therefore asked its question of a prefix.
+
+  A note never changes what a statement answers: a caller that ignores every note
+  gets exactly the records it would have got before notes existed. `EXPLAIN`
+  answers a question you have to know to ask; a note is the store volunteering
+  the one thing about this answer you would have wanted to know.
+
+  `fell-back` fires on an index that **declined**, never on a table that has
+  none — a bounded ordered read over an unindexed table gave nothing up, and a
+  note on it would fire so often that nobody would read the ones that matter.
+
+  Notes reach `Outcome::notes()` and the HTTP body, where the `notes` key is
+  absent when there is nothing to say. They do not cross the binary protocol yet:
+  a decoder there checks it consumed every byte of a body, so a field appended to
+  one is not something an older client ignores, and carrying notes needs the
+  protocol's minor version to gate them.
+
 ### Changed — breaking
+
+- **`Outcome::Records` carries a third field, `notes`.** Embedded callers that
+  match it by naming both fields need `..`; callers that read `records()` and
+  `path()` are unaffected. `Outcome` itself was already `#[non_exhaustive]`; the
+  variant is deliberately not sealed, because the wire crate constructs one when
+  it decodes a response.
 
 - **A conditional delete must now state how much it may remove.**
   `DELETE FROM t WHERE …` takes either `LIMIT n` or `LIMIT ALL`, and a statement

@@ -142,6 +142,33 @@ fn a_script_runs_over_the_wire_and_answers_one_object_per_statement() {
     assert!(body.contains(r#""name":"ada""#), "{body}");
     // The access path is reported, so a scan is visible rather than folklore.
     assert!(body.contains(r#""path":"record""#), "{body}");
+    // …and a read with nothing to report says nothing, so every response that
+    // had no note is byte-identical to what it was before notes existed.
+    assert!(!body.contains(r#""notes""#), "{body}");
+}
+
+#[test]
+fn a_note_reaches_the_client_over_http() {
+    // The channel is only worth building if it arrives somewhere. This is the
+    // surface it arrives on: a JSON key that is absent when there is nothing to
+    // say, which every JSON reader already handles, and present with a kind a
+    // client can group on and a message a person can act on.
+    let (_node, address) = node();
+    request(&address, "POST", "/script", READY);
+    let (status, body) = request(
+        &address,
+        "POST",
+        "/script",
+        "USE NAMESPACE prod DATABASE orders; \
+         CREATE users:1 = { name: 'ada' }; CREATE users:2 = { name: 'grace' }; \
+         SELECT * FROM (SELECT * FROM users LIMIT 1);",
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(r#""kind":"subquery-ceiling""#), "{body}");
+    assert!(body.contains("reached its ceiling of 1"), "{body}");
+    // The note did not displace the answer it is about.
+    assert!(body.contains(r#""kind":"records""#), "{body}");
+    assert!(body.contains(r#""name":"ada""#), "{body}");
 }
 
 #[test]

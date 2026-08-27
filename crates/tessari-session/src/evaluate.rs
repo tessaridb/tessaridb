@@ -25,7 +25,7 @@ use crate::condition::boolean;
 use crate::consume::Consumer;
 use crate::context::Context;
 use crate::error::{Error, Result};
-use crate::outcome::AccessPath;
+use crate::outcome::{AccessPath, Note};
 use crate::plan;
 use crate::rank::{Corpus, score};
 use crate::search::{Searched, matches_terms};
@@ -382,14 +382,19 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
-    ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
+    ) -> Result<Answered> {
         // The searched context is resolved before the source produces anything,
         // because a sort key is an expression too and one holding a `MATCHES` or
         // a score must mean the same thing there as it does in the `WHERE` that
         // produced them. That is the whole reason the source is split in two: it
         // knew `searched` before it walked, and only reported it on return, so
         // the consumer could not be built until every record already existed.
-        let (prepared, searched) = self.prepare_source(transaction, select)?;
+        // The one note channel for the whole read, threaded rather than kept on
+        // the session: a buffer on `self` would outlive the statement that filled
+        // it, and a note reported against the *next* answer is worse than no note
+        // at all.
+        let mut notes = Vec::new();
+        let (prepared, searched) = self.prepare_source(transaction, select, &mut notes)?;
         // The bound the sort may keep to. `bounded` is applied to the ordering
         // stage's output below, so keeping only what it will keep is an identity
         // between two adjacent stages rather than a decision about the
@@ -413,17 +418,30 @@ impl Session<'_> {
                 &searched,
                 crate::shape::Topmost::keeping(&select.order, bound),
             );
-            let path =
-                self.produce_source(transaction, select, prepared, &searched, &mut shaping)?;
-            return Ok((
-                crate::shape::bounded(shaping.finish(), select.start, select.limit),
+            let path = self.produce_source(
+                transaction,
+                select,
+                prepared,
+                &searched,
+                &mut shaping,
+                &mut notes,
+            )?;
+            return Ok(Answered {
+                records: crate::shape::bounded(shaping.finish(), select.start, select.limit),
                 path,
-            ));
+                notes,
+            });
         }
 
         let mut collecting = crate::consume::Collecting::new();
-        let path =
-            self.produce_source(transaction, select, prepared, &searched, &mut collecting)?;
+        let path = self.produce_source(
+            transaction,
+            select,
+            prepared,
+            &searched,
+            &mut collecting,
+            &mut notes,
+        )?;
         let mut records = collecting.finish();
         // Before anything groups, projects or sorts, so a projection and a sort
         // key both see the record rather than the reference that named it.
@@ -483,10 +501,11 @@ impl Session<'_> {
             }
             shaping.finish()
         };
-        Ok((
-            crate::shape::bounded(records, select.start, select.limit),
+        Ok(Answered {
+            records: crate::shape::bounded(records, select.start, select.limit),
             path,
-        ))
+            notes,
+        })
     }
 
     /// One record, reduced to the values a read asked for.
@@ -607,6 +626,7 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         select: &'a Select,
+        notes: &mut Vec<Note>,
     ) -> Result<(Prepared<'a>, Searched)> {
         match &select.from {
             // Resolved from `meta` rather than read from a table, because that
@@ -672,6 +692,7 @@ impl Session<'_> {
                     left_key,
                     right_key,
                     condition.as_deref(),
+                    notes,
                 )?;
                 Ok((Prepared::Held(found, path), searched))
             }
@@ -680,7 +701,10 @@ impl Session<'_> {
             // is how the records were actually reached — the outer statement
             // added no access of its own.
             Source::Subquery { read, condition } => {
-                let (found, path) = self.read(transaction, read)?;
+                let inner = self.read(transaction, read)?;
+                notes.extend(inner.notes);
+                notes.extend(ceiling_reached(read, inner.records.len()));
+                let (found, path) = (inner.records, inner.path);
                 let Some(condition) = condition else {
                     return Ok((Prepared::Held(found, path), Searched::default()));
                 };
@@ -719,6 +743,7 @@ impl Session<'_> {
         prepared: Prepared<'_>,
         searched: &Searched,
         consumer: &mut dyn Consumer,
+        notes: &mut Vec<Note>,
     ) -> Result<AccessPath> {
         match prepared {
             Prepared::Held(found, path) => {
@@ -734,6 +759,10 @@ impl Session<'_> {
                 if let Some(walk) = plan::nearest(select)
                     && let Some(found) = self.walk(transaction, context, id, &walk)?
                 {
+                    // The one place the note is not about a cost but about the
+                    // answer: these records are the best the graph found, and
+                    // nothing in their shape says so.
+                    notes.push(Note::Approximate);
                     hand_over(found, transaction, consumer)?;
                     return Ok(AccessPath::Index);
                 }
@@ -742,21 +771,40 @@ impl Session<'_> {
                 // therefore asking nothing of the statement: a best-first walk
                 // ordered by a floor visits every record that could rank above
                 // the ones it holds.
-                if let Some(closest) = plan::closest(select)
-                    && let Some(found) = self.walk_to_place(transaction, context, id, &closest)?
-                {
-                    hand_over(found, transaction, consumer)?;
-                    return Ok(AccessPath::Ordered);
+                if let Some(closest) = plan::closest(select) {
+                    match self.walk_to_place(transaction, context, id, &closest)? {
+                        Walked::Served(found) => {
+                            hand_over(found, transaction, consumer)?;
+                            return Ok(AccessPath::Ordered);
+                        }
+                        Walked::Declined => notes.push(Note::FellBack {
+                            from: AccessPath::Ordered,
+                            to: AccessPath::Scan,
+                        }),
+                        Walked::NotServed => {}
+                    }
                 }
                 // The other shape an index serves without a condition: an order
                 // it is already stored in, and a bound to stop at. Exact — the
                 // records come back for the ordering stage and `bounded` to
                 // shape, the same two the other answers go through.
-                if let Some(bound) = plan::ordered(select)
-                    && let Some(found) = self.walk_in_order(transaction, context, id, &bound)?
-                {
-                    hand_over(found, transaction, consumer)?;
-                    return Ok(AccessPath::Ordered);
+                if let Some(bound) = plan::ordered(select) {
+                    match self.walk_in_order(transaction, context, id, &bound)? {
+                        Walked::Served(found) => {
+                            hand_over(found, transaction, consumer)?;
+                            return Ok(AccessPath::Ordered);
+                        }
+                        // The index holds the order and ran out of entries, so
+                        // the records that would fill the rest of the answer are
+                        // ones it does not hold. The scan below finds them, and
+                        // this is the note saying the index did not earn its
+                        // keep on this read.
+                        Walked::Declined => notes.push(Note::FellBack {
+                            from: AccessPath::Ordered,
+                            to: AccessPath::Scan,
+                        }),
+                        Walked::NotServed => {}
+                    }
                 }
                 // The bound reaches the source here, and only here, because this
                 // is the one arm where the records the source produces are the
@@ -799,22 +847,36 @@ impl Session<'_> {
                 // bound, and an ascending retry would read further into values
                 // the answer has already passed rather than further into the
                 // ones it still needs — a different read, not a longer one.
-                if let Some(bound) = plan::ordered(select)
-                    && bound.descending
-                    && let Some(found) = self.descend_matching(
+                // The decline is remembered rather than acted on here, because
+                // what the read falls back *to* is not known until `candidates`
+                // has chosen — an index on the condition serves this read even
+                // when no index could serve its order.
+                let mut declined = false;
+                if let Some(bound) = plan::ordered(select).filter(|bound| bound.descending) {
+                    match self.descend_matching(
                         transaction,
                         context,
                         id,
                         &bound,
                         condition,
                         searched,
-                    )?
-                {
-                    hand_over(found, transaction, consumer)?;
-                    return Ok(AccessPath::Ordered);
+                    )? {
+                        Walked::Served(found) => {
+                            hand_over(found, transaction, consumer)?;
+                            return Ok(AccessPath::Ordered);
+                        }
+                        Walked::Declined => declined = true,
+                        Walked::NotServed => {}
+                    }
                 }
                 let (candidates, path) =
                     self.candidates(transaction, id, context, condition, searched)?;
+                if declined {
+                    notes.push(Note::FellBack {
+                        from: AccessPath::Ordered,
+                        to: path,
+                    });
+                }
 
                 // No `expecting` here, deliberately: how many candidates survive
                 // the condition is not known until it has been run, and an
@@ -901,6 +963,7 @@ impl Session<'_> {
         left_key: &tessari_ql::FieldPath,
         right_key: &tessari_ql::FieldPath,
         condition: Option<&Expr>,
+        notes: &mut Vec<Note>,
     ) -> Result<Joined> {
         let left_name = left.name().to_owned();
         let right_name = right.name().to_owned();
@@ -930,8 +993,10 @@ impl Session<'_> {
                 }
             }
             JoinSide::Read { read, .. } => {
-                let (found, _) = self.read(transaction, read)?;
-                collect_by_key(&mut built, found, right_key);
+                let answered = self.read(transaction, read)?;
+                notes.extend(answered.notes);
+                notes.extend(ceiling_reached(read, answered.records.len()));
+                collect_by_key(&mut built, answered.records, right_key);
             }
         }
 
@@ -947,8 +1012,10 @@ impl Session<'_> {
                 (self.records_of(found, &visible)?, searched)
             }
             JoinSide::Read { read, .. } => {
-                let (found, _) = self.read(transaction, read)?;
-                (found, Searched::default())
+                let answered = self.read(transaction, read)?;
+                notes.extend(answered.notes);
+                notes.extend(ceiling_reached(read, answered.records.len()));
+                (answered.records, Searched::default())
             }
         };
 
@@ -1149,24 +1216,27 @@ impl Session<'_> {
         context: crate::context::Context,
         table: TableId,
         wanted: &plan::Closest<'_>,
-    ) -> Result<Option<Vec<(RecordId, Value)>>> {
+    ) -> Result<Walked> {
         let Some((index, visible)) =
             self.index_serving_place(transaction, context, table, wanted.path)?
         else {
-            return Ok(None);
+            return Ok(Walked::NotServed);
         };
+        // Not a decline: a query that is not a point, or a point no cell can
+        // hold, is a statement this walk does not serve rather than an index
+        // that ran out.
         let Value::Geometry(tessari_types::Geometry::Point(position)) =
             self.evaluate(transaction, wanted.query)?
         else {
-            return Ok(None);
+            return Ok(Walked::NotServed);
         };
         let Ok(target) = tessari_geo::Snapped::of(position) else {
-            return Ok(None);
+            return Ok(Walked::NotServed);
         };
         let Some(nearby) = transaction.records_by_place(&index, target, wanted.wanted)? else {
-            return Ok(None);
+            return Ok(Walked::Declined);
         };
-        self.records_of(nearby.rows, &visible).map(Some)
+        self.records_of(nearby.rows, &visible).map(Walked::Served)
     }
 
     /// The spatial index that may serve an order by distance from this field,
@@ -1259,11 +1329,11 @@ impl Session<'_> {
         context: crate::context::Context,
         table: TableId,
         wanted: &plan::Bounded<'_>,
-    ) -> Result<Option<Vec<(RecordId, Value)>>> {
+    ) -> Result<Walked> {
         let Some((index, visible)) =
             self.index_serving_order(transaction, context, table, wanted.path, wanted.descending)?
         else {
-            return Ok(None);
+            return Ok(Walked::NotServed);
         };
         // The two directions differ in what a short walk *means*, which is why
         // one returns an option and the other does not. Descending, an index
@@ -1279,12 +1349,12 @@ impl Session<'_> {
                 wanted.wanted,
             )? {
                 Some(found) => found,
-                None => return Ok(None),
+                None => return Ok(Walked::Declined),
             }
         } else {
             transaction.records_in_ascending_order(&index, ORDERED_LEADING_FIELDS, wanted.wanted)?
         };
-        self.records_of(found, &visible).map(Some)
+        self.records_of(found, &visible).map(Walked::Served)
     }
 
     /// A bounded descending read **under a condition**, taken from the index
@@ -1339,7 +1409,7 @@ impl Session<'_> {
         wanted: &plan::Bounded<'_>,
         condition: &Expr,
         searched: &Searched,
-    ) -> Result<Option<Vec<(RecordId, Value)>>> {
+    ) -> Result<Walked> {
         // Descending, stated rather than taken from the bound: this walk's whole
         // argument rests on absences sorting *last*, and passing the caller's
         // direction through would make that argument depend on a value from
@@ -1348,7 +1418,7 @@ impl Session<'_> {
         let Some((index, visible)) =
             self.index_serving_order(transaction, context, table, wanted.path, true)?
         else {
-            return Ok(None);
+            return Ok(Walked::NotServed);
         };
         let ceiling = wanted.wanted.saturating_mul(ORDERED_FILTER_REACH);
         let mut asking = wanted.wanted;
@@ -1360,7 +1430,7 @@ impl Session<'_> {
             let Some(found) =
                 transaction.records_in_descending_order(&index, ORDERED_LEADING_FIELDS, asking)?
             else {
-                return Ok(None);
+                return Ok(Walked::Declined);
             };
             let mut matched = Vec::new();
             for (id, record) in self.records_of(found, &visible)? {
@@ -1371,10 +1441,10 @@ impl Session<'_> {
                 }
             }
             if matched.len() >= wanted.wanted {
-                return Ok(Some(matched));
+                return Ok(Walked::Served(matched));
             }
             if asking >= ceiling {
-                return Ok(None);
+                return Ok(Walked::Declined);
             }
             // Doubling, so reaching the ceiling costs about twice the ceiling in
             // entries rather than a walk per step.
@@ -1638,7 +1708,12 @@ impl Session<'_> {
     /// array, so that the shape of the answer follows the shape of the question
     /// rather than the number of rows that happened to match.
     fn read_as_value(&self, transaction: &mut Transaction<'_>, select: &Select) -> Result<Value> {
-        let (records, _) = self.read(transaction, select)?;
+        // The notes are dropped here, and this is the one place they are. An
+        // expression position has no channel to carry them: the answer *is* a
+        // value, and a value has no room beside it. Reported at the statement
+        // that holds this one would be worse than silence — a note about an
+        // inner read, attached to an outer answer it does not describe.
+        let Answered { records, .. } = self.read(transaction, select)?;
         // `$node` alongside `Source::Record` because it is one record too: a
         // read of one answers with its own value, and wrapping it in an array of
         // one would make the shape of the answer follow the source rather than
@@ -1740,6 +1815,57 @@ fn ordered_index_on(
 /// remove it. Named separately so the difference is visible in the signature
 /// rather than resting on a comment.
 type Joined = (Vec<(RecordId, Value)>, AccessPath, Searched);
+
+/// What a read produced, and what it has to say about how.
+///
+/// A struct rather than the tuple this was, because the third element is the one
+/// a caller is most likely to drop on the floor — and a `_` in a tuple pattern
+/// says nothing about what was dropped, while a named field does.
+pub(crate) struct Answered {
+    /// The records, in the order the statement asked for.
+    pub records: Vec<(RecordId, Value)>,
+    /// How they were reached.
+    pub path: AccessPath,
+    /// What the read did that the records do not show.
+    pub notes: Vec<Note>,
+}
+
+/// The note a materialised read owes, when it reached the ceiling it stated.
+///
+/// A materialised source and a materialised join side are the same case seen
+/// twice — the outer statement asks its question of whatever the inner read
+/// handed over, and a prefix of an answer and a whole one are the same shape. A
+/// top-level read filling its own `LIMIT` is *not* this: there is no outer
+/// question for it to have misled, and the caller wrote the bound and can see
+/// how many records came back.
+fn ceiling_reached(read: &Select, held: usize) -> Option<Note> {
+    let ceiling = read.limit?;
+    u64::try_from(held)
+        .is_ok_and(|held| held >= ceiling)
+        .then_some(Note::SubqueryCeiling { rows: ceiling })
+}
+
+/// What an index-served walk came back with.
+///
+/// Three cases rather than an [`Option`], because coming back empty happens for
+/// two unrelated reasons and only one of them is worth telling anybody about.
+/// **No index holds this order** is the ordinary state of a table nobody has
+/// indexed; **an index holds it and could not fill the bound** is the case the
+/// index was built to prevent. Collapsed into `None` they are the same value,
+/// and a note raised on it would fire on every unindexed read — which is how a
+/// diagnostic becomes noise and then becomes ignored.
+///
+/// The planner cannot tell them apart either: `plan::ordered` reads the
+/// statement and never the schema, so it says `Some` for an `ORDER BY … LIMIT`
+/// over a table with no index at all.
+enum Walked {
+    /// The index answered.
+    Served(Vec<(RecordId, Value)>),
+    /// An index holds this order and could not fill the bound.
+    Declined,
+    /// No index holds this order, so nothing was given up.
+    NotServed,
+}
 
 /// What resolving a source reached, and what producing it still needs.
 ///

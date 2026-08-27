@@ -23,6 +23,11 @@ pub enum Outcome {
         records: Vec<(RecordId, Value)>,
         /// How.
         path: AccessPath,
+        /// What the store did that the records alone do not show.
+        ///
+        /// Empty for almost every read, which is the point: a note is worth
+        /// reading because it is rare.
+        notes: Vec<Note>,
     },
     /// One value — or [`Value::None`] when the key holds nothing.
     ///
@@ -67,6 +72,82 @@ pub enum AccessPath {
     Scan,
 }
 
+/// Something the store did on the way to an answer that the answer does not say.
+///
+/// A third channel, beside the records and the error. It exists because the two
+/// it sits between cannot carry this: an error would refuse an answer that is
+/// correct, and the records are correct, so silence is the only other option and
+/// silence is what makes a fallback folklore. Every variant here is a case where
+/// the store knows something the reader would otherwise have to guess at or
+/// measure.
+///
+/// A note never changes the answer. A caller that ignores every note gets
+/// exactly the records it would have got before notes existed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Note {
+    /// The planner chose one path and the read took another.
+    ///
+    /// An ordered index that cannot fill the statement's bound leaves the answer
+    /// needing records it does not hold, so the read scans instead. That is
+    /// correct and it is linear, and the difference between the two is the whole
+    /// reason anybody builds the index.
+    FellBack {
+        /// What the planner chose.
+        from: AccessPath,
+        /// What the read did instead.
+        to: AccessPath,
+    },
+    /// The answer is the best the walk found, not provably the best there is.
+    ///
+    /// The one read in this store an index answers differently from a scan.
+    /// Without this note the difference is invisible: an approximate answer and
+    /// an exact one are the same shape, the same length, and usually the same
+    /// records.
+    Approximate,
+    /// A materialised source produced as many records as its ceiling allows.
+    ///
+    /// Its answer is therefore a prefix of what the inner read would have
+    /// answered unbounded, and the outer statement asked its question of that
+    /// prefix. `LIMIT` is the caller's own word, so this is not a mistake — but
+    /// a bound that was reached and a bound that was not are different answers
+    /// and look identical.
+    SubqueryCeiling {
+        /// The ceiling, which is also how many records it held.
+        rows: u64,
+    },
+}
+
+impl Note {
+    /// A short stable name, for a client that groups or filters notes.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::FellBack { .. } => "fell-back",
+            Self::Approximate => "approximate",
+            Self::SubqueryCeiling { .. } => "subquery-ceiling",
+        }
+    }
+
+    /// The note in the words a reader would want it in.
+    #[must_use]
+    pub fn message(&self) -> String {
+        match self {
+            Self::FellBack { from, to } => format!(
+                "the {} path could not fill the bound, so the read took the {} path instead",
+                from.name(),
+                to.name(),
+            ),
+            Self::Approximate => {
+                "an approximate index answered this, so a nearer record may exist".to_owned()
+            }
+            Self::SubqueryCeiling { rows } => format!(
+                "the materialised source reached its ceiling of {rows}, \
+                 so this answers about a prefix of what it would hold unbounded",
+            ),
+        }
+    }
+}
+
 impl AccessPath {
     /// A short stable name, for logs and for a client that shows the cost.
     #[must_use]
@@ -96,6 +177,18 @@ impl Outcome {
         match self {
             Self::Records { path, .. } => Some(*path),
             _ => None,
+        }
+    }
+
+    /// What the store has to say about how it answered.
+    ///
+    /// Empty rather than `None` for an outcome that carries no notes at all, so
+    /// a caller that renders them writes one loop and no branch.
+    #[must_use]
+    pub fn notes(&self) -> &[Note] {
+        match self {
+            Self::Records { notes, .. } => notes,
+            _ => &[],
         }
     }
 

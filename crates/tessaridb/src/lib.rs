@@ -85,7 +85,7 @@ pub mod feed;
 
 pub use tessari_lsm::{Durability, StoreConfig};
 pub use tessari_session::redact::{Visible, seen};
-pub use tessari_session::{AccessPath, Error, Outcome, Parameters, Result, Session, Ticket};
+pub use tessari_session::{AccessPath, Error, Note, Outcome, Parameters, Result, Session, Ticket};
 pub use tessari_storage::{BUILD_VERSION, Change, ChangeKind, Changes, Subscription, Watch};
 pub use tessari_types::{
     DatabaseId, Datetime, Duration, FieldKind, Geometry, NamespaceId, Number, Path as FieldPath,

@@ -212,7 +212,14 @@ fn encode_outcome_body(outcome: &Outcome, names: &Names) -> Vec<u8> {
     let mut body = Vec::new();
     match outcome {
         Outcome::Done => body.push(tag::DONE),
-        Outcome::Records { records, path } => {
+        // The notes are not encoded, and that is a protocol decision rather than
+        // an omission. A decoder asserts it consumed every byte of the body, so
+        // a field appended here is not something an older client ignores — it is
+        // trailing bytes, and trailing bytes are how this protocol says
+        // "mismatch". Carrying notes needs the minor version to gate them, which
+        // is its own change; until then the embedded and HTTP surfaces report
+        // them and this one does not.
+        Outcome::Records { records, path, .. } => {
             body.push(tag::RECORDS);
             body.push(path_tag(*path));
             put_names(&mut body, names);
@@ -485,6 +492,7 @@ mod tests {
             Outcome::Records {
                 records: vec![(RecordId::Int(7), Value::from("ada"))],
                 path: AccessPath::Index,
+                notes: Vec::new(),
             },
         ];
         for outcome in &outcomes {
@@ -535,6 +543,7 @@ mod tests {
                 Value::Record(RecordRef::new(table, RecordId::Int(7))),
             )],
             path: AccessPath::Record,
+            notes: Vec::new(),
         };
         let (answer, used) = decode_outcome(&encode_outcome(&held, &names), 0).expect("an answer");
         assert_eq!(used, encode_outcome(&held, &names).len());

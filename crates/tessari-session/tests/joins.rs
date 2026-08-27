@@ -48,7 +48,7 @@ fn answered(session: &mut Session<'_>, script: &str) -> (Vec<(RecordId, Value)>,
     let outcomes = session.run(script).unwrap();
     let last = outcomes.last().unwrap();
     match last {
-        Outcome::Records { records, path } => (records.clone(), *path),
+        Outcome::Records { records, path, .. } => (records.clone(), *path),
         other => panic!("not records: {other:?}"),
     }
 }

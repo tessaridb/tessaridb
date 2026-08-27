@@ -163,7 +163,7 @@ fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
 /// path it took.
 fn answered(session: &mut Session<'_>, read: &str) -> (Vec<RecordId>, AccessPath) {
     let outcomes = session.run(read).unwrap();
-    let Some(Outcome::Records { records, path }) = outcomes.last() else {
+    let Some(Outcome::Records { records, path, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
     (records.iter().map(|(id, _)| id.clone()).collect(), *path)

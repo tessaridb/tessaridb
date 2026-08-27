@@ -573,9 +573,31 @@ fn encode(body: &mut String, outcome: &Outcome, names: &json::Names) {
             }
             body.push_str("]}");
         }
-        Outcome::Records { records, path } => {
+        Outcome::Records {
+            records,
+            path,
+            notes,
+        } => {
             body.push_str(r#"{"kind":"records","path":"#);
             json::string(body, name_of(*path));
+            // Written only when there is something to say, so every response
+            // that had nothing to report is byte-identical to what it was before
+            // notes existed. A reader that wants them handles an absent key,
+            // which every JSON reader already does.
+            if !notes.is_empty() {
+                body.push_str(r#","notes":["#);
+                for (position, note) in notes.iter().enumerate() {
+                    if position > 0 {
+                        body.push(',');
+                    }
+                    body.push_str(r#"{"kind":"#);
+                    json::string(body, note.kind());
+                    body.push_str(r#","message":"#);
+                    json::string(body, &note.message());
+                    body.push('}');
+                }
+                body.push(']');
+            }
             body.push_str(r#","records":["#);
             for (position, (id, record)) in records.iter().enumerate() {
                 if position > 0 {

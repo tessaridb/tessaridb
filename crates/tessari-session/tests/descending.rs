@@ -372,6 +372,7 @@ fn a_write_in_the_same_transaction_gives_the_read_up() {
     let Some(Outcome::Records {
         records,
         path: took,
+        ..
     }) = outcomes.get(2)
     else {
         panic!("the read answered with {:?}", outcomes.get(2));

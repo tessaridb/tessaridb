@@ -2428,9 +2428,9 @@ a ceiling was free to learn, which today means an equality on a `UNIQUE` index.
 it names the index. **Descending** it is the one plan with a condition it cannot
 check: whether the index holds enough records to fill the bound is the read
 itself, and an index that runs out hands the read to the scan — which is then
-what the read reports. **Ascending** the plan carries no such gap, because the
-direction is admitted only over a `REQUIRED` field, where an index that runs out
-has already answered the whole table.
+what the read reports, and says so in a note (§7b′). **Ascending** the plan
+carries no such gap, because the direction is admitted only over a `REQUIRED`
+field, where an index that runs out has already answered the whole table.
 
 **A number this store cannot know is a number it will not print.** There is no
 estimated row count and no cost, because producing one needs statistics about
@@ -2446,6 +2446,61 @@ be a metadata disclosure wearing a diagnostic's clothes.
 
 Only a read has a plan to describe. A write's cost is its index maintenance,
 which is a different report rather than this one wearing the same word.
+
+## 7b′. What the answer says without being asked
+
+`EXPLAIN` answers a question you have to know to ask. A **note** is the other
+half: the read says what it did, on the answer, without being asked.
+
+```json
+{
+  "kind": "records",
+  "path": "scan",
+  "notes": [
+    {
+      "kind": "fell-back",
+      "message": "the ordered path could not fill the bound, so the read took the scan path instead"
+    }
+  ],
+  "records": []
+}
+```
+
+A read has had two channels since it existed: the records and the refusal.
+Neither can carry *this answer is correct, and there is something about it you
+would want to know* — an error refuses an answer that is right, and the records
+say nothing about how they were reached. So the third case has been silence, and
+silence is how an operator finds out an index stopped serving a read by noticing
+the read got slow.
+
+**A note never changes what a statement answers.** A caller that ignores every
+note gets exactly the records it would have got before notes existed. The `notes`
+key is absent when there is nothing to say, which is almost always — a note is
+worth reading because it is rare.
+
+There are three today:
+
+| kind | what happened |
+|---|---|
+| `fell-back` | an index held the order and could **not** fill the bound, so the read took the path it names instead |
+| `approximate` | the answer is the best the graph found, not provably the best there is (§5, *Asking for an approximate ordering*) |
+| `subquery-ceiling` | a materialised source reached the `LIMIT` it stated, so the outer statement asked its question of a prefix |
+
+**`fell-back` fires on an index that declined, never on a table that has none.**
+A bounded ordered read over an unindexed table is the most ordinary read in the
+language and gave nothing up; a note on it would fire so often that nobody would
+read the ones that matter.
+
+**`subquery-ceiling` is not a truncation.** The bound is the caller's own word
+and a materialised source is required to state it (§5, *Reading what another read
+answered*). What the note adds is that the bound was *reached*: a prefix of an
+answer and a whole one are the same shape, so the outer statement's question was
+asked of less than the inner read could have given.
+
+Notes reach the embedded API — `Outcome::notes()` — and the HTTP body above.
+They do **not** cross the binary protocol yet: a decoder there checks it consumed
+every byte of a body, so a field appended to one is not something an older client
+ignores, and carrying notes needs the protocol's minor version to gate them.
 
 ## 7c. Asking the catalog what it holds
 

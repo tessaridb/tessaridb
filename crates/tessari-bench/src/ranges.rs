@@ -157,6 +157,7 @@ fn at_width(db: &Db, width: u64, settled: Option<u64>) -> Failable<Vec<Report>> 
         if let Some(Outcome::Records {
             records,
             path: took,
+            ..
         }) = outcome.last()
         {
             answered = records.len();
