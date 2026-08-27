@@ -63,7 +63,7 @@ fn erase_statement(statement: &mut Statement) {
     match &mut statement.kind {
         StatementKind::Select(select) => erase_select(select),
         StatementKind::Explain(select) => erase_select(select),
-        StatementKind::Return { value } => erase_expr(value),
+        StatementKind::Return { value } | StatementKind::Throw { value } => erase_expr(value),
         StatementKind::Let { value, span, .. } => {
             *span = CANONICAL;
             erase_expr(value);

@@ -920,6 +920,28 @@ into the record — `visits + 1` is the record's `visits`, the same reading a
 schema, the defaults, the indexes, the change feed and the grants all apply to it
 without knowing which shape produced it.
 
+### Refusing on purpose
+
+```
+THROW 'this order is already paid';
+
+BEGIN;
+UPDATE orders:1 SET total = 40;
+THROW IF total > 100 THEN 'over the limit' ELSE 'fine' END;
+COMMIT;
+```
+
+`IF` made a decision **computable**; `THROW` makes it **enforceable**. Before it,
+every refusal had to be a condition the store itself happened to check — so a
+rule the store does not know, like "this order is already paid", could be worked
+out in the language and then not acted on.
+
+The statement never answers: it fails. That matters more than the message,
+because **a failure inside a transaction discards the work above it** — a guard
+clause that let the writes before it stand would be a comment. The value is
+evaluated, so it may name what went wrong; a string is used as it was typed,
+because the message is for a person and the quotes are syntax.
+
 ### Reading the node itself
 
 ```

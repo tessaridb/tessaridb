@@ -65,6 +65,10 @@ impl Effect {
             // them in the same block.
             StatementKind::Let { .. }
             | StatementKind::Return { .. }
+            // A refusal holds an expression and changes nothing. It is a read
+            // for the same reason a binding is, and `of_script` still sees the
+            // write standing beside it in the same block.
+            | StatementKind::Throw { .. }
             | StatementKind::Select(_)
             | StatementKind::Explain(_)
             | StatementKind::Get { .. }

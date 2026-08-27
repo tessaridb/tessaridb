@@ -322,6 +322,8 @@ pub enum Keyword {
     Ilike,
     /// `UPDATE`
     Update,
+    /// `THROW` — refuse the script, with a message the caller sees.
+    Throw,
     /// `UPSERT` — write the record whether or not it is already there.
     ///
     /// Its own verb rather than a flag on `UPDATE`, because the question it
@@ -441,6 +443,7 @@ impl Keyword {
             Self::Ilike => "ILIKE",
             Self::Update => "UPDATE",
             Self::Upsert => "UPSERT",
+            Self::Throw => "THROW",
             Self::Merge => "MERGE",
             Self::Delete => "DELETE",
             Self::Get => "GET",
@@ -522,6 +525,7 @@ impl Keyword {
         Self::Update,
         Self::Upsert,
         Self::Merge,
+        Self::Throw,
         Self::Delete,
         Self::Get,
         Self::Set,

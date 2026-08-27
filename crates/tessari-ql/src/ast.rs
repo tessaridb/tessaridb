@@ -421,6 +421,17 @@ pub enum StatementKind {
         /// How it changes.
         edit: Edit,
     },
+    /// `THROW 'this order is already paid'` — refuse the script.
+    ///
+    /// With `IF` in the language a script can compute a decision and, until
+    /// this, could not act on it: every refusal had to be a condition the store
+    /// itself happened to check. The statement never answers — it fails, and a
+    /// failure inside a transaction discards the work above it, which is the
+    /// behaviour a guard clause needs to be worth writing.
+    Throw {
+        /// The message. Evaluated, so it may name what went wrong.
+        value: Expr,
+    },
     /// `UPSERT users:1 = { … }` — write the record whether or not it is there.
     ///
     /// Its own statement rather than a flag on `UPDATE`, because the three verbs

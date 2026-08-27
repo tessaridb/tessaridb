@@ -61,6 +61,14 @@ impl Parser<'_> {
             Some(Keyword::Create) => self.write_statement(Keyword::Create)?,
             Some(Keyword::Update) => self.write_statement(Keyword::Update)?,
             Some(Keyword::Upsert) => self.write_statement(Keyword::Upsert)?,
+            Some(Keyword::Throw) => {
+                self.advance();
+                // The value position: the message is a value, and a bare name
+                // here would be a table exactly as it is in every other one.
+                StatementKind::Throw {
+                    value: self.expression()?,
+                }
+            }
             Some(Keyword::Set) => self.write_statement(Keyword::Set)?,
             Some(Keyword::Let) => self.let_statement()?,
             Some(Keyword::Return) => {

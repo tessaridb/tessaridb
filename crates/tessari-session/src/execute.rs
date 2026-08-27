@@ -290,6 +290,18 @@ impl Session<'_> {
             // the three edit shapes need no case of their own: `= { … }` writes
             // the value, and `SET` and `MERGE` fold into nothing and produce
             // exactly what they name.
+            // Never answers: it fails, and the failure discards the work above
+            // it in the transaction. That is what makes it a guard rather than a
+            // log line.
+            StatementKind::Throw { value } => {
+                let message = match self.evaluate(transaction, value)? {
+                    // A string is used as written, so `THROW 'already paid'`
+                    // reads back exactly as it was typed rather than quoted.
+                    Value::String(text) => text,
+                    other => other.to_string(),
+                };
+                Err(Error::Thrown { message, span })
+            }
             StatementKind::Upsert { target, edit } => {
                 let (_, address) = self.writable(transaction, target)?;
                 let existing = match transaction.get(&address)? {

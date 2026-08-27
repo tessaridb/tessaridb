@@ -200,9 +200,9 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             Some(range) => bind_range(range, binding),
             None => Ok(()),
         },
-        StatementKind::Let { value, .. } | StatementKind::Return { value } => {
-            bind_expr(value, binding)
-        }
+        StatementKind::Let { value, .. }
+        | StatementKind::Return { value }
+        | StatementKind::Throw { value } => bind_expr(value, binding),
         StatementKind::Select(select) => bind_select(select, binding),
         // The read it explains is a read, so its parameters bind the same way —
         // and an `EXPLAIN` of a parameterised read is exactly what somebody

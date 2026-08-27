@@ -208,13 +208,16 @@ impl Needs {
             // question is asked of the expression rather than of the statement
             // word, which would have answered `Read` and handed a viewer the
             // topology.
-            StatementKind::Let { value, .. } | StatementKind::Return { value }
+            StatementKind::Let { value, .. }
+            | StatementKind::Return { value }
+            | StatementKind::Throw { value }
                 if holds_node_read(value) =>
             {
                 Self::AdministerStore
             }
             StatementKind::Let { .. }
             | StatementKind::Return { .. }
+            | StatementKind::Throw { .. }
             | StatementKind::Select(_)
             | StatementKind::Get { .. }
             | StatementKind::Keys { .. }

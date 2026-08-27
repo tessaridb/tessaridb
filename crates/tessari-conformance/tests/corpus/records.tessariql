@@ -376,3 +376,22 @@ SELECT * FROM staff WHERE address = 'unknown';
 --- case: a merge needs an object to fold in
 UPDATE staff:22 MERGE 3;
 --- expect: error MergeIsNotAnObject
+
+# `THROW` — a script refusing itself. `IF` made a decision computable; this makes
+# it enforceable. A rule the store does not know — "this order is already paid" —
+# could be detected in the language and not acted on until now.
+
+--- case: a script may refuse itself
+THROW 'this order is already paid';
+--- expect: error Thrown
+
+--- case: and the refusal discards the work above it
+BEGIN;
+CREATE staff:30 = { name: 'nobody' };
+THROW 'changed my mind';
+COMMIT;
+--- expect: error Thrown
+
+--- case: so the record it wrote is not there
+SELECT * FROM staff WHERE name = 'nobody';
+--- expect: rows 0

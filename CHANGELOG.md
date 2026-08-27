@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 521 conformance cases define the language and run in the build.
+Unreleased. 524 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -63,6 +63,12 @@ Unreleased. 521 conformance cases define the language and run in the build.
   position like every other object literal, so a bare name inside it is a table
   rather than a route into the record: `MERGE $patch` is the shape this is for,
   and computing from the record remains `SET`'s job.
+- **`THROW <expr>`** refuses the script, with a message the caller sees. `IF`
+  made a decision computable and this makes it enforceable: a rule the store does
+  not itself check — "this order is already paid" — could be detected in the
+  language and not acted on. A refusal inside a transaction discards the work
+  above it, which is what makes a guard clause worth writing rather than a
+  comment.
 
 ### Changed — breaking
 

@@ -21,6 +21,19 @@ pub enum Error {
     #[error(transparent)]
     Store(#[from] tessari_storage::Error),
 
+    /// A script refused itself with `THROW`.
+    ///
+    /// Carried as its own variant rather than folded into a generic failure, so
+    /// that a caller can tell a refusal the script *chose* from one the store
+    /// raised — the two mean different things to whatever is handling them.
+    #[error("{message} (at {span})")]
+    Thrown {
+        /// What the script said.
+        message: String,
+        /// Where it said it.
+        span: tessari_ql::Span,
+    },
+
     /// A `MERGE` whose right-hand side is not an object.
     ///
     /// The verb folds one object into another, so a scalar or an array there has

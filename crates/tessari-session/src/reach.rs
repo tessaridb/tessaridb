@@ -185,7 +185,9 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // `LET $all = (SELECT * FROM salaries)` reaches `salaries` as surely as
         // the bare read does, so it is answered for here rather than left to the
         // fact that the statement's own `from` is not a table.
-        StatementKind::Let { value, .. } | StatementKind::Return { value } => in_expr(value),
+        StatementKind::Let { value, .. }
+        | StatementKind::Return { value }
+        | StatementKind::Throw { value } => in_expr(value),
     }
 }
 
