@@ -572,3 +572,12 @@ tbody tr:hover td {
   border-left-color: var(--warn);
   color: var(--text-muted);
 }
+
+/* Two panes' worth of controls in one pane, separated rather than merged: the
+   one above acts on somebody else and the one below acts on you, and that is a
+   difference worth a line. */
+hr.between {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 1.25rem 0 0.25rem;
+}

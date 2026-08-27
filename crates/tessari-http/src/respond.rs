@@ -376,6 +376,39 @@ pub(crate) fn open_session(db: &Db, presented: &Presented, tokens: &Tokens) -> A
     }
 }
 
+/// `POST /password` — change your own password, proving the current one.
+///
+/// **Basic only, never a token.** The whole point of the route is the second
+/// proof: a token can be copied off a plaintext connection or read out of a
+/// log, and a route that let one set a new password would make a stolen token a
+/// permanent takeover rather than a temporary one.
+///
+/// The body is the new password and nothing else. It is not a script, so it
+/// carries no grammar a value could be read as, and it is the same shape as
+/// every other route here that takes one thing.
+pub(crate) fn change_password(db: &Db, presented: &Presented, body: &str) -> Answer {
+    let Presented::Password(credentials) = presented else {
+        return Answer::new(
+            401,
+            r#"{"error":"present your name and current password to change it"}"#.to_owned(),
+        );
+    };
+    let mut session = db.session();
+    if let Err(error) = session.sign_in(&credentials.name, &credentials.password) {
+        return failure(&error);
+    }
+    match session.change_password(&credentials.password, body) {
+        Ok(()) => {
+            // Every token this user held stopped working the moment the record
+            // changed, so a client holding one has to sign in again — and is
+            // told so here rather than discovering it on its next request.
+            log::info!("{} changed their own password", credentials.name);
+            Answer::new(200, r#"{"changed":true,"tokens_ended":true}"#.to_owned())
+        }
+        Err(error) => failure(&error),
+    }
+}
+
 /// `DELETE /session` — forget the token this request carries.
 ///
 /// Answers the same whether the token was here or not. Whether a token this
@@ -578,7 +611,13 @@ pub(crate) fn failure(error: &Error) -> Answer {
         // A token whose account has since changed belongs here too, and for the
         // same reason it is not a 403: the holder was somebody, the store no
         // longer agrees, and what fixes it is signing in again.
-        Error::NotSignedIn { .. } | Error::SignInRefused | Error::TicketStale => 401,
+        Error::NotSignedIn { .. }
+        | Error::SignInRefused
+        | Error::TicketStale
+        // The caller is signed in and the second proof failed, which is still
+        // "identify yourself" — a client acts on it by asking for the password
+        // again, exactly as for the first.
+        | Error::CurrentPasswordRefused => 401,
         // It declined to look. Not a 401, because a client told "wrong" retries
         // with a different password and one told "too many" must retry with the
         // same one later — and 429 is the status every client library already
@@ -591,8 +630,16 @@ pub(crate) fn failure(error: &Error) -> Answer {
         // catch-all instead: a caller whose grants do not cover the table was
         // being told they had written the request wrongly, which is the one
         // thing they could not fix.
-        Error::RoleForbids { .. } | Error::OutsideTenancy { .. } | Error::NotGranted { .. } => 403,
+        // `NotTheWholeStore` belongs with these and not with `401`: the node
+        // knows exactly who is asking, and signing in again will never help.
+        Error::RoleForbids { .. }
+        | Error::OutsideTenancy { .. }
+        | Error::NotGranted { .. }
+        | Error::NotTheWholeStore { .. } => 403,
         // The caller wrote it wrong, and no amount of changing the data helps.
+        // A new password that is not one is a bad request rather than a
+        // refusal: nothing about the caller's authority is in question.
+        Error::PasswordEmpty { .. } => 400,
         Error::Script(_) => 400,
         // The caller wrote it right and the data says no. Retriable after a
         // change, which is the whole reason this is not a 400.

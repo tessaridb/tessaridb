@@ -533,6 +533,68 @@ for (const tab of ["tab-node", "tab-cluster"]) {
   });
 }
 
+// ------------------------------------------------- your own password
+
+/**
+ * Keep the button honest about whether the three fields agree.
+ *
+ * The new one twice, because this is the one field on the page whose value
+ * nobody can read back: a typo here is discovered at the next sign-in, by
+ * somebody who no longer knows what they typed.
+ */
+function shapeMine() {
+  const current = at("mine-current").value;
+  const fresh = at("mine-new").value;
+  const again = at("mine-again").value;
+  at("mine").disabled = current === "" || fresh === "" || fresh !== again;
+  say(
+    "mine-status",
+    fresh !== "" && again !== "" && fresh !== again ? "the two new ones differ" : "",
+    fresh !== "" && again !== "" && fresh !== again,
+  );
+}
+
+for (const field of ["mine-current", "mine-new", "mine-again"]) {
+  at(field).addEventListener("input", shapeMine);
+}
+
+at("mine").addEventListener("click", async () => {
+  const name = at("user").value.trim();
+  if (name === "") {
+    say("mine-status", "sign in first — this changes your own password", true);
+    return;
+  }
+  say("mine-status", "changing…");
+  try {
+    // Basic and not the token this page is holding: the route asks for the
+    // current password as a second proof, and a token is not one. The bytes are
+    // encoded the same way `credential()` does it, for the same reason.
+    const bytes = new TextEncoder().encode(name + ":" + at("mine-current").value);
+    const reply = await fetch("/password", {
+      method: "POST",
+      headers: { Authorization: "Basic " + btoa(String.fromCharCode(...bytes)) },
+      body: at("mine-new").value,
+      credentials: "omit",
+    });
+    const text = await reply.text();
+    if (reply.status >= 400) {
+      say("mine-status", reason(text), true);
+      return;
+    }
+    // Every token is dead now, this page's included, so it is signed out here
+    // rather than left to fail on the next button somebody presses.
+    for (const field of ["mine-current", "mine-new", "mine-again"]) {
+      at(field).value = "";
+    }
+    shapeMine();
+    at("sign-out").click();
+    say("identity-status", "password changed — sign in with the new one", false);
+  } catch (failure) {
+    say("mine-status", "the node did not answer: " + failure.message, true);
+  }
+});
+
 shapeTheForm();
 shapeTheChange();
 shapeTheRemoval();
+shapeMine();

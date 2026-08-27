@@ -110,6 +110,13 @@ fn header<'a>(headers: &'a [String], field: &str) -> Option<&'a str> {
 /// Extracted from the served bytes rather than from a list written here: a list
 /// is a second opinion about what the page contains, and it agrees with the page
 /// right up until somebody edits one of them.
+/// Every script the page loads.
+///
+/// Named once here rather than at each call site, because the defect this
+/// guards against is a test that reads one of them and reports on both.
+#[cfg(feature = "console")]
+const SCRIPTS: &[&str] = &["/console.js", "/sections.js"];
+
 #[cfg(feature = "console")]
 fn quoted_urls(text: &str) -> Vec<String> {
     text.split('"')
@@ -218,10 +225,25 @@ fn the_console_calls_no_route_that_did_not_already_exist() {
     // the script names are checked against the public ones by hand, because a
     // new one appearing here is exactly the violation.
     let (_node, address) = node();
-    let (_, _, code) = get(&address, "/console.js");
+    // **Both** scripts. This read `/console.js` alone until a route added in
+    // `sections.js` walked straight past it — a guard that covers half the
+    // console is a guard that reports "no private door" about one door.
+    let mut code = String::new();
+    for script in SCRIPTS {
+        let (status, _, held) = get(&address, script);
+        assert_eq!(status, 200, "{script} is not served");
+        code.push_str(&held);
+    }
 
     let public = [
-        "/script", "/session", "/watch", "/health", "/ready", "/metrics", "/backup",
+        "/script",
+        "/session",
+        "/password",
+        "/watch",
+        "/health",
+        "/ready",
+        "/metrics",
+        "/backup",
     ];
     for url in quoted_urls(&code) {
         // The console's own assets are answered above; what matters here is the

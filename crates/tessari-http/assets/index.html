@@ -327,13 +327,49 @@ USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
             <div class="row">
               <button id="remove" type="button" disabled>Remove</button>
             </div>
+            <hr class="between" />
+
+            <div class="pane-head">
+              <h2>Your own password</h2>
+              <span id="mine-status" class="status" role="status"></span>
+            </div>
             <p class="note">
-              <strong>Your own password.</strong> Changing a password is
-              administering a user, and administering a user needs an owner — so
-              the pane beside this one is for somebody else's credential. Rotate
-              your own and this page's session ends at once: a token stops
-              standing for anybody the moment their record changes, so you are
-              asked to sign in again rather than carrying the old authority.
+              The pane above is for somebody else's credential and needs an
+              owner. This one is yours, and any role may use it — a viewer whose
+              password may have leaked should not have to ask an owner to choose
+              them a new one.
+            </p>
+            <div class="row">
+              <label>
+                Current
+                <input
+                  id="mine-current"
+                  type="password"
+                  autocomplete="current-password"
+                />
+              </label>
+              <label>
+                New
+                <input id="mine-new" type="password" autocomplete="new-password" />
+              </label>
+              <label>
+                New again
+                <input
+                  id="mine-again"
+                  type="password"
+                  autocomplete="new-password"
+                />
+              </label>
+            </div>
+            <div class="row">
+              <button id="mine" type="button" disabled>Change it</button>
+            </div>
+            <p class="note">
+              The current one is asked for because being signed in is not proof
+              of a password — otherwise a token copied off this connection would
+              be a way to take the account rather than borrow it. Changing it
+              ends every session you hold, this one included, so you will be
+              asked to sign in again.
             </p>
           </div>
         </div>

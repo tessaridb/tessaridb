@@ -314,6 +314,72 @@ fn an_open_store_hands_out_no_token() {
 }
 
 #[test]
+fn a_viewer_may_change_their_own_password_over_http_and_their_tokens_end() {
+    let (_node, address) = peopled();
+    // A token first, so the revocation can be observed rather than assumed.
+    let token = opened(&address, "ada");
+    let bearer = format!("Bearer {token}");
+    let (status, _) = send(&address, "POST", "/script", ADAS_OWN, Some(&bearer));
+    assert_eq!(status, 200, "the token works before the change");
+
+    let (status, body) = send(
+        &address,
+        "POST",
+        "/password",
+        "a different horse entirely",
+        Some(&basic("ada", PASSWORD)),
+    );
+    assert_eq!(status, 200, "{body}");
+
+    // The new one works, the old one does not, and the token she held is dead —
+    // which is the property that makes rotating a leaked password worth doing.
+    let (status, body) = send(
+        &address,
+        "POST",
+        "/session",
+        "",
+        Some(&basic("ada", "a different horse entirely")),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (status, _) = send(
+        &address,
+        "POST",
+        "/session",
+        "",
+        Some(&basic("ada", PASSWORD)),
+    );
+    assert_eq!(status, 401, "the old password still opens a session");
+    let (status, _) = send(&address, "POST", "/script", ADAS_OWN, Some(&bearer));
+    assert_eq!(status, 401, "a token outlived the password it came from");
+}
+
+#[test]
+fn a_token_cannot_be_spent_on_changing_a_password() {
+    let (_node, address) = peopled();
+    let token = opened(&address, "ada");
+
+    // The route takes Basic and only Basic. A token that could set a new
+    // password would turn a copied token into a permanent takeover.
+    let (status, body) = send(
+        &address,
+        "POST",
+        "/password",
+        "a different horse entirely",
+        Some(&format!("Bearer {token}")),
+    );
+    assert_eq!(status, 401, "{body}");
+    // And nothing moved.
+    let (status, _) = send(
+        &address,
+        "POST",
+        "/session",
+        "",
+        Some(&basic("ada", PASSWORD)),
+    );
+    assert_eq!(status, 200);
+}
+
+#[test]
 fn the_scrape_says_how_many_sessions_are_held() {
     let (_node, address) = peopled();
     let (status, body) = send(&address, "GET", "/metrics", "", None);

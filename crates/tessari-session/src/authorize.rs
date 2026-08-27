@@ -196,7 +196,13 @@ impl<'a> Session<'a> {
             // Administering is a store-level act with no table to grant it on,
             // and `allows` above has already decided it. Reaching a table while
             // doing one still needs the write.
-            Needs::Write | Needs::Administer => Verb::Write,
+            // A store-wide act reaching a table still needs the write. The
+            // statements themselves are refused above by name — a granted user
+            // cannot back up or declare — so this arm is about the reach rather
+            // than about them.
+            Needs::Write | Needs::Administer | Needs::AdministerStore | Needs::WriteStore => {
+                Verb::Write
+            }
         };
         for table in crate::reach::tables_named(kind) {
             let mut transaction = store.begin()?;

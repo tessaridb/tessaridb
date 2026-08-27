@@ -100,6 +100,12 @@ fn hasher() -> Option<Argon2<'static>> {
 /// Returns [`Error::PasswordUnusable`] when the hasher refuses the input, which
 /// it does for a password long enough to be a denial of service by itself.
 pub(crate) fn hash(password: &str, span: Span) -> Result<String> {
+    // Refused here rather than at each caller, so a path added later cannot set
+    // one by forgetting to ask. An empty password is not a weak credential; it
+    // is an account anybody holding the name can be.
+    if password.is_empty() {
+        return Err(Error::PasswordEmpty { span });
+    }
     let salt = SaltString::generate(&mut OsRng);
     hasher()
         .ok_or(Error::PasswordUnusable { span })?
@@ -131,6 +137,28 @@ pub(crate) enum Needs {
     Write,
     /// Declaring users, which only an `owner` may do.
     Administer,
+    /// Administering the **store itself** — an owner holding no tenancy.
+    ///
+    /// Role and reach are two axes, and the pair below is what happens when a
+    /// statement's subject is the store: the role says what kind of act it is,
+    /// and the reach says that the caller's own tenancy has to be the whole
+    /// thing. The ordinary tenancy check cannot ask the second question here,
+    /// because it compares what a statement *names* against what the caller
+    /// holds — and these statements name nothing.
+    ///
+    /// An owner of one database satisfies [`Needs::Administer`] and must not
+    /// satisfy this, or `BACKUP` hands them every record in every namespace.
+    AdministerStore,
+    /// Writing structure at **store level** — an editor or owner holding no
+    /// tenancy.
+    ///
+    /// `DEFINE NAMESPACE` is the whole of it. A namespace is a *sibling* of
+    /// every other namespace, so declaring one is not shaping the data you own
+    /// unless the store *is* what you own — which is why the reach is required
+    /// and the role is not raised. A store-wide editor may already define
+    /// databases, tables and records anywhere; a namespace is strictly less
+    /// than that. An editor of one database may not, and that was the defect.
+    WriteStore,
 }
 
 impl Needs {
@@ -163,14 +191,14 @@ impl Needs {
             // version of them to hand a `viewer` — the same reasoning that puts
             // `INFO FOR USER` here rather than beside the other four subjects.
             StatementKind::Select(select) if matches!(select.from, tessari_ql::Source::Node) => {
-                Self::Administer
+                Self::AdministerStore
             }
             // `EXPLAIN` of the same read needs the same permission, for the
             // reason `tables_named` gives it: a plan that named a source the
             // caller may not read is a disclosure wearing a diagnostic's
             // clothes.
             StatementKind::Explain(select) if matches!(select.from, tessari_ql::Source::Node) => {
-                Self::Administer
+                Self::AdministerStore
             }
             StatementKind::Select(_)
             | StatementKind::Get { .. }
@@ -201,7 +229,7 @@ impl Needs {
             // of it", so the role is the whole check — and a grant can never add
             // to it, which `within_grants` says out loud rather than leaving to
             // the fact that a backup names no table.
-            StatementKind::Backup { .. } => Self::Administer,
+            StatementKind::Backup { .. } => Self::AdministerStore,
             // Asking about a **user** is asking what the permission system says,
             // so it is the same kind of act as writing it. The other four
             // subjects filter — they report the tables and fields the caller may
@@ -222,23 +250,28 @@ impl Needs {
             // description of the caller's own tables.
             StatementKind::Info {
                 subject: InfoSubject::Node,
-            } => Self::Administer,
+            } => Self::AdministerStore,
             // Configuring the node is administering it. Not `Write`, which is
             // where the other `DEFINE`s sit: an `editor` is expected to shape
             // the data they own, and neither what this machine is for nor which
             // other machines hold the data is that.
             StatementKind::DefineNode { .. } | StatementKind::DefineReplica { .. } => {
-                Self::Administer
+                Self::AdministerStore
             }
             // The other four are reads of the catalog, and what they report is
             // narrowed to what the caller could have found out anyway.
             StatementKind::Info { .. } => Self::Read,
+            // A namespace is a **sibling** of every other namespace, and nothing
+            // contains a sibling — so declaring one is not shaping the data you
+            // own, it is adding to the store's top-level list. Left with the
+            // `Write` block below, an `editor` of one database could do it: a
+            // caller with authority over no tenancy at all, adding one.
+            StatementKind::DefineNamespace { .. } => Self::WriteStore,
             // Everything else changes something: the records, or the structure
             // they are held in. Defining and dropping sit here rather than under
             // `Administer` because an `editor` is expected to shape the data
             // they own; only deciding what *another* person may do is reserved.
-            StatementKind::DefineNamespace { .. }
-            | StatementKind::DefineDatabase { .. }
+            StatementKind::DefineDatabase { .. }
             | StatementKind::DefineTable { .. }
             | StatementKind::DefineSpace { .. }
             | StatementKind::DefineBucket { .. }
@@ -265,7 +298,11 @@ impl Needs {
         match self {
             Self::Read => true,
             Self::Write => matches!(role, Role::Editor | Role::Owner),
-            Self::Administer => matches!(role, Role::Owner),
+            // The store-wide pair needs a reach as well, and that half is asked
+            // in `allows_needs`, where the identity is in hand — a role on its
+            // own cannot answer it.
+            Self::WriteStore => matches!(role, Role::Editor | Role::Owner),
+            Self::Administer | Self::AdministerStore => matches!(role, Role::Owner),
         }
     }
 }
@@ -292,16 +329,34 @@ impl Identity {
             // "I do not know you" — a different answer from "I know you and no",
             // and a client needs to tell them apart to know whether to sign in.
             Self::Anonymous => Err(Error::NotSignedIn { span }),
-            Self::Signed(user) if needs.granted_to(user.role) => Ok(()),
-            Self::Signed(user) => Err(Error::RoleForbids {
+            // The role first, so an owner of a part and a viewer are told
+            // different things: for the viewer the missing piece really is the
+            // role, and telling them about reach sends them to ask for the
+            // wrong grant.
+            Self::Signed(user) if !needs.granted_to(user.role) => Err(Error::RoleForbids {
                 role: user.role.name(),
                 needs: match needs {
                     Needs::Read => "read",
                     Needs::Write => "write",
-                    Needs::Administer => "administer",
+                    Needs::WriteStore => "write",
+                    Needs::Administer | Needs::AdministerStore => "administer",
                 },
                 span,
             }),
+            // The reach, for the statements that have no subject to check it
+            // against. A tenancy of one's own is exactly what disqualifies:
+            // holding `prod.shop` means the store is not yours to act on.
+            Self::Signed(user)
+                if matches!(needs, Needs::AdministerStore | Needs::WriteStore)
+                    && user.namespace.is_some() =>
+            {
+                Err(Error::NotTheWholeStore {
+                    user: user.name.clone(),
+                    span,
+                })
+            }
+            // Both questions asked and both answered.
+            Self::Signed(_) => Ok(()),
         }
     }
 

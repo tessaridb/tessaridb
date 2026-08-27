@@ -436,6 +436,42 @@ pub enum Error {
         span: Span,
     },
 
+    /// A password that is not one.
+    ///
+    /// An empty password is not a weak credential, it is the absence of one
+    /// wearing the shape of a credential — and the account it belongs to is open
+    /// to anybody who types the name. Refused where a password is *set* rather
+    /// than where it is checked, because by the time it is checked the account
+    /// already exists.
+    #[error("a password cannot be empty (at {span})")]
+    PasswordEmpty {
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A caller changing their own password who did not prove the current one.
+    ///
+    /// Distinct from [`Error::SignInRefused`] so a client can tell "your
+    /// password is wrong" from "you are not signed in": here the caller *is*
+    /// signed in, and what failed is the second proof this statement asks for.
+    #[error("the current password does not match")]
+    CurrentPasswordRefused,
+
+    /// An owner of one tenancy attempting something whose subject is the store.
+    ///
+    /// Deliberately not [`Error::RoleForbids`]. The two have different fixes —
+    /// *be made an owner* against *be made an owner of the store* — and an owner
+    /// told they are not an owner goes looking for the wrong thing.
+    #[error(
+        "{user:?} holds one database, and this statement's subject is the whole store (at {span})"
+    )]
+    NotTheWholeStore {
+        /// Who asked.
+        user: String,
+        /// Where they asked.
+        span: Span,
+    },
+
     /// A token whose user has since been changed or removed.
     ///
     /// Deliberately one refusal for four different events — a rotated password,

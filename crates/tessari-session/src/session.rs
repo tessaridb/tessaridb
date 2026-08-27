@@ -213,6 +213,93 @@ impl<'a> Session<'a> {
         Ok(())
     }
 
+    /// Change **this session's own** password, proving the current one.
+    ///
+    /// **Not a statement**, for the same reason `sign_in` is not: it carries a
+    /// credential, and a script is text a caller composes, logs, pastes into an
+    /// issue and sends through a proxy.
+    ///
+    /// # Why this exists beside `ALTER USER`
+    ///
+    /// `ALTER USER … SET PASSWORD` is *administering somebody*, so it needs an
+    /// owner who administers the tenancy they sit in. That is right for
+    /// somebody else's credential and leaves a hole for your own: a `viewer` or
+    /// an `editor` whose password may have leaked could not rotate it at all,
+    /// and had to ask an owner — who then chooses it, and knows it.
+    ///
+    /// # Why the current password is required
+    ///
+    /// Because being signed in is not proof of a password. A token can be copied
+    /// off a plaintext connection or read out of a log, and if holding one were
+    /// enough to set a new password then a stolen token would be a permanent
+    /// takeover: the thief locks the owner out, and a closed store has no door
+    /// from outside. So this asks for the password as well as the session.
+    ///
+    /// That second proof is also what makes it safe for this to be the one path
+    /// that touches a user without administering them: the subject is always the
+    /// caller, so there is no subject to bound.
+    ///
+    /// Every token this user holds stops working, because a ticket is checked by
+    /// comparing the record it was cut from and the record has changed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotSignedIn`] for an anonymous session, [`Error::CurrentPasswordRefused`]
+    /// when the current password does not match, [`Error::PasswordEmpty`] when
+    /// the new one is empty, [`Error::Unknown`] when the user has been removed
+    /// since signing in, and a substrate failure otherwise.
+    pub fn change_password(&mut self, current: &str, new: &str) -> Result<()> {
+        // A span over nothing: no script produced this, and inventing one would
+        // put a caret under a character nobody wrote.
+        let span = tessari_ql::Span::new(0, 0);
+        let Identity::Signed(who) = &self.identity else {
+            return Err(Error::NotSignedIn { span });
+        };
+        let name = who.name.clone();
+        let id = who.id;
+
+        // Re-read rather than trust the session's copy, for the reason a ticket
+        // is re-read: a session open across a `DROP USER` would otherwise write
+        // a hash back over an id the catalog no longer holds.
+        let mut transaction = self.store.begin()?;
+        let found = Catalog::new(&mut transaction)
+            .users()?
+            .into_iter()
+            .find(|user| user.id == id);
+        transaction.rollback();
+        let Some(mut user) = found else {
+            return Err(Error::Unknown {
+                entity: "user",
+                name,
+                span,
+            });
+        };
+
+        // The new password is refused **before** the current one is checked, so
+        // an unusable new password does not spend a verification. `hash` is what
+        // refuses an empty one, in one place for every path that sets a password.
+        let secret = identity::hash(new, span)?;
+
+        let Some(_verifying) = throttle::verifying() else {
+            return Err(Error::SignInThrottled);
+        };
+        if !identity::verifies(current, &user.secret) {
+            log::warn!("a password change was refused for {}", user.name);
+            return Err(Error::CurrentPasswordRefused);
+        }
+
+        user.secret = secret;
+        let mut transaction = self.store.begin()?;
+        Catalog::new(&mut transaction).update_user(&user);
+        transaction.commit()?;
+        log::info!("{} changed their own password", user.name);
+        // The session keeps running as the same user, with the record it now
+        // has: leaving the old copy here would make the next `ticket()` cut one
+        // against a record that no longer exists.
+        self.identity = Identity::Signed(Box::new(user));
+        Ok(())
+    }
+
     /// Forget who this session is.
     pub fn sign_out(&mut self) {
         self.identity = Identity::Anonymous;

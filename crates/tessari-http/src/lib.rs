@@ -357,6 +357,15 @@ fn answer(id: u64, node: &Serving<'_>, busy: &mut Busy, mut request: Request) {
         // credential a client cannot hand back is one it holds until it exits.
         (Method::Post, "/session") => respond::open_session(db, &presented, tokens),
         (Method::Delete, "/session") => respond::close_session(&presented, tokens),
+        // Basic only, deliberately: the second proof is the whole route, and a
+        // token is not proof of a password.
+        (Method::Post, "/password") => {
+            let mut body = String::new();
+            match request.as_reader().read_to_string(&mut body) {
+                Ok(_) => respond::change_password(db, &presented, body.trim_end_matches('\n')),
+                Err(_) => Answer::bad_request("the request body is not text"),
+            }
+        }
         (Method::Post, "/script") => {
             // The body's shape is decided by what the caller says it is, not by
             // sniffing a leading brace: HTTP has a field for this, and a rule
@@ -386,7 +395,10 @@ fn answer(id: u64, node: &Serving<'_>, busy: &mut Busy, mut request: Request) {
         }
         // "No such thing" and "not that way" are different answers, and a caller
         // debugging a client needs to know which one it got.
-        (_, "/script" | "/session" | "/health" | "/ready" | "/metrics" | "/watch") => Answer::new(
+        (
+            _,
+            "/script" | "/session" | "/password" | "/health" | "/ready" | "/metrics" | "/watch",
+        ) => Answer::new(
             405,
             r#"{"error":"that route takes another method"}"#.to_owned(),
         ),
