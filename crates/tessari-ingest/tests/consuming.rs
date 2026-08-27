@@ -33,8 +33,16 @@ const DECLARE: &str = "DEFINE CONSUMER orders_in \
 
 /// A store holding `prod.shop.orders`, with a consumer declared.
 fn declared(policy: &str, parallelism: &str) -> Store {
-    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(backend).unwrap();
+    declared_on(
+        &(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>),
+        policy,
+        parallelism,
+    )
+}
+
+/// The same, on a backend the caller keeps — so it can be reopened.
+fn declared_on(backend: &Arc<dyn KvBackend>, policy: &str, parallelism: &str) -> Store {
+    let store = Store::open(Arc::clone(backend)).unwrap();
     let mut session = Session::new(&store);
     session
         .run(
@@ -490,5 +498,45 @@ fn stopping_finishes_the_batch_in_flight_rather_than_abandoning_it() {
         store.running().progress("orders_in").as_ref().map(|_| ()),
         None,
         "a stopped consumer still reports itself as running"
+    );
+}
+
+#[test]
+fn a_restarted_node_starts_what_the_catalog_declares() {
+    // **The evidence S5 actually asks for is a restart, not a start.** A runner
+    // that starts consumers on the store that just declared them proves the
+    // catalog was readable in that process; it proves nothing about the node
+    // coming back up, which is the case an operator lives with.
+    //
+    // So the store is closed and reopened, and the runner is started against the
+    // reopened one, with nothing but the catalog to go on.
+    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    {
+        let first = declared_on(&backend, "quarantine", "");
+        // And nothing is running on it, so what happens below cannot be a
+        // consumer that was already going.
+        assert!(first.running().progress("orders_in").is_none());
+    }
+
+    let reopened = Store::open(Arc::clone(&backend)).unwrap();
+    assert!(
+        reopened.running().progress("orders_in").is_none(),
+        "a reopened store claims to be running a consumer it has not started"
+    );
+
+    let broker: Arc<dyn Broker> = Arc::new(Handing {
+        messages: vec![message(0, 1, r#"{"order_id": 7, "amount": 500}"#)],
+        commit_fails: false,
+        polls: Arc::new(AtomicUsize::new(0)),
+        slow: Duration::ZERO,
+        handed: Arc::new(AtomicBool::new(false)),
+    });
+    until(&reopened, broker, |store| !landed(store).is_empty());
+
+    let records = landed(&reopened);
+    assert_eq!(
+        records.len(),
+        1,
+        "a restarted node did not start the consumer its catalog declares: {records:?}"
     );
 }
