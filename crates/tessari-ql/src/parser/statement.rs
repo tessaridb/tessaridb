@@ -4,8 +4,8 @@ use super::Parser;
 use tessari_types::{FieldKind, Filter, Path, Step};
 
 use crate::ast::{
-    Assignment, ConsumerSource, Direction, Edit, Expr, ExprKind, FieldMapping, FieldPath, Hop,
-    InfoSubject, OnFailure, Password, Projection, RangeExpr, RecordTarget, Select, Source,
+    Answer, Assignment, ConsumerSource, Direction, Edit, Expr, ExprKind, FieldMapping, FieldPath,
+    Hop, InfoSubject, OnFailure, Password, Projection, RangeExpr, RecordTarget, Select, Source,
     Statement, StatementKind, TableRef, UserChange,
 };
 use crate::error::{Error, Result};
@@ -107,8 +107,10 @@ impl Parser<'_> {
                         limit: self.delete_bound()?,
                     }
                 } else {
+                    let target = self.record_target()?;
                     StatementKind::Delete {
-                        target: self.record_target()?,
+                        target,
+                        answer: self.answer(Keyword::Delete)?,
                     }
                 }
             }
@@ -922,30 +924,71 @@ impl Parser<'_> {
             while self.eat_punct(Punct::Comma) {
                 assignments.push(self.assignment()?);
             }
-            return Ok(Self::changed(verb, target, Edit::Fields(assignments)));
+            let edit = Edit::Fields(assignments);
+            return Ok(Self::changed(verb, target, edit, self.answer(verb)?));
         }
         if edits && self.eat_keyword(Keyword::Merge) {
             // The **value** position, unlike `SET`'s right-hand sides: this is
             // one whole object standing for the change, not a route computed
             // from the record it is changing.
-            let value = self.expression()?;
-            return Ok(Self::changed(verb, target, Edit::Merge(value)));
+            let edit = Edit::Merge(self.expression()?);
+            return Ok(Self::changed(verb, target, edit, self.answer(verb)?));
         }
         self.expect_punct(Punct::Equals, "`=` and the value to write")?;
         let value = self.expression()?;
         Ok(match verb {
-            Keyword::Update | Keyword::Upsert => Self::changed(verb, target, Edit::Whole(value)),
+            Keyword::Update | Keyword::Upsert => {
+                Self::changed(verb, target, Edit::Whole(value), self.answer(verb)?)
+            }
             Keyword::Set => StatementKind::Set { target, value },
-            _ => StatementKind::Create { target, value },
+            _ => StatementKind::Create {
+                target,
+                value,
+                answer: self.answer(verb)?,
+            },
         })
     }
 
-    /// The statement a change verb makes of a target and an edit.
-    fn changed(verb: Keyword, target: RecordTarget, edit: Edit) -> StatementKind {
+    /// `RETURN BEFORE` or `RETURN AFTER`, when the write carries one.
+    ///
+    /// Refused where it could only ever answer `NONE`: there is no record before
+    /// a `CREATE` and none after a `DELETE`. Answering `NONE` to a question the
+    /// author plainly meant is the silent-wrong-answer shape this language
+    /// spends its rules removing, so the refusal names the two words that work.
+    fn answer(&mut self, verb: Keyword) -> Result<Answer> {
+        if !self.eat_keyword(Keyword::Return) {
+            return Ok(Answer::Nothing);
+        }
+        let before = self.eat_word("before");
+        if !before && !self.eat_word("after") {
+            return Err(self.error_here("`BEFORE` or `AFTER` after `RETURN`"));
+        }
+        match (verb, before) {
+            (Keyword::Create, true) => Err(self.error_here(
+                "`AFTER` — a create has no record before it, so `BEFORE` could only answer NONE",
+            )),
+            (Keyword::Delete, false) => Err(self.error_here(
+                "`BEFORE` — a delete has no record after it, so `AFTER` could only answer NONE",
+            )),
+            (_, true) => Ok(Answer::Before),
+            (_, false) => Ok(Answer::After),
+        }
+    }
+
+    /// The statement a change verb makes of a target, an edit and an answer.
+    fn changed(verb: Keyword, target: RecordTarget, edit: Edit, answer: Answer) -> StatementKind {
         if verb == Keyword::Upsert {
-            StatementKind::Upsert { target, edit }
+            StatementKind::Upsert {
+                target,
+                edit,
+                answer,
+            }
         } else {
-            StatementKind::Update { target, edit }
+            StatementKind::Update {
+                target,
+                edit,
+                answer,
+            }
         }
     }
 

@@ -25,8 +25,8 @@ pub mod test_support;
 mod token;
 
 pub use ast::{
-    Aggregate, ArithmeticOp, Assignment, ConsumerSource, DeleteBound, Direction, Edit, Expr,
-    ExprKind, Field, FieldMapping, FieldPath, Hop, Identity, InfoSubject, Name, OnFailure,
+    Aggregate, Answer, ArithmeticOp, Assignment, ConsumerSource, DeleteBound, Direction, Edit,
+    Expr, ExprKind, Field, FieldMapping, FieldPath, Hop, Identity, InfoSubject, Name, OnFailure,
     Ordering, Password, Projected, Projection, RangeExpr, RecordTarget, Script, Select, Source,
     Statement, StatementKind, TableRef, UserChange, Written,
 };

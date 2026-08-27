@@ -920,6 +920,36 @@ into the record — `visits + 1` is the record's `visits`, the same reading a
 schema, the defaults, the indexes, the change feed and the grants all apply to it
 without knowing which shape produced it.
 
+### A write answering with what it wrote
+
+```
+CREATE users:2 = { name: 'grace' } RETURN AFTER;
+UPDATE users:1 SET visits = visits + 1 RETURN AFTER;
+UPDATE users:1 SET plan = 'pro' RETURN BEFORE;
+DELETE users:1 RETURN BEFORE;
+```
+
+Every write used to be followed by a read — a second statement, and over the wire
+a second round trip, to learn a value the store had in hand a moment earlier.
+`RETURN AFTER` answers with the record as it now stands; `RETURN BEFORE` answers
+with the record as it stood, which is the only chance to see what a write
+replaced.
+
+**The clause is absent by default**, and a write without it still answers `done`.
+A store that shipped the changed record back on every write would make the common
+case pay for the rare one.
+
+Two pairings are **refused** rather than answered: `CREATE … RETURN BEFORE` and
+`DELETE … RETURN AFTER`. Each could only ever answer `NONE`, and answering
+`NONE` to a question somebody plainly meant is exactly the kind of quiet wrong
+answer this language spends its rules removing. `UPSERT … RETURN BEFORE` does
+answer `NONE` when the record was not there — that one is the *true* answer, and
+it is what distinguishes an upsert that created from one that replaced.
+
+`RETURN DIFF` is not built. It is refused rather than accepted and ignored,
+because what a diff of an array should look like is a design question rather than
+a missing line.
+
 ### Refusing on purpose
 
 ```

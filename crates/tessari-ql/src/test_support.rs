@@ -194,13 +194,13 @@ fn erase_statement(statement: &mut Statement) {
                 erase_expr(value);
             }
         }
-        StatementKind::Create { target, value }
+        StatementKind::Create { target, value, .. }
         | StatementKind::Set { target, value }
         | StatementKind::Put { target, value, .. } => {
             erase_record(target);
             erase_expr(value);
         }
-        StatementKind::Update { target, edit } | StatementKind::Upsert { target, edit } => {
+        StatementKind::Update { target, edit, .. } | StatementKind::Upsert { target, edit, .. } => {
             erase_record(target);
             match edit {
                 Edit::Whole(value) | Edit::Merge(value) => erase_expr(value),
@@ -212,7 +212,7 @@ fn erase_statement(statement: &mut Statement) {
                 }
             }
         }
-        StatementKind::Delete { target }
+        StatementKind::Delete { target, .. }
         | StatementKind::Get { target }
         | StatementKind::Del { target }
         | StatementKind::Read { target, .. } => erase_record(target),

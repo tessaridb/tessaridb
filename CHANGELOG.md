@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 524 conformance cases define the language and run in the build.
+Unreleased. 530 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -69,6 +69,17 @@ Unreleased. 524 conformance cases define the language and run in the build.
   language and not acted on. A refusal inside a transaction discards the work
   above it, which is what makes a guard clause worth writing rather than a
   comment.
+- **`RETURN BEFORE` / `RETURN AFTER`** on `CREATE`, `UPDATE`, `UPSERT` and
+  `DELETE` — the write answers with the record it produced or the one it
+  replaced. What this removes is the second statement: reading back what was
+  just written cost a round trip to learn a value the store had in hand. Absent
+  by default, so a write that does not ask still answers `done`.
+
+  The two pairings that could only ever answer `NONE` are **refused** rather than
+  answered: there is no record before a `CREATE` and none after a `DELETE`.
+  `RETURN DIFF` is not built and is refused too, rather than accepted and
+  ignored — what a diff of an array should look like is a design question, not a
+  missing line.
 
 ### Changed — breaking
 

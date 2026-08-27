@@ -117,7 +117,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // A written value may hold a read — `CREATE audit:1 = { copy: (SELECT
         // * FROM salaries) }` reaches `salaries` — so the value is walked
         // beside the target rather than trusted to be inert.
-        StatementKind::Create { target, value } | StatementKind::Set { target, value } => {
+        StatementKind::Create { target, value, .. } | StatementKind::Set { target, value } => {
             let mut found = vec![&target.table];
             found.extend(in_expr(value));
             found
@@ -134,7 +134,8 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // Every edit shape holds expressions, and an expression may hold a
         // read — the whole of ADR-0030. `MERGE`'s object is one expression and
         // is walked exactly as a whole-value write is.
-        StatementKind::Update { target, edit } | StatementKind::Upsert { target, edit } => {
+        StatementKind::Update { target, edit, .. }
+        | StatementKind::Upsert { target, edit, .. } => {
             let mut found = vec![&target.table];
             match edit {
                 Edit::Whole(value) | Edit::Merge(value) => found.extend(in_expr(value)),
@@ -148,7 +149,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         }
 
         StatementKind::Get { target }
-        | StatementKind::Delete { target }
+        | StatementKind::Delete { target, .. }
         | StatementKind::Del { target }
         // A file is a record in the bucket, so the bucket is the table a grant
         // is asked about. The chunks live in a table nothing can name, and are

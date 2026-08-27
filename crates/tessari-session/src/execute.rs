@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use tessari_encoding::{Roles, decode_payload, encode_payload};
 use tessari_ql::{
-    Assignment, ConsumerSource, Edit, FieldMapping, FieldPath, Name, RecordTarget, Span,
+    Answer, Assignment, ConsumerSource, Edit, FieldMapping, FieldPath, Name, RecordTarget, Span,
     StatementKind, TableRef,
 };
 use tessari_storage::{
@@ -250,7 +250,11 @@ impl Session<'_> {
                 Catalog::new(transaction).rebuild_index(&index);
                 Ok(Outcome::Done)
             }
-            StatementKind::Create { target, value } => {
+            StatementKind::Create {
+                target,
+                value,
+                answer,
+            } => {
                 let (_, address) = self.writable(transaction, target)?;
                 // A create over a record that is already there is refused. The
                 // alternative is silent replacement, which loses a record with
@@ -264,10 +268,14 @@ impl Session<'_> {
                 }
                 let payload = self.evaluate(transaction, value)?;
                 let payload = self.with_defaults(transaction, address.table, payload)?;
-                self.put_record(transaction, address, payload, span)?;
-                Ok(Outcome::Done)
+                self.put_record(transaction, address, payload.clone(), span)?;
+                Ok(answered(*answer, Value::None, payload))
             }
-            StatementKind::Update { target, edit } => {
+            StatementKind::Update {
+                target,
+                edit,
+                answer,
+            } => {
                 let (_, address) = self.writable(transaction, target)?;
                 let Some(existing) = transaction.get(&address)? else {
                     return Err(Error::NoSuchRecord {
@@ -275,15 +283,15 @@ impl Session<'_> {
                         span: target.span,
                     });
                 };
-                let payload =
-                    self.applied(transaction, edit, decode_payload(&existing)?, target.span)?;
+                let before = decode_payload(&existing)?;
+                let payload = self.applied(transaction, edit, before.clone(), target.span)?;
                 // One rule rather than two: the result of either shape is a
                 // record being written, so `REQUIRED` + `DEFAULT` keeps meaning
                 // "this field always holds a value" even when a caller sets one
                 // to `none`.
                 let payload = self.with_defaults(transaction, address.table, payload)?;
-                self.put_record(transaction, address, payload, span)?;
-                Ok(Outcome::Done)
+                self.put_record(transaction, address, payload.clone(), span)?;
+                Ok(answered(*answer, before, payload))
             }
             // Neither `CREATE`'s "it must be absent" nor `UPDATE`'s "it must be
             // present". A record that is not there starts as an empty object, so
@@ -302,16 +310,29 @@ impl Session<'_> {
                 };
                 Err(Error::Thrown { message, span })
             }
-            StatementKind::Upsert { target, edit } => {
+            StatementKind::Upsert {
+                target,
+                edit,
+                answer,
+            } => {
                 let (_, address) = self.writable(transaction, target)?;
-                let existing = match transaction.get(&address)? {
+                let held = transaction.get(&address)?;
+                // `BEFORE` over a record that was not there answers `NONE`. That
+                // is the true answer to the question the caller asked, and it is
+                // exactly what distinguishes an upsert that created from one
+                // that replaced — which is the reason to ask.
+                let before = match &held {
+                    Some(held) => decode_payload(held)?,
+                    None => Value::None,
+                };
+                let existing = match held {
                     Some(held) => decode_payload(&held)?,
                     None => Value::Object(std::collections::BTreeMap::new()),
                 };
                 let payload = self.applied(transaction, edit, existing, target.span)?;
                 let payload = self.with_defaults(transaction, address.table, payload)?;
-                self.put_record(transaction, address, payload, span)?;
-                Ok(Outcome::Done)
+                self.put_record(transaction, address, payload.clone(), span)?;
+                Ok(answered(*answer, before, payload))
             }
             // A key-value write replaces whatever was there, which is why it is
             // a different verb from `CREATE` rather than the same one.
@@ -321,10 +342,20 @@ impl Session<'_> {
                 self.put_record(transaction, address, payload, span)?;
                 Ok(Outcome::Done)
             }
-            StatementKind::Delete { target } | StatementKind::Del { target } => {
+            StatementKind::Delete { target, answer } => {
                 // A file's bytes go with its metadata, in this commit. A bucket
                 // that kept chunks nothing describes would leak space nothing
                 // could ever find its way back to.
+                self.clear_file(transaction, target)?;
+                let (_, address) = self.address(transaction, target)?;
+                let before = match transaction.get(&address)? {
+                    Some(held) => decode_payload(&held)?,
+                    None => Value::None,
+                };
+                transaction.delete(address);
+                Ok(answered(*answer, before, Value::None))
+            }
+            StatementKind::Del { target } => {
                 self.clear_file(transaction, target)?;
                 let (_, address) = self.address(transaction, target)?;
                 transaction.delete(address);
@@ -1054,7 +1085,20 @@ fn named_roles(named: &[Name]) -> Result<Roles> {
     })
 }
 
-/// Put a value into one field of an object, or take it out.
+/// The outcome a write reports, given what it was asked to answer with.
+///
+/// One place rather than four, so that the four writes cannot come to disagree
+/// about what `AFTER` means. `Nothing` is the default and stays `Done`: a write
+/// that answered with a record by default would make every caller pay to ship
+/// back a value most of them already have.
+fn answered(answer: Answer, before: Value, after: Value) -> Outcome {
+    match answer {
+        Answer::Nothing => Outcome::Done,
+        Answer::Before => Outcome::Value(before),
+        Answer::After => Outcome::Value(after),
+    }
+}
+
 /// Two records folded into one: `incoming` over `existing`.
 ///
 /// Deep where **both** sides hold an object and total everywhere else. That rule
@@ -1092,6 +1136,7 @@ fn merged(existing: Value, incoming: Value) -> Value {
     }
 }
 
+/// Put a value into one field of an object, or take it out.
 fn set_field(
     holder: &mut Value,
     name: &str,

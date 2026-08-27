@@ -160,7 +160,7 @@ impl Statement {
 /// this stays complete as the language grows.
 fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()> {
     match kind {
-        StatementKind::Create { target, value }
+        StatementKind::Create { target, value, .. }
         | StatementKind::Set { target, value }
         | StatementKind::Put { target, value, .. } => {
             bind_target(target, binding)?;
@@ -169,7 +169,8 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // Both shapes of an update hold expressions, and the field shape holds
         // one per assignment: a parameter is legal in each of them, the same as
         // it is anywhere else a value may stand.
-        StatementKind::Update { target, edit } | StatementKind::Upsert { target, edit } => {
+        StatementKind::Update { target, edit, .. }
+        | StatementKind::Upsert { target, edit, .. } => {
             bind_target(target, binding)?;
             match edit {
                 Edit::Whole(value) | Edit::Merge(value) => bind_expr(value, binding),
@@ -182,7 +183,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             }
         }
         StatementKind::Get { target }
-        | StatementKind::Delete { target }
+        | StatementKind::Delete { target, .. }
         | StatementKind::Del { target }
         | StatementKind::Read { target, .. } => bind_target(target, binding),
         StatementKind::Relate {

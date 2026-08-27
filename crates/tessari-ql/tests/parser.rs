@@ -214,7 +214,7 @@ fn a_record_id_is_one_of_its_four_kinds_and_a_float_is_not_one() {
         ("users:'ada'", RecordId::Text("ada".to_owned())),
         ("users:0x0a1b", RecordId::Bytes(vec![0x0a, 0x1b])),
     ] {
-        let StatementKind::Delete { target } = one(&format!("DELETE {source};")) else {
+        let StatementKind::Delete { target, .. } = one(&format!("DELETE {source};")) else {
             panic!("{source} did not parse as a delete");
         };
         assert_eq!(target.id, Identity::Fixed(expected), "{source}");

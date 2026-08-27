@@ -411,6 +411,11 @@ pub enum StatementKind {
         target: RecordTarget,
         /// Its whole content.
         value: Expr,
+        /// What the statement answers with. `BEFORE` is refused: there was no
+        /// record before, and a statement that answered `NONE` to a question
+        /// somebody meant would be worse than one that says the question does
+        /// not apply.
+        answer: Answer,
     },
     /// `SELECT * FROM …`
     Select(Select),
@@ -420,6 +425,8 @@ pub enum StatementKind {
         target: RecordTarget,
         /// How it changes.
         edit: Edit,
+        /// What the statement answers with.
+        answer: Answer,
     },
     /// `THROW 'this order is already paid'` — refuse the script.
     ///
@@ -446,11 +453,18 @@ pub enum StatementKind {
         /// object, so `SET` and `MERGE` mean the same thing over an absence
         /// that they mean over a record with none of the named routes.
         edit: Edit,
+        /// What the statement answers with. `BEFORE` over a record that was not
+        /// there answers `NONE`, which is the true answer rather than a silent
+        /// one — the caller asked what was there, and nothing was.
+        answer: Answer,
     },
     /// `DELETE users:1`
     Delete {
         /// The record to remove.
         target: RecordTarget,
+        /// What the statement answers with. `AFTER` is refused: there is no
+        /// record after a delete, so the clause could only ever answer `NONE`.
+        answer: Answer,
     },
     /// `DELETE FROM readings WHERE at < datetime '…' LIMIT 100` — the records a
     /// condition holds for, up to a stated bound.
@@ -699,6 +713,24 @@ impl OnFailure {
             Self::Quarantine => "quarantine",
         }
     }
+}
+
+/// What a write answers with.
+///
+/// Absent by default, because a write's answer is its effect and a store that
+/// shipped every changed record back by default would make the common case pay
+/// for the rare one. What this removes is the *second statement*: reading back
+/// what was just written cost a round trip to learn a value the store had in
+/// hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Answer {
+    /// No clause: the write reports that it happened and nothing more.
+    #[default]
+    Nothing,
+    /// `RETURN BEFORE` — the record as it stood before the write.
+    Before,
+    /// `RETURN AFTER` — the record as it stands after it.
+    After,
 }
 
 /// How much a conditional delete may remove.

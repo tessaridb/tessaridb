@@ -395,3 +395,32 @@ COMMIT;
 --- case: so the record it wrote is not there
 SELECT * FROM staff WHERE name = 'nobody';
 --- expect: rows 0
+
+# `RETURN BEFORE` / `RETURN AFTER` — a write answering with what it wrote. Opt-in,
+# because a store that shipped the record back on every write would make the
+# common case pay for the rare one. The two pairings that could only ever answer
+# NONE are refused rather than answered.
+
+--- case: a write answers with the record it produced
+CREATE staff:40 = { name: 'katherine', visits: 1 } RETURN AFTER;
+--- expect: ok
+
+--- case: and with the record it overwrote
+UPDATE staff:40 SET visits = 2 RETURN BEFORE;
+--- expect: ok
+
+--- case: a delete answers with what it removed
+DELETE staff:40 RETURN BEFORE;
+--- expect: ok
+
+--- case: there is no record before a create
+CREATE staff:41 = { name: 'nobody' } RETURN BEFORE;
+--- expect: error UnexpectedToken
+
+--- case: and none after a delete
+DELETE staff:9 RETURN AFTER;
+--- expect: error UnexpectedToken
+
+--- case: the write a refused clause was attached to never ran
+SELECT * FROM staff WHERE name = 'nobody';
+--- expect: rows 0
