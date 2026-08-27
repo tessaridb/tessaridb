@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_constants::ORDERED_FILTER_REACH;
 use tessari_ql::{
-    BinaryOp, DeleteBound, Direction, Expr, ExprKind, Function, Hop, Projected, Projection,
-    RecordTarget, Select, Source, Span, TableRef,
+    BinaryOp, DeleteBound, Direction, Expr, ExprKind, Function, Hop, JoinSide, Projected,
+    Projection, RecordTarget, Select, Source, Span, TableRef,
 };
 use tessari_storage::{BUILD_VERSION, Catalog, RecordAddress, Store, Transaction};
 use tessari_types::{
@@ -675,6 +675,34 @@ impl Session<'_> {
                 )?;
                 Ok((Prepared::Held(found, path), searched))
             }
+            // The inner read answers first and the outer statement reads what it
+            // answered. The path reported is the inner read's own, because that
+            // is how the records were actually reached — the outer statement
+            // added no access of its own.
+            Source::Subquery { read, condition } => {
+                let (found, path) = self.read(transaction, read)?;
+                let Some(condition) = condition else {
+                    return Ok((Prepared::Held(found, path), Searched::default()));
+                };
+                // Narrowed here rather than by an access path: the records are
+                // already in hand, so there is nothing left for an index to
+                // choose. That is what lets this condition ask about a value the
+                // inner read *produced* — a projected name, a fold's result —
+                // which no condition inside it could have named.
+                let searched = Searched::default();
+                let mut kept = Vec::new();
+                for (id, record) in found {
+                    let held = self.evaluate_in(
+                        transaction,
+                        condition,
+                        Scope::searching(&record, &searched),
+                    )?;
+                    if boolean(&held, condition.span)? {
+                        kept.push((id, record));
+                    }
+                }
+                Ok((Prepared::Held(kept, path), searched))
+            }
         }
     }
 
@@ -868,44 +896,65 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
-        left: &tessari_ql::TableRef,
-        right: &tessari_ql::TableRef,
+        left: &JoinSide,
+        right: &JoinSide,
         left_key: &tessari_ql::FieldPath,
         right_key: &tessari_ql::FieldPath,
         condition: Option<&Expr>,
     ) -> Result<Joined> {
-        let (left_context, left_id) = self.resolve_table(transaction, left)?;
-        let (right_context, right_id) = self.resolve_table(transaction, right)?;
-        let left_name = left.name.text.clone();
-        let right_name = right.name.text.clone();
+        let left_name = left.name().to_owned();
+        let right_name = right.name().to_owned();
 
-        // Each side is redacted by its own table's grant: a join is two reads
-        // and neither borrows the other's permission.
-        let left_visible = self.visible_in(transaction, left_id)?;
-        let right_visible = self.visible_in(transaction, right_id)?;
-
-        let served = ordered_index_on(transaction, right_id, right_key)?;
-        let mut built = BTreeMap::new();
-        if served.is_none() {
-            let found = transaction.scan_table(
-                right_context.namespace,
-                right_context.database,
-                right_id,
-            )?;
-            for (id, record) in self.records_of(found, &right_visible)? {
-                let Some(key) = right_key.path.resolve(&record).cloned() else {
-                    continue;
-                };
-                built.entry(key).or_insert_with(Vec::new).push((id, record));
+        // The right side takes one of two shapes. A table carrying an ordered
+        // index on the key is **probed**, one left record at a time; anything
+        // else is read once into an ordered map. A materialised read is always
+        // the second: it has no index of its own, and building one for a single
+        // statement would cost more than the map it replaces.
+        //
+        // Each side is redacted by its own grant — a join is two reads and
+        // neither borrows the other's permission. A side that is a read applied
+        // its own on the way through.
+        let mut probed = None;
+        let mut built: BTreeMap<Value, Vec<(RecordId, Value)>> = BTreeMap::new();
+        match right {
+            JoinSide::Table { table, .. } => {
+                let (context, id) = self.resolve_table(transaction, table)?;
+                let visible = self.visible_in(transaction, id)?;
+                match ordered_index_on(transaction, id, right_key)? {
+                    Some(index) => probed = Some((index, visible, context, id)),
+                    None => {
+                        let found =
+                            transaction.scan_table(context.namespace, context.database, id)?;
+                        collect_by_key(&mut built, self.records_of(found, &visible)?, right_key);
+                    }
+                }
+            }
+            JoinSide::Read { read, .. } => {
+                let (found, _) = self.read(transaction, read)?;
+                collect_by_key(&mut built, found, right_key);
             }
         }
 
-        let searched = self.searched_for(transaction, left_id, &shown(select))?;
+        // A read has no table to resolve an analyzer against, so a scored
+        // expression over a joined subquery falls back to the default context
+        // rather than borrowing the other side's.
+        let (driving, searched) = match left {
+            JoinSide::Table { table, .. } => {
+                let (context, id) = self.resolve_table(transaction, table)?;
+                let visible = self.visible_in(transaction, id)?;
+                let searched = self.searched_for(transaction, id, &shown(select))?;
+                let found = transaction.scan_table(context.namespace, context.database, id)?;
+                (self.records_of(found, &visible)?, searched)
+            }
+            JoinSide::Read { read, .. } => {
+                let (found, _) = self.read(transaction, read)?;
+                (found, Searched::default())
+            }
+        };
+
         let mut rows = Vec::new();
         let mut left_kinds = BTreeSet::new();
-        let driving =
-            transaction.scan_table(left_context.namespace, left_context.database, left_id)?;
-        for (id, record) in self.records_of(driving, &left_visible)? {
+        for (id, record) in driving {
             // A left record with nothing at the key matches nothing: `NONE` is a
             // value and the right side would have to carry it to match, which is
             // what an inner join means.
@@ -913,11 +962,11 @@ impl Session<'_> {
                 continue;
             };
             left_kinds.insert(key.type_name());
-            let matches = match &served {
-                Some(index) => {
+            let matches = match &probed {
+                Some((index, visible, _, _)) => {
                     let offered =
                         transaction.records_by_index(index, core::slice::from_ref(&key))?;
-                    self.records_of(offered, &right_visible)?
+                    self.records_of(offered, visible)?
                         .into_iter()
                         .filter(|(_, held)| right_key.path.resolve(held) == Some(&key))
                         .collect()
@@ -950,17 +999,13 @@ impl Session<'_> {
         // one kind, so the sets overlap and this cannot fire; a join that
         // produced nothing is the one whose emptiness needs explaining.
         if rows.is_empty() {
-            let right_kinds = match &served {
+            let right_kinds = match &probed {
                 // The index path never read the right side, so learning what it
                 // holds costs a scan. It is paid once, after an empty answer,
                 // and never by a join that worked.
-                Some(_) => {
-                    let found = transaction.scan_table(
-                        right_context.namespace,
-                        right_context.database,
-                        right_id,
-                    )?;
-                    self.records_of(found, &right_visible)?
+                Some((_, visible, context, id)) => {
+                    let found = transaction.scan_table(context.namespace, context.database, *id)?;
+                    self.records_of(found, visible)?
                         .iter()
                         .filter_map(|(_, record)| right_key.path.resolve(record))
                         .map(Value::type_name)
@@ -984,7 +1029,7 @@ impl Session<'_> {
                 });
             }
         }
-        let path = if served.is_some() {
+        let path = if probed.is_some() {
             AccessPath::Index
         } else {
             AccessPath::Scan
@@ -1644,6 +1689,24 @@ pub(crate) fn within(id: &RecordId, start: &RecordId, end: &RecordId, inclusive:
 /// values and a vector index answers a distance, so neither can answer "which
 /// records hold exactly this"; a composite index answers a question about its
 /// first field and this is not that question unless it is the only field.
+/// File records into an ordered map under the value at one route.
+///
+/// A record with nothing at the route contributes nothing: `NONE` is a value
+/// and the other side would have to carry it to match, which is what an inner
+/// join means.
+fn collect_by_key(
+    into: &mut BTreeMap<Value, Vec<(RecordId, Value)>>,
+    records: Vec<(RecordId, Value)>,
+    key: &tessari_ql::FieldPath,
+) {
+    for (id, record) in records {
+        let Some(found) = key.path.resolve(&record).cloned() else {
+            continue;
+        };
+        into.entry(found).or_default().push((id, record));
+    }
+}
+
 /// Kind names as a reader would say them: `record`, or `record and string`.
 ///
 /// A join key usually holds one kind, so the common message reads as a bare

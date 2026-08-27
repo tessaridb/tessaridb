@@ -13,7 +13,8 @@
 //! it to everybody, and nobody would find out which until it mattered.
 
 use tessari_ql::{
-    Edit, Expr, ExprKind, InfoSubject, Projection, Select, Source, StatementKind, TableRef,
+    Edit, Expr, ExprKind, InfoSubject, JoinSide, Projection, Select, Source, StatementKind,
+    TableRef,
 };
 
 /// Every table this statement names, in the order it names them.
@@ -318,17 +319,40 @@ fn in_source(from: &Source) -> Vec<&TableRef> {
             }
             found
         }
+        // A side may be a read rather than a table, and a read reaches
+        // everything `in_select` reaches — its own source, its projection, its
+        // grouping and its ordering. A join side that only contributed a table
+        // name would be a way around the grant for every table its inner read
+        // could name.
         Source::Join {
             left,
             right,
             condition,
             ..
         } => {
-            let mut found = vec![left, right];
+            let mut found = in_join_side(left);
+            found.extend(in_join_side(right));
             if let Some(condition) = condition {
                 found.extend(in_expr(condition));
             }
             found
         }
+        // The condition is an expression, and an expression may hold a read —
+        // the same reason `Source::Where` walks its own.
+        Source::Subquery { read, condition } => {
+            let mut found = in_select(read);
+            if let Some(condition) = condition {
+                found.extend(in_expr(condition));
+            }
+            found
+        }
+    }
+}
+
+/// The tables one side of a join names.
+fn in_join_side(side: &JoinSide) -> Vec<&TableRef> {
+    match side {
+        JoinSide::Table { table, .. } => vec![table],
+        JoinSide::Read { read, .. } => in_select(read),
     }
 }

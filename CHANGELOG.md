@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 533 conformance cases define the language and run in the build.
+Unreleased. 543 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -49,6 +49,26 @@ Unreleased. 533 conformance cases define the language and run in the build.
   is a value to use — and everywhere else they stay different questions. It
   binds tighter than a comparison and looser than arithmetic, and the right side
   is evaluated only when it is needed.
+
+- **`AS` names a join side**, and the row files it under that name:
+  `FROM users AS u JOIN orders AS o ON u.name = o.who` answers `{ u: …, o: … }`.
+  Once a name is separable from a table, **a table can be joined to itself** —
+  `users AS person JOIN users AS boss` — which is what aliases were needed for.
+  The one-sided-join refusal moved from the table to the name, so
+  `users JOIN users` and `users AS x JOIN orders AS x` are both still refused,
+  and a name given where there is no join is refused rather than ignored.
+- **A `FROM` may name a read**: `SELECT * FROM (SELECT … LIMIT n)`, and
+  `JOIN (SELECT … LIMIT n) AS o` on either side. The answer is the inner records
+  themselves, so the outer statement reads them as it would read a table. The
+  inner read **must state a `LIMIT`** — a materialised source holds every record
+  it answers with, so one that could grow without limit is refused rather than
+  truncated at a number nobody wrote. A joined read must also name itself with
+  `AS`, having no name of its own.
+- **A `WHERE` after a materialised read** asks about what that read *produced*:
+  `FROM (SELECT who, count(*) AS n … GROUP BY who LIMIT n) WHERE n > 1`. `WHERE`
+  belongs to the table position, so a grouped read and a traversal had nowhere to
+  put one; wrapping either gives it one, and the condition can name a value no
+  condition inside the read could have.
 
 - **`UPSERT t:1 = { … }`**, and `SET` and `MERGE` after it, write the record
   whether or not it is already there. A third verb rather than a flag, because
@@ -89,8 +109,8 @@ Unreleased. 533 conformance cases define the language and run in the build.
   all, so a predicate wrong by one character emptied the table with nothing
   between the parser and the store.
 
-  This is the only `LIMIT` in the language that is not optional. The asymmetry is
-  the point: a read that omits a bound answers with more rows than the caller
+  One of the two `LIMIT`s in the language that are not optional; the other bounds
+  a materialised source. The asymmetry against an ordinary read is the point: a read that omits a bound answers with more rows than the caller
   expected, and a delete that omits one destroys data. `LIMIT ALL` costs one word
   and is how a retention policy says the whole matched set is what it meant.
 

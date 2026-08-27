@@ -378,7 +378,10 @@ pub enum StatementKind {
         /// The edge's target.
         to: RecordTarget,
         /// The edge's own properties, when the statement gives any.
-        value: Option<Expr>,
+        ///
+        /// Boxed because this variant is the widest in the enum and every
+        /// statement anywhere is sized by it.
+        value: Option<Box<Expr>>,
     },
     /// `DROP TABLE users` — removes the definition, not the records.
     DropTable {
@@ -992,9 +995,13 @@ pub enum Source {
     /// afterwards would change what already-written statements answer.
     Join {
         /// The side that is read and drives.
-        left: TableRef,
+        ///
+        /// Boxed, with the other side, because a side may itself hold a whole
+        /// read: inline they make this variant three times the size of every
+        /// other one, and every [`Source`] anywhere pays for it.
+        left: Box<JoinSide>,
         /// The side that is probed.
-        right: TableRef,
+        right: Box<JoinSide>,
         /// The route into a left record whose value is matched.
         left_key: FieldPath,
         /// The route into a right record it is matched against.
@@ -1005,6 +1012,83 @@ pub enum Source {
         /// like everything else does.
         condition: Option<Box<Expr>>,
     },
+    /// A read whose answer is what the outer statement reads.
+    ///
+    /// The answer is the inner records themselves — not wrapped, not renamed —
+    /// so an outer `WHERE`, `ORDER BY` and projection read them exactly as they
+    /// would read the table. That is what makes one engine's answer the next
+    /// question's source without a shape to learn.
+    ///
+    /// # It states its own ceiling
+    ///
+    /// The inner read is **materialised**: unlike a table, there is no index to
+    /// walk and no bound to push down, so every record it answers with is held
+    /// at once. A source that could grow without limit is therefore refused
+    /// without a `LIMIT`, rather than truncated at a number nobody wrote — a
+    /// silently truncated source answers a different question from the one that
+    /// was asked, and looks exactly like a complete one.
+    ///
+    /// # It is also the only place some reads can be filtered
+    ///
+    /// `WHERE` belongs to the table position — `FROM t WHERE c` — so a
+    /// traversal and a grouped read have nowhere to put one. Wrapping either in
+    /// a materialised read gives it one, which is why the condition lives here
+    /// rather than only inside. It is also where a condition over a *projected*
+    /// name goes: `SELECT city, count(*) AS n … GROUP BY city` produces `n`, and
+    /// nothing inside that read can ask about it.
+    Subquery {
+        /// The read whose answer this source is.
+        read: Box<Select>,
+        /// What each of its records must satisfy, when a `WHERE` was written.
+        condition: Option<Box<Expr>>,
+    },
+}
+
+/// One side of a join — what it reads, and the name the row files it under.
+///
+/// The name is not decoration. A row is `{ <left>: …, <right>: … }`, so the two
+/// sides need two names, and `ON`, `WHERE`, `ORDER BY` and the projection are
+/// all routes through them. A table brings its own name and may be given
+/// another; a read brings none, which is why the two cases are different
+/// variants rather than one variant with an optional name that is sometimes
+/// required.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JoinSide {
+    /// A table, under its own name unless `AS` gave it another.
+    ///
+    /// An alias is what makes a self-join sayable: `users AS a JOIN users AS b`
+    /// files two records of one table under two names, where `users JOIN users`
+    /// has one name for both and no row a reader could address.
+    Table {
+        /// The table read.
+        table: TableRef,
+        /// The name `AS` gave it, when one was written.
+        alias: Option<Name>,
+    },
+    /// A read, materialised and then joined, under the name `AS` gave it.
+    ///
+    /// The name is **mandatory** and typed as such: a read has no name of its
+    /// own, and a side with no name has no place in the row.
+    Read {
+        /// The read whose answer this side joins.
+        read: Box<Select>,
+        /// The name the row files it under.
+        alias: Name,
+    },
+}
+
+impl JoinSide {
+    /// The name this side answers under in the row.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Table {
+                alias: Some(alias), ..
+            }
+            | Self::Read { alias, .. } => &alias.text,
+            Self::Table { table, alias: None } => &table.name.text,
+        }
+    }
 }
 
 /// An operator producing a number from two numbers.

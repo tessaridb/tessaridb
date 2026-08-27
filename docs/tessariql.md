@@ -1237,6 +1237,67 @@ keyed by record and a row is not a record. A shape for rows is a change to the
 wire, the JSON surface and the console, which is a milestone rather than a
 clause.
 
+### Naming a side, and joining a table to itself
+
+`AS` gives a join side the name the row files it under:
+
+```
+SELECT * FROM users AS u JOIN orders AS o ON u.name = o.who;
+```
+
+The row is `{ u: <the user>, o: <the order> }`, and `ON`, `WHERE`, `ORDER BY` and
+the projection all read through the names the statement gave. Once a name is
+separable from a table, **a table can be joined to itself**:
+
+```
+SELECT * FROM users AS person JOIN users AS boss ON person.boss = boss.code;
+```
+
+`users JOIN users` is still refused, and so is `users AS x JOIN orders AS x` —
+the check is on the two **names**, because two sides answering under one name
+make a row with one half. A name given where there is no join is refused too:
+`FROM users AS u` on its own has nothing to file under `u`, and accepting a name
+a reader cannot use would be the quieter choice and the wrong one.
+
+### Reading what another read answered
+
+A `FROM` may name a read instead of a table:
+
+```
+SELECT * FROM (SELECT * FROM orders WHERE total > 5 LIMIT 100);
+
+SELECT * FROM users AS u
+JOIN (SELECT * FROM orders WHERE total > 5 LIMIT 100) AS o ON u.name = o.who;
+```
+
+The answer is the inner records themselves — not wrapped, not renamed — so the
+outer statement reads them exactly as it would read a table. On a join side it
+needs `AS`, because a read has no name of its own.
+
+**The inner read must state a `LIMIT`.** A materialised source has no index to
+walk and no bound to push into it, so every record it answers with is held at
+once. A source that could grow without limit is therefore refused, rather than
+cut at a number nobody wrote: a silently truncated source answers a different
+question from the one that was asked and looks exactly like a complete one. It
+is the second required `LIMIT` in the language; the first bounds a conditional
+delete, and both exist because the quiet answer is the dangerous one.
+
+**A `WHERE` after it asks about what the read produced.** `WHERE` belongs to the
+table position — `FROM t WHERE c` — so a grouped read and a traversal had
+nowhere to put one. Wrapping either gives it one:
+
+```
+SELECT * FROM (SELECT who, count(*) AS n FROM orders GROUP BY who LIMIT 100)
+WHERE n > 1;
+
+SELECT * FROM (SELECT * FROM users:1->follows->users LIMIT 100) WHERE city = 'london';
+```
+
+`n` is the fold's answer and does not exist until the group is folded, so no
+condition inside that read could have named it. The condition here narrows
+records that are already in hand; there is no access path left for it to choose,
+which is exactly why it can ask a question the inner read could not.
+
 ### Reading a range
 
 The four orderings are served by an ordered index, as a bounded scan:
@@ -1348,10 +1409,11 @@ WHERE …` would read as a table name where an identity belongs, and a statement
 that removes rows should not be one word away from a typo.
 
 **The bound is required too.** A conditional delete carries either `LIMIT n` or
-`LIMIT ALL`, and a statement carrying neither is refused before it runs. This is
-the one `LIMIT` in the language that is not optional, and the asymmetry is
-deliberate: a read that omits a bound answers with more rows than the caller
-expected, while a delete that omits one empties a table. `LIMIT ALL` costs one
+`LIMIT ALL`, and a statement carrying neither is refused before it runs. One of the
+two `LIMIT`s in the language that are not optional — the other bounds a
+materialised source — and the asymmetry against an ordinary read is deliberate:
+a read that omits a bound answers with more rows than the caller expected, while
+a delete that omits one empties a table. `LIMIT ALL` costs one
 word and is how a retention policy says the whole matched set is what it meant.
 
 `LIMIT n` bounds **what is removed**, never what is examined. The condition
@@ -2666,7 +2728,6 @@ be, because it is confined to the run its fixed values name.
 | a field grant on a **nested** route | a grant names a field of a table; `address.city` is a route into a value, and hiding one means rebuilding the object around it rather than dropping a key. Top-level only, so that a half-answer does not look like a whole one |
 | a field grant that limits **writing** | `FIELDS` narrows reading, and a write replaces a whole record — limiting which fields a write may set is a merge semantic the language does not have |
 | `LEFT`, `RIGHT` and `FULL` joins | a bare `JOIN` is inner, chosen so that these stay purely additive: an outer qualifier added later changes no statement already written |
-| joining a table to itself | two records under one name is not a row anybody can read, and telling them apart needs aliases — a language surface to design once rather than a clause |
 | a join on anything but an equality, or on more than one pair | `ON a.x = b.y` is what an index can serve and what a map can be keyed by; a join predicate that is neither is a nested loop with a filter, which is the shape the equality was chosen to avoid |
 | a join of more than two tables | the row is `{ left: …, right: … }`, so a third side is a shape decision (nest or flatten) and an order decision, and neither is worth taking before something needs it |
 | `FETCH` through something already fetched, and cycles | one level, so the work is bounded by the references the answer already holds — one request, whatever their number — and a cycle is impossible rather than handled |

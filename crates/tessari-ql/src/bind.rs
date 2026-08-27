@@ -33,8 +33,8 @@ use tessari_types::Value;
 use tessari_types::{Number, RecordId};
 
 use crate::ast::{
-    Edit, Expr, ExprKind, Identity, Projection, RangeExpr, RecordTarget, Script, Select, Source,
-    Statement, StatementKind,
+    Edit, Expr, ExprKind, Identity, JoinSide, Projection, RangeExpr, RecordTarget, Script, Select,
+    Source, Statement, StatementKind,
 };
 use crate::error::{Error, Result};
 use crate::token::Span;
@@ -289,6 +289,14 @@ fn bind_target(target: &mut RecordTarget, binding: &Binding<'_>) -> Result<()> {
     Ok(())
 }
 
+/// One side of a join, when it is a read rather than a table.
+fn bind_join_side(side: &mut JoinSide, binding: &Binding<'_>) -> Result<()> {
+    match side {
+        JoinSide::Table { .. } => Ok(()),
+        JoinSide::Read { read, .. } => bind_select(read, binding),
+    }
+}
+
 fn bind_select(select: &mut Select, binding: &Binding<'_>) -> Result<()> {
     if let Projection::Values(projected) = &mut select.projection {
         for one in projected {
@@ -299,7 +307,24 @@ fn bind_select(select: &mut Select, binding: &Binding<'_>) -> Result<()> {
         Source::Record(target) => bind_target(target, binding)?,
         Source::Traverse { from, .. } => bind_target(from, binding)?,
         Source::Where { condition, .. } => bind_expr(condition, binding)?,
-        Source::Join { condition, .. } => {
+        Source::Join {
+            left,
+            right,
+            condition,
+            ..
+        } => {
+            // A side that is a read carries every position a binding reaches,
+            // so it is bound the same way the outer read is. This is what keeps
+            // a bound name reaching an index inside a joined subquery, exactly
+            // as it does outside one.
+            bind_join_side(left, binding)?;
+            bind_join_side(right, binding)?;
+            if let Some(condition) = condition {
+                bind_expr(condition, binding)?;
+            }
+        }
+        Source::Subquery { read, condition } => {
+            bind_select(read, binding)?;
             if let Some(condition) = condition {
                 bind_expr(condition, binding)?;
             }

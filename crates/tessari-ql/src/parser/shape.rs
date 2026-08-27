@@ -292,12 +292,19 @@ pub(super) fn check_fold_positions(
         Source::Join {
             condition: Some(condition),
             ..
+        }
+        | Source::Subquery {
+            condition: Some(condition),
+            ..
         } => no_fold(condition)?,
+        // The inner read was checked as it was parsed, so there is nothing left
+        // to say about it here.
         Source::Node
         | Source::Record(_)
         | Source::Table(_)
         | Source::Traverse { .. }
-        | Source::Join { .. } => {}
+        | Source::Join { .. }
+        | Source::Subquery { .. } => {}
     }
     for key in group {
         no_fold(key)?;

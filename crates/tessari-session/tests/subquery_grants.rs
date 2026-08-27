@@ -179,6 +179,43 @@ fn and_from_the_scripts_answer() {
 }
 
 #[test]
+fn and_from_a_materialised_source() {
+    // A `FROM` may now name a read rather than a table, which is a second place
+    // a table name can be written and a second way the grant loop could have
+    // been handed a list the table was never on.
+    let store = store();
+    ready(&store);
+    refused(&store, "SELECT * FROM (SELECT pay FROM salaries LIMIT 10);");
+}
+
+#[test]
+fn and_from_the_condition_over_one() {
+    let store = store();
+    ready(&store);
+    refused(
+        &store,
+        "SELECT * FROM (SELECT * FROM public LIMIT 10) \
+         WHERE n = (SELECT pay FROM salaries);",
+    );
+}
+
+#[test]
+fn and_from_either_side_of_a_join() {
+    let store = store();
+    ready(&store);
+    refused(
+        &store,
+        "SELECT * FROM (SELECT pay FROM salaries LIMIT 10) AS s \
+         JOIN public AS p ON s.pay = p.n;",
+    );
+    refused(
+        &store,
+        "SELECT * FROM public AS p \
+         JOIN (SELECT pay FROM salaries LIMIT 10) AS s ON p.n = s.pay;",
+    );
+}
+
+#[test]
 fn the_granted_table_still_reads() {
     // The other half: closing the hole must not close the door.
     let store = store();

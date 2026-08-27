@@ -229,7 +229,7 @@ impl Session<'_> {
                 edges,
                 to,
                 value,
-            } => self.relate(transaction, from, edges, to, value.as_ref()),
+            } => self.relate(transaction, from, edges, to, value.as_deref()),
             StatementKind::DropTable { table } => {
                 let (_, id) = self.resolve_table(transaction, table)?;
                 Catalog::new(transaction).drop_table(id)?;

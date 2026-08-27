@@ -226,6 +226,7 @@ fn write_source(out: &mut String, source: &Source, span: Span) -> Result<()> {
         Source::Record(_) => unwritten("a read of one record"),
         Source::Traverse { .. } => unwritten("a traversal"),
         Source::Join { .. } => unwritten("a join"),
+        Source::Subquery { .. } => unwritten("a materialised read"),
     }
 }
 

@@ -187,6 +187,12 @@ impl Session<'_> {
             Source::Join { .. } => {
                 plan.insert("access".to_owned(), Value::from("join"));
             }
+            // The inner read has a plan of its own and this one does not
+            // describe it. Reporting a single structure that covers both is R-2,
+            // and it belongs with the note channel rather than here.
+            Source::Subquery { .. } => {
+                plan.insert("access".to_owned(), Value::from("materialised"));
+            }
         }
         Ok(crate::outcome::Outcome::Value(Value::Object(plan)))
     }

@@ -33,8 +33,8 @@
 //! exhaustive matches below are what keep it complete as the language grows.
 
 use crate::ast::{
-    Edit, Expr, ExprKind, FieldPath, InfoSubject, Name, Projection, RecordTarget, Script, Select,
-    Source, Statement, StatementKind, TableRef, UserChange, Written,
+    Edit, Expr, ExprKind, FieldPath, InfoSubject, JoinSide, Name, Projection, RecordTarget, Script,
+    Select, Source, Statement, StatementKind, TableRef, UserChange, Written,
 };
 use crate::token::Span;
 
@@ -286,13 +286,35 @@ fn erase_source(source: &mut Source) {
             right_key,
             condition,
         } => {
-            erase_table(left);
-            erase_table(right);
+            erase_join_side(left);
+            erase_join_side(right);
             erase_path(left_key);
             erase_path(right_key);
             if let Some(condition) = condition {
                 erase_expr(condition);
             }
+        }
+        Source::Subquery { read, condition } => {
+            erase_select(read);
+            if let Some(condition) = condition {
+                erase_expr(condition);
+            }
+        }
+    }
+}
+
+/// One side of a join, whichever of the two it is.
+fn erase_join_side(side: &mut JoinSide) {
+    match side {
+        JoinSide::Table { table, alias } => {
+            erase_table(table);
+            if let Some(alias) = alias {
+                erase_name(alias);
+            }
+        }
+        JoinSide::Read { read, alias } => {
+            erase_select(read);
+            erase_name(alias);
         }
     }
 }
