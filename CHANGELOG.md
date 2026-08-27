@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 530 conformance cases define the language and run in the build.
+Unreleased. 533 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -101,6 +101,22 @@ Unreleased. 530 conformance cases define the language and run in the build.
   **To upgrade:** append `LIMIT ALL` to every existing `DELETE FROM … WHERE …`
   to keep its current behaviour, or a numeric bound where one is wanted. Nothing
   else changes; the single-record `DELETE t:1` form is untouched.
+
+- **A join whose two sides hold different kinds of value at the key is now
+  refused** instead of answering with no rows. Equality across two kinds is
+  false, so such a join could only ever be empty — and empty is also the honest
+  answer to a join over data that does not match. The two answers were identical
+  and only one of them was a mistake: an identity stored as text on one side and
+  as a reference on the other, which is the commonest way a join is written
+  wrong and was invisible in the result.
+
+  The refusal fires only when the answer is empty, both sides held something at
+  the key, and their kinds share nothing. A join that produced any row is never
+  refused, and neither is one over a table whose records have not arrived yet.
+
+  **To upgrade:** nothing to change in a join that answers. A join that was
+  answering `[]` because of a type mistake now says so; fix the data or the key
+  it names.
 
 ## 0.0.1-alpha — 2026-08-25
 

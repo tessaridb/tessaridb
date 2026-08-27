@@ -1197,6 +1197,32 @@ adding `LEFT` afterwards would change what already-written statements answer.
 where equality is the value system's order. A join that used a different rule
 would answer a different question from the operator it is spelled with.
 
+**A join whose two sides hold different kinds of value is refused**, rather than
+answering with no rows:
+
+```
+CREATE users:5  = { tag: 'users:5' };      -- the identity, typed out
+CREATE orders:5 = { by: users:5 };         -- the identity, as a reference
+
+SELECT * FROM users JOIN orders ON users.tag = orders.by;
+-- the join matched tag (string) against by (record), and no value of one kind
+-- equals a value of the other, so this could only answer no rows
+```
+
+Equality across two kinds is false, so such a join can only ever be empty — and
+*empty* is also the honest answer to a join over data that simply does not
+match. The two are the same answer, and only one of them is a mistake, so the
+store says which one it is. Storing an identity as text on one side and as a
+reference on the other is the commonest way a join is written wrong, and it is
+invisible in the result.
+
+The refusal fires when the answer is empty **and** both sides held something at
+the key **and** their kinds share nothing. A join that produced any row is never
+refused, and a join over a table with no records yet is never refused — there is
+nothing to reconcile. It is deliberately not "refuse as soon as one pair
+differs": records carry no declared type, so a single stray value among a
+thousand would refuse a join that works.
+
 **What it costs, stated rather than measured later.** An index on the right
 side's key means the left side drives and each of its records probes the index;
 otherwise the right side is read once into an ordered map and the left side

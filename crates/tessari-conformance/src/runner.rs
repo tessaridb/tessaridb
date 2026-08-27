@@ -229,6 +229,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::DuplicateMapping { .. } => "DuplicateMapping",
         Error::MergeIsNotAnObject { .. } => "MergeIsNotAnObject",
         Error::Thrown { .. } => "Thrown",
+        Error::JoinKeysDiffer { .. } => "JoinKeysDiffer",
         _ => "Unnamed",
     }
 }

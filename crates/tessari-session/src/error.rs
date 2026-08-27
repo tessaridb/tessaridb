@@ -34,6 +34,35 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// A join whose two sides hold different kinds of value at their keys.
+    ///
+    /// Equality across two kinds is false, so such a join can only ever answer
+    /// no rows — and *no rows* is exactly what a correct join over data that
+    /// happens not to match answers too. The two are indistinguishable to
+    /// whoever reads the answer, and only one of them is a mistake. A join is
+    /// written to be trusted, so the store says which one it is rather than
+    /// handing back an empty list.
+    ///
+    /// The commonest shape is `record` against `string`: an identity stored as
+    /// text on one side and as a reference on the other.
+    #[error(
+        "the join matched {left_key} ({left_kinds}) against {right_key} ({right_kinds}), \
+         and no value of one kind equals a value of the other, so this could only \
+         answer no rows (at {span})"
+    )]
+    JoinKeysDiffer {
+        /// The route into the left record.
+        left_key: String,
+        /// The kinds the left side held there, in order.
+        left_kinds: String,
+        /// The route into the right record.
+        right_key: String,
+        /// The kinds the right side held there, in order.
+        right_kinds: String,
+        /// Where the read was written.
+        span: tessari_ql::Span,
+    },
+
     /// A `MERGE` whose right-hand side is not an object.
     ///
     /// The verb folds one object into another, so a scalar or an array there has

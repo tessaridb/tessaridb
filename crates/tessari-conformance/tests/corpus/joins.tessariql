@@ -84,3 +84,31 @@ SELECT * FROM users JOIN orders ON users.qty = orders.qty;
 --- case: a left record with nothing at the key matches nothing
 SELECT * FROM users JOIN orders ON users.missing = orders.who;
 --- expect: rows 0
+
+--- case: two sides holding different kinds at the key are refused, not answered
+# The whole reason this refusal exists: `no rows` is the honest answer to a join
+# over data that happens not to match, and it is also what a join answers when
+# one side stores an identity as text and the other stores it as a reference.
+# The two answers are identical and only one of them is a mistake, so the store
+# says which. `orders.by` is a reference; `users.tag` is the same identity typed
+# out.
+CREATE users:5 = { name: 'ref', tag: 'users:5' };
+CREATE orders:5 = { who: 'ref', by: users:5 };
+SELECT * FROM users JOIN orders ON users.tag = orders.by;
+--- expect: error JoinKeysDiffer
+
+--- case: and the refusal survives an index on the probed side
+# The arm the rule exists for. Without it the index path is told nothing by its
+# probe, which reads exactly like a key that is simply absent.
+DEFINE INDEX by_owner ON orders FIELDS by;
+SELECT * FROM users JOIN orders ON users.tag = orders.by;
+--- expect: error JoinKeysDiffer
+
+--- case: a join that matched anything at all is never refused
+# One good pair among mismatched ones is enough. Records carry no declared type
+# here, so refusing on a single stray value would trade a silent wrong answer
+# for a loud wrong refusal.
+CREATE users:6 = { name: 'mixed', tag: users:6 };
+CREATE orders:6 = { who: 'mixed', by: users:6 };
+SELECT * FROM users JOIN orders ON users.tag = orders.by;
+--- expect: rows 1

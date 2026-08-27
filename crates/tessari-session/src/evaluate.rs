@@ -6,7 +6,7 @@
 //! cannot share a snapshot are two databases sharing a process.
 
 use core::ops::Bound;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_constants::ORDERED_FILTER_REACH;
 use tessari_ql::{
@@ -844,6 +844,22 @@ impl Session<'_> {
     /// probes that index; otherwise the right side is read once into the map and
     /// the left side probes memory. Either way the work is `n + m` rather than
     /// `n × m`, and what happened is reported through [`AccessPath`].
+    ///
+    /// # An empty answer that a type mistake explains is refused
+    ///
+    /// `no rows` is the honest answer to a join over data that happens not to
+    /// match, and it is also what a join answers when one side stores an
+    /// identity as text and the other stores it as a reference. Those two are
+    /// indistinguishable to whoever reads the answer and only one of them is a
+    /// mistake, so the store separates them: when the answer is empty and the
+    /// two sides' key kinds are both non-empty and share nothing, the read
+    /// fails with [`Error::JoinKeysDiffer`] instead of answering.
+    ///
+    /// The rule is deliberately not "refuse as soon as one compared pair
+    /// differs". Records here carry no declared type, so one stray value among a
+    /// thousand would refuse a join that works — trading a silent wrong answer
+    /// for a loud wrong refusal. Making a single mismatched pair *visible*
+    /// without failing the read is the note channel's job and belongs with it.
     #[expect(
         clippy::too_many_arguments,
         reason = "every one is a distinct part of the clause, and a struct here                   would be the clause spelled twice"
@@ -886,6 +902,7 @@ impl Session<'_> {
 
         let searched = self.searched_for(transaction, left_id, &shown(select))?;
         let mut rows = Vec::new();
+        let mut left_kinds = BTreeSet::new();
         let driving =
             transaction.scan_table(left_context.namespace, left_context.database, left_id)?;
         for (id, record) in self.records_of(driving, &left_visible)? {
@@ -895,6 +912,7 @@ impl Session<'_> {
             let Some(key) = left_key.path.resolve(&record).cloned() else {
                 continue;
             };
+            left_kinds.insert(key.type_name());
             let matches = match &served {
                 Some(index) => {
                     let offered =
@@ -925,6 +943,45 @@ impl Session<'_> {
                 // one left record carry one id — stated in `Source::Join` rather
                 // than left to be discovered.
                 rows.push((id.clone(), row));
+            }
+        }
+        // Only here, and only on the answer that was about to lie. A join that
+        // produced a row matched a value, and two values that are equal are of
+        // one kind, so the sets overlap and this cannot fire; a join that
+        // produced nothing is the one whose emptiness needs explaining.
+        if rows.is_empty() {
+            let right_kinds = match &served {
+                // The index path never read the right side, so learning what it
+                // holds costs a scan. It is paid once, after an empty answer,
+                // and never by a join that worked.
+                Some(_) => {
+                    let found = transaction.scan_table(
+                        right_context.namespace,
+                        right_context.database,
+                        right_id,
+                    )?;
+                    self.records_of(found, &right_visible)?
+                        .iter()
+                        .filter_map(|(_, record)| right_key.path.resolve(record))
+                        .map(Value::type_name)
+                        .collect()
+                }
+                None => built.keys().map(Value::type_name).collect::<BTreeSet<_>>(),
+            };
+            // Both sides must have held something: a join over an empty table
+            // has no kinds to reconcile and answers nothing for the ordinary
+            // reason.
+            if !left_kinds.is_empty()
+                && !right_kinds.is_empty()
+                && left_kinds.is_disjoint(&right_kinds)
+            {
+                return Err(Error::JoinKeysDiffer {
+                    left_key: left_key.path.to_string(),
+                    left_kinds: listed(&left_kinds),
+                    right_key: right_key.path.to_string(),
+                    right_kinds: listed(&right_kinds),
+                    span: select.span,
+                });
             }
         }
         let path = if served.is_some() {
@@ -1587,6 +1644,19 @@ pub(crate) fn within(id: &RecordId, start: &RecordId, end: &RecordId, inclusive:
 /// values and a vector index answers a distance, so neither can answer "which
 /// records hold exactly this"; a composite index answers a question about its
 /// first field and this is not that question unless it is the only field.
+/// Kind names as a reader would say them: `record`, or `record and string`.
+///
+/// A join key usually holds one kind, so the common message reads as a bare
+/// noun rather than as a set with one element in it.
+fn listed(kinds: &BTreeSet<&'static str>) -> String {
+    let held: Vec<&str> = kinds.iter().copied().collect();
+    match held.split_last() {
+        None => String::new(),
+        Some((last, [])) => (*last).to_owned(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 fn ordered_index_on(
     transaction: &mut Transaction<'_>,
     table: TableId,
