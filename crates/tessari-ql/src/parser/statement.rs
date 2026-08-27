@@ -60,6 +60,7 @@ impl Parser<'_> {
             Some(Keyword::Revoke) => self.grant_statement(false)?,
             Some(Keyword::Create) => self.write_statement(Keyword::Create)?,
             Some(Keyword::Update) => self.write_statement(Keyword::Update)?,
+            Some(Keyword::Upsert) => self.write_statement(Keyword::Upsert)?,
             Some(Keyword::Set) => self.write_statement(Keyword::Set)?,
             Some(Keyword::Let) => self.let_statement()?,
             Some(Keyword::Return) => {
@@ -905,26 +906,39 @@ impl Parser<'_> {
         // trick this grammar already plays with `ORDER`, `FETCH` and `VECTOR`:
         // nothing but a clause can stand in this position, so nothing is
         // ambiguous, and a field called `set` keeps working.
-        if verb == Keyword::Update && self.eat_keyword(Keyword::Set) {
+        // `UPDATE` and `UPSERT` change a record, so both take the three edit
+        // shapes. `CREATE` and `SET` write a whole value and take none of them.
+        let edits = matches!(verb, Keyword::Update | Keyword::Upsert);
+        if edits && self.eat_keyword(Keyword::Set) {
             let mut assignments = vec![self.assignment()?];
             while self.eat_punct(Punct::Comma) {
                 assignments.push(self.assignment()?);
             }
-            return Ok(StatementKind::Update {
-                target,
-                edit: Edit::Fields(assignments),
-            });
+            return Ok(Self::changed(verb, target, Edit::Fields(assignments)));
+        }
+        if edits && self.eat_keyword(Keyword::Merge) {
+            // The **value** position, unlike `SET`'s right-hand sides: this is
+            // one whole object standing for the change, not a route computed
+            // from the record it is changing.
+            let value = self.expression()?;
+            return Ok(Self::changed(verb, target, Edit::Merge(value)));
         }
         self.expect_punct(Punct::Equals, "`=` and the value to write")?;
         let value = self.expression()?;
         Ok(match verb {
-            Keyword::Update => StatementKind::Update {
-                target,
-                edit: Edit::Whole(value),
-            },
+            Keyword::Update | Keyword::Upsert => Self::changed(verb, target, Edit::Whole(value)),
             Keyword::Set => StatementKind::Set { target, value },
             _ => StatementKind::Create { target, value },
         })
+    }
+
+    /// The statement a change verb makes of a target and an edit.
+    fn changed(verb: Keyword, target: RecordTarget, edit: Edit) -> StatementKind {
+        if verb == Keyword::Upsert {
+            StatementKind::Upsert { target, edit }
+        } else {
+            StatementKind::Update { target, edit }
+        }
     }
 
     /// `name = 'grace'` — one route and what it becomes.

@@ -227,6 +227,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::NotWritable { .. } => "NotWritable",
         Error::ManyWritablePeers { .. } => "ManyWritablePeers",
         Error::DuplicateMapping { .. } => "DuplicateMapping",
+        Error::MergeIsNotAnObject { .. } => "MergeIsNotAnObject",
         _ => "Unnamed",
     }
 }

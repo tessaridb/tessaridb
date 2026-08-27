@@ -200,10 +200,10 @@ fn erase_statement(statement: &mut Statement) {
             erase_record(target);
             erase_expr(value);
         }
-        StatementKind::Update { target, edit } => {
+        StatementKind::Update { target, edit } | StatementKind::Upsert { target, edit } => {
             erase_record(target);
             match edit {
-                Edit::Whole(value) => erase_expr(value),
+                Edit::Whole(value) | Edit::Merge(value) => erase_expr(value),
                 Edit::Fields(assignments) => {
                     for assignment in assignments {
                         erase_path(&mut assignment.route);

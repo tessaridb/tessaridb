@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 514 conformance cases define the language and run in the build.
+Unreleased. 521 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -49,6 +49,20 @@ Unreleased. 514 conformance cases define the language and run in the build.
   is a value to use — and everywhere else they stay different questions. It
   binds tighter than a comparison and looser than arithmetic, and the right side
   is evaluated only when it is needed.
+
+- **`UPSERT t:1 = { … }`**, and `SET` and `MERGE` after it, write the record
+  whether or not it is already there. A third verb rather than a flag, because
+  the three differ in what they assert beforehand — `CREATE` says the record is
+  absent, `UPDATE` says it is present, `UPSERT` says neither — and keeping the
+  first two is what makes the third safe to add. Over an absent record it starts
+  from an empty object, so the edit shapes need no special case.
+- **`UPDATE t:1 MERGE { … }`** folds an object into the record and leaves what it
+  does not name. Deep where both sides hold an object; the incoming value whole
+  everywhere else, so an array replaces an array. An explicit `NULL` is written —
+  removing a field stays `SET route = NONE`. The object stands in the value
+  position like every other object literal, so a bare name inside it is a table
+  rather than a route into the record: `MERGE $patch` is the shape this is for,
+  and computing from the record remains `SET`'s job.
 
 ### Changed — breaking
 

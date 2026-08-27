@@ -145,6 +145,7 @@ impl Effect {
             // keyword test gets wrong.
             StatementKind::Create { .. }
             | StatementKind::Update { .. }
+            | StatementKind::Upsert { .. }
             | StatementKind::Delete { .. }
             | StatementKind::DeleteWhere { .. }
             | StatementKind::Relate { .. }

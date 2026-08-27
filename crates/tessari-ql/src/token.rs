@@ -322,6 +322,14 @@ pub enum Keyword {
     Ilike,
     /// `UPDATE`
     Update,
+    /// `UPSERT` — write the record whether or not it is already there.
+    ///
+    /// Its own verb rather than a flag on `UPDATE`, because the question it
+    /// answers is different: `UPDATE` asserts the record exists and `CREATE`
+    /// asserts it does not, while this one asserts neither.
+    Upsert,
+    /// `MERGE` — fold an object into the record, leaving what it does not name.
+    Merge,
     /// `DELETE`
     Delete,
     /// `GET`
@@ -432,6 +440,8 @@ impl Keyword {
             Self::Like => "LIKE",
             Self::Ilike => "ILIKE",
             Self::Update => "UPDATE",
+            Self::Upsert => "UPSERT",
+            Self::Merge => "MERGE",
             Self::Delete => "DELETE",
             Self::Get => "GET",
             Self::Set => "SET",
@@ -510,6 +520,8 @@ impl Keyword {
         Self::Like,
         Self::Ilike,
         Self::Update,
+        Self::Upsert,
+        Self::Merge,
         Self::Delete,
         Self::Get,
         Self::Set,

@@ -90,6 +90,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::Relate { .. } => Err(unrenderable("RELATE", span)),
         StatementKind::Create { .. } => Err(unrenderable("CREATE", span)),
         StatementKind::Update { .. } => Err(unrenderable("UPDATE", span)),
+        StatementKind::Upsert { .. } => Err(unrenderable("UPSERT", span)),
         StatementKind::Delete { .. } => Err(unrenderable("DELETE", span)),
         StatementKind::DeleteWhere { .. } => Err(unrenderable("DELETE FROM", span)),
         StatementKind::Get { .. } => Err(unrenderable("GET", span)),

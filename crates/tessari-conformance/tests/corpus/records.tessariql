@@ -332,3 +332,47 @@ UPDATE staff:9 SET meta.source = 'import';
 --- case: and a record that is not there is refused
 UPDATE staff:404 SET name = 'nobody';
 --- expect: error NoSuchRecord
+
+# `UPSERT` — the third verb. `CREATE` asserts the record is absent, `UPDATE`
+# asserts it is present, and this one asserts neither. Keeping the first two is
+# what makes the third safe: a caller who knows which case they are in keeps the
+# refusal that tells them when they were wrong.
+
+--- case: upsert writes a record that is not there
+UPSERT staff:20 = { name: 'grace', visits: 1 };
+SELECT * FROM staff WHERE name = 'grace';
+--- expect: rows 1
+
+--- case: and replaces one that is
+UPSERT staff:20 = { name: 'grace', visits: 7 };
+SELECT * FROM staff WHERE visits = 7;
+--- expect: rows 1
+
+--- case: upsert takes the field shape too, over an absence
+UPSERT staff:21 SET name = 'joan';
+SELECT * FROM staff WHERE name = 'joan';
+--- expect: rows 1
+
+# `MERGE` — the third edit shape. `= { … }` replaces the whole record and `SET`
+# names routes one at a time; this takes an object whose shape is the shape of
+# the change, which is what a PATCH handler holds.
+
+--- case: a merge leaves what it does not name
+UPDATE staff:20 MERGE { visits: 9 };
+SELECT * FROM staff WHERE name = 'grace' AND visits = 9;
+--- expect: rows 1
+
+--- case: a merge is deep where both sides hold an object
+UPSERT staff:22 = { name: 'alan', address: { city: 'London', street: 'Dean' } };
+UPDATE staff:22 MERGE { address: { city: 'Paris' } };
+SELECT * FROM staff WHERE address.street = 'Dean' AND address.city = 'Paris';
+--- expect: rows 1
+
+--- case: and the incoming value wins whole where either side is not an object
+UPDATE staff:22 MERGE { address: 'unknown' };
+SELECT * FROM staff WHERE address = 'unknown';
+--- expect: rows 1
+
+--- case: a merge needs an object to fold in
+UPDATE staff:22 MERGE 3;
+--- expect: error MergeIsNotAnObject

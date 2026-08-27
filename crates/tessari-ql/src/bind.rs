@@ -169,10 +169,10 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // Both shapes of an update hold expressions, and the field shape holds
         // one per assignment: a parameter is legal in each of them, the same as
         // it is anywhere else a value may stand.
-        StatementKind::Update { target, edit } => {
+        StatementKind::Update { target, edit } | StatementKind::Upsert { target, edit } => {
             bind_target(target, binding)?;
             match edit {
-                Edit::Whole(value) => bind_expr(value, binding),
+                Edit::Whole(value) | Edit::Merge(value) => bind_expr(value, binding),
                 Edit::Fields(assignments) => {
                     for assignment in assignments {
                         bind_expr(&mut assignment.value, binding)?;

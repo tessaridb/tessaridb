@@ -131,10 +131,13 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             found.extend(in_expr(written));
             found
         }
-        StatementKind::Update { target, edit } => {
+        // Every edit shape holds expressions, and an expression may hold a
+        // read — the whole of ADR-0030. `MERGE`'s object is one expression and
+        // is walked exactly as a whole-value write is.
+        StatementKind::Update { target, edit } | StatementKind::Upsert { target, edit } => {
             let mut found = vec![&target.table];
             match edit {
-                Edit::Whole(value) => found.extend(in_expr(value)),
+                Edit::Whole(value) | Edit::Merge(value) => found.extend(in_expr(value)),
                 Edit::Fields(assignments) => {
                     for assignment in assignments {
                         found.extend(in_expr(&assignment.value));

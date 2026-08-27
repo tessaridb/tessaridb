@@ -856,19 +856,48 @@ UPDATE users:1 = { name: 'ada', email: 'ada2@example.com' };
 UPDATE users:1 SET email = 'ada2@example.com';
 UPDATE users:1 SET visits = visits + 1, seen = time::now();
 UPDATE users:1 SET address.city = 'Lyon';
+UPDATE users:1 MERGE { address: { city: 'Lyon' } };
+UPSERT users:1 = { name: 'ada' };
+UPSERT users:1 SET visits = 1;
 DELETE users:1;
 ```
 
-`CREATE` and `UPDATE` are not two spellings of one verb. **`CREATE` over a
+`CREATE`, `UPDATE` and `UPSERT` are not three spellings of one verb. They differ
+in what each asserts about the record **before** the write: `CREATE` says it is
+absent, `UPDATE` says it is present, and `UPSERT` says neither. **`CREATE` over a
 record that already exists is refused**, and **`UPDATE` over one that does not
-exist is refused**. The alternative — either verb quietly doing the other's job —
-loses a record with nothing anywhere to notice, and `SET` already exists for the
-caller who means "whatever is there, replace it".
+exist is refused** — the alternative, either verb quietly doing the other's job,
+loses a record with nothing anywhere to notice.
 
-**`UPDATE` has two shapes**, and they are one statement because both change
-exactly one record. Giving a value **replaces** it; `SET` changes the routes it
-names and leaves the rest alone — read, applied and written in one transaction,
-so nothing lands between the read and the write.
+`UPSERT` is what to reach for when the caller genuinely does not know, and
+keeping the other two is what makes it safe to have: a caller who *does* know
+keeps the refusal that tells them when they were wrong. Over a record that is not
+there, `UPSERT` starts from an empty object — so `SET` and `MERGE` need no case
+of their own, and produce exactly what they name.
+
+**`UPDATE` and `UPSERT` have three shapes**, and each is one statement because
+all three change exactly one record. Giving a value **replaces** it; `SET`
+changes the routes it names; `MERGE` folds an object in. All three are read,
+applied and written in one transaction, so nothing lands between the read and the
+write.
+
+**`MERGE` is deep where both sides hold an object, and the incoming value wins
+whole everywhere else.** An array replaces an array rather than concatenating,
+because there is no reading of "merge these two lists" that is right more often
+than it is surprising. A field the incoming object does not name is left exactly
+as it was, which is the point of the verb. An explicit `NULL` is written, because
+`NULL` is a value here — removing a field is `SET route = NONE`, which says
+removal out loud rather than hiding it inside a fold.
+
+`MERGE` and `SET` differ in one more way, and it is worth knowing before it
+surprises you. `MERGE` takes an object in the **value position**, as every object
+literal in this language does, so a bare name inside it is a *table* rather than
+a route into the record: `MERGE { visits: visits + 1 }` is refused, and
+`SET visits = visits + 1` is how that is said. The rule bought by this is that
+`{ a: b }` cannot mean two different things depending on the verb in front of it.
+What `MERGE` is for is a whole object arriving from outside — usually
+`UPDATE users:1 MERGE $patch`, which is exactly what an HTTP `PATCH` handler
+holds and what every client would otherwise fold by hand.
 
 Three rules, each here because the alternative is a surprise:
 

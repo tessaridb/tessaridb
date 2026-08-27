@@ -21,6 +21,19 @@ pub enum Error {
     #[error(transparent)]
     Store(#[from] tessari_storage::Error),
 
+    /// A `MERGE` whose right-hand side is not an object.
+    ///
+    /// The verb folds one object into another, so a scalar or an array there has
+    /// no reading: `MERGE 3` could only mean "replace the record with 3", and
+    /// `UPDATE t:1 = 3` already says that.
+    #[error("MERGE takes an object to fold in, and this is {found} (at {span})")]
+    MergeIsNotAnObject {
+        /// What stood there instead.
+        found: &'static str,
+        /// Where it was written.
+        span: tessari_ql::Span,
+    },
+
     /// An assignment into a route the record does not have.
     ///
     /// `SET a.b.c = 1` on a record with no `a`. Creating the objects on the way

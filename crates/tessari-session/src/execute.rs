@@ -275,18 +275,28 @@ impl Session<'_> {
                         span: target.span,
                     });
                 };
-                let payload = match edit {
-                    // Replacing the whole record is a write like a create, so
-                    // the defaults apply to it the same way.
-                    Edit::Whole(value) => self.evaluate(transaction, value)?,
-                    Edit::Fields(assignments) => {
-                        self.edited(transaction, &existing, assignments, target.span)?
-                    }
-                };
+                let payload =
+                    self.applied(transaction, edit, decode_payload(&existing)?, target.span)?;
                 // One rule rather than two: the result of either shape is a
                 // record being written, so `REQUIRED` + `DEFAULT` keeps meaning
                 // "this field always holds a value" even when a caller sets one
                 // to `none`.
+                let payload = self.with_defaults(transaction, address.table, payload)?;
+                self.put_record(transaction, address, payload, span)?;
+                Ok(Outcome::Done)
+            }
+            // Neither `CREATE`'s "it must be absent" nor `UPDATE`'s "it must be
+            // present". A record that is not there starts as an empty object, so
+            // the three edit shapes need no case of their own: `= { … }` writes
+            // the value, and `SET` and `MERGE` fold into nothing and produce
+            // exactly what they name.
+            StatementKind::Upsert { target, edit } => {
+                let (_, address) = self.writable(transaction, target)?;
+                let existing = match transaction.get(&address)? {
+                    Some(held) => decode_payload(&held)?,
+                    None => Value::Object(std::collections::BTreeMap::new()),
+                };
+                let payload = self.applied(transaction, edit, existing, target.span)?;
                 let payload = self.with_defaults(transaction, address.table, payload)?;
                 self.put_record(transaction, address, payload, span)?;
                 Ok(Outcome::Done)
@@ -921,14 +931,46 @@ impl Session<'_> {
     /// `SET a.b.c = 1` on a record with no `a` is an error naming the route.
     /// Creating the objects would be the store writing structure nobody asked
     /// for — the same call this store makes about zero-filling a hole in a file.
+    /// The record an edit produces, whichever of the three shapes it is.
+    ///
+    /// Shared by `UPDATE` and `UPSERT` so the two cannot drift: the only thing
+    /// that separates them is what they assert about the record beforehand, and
+    /// a second copy of this match is how that stops being true.
+    fn applied(
+        &self,
+        transaction: &mut Transaction<'_>,
+        edit: &Edit,
+        existing: Value,
+        span: Span,
+    ) -> Result<Value> {
+        match edit {
+            // Replacing the whole record is a write like a create, so the
+            // defaults apply to it the same way.
+            Edit::Whole(value) => self.evaluate(transaction, value),
+            Edit::Fields(assignments) => self.edited(transaction, existing, assignments, span),
+            Edit::Merge(value) => {
+                // The value position, like every other object literal — see
+                // `Edit::Merge`. Computing from the record is `SET`'s job.
+                let incoming = self.evaluate(transaction, value)?;
+                let Value::Object(_) = incoming else {
+                    return Err(Error::MergeIsNotAnObject {
+                        found: incoming.type_name(),
+                        span,
+                    });
+                };
+                Ok(merged(existing, incoming))
+            }
+        }
+    }
+
     fn edited(
         &self,
         transaction: &mut Transaction<'_>,
-        existing: &[u8],
+        existing: Value,
         assignments: &[Assignment],
         span: Span,
     ) -> Result<Value> {
-        let mut record = decode_payload(existing)?;
+        let mut record = existing;
         let mut wanted = Vec::with_capacity(assignments.len());
         for assignment in assignments {
             wanted.push(self.evaluate_in(
@@ -1001,6 +1043,43 @@ fn named_roles(named: &[Name]) -> Result<Roles> {
 }
 
 /// Put a value into one field of an object, or take it out.
+/// Two records folded into one: `incoming` over `existing`.
+///
+/// Deep where **both** sides hold an object and total everywhere else. That rule
+/// is the whole of it, and the shapes it settles are worth naming:
+///
+/// - object over object — merged, one level deeper;
+/// - anything over anything else — the incoming value, whole. An array replaces
+///   an array rather than concatenating or merging by position, because there is
+///   no reading of "merge these two lists" that is right more often than it is
+///   surprising;
+/// - a field the incoming object does not name — left exactly as it was, which
+///   is the point of the verb;
+/// - an explicit `NULL` — written, because `NULL` is a value here and means
+///   "known to be nothing". Removing a field is `SET route = NONE`, which says
+///   removal out loud rather than hiding it inside a merge.
+fn merged(existing: Value, incoming: Value) -> Value {
+    match (existing, incoming) {
+        (Value::Object(mut into), Value::Object(from)) => {
+            for (name, value) in from {
+                let folded = match (into.remove(&name), value) {
+                    (Some(held @ Value::Object(_)), value @ Value::Object(_)) => {
+                        merged(held, value)
+                    }
+                    (_, value) => value,
+                };
+                into.insert(name, folded);
+            }
+            Value::Object(into)
+        }
+        // One side is not an object, so there is nothing to fold into: the
+        // incoming value stands whole. The top level never reaches here — the
+        // caller refuses a non-object there — but a route below it does, and
+        // that is the "incoming wins" rule doing its job.
+        (_, incoming) => incoming,
+    }
+}
+
 fn set_field(
     holder: &mut Value,
     name: &str,

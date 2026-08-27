@@ -421,6 +421,21 @@ pub enum StatementKind {
         /// How it changes.
         edit: Edit,
     },
+    /// `UPSERT users:1 = { … }` — write the record whether or not it is there.
+    ///
+    /// Its own statement rather than a flag on `UPDATE`, because the three verbs
+    /// assert three different things about the record before the write:
+    /// `CREATE` says it is absent, `UPDATE` says it is present, and this one
+    /// says nothing. A caller who knows which case they are in keeps the
+    /// refusal that tells them when they were wrong.
+    Upsert {
+        /// The record to write.
+        target: RecordTarget,
+        /// How it is written. A record that is not there starts as an empty
+        /// object, so `SET` and `MERGE` mean the same thing over an absence
+        /// that they mean over a record with none of the named routes.
+        edit: Edit,
+    },
     /// `DELETE users:1`
     Delete {
         /// The record to remove.
@@ -705,6 +720,28 @@ pub enum Edit {
     /// `UPDATE users:1 SET name = 'grace', visits = visits + 1` — these routes
     /// change and nothing else does.
     Fields(Vec<Assignment>),
+    /// `UPDATE users:1 MERGE { address: { city: 'Paris' } }` — the object is
+    /// folded into the record, and what it does not name is left alone.
+    ///
+    /// Distinct from `Fields` rather than sugar for it: `SET` names routes one
+    /// at a time and computes each from the record, while this takes a whole
+    /// object whose shape is the shape of the change. It is what an HTTP `PATCH`
+    /// handler holds, and without it every client builds the same fold by hand.
+    ///
+    /// Merging is **deep on objects and total on everything else**: where both
+    /// sides hold an object the two are merged, and otherwise the incoming value
+    /// wins. An explicit `NULL` therefore sets the field to `NULL` — removing a
+    /// field is `SET route = NONE`, which says removal out loud.
+    ///
+    /// The object stands in the **value** position, as every object literal in
+    /// this language does, so a bare name inside it is a table and not a route
+    /// into the record being changed. That is the one place `MERGE` and `SET`
+    /// read differently, and it is deliberate: `{ a: b }` cannot mean two things
+    /// depending on which verb precedes it. `MERGE { visits: visits + 1 }` is
+    /// therefore not the way to say that — `SET visits = visits + 1` is, and
+    /// computing from the record is what `SET` is for. What `MERGE` is for is a
+    /// whole object arriving from outside, which is usually `MERGE $patch`.
+    Merge(Expr),
 }
 
 /// One route of a record, and what it becomes.

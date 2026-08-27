@@ -328,6 +328,7 @@ impl Needs {
             | StatementKind::Relate { .. }
             | StatementKind::Create { .. }
             | StatementKind::Update { .. }
+            | StatementKind::Upsert { .. }
             | StatementKind::Delete { .. }
             | StatementKind::DeleteWhere { .. }
             | StatementKind::Set { .. }
