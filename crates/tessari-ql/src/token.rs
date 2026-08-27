@@ -332,6 +332,15 @@ pub enum Keyword {
     Keys,
     /// `RANGE`
     Range,
+    /// `LET` — bind a value under a name for the rest of the script.
+    ///
+    /// A separate verb from `SET`, which writes a key. The two acts differ in
+    /// what they touch: `SET` reaches the store and outlives the script, `LET`
+    /// touches nothing and dies with it. One word for both would make a typo in
+    /// a sigil the difference between a variable and a durable write.
+    Let,
+    /// `RETURN` — the value this script answers with.
+    Return,
     /// `BEGIN`
     Begin,
     /// `COMMIT`
@@ -417,6 +426,8 @@ impl Keyword {
             Self::Del => "DEL",
             Self::Keys => "KEYS",
             Self::Range => "RANGE",
+            Self::Let => "LET",
+            Self::Return => "RETURN",
             Self::Begin => "BEGIN",
             Self::Commit => "COMMIT",
             Self::Cancel => "CANCEL",
@@ -490,6 +501,8 @@ impl Keyword {
         Self::Del,
         Self::Keys,
         Self::Range,
+        Self::Let,
+        Self::Return,
         Self::Begin,
         Self::Commit,
         Self::Cancel,

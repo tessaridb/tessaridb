@@ -58,7 +58,14 @@ impl Effect {
             // Reads, including the ones that look heavier than they are.
             // `BACKUP` streams the whole log and writes nothing to the store —
             // it is the largest read in the language, not a write.
-            StatementKind::Select(_)
+            // A binding and an answer hold an **expression**, and no expression
+            // in this language writes. What one may hold is a read, which is
+            // already a read. Both stay `Read` for the same reason `SELECT`
+            // does, and `of_script` still sees the write if one stands beside
+            // them in the same block.
+            StatementKind::Let { .. }
+            | StatementKind::Return { .. }
+            | StatementKind::Select(_)
             | StatementKind::Explain(_)
             | StatementKind::Get { .. }
             | StatementKind::Keys { .. }

@@ -108,7 +108,7 @@ impl<'a> Session<'a> {
     /// as [`Session::run`].
     pub fn run_with(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
         let store = self.store;
-        let script = parse(source)?.bind(parameters)?;
+        let mut script = parse(source)?.bind(parameters)?;
 
         // Where a statement may run, asked once for the whole script and before
         // any of it runs — a script that writes must not have its first half
@@ -126,9 +126,41 @@ impl<'a> Session<'a> {
         let mut outcomes = Vec::with_capacity(script.statements.len());
         let mut open: Option<(Transaction<'a>, tessari_ql::Span)> = None;
 
-        for statement in &script.statements {
-            let outcome = self.step(store, &mut open, statement)?;
+        // By index rather than by iterator, because a `LET` reaches forward: the
+        // value it produces is substituted into the statements that have not run
+        // yet, so the loop holds `&mut script` across the step.
+        let mut at = 0usize;
+        while at < script.statements.len() {
+            let outcome = self.step(store, &mut open, &script.statements[at])?;
+            let outcome = match &script.statements[at].kind {
+                StatementKind::Let { name, .. } => {
+                    // Substitution, not a lookup table — the same walk the
+                    // caller's parameters take, for the same reason: by the time
+                    // a statement runs, every name in it is a literal, so the
+                    // planner still finds a right-hand side an index can serve.
+                    let bound = match outcome {
+                        Outcome::Value(value) => value,
+                        // Unreachable while `execute` answers a binding with a
+                        // value, and named rather than unwrapped so that a
+                        // change there is a compile-time conversation.
+                        _ => {
+                            return Err(Error::BindingIsNotAValue {
+                                span: script.statements[at].span,
+                            });
+                        }
+                    };
+                    let name = name.clone();
+                    let mut supplied = Parameters::new();
+                    supplied.insert(name, bound);
+                    for later in &mut script.statements[at.saturating_add(1)..] {
+                        later.substitute(&supplied)?;
+                    }
+                    Outcome::Done
+                }
+                _ => outcome,
+            };
             outcomes.push(outcome);
+            at = at.saturating_add(1);
         }
 
         if let Some((transaction, span)) = open {

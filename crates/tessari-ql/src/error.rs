@@ -455,6 +455,45 @@ pub enum Error {
         /// Where it was written.
         span: Span,
     },
+
+    /// Two `LET`s in one script bind the same name.
+    ///
+    /// Refused rather than shadowed. A binding is substituted into the
+    /// statements below it, so two of them would make `$x` mean one value in
+    /// part of the script and another value further down — and a reader would
+    /// have to count statements to know which. One name, one value, everywhere
+    /// it is written.
+    #[error("`${name}` is bound twice in one script (at {span})")]
+    BoundTwice {
+        /// The name they share, without its marker.
+        name: String,
+        /// Where the second `LET` is.
+        span: Span,
+    },
+
+    /// A `LET` binds a name the caller also supplied a value for.
+    ///
+    /// Refused because there is no reading of it that is not surprising: either
+    /// the caller's value is silently discarded, or the script's own binding is.
+    /// The caller drops the entry or the script picks another name.
+    #[error("`${name}` was supplied by the caller and is also bound by the script (at {span})")]
+    BindingCollidesWithParameter {
+        /// The name they share, without its marker.
+        name: String,
+        /// Where the `LET` is.
+        span: Span,
+    },
+
+    /// A script names its answer twice.
+    ///
+    /// `RETURN` says which value the script answers with, so two of them make
+    /// "the answer" depend on which one ran. A property of the statement text,
+    /// so it is refused where it is written.
+    #[error("a script answers with one value, and this one has two `RETURN`s (at {span})")]
+    ReturnedTwice {
+        /// Where the second `RETURN` is.
+        span: Span,
+    },
 }
 
 impl Error {
@@ -494,6 +533,9 @@ impl Error {
             | Self::OneSidedJoin { span, .. }
             | Self::JoinKeyIsNotAField { span, .. }
             | Self::UnboundParameter { span, .. }
+            | Self::BoundTwice { span, .. }
+            | Self::BindingCollidesWithParameter { span, .. }
+            | Self::ReturnedTwice { span }
             | Self::NotARecordIdentity { span, .. }
             | Self::Unrenderable { span, .. }
             | Self::MalformedGeometry { span, .. }

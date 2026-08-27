@@ -488,6 +488,52 @@ pub enum StatementKind {
         /// The range of keys, when the statement bounds it.
         range: Option<RangeExpr>,
     },
+    /// `LET $recent = SELECT id FROM notes ORDER BY at DESC LIMIT 5`
+    ///
+    /// # Why this is what makes the engines compose
+    ///
+    /// A read resolves to exactly one access path — a table, a record, an index,
+    /// a walk — chosen by the shape of the statement. That is what keeps the
+    /// cost of a read legible, and it is also why a question that crosses two
+    /// engines could not be *said*: the nearest neighbours by embedding, and
+    /// then who wrote them, is a vector read followed by a graph walk, and there
+    /// was no way for the first answer to reach the second statement.
+    ///
+    /// A binding is that way, and it needs no planner: each statement still
+    /// resolves to one path, and what travels between them is a value.
+    ///
+    /// # The value is substituted, not looked up
+    ///
+    /// When this statement runs, the value it produced replaces every mention of
+    /// its name in the statements that have **not run yet** — the same walk
+    /// [`Script::bind`](crate::Script::bind) performs for a caller's parameters,
+    /// for the same reason. The planner reads an expression tree to find a
+    /// right-hand side an index can serve, so a name it could not resolve would
+    /// silently drop the index for exactly the reads this feature exists to
+    /// enable. After the substitution there is no name left to resolve.
+    Let {
+        /// The name, without its `$`.
+        name: String,
+        /// The value to bind.
+        value: Expr,
+        /// Where the name was written, for the error that says it was bound
+        /// twice.
+        span: Span,
+    },
+    /// `RETURN { total: $sum, seen: $count }`
+    ///
+    /// Names the value the script answers with. A script may hold **at most
+    /// one**, refused at parse where there are two — a second would make "the
+    /// answer" depend on which one ran, which is a question no reader should
+    /// have to ask of a script they are looking at.
+    ///
+    /// It does not end the script. Ending it would make everything below
+    /// unreachable, and unreachable statements inside a `BEGIN`/`COMMIT` would
+    /// leave the transaction open.
+    Return {
+        /// What to answer with.
+        value: Expr,
+    },
     /// `BEGIN`
     Begin,
     /// `COMMIT`

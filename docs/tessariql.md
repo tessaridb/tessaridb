@@ -155,6 +155,83 @@ An index still serves a read whose value came in this way. Replacement happens
 before anything plans the read, so `WHERE name = $who` is planned exactly as
 `WHERE name = 'ada'` is.
 
+### Naming a value the script itself produced
+
+A caller's value comes from outside. `LET` names one the script worked out:
+
+```
+LET $city = 'london';
+SELECT * FROM users WHERE city = $city;
+```
+
+Which on its own is a convenience. What it is actually for is this:
+
+```
+LET $nearest = SELECT id FROM notes ORDER BY vector::cosine(embedding, $q) LIMIT 5 APPROXIMATE;
+LET $authors = SELECT * FROM users WHERE id IN $nearest;
+RETURN $authors;
+```
+
+Three statements, three different engines — a vector index, an ordinary index,
+and whatever the third read needs — and each one still resolves to exactly **one**
+access path chosen by its own shape. That is the point. A read in this language
+picks one path, which is what keeps its cost legible; a question crossing two
+engines was therefore unsayable, not because the engines could not answer it but
+because nothing carried the first answer into the second statement. A binding
+carries it, and costs no planner.
+
+**A bound name behaves exactly as a supplied one does.** Everything the section
+above says about `$who` is true of `$city` — legal where a literal is legal and
+nowhere a name is, standing for the id half of an identity and never the table
+half, and reaching an index:
+
+```
+DEFINE INDEX by_city ON users FIELDS city;
+LET $city = 'london';
+SELECT * FROM users WHERE city = $city;    -- served by the index
+```
+
+That is not a coincidence, it is the same machinery. When a `LET` runs, its value
+is **substituted into the statements that have not run yet** — the identical walk
+a caller's map takes, for the identical reason. By the time any statement
+executes, every name in it is a literal, so nothing downstream can tell which of
+the two kinds of binding happened, and the planner still finds a right-hand side
+where it looks for one.
+
+Four rules follow, and each is refused where it is written rather than discovered
+when something runs:
+
+- **A name is bound once in a script.** `LET $x` twice is refused. With
+  substitution, two bindings would make `$x` mean one value in part of the script
+  and another further down, and a reader would have to count statements to know
+  which.
+- **A caller and a script may not name the same thing.** There is no reading of
+  that which is not surprising: one of the two values is silently discarded.
+- **A name must be bound above where it is used.** `$x` written before its own
+  `LET` is refused before the first statement runs, which is what keeps the
+  binds-completely-or-does-nothing property the section above states.
+- **A binding is only as privileged as what it holds.** `LET $x = SELECT …`
+  reaches every table that read reaches, and is refused if the caller may not
+  read one of them.
+
+`RETURN` names the value the script answers with:
+
+```
+LET $paid = SELECT count(*) AS n FROM orders WHERE status = 'paid';
+LET $all  = SELECT count(*) AS n FROM orders;
+RETURN { paid: $paid, total: $all };
+```
+
+A script holds **at most one**, refused where there are two — a second would make
+"the answer" depend on which one ran. It does not end the script: ending it would
+make everything below unreachable, and unreachable statements inside a
+`BEGIN`/`COMMIT` would leave the transaction open.
+
+After `LET $x =` and after `RETURN`, a read may be written **without**
+parentheses, because it runs to the end of the statement and there is nothing for
+a parenthesis to disambiguate. Inside a larger expression — `IN (SELECT …)` — the
+parentheses say where the read stops, and are required.
+
 ### Naming a value inside a record
 
 A record payload is a tree: an object may hold objects and arrays, and those may
@@ -2239,7 +2316,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.0.1", "build": "0.0.1-alpha", "endpoints": ["db-1.internal:9000"],
+ "version": "0.0.2", "build": "0.0.2-alpha", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000"}]}}
 ```
 

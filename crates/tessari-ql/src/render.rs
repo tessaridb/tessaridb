@@ -98,6 +98,8 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::Put { .. } => Err(unrenderable("PUT", span)),
         StatementKind::Read { .. } => Err(unrenderable("READ", span)),
         StatementKind::Keys { .. } => Err(unrenderable("KEYS", span)),
+        StatementKind::Let { .. } => Err(unrenderable("LET", span)),
+        StatementKind::Return { .. } => Err(unrenderable("RETURN", span)),
         StatementKind::Begin => Err(unrenderable("BEGIN", span)),
         StatementKind::Commit => Err(unrenderable("COMMIT", span)),
         StatementKind::Cancel => Err(unrenderable("CANCEL", span)),

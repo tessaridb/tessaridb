@@ -259,6 +259,10 @@ fn script_kind(error: &tessari_ql::Error) -> &'static str {
         tessari_ql::Error::FoldInAFilter { .. } => "FoldInAFilter",
         tessari_ql::Error::MalformedGeometry { .. } => "MalformedGeometry",
         tessari_ql::Error::ComputedGeometry { .. } => "ComputedGeometry",
+        tessari_ql::Error::UnboundParameter { .. } => "UnboundParameter",
+        tessari_ql::Error::BoundTwice { .. } => "BoundTwice",
+        tessari_ql::Error::BindingCollidesWithParameter { .. } => "BindingCollidesWithParameter",
+        tessari_ql::Error::ReturnedTwice { .. } => "ReturnedTwice",
         _ => "Unnamed",
     }
 }

@@ -40,7 +40,9 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
 use tessari_constants::{PASSWORD_HASH_LANES, PASSWORD_HASH_MEMORY_KIB, PASSWORD_HASH_PASSES};
-use tessari_ql::{InfoSubject, Name, Password, Span, StatementKind, TableRef, UserChange};
+use tessari_ql::{
+    Expr, ExprKind, InfoSubject, Name, Password, Span, StatementKind, TableRef, UserChange,
+};
 use tessari_storage::{Catalog, Role, Transaction, UserDefinition};
 
 use crate::error::{Error, Result};
@@ -177,7 +179,7 @@ impl Needs {
     /// So the match is exhaustive, the way `tables_named` and the conformance
     /// coverage list already are: adding a statement to the language will not
     /// compile until somebody says what it needs.
-    pub(crate) const fn of(kind: &StatementKind) -> Self {
+    pub(crate) fn of(kind: &StatementKind) -> Self {
         match kind {
             // Reading **this node** is administering, and it is the one read
             // that is. Every other `SELECT` is governed by a grant on the table
@@ -200,7 +202,20 @@ impl Needs {
             StatementKind::Explain(select) if matches!(select.from, tessari_ql::Source::Node) => {
                 Self::AdministerStore
             }
-            StatementKind::Select(_)
+            // A binding is only as privileged as what it holds. `LET $x =
+            // (SELECT * FROM $node)` reads this node's identity through an
+            // expression, and reading this node is administering — so the
+            // question is asked of the expression rather than of the statement
+            // word, which would have answered `Read` and handed a viewer the
+            // topology.
+            StatementKind::Let { value, .. } | StatementKind::Return { value }
+                if holds_node_read(value) =>
+            {
+                Self::AdministerStore
+            }
+            StatementKind::Let { .. }
+            | StatementKind::Return { .. }
+            | StatementKind::Select(_)
             | StatementKind::Get { .. }
             | StatementKind::Keys { .. }
             // Reading a file is reading. Named rather than left to the
@@ -551,6 +566,34 @@ impl Session<'_> {
             Catalog::new(transaction).drop_user(&user)?;
         }
         Ok(Outcome::Done)
+    }
+}
+
+/// Whether an expression reads this node's own identity anywhere inside it.
+///
+/// Reading `$node` is administering rather than reading (see [`Needs::of`]), and
+/// an expression can carry that read down inside a group, a call argument or an
+/// array. Answering the question shallowly would let the deeper spelling through
+/// with a viewer's permission, which is the whole reason this walks.
+fn holds_node_read(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Select(select) => matches!(select.from, tessari_ql::Source::Node),
+        ExprKind::Not(inner) | ExprKind::Negate(inner) => holds_node_read(inner),
+        ExprKind::And(left, right)
+        | ExprKind::Or(left, right)
+        | ExprKind::Arithmetic { left, right, .. }
+        | ExprKind::Binary { left, right, .. } => holds_node_read(left) || holds_node_read(right),
+        ExprKind::Fold { over, .. } => over.as_deref().is_some_and(holds_node_read),
+        ExprKind::Call { arguments, .. } => arguments.iter().any(holds_node_read),
+        ExprKind::Array(items) | ExprKind::Set(items) => items.iter().any(holds_node_read),
+        ExprKind::Object(fields) => fields.iter().any(|field| holds_node_read(&field.value)),
+        ExprKind::Range(range) => holds_node_read(&range.start) || holds_node_read(&range.end),
+        ExprKind::Literal(_)
+        | ExprKind::Parameter(_)
+        | ExprKind::Path(_)
+        | ExprKind::Table(_)
+        | ExprKind::Record(_)
+        | ExprKind::Get(_) => false,
     }
 }
 

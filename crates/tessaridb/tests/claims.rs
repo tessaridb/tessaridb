@@ -131,9 +131,10 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
     );
 }
 
-/// The six corpora the engines table does not name, because they are
-/// cross-cutting rather than the work of one engine.
-const CROSS_CUTTING: [&str; 7] = [
+/// The corpora the engines table does not name, because they are cross-cutting
+/// rather than the work of one engine.
+const CROSS_CUTTING: [&str; 8] = [
+    "bindings",
     "consumers",
     "functions",
     "grants",
@@ -181,7 +182,7 @@ fn the_engines_table_accounts_for_every_case_the_badge_counts() {
     assert_eq!(
         tabled.saturating_add(cross),
         total,
-        "the engines table sums to {tabled}, the six cross-cutting corpora to \
+        "the engines table sums to {tabled}, the cross-cutting corpora to \
          {cross}, and the corpus holds {total}"
     );
 }

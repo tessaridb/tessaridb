@@ -366,6 +366,17 @@ impl Session<'_> {
             // The transaction verbs and `USE` never reach here; the session
             // handles them, because they change what the next statement runs in
             // rather than touching the store.
+            // Both evaluate an expression and answer with its value. What the
+            // run loop does with that value is where they part: a `RETURN`'s
+            // value is the script's answer and is handed to the caller, while a
+            // `LET`'s is substituted into the statements below it and the
+            // statement itself reports `Done`. Neither decision belongs here —
+            // this layer runs one statement and knows nothing of the ones
+            // around it.
+            StatementKind::Let { value, .. } | StatementKind::Return { value } => {
+                Ok(Outcome::Value(self.evaluate(transaction, value)?))
+            }
+
             StatementKind::Begin
             | StatementKind::Commit
             | StatementKind::Cancel

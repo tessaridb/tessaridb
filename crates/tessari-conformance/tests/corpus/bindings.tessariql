@@ -1,0 +1,72 @@
+# Bindings: a value produced by one statement, named for the ones below it.
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+--- expect: ok
+
+--- case: a table to bind against
+DEFINE TABLE people;
+CREATE people:1 = { name: 'ada', city: 'london', age: 36 };
+CREATE people:2 = { name: 'grace', city: 'london', age: 45 };
+CREATE people:3 = { name: 'alan', city: 'cambridge', age: 41 };
+--- expect: ok
+
+--- case: a binding reports nothing, because its value is not the answer
+LET $city = 'london';
+--- expect: ok
+
+--- case: and the statement below it reads the value it was written against
+LET $home = 'london';
+SELECT * FROM people WHERE city = $home;
+--- expect: rows 2
+
+--- case: a binding stands where a record identity does
+LET $who = 2;
+SELECT * FROM people:$who;
+--- expect: rows 1
+
+--- case: a read may be bound unparenthesised, because it runs to the statement's end
+LET $names = SELECT name FROM people WHERE city = 'cambridge';
+RETURN $names;
+--- expect: value [{ name: 'alan' }]
+
+--- case: RETURN names the value the script answers with
+LET $a = 6;
+LET $b = 7;
+RETURN $a * $b;
+--- expect: value 42
+
+--- case: a bound value composes with a fold
+LET $floor = 40;
+SELECT count(*) AS n FROM people WHERE age > $floor;
+--- expect: rows 1
+
+--- case: a name is bound once in a script
+LET $twice = 1;
+LET $twice = 2;
+--- expect: error BoundTwice
+
+--- case: a script answers with one value
+RETURN 1;
+RETURN 2;
+--- expect: error ReturnedTwice
+
+--- case: a name written above its binding is refused before anything runs
+SELECT * FROM people WHERE city = $later;
+LET $later = 'london';
+--- expect: error UnboundParameter
+
+--- case: a binding inside a transaction reaches the statements in it
+BEGIN;
+LET $where = 'cambridge';
+CREATE people:4 = { name: 'joan', city: $where, age: 29 };
+COMMIT;
+--- expect: ok
+
+--- case: and what it wrote is there afterwards
+SELECT * FROM people WHERE city = 'cambridge';
+--- expect: rows 2

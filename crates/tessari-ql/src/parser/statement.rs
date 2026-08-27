@@ -4,7 +4,7 @@ use super::Parser;
 use tessari_types::{FieldKind, Filter, Path, Step};
 
 use crate::ast::{
-    Assignment, ConsumerSource, Direction, Edit, ExprKind, FieldMapping, FieldPath, Hop,
+    Assignment, ConsumerSource, Direction, Edit, Expr, ExprKind, FieldMapping, FieldPath, Hop,
     InfoSubject, OnFailure, Password, Projection, RangeExpr, RecordTarget, Select, Source,
     Statement, StatementKind, TableRef, UserChange,
 };
@@ -61,6 +61,13 @@ impl Parser<'_> {
             Some(Keyword::Create) => self.write_statement(Keyword::Create)?,
             Some(Keyword::Update) => self.write_statement(Keyword::Update)?,
             Some(Keyword::Set) => self.write_statement(Keyword::Set)?,
+            Some(Keyword::Let) => self.let_statement()?,
+            Some(Keyword::Return) => {
+                self.advance();
+                StatementKind::Return {
+                    value: self.value_or_read()?,
+                }
+            }
             Some(Keyword::Select) => StatementKind::Select(self.select_statement()?),
             Some(Keyword::Explain) => {
                 self.advance();
@@ -248,6 +255,48 @@ impl Parser<'_> {
         Ok(StatementKind::Use {
             namespace,
             database,
+        })
+    }
+
+    /// `LET $recent = SELECT id FROM notes ORDER BY at DESC LIMIT 5`
+    ///
+    /// The name is a parameter token rather than an identifier, which is what
+    /// makes a binding and a caller's value the same kind of thing everywhere
+    /// below: `$recent` reads identically whether the script bound it or the
+    /// caller supplied it, so nothing downstream has to know which happened.
+    fn let_statement(&mut self) -> Result<StatementKind> {
+        self.advance();
+        let span = self.span_here();
+        let Some(Token::Parameter(name)) = self.peek() else {
+            return Err(self.error_here("a `$name` to bind after `LET`"));
+        };
+        let name = name.clone();
+        self.advance();
+        self.expect_punct(Punct::Equals, "`=` after the name to bind")?;
+        Ok(StatementKind::Let {
+            name,
+            value: self.value_or_read()?,
+            span,
+        })
+    }
+
+    /// An expression, or a read written without parentheses.
+    ///
+    /// One rule rather than two spellings: a read needs parentheses where it
+    /// sits **inside** a larger expression, because `IN (SELECT …)` has to say
+    /// where the read stops. After `LET $x =` and after `RETURN` it runs to the
+    /// end of the statement, so there is nothing for a parenthesis to
+    /// disambiguate and requiring one would be ceremony.
+    fn value_or_read(&mut self) -> Result<Expr> {
+        if self.peek_keyword() != Some(Keyword::Select) {
+            return self.expression();
+        }
+        let start = self.span_here();
+        let select = self.select_statement()?;
+        let span = start.to(self.span_behind());
+        Ok(Expr {
+            kind: ExprKind::Select(Box::new(select)),
+            span,
         })
     }
 

@@ -19,10 +19,45 @@ mod path;
 mod shape;
 mod statement;
 
-use crate::ast::{Expr, Script};
+use std::collections::BTreeSet;
+
+use crate::ast::{Expr, Script, Statement, StatementKind};
 use crate::error::{Error, Result};
 use crate::lexer::tokenize;
 use crate::token::{Keyword, Punct, Span, Spanned, Token};
+
+/// What a script may say about names it binds and the value it answers with.
+///
+/// Both rules are properties of the statement **text**, so they are settled
+/// here rather than left for something to discover at run time: a script that
+/// binds a name twice or answers twice is wrong whether or not it is ever run,
+/// and refusing it before anything runs means it cannot half-run first.
+fn check_bindings(statements: &[Statement]) -> Result<()> {
+    let mut bound: BTreeSet<&str> = BTreeSet::new();
+    let mut answered = false;
+    for statement in statements {
+        match &statement.kind {
+            StatementKind::Let { name, span, .. } => {
+                if !bound.insert(name.as_str()) {
+                    return Err(Error::BoundTwice {
+                        name: name.clone(),
+                        span: *span,
+                    });
+                }
+            }
+            StatementKind::Return { .. } => {
+                if answered {
+                    return Err(Error::ReturnedTwice {
+                        span: statement.span,
+                    });
+                }
+                answered = true;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
 
 /// Read `source` into a script.
 ///
@@ -94,6 +129,7 @@ impl Parser<'_> {
                 return Err(self.error_here("`;` between statements"));
             }
         }
+        check_bindings(&statements)?;
         Ok(Script {
             statements,
             span: Span::new(0, self.source.len()),

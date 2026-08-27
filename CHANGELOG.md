@@ -12,6 +12,33 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.0.2-alpha — 2026-08-27
+
+Unreleased. 489 conformance cases define the language and run in the build.
+
+### Security
+
+- **A grant covered only the tables a statement's `FROM` named.** A projection, a
+  `WHERE`, an `ORDER BY`, a `GROUP BY` and a written value are expressions, and
+  an expression may hold a read — so a caller granted `read` on one table could
+  read any other table in the database through a subquery written in any of those
+  positions, with no error raised. Every expression position is now walked, and
+  a statement is refused naming the table it was not granted. If you are running
+  `0.0.1-alpha` with more than one grant-governed user in a database, treat this
+  as a disclosure of everything in that database to every such user.
+
+### Added
+
+- **`LET $name = <expr>`** binds a value for the statements below it, which is
+  what lets one engine's answer become the next statement's question: a vector
+  read into a graph walk into a write, each still resolving to exactly one access
+  path. The value is substituted forward before those statements run, so a bound
+  name reaches an index exactly as a caller-supplied one does.
+- **`RETURN <expr>`** names the value a script answers with. At most one per
+  script.
+- After `LET $x =` and after `RETURN`, a read may be written without
+  parentheses.
+
 ## 0.0.1-alpha — 2026-08-25
 
 The first version with a number on it. Everything before this was `0.0.0`, which

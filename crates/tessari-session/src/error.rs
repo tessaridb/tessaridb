@@ -111,6 +111,18 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `LET` produced something that is not a single value.
+    ///
+    /// Unreachable while the executor answers a binding with a value, and named
+    /// rather than unwrapped: an executor change that made a binding answer with
+    /// records would otherwise become a panic in a running node, and here it is
+    /// a compile-time conversation followed by an honest refusal.
+    #[error("a binding must produce one value (at {span})")]
+    BindingIsNotAValue {
+        /// Where the binding is.
+        span: Span,
+    },
+
     /// `BEGIN` inside a transaction that is already open.
     #[error("a transaction is already open (at {span})")]
     NestedTransaction {

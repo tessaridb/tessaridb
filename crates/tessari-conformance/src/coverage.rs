@@ -57,6 +57,8 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::Explain(_) => "EXPLAIN",
         StatementKind::Info { .. } => "INFO FOR",
         StatementKind::Keys { .. } => "KEYS",
+        StatementKind::Let { .. } => "LET",
+        StatementKind::Return { .. } => "RETURN",
         StatementKind::Begin => "BEGIN",
         StatementKind::Commit => "COMMIT",
         StatementKind::Cancel => "CANCEL",
@@ -78,6 +80,7 @@ pub const FORMS: &[&str] = &[
     "DEFINE FIELD",
     "DEFINE ANALYZER",
     "DEFINE USER",
+    "ALTER USER",
     "DEFINE NODE",
     "DEFINE REPLICA",
     "DEFINE CONSUMER",
@@ -104,6 +107,8 @@ pub const FORMS: &[&str] = &[
     "EXPLAIN",
     "INFO FOR",
     "KEYS",
+    "LET",
+    "RETURN",
     "BEGIN",
     "COMMIT",
     "CANCEL",
@@ -178,6 +183,9 @@ mod tests {
              EXPLAIN SELECT * FROM t;\
              INFO FOR STORE;\
              INFO FOR NODE;\
+             ALTER USER u SET ROLE viewer;\
+             LET $x = 1;\
+             RETURN $x;\
              BEGIN;\
              COMMIT;\
              CANCEL;",
