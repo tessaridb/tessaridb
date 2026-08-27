@@ -12,7 +12,9 @@
 //! would either exempt a new statement from every grant in the store, or refuse
 //! it to everybody, and nobody would find out which until it mattered.
 
-use tessari_ql::{InfoSubject, Select, Source, StatementKind, TableRef};
+use tessari_ql::{
+    Edit, Expr, ExprKind, InfoSubject, Projection, Select, Source, StatementKind, TableRef,
+};
 
 /// Every table this statement names, in the order it names them.
 ///
@@ -98,15 +100,49 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DropField { table, .. }
         | StatementKind::DropTable { table }
         | StatementKind::DropIndex { table, .. }
-        | StatementKind::RebuildIndex { table, .. }
-        | StatementKind::DeleteWhere { table, .. } => vec![table],
+        | StatementKind::RebuildIndex { table, .. } => vec![table],
+
+        // The condition is walked for the same reason a read's is: a subquery
+        // inside it reaches a table this statement does not name.
+        StatementKind::DeleteWhere { table, condition } => {
+            let mut found = vec![table];
+            found.extend(in_expr(condition));
+            found
+        }
 
         StatementKind::Keys { space, .. } => vec![space],
 
-        StatementKind::Create { target, .. }
-        | StatementKind::Update { target, .. }
-        | StatementKind::Set { target, .. }
-        | StatementKind::Get { target }
+        // A written value may hold a read — `CREATE audit:1 = { copy: (SELECT
+        // * FROM salaries) }` reaches `salaries` — so the value is walked
+        // beside the target rather than trusted to be inert.
+        StatementKind::Create { target, value } | StatementKind::Set { target, value } => {
+            let mut found = vec![&target.table];
+            found.extend(in_expr(value));
+            found
+        }
+        StatementKind::Put {
+            target,
+            value: written,
+            ..
+        } => {
+            let mut found = vec![&target.table];
+            found.extend(in_expr(written));
+            found
+        }
+        StatementKind::Update { target, edit } => {
+            let mut found = vec![&target.table];
+            match edit {
+                Edit::Whole(value) => found.extend(in_expr(value)),
+                Edit::Fields(assignments) => {
+                    for assignment in assignments {
+                        found.extend(in_expr(&assignment.value));
+                    }
+                }
+            }
+            found
+        }
+
+        StatementKind::Get { target }
         | StatementKind::Delete { target }
         | StatementKind::Del { target }
         // A file is a record in the bucket, so the bucket is the table a grant
@@ -114,29 +150,116 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // reached only through these two statements — which is what keeps a
         // file's bytes and its metadata behind **one** permission question
         // rather than two (ADR-0011).
-        | StatementKind::Put { target, .. }
         | StatementKind::Read { target, .. } => vec![&target.table],
 
         // An edge reaches three: the two records it connects and the table the
         // relation is recorded in. A grant on the edge table alone would let
         // somebody write a link between records they cannot see.
         StatementKind::Relate {
-            from, edges, to, ..
-        } => vec![&from.table, edges, &to.table],
+            from,
+            edges,
+            to,
+            value,
+        } => {
+            let mut found = vec![&from.table, edges, &to.table];
+            if let Some(value) = value {
+                found.extend(in_expr(value));
+            }
+            found
+        }
 
-        StatementKind::Select(select) => in_source(select),
+        StatementKind::Select(select) => in_select(select),
         // **The read's tables, not none.** An `EXPLAIN` that named no table
         // would pass a grant check vacuously — the shape that let a backup
         // through until it was refused by name — and it would leak which index
         // serves a table the caller may not read: a metadata disclosure wearing
         // a diagnostic's clothes.
-        StatementKind::Explain(select) => in_source(select),
+        StatementKind::Explain(select) => in_select(select),
+
+        // A binding holds an expression, and an expression may hold a read.
+        // `LET $all = (SELECT * FROM salaries)` reaches `salaries` as surely as
+        // the bare read does, so it is answered for here rather than left to the
+        // fact that the statement's own `from` is not a table.
+        StatementKind::Let { value, .. } | StatementKind::Return { value } => in_expr(value),
     }
 }
 
+/// The tables an expression reaches.
+///
+/// An expression can hold a read — `(SELECT …)` is an ordinary term — and a
+/// read names tables. Nothing else in an expression does: a path is a route
+/// inside a record the caller already reached, and a literal names nothing.
+///
+/// Exhaustive for the two arms that carry a table and deliberately shallow
+/// everywhere else, walked recursively so that a read nested two groups deep is
+/// found as surely as one written at the top.
+fn in_expr(expr: &Expr) -> Vec<&TableRef> {
+    match &expr.kind {
+        ExprKind::Select(select) => in_select(select),
+        // A point read of one record names that record's table.
+        ExprKind::Record(target) | ExprKind::Get(target) => vec![&target.table],
+        ExprKind::Table(table) => vec![table],
+        ExprKind::Not(inner) | ExprKind::Negate(inner) => in_expr(inner),
+        ExprKind::And(left, right)
+        | ExprKind::Or(left, right)
+        | ExprKind::Arithmetic { left, right, .. }
+        | ExprKind::Binary { left, right, .. } => {
+            let mut found = in_expr(left);
+            found.extend(in_expr(right));
+            found
+        }
+        ExprKind::Fold { over, .. } => over.as_deref().map(in_expr).unwrap_or_default(),
+        ExprKind::Call { arguments, .. } => arguments.iter().flat_map(in_expr).collect(),
+        ExprKind::Array(items) | ExprKind::Set(items) => items.iter().flat_map(in_expr).collect(),
+        ExprKind::Object(fields) => fields
+            .iter()
+            .flat_map(|field| in_expr(&field.value))
+            .collect(),
+        ExprKind::Range(range) => {
+            let mut found = in_expr(&range.start);
+            found.extend(in_expr(&range.end));
+            found
+        }
+        // A literal, a parameter and a path name nothing.
+        ExprKind::Literal(_) | ExprKind::Parameter(_) | ExprKind::Path(_) => Vec::new(),
+    }
+}
+
+/// Every table a read reaches — its source **and** its expressions.
+///
+/// # The half that was missing, and what it cost
+///
+/// This used to answer with the source alone, and that was a grant bypass
+/// rather than an omission. A projection, a `WHERE`, an `ORDER BY` and a
+/// `GROUP BY` are all expressions, and an expression may hold a read: `SELECT
+/// (SELECT pay FROM salaries) AS leaked FROM public` names `public` as its
+/// source and answers with `salaries`. A caller granted `read` on `public`
+/// alone was handed the contents of a table nobody granted them, with no error
+/// anywhere, because the loop that checks grants was given a list the second
+/// table was never on.
+///
+/// The rule that replaces it is the one the module header already stated for
+/// statements: **every table the statement can reach is named here**, wherever
+/// in it the name was written.
+fn in_select(select: &Select) -> Vec<&TableRef> {
+    let mut found = in_source(&select.from);
+    if let Projection::Values(projected) = &select.projection {
+        for one in projected {
+            found.extend(in_expr(&one.value));
+        }
+    }
+    for key in &select.group {
+        found.extend(in_expr(key));
+    }
+    for key in &select.order {
+        found.extend(in_expr(&key.key));
+    }
+    found
+}
+
 /// The tables a read's source names.
-fn in_source(select: &Select) -> Vec<&TableRef> {
-    match &select.from {
+fn in_source(from: &Source) -> Vec<&TableRef> {
+    match from {
         // **No table, and that emptiness is the `BACKUP` shape** — a loop
         // reading "every table it names is granted" passes over an empty list
         // for a reason that has nothing to do with permission. So this one is
@@ -145,7 +268,13 @@ fn in_source(select: &Select) -> Vec<&TableRef> {
         // grant-governed user by role rather than by an empty answer.
         Source::Node => Vec::new(),
         Source::Record(target) => vec![&target.table],
-        Source::Table(table) | Source::Where { table, .. } => vec![table],
+        Source::Table(table) => vec![table],
+        // The condition is an expression, and an expression may hold a read.
+        Source::Where { table, condition } => {
+            let mut found = vec![table];
+            found.extend(in_expr(condition));
+            found
+        }
         // **Every** table in the chain counts, not only the first and the last.
         // A traversal that could read records in a table nobody granted, because
         // the edge table was granted, is a way around the grant rather than a
@@ -159,6 +288,17 @@ fn in_source(select: &Select) -> Vec<&TableRef> {
             }
             found
         }
-        Source::Join { left, right, .. } => vec![left, right],
+        Source::Join {
+            left,
+            right,
+            condition,
+            ..
+        } => {
+            let mut found = vec![left, right];
+            if let Some(condition) = condition {
+                found.extend(in_expr(condition));
+            }
+            found
+        }
     }
 }
