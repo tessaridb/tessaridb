@@ -157,6 +157,21 @@ fn grouped_by(expr: &Expr, group: &[Expr]) -> bool {
     match &expr.kind {
         ExprKind::Fold { .. } | ExprKind::Literal(_) => true,
         ExprKind::Not(inner) | ExprKind::Negate(inner) => grouped_by(inner, group),
+        // Every arm has to be grouped, not just the one that will run: which
+        // one runs is a property of the data, and whether a projection is legal
+        // is a property of the statement.
+        ExprKind::If {
+            condition,
+            then,
+            otherwise,
+        } => {
+            grouped_by(condition, group)
+                && grouped_by(then, group)
+                && otherwise
+                    .as_deref()
+                    .is_none_or(|otherwise| grouped_by(otherwise, group))
+        }
+        ExprKind::Coalesce(left, right) => grouped_by(left, group) && grouped_by(right, group),
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Arithmetic { left, right, .. }
@@ -211,6 +226,16 @@ fn children(expr: &Expr) -> Vec<&Expr> {
     match &expr.kind {
         ExprKind::Fold { over, .. } => over.as_deref().into_iter().collect(),
         ExprKind::Not(inner) | ExprKind::Negate(inner) => vec![inner],
+        ExprKind::If {
+            condition,
+            then,
+            otherwise,
+        } => {
+            let mut parts = vec![&**condition, &**then];
+            parts.extend(otherwise.as_deref());
+            parts
+        }
+        ExprKind::Coalesce(left, right) => vec![left, right],
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Arithmetic { left, right, .. }

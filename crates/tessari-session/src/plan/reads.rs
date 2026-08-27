@@ -17,6 +17,19 @@ pub(super) fn reads_a_record(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Path(_) => true,
         ExprKind::Not(inner) | ExprKind::Negate(inner) => reads_a_record(inner),
+        // Every arm, not only the one that will run. Which arm runs is a
+        // property of the record, so an expression whose *untaken* arm reads
+        // one is still not constant.
+        ExprKind::If {
+            condition,
+            then,
+            otherwise,
+        } => {
+            reads_a_record(condition)
+                || reads_a_record(then)
+                || otherwise.as_deref().is_some_and(reads_a_record)
+        }
+        ExprKind::Coalesce(left, right) => reads_a_record(left) || reads_a_record(right),
         ExprKind::And(left, right) | ExprKind::Or(left, right) => {
             reads_a_record(left) || reads_a_record(right)
         }
@@ -64,6 +77,21 @@ pub(crate) fn roots_read(expr: &Expr, into: &mut BTreeSet<String>) {
             into.insert(field.path.root().to_owned());
         }
         ExprKind::Not(inner) | ExprKind::Negate(inner) => roots_read(inner, into),
+        ExprKind::If {
+            condition,
+            then,
+            otherwise,
+        } => {
+            roots_read(condition, into);
+            roots_read(then, into);
+            if let Some(otherwise) = otherwise {
+                roots_read(otherwise, into);
+            }
+        }
+        ExprKind::Coalesce(left, right) => {
+            roots_read(left, into);
+            roots_read(right, into);
+        }
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Arithmetic { left, right, .. }

@@ -342,6 +342,22 @@ fn bind_expr(expr: &mut Expr, binding: &Binding<'_>) -> Result<()> {
             Ok(())
         }
         ExprKind::Not(inner) | ExprKind::Negate(inner) => bind_expr(inner, binding),
+        ExprKind::If {
+            condition,
+            then,
+            otherwise,
+        } => {
+            bind_expr(condition, binding)?;
+            bind_expr(then, binding)?;
+            match otherwise {
+                Some(otherwise) => bind_expr(otherwise, binding),
+                None => Ok(()),
+            }
+        }
+        ExprKind::Coalesce(left, right) => {
+            bind_expr(left, binding)?;
+            bind_expr(right, binding)
+        }
         // What a fold folds over is an ordinary per-record expression, so a
         // parameter inside it binds like any other. `count(*)` folds over the
         // records themselves and has nothing to bind.

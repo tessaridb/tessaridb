@@ -366,6 +366,20 @@ impl<'a> Lexer<'a> {
             '-' => Punct::Minus,
             '/' => Punct::Slash,
             '%' => Punct::Percent,
+            // Two characters or none. A lone `?` is not a placeholder in this
+            // language — a value is written `$name` — so reading one as the
+            // start of something would give a worse error further along than
+            // refusing it here does.
+            '?' => {
+                if self.peek() != Some('?') {
+                    return Err(Error::UnexpectedCharacter {
+                        found: '?',
+                        span: Span::new(start, self.position),
+                    });
+                }
+                self.advance('?');
+                Punct::Coalesce
+            }
             '(' => Punct::ParenOpen,
             ')' => Punct::ParenClose,
             '.' => {

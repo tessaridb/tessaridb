@@ -1513,6 +1513,68 @@ because both are asked, and neither is a spelling of the other. `IN` is the same
 question from the other end — `'urgent' IN tags` — because both read naturally
 in different sentences.
 
+### A value that depends on a test
+
+```
+SELECT name, IF age >= 40 THEN 'senior' ELSE 'junior' END AS band FROM users;
+```
+
+`IF … THEN … ELSE … END` is an **expression**, not a statement, and that is the
+whole of the decision: what was missing was never control flow, it was the
+ability to work a value out conditionally in the four places a value stands — a
+projection, an assignment, a filter, an ordering. A statement form would have
+served none of them.
+
+`ELSE IF` chains, and **one** `END` closes the chain:
+
+```
+SELECT IF age >= 60 THEN 'a' ELSE IF age >= 40 THEN 'b' ELSE 'c' END AS band FROM users;
+```
+
+Three rules, each stated rather than discovered:
+
+- **`END` is required.** Without it `IF a THEN b ELSE c + 1` has two readings,
+  and which one the grammar picked is not something a reader should have to
+  know.
+- **Only the arm that is taken is evaluated.** That is not only a saving. It is
+  what lets `IF qty > 0 THEN total / qty ELSE 0 END` be written at all: the arm
+  that is skipped need not be meaningful for the record it is skipped on.
+- **No `ELSE` answers with an absence** — not `null`, and not a key holding
+  `none`. The answer simply does not carry the field, which is exactly what a
+  route into a field the record does not have already does. The two absences
+  compose rather than needing a rule apiece.
+
+The test must answer with a boolean, like every other test in the language.
+
+### A fallback for a value that holds nothing
+
+```
+SELECT nickname ?? name AS shown FROM users;
+```
+
+`a ?? b` answers with `a` unless `a` holds nothing, in which case it answers with
+`b`.
+
+**"Holds nothing" means `NONE` or `NULL`, and this is the only place the two are
+alike.** It is the right place: the question `??` asks is *is there a value here
+for me to use*, and the answer is no in both cases. Everywhere else they stay
+apart — `= NONE` finds the records missing the field and `= NULL` finds the ones
+holding nothing in it, and they are still different questions.
+
+Only the emptiness of the value counts, not its truth: `false ?? 'x'` is `false`
+and `0 ?? 1` is `0`.
+
+Precedence sits where it has to. **Tighter than a comparison**, so
+`nickname ?? name = 'ada'` asks what it looks like it asks — `(nickname ?? name)
+= 'ada'`. **Looser than arithmetic**, so `price ?? 0 * 2` does not quietly
+multiply the fallback. It chains left to right, and the right side is evaluated
+**only** when the left holds nothing — so `cached ?? (SELECT …)` does not pay for
+a read it does not need.
+
+A lone `?` is refused where it is written. A value in this language is `$name`,
+so a single question mark is a typo, and reading it as the start of something
+would give a worse error further along.
+
 ### Arithmetic
 
 `+ - * / %` and a unary `-`, over numbers only — concatenation is

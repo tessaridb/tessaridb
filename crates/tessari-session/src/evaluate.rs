@@ -105,6 +105,37 @@ impl Session<'_> {
                 let held = self.evaluate_in(transaction, right, scope)?;
                 Ok(Value::Bool(boolean(&held, right.span)?))
             }
+            // Only the arm that is taken is evaluated. That is not only a
+            // saving — it is what lets the untaken arm be a read, or an
+            // arithmetic that would fail on this record, without the statement
+            // having to be meaningful for every record it passes over.
+            ExprKind::If {
+                condition,
+                then,
+                otherwise,
+            } => {
+                let held = self.evaluate_in(transaction, condition, scope)?;
+                if boolean(&held, condition.span)? {
+                    return self.evaluate_in(transaction, then, scope);
+                }
+                match otherwise {
+                    Some(otherwise) => self.evaluate_in(transaction, otherwise, scope),
+                    // No `ELSE` answers `none`, which is what a route into a
+                    // field the record does not have already answers.
+                    None => Ok(Value::None),
+                }
+            }
+            // `NONE` and `NULL` both count as holding nothing here, and this is
+            // the one place the language treats them alike — the question `??`
+            // asks is whether there is a value to use, and the answer is no in
+            // both cases. The right side is evaluated only when it is needed.
+            ExprKind::Coalesce(left, right) => {
+                let held = self.evaluate_in(transaction, left, scope)?;
+                if matches!(held, Value::None | Value::Null) {
+                    return self.evaluate_in(transaction, right, scope);
+                }
+                Ok(held)
+            }
             ExprKind::Negate(operand) => {
                 let held = self.evaluate_in(transaction, operand, scope)?;
                 negate(&held, operand.span)

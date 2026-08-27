@@ -579,6 +579,16 @@ fn holds_node_read(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Select(select) => matches!(select.from, tessari_ql::Source::Node),
         ExprKind::Not(inner) | ExprKind::Negate(inner) => holds_node_read(inner),
+        ExprKind::If {
+            condition,
+            then,
+            otherwise,
+        } => {
+            holds_node_read(condition)
+                || holds_node_read(then)
+                || otherwise.as_deref().is_some_and(holds_node_read)
+        }
+        ExprKind::Coalesce(left, right) => holds_node_read(left) || holds_node_read(right),
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Arithmetic { left, right, .. }

@@ -139,6 +139,8 @@ pub enum Punct {
     Slash,
     /// `%` — remainder.
     Percent,
+    /// `??` — the left value unless it holds nothing.
+    Coalesce,
     /// `::` — separates a function's group from its name.
     ColonColon,
     /// `{`
@@ -181,6 +183,7 @@ impl Punct {
             Self::Minus => "-",
             Self::Slash => "/",
             Self::Percent => "%",
+            Self::Coalesce => "??",
             Self::ColonColon => "::",
             Self::BraceOpen => "{",
             Self::BraceClose => "}",
@@ -332,6 +335,15 @@ pub enum Keyword {
     Keys,
     /// `RANGE`
     Range,
+    /// `THEN` — what a conditional answers with when its test holds.
+    Then,
+    /// `ELSE` — what it answers with otherwise.
+    Else,
+    /// `END` — where a conditional stops.
+    ///
+    /// Required rather than optional. Without it `IF a THEN b ELSE c + 1` has
+    /// two readings and a reader has to know which one the grammar picked.
+    End,
     /// `LET` — bind a value under a name for the rest of the script.
     ///
     /// A separate verb from `SET`, which writes a key. The two acts differ in
@@ -426,6 +438,9 @@ impl Keyword {
             Self::Del => "DEL",
             Self::Keys => "KEYS",
             Self::Range => "RANGE",
+            Self::Then => "THEN",
+            Self::Else => "ELSE",
+            Self::End => "END",
             Self::Let => "LET",
             Self::Return => "RETURN",
             Self::Begin => "BEGIN",
@@ -501,6 +516,9 @@ impl Keyword {
         Self::Del,
         Self::Keys,
         Self::Range,
+        Self::Then,
+        Self::Else,
+        Self::End,
         Self::Let,
         Self::Return,
         Self::Begin,

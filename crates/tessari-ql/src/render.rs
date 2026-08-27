@@ -281,6 +281,8 @@ fn write_expr(out: &mut String, expr: &Expr) -> Result<()> {
         ExprKind::Set(_) => unwritten("a set"),
         ExprKind::Object(_) => unwritten("an object"),
         ExprKind::Range(_) => unwritten("a range"),
+        ExprKind::If { .. } => unwritten("a conditional"),
+        ExprKind::Coalesce(..) => unwritten("a coalesce"),
         ExprKind::Get(_) => unwritten("an embedded GET"),
         ExprKind::Select(_) => unwritten("an embedded read"),
     }

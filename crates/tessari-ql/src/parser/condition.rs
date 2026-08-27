@@ -92,15 +92,33 @@ impl Parser<'_> {
     /// between a and c" — are things somebody means, and a grammar that silently
     /// picks one answers a question that was not asked.
     fn comparison(&mut self) -> Result<Expr> {
-        let left = self.additive()?;
+        let left = self.coalescing()?;
         let Some(op) = self.comparison_operator() else {
             return Ok(left);
         };
-        let right = self.additive()?;
+        let right = self.coalescing()?;
         if self.comparison_operator().is_some() {
             return Err(self.error_here("`AND`, `OR` or the end of the condition"));
         }
         Ok(binary(op, left, right))
+    }
+
+    /// `a ?? b`, binding tighter than a comparison and looser than arithmetic.
+    ///
+    /// Tighter than a comparison so that `nickname ?? name = 'ada'` asks what it
+    /// looks like it asks; looser than `+` so that `price ?? 0 * 2` does not
+    /// quietly multiply the fallback.
+    fn coalescing(&mut self) -> Result<Expr> {
+        let mut left = self.additive()?;
+        while self.eat_punct(Punct::Coalesce) {
+            let right = self.additive()?;
+            let span = left.span.to(right.span);
+            left = Expr {
+                kind: ExprKind::Coalesce(Box::new(left), Box::new(right)),
+                span,
+            };
+        }
+        Ok(left)
     }
 
     fn additive(&mut self) -> Result<Expr> {

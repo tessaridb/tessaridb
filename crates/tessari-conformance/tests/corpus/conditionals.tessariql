@@ -1,0 +1,97 @@
+# Conditionals: a value that depends on a test, and a fallback for one that
+# holds nothing. Both are expressions, so both stand wherever a value stands.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+--- expect: ok
+
+--- case: four people, one with no nickname and one whose nickname is null
+DEFINE TABLE people;
+CREATE people:1 = { name: 'ada', nickname: 'countess', age: 36 };
+CREATE people:2 = { name: 'grace', nickname: NULL, age: 45 };
+CREATE people:3 = { name: 'alan', age: 41 };
+CREATE people:4 = { name: 'joan', nickname: 'joanie', age: 29 };
+--- expect: ok
+
+--- case: a conditional computes a projected value
+SELECT IF age >= 40 THEN 'senior' ELSE 'junior' END AS band FROM people WHERE name = 'ada';
+--- expect: rows 1
+
+--- case: ELSE IF chains, and one END closes the chain
+SELECT IF age >= 45 THEN 'a' ELSE IF age >= 40 THEN 'b' ELSE 'c' END AS band FROM people;
+--- expect: rows 4
+
+--- case: a conditional with no ELSE answers an absence
+SELECT IF age > 100 THEN 'ancient' END AS band FROM people WHERE name = 'ada';
+--- expect: rows 1
+
+--- case: only the arm that is taken is evaluated
+RETURN IF 1 > 0 THEN 'safe' ELSE 1 / 0 END;
+--- expect: value 'safe'
+
+--- case: a conditional stands in a filter
+SELECT * FROM people WHERE (IF age >= 40 THEN true ELSE false END) = true;
+--- expect: rows 2
+
+--- case: and in an ordering
+SELECT name FROM people ORDER BY IF age >= 40 THEN 0 ELSE 1 END, name;
+--- expect: rows 4
+
+--- case: and in an assignment
+UPDATE people:3 SET band = IF age >= 40 THEN 'senior' ELSE 'junior' END;
+--- expect: ok
+
+--- case: a test that is not a boolean is refused
+SELECT IF name THEN 'a' ELSE 'b' END AS band FROM people;
+--- expect: error ConditionNotBoolean
+
+--- case: a conditional without END is refused where it is written
+SELECT IF age > 1 THEN 'a' ELSE 'b' AS band FROM people;
+--- expect: error UnexpectedToken
+
+--- case: coalesce passes over an absent field
+SELECT nickname ?? name AS shown FROM people WHERE name = 'alan';
+--- expect: rows 1
+
+--- case: and over a null one, which is the one place the two are alike
+RETURN NULL ?? 'fallback';
+--- expect: value 'fallback'
+
+--- case: and over an absence
+RETURN NONE ?? 'fallback';
+--- expect: value 'fallback'
+
+--- case: a value that is there is kept
+RETURN 'held' ?? 'fallback';
+--- expect: value 'held'
+
+--- case: false is a value, so it is kept
+RETURN false ?? 'fallback';
+--- expect: value false
+
+--- case: zero is a value, so it is kept
+RETURN 0 ?? 'fallback';
+--- expect: value 0
+
+--- case: coalesce chains left to right
+RETURN NONE ?? NULL ?? 'last';
+--- expect: value 'last'
+
+--- case: coalesce binds tighter than a comparison
+SELECT * FROM people WHERE nickname ?? name = 'alan';
+--- expect: rows 1
+
+--- case: and looser than arithmetic
+RETURN NONE ?? 1 + 1;
+--- expect: value 2
+
+--- case: NONE and NULL stay different everywhere else
+SELECT * FROM people WHERE nickname = NONE;
+--- expect: rows 1
+
+--- case: a lone question mark is not an operator
+SELECT nickname ? name AS shown FROM people;
+--- expect: error UnexpectedCharacter

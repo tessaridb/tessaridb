@@ -44,6 +44,49 @@ impl Parser<'_> {
         })
     }
 
+    /// `IF <test> THEN <a> [ELSE IF <test> THEN <b>]* [ELSE <c>] END`
+    ///
+    /// `END` is required rather than optional, and closes the **whole** chain
+    /// once. Without it `IF a THEN b ELSE c + 1` has two readings, and which one
+    /// the grammar picked is not something a reader should have to know.
+    ///
+    /// The chain is read flat and built nested, so an `ELSE IF` is an ordinary
+    /// [`ExprKind::If`] in the `otherwise` position and nothing downstream needs
+    /// a second shape to walk.
+    fn conditional(&mut self, start: Span) -> Result<Expr> {
+        let mut arms = Vec::new();
+        let mut otherwise = None;
+        loop {
+            self.advance();
+            let condition = self.expression()?;
+            self.expect_keyword(Keyword::Then, "`THEN` and the value it answers with")?;
+            arms.push((condition, self.expression()?));
+            if !self.eat_keyword(Keyword::Else) {
+                break;
+            }
+            if self.peek_keyword() != Some(Keyword::If) {
+                otherwise = Some(self.expression()?);
+                break;
+            }
+        }
+        self.expect_keyword(Keyword::End, "`END` to close the conditional")?;
+        let span = start.to(self.span_behind());
+        // Right to left, so the last arm holds the trailing `ELSE`.
+        let mut built = otherwise;
+        while let Some((condition, then)) = arms.pop() {
+            built = Some(Expr {
+                kind: ExprKind::If {
+                    condition: Box::new(condition),
+                    then: Box::new(then),
+                    otherwise: built.map(Box::new),
+                },
+                span,
+            });
+        }
+        // `arms` held at least one entry, so this is always `Some`.
+        built.ok_or_else(|| self.error_here("a conditional"))
+    }
+
     fn primary(&mut self) -> Result<Expr> {
         let span = self.span_here();
         // A call is recognised before a keyword is, so `type::of(x)` reads as
@@ -55,6 +98,12 @@ impl Parser<'_> {
         }
         if let Some(fold) = self.fold()? {
             return Ok(fold);
+        }
+        // Before `keyword_value`, which would read `IF` as a value it is not.
+        // The two positions `IF` appears in never meet: here it leads an
+        // expression, and in `DEFINE … IF NOT EXISTS` it follows a name.
+        if self.peek_keyword() == Some(Keyword::If) {
+            return self.conditional(span);
         }
         if let Some(keyword) = self.peek_keyword() {
             return self.keyword_value(keyword, span);

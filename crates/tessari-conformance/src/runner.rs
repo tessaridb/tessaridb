@@ -152,7 +152,14 @@ fn value_of(expr: &Expr) -> Option<Value> {
             .map(|field| value_of(&field.value).map(|value| (field.name.text.clone(), value)))
             .collect::<Option<_>>()
             .map(Value::Object),
-        ExprKind::Table(_) | ExprKind::Record(_) | ExprKind::Range(_) => None,
+        // A conditional and a coalesce are values only once something has
+        // decided which side wins, and deciding is evaluation. An expectation
+        // that needs evaluating is not an expectation.
+        ExprKind::If { .. }
+        | ExprKind::Coalesce(..)
+        | ExprKind::Table(_)
+        | ExprKind::Record(_)
+        | ExprKind::Range(_) => None,
         ExprKind::Get(_) | ExprKind::Select(_) => None,
         // A test is not a value, and a path needs a record to read from —
         // neither can stand where a corpus says what it expects. Nor can a

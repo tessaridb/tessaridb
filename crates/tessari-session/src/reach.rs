@@ -200,6 +200,28 @@ fn in_expr(expr: &Expr) -> Vec<&TableRef> {
         ExprKind::Record(target) | ExprKind::Get(target) => vec![&target.table],
         ExprKind::Table(table) => vec![table],
         ExprKind::Not(inner) | ExprKind::Negate(inner) => in_expr(inner),
+        // Both arms of a conditional, because either may run and a permission
+        // question is asked before anything does.
+        ExprKind::If {
+            condition,
+            then,
+            otherwise,
+        } => {
+            let mut found = in_expr(condition);
+            found.extend(in_expr(then));
+            if let Some(otherwise) = otherwise {
+                found.extend(in_expr(otherwise));
+            }
+            found
+        }
+        // The right side of a coalesce runs only when the left holds nothing —
+        // and it is still named here, because whether it runs is a property of
+        // the data and a grant must not depend on one.
+        ExprKind::Coalesce(left, right) => {
+            let mut found = in_expr(left);
+            found.extend(in_expr(right));
+            found
+        }
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Arithmetic { left, right, .. }

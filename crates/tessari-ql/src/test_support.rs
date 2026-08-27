@@ -303,6 +303,21 @@ fn erase_expr(expr: &mut Expr) {
         ExprKind::Literal(_) | ExprKind::Parameter(_) => {}
         ExprKind::Path(path) => erase_path(path),
         ExprKind::Not(inner) | ExprKind::Negate(inner) => erase_expr(inner),
+        ExprKind::If {
+            condition,
+            then,
+            otherwise,
+        } => {
+            erase_expr(condition);
+            erase_expr(then);
+            if let Some(otherwise) = otherwise {
+                erase_expr(otherwise);
+            }
+        }
+        ExprKind::Coalesce(left, right) => {
+            erase_expr(left);
+            erase_expr(right);
+        }
         // The first of the two sites a search for `pub span: Span` cannot see.
         ExprKind::Fold { over, span, .. } => {
             *span = CANONICAL;

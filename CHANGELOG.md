@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 489 conformance cases define the language and run in the build.
+Unreleased. 511 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -38,6 +38,17 @@ Unreleased. 489 conformance cases define the language and run in the build.
   script.
 - After `LET $x =` and after `RETURN`, a read may be written without
   parentheses.
+- **`IF <test> THEN <a> [ELSE IF <test> THEN <b>]* [ELSE <c>] END`** computes a
+  value that depends on a test, in any position a value stands — a projection,
+  an assignment, a filter, an ordering. Only the arm that is taken is evaluated,
+  so the untaken one need not be meaningful for the record it is skipped on.
+  Without an `ELSE` the answer is an absence, which is what a route into a field
+  the record does not have already answers.
+- **`a ?? b`** answers with the left value unless it holds nothing. This is the
+  one place `NONE` and `NULL` are treated alike — the question is whether there
+  is a value to use — and everywhere else they stay different questions. It
+  binds tighter than a comparison and looser than arithmetic, and the right side
+  is evaluated only when it is needed.
 
 ## 0.0.1-alpha — 2026-08-25
 

@@ -1120,6 +1120,35 @@ pub enum ExprKind {
         /// The right operand.
         right: Box<Expr>,
     },
+    /// `IF <test> THEN <a> ELSE <b> END` — a value that depends on a test.
+    ///
+    /// An expression rather than a statement, deliberately: what was missing was
+    /// not control flow but the ability to *compute* a value conditionally — in
+    /// a projection, an assignment, a filter, an ordering. A statement form
+    /// would have served none of those positions.
+    ///
+    /// Without an `ELSE` the answer is `NONE`, which is what a path into a field
+    /// the record does not have already answers — so the two absences compose
+    /// rather than needing a rule apiece.
+    If {
+        /// The test, which must answer with a boolean.
+        condition: Box<Expr>,
+        /// The value when it holds.
+        then: Box<Expr>,
+        /// The value when it does not; absent means `NONE`.
+        otherwise: Option<Box<Expr>>,
+    },
+    /// `a ?? b` — the left value unless it holds nothing.
+    ///
+    /// "Holds nothing" is `NONE` **or** `NULL`, and this is the one place the
+    /// language treats the two alike. It is the right place: the question `??`
+    /// asks is *"is there a value here for me to use"*, and the answer is no in
+    /// both cases. Everywhere else keeps them apart, which is why `= NONE` and
+    /// `= NULL` remain different questions.
+    ///
+    /// The right side is evaluated **only** when the left holds nothing, so
+    /// `cached ?? (SELECT …)` does not pay for a read it does not need.
+    Coalesce(Box<Expr>, Box<Expr>),
     /// A table named in a value position.
     Table(TableRef),
     /// A record named in a value position: `users:1`.
