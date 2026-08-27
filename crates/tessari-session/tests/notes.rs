@@ -83,7 +83,7 @@ fn answered(session: &mut Session<'_>, script: &str) -> (Vec<RecordId>, Vec<Note
     let outcomes = session.run(script).unwrap();
     let Some(Outcome::Records {
         records,
-        path,
+        plan,
         notes,
     }) = outcomes.last()
     else {
@@ -92,7 +92,7 @@ fn answered(session: &mut Session<'_>, script: &str) -> (Vec<RecordId>, Vec<Note
     (
         records.iter().map(|(id, _)| id.clone()).collect(),
         notes.clone(),
-        *path,
+        plan.access,
     )
 }
 
@@ -269,7 +269,10 @@ fn an_approximate_answer_says_that_it_is_one() {
         .unwrap();
 
     let (near, notes, path) = answered(&mut session, &format!("{NEAR} APPROXIMATE;"));
-    assert_eq!(path, AccessPath::Index);
+    // The path and the note say the same thing in two registers, and both are
+    // kept: the path is the cost word a caller groups by, the note is the
+    // sentence a reader is meant to read.
+    assert_eq!(path, AccessPath::Approximate);
     assert_eq!(notes, vec![Note::Approximate]);
     assert_eq!(notes[0].kind(), "approximate");
     // Approximate is a statement about the guarantee, not a licence to answer

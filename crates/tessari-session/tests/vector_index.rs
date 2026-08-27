@@ -50,6 +50,11 @@ fn populate(session: &mut Session<'_>, count: i64) {
     }
 }
 
+/// The identities a read answered with, and the path it took.
+///
+/// A graph-served read reports `approximate` rather than `index`: it is the one
+/// read in this store an index answers *differently* from a scan, and the word
+/// that says so is the word `EXPLAIN` has always used for it.
 fn read(session: &mut Session<'_>, script: &str) -> (Vec<RecordId>, AccessPath) {
     let outcomes = session.run(script).unwrap();
     let path = outcomes[0].path().unwrap();
@@ -112,7 +117,7 @@ fn with_the_word_and_a_matching_index_the_graph_runs() {
         .unwrap();
 
     let (found, path) = read(&mut session, &format!("{NEAR_ZERO} APPROXIMATE;"));
-    assert_eq!(path, AccessPath::Index);
+    assert_eq!(path, AccessPath::Approximate);
     // On forty points along a line the walk finds the exact three. That is not
     // promised in general and is not asserted as a property — it is asserted
     // here because a graph that could not manage it on data this simple would be
@@ -143,7 +148,7 @@ fn an_index_built_for_another_distance_does_not_serve_the_read() {
         &mut session,
         "SELECT * FROM items ORDER BY vector::cosine(at, [0.5, 0.1]) LIMIT 3 APPROXIMATE;",
     );
-    assert_eq!(path, AccessPath::Index);
+    assert_eq!(path, AccessPath::Approximate);
 }
 
 #[test]
@@ -189,7 +194,7 @@ fn a_deleted_record_is_never_answered_with() {
     session.run("DELETE items:0; DELETE items:1;").unwrap();
 
     let (found, path) = read(&mut session, &format!("{NEAR_ZERO} APPROXIMATE;"));
-    assert_eq!(path, AccessPath::Index);
+    assert_eq!(path, AccessPath::Approximate);
     assert!(!found.contains(&RecordId::Int(0)), "{found:?}");
     assert!(!found.contains(&RecordId::Int(1)), "{found:?}");
     assert_eq!(found[0], RecordId::Int(2));
@@ -209,7 +214,7 @@ fn a_changed_vector_moves_the_record_in_the_graph() {
         .run("UPDATE items:39 = { at: [0.0, 0.0] };")
         .unwrap();
     let (found, path) = read(&mut session, &format!("{NEAR_ZERO} APPROXIMATE;"));
-    assert_eq!(path, AccessPath::Index);
+    assert_eq!(path, AccessPath::Approximate);
     assert!(found.contains(&RecordId::Int(39)), "{found:?}");
 }
 
@@ -255,7 +260,7 @@ fn a_record_with_no_vector_is_not_in_the_graph() {
         &mut session,
         "SELECT * FROM items ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 20 APPROXIMATE;",
     );
-    assert_eq!(path, AccessPath::Index);
+    assert_eq!(path, AccessPath::Approximate);
     for absent in [100_i64, 101, 102] {
         assert!(!found.contains(&RecordId::Int(absent)), "{found:?}");
     }

@@ -575,11 +575,18 @@ fn encode(body: &mut String, outcome: &Outcome, names: &json::Names) {
         }
         Outcome::Records {
             records,
-            path,
+            plan,
             notes,
         } => {
             body.push_str(r#"{"kind":"records","path":"#);
-            json::string(body, name_of(*path));
+            json::string(body, name_of(plan.access));
+            // The whole plan beside the one word, because the word alone cannot
+            // say which index served the read. `path` stays: it is what every
+            // client already reads, the two are rendered from the same field so
+            // they cannot disagree, and removing it would break readers for
+            // nothing.
+            body.push_str(r#","plan":"#);
+            json::write(body, &plan.to_value(), names);
             // Written only when there is something to say, so every response
             // that had nothing to report is byte-identical to what it was before
             // notes existed. A reader that wants them handles an absent key,

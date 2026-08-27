@@ -7,6 +7,8 @@
 
 use tessari_types::{RecordId, Value};
 
+use crate::plan::Plan;
+
 /// The result of one statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -21,8 +23,9 @@ pub enum Outcome {
     Records {
         /// What was found.
         records: Vec<(RecordId, Value)>,
-        /// How.
-        path: AccessPath,
+        /// How — the same structure `EXPLAIN` answers with, for the read that
+        /// actually ran.
+        plan: Plan,
         /// What the store did that the records alone do not show.
         ///
         /// Empty for almost every read, which is the point: a note is worth
@@ -70,6 +73,33 @@ pub enum AccessPath {
     /// until a text index exists to serve it; the statement does not change when
     /// one does.
     Scan,
+    /// Through a vector index, which answers with the best the graph found
+    /// rather than provably the best there is.
+    ///
+    /// Its own path rather than [`Self::Index`], because it is the one read in
+    /// this store an index answers *differently* from a scan. The answer also
+    /// carries [`Note::Approximate`]; this is the same fact where a caller
+    /// grouping by cost will look for it.
+    Approximate,
+    /// A walk from record to record along an edge table, one index read a step.
+    ///
+    /// Not [`Self::Index`], even though every step is one: which index runs is
+    /// not a choice — an edge table is given one on each endpoint when it is
+    /// declared — so reporting `index` invited the question of *which*, and
+    /// there is no answer that is not the schema.
+    Graph,
+    /// Two reads brought together on a key.
+    ///
+    /// Each side reached its own records its own way, and neither of those is
+    /// how this answer was reached. Reporting one side's path named half a read.
+    Join,
+    /// Records an inner read produced, held and then read from.
+    ///
+    /// The outer statement performed no access of its own, which is exactly what
+    /// this says. The inner read's own path is a plan of its own and is not
+    /// folded in here — a nested plan is its own feature and inventing one field
+    /// for it would describe only the shallowest case.
+    Materialised,
 }
 
 /// Something the store did on the way to an answer that the answer does not say.
@@ -157,6 +187,10 @@ impl AccessPath {
             Self::Index => "index",
             Self::Ordered => "ordered",
             Self::Scan => "scan",
+            Self::Approximate => "approximate",
+            Self::Graph => "graph",
+            Self::Join => "join",
+            Self::Materialised => "materialised",
         }
     }
 }
@@ -171,11 +205,23 @@ impl Outcome {
         }
     }
 
+    /// The plan the read took, if this outcome carries records.
+    #[must_use]
+    pub const fn plan(&self) -> Option<&Plan> {
+        match self {
+            Self::Records { plan, .. } => Some(plan),
+            _ => None,
+        }
+    }
+
     /// How the records were found, if this outcome carries records.
+    ///
+    /// The access path alone, for a caller that wants the one word and not the
+    /// structure around it.
     #[must_use]
     pub const fn path(&self) -> Option<AccessPath> {
         match self {
-            Self::Records { path, .. } => Some(*path),
+            Self::Records { plan, .. } => Some(plan.access),
             _ => None,
         }
     }

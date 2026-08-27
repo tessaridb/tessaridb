@@ -1,14 +1,12 @@
-use std::collections::BTreeMap;
-
-use tessari_ql::{Select, Source};
+use tessari_ql::{JoinSide, Select, Source};
 use tessari_storage::{Catalog, Transaction};
-use tessari_types::Value;
 
 use crate::error::Result;
+use crate::outcome::AccessPath;
 use crate::session::Session;
 
-use super::candidate::{Rows, Served};
 use super::rank::choose;
+use super::reported::Plan;
 use super::statement::{closest, nearest, ordered};
 
 impl Session<'_> {
@@ -27,43 +25,56 @@ impl Session<'_> {
     /// ceiling — when there was one that was free to learn. No invented cost: a
     /// number this store cannot know is a number it will not print, and a plan
     /// carrying a made-up estimate is how somebody comes to trust one.
+    ///
+    /// # It is the same structure the answer carries
+    ///
+    /// [`Plan`], filled here from the choice and filled by the read from the
+    /// choice it ran. The one field they can differ on is the access path, and
+    /// only where the read fell back — which the planner cannot know, because
+    /// whether an index will fill the statement's bound is the read itself. That
+    /// difference is the honest answer, and a note on the answer names it.
     pub(crate) fn explain(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
     ) -> Result<crate::outcome::Outcome> {
-        let mut plan = BTreeMap::new();
+        let plan = self.plan_of(transaction, select)?;
+        Ok(crate::outcome::Outcome::Value(plan.to_value()))
+    }
+
+    /// The plan, before it is a value.
+    fn plan_of(&self, transaction: &mut Transaction<'_>, select: &Select) -> Result<Plan> {
         match &select.from {
             // One value out of `meta`, with no table, no index and no choice.
-            Source::Node => {
-                plan.insert("access".to_owned(), Value::from("record"));
-                plan.insert("source".to_owned(), Value::from("node"));
-            }
+            Source::Node => Ok(Plan {
+                source: Some("node"),
+                ..Plan::new(AccessPath::Record)
+            }),
             // Straight to one record by its identity: there is nothing to choose.
             Source::Record(target) => {
-                plan.insert("access".to_owned(), Value::from("record"));
-                plan.insert(
-                    "table".to_owned(),
-                    Value::from(target.table.name.text.as_str()),
-                );
+                Ok(Plan::new(AccessPath::Record).on(target.table.name.text.as_str()))
             }
             Source::Table(table) => {
-                plan.insert("table".to_owned(), Value::from(table.name.text.as_str()));
+                let named = table.name.text.as_str();
                 // A read with no condition has nothing for an index to narrow —
                 // except the one shape an index answers differently from a scan,
                 // which says so by name rather than hiding inside "index".
-                if nearest(select).is_some() {
+                if let Some(walk) = nearest(select) {
                     let (_, id) = self.resolve_table(transaction, table)?;
-                    let declared = Catalog::new(transaction).indexes_on(id)?;
-                    let named = declared
-                        .iter()
-                        .find(|index| index.vector.is_some())
-                        .map(|index| index.name.clone());
-                    plan.insert("access".to_owned(), Value::from("approximate"));
-                    if let Some(name) = named {
-                        plan.insert("index".to_owned(), Value::from(name.as_str()));
+                    // Asked by path, exactly as the read asks it. Taking the
+                    // first declared index carrying a vector named a different
+                    // index than the read used whenever a table carried two.
+                    if let Some(index) = self.index_on_path(transaction, id, walk.path)?
+                        && index.vector.is_some()
+                    {
+                        return Ok(Plan {
+                            index: Some(index.name.clone()),
+                            ..Plan::new(AccessPath::Approximate).on(named)
+                        });
                     }
-                } else if let Some(place) = closest(select)
+                    return Ok(Plan::new(AccessPath::Approximate).on(named));
+                }
+                if let Some(place) = closest(select)
                     && let Some((index, _)) = {
                         let (context, id) = self.resolve_table(transaction, table)?;
                         self.index_serving_place(transaction, context, id, place.path)?
@@ -75,10 +86,13 @@ impl Session<'_> {
                     // cells and ranks what it finds. Same caveat as below — the
                     // one thing a plan cannot ask is whether the walk will fill
                     // the bound, so a read whose index runs out reports `scan`.
-                    plan.insert("access".to_owned(), Value::from("ordered"));
-                    plan.insert("shape".to_owned(), Value::from("nearest"));
-                    plan.insert("index".to_owned(), Value::from(index.name.as_str()));
-                } else if let Some(bound) = ordered(select)
+                    return Ok(Plan {
+                        shape: Some("nearest"),
+                        index: Some(index.name.clone()),
+                        ..Plan::new(AccessPath::Ordered).on(named)
+                    });
+                }
+                if let Some(bound) = ordered(select)
                     && let Some((index, _)) = {
                         let (context, id) = self.resolve_table(transaction, table)?;
                         self.index_serving_order(
@@ -96,15 +110,16 @@ impl Session<'_> {
                     // read whose index runs out first answers `scan`, because
                     // the records below the last entry are the ones the index
                     // does not hold.
-                    plan.insert("access".to_owned(), Value::from("ordered"));
-                    plan.insert("index".to_owned(), Value::from(index.name.as_str()));
-                } else {
-                    plan.insert("access".to_owned(), Value::from("scan"));
+                    return Ok(Plan {
+                        index: Some(index.name.clone()),
+                        ..Plan::new(AccessPath::Ordered).on(named)
+                    });
                 }
+                Ok(Plan::new(AccessPath::Scan).on(named))
             }
             Source::Where { table, condition } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
-                plan.insert("table".to_owned(), Value::from(table.name.text.as_str()));
+                let named = table.name.text.as_str();
                 // Asked before the candidates, because the read asks it before
                 // the candidates — and from the same function, so the two cannot
                 // come to disagree. As in the unconditioned case, whether the
@@ -122,78 +137,44 @@ impl Session<'_> {
                         bound.descending,
                     )?
                 {
-                    plan.insert("access".to_owned(), Value::from("ordered"));
-                    plan.insert("index".to_owned(), Value::from(index.name.as_str()));
-                    return Ok(crate::outcome::Outcome::Value(Value::Object(plan)));
+                    return Ok(Plan {
+                        index: Some(index.name.clone()),
+                        ..Plan::new(AccessPath::Ordered).on(named)
+                    });
                 }
                 let searched = self.searched_for(transaction, id, &[condition])?;
                 let declared = Catalog::new(transaction).indexes_on(id)?;
                 let offered = self.enumerate(transaction, condition, &declared, &searched)?;
-                match choose(offered) {
-                    Some(chosen) => {
-                        plan.insert("access".to_owned(), Value::from("index"));
-                        plan.insert("index".to_owned(), Value::from(chosen.index.name.as_str()));
-                        plan.insert(
-                            "shape".to_owned(),
-                            Value::from(chosen.served.shape().name()),
-                        );
-                        // How many of the index's fields the lookup fixes. A
-                        // separate number rather than a second `shape` word,
-                        // because `Shape`'s ordering is the ranking's tie-break
-                        // and a new variant would move plans this is only
-                        // reporting on. Equal to the index's arity is a complete
-                        // lookup — the thing §8 said could not be asked for.
-                        plan.insert(
-                            "columns".to_owned(),
-                            Value::Number(tessari_types::Number::Integer(
-                                i64::try_from(chosen.served.fixed()).unwrap_or(i64::MAX),
-                            )),
-                        );
-                        // How much of the key space a region read will touch,
-                        // which is the one cost of it a plan can know without
-                        // running it: each cell is a scan plus a lookup per
-                        // level above it. The candidate-to-result ratio is the
-                        // number that says whether the index is *working*, and
-                        // it needs the read to have happened — so it is not
-                        // invented here. A plan carrying a made-up estimate is
-                        // how somebody comes to trust one.
-                        if let Served::Region { cells, .. } = &chosen.served {
-                            plan.insert(
-                                "cells".to_owned(),
-                                Value::Number(tessari_types::Number::Integer(
-                                    i64::try_from(cells.len()).unwrap_or(i64::MAX),
-                                )),
-                            );
-                        }
-                        if let Rows::AtMost(held) = chosen.rows {
-                            plan.insert(
-                                "at_most".to_owned(),
-                                Value::Number(tessari_types::Number::Integer(
-                                    i64::try_from(held).unwrap_or(i64::MAX),
-                                )),
-                            );
-                        }
-                    }
-                    None => {
-                        plan.insert("access".to_owned(), Value::from("scan"));
-                    }
-                }
+                Ok(match choose(offered) {
+                    Some(chosen) => chosen.plan(Some(named)),
+                    None => Plan::new(AccessPath::Scan).on(named),
+                })
             }
             // A walk reads an index per step, and which index is not a choice:
             // an edge table is given one on each endpoint when it is declared.
-            Source::Traverse { .. } => {
-                plan.insert("access".to_owned(), Value::from("graph"));
-            }
-            Source::Join { .. } => {
-                plan.insert("access".to_owned(), Value::from("join"));
+            Source::Traverse { .. } => Ok(Plan::new(AccessPath::Graph)),
+            // Neither side's own path is how a joined answer is reached, so
+            // there is one word for it. What is worth naming is the index the
+            // right side would be **probed** through — the difference between a
+            // probe per left record and a map of the whole right table — and it
+            // is asked here through the same function the join asks.
+            Source::Join {
+                right, right_key, ..
+            } => {
+                let JoinSide::Table { table, .. } = right.as_ref() else {
+                    return Ok(Plan::new(AccessPath::Join));
+                };
+                let (_, id) = self.resolve_table(transaction, table)?;
+                Ok(Plan {
+                    index: crate::evaluate::ordered_index_on(transaction, id, right_key)?
+                        .map(|index| index.name),
+                    ..Plan::new(AccessPath::Join)
+                })
             }
             // The inner read has a plan of its own and this one does not
-            // describe it. Reporting a single structure that covers both is R-2,
-            // and it belongs with the note channel rather than here.
-            Source::Subquery { .. } => {
-                plan.insert("access".to_owned(), Value::from("materialised"));
-            }
+            // describe it: a nested plan is its own feature, and one field for
+            // it would describe only the shallowest case.
+            Source::Subquery { .. } => Ok(Plan::new(AccessPath::Materialised)),
         }
-        Ok(crate::outcome::Outcome::Value(Value::Object(plan)))
     }
 }

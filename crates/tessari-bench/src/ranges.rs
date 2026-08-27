@@ -154,14 +154,9 @@ fn at_width(db: &Db, width: u64, settled: Option<u64>) -> Failable<Vec<Report>> 
             "SELECT * FROM spans WHERE n >= {from} AND n < {until};"
         ))?;
         taken.push(started.elapsed());
-        if let Some(Outcome::Records {
-            records,
-            path: took,
-            ..
-        }) = outcome.last()
-        {
+        if let Some(Outcome::Records { records, plan, .. }) = outcome.last() {
             answered = records.len();
-            path = Some(took.name());
+            path = Some(plan.access.name());
         }
     }
 

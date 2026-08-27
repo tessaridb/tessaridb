@@ -165,12 +165,12 @@ fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
 /// the order — the previous wave's file owns that claim.
 fn answered(session: &mut Session<'_>, read: &str) -> (Vec<RecordId>, AccessPath) {
     let outcomes = session.run(read).unwrap();
-    let Some(Outcome::Records { records, path, .. }) = outcomes.last() else {
+    let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
     let mut ids: Vec<RecordId> = records.iter().map(|(id, _)| id.clone()).collect();
     ids.sort();
-    (ids, *path)
+    (ids, plan.access)
 }
 
 /// A slice of ten tags inside one group, written as two conjuncts.

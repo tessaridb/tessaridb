@@ -143,15 +143,16 @@ impl Store for Remote {
 /// An outcome, as a client would have received it.
 fn into_answer(outcome: &Outcome, names: Names) -> Answer {
     match outcome {
-        // The notes stop here, for the same reason they stop at the wire: an
-        // `Answer` is what a client receives, and it cannot carry a field the
-        // protocol does not encode. The embedded and HTTP surfaces report them.
-        Outcome::Records { records, path, .. } => Answer::Records {
+        // The notes stop here, and so does the plan beyond its access path, for
+        // the same reason: an `Answer` is what a client receives, and it cannot
+        // carry a field the protocol does not encode. The embedded and HTTP
+        // surfaces report both.
+        Outcome::Records { records, plan, .. } => Answer::Records {
             records: records
                 .iter()
                 .map(|(id, held)| (id.to_string(), held.clone()))
                 .collect(),
-            path: path.name().to_owned(),
+            path: plan.access.name().to_owned(),
             names,
         },
         Outcome::Value(held) => Answer::Value {

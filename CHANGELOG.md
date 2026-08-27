@@ -123,7 +123,44 @@ Unreleased. 543 conformance cases define the language and run in the build.
   one is not something an older client ignores, and carrying notes needs the
   protocol's minor version to gate them.
 
+- **`EXPLAIN` and an answer report one plan structure.** Until now there were two
+  descriptions of the same read speaking different words: a traversal explained
+  as `graph` and answered `index`, a join explained as `join` and answered
+  `index` or `scan` depending on which side got probed, a materialised source
+  explained as `materialised` and answered whatever the *inner* read had done —
+  which claimed an index the outer statement never touched. Neither report was
+  wrong; together they made the plan unusable, because comparing what a statement
+  said it would do against what it did meant translating between two
+  vocabularies.
+
+  There is now one `Plan` type, one renderer, and one function filling the fields
+  that describe a chosen index — called by the read that runs the choice and by
+  the `EXPLAIN` that only describes it. `AccessPath` gains `Approximate`,
+  `Graph`, `Join` and `Materialised` so both sides say the same word.
+
+  The two agree everywhere but one case, and that case is why both are reported.
+  Whether a descending ordered index will fill the statement's bound is the read
+  itself, so `EXPLAIN` reports the order it chose while a read whose index ran
+  out reports the scan it settled for — and the answer carries the `fell-back`
+  note naming both.
+
+  The plan reaches `Outcome::plan()` and the HTTP body as a `plan` object beside
+  the `path` word. The binary protocol still carries the access path alone; an
+  older client reads an unknown path tag as the scan, which is the one path that
+  promises nothing, so the widened vocabulary degrades rather than breaking.
+
 ### Changed — breaking
+
+- **`Outcome::Records` carries its plan instead of a bare `AccessPath`.** The
+  `path` field is now `plan: Plan`; `Outcome::path()` still answers the access
+  path alone and is unaffected, and `Outcome::plan()` is new. Embedded callers
+  that matched the variant by naming `path` read `plan.access` instead.
+
+- **A traversal, a join and a materialised source report new access paths.** They
+  answered `index` or `scan` before and now answer `graph`, `join` and
+  `materialised` — the words `EXPLAIN` already used for them. A join no longer
+  reports whether its right side was probed or scanned: neither side's path is
+  how the joined answer was reached.
 
 - **`Outcome::Records` carries a third field, `notes`.** Embedded callers that
   match it by naming both fields need `..`; callers that read `records()` and

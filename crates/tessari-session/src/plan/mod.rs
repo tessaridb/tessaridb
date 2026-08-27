@@ -29,6 +29,7 @@
 //! | [`rank`] | which of them promises to narrow the most |
 //! | [`fold`] | evaluating the record-independent parts of a statement once |
 //! | [`statement`] | what shape of read a whole statement is — nearest, ordered, bounded |
+//! | [`reported`] | the one structure both `EXPLAIN` and an answer report |
 //! | [`explain`] | reporting the plan a read would take, without taking it |
 //!
 //! The dependency runs one way: `reads` → `conjunct` → `enumerate` → `rank`,
@@ -97,6 +98,7 @@ mod explain;
 mod fold;
 mod rank;
 mod reads;
+pub(crate) mod reported;
 mod serving;
 mod statement;
 #[cfg(test)]
@@ -105,4 +107,5 @@ mod tests;
 pub(crate) use candidate::{Candidate, Served};
 pub(crate) use rank::choose;
 pub(crate) use reads::roots_read;
+pub use reported::Plan;
 pub(crate) use statement::{Bounded, Closest, Nearest, answers, bound, closest, nearest, ordered};

@@ -2419,10 +2419,30 @@ answers with the plan the read would take, without taking it:
 {"access": "index", "index": "by_email", "shape": "equality", "at_most": 1, "table": "users"}
 ```
 
-`access` is one of `record`, `index`, `ordered`, `scan`, `approximate`, `graph`
-or `join`. An index-served read also names the index and the **shape** that
-served it — `equality`, `prefix`, `range` or `terms` — and carries `at_most` when
-a ceiling was free to learn, which today means an equality on a `UNIQUE` index.
+`access` is one of `record`, `index`, `ordered`, `scan`, `approximate`, `graph`,
+`join` or `materialised`. An index-served read also names the index and the
+**shape** that served it — `equality`, `prefix`, `range` or `terms` — and carries
+`at_most` when a ceiling was free to learn, which today means an equality on a
+`UNIQUE` index.
+
+**The answer carries the same structure**, for the read that actually ran. Over
+the embedded API it is `Outcome::plan()`; over HTTP it is the `plan` object on a
+records response, beside the `path` word that response has always carried. The
+two are one type filled by one set of functions, so a plan cannot describe a
+choice the read did not make.
+
+They agree everywhere except one case, and that case is the point of reporting
+both. The planner cannot know whether a **descending ordered** index will fill
+the statement's bound — that question *is* the read — so `EXPLAIN` reports the
+order it chose while a read whose index ran out reports the `scan` it settled
+for, and the answer carries a `fell-back` note (§7b′) naming both. Making them
+agree by running the read inside `EXPLAIN` was considered and rejected: it would
+cost `EXPLAIN` the property that makes it worth having.
+
+A materialised source reports `materialised` and not the inner read's own path:
+the outer statement performed no access of its own, and saying `index` there
+claimed an index this statement never touched. The inner read's plan is a plan of
+its own, and is not folded into one field.
 
 `ordered` is a bounded read taken from an index already in that order (§5), and
 it names the index. **Descending** it is the one plan with a condition it cannot
@@ -2456,6 +2476,7 @@ half: the read says what it did, on the answer, without being asked.
 {
   "kind": "records",
   "path": "scan",
+  "plan": { "access": "scan", "table": "events" },
   "notes": [
     {
       "kind": "fell-back",

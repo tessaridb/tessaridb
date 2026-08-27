@@ -415,7 +415,7 @@ impl Session<'_> {
                 let answered = self.read(transaction, select)?;
                 Ok(Outcome::Records {
                     records: answered.records,
-                    path: answered.path,
+                    plan: answered.plan,
                     notes: answered.notes,
                 })
             }

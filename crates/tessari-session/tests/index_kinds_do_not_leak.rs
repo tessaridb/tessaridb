@@ -136,10 +136,10 @@ fn an_ordered_index_still_serves_the_equality_it_is_for() {
         .run("SELECT * FROM notes WHERE city = 'paris';")
         .unwrap();
     match answered.first() {
-        Some(Outcome::Records { records, path, .. }) => {
+        Some(Outcome::Records { records, plan, .. }) => {
             assert_eq!(records.len(), 1);
             assert_eq!(
-                format!("{path:?}"),
+                format!("{:?}", plan.access),
                 "Index",
                 "an ordered index must still be chosen for its own equality"
             );

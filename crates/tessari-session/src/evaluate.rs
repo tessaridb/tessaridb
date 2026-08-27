@@ -27,6 +27,7 @@ use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::outcome::{AccessPath, Note};
 use crate::plan;
+use crate::plan::Plan;
 use crate::rank::{Corpus, score};
 use crate::search::{Searched, matches_terms};
 use crate::session::Session;
@@ -341,7 +342,10 @@ impl Session<'_> {
         };
         let (context, id) = self.resolve_table(transaction, table)?;
         let searched = self.searched_for(transaction, id, &[condition])?;
-        let (candidates, _) = self.candidates(transaction, id, context, condition, &searched)?;
+        // No plan is reported: a delete answers with a count and has no plan to
+        // carry one on, so the table it would name is not asked for.
+        let (candidates, _) =
+            self.candidates(transaction, id, context, condition, &searched, None)?;
 
         let mut removed = 0_u64;
         for (record_id, record) in candidates {
@@ -418,7 +422,7 @@ impl Session<'_> {
                 &searched,
                 crate::shape::Topmost::keeping(&select.order, bound),
             );
-            let path = self.produce_source(
+            let plan = self.produce_source(
                 transaction,
                 select,
                 prepared,
@@ -428,13 +432,13 @@ impl Session<'_> {
             )?;
             return Ok(Answered {
                 records: crate::shape::bounded(shaping.finish(), select.start, select.limit),
-                path,
+                plan,
                 notes,
             });
         }
 
         let mut collecting = crate::consume::Collecting::new();
-        let path = self.produce_source(
+        let plan = self.produce_source(
             transaction,
             select,
             prepared,
@@ -503,7 +507,7 @@ impl Session<'_> {
         };
         Ok(Answered {
             records: crate::shape::bounded(records, select.start, select.limit),
-            path,
+            plan,
             notes,
         })
     }
@@ -634,7 +638,13 @@ impl Session<'_> {
             // (ADR-0018 §1). It needs no tenancy, so `$node` answers without a
             // `USE` — a node is not in a database.
             Source::Node => Ok((
-                Prepared::Held(vec![node_row(self.store)?], AccessPath::Record),
+                Prepared::Held(
+                    vec![node_row(self.store)?],
+                    Plan {
+                        source: Some("node"),
+                        ..Plan::new(AccessPath::Record)
+                    },
+                ),
                 Searched::default(),
             )),
             Source::Record(target) => {
@@ -647,7 +657,10 @@ impl Session<'_> {
                     None => Vec::new(),
                 };
                 Ok((
-                    Prepared::Held(found, AccessPath::Record),
+                    Prepared::Held(
+                        found,
+                        Plan::new(AccessPath::Record).on(target.table.name.text.as_str()),
+                    ),
                     Searched::default(),
                 ))
             }
@@ -661,8 +674,11 @@ impl Session<'_> {
                 direction,
                 hops,
             } => {
-                let (found, path) = self.traverse(transaction, from, *direction, hops)?;
-                Ok((Prepared::Held(found, path), Searched::default()))
+                let found = self.traverse(transaction, from, *direction, hops)?;
+                Ok((
+                    Prepared::Held(found, Plan::new(AccessPath::Graph)),
+                    Searched::default(),
+                ))
             }
             Source::Where { table, condition } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
@@ -684,7 +700,7 @@ impl Session<'_> {
                 right_key,
                 condition,
             } => {
-                let (found, path, searched) = self.join(
+                let (found, plan, searched) = self.join(
                     transaction,
                     select,
                     left,
@@ -694,19 +710,21 @@ impl Session<'_> {
                     condition.as_deref(),
                     notes,
                 )?;
-                Ok((Prepared::Held(found, path), searched))
+                Ok((Prepared::Held(found, plan), searched))
             }
             // The inner read answers first and the outer statement reads what it
-            // answered. The path reported is the inner read's own, because that
-            // is how the records were actually reached — the outer statement
-            // added no access of its own.
+            // answered. The path reported is `materialised` and not the inner
+            // read's own: the outer statement performed no access, and reporting
+            // the inner one said this statement used an index when it read from
+            // a held vector. The inner plan is a plan of its own, and one field
+            // for it would describe only the shallowest case.
             Source::Subquery { read, condition } => {
                 let inner = self.read(transaction, read)?;
                 notes.extend(inner.notes);
                 notes.extend(ceiling_reached(read, inner.records.len()));
-                let (found, path) = (inner.records, inner.path);
+                let (found, plan) = (inner.records, Plan::new(AccessPath::Materialised));
                 let Some(condition) = condition else {
-                    return Ok((Prepared::Held(found, path), Searched::default()));
+                    return Ok((Prepared::Held(found, plan), Searched::default()));
                 };
                 // Narrowed here rather than by an access path: the records are
                 // already in hand, so there is nothing left for an index to
@@ -725,7 +743,7 @@ impl Session<'_> {
                         kept.push((id, record));
                     }
                 }
-                Ok((Prepared::Held(kept, path), searched))
+                Ok((Prepared::Held(kept, plan), searched))
             }
         }
     }
@@ -744,11 +762,19 @@ impl Session<'_> {
         searched: &Searched,
         consumer: &mut dyn Consumer,
         notes: &mut Vec<Note>,
-    ) -> Result<AccessPath> {
+    ) -> Result<Plan> {
+        let named = table_named(&select.from);
+        // The table every plan below reports, resolved once: which table a read
+        // is over is a property of the statement and not of the walk that turned
+        // out to serve it.
+        let over = |access: AccessPath| Plan {
+            table: named.map(ToOwned::to_owned),
+            ..Plan::new(access)
+        };
         match prepared {
-            Prepared::Held(found, path) => {
+            Prepared::Held(found, plan) => {
                 hand_over(found, transaction, consumer)?;
-                Ok(path)
+                Ok(plan)
             }
             Prepared::Table(context, id) => {
                 // A statement that asked for an approximate ordering, over a
@@ -757,14 +783,17 @@ impl Session<'_> {
                 // scan. Every other shape falls through to the scan below, which
                 // is exact.
                 if let Some(walk) = plan::nearest(select)
-                    && let Some(found) = self.walk(transaction, context, id, &walk)?
+                    && let Some((found, index)) = self.walk(transaction, context, id, &walk)?
                 {
                     // The one place the note is not about a cost but about the
                     // answer: these records are the best the graph found, and
                     // nothing in their shape says so.
                     notes.push(Note::Approximate);
                     hand_over(found, transaction, consumer)?;
-                    return Ok(AccessPath::Index);
+                    return Ok(Plan {
+                        index: Some(index),
+                        ..over(AccessPath::Approximate)
+                    });
                 }
                 // A bounded order by distance from a place, over a field
                 // carrying a spatial index. Exact rather than approximate, and
@@ -773,9 +802,13 @@ impl Session<'_> {
                 // the ones it holds.
                 if let Some(closest) = plan::closest(select) {
                     match self.walk_to_place(transaction, context, id, &closest)? {
-                        Walked::Served(found) => {
+                        Walked::Served { found, index } => {
                             hand_over(found, transaction, consumer)?;
-                            return Ok(AccessPath::Ordered);
+                            return Ok(Plan {
+                                shape: Some("nearest"),
+                                index: Some(index),
+                                ..over(AccessPath::Ordered)
+                            });
                         }
                         Walked::Declined => notes.push(Note::FellBack {
                             from: AccessPath::Ordered,
@@ -790,9 +823,12 @@ impl Session<'_> {
                 // shape, the same two the other answers go through.
                 if let Some(bound) = plan::ordered(select) {
                     match self.walk_in_order(transaction, context, id, &bound)? {
-                        Walked::Served(found) => {
+                        Walked::Served { found, index } => {
                             hand_over(found, transaction, consumer)?;
-                            return Ok(AccessPath::Ordered);
+                            return Ok(Plan {
+                                index: Some(index),
+                                ..over(AccessPath::Ordered)
+                            });
                         }
                         // The index holds the order and ran out of entries, so
                         // the records that would fill the rest of the answer are
@@ -836,7 +872,7 @@ impl Session<'_> {
                         break;
                     }
                 }
-                Ok(AccessPath::Scan)
+                Ok(over(AccessPath::Scan))
             }
             Prepared::Filtered(context, id, condition) => {
                 // The order first, when an index holds it. A filtered read that
@@ -861,20 +897,23 @@ impl Session<'_> {
                         condition,
                         searched,
                     )? {
-                        Walked::Served(found) => {
+                        Walked::Served { found, index } => {
                             hand_over(found, transaction, consumer)?;
-                            return Ok(AccessPath::Ordered);
+                            return Ok(Plan {
+                                index: Some(index),
+                                ..over(AccessPath::Ordered)
+                            });
                         }
                         Walked::Declined => declined = true,
                         Walked::NotServed => {}
                     }
                 }
-                let (candidates, path) =
-                    self.candidates(transaction, id, context, condition, searched)?;
+                let (candidates, plan) =
+                    self.candidates(transaction, id, context, condition, searched, named)?;
                 if declined {
                     notes.push(Note::FellBack {
                         from: AccessPath::Ordered,
-                        to: path,
+                        to: plan.access,
                     });
                 }
 
@@ -899,7 +938,7 @@ impl Session<'_> {
                         break;
                     }
                 }
-                Ok(path)
+                Ok(plan)
             }
         }
     }
@@ -1096,12 +1135,17 @@ impl Session<'_> {
                 });
             }
         }
-        let path = if probed.is_some() {
-            AccessPath::Index
-        } else {
-            AccessPath::Scan
+        // `join`, whichever way the sides were read: neither side's own path is
+        // how the joined answer was reached, and reporting one of them named half
+        // a read. What is worth naming is the index the right side was **probed**
+        // through, because that is the difference between a probe per left record
+        // and a map of the whole right table — and `EXPLAIN` names it from the
+        // same `ordered_index_on`.
+        let plan = Plan {
+            index: probed.map(|(index, ..)| index.name),
+            ..Plan::new(AccessPath::Join)
         };
-        Ok((rows, path, searched))
+        Ok((rows, plan, searched))
     }
 
     /// The records worth testing, and how they were reached.
@@ -1123,7 +1167,8 @@ impl Session<'_> {
         context: crate::context::Context,
         condition: &Expr,
         searched: &Searched,
-    ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
+        named: Option<&str>,
+    ) -> Result<(Vec<(RecordId, Value)>, Plan)> {
         // Once for the statement rather than once per conjunct: which indexes a
         // table carries is one question, and it used to be asked as many times
         // as the condition had clauses.
@@ -1135,11 +1180,21 @@ impl Session<'_> {
         // whole condition unable to answer what a scan refuses.
         let visible = self.visible_in(transaction, table)?;
         if let Some(chosen) = plan::choose(offered) {
+            // Built by the candidate itself, which is the same function
+            // `EXPLAIN` calls on the candidate its own `choose` returned. The
+            // two report one structure because one function writes it.
+            let plan = chosen.plan(named);
             let found = self.serve(transaction, context, table, &chosen)?;
-            return Ok((self.records_of(found, &visible)?, AccessPath::Index));
+            return Ok((self.records_of(found, &visible)?, plan));
         }
         let scanned = transaction.scan_table(context.namespace, context.database, table)?;
-        Ok((self.records_of(scanned, &visible)?, AccessPath::Scan))
+        Ok((
+            self.records_of(scanned, &visible)?,
+            Plan {
+                table: named.map(ToOwned::to_owned),
+                ..Plan::new(AccessPath::Scan)
+            },
+        ))
     }
 
     /// Walk a vector index, when there is one that answers this read.
@@ -1155,7 +1210,7 @@ impl Session<'_> {
         context: crate::context::Context,
         table: TableId,
         wanted: &plan::Nearest<'_>,
-    ) -> Result<Option<Vec<(RecordId, Value)>>> {
+    ) -> Result<Option<Approximated>> {
         let Some(index) = self.index_on_path(transaction, table, wanted.path)? else {
             return Ok(None);
         };
@@ -1179,7 +1234,7 @@ impl Session<'_> {
                 rows.push((at.id, self.record_of(&payload, &visible)?));
             }
         }
-        Ok(Some(rows))
+        Ok(Some((rows, index.name)))
     }
 
     /// Walk a spatial index nearest-first, when there is one that answers this
@@ -1236,7 +1291,10 @@ impl Session<'_> {
         let Some(nearby) = transaction.records_by_place(&index, target, wanted.wanted)? else {
             return Ok(Walked::Declined);
         };
-        self.records_of(nearby.rows, &visible).map(Walked::Served)
+        Ok(Walked::Served {
+            found: self.records_of(nearby.rows, &visible)?,
+            index: index.name,
+        })
     }
 
     /// The spatial index that may serve an order by distance from this field,
@@ -1354,7 +1412,10 @@ impl Session<'_> {
         } else {
             transaction.records_in_ascending_order(&index, ORDERED_LEADING_FIELDS, wanted.wanted)?
         };
-        self.records_of(found, &visible).map(Walked::Served)
+        Ok(Walked::Served {
+            found: self.records_of(found, &visible)?,
+            index: index.name,
+        })
     }
 
     /// A bounded descending read **under a condition**, taken from the index
@@ -1441,7 +1502,10 @@ impl Session<'_> {
                 }
             }
             if matched.len() >= wanted.wanted {
-                return Ok(Walked::Served(matched));
+                return Ok(Walked::Served {
+                    found: matched,
+                    index: index.name,
+                });
             }
             if asking >= ceiling {
                 return Ok(Walked::Declined);
@@ -1620,7 +1684,7 @@ impl Session<'_> {
         from: &RecordTarget,
         direction: Direction,
         hops: &[Hop],
-    ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
+    ) -> Result<Vec<(RecordId, Value)>> {
         let (_, start) = self.address(transaction, from)?;
         let mut anchors = vec![RecordRef::new(start.table, start.id.clone())];
         let mut answer = Vec::new();
@@ -1699,7 +1763,7 @@ impl Session<'_> {
                 .collect();
             answer = reached.into_iter().collect();
         }
-        Ok((answer, AccessPath::Index))
+        Ok(answer)
     }
 
     /// A read standing where a value stands.
@@ -1795,7 +1859,7 @@ fn listed(kinds: &BTreeSet<&'static str>) -> String {
     }
 }
 
-fn ordered_index_on(
+pub(crate) fn ordered_index_on(
     transaction: &mut Transaction<'_>,
     table: TableId,
     key: &tessari_ql::FieldPath,
@@ -1814,7 +1878,14 @@ fn ordered_index_on(
 /// not per-record and streaming it would move the materialisation rather than
 /// remove it. Named separately so the difference is visible in the signature
 /// rather than resting on a comment.
-type Joined = (Vec<(RecordId, Value)>, AccessPath, Searched);
+type Joined = (Vec<(RecordId, Value)>, Plan, Searched);
+
+/// What a vector walk came back with, and the index that answered it.
+///
+/// No `Walked` here: every empty return is a shape this walk does not serve — no
+/// index on the path, one built for another distance, a query that is not a
+/// vector — and none of them is an index that ran out.
+type Approximated = (Vec<(RecordId, Value)>, String);
 
 /// What a read produced, and what it has to say about how.
 ///
@@ -1824,8 +1895,9 @@ type Joined = (Vec<(RecordId, Value)>, AccessPath, Searched);
 pub(crate) struct Answered {
     /// The records, in the order the statement asked for.
     pub records: Vec<(RecordId, Value)>,
-    /// How they were reached.
-    pub path: AccessPath,
+    /// How they were reached — the plan the read took, in the structure
+    /// `EXPLAIN` answers with.
+    pub plan: Plan,
     /// What the read did that the records do not show.
     pub notes: Vec<Note>,
 }
@@ -1859,8 +1931,13 @@ fn ceiling_reached(read: &Select, held: usize) -> Option<Note> {
 /// statement and never the schema, so it says `Some` for an `ORDER BY … LIMIT`
 /// over a table with no index at all.
 enum Walked {
-    /// The index answered.
-    Served(Vec<(RecordId, Value)>),
+    /// The index answered, and named itself so the plan can report which one.
+    Served {
+        /// What it came back with.
+        found: Vec<(RecordId, Value)>,
+        /// The index that served it.
+        index: String,
+    },
     /// An index holds this order and could not fill the bound.
     Declined,
     /// No index holds this order, so nothing was given up.
@@ -1882,7 +1959,21 @@ enum Prepared<'a> {
     /// reading them: one record by identity, a traversal, a join. Each is a
     /// barrier in its own right — a join builds a map of one side — so producing
     /// lazily would move the materialisation rather than remove it.
-    Held(Vec<(RecordId, Value)>, AccessPath),
+    Held(Vec<(RecordId, Value)>, Plan),
+}
+
+/// The table a source names, for the plan that reports it.
+///
+/// A traversal, a join and a materialised source name none: each reaches records
+/// from more than one place, or from a read rather than a table.
+fn table_named(source: &Source) -> Option<&str> {
+    match source {
+        Source::Table(table) | Source::Where { table, .. } => Some(table.name.text.as_str()),
+        Source::Record(target) => Some(target.table.name.text.as_str()),
+        Source::Node | Source::Traverse { .. } | Source::Join { .. } | Source::Subquery { .. } => {
+            None
+        }
+    }
 }
 
 /// This node, as the one record `$node` answers.

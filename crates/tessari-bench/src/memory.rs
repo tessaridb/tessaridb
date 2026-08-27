@@ -97,7 +97,7 @@ pub fn memory(db: &Db) -> Failable<Vec<Report>> {
     // are taken at all: the figure being sought is what the caller is holding,
     // and it stops existing the moment the answer is dropped.
     let (answered, path) = match outcome.last() {
-        Some(Outcome::Records { records, path, .. }) => (records.len(), path.name()),
+        Some(Outcome::Records { records, plan, .. }) => (records.len(), plan.access.name()),
         _ => (0, "nothing"),
     };
     drop(outcome);
@@ -217,7 +217,7 @@ fn reads_that_keep_less_than_they_touch(
         let outcome = session.run(&read)?;
         let peak = counting::peak();
         let (answered, path) = match outcome.last() {
-            Some(Outcome::Records { records, path, .. }) => (records.len(), path.name()),
+            Some(Outcome::Records { records, plan, .. }) => (records.len(), plan.access.name()),
             _ => (0, "nothing"),
         };
         drop(outcome);

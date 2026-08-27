@@ -924,7 +924,7 @@ fn dropping_a_declaration_leaves_the_data_and_removes_only_the_rule() {
 }
 
 #[test]
-fn a_traversal_is_an_index_read_and_says_so() {
+fn a_traversal_is_a_walk_and_says_so() {
     use tessari_session::AccessPath;
 
     let store = store();
@@ -939,13 +939,17 @@ fn a_traversal_is_an_index_read_and_says_so() {
         )
         .unwrap();
 
+    // `graph` rather than `index`. Every step *is* an index read, but which
+    // index is not a choice — an edge table is given one on each endpoint when it
+    // is declared — so `index` invited the question of which, and the only answer
+    // is the schema. It is also the word `EXPLAIN` has always used for a walk.
     let found = session.run("SELECT * FROM users:1->follows;").unwrap();
-    assert_eq!(found[0].path(), Some(AccessPath::Index));
+    assert_eq!(found[0].path(), Some(AccessPath::Graph));
 
     let reached = session
         .run("SELECT * FROM users:1->follows->users;")
         .unwrap();
-    assert_eq!(reached[0].path(), Some(AccessPath::Index));
+    assert_eq!(reached[0].path(), Some(AccessPath::Graph));
     let records = reached[0].records().unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(field(&records[0].1, "handle"), &Value::from("grace"));
@@ -1357,7 +1361,7 @@ fn a_projection_applies_to_every_source_and_changes_no_access_path() {
         ),
         (
             "SELECT name FROM people:1->knows->people;",
-            AccessPath::Index,
+            AccessPath::Graph,
         ),
     ] {
         let found = session.run(script).unwrap();

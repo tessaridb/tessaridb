@@ -75,10 +75,10 @@ fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
 
 fn path(session: &mut Session<'_>, read: &str) -> AccessPath {
     let outcomes = session.run(read).unwrap();
-    let Some(Outcome::Records { path, .. }) = outcomes.last() else {
+    let Some(Outcome::Records { plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
-    *path
+    plan.access
 }
 
 fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
@@ -369,15 +369,10 @@ fn a_write_in_the_same_transaction_gives_the_read_up() {
              COMMIT;",
         )
         .unwrap();
-    let Some(Outcome::Records {
-        records,
-        path: took,
-        ..
-    }) = outcomes.get(2)
-    else {
+    let Some(Outcome::Records { records, plan, .. }) = outcomes.get(2) else {
         panic!("the read answered with {:?}", outcomes.get(2));
     };
-    assert_eq!(*took, AccessPath::Scan);
+    assert_eq!(plan.access, AccessPath::Scan);
     assert_eq!(
         records.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
         vec![RecordId::Int(9), RecordId::Int(8)]

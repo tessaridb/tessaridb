@@ -236,10 +236,13 @@ fn store() -> Store {
 /// What a read answered and how it was served, in answer order.
 fn run(session: &mut Session<'_>, read: &str) -> (Vec<RecordId>, AccessPath) {
     let outcomes = session.run(read).unwrap();
-    let Some(Outcome::Records { records, path, .. }) = outcomes.last() else {
+    let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
-    (records.iter().map(|(id, _)| id.clone()).collect(), *path)
+    (
+        records.iter().map(|(id, _)| id.clone()).collect(),
+        plan.access,
+    )
 }
 
 /// The whole plan `EXPLAIN` reports, flattened into one comparable word.

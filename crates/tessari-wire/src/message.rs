@@ -219,9 +219,9 @@ fn encode_outcome_body(outcome: &Outcome, names: &Names) -> Vec<u8> {
         // "mismatch". Carrying notes needs the minor version to gate them, which
         // is its own change; until then the embedded and HTTP surfaces report
         // them and this one does not.
-        Outcome::Records { records, path, .. } => {
+        Outcome::Records { records, plan, .. } => {
             body.push(tag::RECORDS);
-            body.push(path_tag(*path));
+            body.push(path_tag(plan.access));
             put_names(&mut body, names);
             put_u32(&mut body, u32::try_from(records.len()).unwrap_or(u32::MAX));
             for (id, value) in records {
@@ -394,6 +394,10 @@ const fn path_tag(path: AccessPath) -> u8 {
         AccessPath::Index => 1,
         AccessPath::Scan => 2,
         AccessPath::Ordered => 3,
+        AccessPath::Approximate => 4,
+        AccessPath::Graph => 5,
+        AccessPath::Join => 6,
+        AccessPath::Materialised => 7,
     }
 }
 
@@ -406,6 +410,10 @@ const fn path_name(tag: u8) -> &'static str {
         0 => "record",
         1 => "index",
         3 => "ordered",
+        4 => "approximate",
+        5 => "graph",
+        6 => "join",
+        7 => "materialised",
         _ => "scan",
     }
 }
@@ -426,7 +434,7 @@ pub fn spell(id: &RecordId) -> String {
 mod tests {
     #![allow(clippy::panic)]
 
-    use tessari_session::{AccessPath, Outcome, Parameters};
+    use tessari_session::{AccessPath, Outcome, Parameters, Plan};
     use tessari_types::{Number, RecordId, RecordRef, TableId, Value};
 
     use super::{Answer, Names, Request, decode_outcome, encode_outcome};
@@ -491,7 +499,7 @@ mod tests {
             Outcome::Removed { count: 12_043 },
             Outcome::Records {
                 records: vec![(RecordId::Int(7), Value::from("ada"))],
-                path: AccessPath::Index,
+                plan: Plan::new(AccessPath::Index),
                 notes: Vec::new(),
             },
         ];
@@ -542,7 +550,7 @@ mod tests {
                 RecordId::Int(1),
                 Value::Record(RecordRef::new(table, RecordId::Int(7))),
             )],
-            path: AccessPath::Record,
+            plan: Plan::new(AccessPath::Record),
             notes: Vec::new(),
         };
         let (answer, used) = decode_outcome(&encode_outcome(&held, &names), 0).expect("an answer");

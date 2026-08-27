@@ -4,6 +4,9 @@ use tessari_geo::{Bounds, Cell, Relation};
 use tessari_storage::IndexDefinition;
 use tessari_types::Value;
 
+use crate::outcome::AccessPath;
+use crate::plan::Plan;
+
 /// What shape of test an index is being asked to answer.
 ///
 /// Ordered by how much a candidate of this shape is trusted to narrow when
@@ -177,6 +180,34 @@ pub(crate) struct Candidate {
     pub(crate) index: IndexDefinition,
     /// How many records it can produce.
     pub(crate) rows: Rows,
+}
+
+impl Candidate {
+    /// The plan this choice describes.
+    ///
+    /// One function, called by the read that runs the choice and by the
+    /// `EXPLAIN` that only describes it. Two of them would report the same
+    /// choice in different words the first time one changed, which is the whole
+    /// failure this replaces.
+    pub(crate) fn plan(&self, table: Option<&str>) -> Plan {
+        Plan {
+            table: table.map(ToOwned::to_owned),
+            index: Some(self.index.name.clone()),
+            shape: Some(self.served.shape().name()),
+            columns: Some(u64::try_from(self.served.fixed()).unwrap_or(u64::MAX)),
+            cells: match &self.served {
+                Served::Region { cells, .. } => {
+                    Some(u64::try_from(cells.len()).unwrap_or(u64::MAX))
+                }
+                _ => None,
+            },
+            at_most: match self.rows {
+                Rows::AtMost(held) => Some(held),
+                Rows::Unknown => None,
+            },
+            ..Plan::new(AccessPath::Index)
+        }
+    }
 }
 
 /// The word a shape answers under, for a plan somebody is reading.
