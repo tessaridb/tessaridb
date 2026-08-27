@@ -133,6 +133,12 @@ fn bind_statement(kind: &mut StatementKind, parameters: &Parameters) -> Result<(
         // which is the file-beside-the-store problem in a different shape.
         | StatementKind::DefineNode { .. }
         | StatementKind::DefineReplica { .. }
+        // A broker address, a group name and a mapping are written where they
+        // stand, for the reason above: a consumer whose destination arrived as a
+        // parameter is a background writer aimed by whoever last called, and
+        // unlike a node's configuration it keeps running afterwards.
+        | StatementKind::DefineConsumer { .. }
+        | StatementKind::DropConsumer { .. }
         | StatementKind::DropUser { .. }
         | StatementKind::Grant { .. }
         | StatementKind::Revoke { .. }

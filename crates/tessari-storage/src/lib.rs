@@ -29,16 +29,17 @@ mod index;
 mod log;
 mod node;
 mod reclaim;
+mod running;
 mod schema;
 mod snapshots;
 mod store;
 mod transaction;
 
 pub use catalog::{
-    AnalyzerDefinition, Catalog, DatabaseDefinition, EDGE_IN, EDGE_OUT, FieldDefinition,
-    FieldShape, GrantDefinition, IndexDefinition, IndexShape, NamespaceDefinition,
-    ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition, TableShape,
-    UserDefinition, VectorDistance, Verb,
+    AnalyzerDefinition, Catalog, ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT,
+    FieldDefinition, FieldShape, GrantDefinition, IndexDefinition, IndexShape, Mapped,
+    NamespaceDefinition, OnFailure, ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE,
+    TableDefinition, TableShape, UserDefinition, VectorDistance, Verb,
 };
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
@@ -46,6 +47,7 @@ pub use error::{Error, Result};
 pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use graph::vector_of;
 pub use reclaim::Reclaimed;
+pub use running::{Progress, Running};
 pub use store::{Health, Store};
 pub use tessari_encoding::{BUILD_VERSION, Roles};
 pub use transaction::{Nearby, RecordAddress, Region, StoredRecord, Transaction};

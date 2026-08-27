@@ -75,6 +75,8 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::AlterUser { .. } => Err(unrenderable("ALTER USER", span)),
         StatementKind::DefineNode { .. } => Err(unrenderable("DEFINE NODE", span)),
         StatementKind::DefineReplica { .. } => Err(unrenderable("DEFINE REPLICA", span)),
+        StatementKind::DefineConsumer { .. } => Err(unrenderable("DEFINE CONSUMER", span)),
+        StatementKind::DropConsumer { .. } => Err(unrenderable("DROP CONSUMER", span)),
         StatementKind::Explain(_) => Err(unrenderable("EXPLAIN", span)),
         StatementKind::Info { .. } => Err(unrenderable("INFO", span)),
         StatementKind::Backup { .. } => Err(unrenderable("BACKUP", span)),

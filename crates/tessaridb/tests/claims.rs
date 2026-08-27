@@ -133,7 +133,8 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The six corpora the engines table does not name, because they are
 /// cross-cutting rather than the work of one engine.
-const CROSS_CUTTING: [&str; 6] = [
+const CROSS_CUTTING: [&str; 7] = [
+    "consumers",
     "functions",
     "grants",
     "node",

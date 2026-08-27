@@ -258,6 +258,34 @@ impl Needs {
             StatementKind::DefineNode { .. } | StatementKind::DefineReplica { .. } => {
                 Self::AdministerStore
             }
+            // Declaring a consumer is administering, not writing — the same
+            // reasoning that puts `DEFINE USER` here. It hands a broker address
+            // and a group name to a process that will then write into somebody's
+            // table with nobody watching, which is a decision about what runs
+            // rather than about what the data looks like.
+            //
+            // `Administer` and not `AdministerStore`, because a consumer lives in
+            // the database its destination lives in: an owner of `prod.shop`
+            // should be able to declare what feeds `prod.shop.orders`. The reach
+            // check still applies, because `tables_named` reports the
+            // destination — which is the difference between this and `BACKUP`.
+            StatementKind::DefineConsumer { .. } | StatementKind::DropConsumer { .. } => {
+                Self::Administer
+            }
+            // Asking about a consumer is asking for a broker address, a group
+            // name and a running position. It **refuses rather than filters**,
+            // for `INFO FOR USER`'s reason: there is no smaller truthful answer
+            // about what a background writer is doing, and a partial one reads as
+            // the whole one.
+            //
+            // This arm has to be written rather than left to the `Info` catch-all
+            // below, and that is worth saying out loud: the catch-all means a new
+            // `InfoSubject` does **not** raise a compile error, so the ratchet
+            // that protects every other statement does not protect this one. A
+            // subject added and forgotten would be answered to a `viewer`.
+            StatementKind::Info {
+                subject: InfoSubject::Consumer(_) | InfoSubject::Consumers,
+            } => Self::Administer,
             // The other four are reads of the catalog, and what they report is
             // narrowed to what the caller could have found out anyway.
             StatementKind::Info { .. } => Self::Read,

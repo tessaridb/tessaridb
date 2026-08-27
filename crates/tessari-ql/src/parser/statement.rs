@@ -4,8 +4,9 @@ use super::Parser;
 use tessari_types::{FieldKind, Filter, Path, Step};
 
 use crate::ast::{
-    Assignment, Direction, Edit, ExprKind, FieldPath, Hop, InfoSubject, Password, Projection,
-    RangeExpr, RecordTarget, Select, Source, Statement, StatementKind, TableRef, UserChange,
+    Assignment, ConsumerSource, Direction, Edit, ExprKind, FieldMapping, FieldPath, Hop,
+    InfoSubject, OnFailure, Password, Projection, RangeExpr, RecordTarget, Select, Source,
+    Statement, StatementKind, TableRef, UserChange,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -217,9 +218,13 @@ impl Parser<'_> {
             _ if self.eat_word("users") => InfoSubject::Users,
             _ if self.eat_word("store") => InfoSubject::Store,
             _ if self.eat_word("node") => InfoSubject::Node,
+            // Plural first, as with `USERS` above, so that reading this arm in
+            // order tells you which of the two a bare word reaches.
+            _ if self.eat_word("consumers") => InfoSubject::Consumers,
+            _ if self.eat_word("consumer") => InfoSubject::Consumer(self.name()?),
             _ => {
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS` or `NODE`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `NODE`, `CONSUMER` or `CONSUMERS`",
                 ));
             }
         };
@@ -319,8 +324,9 @@ impl Parser<'_> {
             // arms consume their word, so neither may `advance` again.
             _ if self.eat_word("node") => self.define_node(),
             _ if self.eat_word("replica") => self.define_replica(),
+            _ if self.eat_word("consumer") => self.define_consumer(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE` or `REPLICA`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA` or `CONSUMER`",
             )),
         }
     }
@@ -403,6 +409,146 @@ impl Parser<'_> {
             roles,
             if_not_exists,
         })
+    }
+
+    /// ```text
+    /// DEFINE CONSUMER orders_in
+    ///     FROM 'broker-1:9092', 'broker-2:9092'
+    ///     TOPIC 'orders'
+    ///     GROUP 'shop-orders'
+    ///     FORMAT json
+    ///     INTO shop.orders
+    ///     IDENTITY order_id
+    ///     MAP amount AS total, placed.at AS placed_at
+    ///     ON FAILURE quarantine
+    ///     PARALLELISM 2
+    /// ```
+    ///
+    /// Every clause is required except `PARALLELISM`, and they are read in that
+    /// order. A fixed order rather than a free one for `DEFINE NODE`'s reason in
+    /// a stronger key: with nine clauses, accepting any order means the refusal
+    /// for a missing one can no longer name it — the parser would only be able
+    /// to say that *something* is missing, at the end, where the author has no
+    /// idea which.
+    ///
+    /// **`on_failure` has no default.** A default here is a decision about data
+    /// loss taken by whoever did not type the clause (ADR-0023 §4).
+    fn define_consumer(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+
+        self.expect_keyword(Keyword::From, "`FROM` and the brokers to read from")?;
+        let (first, _) = self.text("a broker, as text")?;
+        let mut brokers = vec![first];
+        while self.eat_punct(Punct::Comma) {
+            let (broker, _) = self.text("a broker, as text")?;
+            brokers.push(broker);
+        }
+        if !self.eat_word("topic") {
+            return Err(self.error_here("`TOPIC` and the topic to read"));
+        }
+        let (topic, _) = self.text("the topic, as text")?;
+
+        // Declared, never derived. Deriving it from the node id would be a bug
+        // that only shows up in a cluster, where every node would form its own
+        // group and every node would then consume every message.
+        if !self.eat_word("group") {
+            return Err(self.error_here("`GROUP` and the consumer group, as text"));
+        }
+        let (group, _) = self.text("the consumer group, as text")?;
+
+        if !self.eat_word("format") {
+            return Err(self.error_here("`FORMAT` and how a message becomes fields"));
+        }
+        let format = self.name()?;
+
+        if !self.eat_word("into") {
+            return Err(self.error_here("`INTO` and the table the records land in"));
+        }
+        let destination = self.table_ref()?;
+
+        // Required, and it is what makes a replayed message converge to one
+        // record instead of two — so it is the clause the at-least-once claim
+        // rests on rather than an optional nicety.
+        if !self.eat_word("identity") {
+            return Err(
+                self.error_here("`IDENTITY` and the message field carrying the record's id")
+            );
+        }
+        let identity = self.field_path()?;
+
+        if !self.eat_word("map") {
+            return Err(
+                self.error_here("`MAP` and which message fields become which record fields")
+            );
+        }
+        let mut mapping = vec![self.field_mapping()?];
+        while self.eat_punct(Punct::Comma) {
+            mapping.push(self.field_mapping()?);
+        }
+
+        self.expect_keyword(
+            Keyword::On,
+            "`ON FAILURE` and what to do with a message that cannot be applied",
+        )?;
+        if !self.eat_word("failure") {
+            return Err(self.error_here("`FAILURE`, which follows `ON` here"));
+        }
+        let on_failure = if self.eat_word("stop") {
+            OnFailure::Stop
+        } else if self.eat_word("quarantine") {
+            OnFailure::Quarantine
+        } else {
+            // Both named, and no third offered. A skip mode is the one this
+            // grammar deliberately does not have.
+            return Err(self.error_here("`STOP` or `QUARANTINE`"));
+        };
+
+        let parallelism = if self.eat_word("parallelism") {
+            Some(self.whole_number("how many consumers to run")?)
+        } else {
+            None
+        };
+
+        Ok(StatementKind::DefineConsumer {
+            name,
+            source: ConsumerSource { brokers, topic },
+            group,
+            format,
+            identity,
+            mapping,
+            destination,
+            on_failure,
+            parallelism,
+            if_not_exists,
+        })
+    }
+
+    /// `amount AS total` — one message field and what the record calls it.
+    fn field_mapping(&mut self) -> Result<FieldMapping> {
+        let from = self.field_path()?;
+        self.expect_keyword(Keyword::As, "`AS` and what the record calls the field")?;
+        Ok(FieldMapping {
+            from,
+            to: self.name()?,
+        })
+    }
+
+    /// A count standing where one is required.
+    ///
+    /// Refused rather than clamped when it does not fit or is not positive: a
+    /// clamped count is a statement that ran as something other than what it
+    /// says, which is the class of bug this grammar spends refusals to avoid.
+    fn whole_number(&mut self, expected: &'static str) -> Result<u32> {
+        let Some(Token::Number(tessari_types::Number::Integer(held))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let held = u32::try_from(*held).map_err(|_| self.error_here(expected))?;
+        if held == 0 {
+            return Err(self.error_here(expected));
+        }
+        self.advance();
+        Ok(held)
     }
 
     /// `DEFINE INDEX by_email ON users FIELDS email, name UNIQUE`
@@ -691,7 +837,13 @@ impl Parser<'_> {
                     table: self.table_ref()?,
                 })
             }
-            _ => Err(self.error_here("`TABLE`, `SPACE`, `INDEX` or `FIELD`")),
+            // Contextual, for the reason `DEFINE CONSUMER` is: `consumer` is a
+            // plausible table in an application that has customers, and nothing
+            // but a subject can stand here.
+            _ if self.eat_word("consumer") => {
+                Ok(StatementKind::DropConsumer { name: self.name()? })
+            }
+            _ => Err(self.error_here("`TABLE`, `SPACE`, `INDEX`, `FIELD` or `CONSUMER`")),
         }
     }
 

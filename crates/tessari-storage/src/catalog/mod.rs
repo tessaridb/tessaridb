@@ -21,6 +21,7 @@
 
 mod analyzer;
 mod change;
+mod consumer;
 mod definition;
 mod field;
 mod grant;
@@ -33,6 +34,7 @@ use tessari_types::{DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId,
 
 pub use analyzer::AnalyzerDefinition;
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
+pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{
     DatabaseDefinition, IndexDefinition, IndexShape, NamespaceDefinition, TableDefinition,
     TableShape, VectorDistance,

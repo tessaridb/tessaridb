@@ -256,6 +256,70 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `DEFINE CONSUMER orders_in FROM 'broker:9092' TOPIC 'orders' …`
+    ///
+    /// Ingestion that is **declared rather than scripted**: one statement says
+    /// what to read, how to read it, where it lands, and under which group, and
+    /// the node runs it because the catalog says so (ADR-0023).
+    ///
+    /// # Why one object rather than two
+    ///
+    /// The obvious alternative splits this in half — a thing that consumes and a
+    /// thing that writes — which buys composition at the price of an ordering
+    /// nobody controls: the consumer can start before its destination exists,
+    /// and the binding between them lives inside a third object where nothing
+    /// names it as a relationship. Making the destination a *field* removes that
+    /// race by construction, because a field is resolved before the consumer is
+    /// started rather than raced against it.
+    ///
+    /// # What it refuses to say
+    ///
+    /// There is no exactly-once, and there is no schema inference. Both refusals
+    /// are also reported by `INFO FOR CONSUMER`, because a guarantee documented
+    /// away from the point of configuration is one that will be misread.
+    DefineConsumer {
+        /// The consumer's catalog identity.
+        name: Name,
+        /// Where the messages come from.
+        source: ConsumerSource,
+        /// The consumer group, as written — see [`ConsumerSource`] for why this
+        /// is never derived.
+        group: String,
+        /// How a message becomes fields, as the word a statement wrote.
+        ///
+        /// Carried as written for the reason a vector distance is: which formats
+        /// exist is the store's question and not the grammar's, so an unknown
+        /// one is refused where the store knows what it knows, with the span the
+        /// author can see.
+        format: Name,
+        /// Which message field carries the record's identity.
+        ///
+        /// Required, and it is what makes a replayed message converge to one
+        /// record rather than to two — the whole reason this node may claim
+        /// at-least-once delivery with idempotent application.
+        identity: FieldPath,
+        /// Which message fields become which record fields.
+        ///
+        /// A field nobody named **does not land**. That is the anti-inference
+        /// rule stated positively: a producer adding a field changes nothing
+        /// here, where an inferred mapping would have started writing it.
+        mapping: Vec<FieldMapping>,
+        /// The table the records land in.
+        destination: TableRef,
+        /// What happens to a message that cannot be applied.
+        on_failure: OnFailure,
+        /// How many consumers this declaration runs.
+        ///
+        /// `None` reads as one, not as "decide for me".
+        parallelism: Option<u32>,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DROP CONSUMER orders_in` — stops it and forgets the declaration.
+    DropConsumer {
+        /// The name to remove.
+        name: Name,
+    },
     /// `DROP USER ada`
     DropUser {
         /// The name to remove.
@@ -485,6 +549,78 @@ pub enum InfoSubject {
     /// key: it names no table, so a grant check would pass over it vacuously,
     /// and roles and endpoints have no smaller truthful form to hand a viewer.
     Node,
+    /// `INFO FOR CONSUMER orders_in` — one consumer's declaration and its
+    /// running state on **this** node.
+    ///
+    /// Two named groups rather than one flat object, for [`InfoSubject::Node`]'s
+    /// reason: the declaration follows a backup and the running state does not,
+    /// and flattening them would make that a thing you have to remember
+    /// (ADR-0020 §3).
+    ///
+    /// It is also where the two refusals are reported — no exactly-once, no
+    /// schema inference — because the loudest complaint about the system that
+    /// has shipped this feature for years is that a consumer can be declared and
+    /// not observed, and the second loudest is that its delivery guarantee is
+    /// documented somewhere other than where a person configures it.
+    Consumer(Name),
+    /// `INFO FOR CONSUMERS` — every declared consumer, and whether it is running.
+    Consumers,
+}
+
+/// Where a consumer's messages come from.
+///
+/// The **group is declared and never derived**. It is a broker-side identity,
+/// and deriving it from the node id would be a bug that appears only in a
+/// cluster: every node would form its own group, and every node would then
+/// consume every message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsumerSource {
+    /// The brokers to reach, as written.
+    pub brokers: Vec<String>,
+    /// The topic to read.
+    pub topic: String,
+}
+
+/// One message field, and what it is called in the record.
+///
+/// Read from a path so a nested payload works, written to a plain name so the
+/// record stays flat. That asymmetry is the boundary that keeps this a mapping
+/// rather than a transformation language.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldMapping {
+    /// Where to read it in the message.
+    pub from: FieldPath,
+    /// What it is called in the record.
+    pub to: Name,
+}
+
+/// What a consumer does with a message it cannot apply.
+///
+/// Two values, and the absence of a third is the decision. A skip-N mode would
+/// let a silent default decide about data loss, and the system that offers one
+/// miscounts what it skips: given a message holding several rows it discards
+/// *the row*, not the message, so the counter does not count what its name says.
+/// A misnamed safety knob is a safety knob set wrong.
+///
+/// There is no default value either, because a default here is a decision about
+/// data loss taken by whoever did not type the clause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnFailure {
+    /// Halt the consumer and record why.
+    Stop,
+    /// Bounded retries, then park the payload where the language can find it.
+    Quarantine,
+}
+
+impl OnFailure {
+    /// The word a statement writes it as.
+    #[must_use]
+    pub const fn spelling(self) -> &'static str {
+        match self {
+            Self::Stop => "stop",
+            Self::Quarantine => "quarantine",
+        }
+    }
 }
 
 /// How an `UPDATE` changes the record it names.

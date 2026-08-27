@@ -33,6 +33,8 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::AlterUser { .. } => "ALTER USER",
         StatementKind::DefineNode { .. } => "DEFINE NODE",
         StatementKind::DefineReplica { .. } => "DEFINE REPLICA",
+        StatementKind::DefineConsumer { .. } => "DEFINE CONSUMER",
+        StatementKind::DropConsumer { .. } => "DROP CONSUMER",
         StatementKind::DropUser { .. } => "DROP USER",
         StatementKind::Grant { .. } => "GRANT",
         StatementKind::Revoke { .. } => "REVOKE",
@@ -78,6 +80,8 @@ pub const FORMS: &[&str] = &[
     "DEFINE USER",
     "DEFINE NODE",
     "DEFINE REPLICA",
+    "DEFINE CONSUMER",
+    "DROP CONSUMER",
     "DROP USER",
     "GRANT",
     "REVOKE",
@@ -152,6 +156,9 @@ mod tests {
              DEFINE USER u ROLE owner PASSWORD 'x';\
              DEFINE NODE ROLES serving;\
              DEFINE REPLICA second AT 'host:9001';\
+             DEFINE CONSUMER c FROM 'b:9092' TOPIC 't' GROUP 'g' FORMAT json \
+             INTO t IDENTITY k MAP a AS b ON FAILURE stop;\
+             DROP CONSUMER c;\
              DROP USER u;\
              GRANT read ON t TO u;\
              REVOKE read ON t FROM u;\

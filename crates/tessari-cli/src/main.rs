@@ -34,6 +34,7 @@
 
 mod arguments;
 mod bootstrap;
+mod consumers;
 mod line;
 mod logging;
 mod raw;
@@ -259,6 +260,17 @@ fn serve(db: Db, serving: &Serving, started: std::time::Instant) -> Result<Ended
     }
     eprintln!("tessaridb — there is no TLS, so trust the network");
 
+    // After both surfaces are bound and before either serves, so a node that
+    // could not take its address does not connect to a broker on the way to
+    // failing — and so a consumer that starts is a consumer on a node that is
+    // about to answer.
+    //
+    // Stopped at the stage that refuses new connections and joined before the
+    // store is dropped — see `consumers.rs` for why a `Drop` at the end of this
+    // function is neither of those moments.
+    let running = consumers::start(&db);
+    let quiet = consumers::halting(&running);
+
     // What the stages will act on, taken before either surface starts serving:
     // `serve` borrows its node for as long as it runs, so a caller that asked
     // afterwards would be asking a node that had already stopped.
@@ -307,16 +319,16 @@ fn serve(db: Db, serving: &Serving, started: std::time::Instant) -> Result<Ended
         // store, and no runtime to hold them. The watcher is a third, and it is
         // what turns a signal into the stages.
         (Some(wire), Some(http)) => std::thread::scope(|scope| {
-            scope.spawn(|| shutdown::watch(&surfaces));
+            scope.spawn(|| shutdown::watch(&surfaces, quiet.as_ref()));
             scope.spawn(|| http.serve());
             wire.serve();
         }),
         (Some(wire), None) => std::thread::scope(|scope| {
-            scope.spawn(|| shutdown::watch(&surfaces));
+            scope.spawn(|| shutdown::watch(&surfaces, quiet.as_ref()));
             wire.serve();
         }),
         (None, Some(http)) => std::thread::scope(|scope| {
-            scope.spawn(|| shutdown::watch(&surfaces));
+            scope.spawn(|| shutdown::watch(&surfaces, quiet.as_ref()));
             http.serve();
         }),
         // Unreachable through the parser, which sets `Source::Serve` only when
@@ -324,6 +336,10 @@ fn serve(db: Db, serving: &Serving, started: std::time::Instant) -> Result<Ended
         // are far enough apart to drift.
         (None, None) => return Err("--serve or --http wants an address".to_owned()),
     }
+    // Before the store, not after. Stage 1 told the consumers to stop and did
+    // not wait; this is the wait. Joining after `drop(db)` would flush the store
+    // and release its lock while threads were still writing through it.
+    consumers::stop(running);
     // Stage 4. Dropping the store is what flushes it and releases the file
     // lock, and it happens here rather than in the stages because this is what
     // owns it — the stages know about surfaces, not about a store.

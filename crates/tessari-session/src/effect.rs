@@ -123,6 +123,15 @@ impl Effect {
             // catalog record, commits in the transaction that issued it, and
             // reaches every node through the ordinary apply path (ADR-0009).
             StatementKind::DefineReplica { .. } => Self::Write,
+            // A consumer's **declaration** is a catalog record and replicates,
+            // exactly as a replica's does; whether it is running on this machine
+            // is local and is not part of the record. So both forms are writes,
+            // and a follower that received one starts its own consumer in the
+            // same group — which is the behaviour wanted, because the broker then
+            // spreads the partitions across them.
+            StatementKind::DefineConsumer { .. } | StatementKind::DropConsumer { .. } => {
+                Self::Write
+            }
 
             // Records and files. `UPDATE` and `DELETE … WHERE` read to find
             // their targets and then change them, which is exactly the shape a

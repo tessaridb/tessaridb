@@ -109,9 +109,10 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Namespace
             | InfoSubject::Database
             | InfoSubject::Users
-            | InfoSubject::Node => {}
+            | InfoSubject::Node
+            | InfoSubject::Consumers => {}
             InfoSubject::Table(table) => erase_table(table),
-            InfoSubject::User(name) => erase_name(name),
+            InfoSubject::User(name) | InfoSubject::Consumer(name) => erase_name(name),
         },
         StatementKind::DefineAnalyzer { name, .. } => erase_name(name),
         StatementKind::DefineUser {
@@ -134,6 +135,24 @@ fn erase_statement(statement: &mut Statement) {
             erase_name(name);
             erase_names(roles.as_deref_mut());
         }
+        StatementKind::DefineConsumer {
+            name,
+            format,
+            identity,
+            mapping,
+            destination,
+            ..
+        } => {
+            erase_name(name);
+            erase_name(format);
+            erase_path(identity);
+            for pair in mapping {
+                erase_path(&mut pair.from);
+                erase_name(&mut pair.to);
+            }
+            erase_table(destination);
+        }
+        StatementKind::DropConsumer { name } => erase_name(name),
         StatementKind::Grant {
             verbs,
             table,

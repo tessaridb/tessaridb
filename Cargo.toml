@@ -26,6 +26,7 @@ tessaridb = { path = "crates/tessaridb", version = "0.0.1-alpha" }
 tessari-backup = { path = "crates/tessari-backup", version = "0.0.1-alpha" }
 tessari-wire = { path = "crates/tessari-wire", version = "0.0.1-alpha" }
 tessari-http = { path = "crates/tessari-http", version = "0.0.1-alpha" }
+tessari-ingest = { path = "crates/tessari-ingest", version = "0.0.1-alpha" }
 tessari-serve = { path = "crates/tessari-serve", version = "0.0.1-alpha" }
 
 thiserror = "2"

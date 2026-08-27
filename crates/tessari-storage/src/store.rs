@@ -71,6 +71,12 @@ impl Health {
 pub struct Store {
     backend: Arc<dyn KvBackend>,
     snapshots: Arc<Registry>,
+    /// What this process is doing with the declared consumers.
+    ///
+    /// Shared like the snapshot registry and for the same reason: a session
+    /// answering `INFO FOR CONSUMER` and the thread doing the consuming must be
+    /// looking at one registry, not at two that agree until they do not.
+    running: Arc<crate::running::Running>,
 }
 
 impl Store {
@@ -96,6 +102,7 @@ impl Store {
         Ok(Self {
             backend,
             snapshots: Arc::new(Registry::default()),
+            running: Arc::new(crate::running::Running::default()),
         })
     }
 
@@ -125,6 +132,16 @@ impl Store {
     /// or membership this build does not know.
     pub fn node_identity(&self) -> Result<NodeIdentity> {
         crate::node::read(&self.backend)?.ok_or(Error::NoIdentity)
+    }
+
+    /// What this process is doing with the consumers the catalog declares.
+    ///
+    /// Empty until the runner starts something, and empty again after a restart
+    /// — nothing here is persisted, because a persisted `running` flag outlives
+    /// the thread it describes and the next process reads it as true.
+    #[must_use]
+    pub fn running(&self) -> &Arc<crate::running::Running> {
+        &self.running
     }
 
     /// Change what this node is for, and where it is reached.

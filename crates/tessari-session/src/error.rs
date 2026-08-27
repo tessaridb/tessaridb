@@ -471,6 +471,20 @@ pub enum Error {
         /// Where they asked.
         span: Span,
     },
+    /// Two message fields mapped onto one record field.
+    ///
+    /// Refused rather than resolved by order, because there is no order here
+    /// that is not arbitrary: the mapping is a set of pairs, and whichever one
+    /// happened to be applied last would win silently on every message.
+    #[error(
+        "{field:?} is mapped more than once, so which message field wins is undefined (at {span})"
+    )]
+    DuplicateMapping {
+        /// The record field named twice.
+        field: String,
+        /// Where the second one was written.
+        span: Span,
+    },
 
     /// A token whose user has since been changed or removed.
     ///

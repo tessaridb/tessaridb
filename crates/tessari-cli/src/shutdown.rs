@@ -108,6 +108,11 @@ fn wanted() -> bool {
 /// leaving the caller to close the store — which is stage 4 and is the caller's
 /// because the caller is what owns it.
 ///
+/// `quiet` stops whatever writes in the background — the declared stream
+/// consumers — at stage 1, beside the listeners. It is a closure rather than a
+/// surface because the stages' vocabulary does not fit: nothing accepts a
+/// consumer, nothing counts one in flight, and there is no listener to wake.
+///
 /// # The order is the substance
 ///
 /// The node says **not ready** before it refuses anything, so whatever routes
@@ -117,7 +122,7 @@ fn wanted() -> bool {
 /// is not punished for a deployment. Subscriptions come **after** the drain
 /// because they never end on their own, and waiting for one in stage 2 would
 /// mean the drain never completes.
-pub fn watch(surfaces: &[Surface]) {
+pub fn watch(surfaces: &[Surface], quiet: &(dyn Fn() + Send + Sync)) {
     while !wanted() {
         std::thread::park_timeout(GLANCE);
     }
@@ -149,6 +154,18 @@ pub fn watch(surfaces: &[Surface]) {
     for surface in surfaces {
         (surface.wake)();
     }
+    // And the background writers stop taking new work at the same moment, for
+    // the same reason. They are not a `Surface`: nothing accepts them, nothing
+    // counts them in flight, and no wake reaches them — what they share with the
+    // listeners is only this instant. A consumer left running past here keeps
+    // writing while the node has been telling its load balancer it is not ready,
+    // and the drain below would be waiting on requests that have nothing to do
+    // with it.
+    //
+    // This does not wait. Each consumer finishes the batch it is in and returns;
+    // the join belongs to whoever owns the handle, and happens before the store
+    // is dropped.
+    quiet();
 
     // Stage 2. Requests only. Feeds are stage 3 and were moved off this count
     // when they became feeds, which is what lets this finish at all.

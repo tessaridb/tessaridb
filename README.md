@@ -13,7 +13,7 @@ products around them.
 [![version](https://img.shields.io/badge/version-0.0.1--alpha-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-463%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-476%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/TessariDB/TessariDB-protocol) ·
@@ -122,6 +122,7 @@ possible rather than aspirational.
 |---|---|
 | **Transactions** | snapshot isolation on the commit log, `BEGIN` · `COMMIT` · `CANCEL` |
 | **Real-time** | change subscriptions as a first-class feature — over the wire and over a WebSocket |
+| **Stream ingestion** | `DEFINE CONSUMER` — one statement says what to read, where it lands and under which group, and the node runs it; at-least-once, never exactly-once |
 | **Multi-tenant** | namespaces and databases, users, roles, `GRANT` and `REVOKE` per database |
 | **Four ways in** | embedded library · `tessaridb` CLI · HTTP + WebSocket · a framed binary wire protocol |
 | **Operable** | health and readiness endpoints, Prometheus metrics, graceful drain, log-as-backup with replay-as-restore |
@@ -1003,6 +1004,7 @@ crates/
   tessari-http                the HTTP and WebSocket surface
   tessari-wire                the wire protocol
   tessari-serve               stopping a serving process in the order the stages require
+  tessari-ingest              running the declared stream consumers: source, shaping, runner
   tessari-backup              log as backup, replay as restore
   tessari-conformance         the executable definition of TessariQL: corpora and runner
   tessari-cli          bin    `tessaridb` — a prompt and a script runner

@@ -60,6 +60,14 @@ pub const GRANTS: TableId = TableId::new(10);
 /// log; who *this node* is must not, so it does not (see `crate::node`).
 pub const REPLICAS: TableId = TableId::new(11);
 
+/// Declared stream consumers, keyed by consumer id.
+///
+/// The **declaration** only. Whether this process is running one, and where it
+/// had reached when it last committed, are facts about this machine and live in
+/// `META` beside the node's own identity — the same split ADR-0018 makes for a
+/// replica, applied to the two halves of one object.
+pub const CONSUMERS: TableId = TableId::new(12);
+
 /// The first id handed out at any level. Zero belongs to the system.
 pub const FIRST_ID: u32 = 1;
 
@@ -88,6 +96,8 @@ pub enum Level {
     User,
     /// Known peers.
     Replica,
+    /// Declared stream consumers.
+    Consumer,
 }
 
 impl Level {
@@ -103,6 +113,7 @@ impl Level {
             Self::Analyzer => "analyzer",
             Self::User => "user",
             Self::Replica => "replica",
+            Self::Consumer => "consumer",
         }
     }
 
@@ -122,6 +133,7 @@ impl Level {
             Self::Analyzer => "an",
             Self::User => "us",
             Self::Replica => "rp",
+            Self::Consumer => "cs",
         }
     }
 }
@@ -145,7 +157,7 @@ mod tests {
         // from here until it was noticed while adding `REPLICAS`.
         let ids = [
             NAMESPACES, DATABASES, TABLES, NAMES, ALLOCATORS, INDEXES, FIELDS, ANALYZERS, USERS,
-            GRANTS, REPLICAS,
+            GRANTS, REPLICAS, CONSUMERS,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(
@@ -169,6 +181,7 @@ mod tests {
             Level::Analyzer,
             Level::User,
             Level::Replica,
+            Level::Consumer,
         ];
         for (index, level) in levels.iter().enumerate() {
             for other in &levels[index.saturating_add(1)..] {

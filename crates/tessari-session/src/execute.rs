@@ -2,10 +2,13 @@
 
 use std::collections::BTreeMap;
 use tessari_encoding::{Roles, decode_payload, encode_payload};
-use tessari_ql::{Assignment, Edit, FieldPath, Name, RecordTarget, Span, StatementKind, TableRef};
+use tessari_ql::{
+    Assignment, ConsumerSource, Edit, FieldMapping, FieldPath, Name, RecordTarget, Span,
+    StatementKind, TableRef,
+};
 use tessari_storage::{
-    Catalog, EDGE_IN, EDGE_OUT, FieldShape, IndexDefinition, IndexShape, RecordAddress, TableShape,
-    Transaction, VectorDistance,
+    Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, FieldShape, IndexDefinition, IndexShape,
+    Mapped, OnFailure, RecordAddress, TableShape, Transaction, VectorDistance,
 };
 
 use tessari_types::{
@@ -17,6 +20,30 @@ use crate::evaluate::{key_bound, within};
 use crate::geometry::on_the_grid;
 use crate::outcome::Outcome;
 use crate::session::Session;
+
+/// The one message format this store reads.
+///
+/// Named rather than written twice, because the refusal below and the reader
+/// that acts on it have to mean the same word.
+const FORMAT_JSON: &str = "json";
+
+/// A `DEFINE CONSUMER` statement's parts, carried together.
+///
+/// Nine fields is more than a function signature should take, and the grouping
+/// is not only clippy's preference: passing them as one borrow means a field
+/// added to the statement cannot be silently dropped on the way to the catalog,
+/// which is exactly the failure a long positional argument list invites.
+struct Declared<'a> {
+    name: &'a Name,
+    source: &'a ConsumerSource,
+    group: &'a str,
+    format: &'a Name,
+    identity: &'a FieldPath,
+    mapping: &'a [FieldMapping],
+    destination: &'a TableRef,
+    on_failure: tessari_ql::OnFailure,
+    parallelism: Option<u32>,
+}
 
 impl Session<'_> {
     pub(crate) fn execute(
@@ -119,6 +146,33 @@ impl Session<'_> {
                 roles.as_deref(),
                 *if_not_exists,
             ),
+            StatementKind::DefineConsumer {
+                name,
+                source,
+                group,
+                format,
+                identity,
+                mapping,
+                destination,
+                on_failure,
+                parallelism,
+                if_not_exists,
+            } => self.define_consumer(
+                transaction,
+                &Declared {
+                    name,
+                    source,
+                    group,
+                    format,
+                    identity,
+                    mapping,
+                    destination,
+                    on_failure: *on_failure,
+                    parallelism: *parallelism,
+                },
+                *if_not_exists,
+            ),
+            StatementKind::DropConsumer { name } => self.drop_consumer(transaction, name, span),
             StatementKind::AlterUser { name, change } => {
                 self.alter_user(transaction, name, change, span)
             }
@@ -613,6 +667,120 @@ impl Session<'_> {
         // asked for or declares nothing.
         let roles = roles.map(named_roles).transpose()?.unwrap_or(Roles::NONE);
         Catalog::new(transaction).create_replica(&name.text, endpoint, roles)?;
+        Ok(Outcome::Done)
+    }
+
+    /// Declare a consumer, after checking everything it names actually exists.
+    ///
+    /// The order matters and is the same one `DEFINE REPLICA` uses for its
+    /// roles: everything that can be refused is refused **before** the name is
+    /// claimed, so a statement either declares the consumer it was asked for or
+    /// declares nothing. Here that covers three things a mistyped statement gets
+    /// wrong — an unknown format, a destination that does not exist, and a
+    /// mapping that names the same record field twice.
+    fn define_consumer(
+        &self,
+        transaction: &mut Transaction<'_>,
+        declared: &Declared<'_>,
+        if_not_exists: bool,
+    ) -> Result<Outcome> {
+        if if_not_exists
+            && Catalog::new(transaction)
+                .consumers()?
+                .iter()
+                .any(|found| found.name == declared.name.text)
+        {
+            return Ok(Outcome::Done);
+        }
+
+        // Refused where the store knows what it knows, with the span the author
+        // can see — the rule a vector distance and a node role already follow.
+        // There is one format today, and an unknown one is a consumer that would
+        // start and then fail on its first message rather than at declaration.
+        if declared.format.text != FORMAT_JSON {
+            return Err(Error::Unknown {
+                entity: "message format",
+                name: declared.format.text.clone(),
+                span: declared.format.span,
+            });
+        }
+
+        // The destination is resolved rather than remembered, which is what
+        // removes the race the two-object design cannot: a consumer whose
+        // destination does not exist is refused here instead of starting and
+        // discovering it later, with messages already read.
+        let (context, destination) = self.resolve_table(transaction, declared.destination)?;
+
+        let mut mapping = Vec::with_capacity(declared.mapping.len());
+        for pair in declared.mapping {
+            // Two message fields landing on one record field is a mapping whose
+            // result depends on which one is applied last. Refused rather than
+            // ordered, because there is no ordering that is not arbitrary.
+            if mapping.iter().any(|held: &Mapped| held.to == pair.to.text) {
+                return Err(Error::DuplicateMapping {
+                    field: pair.to.text.clone(),
+                    span: pair.to.span,
+                });
+            }
+            mapping.push(Mapped {
+                from: pair.from.path.to_string(),
+                to: pair.to.text.clone(),
+            });
+        }
+
+        let definition = ConsumerDefinition {
+            // Replaced by the catalog when the record is written; the field
+            // exists on the way in only because the definition is one type.
+            id: 0,
+            name: declared.name.text.clone(),
+            brokers: declared.source.brokers.clone(),
+            topic: declared.source.topic.clone(),
+            group: declared.group.to_owned(),
+            format: declared.format.text.clone(),
+            identity: declared.identity.path.to_string(),
+            mapping,
+            namespace: context.namespace,
+            database: context.database,
+            destination,
+            on_failure: match declared.on_failure {
+                tessari_ql::OnFailure::Stop => OnFailure::Stop,
+                tessari_ql::OnFailure::Quarantine => OnFailure::Quarantine,
+            },
+            // `None` reads as one, not as "decide for me". The parser has
+            // already refused a zero, so this cannot be a consumer that runs
+            // nothing.
+            parallelism: declared.parallelism.unwrap_or(1),
+        };
+        // A name already taken is refused by the catalog itself, which is where
+        // every other declaration's collision is decided.
+        Catalog::new(transaction).create_consumer(&definition)?;
+        Ok(Outcome::Done)
+    }
+
+    /// Forget a consumer.
+    ///
+    /// Removing the declaration is all this does here. Stopping whatever is
+    /// running is the runner's job, and it learns of the change the same way a
+    /// follower does — by reading the catalog — rather than by being called from
+    /// inside a transaction that has not committed yet.
+    fn drop_consumer(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let found = Catalog::new(transaction)
+            .consumers()?
+            .into_iter()
+            .find(|held| held.name == name.text);
+        let Some(consumer) = found else {
+            return Err(Error::Unknown {
+                entity: "consumer",
+                name: name.text.clone(),
+                span,
+            });
+        };
+        Catalog::new(transaction).drop_consumer(&consumer)?;
         Ok(Outcome::Done)
     }
 

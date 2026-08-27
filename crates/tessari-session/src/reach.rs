@@ -44,6 +44,10 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // are `Needs::Administer`, decided before this list is consulted.
         | StatementKind::DefineNode { .. }
         | StatementKind::DefineReplica { .. }
+        // Forgetting a consumer names no table. Declaring one does, and it is
+        // listed below rather than here — see the arm that returns its
+        // destination.
+        | StatementKind::DropConsumer { .. }
         | StatementKind::Begin
         | StatementKind::Commit
         | StatementKind::Cancel
@@ -62,6 +66,16 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         StatementKind::Info {
             subject: InfoSubject::Table(table),
         } => vec![table],
+
+        // A consumer names the table it will write into, and that is the whole
+        // reason it appears here at all: without it the grant loop would pass
+        // over `DEFINE CONSUMER` vacuously, and a caller could point a
+        // background writer at a table they were never granted — the `BACKUP`
+        // hole again, in a statement that keeps writing after it is issued.
+        //
+        // It is the destination and not the brokers because a broker is not a
+        // table; what this store must check is where the records land.
+        StatementKind::DefineConsumer { destination, .. } => vec![destination],
 
         // The remaining subjects name **no** table, and that emptiness is the
         // `BACKUP` shape — a loop reading "every table it names is granted"

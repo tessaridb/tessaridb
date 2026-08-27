@@ -219,6 +219,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::FileIsIncomplete { .. } => "FileIsIncomplete",
         Error::NotWritable { .. } => "NotWritable",
         Error::ManyWritablePeers { .. } => "ManyWritablePeers",
+        Error::DuplicateMapping { .. } => "DuplicateMapping",
         _ => "Unnamed",
     }
 }

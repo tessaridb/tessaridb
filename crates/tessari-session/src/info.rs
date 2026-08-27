@@ -38,8 +38,8 @@ use std::collections::BTreeMap;
 
 use tessari_ql::{InfoSubject, Name, Span, TableRef};
 use tessari_storage::{
-    BUILD_VERSION, Catalog, FieldDefinition, GrantDefinition, IndexDefinition, ReplicaDefinition,
-    TableDefinition, Transaction, UserDefinition,
+    BUILD_VERSION, Catalog, ConsumerDefinition, FieldDefinition, GrantDefinition, IndexDefinition,
+    Progress, ReplicaDefinition, TableDefinition, Transaction, UserDefinition,
 };
 use tessari_types::{DatabaseId, NamespaceId, TableId, Value};
 
@@ -65,6 +65,8 @@ impl Session<'_> {
             InfoSubject::User(name) => self.info_user(transaction, name, span)?,
             InfoSubject::Users => self.info_users(transaction)?,
             InfoSubject::Node => self.info_node(transaction)?,
+            InfoSubject::Consumer(name) => self.info_consumer(transaction, name, span)?,
+            InfoSubject::Consumers => self.info_consumers(transaction)?,
         };
         Ok(Outcome::Value(Value::Object(report)))
     }
@@ -372,6 +374,220 @@ impl Session<'_> {
             ),
         ]))
     }
+
+    /// One consumer: what was declared, what this process is doing with it, and
+    /// what it does not promise.
+    ///
+    /// Three named groups rather than one flat object, for `INFO FOR NODE`'s
+    /// reason plus one of its own:
+    ///
+    /// - `declared` is what a backup carries and what every node agrees on;
+    /// - `running` is this process only, and is empty on a node that has not
+    ///   started it;
+    /// - `guarantees` is here because the loudest failure of systems that ship
+    ///   this feature is not a bug, it is that their delivery semantics are
+    ///   documented somewhere other than where a person configures the thing.
+    ///   Somebody reading this output is configuring it right now.
+    fn info_consumer(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let found = Catalog::new(transaction)
+            .consumers()?
+            .into_iter()
+            .find(|held| held.name == name.text);
+        let Some(consumer) = found else {
+            return Err(Error::Unknown {
+                entity: "consumer",
+                name: name.text.clone(),
+                span,
+            });
+        };
+        let destination = self.named_table(transaction, &consumer)?;
+        Ok(BTreeMap::from([
+            (
+                "declared".to_owned(),
+                described_consumer(&consumer, &destination),
+            ),
+            (
+                "running".to_owned(),
+                running_state(self.store.running().progress(&consumer.name).as_ref()),
+            ),
+            ("guarantees".to_owned(), guarantees()),
+        ]))
+    }
+
+    /// Every declared consumer, with whether this process is running it.
+    ///
+    /// The counters are left to `INFO FOR CONSUMER <name>`: this is the listing
+    /// an operator reads to find out *which* consumer to ask about, and a table
+    /// of every partition position would bury that.
+    fn info_consumers(&self, transaction: &mut Transaction<'_>) -> Result<BTreeMap<String, Value>> {
+        let declared = Catalog::new(transaction).consumers()?;
+        let mut described = Vec::with_capacity(declared.len());
+        for consumer in declared {
+            let running = self.store.running().progress(&consumer.name).is_some();
+            described.push(Value::Object(BTreeMap::from([
+                ("name".to_owned(), Value::from(consumer.name.as_str())),
+                ("topic".to_owned(), Value::from(consumer.topic.as_str())),
+                ("group".to_owned(), Value::from(consumer.group.as_str())),
+                ("running".to_owned(), Value::Bool(running)),
+            ])));
+        }
+        Ok(BTreeMap::from([(
+            "consumers".to_owned(),
+            Value::Array(described),
+        )]))
+    }
+
+    /// The destination, written the way a statement would name it.
+    ///
+    /// Resolved back from ids rather than stored as text, so a table renamed
+    /// under a consumer reports its new name instead of the one that was typed.
+    fn named_table(
+        &self,
+        transaction: &mut Transaction<'_>,
+        consumer: &ConsumerDefinition,
+    ) -> Result<String> {
+        let named = Catalog::new(transaction)
+            .tables_in(consumer.namespace, consumer.database)?
+            .into_iter()
+            .find(|table| table.id == consumer.destination)
+            .map(|table| table.name);
+        // A destination that has been dropped is reported as gone rather than
+        // omitted: a consumer writing into nothing is the condition an operator
+        // is looking for, and a missing field reads as a display bug.
+        Ok(named.unwrap_or_else(|| "<dropped>".to_owned()))
+    }
+}
+
+/// What a consumer promises, and what it refuses to.
+///
+/// Built per answer rather than held in a constant, because a [`Value`] cannot
+/// be one — and the cost is irrelevant: this runs once per administrative
+/// statement, not once per record.
+///
+/// It is part of the report rather than of the documentation alone because the
+/// failure being avoided is a documented one: the system that has shipped this
+/// feature longest states its delivery guarantee in a guide and a design
+/// proposal, and *not* on the page somebody reads while configuring a consumer.
+/// The reader of this output is configuring one right now.
+fn guarantees() -> Value {
+    Value::Object(BTreeMap::from([
+        ("delivery".to_owned(), Value::from("at-least-once")),
+        (
+            "idempotence".to_owned(),
+            Value::from(
+                "a replayed message converges to one record, because the identity field \
+                 makes the write a compare-and-set",
+            ),
+        ),
+        (
+            "exactly_once".to_owned(),
+            Value::from(
+                "not offered: the store commit and the broker offset commit are two \
+                 commits into two systems, and the store's comes first, which chooses \
+                 duplicates over loss",
+            ),
+        ),
+        (
+            "schema".to_owned(),
+            Value::from("declared, never inferred: a message field nobody mapped does not land"),
+        ),
+    ]))
+}
+
+/// One consumer's declaration, as an object.
+fn described_consumer(consumer: &ConsumerDefinition, destination: &str) -> Value {
+    let brokers = consumer
+        .brokers
+        .iter()
+        .map(|broker| Value::from(broker.as_str()))
+        .collect();
+    let mapping = consumer
+        .mapping
+        .iter()
+        .map(|pair| {
+            Value::Object(BTreeMap::from([
+                ("from".to_owned(), Value::from(pair.from.as_str())),
+                ("to".to_owned(), Value::from(pair.to.as_str())),
+            ]))
+        })
+        .collect();
+    Value::Object(BTreeMap::from([
+        ("name".to_owned(), Value::from(consumer.name.as_str())),
+        ("brokers".to_owned(), Value::Array(brokers)),
+        ("topic".to_owned(), Value::from(consumer.topic.as_str())),
+        ("group".to_owned(), Value::from(consumer.group.as_str())),
+        ("format".to_owned(), Value::from(consumer.format.as_str())),
+        (
+            "identity".to_owned(),
+            Value::from(consumer.identity.as_str()),
+        ),
+        ("mapping".to_owned(), Value::Array(mapping)),
+        ("destination".to_owned(), Value::from(destination)),
+        (
+            "on_failure".to_owned(),
+            Value::from(consumer.on_failure.spelling()),
+        ),
+        (
+            "parallelism".to_owned(),
+            Value::Number(tessari_types::Number::Integer(i64::from(
+                consumer.parallelism,
+            ))),
+        ),
+    ]))
+}
+
+/// What this process is doing, or that it is doing nothing.
+fn running_state(progress: Option<&Progress>) -> Value {
+    let Some(progress) = progress else {
+        // Named rather than left as an absent field, because "this node is not
+        // running it" is the answer an operator is most often looking for, and
+        // an empty object would read as "no information".
+        return Value::Object(BTreeMap::from([("here".to_owned(), Value::Bool(false))]));
+    };
+    let positions = progress
+        .positions
+        .iter()
+        .map(|(partition, offset)| {
+            Value::Object(BTreeMap::from([
+                (
+                    "partition".to_owned(),
+                    Value::Number(tessari_types::Number::Integer(i64::from(*partition))),
+                ),
+                (
+                    "offset".to_owned(),
+                    Value::Number(tessari_types::Number::Integer(*offset)),
+                ),
+            ]))
+        })
+        .collect();
+    Value::Object(BTreeMap::from([
+        ("here".to_owned(), Value::Bool(true)),
+        (
+            "applied".to_owned(),
+            Value::Number(tessari_types::Number::Integer(
+                i64::try_from(progress.applied).unwrap_or(i64::MAX),
+            )),
+        ),
+        (
+            "quarantined".to_owned(),
+            Value::Number(tessari_types::Number::Integer(
+                i64::try_from(progress.quarantined).unwrap_or(i64::MAX),
+            )),
+        ),
+        (
+            "last_error".to_owned(),
+            progress
+                .last_error
+                .as_deref()
+                .map_or(Value::Null, Value::from),
+        ),
+        ("positions".to_owned(), Value::Array(positions)),
+    ]))
 }
 
 /// One peer, as the catalog holds it.
