@@ -57,7 +57,7 @@ SELECT count(*) AS held, max(level) AS peak FROM readings;
 --- expect: rows 1
 
 --- case: a retention policy is a statement, not a declaration
-DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z';
+DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z' LIMIT ALL;
 --- expect: ok
 
 --- case: and it says how many it removed

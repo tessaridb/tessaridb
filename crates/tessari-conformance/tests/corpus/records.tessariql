@@ -265,7 +265,7 @@ SELECT time::bucket(level, 1h) AS window FROM readings;
 # the versions.
 
 --- case: a conditional delete removes what the condition holds for and says how many
-DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z';
+DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z' LIMIT ALL;
 --- expect: ok
 
 --- case: what it removed is gone
@@ -273,8 +273,21 @@ SELECT * FROM readings;
 --- expect: rows 2
 
 --- case: a condition nothing satisfies removes nothing and is not an error
-DELETE FROM readings WHERE at < datetime '2020-01-01T00:00:00Z';
+DELETE FROM readings WHERE at < datetime '2020-01-01T00:00:00Z' LIMIT ALL;
 --- expect: ok
+
+# The bound is required. `LIMIT ALL` above is how a retention policy says it
+# means the whole matched set; the refusal below is what stands between a
+# mistyped predicate and an empty table. It is refused for being unbounded, not
+# for what it matches — so the condition here holds for every record left.
+
+--- case: a conditional delete without a bound is refused
+DELETE FROM readings WHERE level >= 0;
+--- expect: error UnexpectedToken
+
+--- case: the refusal removed nothing
+SELECT * FROM readings;
+--- expect: rows 2
 
 --- case: the single-record form still means what it always did
 DELETE readings:4;
@@ -284,6 +297,11 @@ SELECT * FROM readings;
 --- case: a delete without `FROM` reads its argument as an identity
 DELETE FROM readings;
 --- expect: error UnexpectedToken
+
+--- case: a numeric bound removes at most that many
+DELETE FROM readings WHERE level >= 0 LIMIT 1;
+SELECT * FROM readings;
+--- expect: rows 0
 
 # `UPDATE … SET` — changing named routes rather than replacing the record. The
 # right-hand sides all see the record as it was, so a swap swaps.

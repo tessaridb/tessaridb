@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 511 conformance cases define the language and run in the build.
+Unreleased. 514 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -49,6 +49,27 @@ Unreleased. 511 conformance cases define the language and run in the build.
   is a value to use — and everywhere else they stay different questions. It
   binds tighter than a comparison and looser than arithmetic, and the right side
   is evaluated only when it is needed.
+
+### Changed — breaking
+
+- **A conditional delete must now state how much it may remove.**
+  `DELETE FROM t WHERE …` takes either `LIMIT n` or `LIMIT ALL`, and a statement
+  carrying neither is refused before it runs. Previously it accepted no bound at
+  all, so a predicate wrong by one character emptied the table with nothing
+  between the parser and the store.
+
+  This is the only `LIMIT` in the language that is not optional. The asymmetry is
+  the point: a read that omits a bound answers with more rows than the caller
+  expected, and a delete that omits one destroys data. `LIMIT ALL` costs one word
+  and is how a retention policy says the whole matched set is what it meant.
+
+  `LIMIT n` bounds **what is removed**, not what is examined — the condition
+  decides first, so the statement means the same thing whichever index answered
+  it.
+
+  **To upgrade:** append `LIMIT ALL` to every existing `DELETE FROM … WHERE …`
+  to keep its current behaviour, or a numeric bound where one is wanted. Nothing
+  else changes; the single-record `DELETE t:1` form is untouched.
 
 ## 0.0.1-alpha — 2026-08-25
 

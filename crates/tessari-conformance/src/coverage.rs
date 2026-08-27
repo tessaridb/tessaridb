@@ -172,7 +172,7 @@ mod tests {
              SELECT * FROM t;\
              UPDATE t:1 = 1;\
              DELETE t:1;\
-             DELETE FROM t WHERE a = 1;\
+             DELETE FROM t WHERE a = 1 LIMIT ALL;\
              GET s:1;\
              SET s:1 = 1;\
              DEL s:1;\

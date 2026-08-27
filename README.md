@@ -13,7 +13,7 @@ products around them.
 [![version](https://img.shields.io/badge/version-0.0.2--alpha-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-511%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-514%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/TessariDB/TessariDB-protocol) ·
@@ -100,7 +100,7 @@ compares against expected answers, case by case. The counts are those cases.
 
 | Engine | What it gives you | Cases | State |
 |---|---|---|:--|
-| **Documents** | schemaless or schemafull records, nested objects and arrays, typed fields with defaults | 38 + 59 | ✅ runs |
+| **Documents** | schemaless or schemafull records, nested objects and arrays, typed fields with defaults | 38 + 62 | ✅ runs |
 | **Relational** | declared tables and fields, unique and multi-field indexes, joins whose answer an index may not change | 44 + 14 + 48 | ✅ runs |
 | **Graph** | edge tables, `RELATE`, properties on the edge, multi-hop traversal in both directions | 17 | ✅ runs |
 | **Key–value** | `SPACE`s — one key, one whole value, ordered range scans with inclusive or exclusive bounds | 12 | ✅ runs |

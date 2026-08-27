@@ -83,7 +83,10 @@ const CLASSIFIED: &[(&str, Effect)] = &[
     // names as where a keyword test fails.
     ("UPDATE users:1 SET name = 'ada';", Effect::Write),
     ("DELETE users:1;", Effect::Write),
-    ("DELETE FROM users WHERE name = 'ada';", Effect::Write),
+    (
+        "DELETE FROM users WHERE name = 'ada' LIMIT ALL;",
+        Effect::Write,
+    ),
     (
         "RELATE users:1->attached->media:'/logo.png';",
         Effect::Write,

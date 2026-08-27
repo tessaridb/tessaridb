@@ -300,7 +300,7 @@ fn a_retention_statement_removes_a_range_and_says_how_much() {
     populate(&mut session);
 
     let outcomes = session
-        .run("DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z';")
+        .run("DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z' LIMIT ALL;")
         .unwrap();
     match outcomes[0] {
         tessari_session::Outcome::Removed { count } => assert_eq!(count, 3),
@@ -325,7 +325,7 @@ fn a_retention_statement_is_served_by_an_index_like_any_other_read() {
         .unwrap();
 
     let outcomes = session
-        .run("DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z';")
+        .run("DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z' LIMIT ALL;")
         .unwrap();
     match outcomes[0] {
         tessari_session::Outcome::Removed { count } => assert_eq!(count, 3),
@@ -345,7 +345,7 @@ fn a_condition_nothing_satisfies_removes_nothing_and_is_not_an_error() {
     populate(&mut session);
 
     let outcomes = session
-        .run("DELETE FROM readings WHERE at < datetime '2020-01-01T00:00:00Z';")
+        .run("DELETE FROM readings WHERE at < datetime '2020-01-01T00:00:00Z' LIMIT ALL;")
         .unwrap();
     match outcomes[0] {
         tessari_session::Outcome::Removed { count } => assert_eq!(count, 0),
@@ -373,7 +373,7 @@ fn a_retention_run_is_one_commit() {
     session
         .run(
             "BEGIN;\n\
-             DELETE FROM readings WHERE at < datetime '2026-03-01T02:00:00Z';\n\
+             DELETE FROM readings WHERE at < datetime '2026-03-01T02:00:00Z' LIMIT ALL;\n\
              CANCEL;",
         )
         .unwrap();
@@ -399,7 +399,7 @@ fn what_retention_removes_is_reclaimed_rather_than_left_behind() {
         let mut session = ready(&store);
         populate(&mut session);
         session
-            .run("DELETE FROM readings WHERE at < datetime '2026-03-01T02:00:00Z';")
+            .run("DELETE FROM readings WHERE at < datetime '2026-03-01T02:00:00Z' LIMIT ALL;")
             .unwrap();
     }
 

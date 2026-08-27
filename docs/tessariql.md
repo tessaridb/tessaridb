@@ -1232,12 +1232,26 @@ a grammar that picked one would answer a question nobody asked.
 
 ```
 DELETE readings:1;
-DELETE FROM readings WHERE at < datetime '2026-01-01T00:00:00Z';
+DELETE FROM readings WHERE at < datetime '2026-01-01T00:00:00Z' LIMIT ALL;
+DELETE FROM readings WHERE at < datetime '2026-01-01T00:00:00Z' LIMIT 1000;
 ```
 
 **`FROM` is what tells the two apart, and it is required.** `DELETE readings
 WHERE …` would read as a table name where an identity belongs, and a statement
 that removes rows should not be one word away from a typo.
+
+**The bound is required too.** A conditional delete carries either `LIMIT n` or
+`LIMIT ALL`, and a statement carrying neither is refused before it runs. This is
+the one `LIMIT` in the language that is not optional, and the asymmetry is
+deliberate: a read that omits a bound answers with more rows than the caller
+expected, while a delete that omits one empties a table. `LIMIT ALL` costs one
+word and is how a retention policy says the whole matched set is what it meant.
+
+`LIMIT n` bounds **what is removed**, never what is examined. The condition
+decides first and the bound applies to the records that satisfied it, so a
+statement means the same thing whichever index answered it — a bound on
+candidates would remove a different set depending on the order an index happened
+to be walked in, which is not something the author of the statement chose.
 
 It answers with **how many it removed**, because that is the whole point of a
 retention statement: "removed 12 043 readings" is an operator checking their

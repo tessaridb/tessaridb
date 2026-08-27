@@ -204,7 +204,7 @@ fn a_fold_in_a_filter_is_refused_and_says_what_it_would_be() {
     for script in [
         "SELECT city FROM sales WHERE mean(price) > 30 GROUP BY city;",
         "SELECT city, count(*) AS n FROM sales GROUP BY city ORDER BY count(*);",
-        "DELETE FROM sales WHERE count(*) > 1;",
+        "DELETE FROM sales WHERE count(*) > 1 LIMIT ALL;",
     ] {
         let refused = session.run(script);
         assert!(

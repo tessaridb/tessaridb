@@ -104,7 +104,9 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
 
         // The condition is walked for the same reason a read's is: a subquery
         // inside it reaches a table this statement does not name.
-        StatementKind::DeleteWhere { table, condition } => {
+        StatementKind::DeleteWhere {
+            table, condition, ..
+        } => {
             let mut found = vec![table];
             found.extend(in_expr(condition));
             found

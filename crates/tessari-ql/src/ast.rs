@@ -426,8 +426,8 @@ pub enum StatementKind {
         /// The record to remove.
         target: RecordTarget,
     },
-    /// `DELETE FROM readings WHERE at < datetime '…'` — every record a
-    /// condition holds for.
+    /// `DELETE FROM readings WHERE at < datetime '…' LIMIT 100` — the records a
+    /// condition holds for, up to a stated bound.
     ///
     /// Separate from the single-record form rather than folded into it, because
     /// the two answer different questions and one of them can remove a table.
@@ -439,6 +439,12 @@ pub enum StatementKind {
         table: TableRef,
         /// What a record must satisfy to be removed.
         condition: Box<Expr>,
+        /// How much this statement may remove.
+        ///
+        /// Not an `Option`. A bound that could be absent would let the
+        /// unbounded form exist in the tree, and the whole point of the clause
+        /// is that removing a table has to be *said*.
+        limit: DeleteBound,
     },
     /// `GET sessions:'abc'` as a statement of its own.
     Get {
@@ -667,6 +673,24 @@ impl OnFailure {
             Self::Quarantine => "quarantine",
         }
     }
+}
+
+/// How much a conditional delete may remove.
+///
+/// Every `DELETE FROM … WHERE …` carries one, and there is no third variant for
+/// "unstated". A predicate wrong by one character is the ordinary way a table is
+/// emptied by accident, and the cheapest thing standing between that typo and
+/// the store is a clause the author had to write.
+///
+/// The bound is on what is **removed**, never on what is examined. A bound
+/// applied to candidates would make the same statement remove different records
+/// on two runs, depending on which index answered it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteBound {
+    /// `LIMIT 100` — stop after this many records have been removed.
+    AtMost(u64),
+    /// `LIMIT ALL` — every record the condition holds for, however many that is.
+    All,
 }
 
 /// How an `UPDATE` changes the record it names.

@@ -12,7 +12,7 @@
 use tessari_types::Number;
 
 use super::Parser;
-use crate::ast::{Expr, ExprKind, FieldPath, Ordering, Projection, Source};
+use crate::ast::{DeleteBound, Expr, ExprKind, FieldPath, Ordering, Projection, Source};
 use crate::error::{Error, Result};
 use crate::token::{Punct, Span, Token};
 
@@ -96,6 +96,29 @@ impl Parser<'_> {
         let count = u64::try_from(*count).map_err(|_| self.error_here(expected))?;
         self.advance();
         Ok(Some(count))
+    }
+
+    /// The bound a conditional delete must carry: `LIMIT 100` or `LIMIT ALL`.
+    ///
+    /// Required, unlike every other `LIMIT` in this grammar. A read that omits
+    /// one answers with more rows than the caller expected; a delete that omits
+    /// one removes a table. `LIMIT ALL` is the way to say the second on purpose,
+    /// and it costs one word — which is the entire mechanism.
+    pub(super) fn delete_bound(&mut self) -> Result<DeleteBound> {
+        let expected =
+            "`LIMIT n` or `LIMIT ALL` — a conditional delete states how much it may remove";
+        if !self.eat_word("limit") {
+            return Err(self.error_here(expected));
+        }
+        if self.eat_word("all") {
+            return Ok(DeleteBound::All);
+        }
+        let Some(Token::Number(Number::Integer(count))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let count = u64::try_from(*count).map_err(|_| self.error_here(expected))?;
+        self.advance();
+        Ok(DeleteBound::AtMost(count))
     }
 }
 

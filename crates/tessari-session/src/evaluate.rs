@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 
 use tessari_constants::ORDERED_FILTER_REACH;
 use tessari_ql::{
-    BinaryOp, Direction, Expr, ExprKind, Function, Hop, Projected, Projection, RecordTarget,
-    Select, Source, Span, TableRef,
+    BinaryOp, DeleteBound, Direction, Expr, ExprKind, Function, Hop, Projected, Projection,
+    RecordTarget, Select, Source, Span, TableRef,
 };
 use tessari_storage::{BUILD_VERSION, Catalog, RecordAddress, Store, Transaction};
 use tessari_types::{
@@ -317,20 +317,37 @@ impl Session<'_> {
     ///
     /// **What that costs is worth stating**: the whole matched set is held and
     /// committed at once, so a retention statement that matches a very large
-    /// table is a very large commit. Bounding it is `LIMIT` on a delete, which
-    /// is a different statement and is not built.
+    /// table is a very large commit. `LIMIT n` is how a caller keeps that commit
+    /// to a size they chose; `LIMIT ALL` is how they say the whole table is what
+    /// they meant.
+    ///
+    /// # The bound counts survivors, not candidates
+    ///
+    /// It is applied *after* the condition decides, which is the only placement
+    /// that makes the statement mean one thing. A bound on candidates would stop
+    /// the walk after `n` records had been *examined*, so the same statement
+    /// against the same data would remove a different set depending on which
+    /// index answered it and in what order that index happened to be walked.
     pub(crate) fn delete_where(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
         condition: &Expr,
+        limit: DeleteBound,
     ) -> Result<crate::outcome::Outcome> {
+        let ceiling = match limit {
+            DeleteBound::AtMost(count) => count,
+            DeleteBound::All => u64::MAX,
+        };
         let (context, id) = self.resolve_table(transaction, table)?;
         let searched = self.searched_for(transaction, id, &[condition])?;
         let (candidates, _) = self.candidates(transaction, id, context, condition, &searched)?;
 
         let mut removed = 0_u64;
         for (record_id, record) in candidates {
+            if removed >= ceiling {
+                break;
+            }
             // Tested against the whole condition, exactly as a read is: the
             // index narrowed, and the condition decides. A delete that trusted
             // the narrowing would remove records the statement did not name.

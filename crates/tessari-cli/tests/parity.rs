@@ -75,7 +75,7 @@ fn scripts() -> Vec<(&'static str, &'static str)> {
         ("a statement that only does work", "DEFINE TABLE later;"),
         (
             "a conditional delete's count",
-            "DELETE FROM readings WHERE value >= 1;",
+            "DELETE FROM readings WHERE value >= 1 LIMIT ALL;",
         ),
     ]
 }

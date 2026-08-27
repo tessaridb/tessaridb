@@ -95,6 +95,7 @@ impl Parser<'_> {
                     StatementKind::DeleteWhere {
                         table,
                         condition: Box::new(condition),
+                        limit: self.delete_bound()?,
                     }
                 } else {
                     StatementKind::Delete {

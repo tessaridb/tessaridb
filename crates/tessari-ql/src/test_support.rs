@@ -216,7 +216,9 @@ fn erase_statement(statement: &mut Statement) {
         | StatementKind::Get { target }
         | StatementKind::Del { target }
         | StatementKind::Read { target, .. } => erase_record(target),
-        StatementKind::DeleteWhere { table, condition } => {
+        StatementKind::DeleteWhere {
+            table, condition, ..
+        } => {
             erase_table(table);
             erase_expr(condition);
         }

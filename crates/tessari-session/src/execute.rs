@@ -308,9 +308,11 @@ impl Session<'_> {
                 transaction.delete(address);
                 Ok(Outcome::Done)
             }
-            StatementKind::DeleteWhere { table, condition } => {
-                self.delete_where(transaction, table, condition)
-            }
+            StatementKind::DeleteWhere {
+                table,
+                condition,
+                limit,
+            } => self.delete_where(transaction, table, condition, *limit),
             StatementKind::DefineBucket {
                 name,
                 if_not_exists,
