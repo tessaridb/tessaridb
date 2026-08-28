@@ -160,6 +160,8 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::TimeUnix
         | Function::TimeFromUnix
         | Function::RandUuid
+        | Function::CryptoSha256
+        | Function::CryptoSha512
         | Function::TimeBucket
         | Function::TypeOf
         | Function::TypeBool

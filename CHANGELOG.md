@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 757 conformance cases define the language and run in the build.
+Unreleased. 767 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -28,6 +28,15 @@ Unreleased. 757 conformance cases define the language and run in the build.
   as a disclosure of everything in that database to every such user.
 
 ### Added
+
+- **`crypto::sha256` and `crypto::sha512`.** Two pure functions, text in and
+  lowercase hex out, so that `crypto::sha256(body) = $expected` is writable — an
+  array of thirty-two numbers would not be. The argument must be text:
+  `crypto::sha256(type::string(x))` is the sentence for anything else, because
+  hashing the canonical rendering of any value would promise that `3`, `3.0` and
+  the decimal `3.0` — one value in this store — have one digest. Not for
+  passwords, and there is deliberately still no function that exposes the
+  credential hasher to a query.
 
 - **`variance`, `stddev`, `median` and `collect`, and a memory ceiling that stopped
   believing every fold is cheap.** The two statistical folds reduce as they go —

@@ -215,6 +215,22 @@ pub enum Function {
     /// `geo::area(shape)` — how much ground a shape covers, in **square
     /// metres**. Zero for anything with no interior.
     GeoArea,
+    /// `crypto::sha256(text)` — the SHA-256 digest of the text's UTF-8 bytes,
+    /// as sixty-four lowercase hexadecimal characters.
+    ///
+    /// Text in and text out. A digest is compared, stored beside a record and
+    /// printed in a log, and all three want the form every other tool prints;
+    /// an array of thirty-two numbers would make `crypto::sha256(x) = '…'` —
+    /// the sentence the function exists for — unwritable.
+    ///
+    /// **Not a password hash.** These are fast by design, which is the property
+    /// a credential must not be stored under. Passwords go through
+    /// `crate::identity`, whose parameters are pinned, and there is deliberately
+    /// no callable-from-a-query path to it (Q-218).
+    CryptoSha256,
+    /// `crypto::sha512(text)` — the same, as a hundred and twenty-eight
+    /// lowercase hexadecimal characters.
+    CryptoSha512,
 }
 
 impl Function {
@@ -278,6 +294,8 @@ impl Function {
         Self::GeoTouches,
         Self::GeoDistance,
         Self::GeoArea,
+        Self::CryptoSha256,
+        Self::CryptoSha512,
     ];
 
     /// How the function is written, group and name together.
@@ -342,6 +360,8 @@ impl Function {
             Self::GeoTouches => "geo::touches",
             Self::GeoDistance => "geo::distance",
             Self::GeoArea => "geo::area",
+            Self::CryptoSha256 => "crypto::sha256",
+            Self::CryptoSha512 => "crypto::sha512",
         }
     }
 
@@ -396,7 +416,9 @@ impl Function {
             | Self::TypeString
             | Self::TypeDatetime
             | Self::TypeUuid
-            | Self::GeoArea => 1,
+            | Self::GeoArea
+            | Self::CryptoSha256
+            | Self::CryptoSha512 => 1,
             Self::StringConcat
             | Self::StringSplit
             | Self::MathPow
@@ -499,7 +521,9 @@ impl Function {
             | Self::GeoEquals
             | Self::GeoTouches
             | Self::GeoDistance
-            | Self::GeoArea => Purity::Pure,
+            | Self::GeoArea
+            | Self::CryptoSha256
+            | Self::CryptoSha512 => Purity::Pure,
         }
     }
 

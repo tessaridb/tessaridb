@@ -2327,6 +2327,35 @@ than falling back to a clock, a process id or a counter. Those fallbacks are how
 start from one image in the same millisecond — and a colliding identifier fails
 silently, with the second record simply overwriting the first.
 
+### Digests
+
+| Written | What it answers |
+|---|---|
+| `crypto::sha256(text)` | the SHA-256 digest, as 64 lowercase hexadecimal characters |
+| `crypto::sha512(text)` | the SHA-512 digest, as 128 of them |
+
+```
+SELECT crypto::sha256(email) AS pseudonym FROM subscribers;
+SELECT * FROM uploads WHERE crypto::sha256(body) = $expected;
+```
+
+**Text in and text out.** A digest is compared against a stored one, written
+beside a record and read in a log, and all three want the form every other tool
+prints — an array of thirty-two numbers would make the comparison above
+unwritable, and that comparison is the reason the function is here.
+
+**The argument must be text**, and `crypto::sha256(type::string(x))` is the
+sentence for anything else. Hashing "the canonical text of any value" would
+promise that `3`, `3.0` and the decimal `3.0` — which are *one* value in this
+store, since they compare equal — have one digest. They could not, and every
+digest ever stored would be tied to today's rendering of every kind.
+
+**These are not for passwords.** SHA-2 is fast by design, and speed is the one
+property a stored credential must not have. `DEFINE USER` already hashes with
+per-user salt and pinned cost parameters, and there is deliberately no function
+that exposes that from a query: a credential primitive behind a grant check is a
+credential primitive in the wrong place.
+
 ### Shapes
 
 A geometry is a value like any other, so a spatial question is an ordinary

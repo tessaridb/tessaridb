@@ -52,6 +52,15 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
                 .as_str(),
         )),
         Function::StringTrim => Ok(Value::from(text_at(function, arguments, 0, span)?.trim())),
+        // Text in and text out, and the argument check is the one every string
+        // function uses — see `crate::digest` for why hashing any value's
+        // rendering was refused.
+        Function::CryptoSha256 => Ok(crate::digest::sha256(text_at(
+            function, arguments, 0, span,
+        )?)),
+        Function::CryptoSha512 => Ok(crate::digest::sha512(text_at(
+            function, arguments, 0, span,
+        )?)),
         Function::StringConcat => {
             let first = text_at(function, arguments, 0, span)?;
             let second = text_at(function, arguments, 1, span)?;
