@@ -89,6 +89,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DropDatabase { .. } => Err(unrenderable("DROP DATABASE", span)),
         StatementKind::DropNamespace { .. } => Err(unrenderable("DROP NAMESPACE", span)),
         StatementKind::AlterTable { .. } => Err(unrenderable("ALTER TABLE", span)),
+        StatementKind::AlterField { .. } => Err(unrenderable("ALTER TABLE ALTER FIELD", span)),
         StatementKind::RebuildIndex { .. } => Err(unrenderable("REBUILD INDEX", span)),
         StatementKind::Grant { .. } => Err(unrenderable("GRANT", span)),
         StatementKind::Revoke { .. } => Err(unrenderable("REVOKE", span)),

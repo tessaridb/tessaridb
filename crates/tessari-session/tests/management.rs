@@ -283,3 +283,67 @@ fn a_replica_goes_and_going_twice_is_refused() {
     assert!(message.contains("replica"), "wrong noun: {message}");
     assert!(message.contains("warsaw"), "does not name it: {message}");
 }
+
+/// `ALTER FIELD` replaces the declaration whole, and the rows answer for it.
+///
+/// The property the corpus cannot see: that the refusal leaves **neither** half
+/// applied. A drop and a declaration in one commit could fail after removing the
+/// old one, and the store would answer every subsequent write as though the
+/// field had never been declared — which looks like success.
+#[test]
+fn a_refused_field_alteration_leaves_the_old_declaration_standing() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(
+        &mut session,
+        "DEFINE TABLE people;
+         ALTER TABLE people ADD FIELD name TYPE string;
+         CREATE people:1 = { name: 'ada' };",
+    );
+    let message = refusal(
+        &mut session,
+        "ALTER TABLE people ALTER FIELD name TYPE int;",
+    );
+    assert!(
+        message.contains("name"),
+        "does not name the field: {message}"
+    );
+    // The old declaration is still enforcing: an int is still refused, which it
+    // would not be if the drop had landed and the redeclaration had not.
+    session
+        .run("CREATE people:2 = { name: 42 };")
+        .expect_err("the dropped half of a refused alteration was applied");
+    ok(&mut session, "CREATE people:3 = { name: 'grace' };");
+}
+
+/// The two spellings parse the same declaration, option for option.
+///
+/// Written as a test rather than trusted to the shared function, because the
+/// sharing is the thing that could be undone by a later edit — and the symptom
+/// would be one spelling silently ignoring a `DEFAULT` somebody wrote.
+#[test]
+fn the_columnar_spelling_takes_every_option_the_long_one_does() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(
+        &mut session,
+        "DEFINE TABLE people;
+         ALTER TABLE people ADD FIELD name TYPE string REQUIRED;
+         ALTER TABLE people ADD FIELD rank TYPE string DEFAULT 'viewer';
+         ALTER TABLE people ADD FIELD bio TYPE string;",
+    );
+    ok(&mut session, "CREATE people:1 = { name: 'ada' };");
+    // The default was taken, so the columnar spelling did not drop the clause.
+    let outcome = session
+        .run("RETURN (SELECT rank FROM people:1);")
+        .unwrap()
+        .pop()
+        .expect("one outcome");
+    assert!(
+        format!("{outcome:?}").contains("viewer"),
+        "the DEFAULT was parsed and then ignored: {outcome:?}"
+    );
+    session
+        .run("CREATE people:2 = { rank: 'editor' };")
+        .expect_err("REQUIRED was parsed and then ignored");
+}

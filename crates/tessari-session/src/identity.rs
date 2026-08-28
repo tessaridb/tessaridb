@@ -345,6 +345,7 @@ impl Needs {
             | StatementKind::DropDatabase { .. }
             | StatementKind::DropAnalyzer { .. }
             | StatementKind::AlterTable { .. }
+            | StatementKind::AlterField { .. }
             | StatementKind::Relate { .. }
             | StatementKind::Create { .. }
             | StatementKind::Update { .. }

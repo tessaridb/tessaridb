@@ -137,6 +137,44 @@ CREATE notes:4 = { title: 'fourth', extra: 'again' };
 ALTER TABLE nothing SET SCHEMAFULL;
 --- expect: error Unknown
 
+# ------------------------------ ALTER TABLE ADD / ALTER / DROP FIELD
+
+--- case: a field is added by the columnar spelling
+DEFINE TABLE people;
+ALTER TABLE people ADD FIELD name TYPE string;
+CREATE people:1 = { name: 'ada' };
+--- expect: ok
+
+--- case: adding one that is already there is refused, as `DEFINE FIELD` would be
+ALTER TABLE people ADD FIELD name TYPE string;
+--- expect: error NameTaken
+
+--- case: a field is altered, which a second declaration cannot do
+# `ALTER FIELD` drops and redeclares in one commit. `ADD FIELD` twice is refused
+# above precisely because the catalog reserves the name — that is the difference
+# between the two verbs, rather than a preference about which reads better.
+ALTER TABLE people ALTER FIELD name TYPE string REQUIRED;
+--- expect: ok
+
+--- case: and the new declaration binds — the field is now required
+CREATE people:2 = { };
+--- expect: error MissingRequiredField
+
+--- case: altering to a type the stored rows do not satisfy is refused
+# The drop and the declaration are one commit, so the rows answer for the NEW
+# declaration. Nothing is written: neither the removal nor the replacement.
+ALTER TABLE people ALTER FIELD name TYPE int;
+--- expect: error SchemaViolation
+
+--- case: and the field is still there, still a string, still required
+CREATE people:3 = { name: 'grace' };
+--- expect: ok
+
+--- case: a field is removed by the columnar spelling
+ALTER TABLE people DROP FIELD name;
+CREATE people:4 = { name: 42 };
+--- expect: ok
+
 # ------------------------------------------------------------- DROP DATABASE
 
 --- case: a database still holding a table refuses to go

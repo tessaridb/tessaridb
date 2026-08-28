@@ -107,6 +107,7 @@ impl Effect {
             | StatementKind::DropDatabase { .. }
             | StatementKind::DropNamespace { .. }
             | StatementKind::AlterTable { .. }
+            | StatementKind::AlterField { .. }
             | StatementKind::RebuildIndex { .. } => Self::Write,
 
             // Who may reach it. Administering in `Needs`, and a write here:

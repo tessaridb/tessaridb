@@ -681,6 +681,29 @@ stored row can contradict it.
 `edge` and `bucket` do not move, because both describe what the records already
 **are** rather than what may be written next.
 
+A table's fields are also reachable from the table, in the order somebody
+thinking about the table writes them:
+
+```tessariql
+ALTER TABLE people ADD FIELD name TYPE string;
+ALTER TABLE people ALTER FIELD name TYPE string REQUIRED;
+ALTER TABLE people DROP FIELD name;
+```
+
+`ADD FIELD` and `DROP FIELD` say exactly what `DEFINE FIELD … ON people` and
+`DROP FIELD … ON people` say — one function parses the declaration, so the two
+spellings cannot drift into accepting different options.
+
+**`ALTER FIELD` is the one that is not a second spelling.** A second
+`DEFINE FIELD` is refused because the catalog reserves the name, so redeclaring
+needs a statement of its own. It **replaces the declaration whole** rather than
+patching the parts it mentions: a statement that changed only what it named
+would make *leave the default alone* and *remove the default* the same sentence.
+
+The drop and the declaration land in one commit, so the rows answer for the
+**new** declaration — altering a field to a type its rows do not satisfy is
+refused, writing neither the removal nor the replacement.
+
 ### What a table declares about its fields
 
 A table is schemaless until something is declared on it, and stays schemaless

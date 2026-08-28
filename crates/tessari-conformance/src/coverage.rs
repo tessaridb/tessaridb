@@ -47,6 +47,7 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DropDatabase { .. } => "DROP DATABASE",
         StatementKind::DropNamespace { .. } => "DROP NAMESPACE",
         StatementKind::AlterTable { .. } => "ALTER TABLE",
+        StatementKind::AlterField { .. } => "ALTER TABLE ALTER FIELD",
         StatementKind::Relate { .. } => "RELATE",
         StatementKind::Create { .. } => "CREATE",
         StatementKind::Select(_) => "SELECT",
@@ -104,6 +105,7 @@ pub const FORMS: &[&str] = &[
     "DROP DATABASE",
     "DROP NAMESPACE",
     "ALTER TABLE",
+    "ALTER TABLE ALTER FIELD",
     "RELATE",
     "CREATE",
     "SELECT",
@@ -176,6 +178,7 @@ mod tests {
              DROP DATABASE d;\
              DROP NAMESPACE n;\
              ALTER TABLE t SET SCHEMAFULL;\
+             ALTER TABLE t ALTER FIELD f TYPE string;\
              DEFINE ANALYZER a FILTERS lowercase;\
              DEFINE USER u ROLE owner PASSWORD 'x';\
              DEFINE NODE ROLES serving;\

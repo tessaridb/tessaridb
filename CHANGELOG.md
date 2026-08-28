@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 796 conformance cases define the language and run in the build.
+Unreleased. 803 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -53,6 +53,19 @@ Unreleased. 796 conformance cases define the language and run in the build.
   `DEFINE NODE` writes this process's own configuration outside the transaction,
   so its inverse is a configuration edit — the message names that, and names
   `DROP REPLICA` as the statement that stops counting another endpoint as a peer.
+
+- **The columnar spellings: `ALTER TABLE t ADD FIELD …`, `… ALTER FIELD …` and
+  `… DROP FIELD …`.** `ADD` and `DROP` say what `DEFINE FIELD … ON t` and
+  `DROP FIELD … ON t` already said, in the order somebody thinking about the
+  table writes them; the declaration itself is parsed by one function, so the
+  two spellings cannot drift into accepting different options.
+
+  `ALTER FIELD` is the one that is not sugar. A second `DEFINE FIELD` is refused
+  because the catalog reserves the name, so redeclaring needs its own statement —
+  and it drops and declares **in one commit**, which means the stored rows answer
+  for the *new* declaration through the store's own schema pass. Altering a field
+  to a type its rows do not satisfy is refused outright, writing neither the
+  removal nor the replacement.
 
 - **`crypto::sha256` and `crypto::sha512`.** Two pure functions, text in and
   lowercase hex out, so that `crypto::sha256(body) = $expected` is writable — an

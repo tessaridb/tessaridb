@@ -430,6 +430,34 @@ pub enum StatementKind {
         /// The namespace to undefine.
         name: Name,
     },
+    /// `ALTER TABLE users ALTER FIELD email TYPE string REQUIRED`
+    ///
+    /// Redeclares a field that already exists, which a second `DEFINE FIELD`
+    /// cannot do — the catalog reserves the name, so the second one is refused
+    /// as taken. The declaration is replaced whole rather than patched: a
+    /// statement that changed only the parts it mentioned would make *leave the
+    /// default alone* and *remove the default* the same sentence, which is the
+    /// reason [`UserChange`] is an enum rather than a record of options.
+    ///
+    /// The drop and the declaration land in one commit, so the rows are held to
+    /// the **new** declaration by the store's own schema pass — an alteration no
+    /// stored row satisfies is refused, writing nothing at all.
+    AlterField {
+        /// The field's name.
+        name: Name,
+        /// The table it is declared on.
+        table: TableRef,
+        /// What it may now hold.
+        kind: FieldKind,
+        /// Whether it must now be present.
+        required: bool,
+        /// What fills it when a write omits it, as written.
+        default: Option<Written>,
+        /// The analyzer its text is turned into terms by.
+        analyzer: Option<Name>,
+        /// What a value must satisfy.
+        assert: Option<Assertion>,
+    },
     /// `ALTER TABLE users SET SCHEMAFULL` · `… SET SCHEMALESS`
     ///
     /// The one thing about a table worth changing after it exists.

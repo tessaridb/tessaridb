@@ -88,6 +88,20 @@ fn erase_statement(statement: &mut Statement) {
         // The change is a word the statement was written with rather than a
         // value, so there is nothing under it to normalise.
         StatementKind::AlterTable { table, .. } => erase_table(table),
+        StatementKind::AlterField {
+            name,
+            table,
+            analyzer,
+            default,
+            ..
+        } => {
+            erase_name(name);
+            erase_table(table);
+            erase_optional_name(analyzer.as_mut());
+            if let Some(default) = default {
+                erase_written(default);
+            }
+        }
         StatementKind::DefineIndex {
             name,
             table,

@@ -113,6 +113,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DropTable { table }
         | StatementKind::DropIndex { table, .. }
         | StatementKind::AlterTable { table, .. }
+        | StatementKind::AlterField { table, .. }
         | StatementKind::RebuildIndex { table, .. } => vec![table],
 
         // The condition is walked for the same reason a read's is: a subquery

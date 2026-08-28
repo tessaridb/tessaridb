@@ -264,6 +264,37 @@ impl Session<'_> {
             StatementKind::DropReplica { name } => self.drop_replica(transaction, name, span),
             StatementKind::DropDatabase { name } => self.drop_database(transaction, name, span),
             StatementKind::DropNamespace { name } => self.drop_namespace(transaction, name, span),
+            // Drop and declare in ONE transaction, which is what makes this
+            // more than sugar: the catalog change and the rows ride the same log
+            // record, so the store's schema pass holds every stored row to the
+            // NEW declaration and refuses the alteration outright when one does
+            // not fit — writing neither the removal nor the replacement.
+            StatementKind::AlterField {
+                name,
+                table,
+                kind,
+                required,
+                default,
+                analyzer,
+                assert,
+            } => {
+                let (_, id) = self.resolve_table(transaction, table)?;
+                let field = self.field_named(transaction, id, name)?;
+                Catalog::new(transaction).drop_field(field)?;
+                self.define_field(
+                    transaction,
+                    name,
+                    table,
+                    *kind,
+                    FieldShape {
+                        required: *required,
+                        default: default.as_ref().map(|written| written.text.clone()),
+                        analyzer: analyzer.as_ref().map(|named| named.text.clone()),
+                        assert: assert.clone(),
+                    },
+                    false,
+                )
+            }
             StatementKind::AlterTable { table, change } => {
                 let (_, id) = self.resolve_table(transaction, table)?;
                 Catalog::new(transaction)

@@ -6,7 +6,7 @@ use tessari_types::{FieldKind, Filter, Path, Step};
 use crate::ast::{
     Answer, Assignment, ConsumerSource, Direction, Edit, Expr, ExprKind, FieldMapping, FieldPath,
     Hop, InfoSubject, JoinSide, Name, OnFailure, Password, Projection, RangeExpr, RecordTarget,
-    Select, Source, Statement, StatementKind, TableChange, UserChange,
+    Select, Source, Statement, StatementKind, TableChange, TableRef, UserChange,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -733,7 +733,30 @@ impl Parser<'_> {
         self.advance();
         if self.eat_keyword(Keyword::Table) {
             let table = self.table_ref()?;
-            self.expect_keyword(Keyword::Set, "`SET` and the one thing to change")?;
+            // The columnar spellings first, because `SET` is the one that reads
+            // as a whole-table change and the three field verbs read as changes
+            // to something inside it.
+            if self.eat_word("add") {
+                self.expect_keyword(Keyword::Field, "`FIELD` and the field to add")?;
+                let name = self.name()?;
+                return self.field_declaration(name, table, false);
+            }
+            if self.eat_keyword(Keyword::Alter) {
+                self.expect_keyword(Keyword::Field, "`FIELD` and the field to change")?;
+                let name = self.name()?;
+                return self.field_declaration(name, table, true);
+            }
+            if self.eat_keyword(Keyword::Drop) {
+                self.expect_keyword(Keyword::Field, "`FIELD` and the field to remove")?;
+                return Ok(StatementKind::DropField {
+                    name: self.name()?,
+                    table,
+                });
+            }
+            self.expect_keyword(
+                Keyword::Set,
+                "`SET`, `ADD FIELD`, `ALTER FIELD` or `DROP FIELD`",
+            )?;
             let change = if self.eat_keyword(Keyword::Schemafull) {
                 TableChange::Schemafull
             } else if self.eat_word("schemaless") {
@@ -806,6 +829,32 @@ impl Parser<'_> {
         let name = self.name()?;
         self.expect_keyword(Keyword::On, "`ON` and the table the field is on")?;
         let table = self.table_ref()?;
+        self.declaration_tail(name, table, if_not_exists, false)
+    }
+
+    /// The half of a field declaration that follows its name and its table.
+    ///
+    /// Shared with `ALTER TABLE … ADD FIELD` and `… ALTER FIELD`, which name the
+    /// same two things in the other order and then say exactly the same thing
+    /// about the field. Written once so the two spellings cannot drift — a
+    /// second copy is how `DEFAULT` ends up accepted by one of them and not the
+    /// other.
+    fn field_declaration(
+        &mut self,
+        name: Name,
+        table: TableRef,
+        replacing: bool,
+    ) -> Result<StatementKind> {
+        self.declaration_tail(name, table, false, replacing)
+    }
+
+    fn declaration_tail(
+        &mut self,
+        name: Name,
+        table: TableRef,
+        if_not_exists: bool,
+        replacing: bool,
+    ) -> Result<StatementKind> {
         self.expect_keyword(Keyword::Type, "`TYPE` and what the field may hold")?;
         let kind = self.field_kind()?;
         // Either marker, in either order, and neither twice — the rule
@@ -831,6 +880,17 @@ impl Parser<'_> {
             } else {
                 break;
             }
+        }
+        if replacing {
+            return Ok(StatementKind::AlterField {
+                name,
+                table,
+                kind,
+                required,
+                default,
+                analyzer,
+                assert,
+            });
         }
         Ok(StatementKind::DefineField {
             name,
