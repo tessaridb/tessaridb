@@ -155,6 +155,12 @@ pub enum Punct {
     ArrowRight,
     /// `<-` — a traversal step following an edge from its target.
     ArrowLeft,
+    /// `|` — separates the members of a declared union of literals.
+    ///
+    /// Not a boolean or, which is the word `OR`, and not a bitwise one, which
+    /// this language does not have. It appears in exactly one position — after
+    /// `TYPE` — so the single character costs the language nothing elsewhere.
+    Pipe,
     /// `(`
     ParenOpen,
     /// `)`
@@ -191,6 +197,7 @@ impl Punct {
             Self::BracketClose => "]",
             Self::ArrowRight => "->",
             Self::ArrowLeft => "<-",
+            Self::Pipe => "|",
             Self::ParenOpen => "(",
             Self::ParenClose => ")",
         }

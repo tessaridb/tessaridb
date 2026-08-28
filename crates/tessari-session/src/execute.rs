@@ -104,7 +104,7 @@ impl Session<'_> {
                 transaction,
                 name,
                 table,
-                *kind,
+                kind.clone(),
                 FieldShape {
                     required: *required,
                     default: default.as_ref().map(|written| written.text.clone()),
@@ -287,7 +287,7 @@ impl Session<'_> {
                     transaction,
                     name,
                     table,
-                    *kind,
+                    kind.clone(),
                     FieldShape {
                         required: *required,
                         default: default.as_ref().map(|written| written.text.clone()),
@@ -742,7 +742,7 @@ impl Session<'_> {
                 transaction,
                 &column.name,
                 &table,
-                column.kind,
+                column.kind.clone(),
                 FieldShape {
                     required: column.required,
                     default: column.default.as_ref().map(|written| written.text.clone()),
@@ -785,7 +785,7 @@ impl Session<'_> {
             if !kind.accepts(&value) {
                 return Err(Error::DefaultDoesNotMatch {
                     field: name.text.clone(),
-                    declared: kind.name(),
+                    declared: kind.name().into_owned(),
                     found: value.type_name(),
                     span: name.span,
                 });

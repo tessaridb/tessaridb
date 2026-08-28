@@ -604,6 +604,48 @@ live in a companion table created alongside it whose name carries a byte no
 identifier can hold, so nothing could ever name it to drop it — it goes with the
 bucket or it is orphaned permanently.
 
+### A type that is a set of strings
+
+A field's declared type may be a union of string literals:
+
+```
+DEFINE FIELD status ON articles TYPE 'draft' | 'published' | 'archived';
+DEFINE TABLE posts (status 'draft' | 'published', title string);
+```
+
+Both spellings take it, because it is a type rather than a spelling. What it
+buys over `TYPE string` is that the declaration is *about* the column:
+
+```
+CREATE articles:1 = { status: 'draft' };      -- accepted
+CREATE articles:2 = { status: 'deleted' };    -- refused, naming the set
+```
+
+`ASSERT $value IN ['draft', 'published']` expresses the same constraint and puts
+it in a worse place. A reader of the schema does not look at assertions, and a
+reader of the refusal gets a condition to evaluate instead of a list to choose
+from. `INFO FOR TABLE` reports a union as the field's **type**, which is where
+somebody goes to find out what a column holds.
+
+The union is a **set**. Members are sorted and deduplicated when the type is
+built, so `'b' | 'a'` and `'a' | 'b' | 'b'` are one declaration — a type that
+remembered the order it was typed in would be two values for one fact.
+
+A `DEFAULT` is checked against the union when the field is declared, not when a
+write first takes it:
+
+```
+DEFINE FIELD stage ON articles TYPE 'open' | 'closed' DEFAULT 'gone';
+```
+
+is refused, because the alternative leaves the catalog holding a default that no
+write of that field could ever accept, and the failure then arrives looking like
+the write's fault.
+
+`|` separates the members of a union and nothing else. It is not a boolean or —
+that is the word `OR` — and this language has no bitwise operators, so the
+character appears in exactly one position and costs nothing elsewhere.
+
 ### A table and its columns in one statement
 
 A table's fields can be declared with it, in parentheses after the name:

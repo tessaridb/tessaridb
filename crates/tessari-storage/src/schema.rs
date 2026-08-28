@@ -183,7 +183,7 @@ fn check(schema: &TableSchema, value: &Value, table: TableId, id: &RecordId) -> 
                     table: table.get(),
                     record: id.to_string(),
                     field: name.clone(),
-                    declared: declared.kind.name(),
+                    declared: declared.kind.name().into_owned(),
                     found: held.type_name(),
                 });
             }

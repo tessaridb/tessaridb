@@ -981,6 +981,12 @@ impl Parser<'_> {
     /// already is. The alternative is a language where five of the seventeen
     /// types cannot be written down.
     fn field_kind(&mut self) -> Result<FieldKind> {
+        // A union is spelled by its members, so it is recognised by one of them
+        // standing where a type name would. Nothing else in a declaration puts
+        // a string here, so the two readings cannot collide.
+        if matches!(self.peek(), Some(Token::Str(_))) {
+            return self.literal_union();
+        }
         let spelling = match self.peek() {
             Some(Token::Keyword(keyword)) => keyword.spelling().to_owned(),
             Some(Token::Ident(name)) => name.clone(),
@@ -991,6 +997,35 @@ impl Parser<'_> {
         };
         self.advance();
         Ok(kind)
+    }
+
+    /// `'draft' | 'published'` — a field that holds one of a fixed set of strings.
+    ///
+    /// The declaration a status column has always wanted. `TYPE string` is true
+    /// and says nothing; an `ASSERT` says the same thing but says it where a
+    /// reader of the schema does not look, and where a reader of an error
+    /// message gets a condition rather than a list.
+    ///
+    /// Members are sorted and deduplicated by the constructor, so two
+    /// declarations naming the same set are the same type however they were
+    /// typed. A set that remembers the order somebody wrote it in is two values
+    /// for one fact — the rule a grant's verbs already follow.
+    fn literal_union(&mut self) -> Result<FieldKind> {
+        let mut members = Vec::new();
+        loop {
+            let Some(Token::Str(member)) = self.peek() else {
+                return Err(self.error_here("a quoted member of the union"));
+            };
+            members.push(member.clone());
+            self.advance();
+            if !self.eat_punct(Punct::Pipe) {
+                break;
+            }
+        }
+        // Unreachable while the loop pushes before it can break, and named
+        // rather than unwrapped because `union` refusing an empty set is a rule
+        // about the type and not about this parser.
+        FieldKind::union(members).ok_or_else(|| self.error_here("a member of the union"))
     }
 
     /// `REBUILD INDEX <name> ON <table>`

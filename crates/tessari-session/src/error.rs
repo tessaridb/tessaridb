@@ -549,7 +549,11 @@ pub enum Error {
         /// The field being declared.
         field: String,
         /// The type it declares.
-        declared: &'static str,
+        ///
+        /// Owned rather than `&'static str`: a literal union spells itself as
+        /// its members, so not every declared type is a word known at compile
+        /// time.
+        declared: String,
         /// The type its default evaluated to.
         found: &'static str,
         /// Where the field was named.

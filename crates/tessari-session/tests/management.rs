@@ -456,3 +456,76 @@ fn empty_parentheses_are_refused_rather_than_read_as_no_columns() {
     let mut session = opened(&store);
     refusal(&mut session, "DEFINE TABLE nothing ();");
 }
+
+/// A declared type says what it holds, and the schema report says it back.
+///
+/// `TYPE string` is true about a status column and says nothing. An `ASSERT`
+/// says the right thing in the wrong place: a reader of the schema does not see
+/// it, and a reader of the refusal gets a condition instead of a list. This is
+/// the declaration that puts the set where both of them look.
+#[test]
+fn a_union_of_literals_is_a_declared_type_and_reads_back_as_one() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(
+        &mut session,
+        "DEFINE TABLE posts (status 'draft' | 'published' | 'archived');",
+    );
+
+    ok(&mut session, "CREATE posts:1 = { status: 'draft' };");
+    let refused = refusal(&mut session, "CREATE posts:2 = { status: 'deleted' };");
+    assert!(
+        refused.contains("'archived' | 'draft' | 'published'"),
+        "the refusal should name the set the field may hold: {refused}"
+    );
+
+    // Read back out of the catalog through the report a caller actually uses.
+    // This is the half that makes it a *declared type* rather than a check: the
+    // schema says what the field holds, so a reader learns it without running a
+    // write and being told off.
+    let reported = format!(
+        "{:?}",
+        session
+            .run("INFO FOR TABLE posts;")
+            .unwrap()
+            .pop()
+            .expect("one outcome")
+    );
+    assert!(
+        reported.contains("'archived' | 'draft' | 'published'"),
+        "the schema report did not carry the declared type: {reported}"
+    );
+}
+
+/// The set is a set: two spellings of one union are one type.
+#[test]
+fn a_union_declared_in_another_order_is_the_same_declaration() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(&mut session, "DEFINE TABLE a (s 'x' | 'y');");
+    ok(&mut session, "DEFINE TABLE b (s 'y' | 'x' | 'y');");
+    let one = format!("{:?}", session.run("INFO FOR TABLE a;").unwrap());
+    let other = format!("{:?}", session.run("INFO FOR TABLE b;").unwrap());
+    assert!(one.contains("'x' | 'y'"), "{one}");
+    assert!(other.contains("'x' | 'y'"), "{other}");
+}
+
+/// A default is checked against the union when the field is declared.
+///
+/// The same symmetry the rest of the schema follows: a declaration is checked
+/// when it is made, not when it first bites. Without it the catalog holds a
+/// default no write of that field could ever accept, and the failure arrives
+/// later looking like the write's fault.
+#[test]
+fn a_default_outside_the_union_is_refused_at_declaration() {
+    let store = store();
+    let mut session = opened(&store);
+    refusal(
+        &mut session,
+        "DEFINE TABLE posts (status 'draft' | 'published' DEFAULT 'deleted');",
+    );
+    ok(
+        &mut session,
+        "DEFINE TABLE posts (status 'draft' | 'published' DEFAULT 'draft');",
+    );
+}

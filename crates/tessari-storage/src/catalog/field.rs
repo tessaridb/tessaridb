@@ -122,7 +122,10 @@ impl FieldDefinition {
             (FIELD_DATABASE.to_owned(), number(self.database.get())),
             (FIELD_TABLE.to_owned(), number(self.table.get())),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
-            (FIELD_KIND.to_owned(), Value::from(self.kind.name())),
+            (
+                FIELD_KIND.to_owned(),
+                Value::from(self.kind.name().as_ref()),
+            ),
             (FIELD_REQUIRED.to_owned(), Value::Bool(self.required)),
             (
                 FIELD_DEFAULT.to_owned(),
@@ -416,7 +419,7 @@ mod tests {
     #[test]
     fn a_definition_of_every_kind_round_trips() {
         for kind in FieldKind::all() {
-            let original = definition(*kind);
+            let original = definition(kind.clone());
             assert_eq!(
                 FieldDefinition::from_value(&original.to_value()).unwrap(),
                 original,
@@ -455,7 +458,7 @@ mod tests {
         // nothing asserted that the known kinds *are* known, so adding one broke
         // a negative fixture with no positive one to contradict it.
         for kind in FieldKind::all() {
-            let stored = definition(*kind).to_value();
+            let stored = definition(kind.clone()).to_value();
             let read = FieldDefinition::from_value(&stored);
             assert!(
                 read.is_ok(),

@@ -380,6 +380,7 @@ impl<'a> Lexer<'a> {
                 self.advance('?');
                 Punct::Coalesce
             }
+            '|' => Punct::Pipe,
             '(' => Punct::ParenOpen,
             ')' => Punct::ParenClose,
             '.' => {

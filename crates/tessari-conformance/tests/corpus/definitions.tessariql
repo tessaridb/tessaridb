@@ -206,3 +206,47 @@ INFO STORE;
 --- case: FOR is contextual, so it is still a perfectly good field name
 CREATE users:'for-test' = { for: 'reserved words are expensive' };
 --- expect: ok
+
+--- case: a field's type may be a union of string literals
+# `TYPE string` is true about a status column and says nothing. An ASSERT says
+# the right thing in the wrong place — a reader of the schema does not see it,
+# and a reader of the refusal gets a condition instead of a list.
+DEFINE TABLE articles;
+DEFINE FIELD status ON articles TYPE 'draft' | 'published' | 'archived';
+--- expect: ok
+
+--- case: a member of the union is accepted
+CREATE articles:1 = { status: 'draft' };
+--- expect: ok
+
+--- case: text the union does not name is refused
+CREATE articles:2 = { status: 'deleted' };
+--- expect: error SchemaViolation
+
+--- case: and so is a value that is not text at all
+CREATE articles:3 = { status: 3 };
+--- expect: error SchemaViolation
+
+--- case: the declared type reads back out of the schema report
+INFO FOR TABLE articles;
+--- expect: ok
+
+--- case: a union is a set, so declaring one twice in another order is one type
+DEFINE FIELD status ON articles TYPE 'published' | 'archived' | 'draft';
+--- expect: error NameTaken
+
+--- case: a default outside the union is refused when the field is declared
+DEFINE FIELD stage ON articles TYPE 'open' | 'closed' DEFAULT 'gone';
+--- expect: error DefaultDoesNotMatch
+
+--- case: a default inside it is not
+DEFINE FIELD stage ON articles TYPE 'open' | 'closed' DEFAULT 'open';
+--- expect: ok
+
+--- case: a union of one member is a type that holds exactly one string
+DEFINE FIELD kind ON articles TYPE 'article';
+--- expect: ok
+
+--- case: the bar is a union separator and not a boolean or
+SELECT * FROM articles WHERE status = 'draft' | status = 'published';
+--- expect: error UnexpectedToken

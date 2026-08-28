@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 824 conformance cases define the language and run in the build.
+Unreleased. 834 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -28,6 +28,18 @@ Unreleased. 824 conformance cases define the language and run in the build.
   as a disclosure of everything in that database to every such user.
 
 ### Added
+
+- **A field's declared type can be a union of string literals.**
+  `DEFINE FIELD status ON articles TYPE 'draft' | 'published' | 'archived'`, and
+  the same after a column name in the columnar spelling. `TYPE string` is true
+  about a status column and says nothing; an `ASSERT` says the right thing in
+  the wrong place, where a reader of the schema does not look and a reader of the
+  refusal gets a condition instead of a list.
+
+  The set is a set: members are sorted and deduplicated, so two declarations
+  naming the same members are the same type however they were typed. A default
+  outside the union is refused when the field is declared rather than when it
+  first bites, and `INFO FOR TABLE` reports the union as the field's type.
 
 - **A table and its fields are one statement.**
   `DEFINE TABLE people (name string REQUIRED, rank string DEFAULT 'viewer')`

@@ -114,7 +114,10 @@ pub enum Error {
         /// The field that disagreed.
         field: String,
         /// The type the table declares for it.
-        declared: &'static str,
+        /// Owned rather than `&'static str`: a literal union spells itself as
+        /// its members, so not every declared type is a word this binary knows
+        /// at compile time.
+        declared: String,
         /// The type the record held instead.
         found: &'static str,
     },

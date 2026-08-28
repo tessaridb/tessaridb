@@ -678,7 +678,7 @@ fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> {
 fn described_field(field: &FieldDefinition) -> Value {
     let mut described = BTreeMap::from([
         ("name".to_owned(), Value::from(field.name.as_str())),
-        ("type".to_owned(), Value::from(field.kind.name())),
+        ("type".to_owned(), Value::from(field.kind.name().as_ref())),
         ("required".to_owned(), Value::Bool(field.required)),
     ]);
     if let Some(default) = &field.default {
