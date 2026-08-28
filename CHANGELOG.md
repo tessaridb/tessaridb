@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 655 conformance cases define the language and run in the build.
+Unreleased. 678 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -29,6 +29,20 @@ Unreleased. 655 conformance cases define the language and run in the build.
 
 ### Added
 
+- **Eight `time::` functions read the calendar out of an instant** — `year`,
+  `month`, `day`, `hour`, `minute`, `second`, `unix` and `from_unix`. A reading
+  is a value like any other, so it filters, orders, groups and projects, which
+  is what makes a calendar report sayable without storing the year beside the
+  instant and keeping the two in step. Everything is UTC, because an instant has
+  no zone. `time::second` is the second **of the minute** and `time::unix` is
+  the seconds since the epoch — two questions that both answer an integer.
+  `time::from_unix` refuses a fraction rather than truncating it, because
+  `math::round` already says which whole second was meant; `time::unix` drops a
+  sub-second remainder rather than refusing, because nothing else in the
+  language could say that conversion and `time::now()` carries a remainder
+  nearly always. The date arithmetic now has **one** home: a second copy is how
+  a writer comes to disagree with its own reader on one day in four hundred
+  years, silently.
 - **Six `type::` casts** — `bool`, `int`, `float`, `string`, `datetime`, `uuid` —
   turn a value into a kind, and are named after the kinds themselves, so a cast
   and a `DEFINE FIELD … TYPE` spell the same word. **A cast is an assertion, not

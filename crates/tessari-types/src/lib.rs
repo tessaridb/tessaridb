@@ -12,6 +12,7 @@
 
 mod analyzer;
 mod assertion;
+mod calendar;
 mod condition;
 mod field_kind;
 mod geojson;
@@ -27,6 +28,7 @@ mod value;
 
 pub use analyzer::{Analyzer, Filter};
 pub use assertion::Assertion;
+pub use calendar::Civil;
 pub use condition::{BinaryOp, apply};
 pub use field_kind::FieldKind;
 pub use geojson::{Malformed, from_geojson, geojson_name, to_geojson};

@@ -108,6 +108,23 @@ pub enum Function {
     MathRound,
     /// `time::now()` — the instant the statement is evaluated at.
     TimeNow,
+    /// `time::year(instant)` — the calendar year, in UTC.
+    TimeYear,
+    /// `time::month(instant)` — the month, 1 through 12.
+    TimeMonth,
+    /// `time::day(instant)` — the day of the month, 1 through 31.
+    TimeDay,
+    /// `time::hour(instant)` — the hour, 0 through 23.
+    TimeHour,
+    /// `time::minute(instant)` — the minute, 0 through 59.
+    TimeMinute,
+    /// `time::second(instant)` — the second **of the minute**, 0 through 59.
+    /// Not the seconds since the epoch, which is [`Function::TimeUnix`].
+    TimeSecond,
+    /// `time::unix(instant)` — whole seconds since the epoch.
+    TimeUnix,
+    /// `time::from_unix(seconds)` — the instant a second count names.
+    TimeFromUnix,
     /// `type::of(value)` — the type's name, as §3 spells it.
     TypeOf,
     /// `type::bool(value)` — the value as a boolean, or a refusal.
@@ -180,6 +197,14 @@ impl Function {
         Self::MathCeil,
         Self::MathRound,
         Self::TimeNow,
+        Self::TimeYear,
+        Self::TimeMonth,
+        Self::TimeDay,
+        Self::TimeHour,
+        Self::TimeMinute,
+        Self::TimeSecond,
+        Self::TimeUnix,
+        Self::TimeFromUnix,
         Self::TypeOf,
         Self::TypeBool,
         Self::TypeInt,
@@ -221,6 +246,14 @@ impl Function {
             Self::MathCeil => "math::ceil",
             Self::MathRound => "math::round",
             Self::TimeNow => "time::now",
+            Self::TimeYear => "time::year",
+            Self::TimeMonth => "time::month",
+            Self::TimeDay => "time::day",
+            Self::TimeHour => "time::hour",
+            Self::TimeMinute => "time::minute",
+            Self::TimeSecond => "time::second",
+            Self::TimeUnix => "time::unix",
+            Self::TimeFromUnix => "time::from_unix",
             Self::TypeOf => "type::of",
             Self::TypeBool => "type::bool",
             Self::TypeInt => "type::int",
@@ -274,6 +307,14 @@ impl Function {
             | Self::MathFloor
             | Self::MathCeil
             | Self::MathRound
+            | Self::TimeYear
+            | Self::TimeMonth
+            | Self::TimeDay
+            | Self::TimeHour
+            | Self::TimeMinute
+            | Self::TimeSecond
+            | Self::TimeUnix
+            | Self::TimeFromUnix
             | Self::TypeOf
             | Self::TypeBool
             | Self::TypeInt
@@ -333,6 +374,14 @@ impl Function {
             | Self::MathFloor
             | Self::MathCeil
             | Self::MathRound
+            | Self::TimeYear
+            | Self::TimeMonth
+            | Self::TimeDay
+            | Self::TimeHour
+            | Self::TimeMinute
+            | Self::TimeSecond
+            | Self::TimeUnix
+            | Self::TimeFromUnix
             | Self::TypeOf
             | Self::TypeBool
             | Self::TypeInt

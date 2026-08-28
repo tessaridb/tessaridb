@@ -13,12 +13,11 @@
 
 use core::fmt::Write as _;
 
+use crate::calendar::{
+    SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, days_from_civil, days_in_month,
+};
 use crate::time::Datetime;
 
-/// Seconds in the units the wall-clock fields carry.
-const SECONDS_PER_MINUTE: i64 = 60;
-const SECONDS_PER_HOUR: i64 = 3_600;
-const SECONDS_PER_DAY: i64 = 86_400;
 /// The most sub-second digits the type can hold.
 const NANOS_DIGITS: usize = 9;
 
@@ -188,46 +187,6 @@ fn offset_seconds(zone: &str) -> Option<i64> {
         .checked_mul(SECONDS_PER_HOUR)?
         .checked_add(minutes.checked_mul(SECONDS_PER_MINUTE)?)?
         .checked_mul(sign)
-}
-
-/// Days between the Unix epoch and a civil date, by Howard Hinnant's algorithm.
-///
-/// The era arithmetic is what makes the leap-year rule fall out instead of
-/// being special-cased: four hundred years hold exactly 146,097 days.
-fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
-    let year = if month <= 2 {
-        year.checked_sub(1)?
-    } else {
-        year
-    };
-    let era = year.div_euclid(400);
-    let year_of_era = year.rem_euclid(400);
-    let shift = if month > 2 { -3 } else { 9 };
-    let day_of_year = 153_i64
-        .checked_mul(month.checked_add(shift)?)?
-        .checked_add(2)?
-        .div_euclid(5)
-        .checked_add(day.checked_sub(1)?)?;
-    let day_of_era = year_of_era
-        .checked_mul(365)?
-        .checked_add(year_of_era.div_euclid(4))?
-        .checked_sub(year_of_era.div_euclid(100))?
-        .checked_add(day_of_year)?;
-    era.checked_mul(146_097)?
-        .checked_add(day_of_era)?
-        .checked_sub(719_468)
-}
-
-/// How many days the month holds, leap years included.
-fn days_in_month(year: i64, month: i64) -> Option<i64> {
-    let leap = year.rem_euclid(4) == 0 && (year.rem_euclid(100) != 0 || year.rem_euclid(400) == 0);
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => Some(31),
-        4 | 6 | 9 | 11 => Some(30),
-        2 if leap => Some(29),
-        2 => Some(28),
-        _ => None,
-    }
 }
 
 /// A run of ASCII digits as a number, or nothing.
@@ -426,15 +385,12 @@ impl Datetime {
     /// whole second reads the way anybody writes one.
     #[must_use]
     pub fn to_rfc3339(self) -> String {
-        let seconds = self.seconds();
-        let days = seconds.div_euclid(SECONDS_PER_DAY);
-        let within = seconds.rem_euclid(SECONDS_PER_DAY);
-        let (year, month, day) = civil_from_days(days);
-        let hour = within.div_euclid(SECONDS_PER_HOUR);
-        let minute = within
-            .rem_euclid(SECONDS_PER_HOUR)
-            .div_euclid(SECONDS_PER_MINUTE);
-        let second = within.rem_euclid(SECONDS_PER_MINUTE);
+        // The date is read by `crate::calendar`, not derived here. A second copy
+        // of the era arithmetic beside the first is how a writer comes to
+        // disagree with its own reader on one day in four hundred years.
+        let civil = self.civil();
+        let (year, month, day) = (civil.year, civil.month, civil.day);
+        let (hour, minute, second) = (civil.hour, civil.minute, civil.second);
         let mut text = format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}");
         if self.nanos() > 0 {
             // Trailing zeros trimmed: `.5` and `.500000000` name one instant,
@@ -494,48 +450,6 @@ impl crate::time::Duration {
         }
         text
     }
-}
-
-/// The civil date a day count names, inverse of [`days_from_civil`].
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let shifted = days.saturating_add(719_468);
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted.rem_euclid(146_097);
-    let year_of_era = day_of_era
-        .saturating_sub(day_of_era.div_euclid(1_460))
-        .saturating_add(day_of_era.div_euclid(36_524))
-        .saturating_sub(day_of_era.div_euclid(146_096))
-        .div_euclid(365);
-    let year = year_of_era.saturating_add(era.saturating_mul(400));
-    let day_of_year = day_of_era.saturating_sub(
-        year_of_era
-            .saturating_mul(365)
-            .saturating_add(year_of_era.div_euclid(4))
-            .saturating_sub(year_of_era.div_euclid(100)),
-    );
-    let shifted_month = day_of_year
-        .saturating_mul(5)
-        .saturating_add(2)
-        .div_euclid(153);
-    let day = day_of_year
-        .saturating_sub(
-            153_i64
-                .saturating_mul(shifted_month)
-                .saturating_add(2)
-                .div_euclid(5),
-        )
-        .saturating_add(1);
-    let month = if shifted_month < 10 {
-        shifted_month.saturating_add(3)
-    } else {
-        shifted_month.saturating_sub(9)
-    };
-    let year = if month <= 2 {
-        year.saturating_add(1)
-    } else {
-        year
-    };
-    (year, month, day)
 }
 
 #[cfg(test)]

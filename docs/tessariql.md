@@ -1998,7 +1998,7 @@ SELECT * FROM users WHERE string::len(name) = 3;
 | `string` | `len` (characters, not bytes) · `lower` · `upper` · `trim` · `concat(a, b)` |
 | `array` | `len` · `first` · `last` |
 | `math` | `abs` · `floor` · `ceil` · `round` (half away from zero) |
-| `time` | `now()` · `bucket(instant, width)` — the start of the window an instant is in |
+| `time` | `now()` · `bucket(instant, width)` — the start of the window an instant is in · `year` · `month` · `day` · `hour` · `minute` · `second` · `unix` · `from_unix(seconds)` — the [calendar](#the-calendar) |
 | `type` | `of(value)` — the type's name, as §3 spells it · `bool` · `int` · `float` · `string` · `datetime` · `uuid` — the [casts](#casts) |
 | `vector` | `cosine(a, b)` · `euclidean(a, b)` · `dot(a, b)` |
 | `search` | `score(field, 'query')` — see [Ranking](#ranking) |
@@ -2100,6 +2100,59 @@ opposite reason, that it accepts all three. `type::decimal` is deferred rather
 than refused: an exact decimal is the kind money is kept in, so a cast producing
 one from a float has to say what it does with a value no decimal holds exactly,
 and that deserves its own answer.
+
+### The calendar
+
+An instant is a count of seconds. A year, a month and a day are a **reading** of
+that count, and eight functions do the reading:
+
+```
+SELECT time::year(at) AS year, time::month(at) AS month FROM events;
+SELECT label FROM events WHERE time::year(at) = 2026;
+SELECT count(*) AS held, time::year(at) AS year FROM events GROUP BY time::year(at);
+```
+
+| Written | Answers |
+|---|---|
+| `time::year(at)` | the calendar year, negative before year 1 |
+| `time::month(at)` | 1 through 12 |
+| `time::day(at)` | the day of the month, 1 through 31 |
+| `time::hour(at)` | 0 through 23 |
+| `time::minute(at)` | 0 through 59 |
+| `time::second(at)` | the second **of the minute**, 0 through 59 |
+| `time::unix(at)` | whole seconds since the epoch |
+| `time::from_unix(n)` | the instant a second count names |
+
+**Everything is UTC**, because an instant has no zone. A zone is a rendering
+choice made where a value is displayed, and storing one would make two instants
+naming the same moment compare unequal.
+
+**`time::second` and `time::unix` are different questions.** The first is the
+second of the minute — `9` in `14:37:09`. The second is 1,787,927,829. Both
+answer an integer, so nothing but the name distinguishes them at a glance.
+
+**A reading is a value like any other.** It filters, it orders, it groups, and it
+sits in a projection. That is what makes a calendar report sayable without
+storing the year beside the instant and keeping the two in step.
+
+**A reading of a field that is not there is `none`,** like any other function of
+an absence — there is no year that a missing field has. So a read over records
+of differing shapes narrows rather than failing.
+
+**`time::from_unix` refuses a fraction rather than truncating it**, on the same
+rule the casts follow: `math::round` already says which whole second was meant.
+
+```
+RETURN time::from_unix(math::round(1.5));
+```
+
+**`time::unix` drops the sub-second remainder, and that is a deliberate
+asymmetry with the rule above.** Refusing is affordable only where the language
+already holds the sentence a caller should write instead — `math::round` is that
+sentence for `from_unix`, and there is no `time::unix_millis` to be the one
+here. `time::now()` carries a remainder nearly always, so a strict `time::unix`
+would fail the pairing everybody writes. The remainder is still on the instant
+when the whole value is kept.
 
 ### Shapes
 
@@ -3305,6 +3358,7 @@ be, because it is confined to the run its fixed values name.
 | A function is added only when the language cannot already say it | **contract** — the rule that keeps the surface from growing by association |
 | An absent or null argument makes a call answer `none` | **contract** — except `type::of`, which asks about the value rather than computing from it |
 | A cast produces the kind it names or refuses, never something near it | **contract** — an absent argument still answers `none`, so a cast narrows a read; a value that is there and does not convert fails it, because a filter silently returning fewer rows is the one wrong answer nothing downstream detects |
+| A date read from an instant is UTC, and `time::second` is the second of the minute | **contract** — an instant has no zone, and `time::unix` is the other question; `time::from_unix` refuses a fraction because `math::round` says which second was meant, while `time::unix` drops a remainder because nothing else could say that conversion |
 | Anything computed in a projection needs `AS` | **contract** |
 | Comparison is the value system's declared order, including across types | **contract** — a comparison disagreeing with the order its index is stored in is an answer that changes when an index appears |
 | An ordered comparison against `NONE` or `NULL` is false | **contract** — they are the absence of a value, not a small one |

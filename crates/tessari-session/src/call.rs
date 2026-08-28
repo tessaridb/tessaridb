@@ -77,6 +77,28 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // value like any other — a replica applies what was written rather than
         // asking its own clock and reaching a different answer.
         Function::TimeNow => now(function, span),
+        // The six readings of a date, each named separately rather than sharing
+        // one arm with a match inside it. A shared arm needs a fallback for the
+        // function the outer match already excluded, and a fallback here is an
+        // invented answer: `time::month` returning a year is not a failure
+        // anything downstream could detect.
+        Function::TimeYear => reading(function, arguments, span, |civil| civil.year),
+        Function::TimeMonth => reading(function, arguments, span, |civil| civil.month),
+        Function::TimeDay => reading(function, arguments, span, |civil| civil.day),
+        Function::TimeHour => reading(function, arguments, span, |civil| civil.hour),
+        Function::TimeMinute => reading(function, arguments, span, |civil| civil.minute),
+        Function::TimeSecond => reading(function, arguments, span, |civil| civil.second),
+        // Whole seconds, and the sub-second remainder is **not** in the answer.
+        // That is a loss taken deliberately, for the reason `type::float` takes
+        // the nearest float for a decimal: strictness is affordable only where
+        // the language already holds the sentence the caller should write
+        // instead, and there is no `time::unix_millis` to write. `time::now()`
+        // carries a remainder almost always, so refusing one would fail the
+        // pairing everybody writes.
+        Function::TimeUnix => Ok(Value::Number(Number::Integer(
+            datetime_at(function, arguments, 0, span)?.seconds(),
+        ))),
+        Function::TimeFromUnix => from_unix(function, arguments, span),
         // A score needs the record's analyzer and the collection it is measured
         // against, and neither is a value — so it is answered in the evaluator,
         // where the scope is, and never reaches here.
@@ -196,6 +218,42 @@ fn bucket(
         },
         |held| Ok(Value::Datetime(held)),
     )
+}
+
+/// One field of the date an instant falls on.
+///
+/// The date is read by [`Datetime::civil`], which is the store's single answer
+/// to how a second count becomes a calendar date. Deriving it here as well would
+/// be a second copy of the era arithmetic, and the way two copies fail is that
+/// they disagree on one day in four hundred years while both keep answering.
+fn reading(
+    function: Function,
+    arguments: &[Value],
+    span: Span,
+    take: impl Fn(tessari_types::Civil) -> i64,
+) -> Result<Value> {
+    let instant = datetime_at(function, arguments, 0, span)?;
+    Ok(Value::Number(Number::Integer(take(instant.civil()))))
+}
+
+/// The instant a second count names.
+///
+/// A fraction is refused rather than truncated, on the rule the casts follow:
+/// `math::round` already says which whole number was meant, so choosing one here
+/// would answer a question the caller did not ask. A count no instant holds is
+/// refused for the same reason it is never clamped — a clamped instant is a
+/// moment the author did not write, sitting in a record that will be read back.
+fn from_unix(function: Function, arguments: &[Value], span: Span) -> Result<Value> {
+    let number = number_at(function, arguments, 0, span)?;
+    let Some(seconds) = number.as_exact_integer() else {
+        return Err(Error::CallFailed {
+            function,
+            reason: "a unix time is a whole number of seconds an instant holds; \
+                     math::round says which whole one was meant",
+            span,
+        });
+    };
+    Ok(Value::Datetime(Datetime::from_seconds(seconds)))
 }
 
 fn now(function: Function, span: Span) -> Result<Value> {
@@ -399,6 +457,102 @@ mod tests {
         assert_eq!(
             call(Function::MathRound, &[fractional], at()).expect("a number"),
             Value::Number(Number::float(3.0))
+        );
+    }
+
+    /// The instant every `time::` test below reads.
+    fn instant(text: &str) -> Value {
+        Value::Datetime(tessari_types::Datetime::parse_rfc3339(text).expect("an instant"))
+    }
+
+    fn read(function: Function, value: Value) -> Value {
+        call(function, &[value], at()).expect("a reading")
+    }
+
+    #[test]
+    fn each_reading_takes_its_own_field_and_not_a_neighbours() {
+        // The failure this guards is a copy-paste one: six arms differing by a
+        // single field name, where `time::minute` returning the hour is not a
+        // crash and not a type error. The fixture has six distinct values so no
+        // two fields can be swapped without the test noticing.
+        let taken = instant("2026-08-28T14:37:09Z");
+        for (function, expected) in [
+            (Function::TimeYear, 2026),
+            (Function::TimeMonth, 8),
+            (Function::TimeDay, 28),
+            (Function::TimeHour, 14),
+            (Function::TimeMinute, 37),
+            (Function::TimeSecond, 9),
+        ] {
+            assert_eq!(
+                read(function, taken.clone()),
+                Value::Number(Number::Integer(expected)),
+                "{function}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_second_of_the_minute_is_not_the_second_since_the_epoch() {
+        // Two functions one letter apart in meaning, and both answer an integer,
+        // so nothing but this asserts which is which.
+        let taken = instant("2026-08-28T14:37:09Z");
+        assert_eq!(
+            read(Function::TimeSecond, taken.clone()),
+            Value::Number(Number::Integer(9))
+        );
+        assert_eq!(
+            read(Function::TimeUnix, taken),
+            Value::Number(Number::Integer(1_787_927_829))
+        );
+    }
+
+    #[test]
+    fn an_instant_survives_a_round_trip_through_its_second_count() {
+        let taken = instant("2026-08-28T14:37:09Z");
+        let seconds = read(Function::TimeUnix, taken.clone());
+        assert_eq!(read(Function::TimeFromUnix, seconds), taken);
+    }
+
+    #[test]
+    fn a_sub_second_remainder_is_dropped_by_the_second_count_and_not_refused() {
+        // Deliberate, and the reason is in `time::unix`'s comment: there is no
+        // `time::unix_millis` to write instead, and `time::now()` carries a
+        // remainder nearly always. Asserted so the loss is a decision on the
+        // record rather than something nobody looked at.
+        let taken = instant("2026-08-28T14:37:09.5Z");
+        assert_eq!(
+            read(Function::TimeUnix, taken),
+            Value::Number(Number::Integer(1_787_927_829))
+        );
+    }
+
+    #[test]
+    fn a_fractional_second_count_is_refused_rather_than_truncated() {
+        let error = call(
+            Function::TimeFromUnix,
+            &[Value::Number(Number::float(1.5))],
+            at(),
+        )
+        .expect_err("a refusal");
+        let message = error.to_string();
+        assert!(message.contains("time::from_unix"), "{message}");
+        assert!(message.contains("math::round"), "{message}");
+        // A whole number written as a float is not a fraction, and is taken.
+        assert_eq!(
+            read(Function::TimeFromUnix, Value::Number(Number::float(0.0))),
+            Value::Datetime(tessari_types::Datetime::from_seconds(0))
+        );
+    }
+
+    #[test]
+    fn a_reading_of_an_absent_instant_is_an_absence_and_narrows_the_read() {
+        // None of the eight join `answers_for_absence`: there is no year that a
+        // missing field has. The general rule therefore applies, and a record
+        // without the field drops out of the read instead of failing it.
+        assert_eq!(
+            call(Function::TimeYear, &[Value::None], at()).expect("an answer"),
+            Value::None
         );
     }
 }

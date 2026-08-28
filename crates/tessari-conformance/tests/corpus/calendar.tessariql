@@ -1,0 +1,122 @@
+# Reading a date out of an instant, and building an instant from a second count.
+#
+# An instant is a second count; a year, a month and a day are a reading of it.
+# The reading happens in one place, so `time::day` and `time::month` cannot come
+# to disagree about which day it is — the failure a second copy of the calendar
+# arithmetic produces, silently, on one day in four hundred years.
+#
+# The readings are asserted as VALUES rather than as row counts. A case that
+# says `rows 1` about `time::month` proves the call did not fail, which is not
+# the claim its name makes: a month of `8` and a month of `14` both answer one
+# row.
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE intake;
+USE DATABASE intake;
+--- expect: ok
+
+--- case: the year of an instant
+RETURN time::year(datetime '2026-08-28T14:37:09Z');
+--- expect: value 2026
+
+--- case: the month, and it is the month rather than a neighbouring field
+RETURN time::month(datetime '2026-08-28T14:37:09Z');
+--- expect: value 8
+
+--- case: the day of the month
+RETURN time::day(datetime '2026-08-28T14:37:09Z');
+--- expect: value 28
+
+--- case: the hour
+RETURN time::hour(datetime '2026-08-28T14:37:09Z');
+--- expect: value 14
+
+--- case: the minute
+RETURN time::minute(datetime '2026-08-28T14:37:09Z');
+--- expect: value 37
+
+--- case: the second of the minute
+RETURN time::second(datetime '2026-08-28T14:37:09Z');
+--- expect: value 9
+
+--- case: which is not the second since the epoch
+# Two functions that both answer an integer, one letter apart in meaning.
+RETURN time::unix(datetime '2026-08-28T14:37:09Z');
+--- expect: value 1787927829
+
+--- case: a leap day exists in a year that divides by four hundred
+# 2000 is a leap year; 1900 is not, because it divides by 100 and not 400. A
+# calendar that gets this wrong is right for 99 years at a time.
+RETURN time::day(datetime '2000-02-29T12:00:00Z');
+--- expect: value 29
+
+--- case: and the day after the twenty-eighth of a common February is March
+RETURN time::month(datetime '1900-03-01T00:00:00Z');
+--- expect: value 3
+
+--- case: an instant before the epoch reads backwards, not negatively
+# The way truncating division fails: one second before the epoch is the last
+# second of 1969, and not day zero of 1970 with a second of minus one.
+RETURN time::year(datetime '1969-12-31T23:59:59Z');
+--- expect: value 1969
+
+--- case: and its wall clock is the last second of that day
+RETURN time::hour(datetime '1969-12-31T23:59:59Z');
+--- expect: value 23
+
+--- case: an instant survives a round trip through its second count
+RETURN time::unix(time::from_unix(time::unix(datetime '2026-08-28T14:37:09Z')));
+--- expect: value 1787927829
+
+--- case: the epoch itself is the first of January
+RETURN time::year(time::from_unix(0));
+--- expect: value 1970
+
+--- case: a sub-second remainder is not in the second count
+# Taken rather than refused: there is no `time::unix_millis` to write instead,
+# and `time::now()` carries a remainder nearly always.
+RETURN time::unix(datetime '2026-08-28T14:37:09.5Z');
+--- expect: value 1787927829
+
+--- case: a fractional second count is refused rather than truncated
+# The rule the casts follow: `math::round` already says which whole number was
+# meant, so choosing one here would answer a question the caller did not ask.
+RETURN time::from_unix(1.5);
+--- expect: error CallFailed
+
+--- case: because math::round is how a caller says which whole second was meant
+RETURN time::unix(time::from_unix(math::round(1.5)));
+--- expect: value 2
+
+--- case: a reading of something that is not an instant is refused by type
+RETURN time::year('2026-08-28T14:37:09Z');
+--- expect: error WrongArgument
+
+--- case: which the cast to an instant is how a caller fixes
+RETURN time::year(type::datetime('2026-08-28T14:37:09Z'));
+--- expect: value 2026
+
+--- case: events carrying an instant each, to read over
+DEFINE TABLE events;
+CREATE events:1 = { at: datetime '2026-08-28T14:37:09Z', label: 'summer' };
+CREATE events:2 = { at: datetime '2000-02-29T00:00:00Z', label: 'a leap day' };
+CREATE events:3 = { at: datetime '1969-12-31T23:59:59Z', label: 'before the epoch' };
+CREATE events:4 = { label: 'no instant recorded' };
+--- expect: ok
+
+--- case: a reading of a field that is not there is an absence, so a read narrows
+# None of the eight answer for an absence: there is no year a missing field has.
+# So the general rule applies and the record stays, holding `none`.
+SELECT time::year(at) AS year FROM events;
+--- expect: rows 4
+
+--- case: and a reading is a value like any other, so it filters
+SELECT label FROM events WHERE time::year(at) = 2026;
+--- expect: rows 1
+
+--- case: and it groups, which is what makes a calendar report sayable
+SELECT count(*) AS held, time::year(at) AS year FROM events GROUP BY time::year(at);
+--- expect: rows 4

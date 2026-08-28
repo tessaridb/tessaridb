@@ -137,6 +137,14 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::MathCeil
         | Function::MathRound
         | Function::TimeNow
+        | Function::TimeYear
+        | Function::TimeMonth
+        | Function::TimeDay
+        | Function::TimeHour
+        | Function::TimeMinute
+        | Function::TimeSecond
+        | Function::TimeUnix
+        | Function::TimeFromUnix
         | Function::TimeBucket
         | Function::TypeOf
         | Function::TypeBool
