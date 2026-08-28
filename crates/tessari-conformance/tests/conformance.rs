@@ -253,7 +253,7 @@ fn the_vocabulary_tables_name_every_function_and_every_fold() {
             let group = backticked(group).next().and_then(bare)?;
             Some(
                 backticked(listed)
-                    .filter_map(|name| bare(name))
+                    .filter_map(bare)
                     .map(|name| format!("{group}::{name}"))
                     .collect::<Vec<String>>(),
             )
