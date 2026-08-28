@@ -604,6 +604,65 @@ live in a companion table created alongside it whose name carries a byte no
 identifier can hold, so nothing could ever name it to drop it — it goes with the
 bucket or it is orphaned permanently.
 
+### A table and its columns in one statement
+
+A table's fields can be declared with it, in parentheses after the name:
+
+```
+DEFINE TABLE people (
+    name   string REQUIRED,
+    rank   string DEFAULT 'viewer',
+    joined datetime DEFAULT time::now(),
+    level  int assert $value > 0
+);
+```
+
+That is the same declaration as the long spelling — a `DEFINE TABLE` and one
+`DEFINE FIELD` per column — written the way it is usually thought. The type
+follows the column's name without `TYPE`, because nothing but a type can stand
+there; everything after it is what a field declaration always takes, in any
+order: `REQUIRED`, `DEFAULT`, `ANALYZER`, `ASSERT`.
+
+It is a **desugaring**, and that is load-bearing rather than an implementation
+note. Each column runs through the same code a `DEFINE FIELD` reaches, so
+whatever a field does, a column does — including the part that only shows up
+later:
+
+```
+CREATE readings:1 = { level: 'high' };
+DEFINE TABLE IF NOT EXISTS readings (level int);
+```
+
+is refused, because the row already there is not an `int`, and the declaration
+would otherwise leave the catalog claiming something about the table that the
+table does not do. A refusal at any column takes the columns before it and the
+table with it: the statement is one unit, and a half-declared table is not a
+state it can leave behind.
+
+**Columns do not make the table `SCHEMAFULL`.** A table declared this way still
+accepts a field nobody named:
+
+```
+DEFINE TABLE loose (name string);
+CREATE loose:1 = { name: 'ada', extra: 1 };   -- accepted
+DEFINE TABLE tight (name string) SCHEMAFULL;
+CREATE tight:1 = { name: 'ada', extra: 1 };   -- refused
+```
+
+Of the two readings that is the one the other can be written from: strictness is
+one word away, while a lenient table with declared columns would have no
+spelling at all if the parentheses implied it.
+
+The flags stand after the column list, never before it — `DEFINE TABLE t
+SCHEMAFULL (…)` reads as though the parentheses qualified `SCHEMAFULL`, so it is
+refused. Empty parentheses are refused too: writing nothing already says *no
+columns*, so `()` can only be a list somebody meant to fill in.
+
+`IF NOT EXISTS` covers the whole declaration, the table and every column. The
+alternative tolerates the table and then refuses on the first column, which
+makes the statement impossible to re-run — the opposite of what the words ask
+for.
+
 ### Undeclaring, and what refuses
 
 Every catalog object this language can declare can be undeclared, except one:

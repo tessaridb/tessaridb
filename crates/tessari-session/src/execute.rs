@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 use tessari_encoding::{Roles, decode_payload, encode_payload};
 use tessari_ql::{
-    Answer, Assignment, ConsumerSource, Edit, FieldMapping, FieldPath, Name, RecordTarget, Span,
-    StatementKind, TableChange, TableRef,
+    Answer, Assignment, ColumnDeclaration, ConsumerSource, Edit, FieldMapping, FieldPath, Name,
+    RecordTarget, Span, StatementKind, TableChange, TableRef,
 };
 use tessari_storage::{
     Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, FieldShape, IndexDefinition, IndexShape,
@@ -63,12 +63,14 @@ impl Session<'_> {
             } => self.define_database(transaction, name, *if_not_exists, span),
             StatementKind::DefineTable {
                 name,
+                columns,
                 schemafull,
                 edge,
                 if_not_exists,
-            } => self.define_table(
+            } => self.define_table_with_columns(
                 transaction,
                 name,
+                columns,
                 TableShape {
                     schemafull: *schemafull,
                     edge: *edge,
@@ -698,6 +700,61 @@ impl Session<'_> {
     /// the table to it — the ones already there and the ones this transaction
     /// writes. The declaration and the rows it constrains land together or
     /// neither does.
+    /// `DEFINE TABLE t (a string, b int REQUIRED)` — the table, then its fields.
+    ///
+    /// **A desugaring, not a second implementation.** Each column goes through
+    /// the same `define_field` the long spelling does, which is what makes a
+    /// constraint declared here behave the way one declared there does — it is
+    /// checked against the rows already in the table, and a violation refuses
+    /// the whole statement. Reimplementing the field half would have produced
+    /// the one thing this criterion is about: two spellings that agree on the
+    /// happy path and disagree on the day the data does not fit.
+    ///
+    /// Fields are declared **after** the table exists and in written order, so
+    /// a failure at the third column rolls back the first two and the table
+    /// with them: the statement's transaction is the unit, and a half-declared
+    /// table is not a state this can leave behind.
+    ///
+    /// `IF NOT EXISTS` covers the whole declaration rather than the table
+    /// alone. The alternative makes the statement un-re-runnable — the table is
+    /// tolerated and the first column then refuses — which is the opposite of
+    /// what the words ask for.
+    fn define_table_with_columns(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        columns: &[ColumnDeclaration],
+        shape: TableShape,
+        if_not_exists: bool,
+        span: Span,
+    ) -> Result<Outcome> {
+        let outcome = self.define_table(transaction, name, shape, if_not_exists, span)?;
+        if columns.is_empty() {
+            return Ok(outcome);
+        }
+        let table = TableRef {
+            database: None,
+            name: name.clone(),
+            span: name.span,
+        };
+        for column in columns {
+            self.define_field(
+                transaction,
+                &column.name,
+                &table,
+                column.kind,
+                FieldShape {
+                    required: column.required,
+                    default: column.default.as_ref().map(|written| written.text.clone()),
+                    analyzer: column.analyzer.as_ref().map(|named| named.text.clone()),
+                    assert: column.assert.clone(),
+                },
+                if_not_exists,
+            )?;
+        }
+        Ok(outcome)
+    }
+
     fn define_field(
         &self,
         transaction: &mut Transaction<'_>,

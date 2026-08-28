@@ -347,3 +347,112 @@ fn the_columnar_spelling_takes_every_option_the_long_one_does() {
         .run("CREATE people:2 = { rank: 'editor' };")
         .expect_err("REQUIRED was parsed and then ignored");
 }
+
+/// One statement declares the table and its fields.
+///
+/// The property is not that it parses. It is that what comes out is
+/// **indistinguishable** from the long spelling: the executor desugars into the
+/// same `define_field`, so a column is a field in every way a field is one, and
+/// there is no second set of rules for the shorter form to disagree under.
+#[test]
+fn a_table_and_its_columns_are_one_statement() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(
+        &mut session,
+        "DEFINE TABLE people (name string REQUIRED, rank string DEFAULT 'viewer');",
+    );
+    ok(&mut session, "CREATE people:1 = { name: 'ada' };");
+
+    let outcome = session
+        .run("RETURN (SELECT rank FROM people:1);")
+        .unwrap()
+        .pop()
+        .expect("one outcome");
+    assert!(
+        format!("{outcome:?}").contains("viewer"),
+        "the column's DEFAULT did not reach the field: {outcome:?}"
+    );
+    session
+        .run("CREATE people:2 = { rank: 'editor' };")
+        .expect_err("the column's REQUIRED did not reach the field");
+}
+
+/// Declaring columns does not make the table refuse the ones it does not name.
+///
+/// Of the two candidate readings, this is the one the other can be written
+/// from: strictness is one word away, and a lenient table with declared columns
+/// has no other spelling at all if the parentheses imply `SCHEMAFULL`.
+#[test]
+fn columns_do_not_imply_schemafull_and_the_word_still_does() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(&mut session, "DEFINE TABLE loose (name string);");
+    ok(&mut session, "CREATE loose:1 = { name: 'ada', extra: 1 };");
+
+    ok(&mut session, "DEFINE TABLE tight (name string) SCHEMAFULL;");
+    let refused = refusal(&mut session, "CREATE tight:1 = { name: 'ada', extra: 1 };");
+    assert!(
+        refused.contains("extra"),
+        "the refusal should name the undeclared field: {refused}"
+    );
+}
+
+/// A column's constraint is checked against the rows already in the table.
+///
+/// The half of this criterion that is not about grammar. A declaration accepted
+/// over data that contradicts it is worse than one refused: the catalog then
+/// says something about the table that the table does not do, and every reader
+/// downstream believes it.
+#[test]
+fn a_column_declared_over_violating_rows_is_refused_and_writes_nothing() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(&mut session, "DEFINE TABLE readings;");
+    ok(&mut session, "CREATE readings:1 = { level: 'high' };");
+
+    let refused = refusal(
+        &mut session,
+        "DEFINE TABLE IF NOT EXISTS readings (level int);",
+    );
+    // Named, so the refusal is the schema check over the stored row and not
+    // `IF NOT EXISTS` declining the whole statement — which would make this
+    // test pass while proving nothing.
+    assert!(
+        refused.contains("level"),
+        "refused for some other reason than the column: {refused}"
+    );
+    // Nothing was written: the field is still undeclared, so a row that would
+    // violate it is still accepted.
+    ok(&mut session, "CREATE readings:2 = { level: 'low' };");
+}
+
+/// A refusal at the third column takes the first two, and the table, with it.
+///
+/// The statement's transaction is the unit. A half-declared table is the state
+/// this must never leave behind, because the reader who wrote one statement has
+/// no reason to go looking for a partial one.
+#[test]
+fn a_failing_column_rolls_back_the_columns_before_it_and_the_table() {
+    let store = store();
+    let mut session = opened(&store);
+    refusal(
+        &mut session,
+        "DEFINE TABLE half (first string, second int, first bool);",
+    );
+    session
+        .run("SELECT * FROM half;")
+        .expect_err("the table survived a refused declaration");
+}
+
+/// Empty parentheses are a list somebody meant to fill in.
+///
+/// The flag-only spelling already says *no columns* by writing nothing, so `()`
+/// carries no reading of its own — and accepting it silently would make a
+/// truncated statement look like a deliberate one.
+#[test]
+fn empty_parentheses_are_refused_rather_than_read_as_no_columns() {
+    let store = store();
+    let mut session = opened(&store);
+    refusal(&mut session, "DEFINE TABLE nothing ();");
+}

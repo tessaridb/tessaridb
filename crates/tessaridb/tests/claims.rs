@@ -133,8 +133,13 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 21] = [
+const CROSS_CUTTING: [&str; 22] = [
     "bindings",
+    // Declaring a table's fields with the table is a spelling, and a spelling
+    // belongs to no engine: the columns desugar into the field declarations the
+    // long form makes, and what a field then does to a write is the same
+    // whether the table is scanned, indexed or walked.
+    "columns",
     // The vocabulary is cross-cutting by construction: a function is a value's
     // value, and every engine hands over values. `type::int(count)` reads the
     // same whether the record came from a scan, an index, a walk or a

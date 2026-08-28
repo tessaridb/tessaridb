@@ -1,15 +1,29 @@
 //! One statement at a time.
 
 use super::Parser;
-use tessari_types::{FieldKind, Filter, Path, Step};
+use tessari_types::{Assertion, FieldKind, Filter, Path, Step};
 
 use crate::ast::{
-    Answer, Assignment, ConsumerSource, Direction, Edit, Expr, ExprKind, FieldMapping, FieldPath,
-    Hop, InfoSubject, JoinSide, Name, OnFailure, Password, Projection, RangeExpr, RecordTarget,
-    Select, Source, Statement, StatementKind, TableChange, TableRef, UserChange,
+    Answer, Assignment, ColumnDeclaration, ConsumerSource, Direction, Edit, Expr, ExprKind,
+    FieldMapping, FieldPath, Hop, InfoSubject, JoinSide, Name, OnFailure, Password, Projection,
+    RangeExpr, RecordTarget, Select, Source, Statement, StatementKind, TableChange, TableRef,
+    UserChange, Written,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
+
+/// What a field declaration says after its type.
+///
+/// A struct rather than a four-value tuple so that the two call sites cannot
+/// bind them in the wrong order — `analyzer` and a `default` that happens to be
+/// a name would both compile.
+#[derive(Default)]
+struct FieldOptions {
+    required: bool,
+    default: Option<Written>,
+    analyzer: Option<Name>,
+    assert: Option<Assertion>,
+}
 
 /// The parameter name that reads as this node in a `FROM`.
 ///
@@ -335,6 +349,12 @@ impl Parser<'_> {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
                 let name = self.name()?;
+                // The columns come before the flags rather than in the same
+                // order-free loop: they are the subject of the statement and
+                // the flags are adjectives on it, and `DEFINE TABLE t
+                // SCHEMAFULL (…)` reads as though the parentheses qualified
+                // `SCHEMAFULL`.
+                let columns = self.columns()?;
                 // Either marker, in either order, and neither twice. Order-free
                 // because there is no reading under which one has to precede the
                 // other, and a grammar that insisted would only be remembered
@@ -352,6 +372,7 @@ impl Parser<'_> {
                 }
                 Ok(StatementKind::DefineTable {
                     name,
+                    columns,
                     schemafull,
                     edge,
                     if_not_exists,
@@ -857,30 +878,12 @@ impl Parser<'_> {
     ) -> Result<StatementKind> {
         self.expect_keyword(Keyword::Type, "`TYPE` and what the field may hold")?;
         let kind = self.field_kind()?;
-        // Either marker, in either order, and neither twice — the rule
-        // `DEFINE TABLE`'s two flags already follow, for the same reason: there
-        // is no reading under which one has to precede the other, and a grammar
-        // that insisted would only be remembered wrong.
-        let mut required = false;
-        let mut default = None;
-        let mut analyzer = None;
-        let mut assert = None;
-        loop {
-            if !required && self.eat_keyword(Keyword::Required) {
-                required = true;
-            } else if default.is_none() && self.eat_keyword(Keyword::Default) {
-                default = Some(self.written_expression()?);
-            } else if analyzer.is_none() && self.eat_keyword(Keyword::Analyzer) {
-                analyzer = Some(self.name()?);
-            } else if assert.is_none() && self.eat_word("assert") {
-                // Contextual, like `vector` and `fetch`: nothing but this marker
-                // can stand here, and a field called `assert` is not a name to
-                // take away from a table that has one.
-                assert = Some(super::assertion::lower(&self.condition()?)?);
-            } else {
-                break;
-            }
-        }
+        let FieldOptions {
+            required,
+            default,
+            analyzer,
+            assert,
+        } = self.field_options()?;
         if replacing {
             return Ok(StatementKind::AlterField {
                 name,
@@ -902,6 +905,72 @@ impl Parser<'_> {
             assert,
             if_not_exists,
         })
+    }
+
+    /// Everything a field declaration says after its type.
+    ///
+    /// Shared by all three spellings — `DEFINE FIELD`, `ALTER TABLE … FIELD`,
+    /// and a column inside `DEFINE TABLE`'s parentheses — because a reader who
+    /// learns `DEFAULT` in one of them has learned it in the others, and three
+    /// copies of this loop is how one of them quietly stops accepting `ASSERT`.
+    fn field_options(&mut self) -> Result<FieldOptions> {
+        // Any marker, in any order, and none twice — the rule `DEFINE TABLE`'s
+        // two flags already follow, for the same reason: there is no reading
+        // under which one has to precede the other, and a grammar that insisted
+        // would only be remembered wrong.
+        let mut options = FieldOptions::default();
+        loop {
+            if !options.required && self.eat_keyword(Keyword::Required) {
+                options.required = true;
+            } else if options.default.is_none() && self.eat_keyword(Keyword::Default) {
+                options.default = Some(self.written_expression()?);
+            } else if options.analyzer.is_none() && self.eat_keyword(Keyword::Analyzer) {
+                options.analyzer = Some(self.name()?);
+            } else if options.assert.is_none() && self.eat_word("assert") {
+                // Contextual, like `vector` and `fetch`: nothing but this marker
+                // can stand here, and a field called `assert` is not a name to
+                // take away from a table that has one.
+                options.assert = Some(super::assertion::lower(&self.condition()?)?);
+            } else {
+                break;
+            }
+        }
+        Ok(options)
+    }
+
+    /// The parenthesised column list of a columnar `DEFINE TABLE`, if it has one.
+    ///
+    /// Empty parentheses are refused rather than read as no columns: the
+    /// flag-only spelling already says *no columns* by writing nothing, so `()`
+    /// can only be a list somebody meant to fill in.
+    fn columns(&mut self) -> Result<Vec<ColumnDeclaration>> {
+        if !self.eat_punct(Punct::ParenOpen) {
+            return Ok(Vec::new());
+        }
+        let mut columns = Vec::new();
+        loop {
+            let name = self.name()?;
+            let kind = self.field_kind()?;
+            let FieldOptions {
+                required,
+                default,
+                analyzer,
+                assert,
+            } = self.field_options()?;
+            columns.push(ColumnDeclaration {
+                name,
+                kind,
+                required,
+                default,
+                analyzer,
+                assert,
+            });
+            if !self.eat_punct(Punct::Comma) {
+                break;
+            }
+        }
+        self.expect_punct(Punct::ParenClose, "`)` closing the column list")?;
+        Ok(columns)
     }
 
     /// A type name, which may be spelled with a reserved word.

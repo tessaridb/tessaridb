@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 803 conformance cases define the language and run in the build.
+Unreleased. 824 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -28,6 +28,24 @@ Unreleased. 803 conformance cases define the language and run in the build.
   as a disclosure of everything in that database to every such user.
 
 ### Added
+
+- **A table and its fields are one statement.**
+  `DEFINE TABLE people (name string REQUIRED, rank string DEFAULT 'viewer')`
+  declares the table and every field in it, with the same options the long
+  spelling takes — `REQUIRED`, `DEFAULT`, `ANALYZER` and `ASSERT` — and the type
+  written positionally, because nothing but a type can stand after a column
+  name.
+
+  It is a desugaring rather than a second feature: each column goes through the
+  same code path `DEFINE FIELD` reaches, so a constraint declared this way is
+  checked against the rows already in the table, and a refusal at the third
+  column rolls back the first two and the table with them.
+
+  **Columns do not imply `SCHEMAFULL`** — of the two readings, this is the one
+  the other can be written from, since strictness is one word away while a
+  lenient table with declared columns would otherwise have no spelling. And
+  `IF NOT EXISTS` covers the whole declaration, table and columns alike, so the
+  statement can be re-run.
 
 - **Six more of the twelve catalog objects can now be undeclared, and one says
   why it cannot.** `DROP BUCKET`, `DROP ANALYZER`, `DROP REPLICA`,

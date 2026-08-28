@@ -71,9 +71,17 @@ pub enum StatementKind {
         if_not_exists: bool,
     },
     /// `DEFINE TABLE users SCHEMAFULL` / `DEFINE TABLE follows EDGE`
+    ///
+    /// With columns: `DEFINE TABLE users (name string REQUIRED, age int)`.
     DefineTable {
         /// The name to create.
         name: Name,
+        /// The fields declared with the table, in the order they were written.
+        ///
+        /// Empty for the flag-only spelling, which is not the same statement
+        /// with nothing in its parentheses: `DEFINE TABLE t ()` is refused,
+        /// because a reader writing empty parentheses meant to write something.
+        columns: Vec<ColumnDeclaration>,
         /// Whether the table refuses a field it does not declare.
         schemafull: bool,
         /// Whether the table holds edges, with an index on each endpoint.
@@ -1877,6 +1885,35 @@ pub enum UserChange {
     /// `SET ROLE editor` — what the user may do, within the tenancy they
     /// already hold. The tenancy itself does not move.
     Role(Name),
+}
+
+/// One field declared inside a table's parentheses.
+///
+/// Every field of [`DefineField`](StatementKind::DefineField) except the table,
+/// which the surrounding statement names, and `if_not_exists`, which the
+/// surrounding statement holds for the whole declaration. The two spellings are
+/// therefore the same declaration written two ways, and the executor desugars
+/// this one into the other rather than reimplementing what a field means —
+/// which is what keeps a constraint declared here checking the rows already
+/// there, exactly as the long spelling does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnDeclaration {
+    /// The field's name, unique within its table.
+    pub name: Name,
+    /// What the field is allowed to hold.
+    ///
+    /// Positional rather than introduced by `TYPE`: nothing but a type can
+    /// stand after a column name, and the word would be noise in a list whose
+    /// whole purpose is to be read down a page.
+    pub kind: FieldKind,
+    /// Whether the field must hold a value: present, and not `null`.
+    pub required: bool,
+    /// What a write supplying no value uses instead.
+    pub default: Option<Written>,
+    /// The analyzer this field's text becomes terms by, when it has one.
+    pub analyzer: Option<Name>,
+    /// What the value must satisfy, beyond its type.
+    pub assert: Option<Assertion>,
 }
 
 /// The one thing an [`AlterTable`](StatementKind::AlterTable) statement changes.
