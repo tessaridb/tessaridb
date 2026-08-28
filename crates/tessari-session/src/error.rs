@@ -106,6 +106,29 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// An `AFTER` anchor names a record that is not there, on a read that needs
+    /// its key.
+    ///
+    /// A cursor resumes an order, and an order this read named is a value the
+    /// anchor held — so with the record gone there is no position to resume
+    /// from. Every guess at one picks a page: the page after where the record
+    /// used to be, the page after the next record, or the whole table again.
+    ///
+    /// A read that named **no** order never raises this. Its order is the
+    /// store's own, the identity is the whole key, and the position outlives the
+    /// record standing on it.
+    #[error(
+        "`AFTER` names a record `{table}` no longer holds (at {span}), \
+         and this read's order needs the value it held; \
+         resume from a record that is there, or drop the `ORDER BY`"
+    )]
+    AnchorGone {
+        /// The table the anchor named.
+        table: String,
+        /// Where the anchor is.
+        span: tessari_ql::Span,
+    },
+
     /// A `USING <path>` the read did not satisfy.
     ///
     /// The whole point of the clause. It is checked against what the read

@@ -1,0 +1,86 @@
+# `AFTER <record>`: a page that resumes from a record instead of an offset.
+# A corpus file is one session against one store, so these run in order.
+#
+# `START 100000 LIMIT 20` reads a hundred thousand records to answer with twenty
+# and does it again, one record deeper, on every page — and under concurrent
+# writes it is not even correct: a record inserted behind the cursor shifts every
+# later page by one.
+#
+# The cases walk what the clause decides, which is mostly what it refuses.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+--- expect: ok
+
+--- case: five people and one note, to page and to page wrongly
+DEFINE TABLE people;
+CREATE people:1 = { name: 'ada', city: 'london', active: true };
+CREATE people:2 = { name: 'bo', city: 'paris', active: true };
+CREATE people:3 = { name: 'cy', city: 'london', active: false };
+CREATE people:4 = { name: 'di', city: 'paris', active: true };
+CREATE people:5 = { name: 'ed', city: 'london', active: true };
+DEFINE TABLE notes;
+CREATE notes:1 = { title: 'first' };
+--- expect: ok
+
+--- case: a page begins after the anchor and never at it
+SELECT * FROM people AFTER people:2;
+--- expect: rows 3
+
+--- case: the bound counts the page and not the table
+SELECT * FROM people AFTER people:2 LIMIT 2;
+--- expect: rows 2
+
+--- case: a bounded ordered page resumes rather than answering empty
+SELECT * FROM people ORDER BY name AFTER people:2 LIMIT 2;
+--- expect: rows 2
+
+--- case: an ordering the cursor resumes is the one the statement named
+SELECT * FROM people ORDER BY name DESC AFTER people:4;
+--- expect: rows 3
+
+--- case: a cursor over a condition pages the records the condition kept
+SELECT * FROM people WHERE active = true AFTER people:2;
+--- expect: rows 2
+
+--- case: a cursor past the last record answers with nothing
+SELECT * FROM people AFTER people:5;
+--- expect: rows 0
+
+--- case: the word is contextual, so a field called after is still a field
+DEFINE TABLE runs;
+CREATE runs:1 = { after: 'yes' };
+SELECT after FROM runs;
+--- expect: rows 1
+
+--- case: an offset beside a cursor is refused, because both say where a page begins
+SELECT * FROM people AFTER people:2 START 1 LIMIT 2;
+--- expect: error CursorBesideAnOffset
+
+--- case: an anchor from another table is refused rather than compared
+SELECT * FROM people AFTER notes:1;
+--- expect: error AnchorFromAnotherTable
+
+--- case: a grouping answers with groups, and an anchor is a record
+SELECT city, count(*) AS n FROM people GROUP BY city AFTER people:2;
+--- expect: error CursorBesideAReshaping
+
+--- case: a fetch answers with records whose references have been opened
+SELECT * FROM people FETCH city AFTER people:2;
+--- expect: error CursorBesideAReshaping
+
+--- case: and a split answers with a row per element
+SELECT * FROM people SPLIT ON city AFTER people:2;
+--- expect: error CursorBesideAReshaping
+
+--- case: a page walk survives the deletion of the record it resumed from
+DELETE people:2;
+SELECT * FROM people AFTER people:2;
+--- expect: rows 3
+
+--- case: but an ordered page needs the value the anchor held, and refuses without it
+SELECT * FROM people ORDER BY name AFTER people:2;
+--- expect: error AnchorGone

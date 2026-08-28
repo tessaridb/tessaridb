@@ -1756,10 +1756,106 @@ sort by values a field permission has already removed from the record. An index
 that cannot fill the bound hands the read back to the scan, and **the path
 reported is always the one that ran**.
 
-`ORDER`, `BY`, `ASC`, `DESC`, `LIMIT` and `START` are **not reserved words**.
-They shape a clause where nothing else can stand, so nothing is ambiguous, and
-reserving them would take six perfectly good names away from data that already
-exists — `SELECT * FROM order ORDER BY by LIMIT 1` is a legal statement.
+`ORDER`, `BY`, `ASC`, `DESC`, `LIMIT`, `START` and `AFTER` are **not reserved
+words**. They shape a clause where nothing else can stand, so nothing is
+ambiguous, and reserving them would take seven perfectly good names away from
+data that already exists — `SELECT * FROM order ORDER BY by LIMIT 1` is a legal
+statement.
+
+### Resuming a page from a record
+
+```
+SELECT * FROM users AFTER users:1042 LIMIT 20;
+SELECT * FROM users ORDER BY joined AFTER users:1042 LIMIT 20;
+SELECT * FROM users WHERE active = true AFTER users:1042 LIMIT 20;
+```
+
+**`AFTER <record>` answers with the records that sort strictly after that one**,
+in the answer's own order. It is written after the order it resumes and before
+the bound it fills.
+
+It exists because `START` is the wrong tool for a page walk twice over. It costs
+what it passes over, so `START 100000 LIMIT 20` reads a hundred thousand records
+to answer with twenty and does it again, one record deeper, on every page. And it
+is not correct under concurrent writes: an insert behind the cursor shifts every
+later page by one, so a walk to the end skips a record for every insert behind it
+and repeats one for every delete.
+
+**The anchor is a record identity and not an opaque token**, because the answer
+already carries it — every record comes back under its identity, so the clause
+needs no new return channel, no token format and no version of one. Resuming
+after the *pair* `(the anchor's key, the anchor's identity)` also breaks ties
+deterministically, which a bare key value cannot.
+
+**The clause supplies the order it resumes.** With an `ORDER BY` that is the
+order written. With none it is the store's own key order — so a cursor read that
+names no order answers identity-ascending rather than in whatever order the
+source happened to produce, because a page resumed on an order nobody promised is
+a page that moves when an index appears.
+
+**Where the order is the store's own, the read seeks.** A record's key is its
+table prefix followed by its identity, so `SELECT * FROM users AFTER users:1042`
+begins at a position in the keyspace and the records before the anchor are never
+read: a page at the end of a table costs what a page at the start costs. That is
+the entire difference between a cursor and an offset, and it is why the clause is
+worth having.
+
+**Where it is not, the read walks and says so.** A read that named an `ORDER BY`
+is answered in the key the author wrote, which is not a position in the store, so
+the records are reached and the ones after the anchor kept. The answer is the
+same; the cost is what the offset's was, and the note `cursor-walked` (§7b′) is
+how the read says so rather than getting quietly slower page by page.
+
+| Written | Reached by | Says |
+|---|---|---|
+| `FROM users AFTER users:1042` | a seek | nothing — this is the cheap page |
+| `FROM users WHERE … AFTER users:1042` | a walk in identity order | `cursor-walked` |
+| `FROM users ORDER BY joined AFTER users:1042` | a walk in the named order | `cursor-walked` |
+
+**A walked page buys correctness and not speed, and the note says so precisely
+because the two are easy to confuse.** What every cursor gives — sought or
+walked — is a page that does not shift when a record is inserted behind it. What
+only a *sought* page gives is a cost that does not grow with depth.
+
+Measured over a hundred thousand records in memory
+(`benchmarks/2026-08-28-macos-aarch64-memory-paging.md`), pages of twenty, p50:
+
+| depth | `START n LIMIT 20` | `AFTER … LIMIT 20` | `ORDER BY name START n` | `ORDER BY name AFTER …` |
+|---|---|---|---|---|
+| 0 | 10 µs | 13 µs | 45 ms | 45 ms |
+| 1 000 | 362 µs | 14 µs | 46 ms | 42 ms |
+| 10 000 | 3.9 ms | 14 µs | 48 ms | 44 ms |
+| 99 000 | 41 ms | **13 µs** | 51 ms | 44 ms |
+
+The sought column is **flat**: a page at the end of the table costs what a page
+at the start costs, and at ninety-nine thousand it is some three thousand times
+cheaper than the offset it replaces. At depth zero it is marginally *dearer* —
+one record read to learn where to start, on a page that begins where the table
+does — which is the shape of a cost that does not compound.
+
+The two ordered columns are the honest pair for a walked page, and they are the
+same: a read that names an order sorts the table whether it pages by offset or by
+cursor, so the cursor neither adds cost nor removes it there. Comparing a walked
+cursor against the *unordered* offset would credit it with a sort it did not do,
+or blame it for one; the note exists so the reader does not have to guess which.
+
+**What it refuses, and where.** A `START` beside it, because both say where the
+page begins and applying both silently skips one. A `GROUP BY`, a `FETCH` or a
+`SPLIT ON` beside it, because each answers with something that is not a record —
+a group, a record whose references have been opened, a row per element — and the
+anchor is a record. An anchor naming another table, because an identity carries
+no table once it is compared: `notes:1` and `people:1` compare identically, so a
+cursor pasted from the wrong page would answer with real records and no
+complaint. All three are properties of the statement, so all three are refused
+when the statement is read.
+
+**A deleted anchor ends an ordered walk and not an unordered one.** Without an
+`ORDER BY` the identity is the whole key, so the position outlives the record
+standing on it and the walk continues — which matters, because the record a
+caller last saw is exactly the one most likely to be gone. With an `ORDER BY` the
+position is a *value the anchor held*, and with the record gone there is nothing
+to resume from; the read is refused rather than guessing, because every guess
+picks a page.
 
 ### What a comparison means
 
@@ -2685,7 +2781,7 @@ note gets exactly the records it would have got before notes existed. The `notes
 key is absent when there is nothing to say, which is almost always — a note is
 worth reading because it is rare.
 
-There are three today:
+There are five today:
 
 | kind | what happened |
 |---|---|
@@ -2693,6 +2789,7 @@ There are three today:
 | `approximate` | the answer is the best the graph found, not provably the best there is (§5, *Asking for an approximate ordering*) |
 | `subquery-ceiling` | a materialised source reached the `LIMIT` it stated, so the outer statement asked its question of a prefix |
 | `compared-across-kinds` | the read compared values of two different kinds — a number against the text of one, say — so it answered about the records whose kinds happened to line up |
+| `cursor-walked` | an `AFTER` page was reached by reading the records rather than seeking to the anchor, so it cost what the read costs and not what the page costs (§5, *Resuming a page from a record*) |
 
 **`fell-back` fires on an index that declined, never on a table that has none.**
 A bounded ordered read over an unindexed table is the most ordinary read in the
@@ -2712,6 +2809,13 @@ written rather than a mistake.
 The note names a **pair of kinds, once**. A comparison runs per record, so a read
 over a million mixed records has one thing to say and not a million; and the pair
 reads the same way whichever side of the `=` each half was written on.
+
+**`cursor-walked` is about cost and never about the records.** A page that
+sought and a page that walked are the same records in the same order; only the
+first one costs the same at any depth, which is the failure `AFTER` exists to
+remove. The note is not a fallback in the `fell-back` sense — nothing declined —
+it is the read saying that on this statement the clause bought correctness rather
+than cost. Without it the difference is invisible until somebody times it.
 
 **`subquery-ceiling` is not a truncation.** The bound is the caller's own word
 and a materialised source is required to state it (§5, *Reading what another read

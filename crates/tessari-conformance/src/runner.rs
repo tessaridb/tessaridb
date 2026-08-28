@@ -236,6 +236,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::TimedOut { .. } => "TimedOut",
         Error::Unbounded { .. } => "Unbounded",
         Error::NotAlone { .. } => "NotAlone",
+        Error::AnchorGone { .. } => "AnchorGone",
         _ => "Unnamed",
     }
 }
@@ -280,6 +281,9 @@ fn script_kind(error: &tessari_ql::Error) -> &'static str {
         tessari_ql::Error::BoundTwice { .. } => "BoundTwice",
         tessari_ql::Error::BindingCollidesWithParameter { .. } => "BindingCollidesWithParameter",
         tessari_ql::Error::ReturnedTwice { .. } => "ReturnedTwice",
+        tessari_ql::Error::CursorBesideAnOffset { .. } => "CursorBesideAnOffset",
+        tessari_ql::Error::CursorBesideAReshaping { .. } => "CursorBesideAReshaping",
+        tessari_ql::Error::AnchorFromAnotherTable { .. } => "AnchorFromAnotherTable",
         _ => "Unnamed",
     }
 }

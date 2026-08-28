@@ -241,6 +241,10 @@ impl Select<Sourced> {
             split: None,
             group: Vec::new(),
             order: self.order,
+            // Nor a cursor: `AFTER` anchors a page on a record the caller read
+            // out of a previous answer, and a builder that has not seen an
+            // answer has no anchor to offer.
+            after: None,
             approximate: false,
             start: self.start,
             limit: self.limit,

@@ -133,8 +133,12 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 14] = [
+const CROSS_CUTTING: [&str; 15] = [
     "bindings",
+    // Where a page begins belongs to no engine: `AFTER` resumes a scan, an
+    // index read and a walk from the same anchor, and the seek that makes it
+    // cheap is a property of the keyspace rather than of an access path.
+    "cursor",
     "conditionals",
     "consumers",
     "functions",

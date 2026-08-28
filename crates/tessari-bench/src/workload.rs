@@ -117,6 +117,11 @@ pub const ALL: &[Workload] = &[
         run: vector_index,
     },
     Workload {
+        name: "paging",
+        about: "the same page by offset, by cursor, and by a cursor that cannot seek, at four depths",
+        run: crate::paging::paging,
+    },
+    Workload {
         name: "vector",
         about: "a nearest-neighbour read over a scan — the number an HNSW index has to beat",
         run: vector,
@@ -130,7 +135,7 @@ pub fn by_name(name: &str) -> Option<&'static Workload> {
 }
 
 /// A namespace and database to work in.
-fn prepared(db: &Db) -> Failable<()> {
+pub(crate) fn prepared(db: &Db) -> Failable<()> {
     db.session().run(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench;\n\
          DEFINE DATABASE bench; USE DATABASE bench;",

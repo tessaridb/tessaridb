@@ -40,7 +40,39 @@ impl Transaction<'_> {
         database: DatabaseId,
         table: TableId,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
-        self.table_records(namespace, database, table, None)
+        self.table_records(namespace, database, table, None, None)
+    }
+
+    /// The live records of one table whose identity sorts after `anchor`.
+    ///
+    /// The seek behind a cursor. A record's key is its table prefix followed by
+    /// its identity, so "after this record" is a **position in the keyspace**
+    /// and not a predicate: the walk starts past the anchor's own versions and
+    /// the records before it are never read at all. That is the whole difference
+    /// between a cursor and an offset, and it is why this is a method here
+    /// rather than a filter above.
+    ///
+    /// The anchor itself need not exist. It names a position, and a position is
+    /// well defined whether or not something sits on it — which is what lets a
+    /// page walk survive the deletion of the record it resumed from.
+    ///
+    /// `bound` carries the same looser-than-it-looks contract as
+    /// [`Self::first_records_of`]: at least that many records, or every one
+    /// after the anchor when there are fewer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or stored bytes cannot be
+    /// decoded.
+    pub fn records_after(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        anchor: &RecordId,
+        bound: Option<usize>,
+    ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        self.table_records(namespace, database, table, bound, Some(anchor))
     }
 
     /// The first `wanted` live records of one table, in key order.
@@ -87,21 +119,33 @@ impl Transaction<'_> {
         table: TableId,
         wanted: usize,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
-        self.table_records(namespace, database, table, Some(wanted))
+        self.table_records(namespace, database, table, Some(wanted), None)
     }
 
-    /// The live records of one table, all of them or the first `bound` of them.
+    /// The live records of one table, all of them or the first `bound` of them,
+    /// starting past `anchor` when a cursor named one.
     fn table_records(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
         table: TableId,
         bound: Option<usize>,
+        anchor: Option<&RecordId>,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
         let prefix = RecordKey::table_prefix(namespace, database, table);
         let of_this_table = |address: &RecordAddress| {
             address.namespace == namespace && address.database == database && address.table == table
         };
+        // The anchor's own versions are behind the page, not in it, so the walk
+        // begins past the last of them rather than at the first.
+        let opening = anchor.map_or_else(
+            || prefix.clone(),
+            |anchor| {
+                after(RecordKey::versions_prefix(
+                    namespace, database, table, anchor,
+                ))
+            },
+        );
         let wanted = bound.map(|bound| {
             let displacing = self
                 .writes
@@ -127,7 +171,7 @@ impl Transaction<'_> {
         // them would answer short by however many deleted records the walk
         // happened to pass.
         let mut present = 0_usize;
-        let mut from = prefix.clone();
+        let mut from = opening;
         let end = after(prefix);
         loop {
             let request = ScanRequest {
@@ -171,7 +215,12 @@ impl Transaction<'_> {
         }
 
         for (address, value) in &self.writes {
-            if of_this_table(address) {
+            // A pending write is folded in only where the committed walk would
+            // have reached it. Without the second test a record written but not
+            // yet committed would appear on a page it sorts before, which is the
+            // one way a cursor could answer with a record it had already handed
+            // the caller.
+            if of_this_table(address) && anchor.is_none_or(|anchor| &address.id > anchor) {
                 live.insert(address.id.clone(), value.clone());
             }
         }

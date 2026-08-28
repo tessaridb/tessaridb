@@ -13,7 +13,8 @@ use tessari_types::Number;
 
 use super::Parser;
 use crate::ast::{
-    DeleteBound, Expr, ExprKind, FieldPath, Ordering, Projection, Source, Timeout, Using,
+    DeleteBound, Expr, ExprKind, FieldPath, Ordering, Projection, RecordTarget, Source, Timeout,
+    Using,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Span, Token};
@@ -158,6 +159,25 @@ impl Parser<'_> {
         Ok(Ordering { key, descending })
     }
 
+    /// `AFTER users:1042` after the order, when it is there.
+    ///
+    /// Contextual, like every clause word here but `ONLY`: a field or a table
+    /// called `after` is still one, because the position this stands in holds
+    /// clause words and never a name.
+    ///
+    /// The anchor is written as a record identity — table and all — rather than
+    /// as a bare id. It is the spelling every identity in this language already
+    /// has, it is exactly what the answer handed back, and carrying the table
+    /// is what lets a cursor from another page of another table be refused
+    /// instead of silently paging by an identity that happens to compare.
+    pub(super) fn after_anchor(&mut self) -> Result<Option<Box<RecordTarget>>> {
+        if !self.eat_word("after") {
+            return Ok(None);
+        }
+        let table = self.table_ref()?;
+        Ok(Some(Box::new(self.record_target_after(table)?)))
+    }
+
     /// `LIMIT 10` or `START 20`, when it is there.
     pub(super) fn bound(&mut self, word: &str) -> Result<Option<u64>> {
         if !self.eat_word(word) {
@@ -275,6 +295,67 @@ impl Parser<'_> {
         self.advance();
         Ok(DeleteBound::AtMost(count))
     }
+}
+
+/// What a cursor may be written beside, and which table its anchor may name.
+///
+/// Both refusals are properties of the statement, so neither waits for a read.
+///
+/// **A `START` beside an `AFTER`** is refused because the two are answers to the
+/// same question — where does this page begin — and applying both means one of
+/// them silently loses: the offset would count from the cursor's own position
+/// and skip a page nobody asked to skip.
+///
+/// **An anchor from another table** is refused because a record identity carries
+/// no table once it is compared. `orders:5` and `users:5` compare identically,
+/// so a cursor pasted from the wrong page would page a real table by a real
+/// identity and answer with records — the wrong ones, quietly. The check is
+/// possible only where the source names one table; a join, a walk and a
+/// materialised source each reach records from more than one place, and there is
+/// no name there to disagree with.
+///
+/// **A clause that changes what a row is** is refused beside it for a third
+/// reason: an anchor is a record, and `GROUP BY` answers with groups, `FETCH`
+/// answers with records whose references have been opened, and `SPLIT ON`
+/// answers with a row per element. In each of those the thing the cursor is
+/// compared against is not the thing the anchor is, so the comparison would be
+/// between two different kinds of row and the page would be decided by whichever
+/// of them the sort key happened to reach.
+pub(super) fn check_cursor(
+    from: &Source,
+    after: Option<&RecordTarget>,
+    start: Option<u64>,
+    reshaping: [(&'static str, bool); 3],
+) -> Result<()> {
+    let Some(anchor) = after else {
+        return Ok(());
+    };
+    if start.is_some() {
+        return Err(Error::CursorBesideAnOffset { span: anchor.span });
+    }
+    for (clause, written) in reshaping {
+        if written {
+            return Err(Error::CursorBesideAReshaping {
+                clause,
+                span: anchor.span,
+            });
+        }
+    }
+    let named = match from {
+        Source::Table(table) | Source::Where { table, .. } => &table.name,
+        Source::Record(target) => &target.table.name,
+        Source::Node | Source::Traverse { .. } | Source::Join { .. } | Source::Subquery { .. } => {
+            return Ok(());
+        }
+    };
+    if !anchor.table.name.text.eq_ignore_ascii_case(&named.text) {
+        return Err(Error::AnchorFromAnotherTable {
+            anchor: anchor.table.name.text.clone(),
+            table: named.text.clone(),
+            span: anchor.span,
+        });
+    }
+    Ok(())
 }
 
 /// A grouped read may project only its keys and its folds.

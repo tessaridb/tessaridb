@@ -873,6 +873,30 @@ pub struct Select {
     pub group: Vec<Expr>,
     /// The keys the answer is sorted by, in order of significance.
     pub order: Vec<Ordering>,
+    /// The record the answer resumes after, when `AFTER` named one.
+    ///
+    /// A cursor: the page begins at the first record that sorts **strictly
+    /// after** this one in the answer's own order. A record identity rather than
+    /// an opaque token because the caller already holds it — the answer carries
+    /// the identity of every record in it — so the clause needs no new return
+    /// channel, no token format, and no version of one.
+    ///
+    /// **It supplies the order it resumes.** With an `ORDER BY` that is the
+    /// order written; with none, it is the store's own key order, which is why a
+    /// cursor read that names no order still answers identity-ascending rather
+    /// than in whatever order the source happened to produce. A cursor without
+    /// an order to resume would be a filter on a sequence nobody promised.
+    ///
+    /// A `START` beside it is refused where the statement is read: an offset and
+    /// a cursor are two answers to the same question, and accepting both would
+    /// make one of them silently lose.
+    ///
+    /// Boxed where every other field of this struct is inline, because a record
+    /// target is one of the larger things the grammar holds and a cursor is
+    /// absent from very nearly every statement ever parsed. Inline it made
+    /// `Select` the outlier variant of [`Statement`] — every statement of every
+    /// kind paying for a clause almost none of them write.
+    pub after: Option<Box<RecordTarget>>,
     /// Whether the caller will accept an approximate ordering.
     ///
     /// **Permission, not a demand.** Every index in this store may change what a

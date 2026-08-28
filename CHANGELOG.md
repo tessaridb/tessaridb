@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 619 conformance cases define the language and run in the build.
+Unreleased. 635 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -48,6 +48,25 @@ Unreleased. 619 conformance cases define the language and run in the build.
   nothing else. It takes a route, so `OMIT address.postcode` keeps the address;
   it refuses a position, because removing an element renumbers the rest. Without
   it every `SELECT *` over a table holding an embedding shipped the embedding.
+- **`AFTER <record>`** resumes a page from a record instead of counting past one.
+  `SELECT * FROM users AFTER users:1042 LIMIT 20` answers with the twenty records
+  after that one, and where the read's order is the store's own it **seeks**: the
+  records before the anchor are never read, so a page at the end of a table costs
+  what a page at the start costs. `START 100000 LIMIT 20` read a hundred thousand
+  records to answer with twenty, and was not even correct under concurrent
+  writes — an insert behind the cursor shifted every later page by one, so a walk
+  to the end skipped a record for every insert and repeated one for every delete.
+  The anchor is a record identity because the answer already carries it: no token
+  format, no new return channel, and no version of one. A read that named an
+  `ORDER BY` resumes *that* order, which it cannot seek to, so it reads the
+  records and reports `cursor-walked` rather than letting a deep page get quietly
+  slower. A `START` beside it is refused, and so is a `GROUP BY`, a `FETCH` or a
+  `SPLIT ON`, each of which answers with something that is not a record. An
+  anchor from another table is refused too: identities carry no table once they
+  are compared, so a cursor pasted from the wrong page would answer with real
+  records and no complaint. Without an `ORDER BY` a page walk survives the
+  deletion of the record it resumed from, because the position outlives the
+  record standing on it.
 - **`SPLIT ON <route>`** opens an array into one record per element, each
   carrying the element where the array stood — which is what makes "each tag, and
   how many notes carry it" sayable in a document store. It is applied after

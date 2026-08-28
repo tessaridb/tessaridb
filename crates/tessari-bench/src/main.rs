@@ -37,6 +37,7 @@
 mod counting;
 #[cfg(feature = "counting")]
 mod memory;
+mod paging;
 mod ranges;
 mod samples;
 mod workload;

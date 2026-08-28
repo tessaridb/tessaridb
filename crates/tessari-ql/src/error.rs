@@ -184,6 +184,57 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `START` was written beside an `AFTER`.
+    ///
+    /// Both say where the page begins, and applying both means the offset counts
+    /// from the cursor's own position — so one page is skipped and nothing says
+    /// so. Which of the two was meant is the author's to say.
+    #[error(
+        "`START` and `AFTER` (at {span}) both say where this page begins; \
+         keep the cursor and drop the offset, or the other way round"
+    )]
+    CursorBesideAnOffset {
+        /// Where the anchor is.
+        span: Span,
+    },
+
+    /// An `AFTER` was written beside a clause that changes what a row is.
+    ///
+    /// An anchor is a record. A grouped read answers with groups, a `FETCH`
+    /// answers with records whose references have been opened, and a `SPLIT ON`
+    /// answers with a row per element — so the cursor would be comparing an
+    /// anchor of one kind against rows of another, and the page would fall
+    /// wherever the sort key happened to reach.
+    #[error(
+        "`AFTER` (at {span}) resumes after a record and `{clause}` answers with \
+         something else; page the records and reshape them after"
+    )]
+    CursorBesideAReshaping {
+        /// The clause that reshapes the row.
+        clause: &'static str,
+        /// Where the anchor is.
+        span: Span,
+    },
+
+    /// An `AFTER` anchor names a table the read does not.
+    ///
+    /// A record identity carries no table once it is compared, so `orders:5` and
+    /// `users:5` compare identically — a cursor pasted from another page would
+    /// page this table by that identity and answer with the wrong records and no
+    /// complaint.
+    #[error(
+        "`AFTER {anchor}:…` (at {span}) anchors this page in `{anchor}` \
+         and the read is of `{table}`"
+    )]
+    AnchorFromAnotherTable {
+        /// The table the anchor named.
+        anchor: String,
+        /// The table the read names.
+        table: String,
+        /// Where the anchor is.
+        span: Span,
+    },
+
     /// A `TIMEOUT` names a ceiling no statement could satisfy.
     ///
     /// `TIMEOUT 0s` and `TIMEOUT -5s` can only refuse, whatever the read does and
@@ -554,6 +605,9 @@ impl Error {
             | Self::Unrenderable { span, .. }
             | Self::MalformedGeometry { span, .. }
             | Self::ComputedGeometry { span, .. }
+            | Self::CursorBesideAnOffset { span }
+            | Self::CursorBesideAReshaping { span, .. }
+            | Self::AnchorFromAnotherTable { span, .. }
             | Self::EmptyTimeout { span, .. } => *span,
         }
     }

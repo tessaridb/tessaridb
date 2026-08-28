@@ -273,6 +273,39 @@ collector and no spill can make it smaller while an answer is a materialised
 value. That last row is a stated limit of this store rather than an unfinished
 feature.
 
+## What a cursor is worth, and what it is not
+
+`AFTER <record>` was built to remove the deep-offset failure by design, and
+whether it did is a measurement rather than an argument
+(`2026-08-28-macos-aarch64-memory-paging.md`, 100 000 records, pages of 20, p50):
+
+| depth | `START n LIMIT 20` | `AFTER … LIMIT 20` | `ORDER BY name START n` | `ORDER BY name AFTER …` |
+|---|---|---|---|---|
+| 0 | 10 µs | 13 µs | 45 ms | 45 ms |
+| 1 000 | 362 µs | 14 µs | 46 ms | 42 ms |
+| 10 000 | 3.9 ms | 14 µs | 48 ms | 44 ms |
+| 99 000 | 41 ms | **13 µs** | 51 ms | 44 ms |
+
+Two things are worth reading off this rather than one.
+
+**The seek is flat and the offset is linear**, which is the whole claim: a record's
+key is its table prefix followed by its identity, so a read answering in the
+store's own order begins at a position and never touches what it skips. At
+ninety-nine thousand that is about three thousand times cheaper. At depth zero the
+cursor is marginally *dearer* — the page begins where the table does, and the
+clause still costs the work of knowing where to start — which is exactly the shape
+of a cost that does not compound.
+
+**The ordered pair is measured because the tempting comparison is the wrong
+one.** A cursor over a read that named its own order cannot seek: the answer's
+order is the key the author wrote, not the store's. Timed against the *unordered*
+offset it would look four thousand times slower, which would be blaming it for a
+sort it was asked to do. Timed against the same statement paying an offset —
+which is the honest pair — the two are the same, and the cursor still buys the
+thing every cursor buys: a page that does not shift when a record is inserted
+behind it. `Note::CursorWalked` is on those answers so nobody has to run this
+table to find out which case they are in.
+
 ## What is deliberately not measured here
 
 - **Concurrency.** The store is single-writer (ADR-0007), so a concurrent write

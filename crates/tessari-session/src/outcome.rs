@@ -160,6 +160,25 @@ pub enum Note {
         /// The other.
         right: &'static str,
     },
+    /// A cursor was applied to the records rather than sought to.
+    ///
+    /// `AFTER` exists to make a deep page cost what a shallow one costs, and it
+    /// does that by starting the read past the anchor's own key — but only a
+    /// read answering in the store's own key order has a key to start past. Any
+    /// other read has to reach the records first and then keep the ones after
+    /// the anchor, which is the work an offset does, spelled better.
+    ///
+    /// The answer is the same either way. The cost is not, and without this note
+    /// the difference is invisible: a page that sought and a page that walked are
+    /// the same records in the same order.
+    ///
+    /// What a walked page gives is the cursor's **correctness** — a page that
+    /// does not shift when a record is inserted behind it — and not its cost.
+    /// Measured on this store, a sought page is flat at about 13 µs from the
+    /// first record to the hundred-thousandth while the offset it replaces grows
+    /// from 10 µs to 39 ms; a walked page is the cost of the read it sits on,
+    /// which is what the same statement paying an offset would have cost too.
+    CursorWalked,
     /// A materialised source produced as many records as its ceiling allows.
     ///
     /// Its answer is therefore a prefix of what the inner read would have
@@ -181,6 +200,7 @@ impl Note {
             Self::FellBack { .. } => "fell-back",
             Self::Approximate => "approximate",
             Self::ComparedAcrossKinds { .. } => "compared-across-kinds",
+            Self::CursorWalked => "cursor-walked",
             Self::SubqueryCeiling { .. } => "subquery-ceiling",
         }
     }
@@ -201,6 +221,10 @@ impl Note {
                 "this read compared a {left} with a {right}, \
                  so it answered about the records whose kinds happened to line up",
             ),
+            Self::CursorWalked => "this page was reached by reading the records rather \
+                 than seeking to the anchor, so it cost what the read costs and not \
+                 what the page costs"
+                .to_owned(),
             Self::SubqueryCeiling { rows } => format!(
                 "the materialised source reached its ceiling of {rows}, \
                  so this answers about a prefix of what it would hold unbounded",

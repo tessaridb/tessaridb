@@ -205,6 +205,59 @@ impl<'a, 's> Shaping<'a, 's> {
         self.topmost.finish()
     }
 
+    /// Resume after one record: keep only what sorts strictly past it.
+    ///
+    /// The anchor's keys are evaluated **here**, by the stage that evaluates
+    /// every other record's, and through the same projection and overlay. That
+    /// is what makes the comparison the answer's own order rather than a second
+    /// one that agrees until somebody edits it: a key naming an alias reads the
+    /// alias on the anchor too.
+    ///
+    /// `None` for the record is the read that named no order — there is nothing
+    /// to evaluate, the identity is the whole key, and the anchor's own record
+    /// is never read. Which is also why a page walk survives a deleted anchor
+    /// where an ordered one cannot: the position is in the language, and only
+    /// the key is in the data.
+    ///
+    /// Nothing is spent against the budget. The anchor is not a record of the
+    /// answer, and a ceiling of one should not refuse a page of one.
+    pub(crate) fn resume_after(
+        &mut self,
+        transaction: &mut Transaction<'_>,
+        id: RecordId,
+        record: Option<Value>,
+    ) -> Result<()> {
+        let keys = match record {
+            None => Vec::new(),
+            Some(record) => self.keyed(transaction, record)?.0,
+        };
+        self.topmost.after(keys, id);
+        Ok(())
+    }
+
+    /// One record projected, and the order's keys evaluated over it.
+    fn keyed(
+        &self,
+        transaction: &mut Transaction<'_>,
+        record: Value,
+    ) -> Result<(Vec<Value>, Value)> {
+        let Some(wanted) = &self.wanted else {
+            // Already projected by a barrier stage above, so there is no source
+            // left to overlay and nothing was dropped that a key could want.
+            let keys = self.keys_against(transaction, &record)?;
+            return Ok((keys, record));
+        };
+        let projected =
+            self.session
+                .project(transaction, &record, wanted, self.searched, self.noticed)?;
+        let keys = if self.keys_reach_past_the_projection {
+            self.keys_against(transaction, &overlaid(record, &projected))?
+        } else {
+            self.keys_against(transaction, &projected)?
+        };
+        Ok((keys, projected))
+    }
+
     fn keys_against(
         &self,
         transaction: &mut Transaction<'_>,
@@ -277,22 +330,8 @@ impl Consumer for Shaping<'_, '_> {
         record: Value,
     ) -> Result<ControlFlow<()>> {
         self.budget.spend()?;
-        let Some(wanted) = &self.wanted else {
-            // Already projected by a barrier stage above, so there is no source
-            // left to overlay and nothing was dropped that a key could want.
-            let keys = self.keys_against(transaction, &record)?;
-            self.topmost.offer(keys, id, record);
-            return Ok(ControlFlow::Continue(()));
-        };
-        let projected =
-            self.session
-                .project(transaction, &record, wanted, self.searched, self.noticed)?;
-        let keys = if self.keys_reach_past_the_projection {
-            self.keys_against(transaction, &overlaid(record, &projected))?
-        } else {
-            self.keys_against(transaction, &projected)?
-        };
-        self.topmost.offer(keys, id, projected);
+        let (keys, record) = self.keyed(transaction, record)?;
+        self.topmost.offer(keys, id, record);
         Ok(ControlFlow::Continue(()))
     }
 }

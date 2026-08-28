@@ -163,6 +163,14 @@ fn write_select(out: &mut String, select: &Select) -> Result<()> {
             write_ordering(out, ordering)?;
         }
     }
+    // A cursor names a record identity, and an identity is the one thing this
+    // renderer has never learned to write — which is also why a read of one
+    // record is unrenderable above. The builder cannot produce either, so this
+    // arm is unreachable from the only caller; it is here so that it stays that
+    // way rather than becoming a clause quietly dropped from rendered text.
+    if select.after.is_some() {
+        return Err(unrenderable("a cursor", select.span));
+    }
     if let Some(start) = select.start {
         out.push_str(" START ");
         out.push_str(&start.to_string());

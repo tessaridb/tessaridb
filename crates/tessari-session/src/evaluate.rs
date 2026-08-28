@@ -437,6 +437,17 @@ impl Session<'_> {
         // statement — which is why, unlike the bound handed to the source, this
         // one needs no whitelist of shapes (ADR-0013).
         let bound = order_bound(select);
+        // Resolved before the source runs, because the ordering stage has to
+        // hold it before the first record arrives — a cursor applied to the
+        // finished answer would let the bound keep the records the page has
+        // already handed back and then throw them away.
+        let resuming = self.resuming(transaction, select)?;
+        // The seek reaches the source itself, so only the walk has anything to
+        // report. Pushed here rather than beside the seek because it is a
+        // property of the statement's shape, which is decided once.
+        if select.after.is_some() && !sought(select) {
+            notes.push(Note::CursorWalked);
+        }
 
         if streams(select) {
             // The projection folded once, above the records rather than per
@@ -453,6 +464,9 @@ impl Session<'_> {
                 &mut budget,
                 &noticed,
             );
+            if let Some((id, record)) = resuming {
+                shaping.resume_after(transaction, id, record)?;
+            }
             let plan = self.produce_source(
                 transaction,
                 select,
@@ -533,7 +547,13 @@ impl Session<'_> {
         // works, because a projected record keeps the shape it was given only
         // where the projection preserved it — which is why the sort falls back
         // to the route when the name is not there.
-        let records = if select.order.is_empty() {
+        // A cursor read goes through the ordering stage even when it named no
+        // order, because the clause supplies one: with no keys to compare,
+        // `ranked` falls through to the identity, so the stage both applies the
+        // cursor and answers in the store's own order. Skipping it would leave
+        // the page to whatever order the source happened to produce, which is
+        // the one thing a resumed read cannot be built on.
+        let records = if select.order.is_empty() && select.after.is_none() {
             records
         } else {
             // The same ordering stage the streaming path uses, fed from a vector
@@ -553,6 +573,9 @@ impl Session<'_> {
                 &mut budget,
                 &noticed,
             );
+            if let Some((id, record)) = resuming {
+                shaping.resume_after(transaction, id, record)?;
+            }
             for (id, record) in records {
                 if shaping.take(transaction, id, record)?.is_break() {
                     break;
@@ -569,6 +592,39 @@ impl Session<'_> {
             plan,
             notes,
         })
+    }
+
+    /// The record a cursor resumes after: its identity, and itself when the
+    /// order needs a key evaluated over it.
+    ///
+    /// The asymmetry in the middle is the whole of this function. A read that
+    /// named **no order** resumes in the store's own, where the identity *is*
+    /// the key — so nothing is read, and a page walk survives the deletion of
+    /// the record it resumed from, which is the ordinary way a long walk ends
+    /// otherwise. A read that named **an order** needs the anchor's value for
+    /// that key, and there is nowhere to get it but the record: a missing anchor
+    /// is refused rather than guessed at, because every guess picks a page.
+    fn resuming(
+        &self,
+        transaction: &mut Transaction<'_>,
+        select: &Select,
+    ) -> Result<Option<(RecordId, Option<Value>)>> {
+        let Some(anchor) = &select.after else {
+            return Ok(None);
+        };
+        let (_, address) = self.address(transaction, anchor)?;
+        if select.order.is_empty() {
+            return Ok(Some((address.id, None)));
+        }
+        let visible = self.visible_in(transaction, address.table)?;
+        let Some(payload) = transaction.get(&address)? else {
+            return Err(Error::AnchorGone {
+                table: anchor.table.name.text.clone(),
+                span: anchor.span,
+            });
+        };
+        let record = self.record_of(&payload, &visible)?;
+        Ok(Some((address.id, Some(record))))
     }
 
     /// What this read's projection produces, or nothing when it produces the
@@ -963,14 +1019,29 @@ impl Session<'_> {
                 // is the one arm where the records the source produces are the
                 // records the answer holds. `plan::bound` returns nothing for
                 // every shape where they differ (ADR-0013).
-                let found = match plan::bound(select) {
-                    Some(wanted) => transaction.first_records_of(
+                let resuming = select.after.as_ref().filter(|_| sought(select));
+                let found = match (resuming, plan::bound(select)) {
+                    // The seek. A record's key is its table prefix followed by
+                    // its identity, so a read whose order is the store's own
+                    // begins at a *position* rather than at the table — and the
+                    // records before the anchor are never read, which is the
+                    // entire difference between a cursor and an offset.
+                    (Some(anchor), bound) => transaction.records_after(
+                        context.namespace,
+                        context.database,
+                        id,
+                        anchor.id.fixed(anchor.span)?,
+                        bound,
+                    )?,
+                    (None, Some(wanted)) => transaction.first_records_of(
                         context.namespace,
                         context.database,
                         id,
                         wanted,
                     )?,
-                    None => transaction.scan_table(context.namespace, context.database, id)?,
+                    (None, None) => {
+                        transaction.scan_table(context.namespace, context.database, id)?
+                    }
                 };
                 let visible = self.visible_in(transaction, id)?;
                 // The one place in the store that knows how many records are
@@ -2130,6 +2201,25 @@ fn opened(
 /// exists for. More than one falsifies what the author wrote, and it refuses
 /// rather than answering with the first: the records found are already correct,
 /// so a prefix of them costs nothing and looks exactly like success.
+/// Whether this read's cursor is served by seeking rather than by walking.
+///
+/// True for exactly one shape, and the reason is the keyspace rather than a
+/// preference: a record's key is its table prefix followed by its identity, so a
+/// read that answers in the store's own order can begin at a position in that
+/// keyspace. Both halves are load-bearing.
+///
+/// An `ORDER BY` breaks it because the answer's order is then the key the author
+/// named, and a record sorting before the anchor by that key may sort after it
+/// by identity — so seeking would drop records the page is owed.
+///
+/// A source other than a plain table breaks it because its records do not come
+/// from that keyspace in that order: a condition may be served by an index, a
+/// walk arrives along edges, a join and a materialised read build their rows.
+/// Each of those is walked and says so.
+fn sought(select: &Select) -> bool {
+    select.after.is_some() && select.order.is_empty() && matches!(select.from, Source::Table(_))
+}
+
 fn alone(select: &Select, records: &[(RecordId, Value)]) -> Result<()> {
     let Some(span) = select.only else {
         return Ok(());

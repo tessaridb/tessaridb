@@ -34,7 +34,7 @@ pub(crate) struct Nearest<'a> {
 
 /// The nearest-neighbour read this statement is, if it is one.
 pub(crate) fn nearest(select: &Select) -> Option<Nearest<'_>> {
-    if !select.approximate || !select.group.is_empty() {
+    if !select.approximate || !select.group.is_empty() || resumes(select) {
         return None;
     }
     let [ordering] = select.order.as_slice() else {
@@ -117,7 +117,8 @@ pub(crate) struct Closest<'a> {
 
 /// The nearest-first read this statement is, if it is one.
 pub(crate) fn closest(select: &Select) -> Option<Closest<'_>> {
-    if select.approximate || !select.group.is_empty() || !select.fetch.is_empty() {
+    if select.approximate || !select.group.is_empty() || !select.fetch.is_empty() || resumes(select)
+    {
         return None;
     }
     if !matches!(select.projection, Projection::All) {
@@ -228,9 +229,27 @@ pub(crate) struct Bounded<'a> {
     pub(crate) descending: bool,
 }
 
+/// Whether a cursor makes this statement's bound reach the wrong records.
+///
+/// Every walk below stops when it has `wanted` records, counted from the
+/// **front** of the order. A cursor asks for the records after a position, which
+/// is the other end: the first `wanted` an ordered walk finds are exactly the
+/// ones a resumed page has already handed back, so the walk would fill its bound
+/// with them and answer with nothing.
+///
+/// So a resumed read declines every bounded walk and reaches its records the one
+/// way that cannot be cut short. The seek that makes a cursor cheap lives where
+/// the order **is** the store's own — see `Transaction::records_after` — and a
+/// read that named an order of its own is walked and says so
+/// (`Note::CursorWalked`).
+fn resumes(select: &Select) -> bool {
+    select.after.is_some()
+}
+
 /// The bounded ordered read this statement is, if it is one.
 pub(crate) fn ordered(select: &Select) -> Option<Bounded<'_>> {
-    if select.approximate || !select.group.is_empty() || !select.fetch.is_empty() {
+    if select.approximate || !select.group.is_empty() || !select.fetch.is_empty() || resumes(select)
+    {
         return None;
     }
     if !matches!(select.projection, Projection::All) {

@@ -1195,6 +1195,11 @@ impl Parser<'_> {
         let split = self.split_path()?;
         let group = self.group_by()?;
         let order = self.order_by()?;
+        // After the order, because the order is what it resumes: the anchor is
+        // the last record of the page before, and "after" is a position in the
+        // sequence the clause above just named. Before `START`, which it is also
+        // refused beside — both say where the page begins.
+        let after = self.after_anchor()?;
         // `START` before `LIMIT`, because that is the order they are applied in
         // and a grammar that let them be written either way would suggest they
         // commute.
@@ -1215,6 +1220,16 @@ impl Parser<'_> {
         let timeout = self.timeout()?;
         super::shape::check_grouping(&projection, &group)?;
         super::shape::check_fold_positions(&from, &group, &order)?;
+        super::shape::check_cursor(
+            &from,
+            after.as_deref(),
+            skip,
+            [
+                ("GROUP BY", !group.is_empty()),
+                ("FETCH", !fetch.is_empty()),
+                ("SPLIT ON", split.is_some()),
+            ],
+        )?;
         // Where `[*]` may stand. A condition admits one on the left of a
         // comparison and a projection admits one as a whole projected value; a
         // key and an ordering do not yet, and each is refused by name rather
@@ -1259,6 +1274,7 @@ impl Parser<'_> {
             split,
             group,
             order,
+            after,
             approximate,
             start: skip,
             limit,
