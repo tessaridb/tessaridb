@@ -1,0 +1,99 @@
+# Generating an identifier, and the one thing that must never be true of it.
+#
+# `rand::uuid()` is the language's first function that answers differently every
+# time it is asked. Everything else here answers from its arguments, which is
+# what let the planner evaluate a record-independent expression once above the
+# records and reuse it — correct for all twenty-nine of them, and wrong for this
+# one in a way nothing raises: every record of a read takes the same identifier,
+# and a store notices when two records that should differ do not.
+#
+# A generated value cannot be asserted by writing it down, so these cases assert
+# its PROPERTIES instead: that two calls disagree, that what comes out reads back
+# as a UUID rather than as sixteen bytes, and — the case this wave exists for —
+# that a read over three records produces three identifiers and not one.
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE intake;
+USE DATABASE intake;
+--- expect: ok
+
+--- case: two calls do not agree
+# The whole property, written as small as it can be written.
+RETURN rand::uuid() = rand::uuid();
+--- expect: value false
+
+--- case: and a call agrees with itself, so the comparison above means something
+RETURN rand::uuid() = rand::uuid() OR true;
+--- expect: value true
+
+--- case: what comes back is a uuid and not sixteen bytes
+RETURN type::of(rand::uuid());
+--- expect: value 'uuid'
+
+--- case: it renders in the canonical form, hyphens and all
+# Thirty-two digits and four hyphens. A value of this type is claimed to be a
+# UUID everywhere it is written out, so the claim is checked here.
+RETURN string::len(type::string(rand::uuid()));
+--- expect: value 36
+
+--- case: and it is a version-4 uuid, which is the digit that says so
+# The first digit of the third group. Six of the hundred and twenty-eight bits
+# are spent saying what this is; a reader on the other side is entitled to them.
+RETURN string::slice(type::string(rand::uuid()), 14, 1);
+--- expect: value '4'
+
+--- case: three calls in one array are three different identifiers
+RETURN array::len(array::distinct([rand::uuid(), rand::uuid(), rand::uuid()]));
+--- expect: value 3
+
+--- case: a generator takes no arguments
+RETURN rand::uuid(1);
+--- expect: error WrongArity
+
+--- case: three records to read over
+DEFINE TABLE accounts;
+CREATE accounts:1 = { holder: 'ada' };
+CREATE accounts:2 = { holder: 'bob' };
+CREATE accounts:3 = { holder: 'cyd' };
+--- expect: ok
+
+--- case: a read over three records produces three identifiers, not one
+# The case the wave was written for. Evaluated once above the records — which is
+# what the planner does to every expression that reads no record — this answers
+# `1`, and the read looks like it worked.
+RETURN array::len(array::distinct((SELECT rand::uuid() AS id FROM accounts)));
+--- expect: value 3
+
+--- case: while an instant over the same three records is still one instant
+# The other half, and the reason the fix is a question about the function rather
+# than a rule that impure things do not fold: a statement observes one moment.
+RETURN array::len(array::distinct((SELECT time::now() AS at FROM accounts)));
+--- expect: value 1
+
+--- case: a generator nested inside another call is still asked per record
+RETURN array::len(array::distinct((SELECT type::string(rand::uuid()) AS id FROM accounts)));
+--- expect: value 3
+
+--- case: a field may default to a generated identifier
+DEFINE TABLE sessions;
+DEFINE FIELD id ON sessions TYPE uuid DEFAULT rand::uuid();
+--- expect: ok
+
+--- case: and each record written gets its own
+CREATE sessions:1 = { holder: 'ada' };
+CREATE sessions:2 = { holder: 'bob' };
+CREATE sessions:3 = { holder: 'cyd' };
+--- expect: ok
+
+--- case: three records, three identifiers
+RETURN array::len(array::distinct((SELECT id FROM sessions)));
+--- expect: value 3
+
+--- case: and what was written is a uuid, not text that looks like one
+# The declared field type would refuse anything else, so this says out loud what
+# `DEFINE FIELD … TYPE uuid` is being trusted for.
+RETURN array::distinct((SELECT type::of(id) AS kind FROM sessions)) = [{ kind: 'uuid' }];
+--- expect: value true

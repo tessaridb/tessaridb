@@ -35,6 +35,7 @@ mod error;
 mod evaluate;
 mod execute;
 mod file;
+mod generate;
 mod geo;
 mod geometry;
 mod grants;

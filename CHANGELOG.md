@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 716 conformance cases define the language and run in the build.
+Unreleased. 732 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -28,6 +28,21 @@ Unreleased. 716 conformance cases define the language and run in the build.
   as a disclosure of everything in that database to every such user.
 
 ### Added
+
+- **`rand::uuid()` generates an identifier, and the planner learned that reading
+  no record is not the same as being safe to evaluate once.** A field can now say
+  `DEFAULT rand::uuid()`. The function is the small half: every expression that
+  reads no record was evaluated **once above the records** and the result reused,
+  which is right for the twenty-nine functions that came before and wrong for a
+  generator — `SELECT rand::uuid() AS id FROM users` would have written one
+  identifier into every row, with no error, no failing test, and nothing visible
+  until two records that should differ did not. `Function::purity` now has a
+  third answer for exactly this, the fold consults it, and `time::now()` still
+  folds so that one statement observes one instant. The value is a real
+  version-4 UUID with its version and variant bits set, because the type renders
+  in the canonical form and something on the other side will parse it back. The
+  bytes come from the operating system's randomness source, and a source that
+  cannot be read is a refusal rather than a fallback to a clock or a counter.
 
 - **Fourteen functions open an object and reshape an array** —
   `object::keys values len`, `array::distinct sort reverse flatten join slice`,

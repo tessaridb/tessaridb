@@ -176,6 +176,13 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
             datetime_at(function, arguments, 0, span)?.seconds(),
         ))),
         Function::TimeFromUnix => from_unix(function, arguments, span),
+        // The one call in this match that must not be evaluated above the
+        // records. Nothing here enforces that — `plan::fold` does, by asking
+        // `Function::purity` — and the arrangement is deliberate: an evaluator
+        // that answered per record while the planner folded the call would still
+        // hand out one identifier, so the guarantee belongs where the decision
+        // to evaluate once is taken.
+        Function::RandUuid => crate::generate::uuid(span),
         // A score needs the record's analyzer and the collection it is measured
         // against, and neither is a value — so it is answered in the evaluator,
         // where the scope is, and never reaches here.

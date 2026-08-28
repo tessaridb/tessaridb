@@ -133,7 +133,7 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 18] = [
+const CROSS_CUTTING: [&str; 19] = [
     "bindings",
     // The vocabulary is cross-cutting by construction: a function is a value's
     // value, and every engine hands over values. `type::int(count)` reads the
@@ -151,6 +151,11 @@ const CROSS_CUTTING: [&str; 18] = [
     "consumers",
     "functions",
     "grants",
+    // A generated identifier is a value like any other, and every engine
+    // hands over values: `rand::uuid()` reads the same whether the record it
+    // is written beside came from a scan, an index or a walk. What it does
+    // belong to is the planner, which is not an engine either.
+    "identity",
     "node",
     // How many records a read says it answers with is about no engine either:
     // `ONLY` asserts the same thing of a scan, a walk and an index read.

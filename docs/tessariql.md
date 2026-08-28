@@ -2236,6 +2236,45 @@ here. `time::now()` carries a remainder nearly always, so a strict `time::unix`
 would fail the pairing everybody writes. The remainder is still on the instant
 when the whole value is kept.
 
+### Generated identifiers
+
+| Written | What it answers |
+|---|---|
+| `rand::uuid()` | a version-4 UUID that has never been answered before |
+
+The case it is for is a field that gives every record an identity of its own:
+
+```
+DEFINE FIELD id ON sessions TYPE uuid DEFAULT rand::uuid();
+```
+
+**It is asked again for every record, and that is a property of the planner
+rather than of the function.** Every expression that reads no record is
+evaluated once above the records and the answer reused — which is what makes a
+read over two thousand records affordable, and what makes one statement observe
+one instant. A generator reads no record either, so under that rule alone
+`SELECT rand::uuid() AS id FROM users` would write **one** identifier into every
+row: no error, no failing test, and nothing to see until two records that should
+differ do not. Reading no record and being safe to evaluate once are two
+properties, and the language now asks both.
+
+**`time::now()` is the reason the question is asked about the function rather
+than about impurity.** It is impure too and it *must* be evaluated once, or one
+statement observes several moments and `ORDER BY time::now()` sorts by a key
+that regenerates under its own comparator. The two impure functions in the
+language want opposite treatment, which is why each one says which it wants.
+
+**What comes out is a real UUID**, version and variant bits included, not
+sixteen random bytes. `type::string` renders it in the canonical
+`8-4-4-4-12` form and that text goes on to be stored, sent and parsed by
+something else, which is entitled to the six bits that say what it is.
+
+**A machine that cannot read its randomness source refuses the call** rather
+than falling back to a clock, a process id or a counter. Those fallbacks are how
+"this cannot happen" becomes two identical identifiers on the day two containers
+start from one image in the same millisecond — and a colliding identifier fails
+silently, with the second record simply overwriting the first.
+
 ### Shapes
 
 A geometry is a value like any other, so a spatial question is an ordinary
@@ -3442,6 +3481,8 @@ be, because it is confined to the run its fixed values name.
 | A cast produces the kind it names or refuses, never something near it | **contract** — an absent argument still answers `none`, so a cast narrows a read; a value that is there and does not convert fails it, because a filter silently returning fewer rows is the one wrong answer nothing downstream detects |
 | Of two candidate behaviours for a collection function, the one the other can be written from wins | **contract** — `array::reverse(array::sort(x))` is why there is no `sort_desc`, and `array::distinct` keeps the first occurrence because sorting throws away an order nothing recovers; `object::keys` and `object::values` correspond position by position; positions count characters, not bytes |
 | A date read from an instant is UTC, and `time::second` is the second of the minute | **contract** — an instant has no zone, and `time::unix` is the other question; `time::from_unix` refuses a fraction because `math::round` says which second was meant, while `time::unix` drops a remainder because nothing else could say that conversion |
+| Reading no record and being safe to evaluate once are two properties, and a function says which it has | **contract** — every record-independent expression is evaluated once above the records, so `rand::uuid()` is asked again per record while `time::now()` is not; the two impure functions want opposite treatment, and a single rule about impurity would get one of them wrong in silence |
+| A generated identifier is a real UUID, and a machine that cannot read its randomness source refuses | **contract** — the canonical text is parsed by something else, and a fallback to a clock or a counter is how a collision arrives on the day two containers start from one image |
 | Anything computed in a projection needs `AS` | **contract** |
 | Comparison is the value system's declared order, including across types | **contract** — a comparison disagreeing with the order its index is stored in is an answer that changes when an index appears |
 | An ordered comparison against `NONE` or `NULL` is false | **contract** — they are the absence of a value, not a small one |

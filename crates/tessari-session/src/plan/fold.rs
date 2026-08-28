@@ -4,16 +4,31 @@ use tessari_storage::Transaction;
 use crate::error::Result;
 use crate::session::Session;
 
-use super::reads::reads_a_record;
+use super::reads::{answers_afresh, reads_a_record};
 
 /// Evaluate the parts of an expression that do not depend on a record, once.
 ///
 /// # Why this is here and not in the evaluator
 ///
-/// It is the same judgement the index selection makes — [`reads_a_record`]
-/// decides whether a filter's right-hand side can be an index bound, and it
-/// answers exactly the question a fold asks. Two notions of "constant" in one
-/// query engine is one more than can be kept in step.
+/// It shares its first question with the index selection — [`reads_a_record`]
+/// decides whether a filter's right-hand side can be an index bound. Two notions
+/// of "constant" in one query engine is one more than can be kept in step, so
+/// the walks live together in `super::reads`.
+///
+/// # Reading no record is not the same as being safe to evaluate once
+///
+/// It was treated as the same question until `rand::uuid()` arrived, and for the
+/// 29 functions that came before, the two answers coincided. They part exactly
+/// here: a generator reads no record, so the older condition called it constant
+/// and `SELECT rand::uuid() AS id FROM users` wrote **one** identifier into every
+/// row — no error, no failing test, and nothing visible until two records that
+/// should differ do not. [`answers_afresh`] is the second half of the condition,
+/// and `Function::purity` is what it consults.
+///
+/// The reverse mistake has the same shape and is why the second half is a
+/// separate question rather than "impure does not fold": `time::now()` is impure
+/// too and *must* fold, or one statement observes several instants and
+/// `ORDER BY time::now()` sorts by a key regenerated under its own comparator.
 ///
 /// # What it was worth
 ///
@@ -34,7 +49,7 @@ use super::reads::reads_a_record;
 impl Session<'_> {
     /// This expression with its record-independent parts already evaluated.
     pub(crate) fn folded(&self, transaction: &mut Transaction<'_>, expr: &Expr) -> Result<Expr> {
-        if !reads_a_record(expr) {
+        if !reads_a_record(expr) && !answers_afresh(expr) {
             // Already a literal: folding would rebuild an identical node and
             // lose nothing but time.
             if matches!(expr.kind, ExprKind::Literal(_)) {

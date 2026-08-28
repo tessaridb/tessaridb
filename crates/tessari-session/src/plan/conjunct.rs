@@ -159,6 +159,7 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::TimeSecond
         | Function::TimeUnix
         | Function::TimeFromUnix
+        | Function::RandUuid
         | Function::TimeBucket
         | Function::TypeOf
         | Function::TypeBool

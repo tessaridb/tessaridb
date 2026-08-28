@@ -47,19 +47,18 @@ use core::fmt;
 ///
 /// # What this is for, concretely
 ///
-/// A reader in `tessari-session` decides whether an expression may be evaluated
-/// **once above the records** instead of once per record, and today it decides
-/// by asking whether the expression reads a record. For every function the
-/// language currently has, those two questions have the same answer, so nothing
-/// has needed this.
+/// `plan::fold` decides whether an expression may be evaluated **once above the
+/// records** instead of once per record, and it used to decide by asking only
+/// whether the expression reads a record. For the twenty-nine functions the
+/// language had before `rand::uuid`, those two questions had the same answer.
 ///
 /// They come apart at the first function that reads no record and must still be
 /// asked again for every one of them — a generated identity being the obvious
-/// one. Folded like a constant, `rand::uuid()` would hand every record of a bulk
+/// one. Folded like a constant, `rand::uuid()` hands every record of a bulk
 /// insert **the same id**: not a compile error, not a test failure, and not
 /// visible until two records that should differ do not. Reading no record is
 /// therefore not the same property as being foldable, and this is the one that
-/// actually governs it.
+/// actually governs it — which is why the fold now asks both questions.
 ///
 /// The reverse mistake is the same shape. `time::now()` reads no record and
 /// *should* fold: unfolded, one statement observes several instants and
@@ -77,6 +76,13 @@ pub enum Purity {
     /// answers alike however many records it is asked about. Foldable, and
     /// folding is what currently delivers that — see `plan::fold`.
     PerStatement,
+    /// Impure, and a fresh answer every single time it is asked.
+    ///
+    /// The one answer that is **not** foldable, and the reason this enum is
+    /// consulted rather than [`Purity::Pure`] being assumed. A generated
+    /// identity is the case: `rand::uuid()` reads no record, so the fold's older
+    /// question said constant, and every row of one read took the same id.
+    PerCall,
 }
 
 /// One of the language's own functions.
@@ -153,6 +159,8 @@ pub enum Function {
     TimeUnix,
     /// `time::from_unix(seconds)` — the instant a second count names.
     TimeFromUnix,
+    /// `rand::uuid()` — a fresh version-4 identifier, once per call.
+    RandUuid,
     /// `type::of(value)` — the type's name, as §3 spells it.
     TypeOf,
     /// `type::bool(value)` — the value as a boolean, or a refusal.
@@ -247,6 +255,7 @@ impl Function {
         Self::TimeSecond,
         Self::TimeUnix,
         Self::TimeFromUnix,
+        Self::RandUuid,
         Self::TypeOf,
         Self::TypeBool,
         Self::TypeInt,
@@ -310,6 +319,7 @@ impl Function {
             Self::TimeSecond => "time::second",
             Self::TimeUnix => "time::unix",
             Self::TimeFromUnix => "time::from_unix",
+            Self::RandUuid => "rand::uuid",
             Self::TypeOf => "type::of",
             Self::TypeBool => "type::bool",
             Self::TypeInt => "type::int",
@@ -351,7 +361,7 @@ impl Function {
     /// how many arguments it takes.
     pub const fn arity(self) -> usize {
         match self {
-            Self::TimeNow => 0,
+            Self::TimeNow | Self::RandUuid => 0,
             Self::StringLen
             | Self::StringLower
             | Self::StringUpper
@@ -419,17 +429,21 @@ impl Function {
     /// value something else decided to keep. So a function added to the language
     /// will not compile until somebody says which of these it is.
     ///
-    /// [`Purity::PerStatement`] is a category of one today, and every function
-    /// here is currently foldable. The test below writes that membership down so
-    /// that the first function which is *not* — one that must be asked again for
-    /// every record despite reading none — cannot be added without somebody
-    /// reading what folding would do to it.
+    /// [`Purity::PerStatement`] and [`Purity::PerCall`] are each a category of
+    /// one. The tests below write both memberships down as sets, so the next
+    /// function that must be asked again for every record despite reading none
+    /// cannot be added without somebody reading what folding would do to it —
+    /// which is how `rand::uuid` came to be classified before it was evaluated.
     #[must_use]
     pub const fn purity(self) -> Purity {
         match self {
             // The clock moves while a statement runs; the statement should not
             // see it move.
             Self::TimeNow => Purity::PerStatement,
+            // The one function the fold may not touch. Reading no record makes
+            // it *look* constant, and a `SELECT rand::uuid() AS id` evaluated
+            // once above the records hands every row the same id.
+            Self::RandUuid => Purity::PerCall,
             Self::StringLen
             | Self::StringLower
             | Self::StringUpper
@@ -556,12 +570,11 @@ mod tests {
     /// The whole membership of [`Purity::PerStatement`], asserted as a set.
     ///
     /// The guard the type system cannot give. `purity` forces a new function to
-    /// be *classified*, but a classification on its own changes nothing about
-    /// how the function is evaluated — `plan::fold` still decides by asking
-    /// whether the expression reads a record, and a function that reads none is
-    /// folded whatever it is classified as.
+    /// be *classified*, but a classification is a claim about how the function
+    /// must be evaluated, and the two can be written apart: a function put here
+    /// wrongly is folded to one value per statement and nothing says so.
     ///
-    /// So the set is written down here. Adding a member fails this test, and the
+    /// So the set is written down. Adding a member fails this test, and the
     /// failure is the instruction: go and read what folding does to it before
     /// widening this list.
     #[test]
@@ -574,13 +587,29 @@ mod tests {
         assert_eq!(constant, ["time::now"]);
     }
 
+    /// The whole membership of [`Purity::PerCall`], asserted the same way.
+    ///
+    /// This is the list `plan::fold` refuses to evaluate above the records, so
+    /// widening it makes a read slower and narrowing it makes one **wrong** —
+    /// asymmetric, and the direction that costs correctness is the one a
+    /// classification typo takes silently.
     #[test]
-    fn every_function_is_classified_and_only_the_clock_is_not_pure() {
+    fn the_functions_the_fold_may_not_touch_are_exactly_the_one_that_generates() {
+        let afresh: Vec<&str> = Function::ALL
+            .iter()
+            .filter(|function| function.purity() == Purity::PerCall)
+            .map(|function| function.spelling())
+            .collect();
+        assert_eq!(afresh, ["rand::uuid"]);
+    }
+
+    #[test]
+    fn every_function_is_classified_and_only_the_clock_and_the_generator_are_not_pure() {
         for function in Function::ALL {
-            let expected = if *function == Function::TimeNow {
-                Purity::PerStatement
-            } else {
-                Purity::Pure
+            let expected = match function {
+                Function::TimeNow => Purity::PerStatement,
+                Function::RandUuid => Purity::PerCall,
+                _ => Purity::Pure,
             };
             assert_eq!(function.purity(), expected, "{function} is misclassified");
         }
