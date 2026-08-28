@@ -28,6 +28,42 @@
 
 use core::fmt;
 
+/// Whether a function answers the same way every time it is asked.
+///
+/// # What this is for, concretely
+///
+/// A reader in `tessari-session` decides whether an expression may be evaluated
+/// **once above the records** instead of once per record, and today it decides
+/// by asking whether the expression reads a record. For every function the
+/// language currently has, those two questions have the same answer, so nothing
+/// has needed this.
+///
+/// They come apart at the first function that reads no record and must still be
+/// asked again for every one of them — a generated identity being the obvious
+/// one. Folded like a constant, `rand::uuid()` would hand every record of a bulk
+/// insert **the same id**: not a compile error, not a test failure, and not
+/// visible until two records that should differ do not. Reading no record is
+/// therefore not the same property as being foldable, and this is the one that
+/// actually governs it.
+///
+/// The reverse mistake is the same shape. `time::now()` reads no record and
+/// *should* fold: unfolded, one statement observes several instants and
+/// `ORDER BY time::now()` sorts by a key regenerated under its own comparator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Purity {
+    /// The same arguments answer the same way, always.
+    ///
+    /// Which is what lets the answer be computed once, reordered, or served from
+    /// an index without changing what the statement means.
+    Pure,
+    /// Impure, and fixed for the length of one statement.
+    ///
+    /// A statement observes **one** instant, so every `time::now()` in it
+    /// answers alike however many records it is asked about. Foldable, and
+    /// folding is what currently delivers that — see `plan::fold`.
+    PerStatement,
+}
+
 /// One of the language's own functions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Function {
@@ -219,6 +255,58 @@ impl Function {
         }
     }
 
+    /// Whether this function answers the same way every time it is asked.
+    ///
+    /// # Every function is named here too, and for [`Function::arity`]'s reason
+    ///
+    /// A catch-all arm would hand a newly added function the majority answer,
+    /// and the majority answer is [`Purity::Pure`]. A function wrongly called
+    /// pure is refused nowhere and fails no test — it quietly answers from a
+    /// value something else decided to keep. So a function added to the language
+    /// will not compile until somebody says which of these it is.
+    ///
+    /// [`Purity::PerStatement`] is a category of one today, and every function
+    /// here is currently foldable. The test below writes that membership down so
+    /// that the first function which is *not* — one that must be asked again for
+    /// every record despite reading none — cannot be added without somebody
+    /// reading what folding would do to it.
+    #[must_use]
+    pub const fn purity(self) -> Purity {
+        match self {
+            // The clock moves while a statement runs; the statement should not
+            // see it move.
+            Self::TimeNow => Purity::PerStatement,
+            Self::StringLen
+            | Self::StringLower
+            | Self::StringUpper
+            | Self::StringTrim
+            | Self::StringConcat
+            | Self::ArrayLen
+            | Self::ArrayFirst
+            | Self::ArrayLast
+            | Self::MathAbs
+            | Self::MathFloor
+            | Self::MathCeil
+            | Self::MathRound
+            | Self::TypeOf
+            | Self::VectorCosine
+            | Self::VectorEuclidean
+            | Self::VectorDot
+            | Self::SearchScore
+            | Self::TimeBucket
+            | Self::GeoIntersects
+            | Self::GeoDisjoint
+            | Self::GeoCovers
+            | Self::GeoCoveredBy
+            | Self::GeoContains
+            | Self::GeoWithin
+            | Self::GeoEquals
+            | Self::GeoTouches
+            | Self::GeoDistance
+            | Self::GeoArea => Purity::Pure,
+        }
+    }
+
     /// Whether this function has an answer for an argument that holds nothing.
     ///
     /// Most do not: a function of an absence is an absence, which is what lets a
@@ -274,7 +362,40 @@ impl fmt::Display for Function {
 
 #[cfg(test)]
 mod tests {
-    use super::Function;
+    use super::{Function, Purity};
+
+    /// The whole membership of [`Purity::PerStatement`], asserted as a set.
+    ///
+    /// The guard the type system cannot give. `purity` forces a new function to
+    /// be *classified*, but a classification on its own changes nothing about
+    /// how the function is evaluated — `plan::fold` still decides by asking
+    /// whether the expression reads a record, and a function that reads none is
+    /// folded whatever it is classified as.
+    ///
+    /// So the set is written down here. Adding a member fails this test, and the
+    /// failure is the instruction: go and read what folding does to it before
+    /// widening this list.
+    #[test]
+    fn the_statement_constant_functions_are_exactly_the_one_the_fold_was_written_for() {
+        let constant: Vec<&str> = Function::ALL
+            .iter()
+            .filter(|function| function.purity() == Purity::PerStatement)
+            .map(|function| function.spelling())
+            .collect();
+        assert_eq!(constant, ["time::now"]);
+    }
+
+    #[test]
+    fn every_function_is_classified_and_only_the_clock_is_not_pure() {
+        for function in Function::ALL {
+            let expected = if *function == Function::TimeNow {
+                Purity::PerStatement
+            } else {
+                Purity::Pure
+            };
+            assert_eq!(function.purity(), expected, "{function} is misclassified");
+        }
+    }
 
     #[test]
     fn every_function_is_findable_by_its_own_spelling_and_no_two_share_one() {

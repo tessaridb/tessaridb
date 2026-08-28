@@ -32,7 +32,7 @@ pub use ast::{
 };
 pub use bind::Parameters;
 pub use error::{Error, Result};
-pub use function::Function;
+pub use function::{Function, Purity};
 pub use lexer::tokenize;
 pub use parser::{parse, parse_expression};
 pub use render::render;
