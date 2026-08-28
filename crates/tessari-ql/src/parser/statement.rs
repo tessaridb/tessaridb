@@ -1176,6 +1176,9 @@ impl Parser<'_> {
         let start = self.span_here();
         self.advance();
         let projection = self.projection()?;
+        // Beside the projection rather than among the clauses after `FROM`,
+        // because it says what the star contributes and not what the read does.
+        let omit = self.omit_paths(&projection)?;
         self.expect_keyword(Keyword::From, "`FROM` and what to read")?;
 
         let from = self.select_source()?;
@@ -1210,7 +1213,7 @@ impl Parser<'_> {
         // comparison and a projection admits one as a whole projected value; a
         // key and an ordering do not yet, and each is refused by name rather
         // than by a stray-token message.
-        if let Projection::Values(values) = &projection {
+        if let Projection::Values { values, .. } = &projection {
             for value in values {
                 super::shape::check_projected(&value.value)?;
             }
@@ -1243,6 +1246,7 @@ impl Parser<'_> {
         }
         Ok(Select {
             projection,
+            omit,
             from,
             fetch,
             group,

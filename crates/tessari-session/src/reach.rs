@@ -274,7 +274,10 @@ fn in_expr(expr: &Expr) -> Vec<&TableRef> {
 /// in it the name was written.
 fn in_select(select: &Select) -> Vec<&TableRef> {
     let mut found = in_source(&select.from);
-    if let Projection::Values(projected) = &select.projection {
+    if let Projection::Values {
+        values: projected, ..
+    } = &select.projection
+    {
         for one in projected {
             found.extend(in_expr(&one.value));
         }

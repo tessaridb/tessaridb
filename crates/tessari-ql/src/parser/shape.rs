@@ -54,6 +54,60 @@ impl Parser<'_> {
         Ok(routes)
     }
 
+    /// `OMIT embedding, address.postcode` after the projection, when it is
+    /// there.
+    ///
+    /// Written next to the `*` it subtracts from rather than down among the
+    /// clauses after `FROM`, because it says what the star does and not what the
+    /// read does. Contextual like every other clause word here: a field called
+    /// `omit` is still a field, and there is no ambiguity to resolve because a
+    /// projection reading it as a value has already consumed it by the time this
+    /// is asked.
+    pub(super) fn omit_paths(&mut self, projection: &Projection) -> Result<Vec<FieldPath>> {
+        if !self.peek_word("omit") {
+            return Ok(Vec::new());
+        }
+        // Refused here rather than accepted and ignored: with nothing to
+        // subtract from, the clause is either a mistake about what the read
+        // answers with or a request to drop a value the author wrote out by
+        // name, and both deserve to be said rather than silently dropped.
+        if !projection.stars() {
+            return Err(self.error_here(
+                "a `*` for `OMIT` to subtract from — a value written out by name \
+                 was asked for on purpose",
+            ));
+        }
+        self.advance();
+        let mut routes = vec![self.omitted_path()?];
+        while self.eat_punct(Punct::Comma) {
+            routes.push(self.omitted_path()?);
+        }
+        Ok(routes)
+    }
+
+    /// One route `OMIT` may name: fields all the way down, never a position.
+    ///
+    /// `OMIT tags[0]` would renumber everything after it, so what the answer
+    /// held at position one would depend on what was left out — a different
+    /// question from the one `OMIT` is for, and refused rather than guessed at.
+    fn omitted_path(&mut self) -> Result<FieldPath> {
+        let route = self.field_path()?;
+        if route
+            .path
+            .steps()
+            .iter()
+            .any(|step| !matches!(step, tessari_types::Step::Field(_)))
+        {
+            return Err(Error::UnexpectedToken {
+                expected: "a route of field names — `OMIT` cannot leave out a \
+                           position, because the rest would renumber",
+                found: route.path.to_string(),
+                span: route.span,
+            });
+        }
+        Ok(route)
+    }
+
     /// `ORDER BY name, address.city DESC`, when it is there.
     ///
     /// Keys are read in the condition position, so a bare name is a route into
@@ -212,7 +266,7 @@ impl Parser<'_> {
 /// wrong number reaches a report. It is a property of the statement, so it is
 /// refused when the statement is read.
 pub(super) fn check_grouping(projection: &Projection, group: &[Expr]) -> Result<()> {
-    let Projection::Values(values) = projection else {
+    let Projection::Values { values, .. } = projection else {
         // `SELECT *` over a group would answer with whichever record came last.
         if group.is_empty() {
             return Ok(());

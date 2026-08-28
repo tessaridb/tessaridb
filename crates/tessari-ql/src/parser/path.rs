@@ -62,26 +62,48 @@ impl Parser<'_> {
         Ok(at)
     }
 
-    /// What a read answers with: `*`, or a list of routes with their names.
+    /// What a read answers with: `*`, a list of routes with their names, or a
+    /// `*` standing among that list.
+    ///
+    /// A bare `*` keeps its own variant rather than becoming an empty list with
+    /// the star set, because that read copies nothing — the records reach the
+    /// answer as they were decoded — and it is the commonest read there is.
     pub(super) fn projection(&mut self) -> Result<Projection> {
-        if self.eat_punct(Punct::Star) {
+        let mut everything = None;
+        let mut values: Vec<Projected> = Vec::new();
+        loop {
+            let at = self.span_here();
+            if self.eat_punct(Punct::Star) {
+                // A second `*` adds nothing the first did not, so it is a typo
+                // rather than a meaning, and it is refused where it is written.
+                if everything.is_some() {
+                    return Err(Error::DuplicateProjection {
+                        name: "*".to_owned(),
+                        span: at,
+                    });
+                }
+                everything = Some(at);
+            } else {
+                let next = self.projected()?;
+                // Two projections answering under one name would write one field
+                // twice into a name-ordered object and keep whichever came last.
+                // Knowable from the statement alone, so it is refused here.
+                if let Some(clash) = values.iter().find(|held| held.name.text == next.name.text) {
+                    return Err(Error::DuplicateProjection {
+                        name: clash.name.text.clone(),
+                        span: next.name.span,
+                    });
+                }
+                values.push(next);
+            }
+            if !self.eat_punct(Punct::Comma) {
+                break;
+            }
+        }
+        if values.is_empty() && everything.is_some() {
             return Ok(Projection::All);
         }
-        let mut values = vec![self.projected()?];
-        while self.eat_punct(Punct::Comma) {
-            let next = self.projected()?;
-            // Two projections answering under one name would write one field
-            // twice into a name-ordered object and keep whichever came last.
-            // Knowable from the statement alone, so it is refused here.
-            if let Some(clash) = values.iter().find(|held| held.name.text == next.name.text) {
-                return Err(Error::DuplicateProjection {
-                    name: clash.name.text.clone(),
-                    span: next.name.span,
-                });
-            }
-            values.push(next);
-        }
-        Ok(Projection::Values(values))
+        Ok(Projection::Values { everything, values })
     }
 
     /// One projected value, and the name it answers under.

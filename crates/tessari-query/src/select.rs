@@ -218,10 +218,18 @@ impl Select<Sourced> {
         let projection = if self.projection.is_empty() {
             Projection::All
         } else {
-            Projection::Values(self.projection)
+            // `None`: the builder has no star to write. A caller that wants the
+            // record whole leaves the projection empty, which is `All` above.
+            Projection::Values {
+                everything: None,
+                values: self.projection,
+            }
         };
         let select = Syntax {
             projection,
+            // The builder offers no `OMIT`: it subtracts from a star this API
+            // has no way to write.
+            omit: Vec::new(),
             from,
             fetch: Vec::new(),
             group: Vec::new(),

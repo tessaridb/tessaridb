@@ -282,7 +282,7 @@ pub(crate) fn bound(select: &Select) -> Option<usize> {
     if !select.group.is_empty() || !select.order.is_empty() {
         return None;
     }
-    if let Projection::Values(wanted) = &select.projection
+    if let Projection::Values { values: wanted, .. } = &select.projection
         && crate::aggregate::folds(wanted)
     {
         return None;

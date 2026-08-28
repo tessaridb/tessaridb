@@ -298,7 +298,10 @@ fn bind_join_side(side: &mut JoinSide, binding: &Binding<'_>) -> Result<()> {
 }
 
 fn bind_select(select: &mut Select, binding: &Binding<'_>) -> Result<()> {
-    if let Projection::Values(projected) = &mut select.projection {
+    if let Projection::Values {
+        values: projected, ..
+    } = &mut select.projection
+    {
         for one in projected {
             bind_expr(&mut one.value, binding)?;
         }

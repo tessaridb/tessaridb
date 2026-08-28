@@ -241,7 +241,10 @@ fn erase_select(select: &mut Select) {
     select.span = CANONICAL;
     match &mut select.projection {
         Projection::All => {}
-        Projection::Values(values) => {
+        Projection::Values { everything, values } => {
+            if let Some(at) = everything {
+                *at = CANONICAL;
+            }
             for projected in values {
                 erase_expr(&mut projected.value);
                 erase_name(&mut projected.name);
@@ -249,6 +252,9 @@ fn erase_select(select: &mut Select) {
         }
     }
     erase_source(&mut select.from);
+    for route in &mut select.omit {
+        erase_path(route);
+    }
     for route in &mut select.fetch {
         erase_path(route);
     }

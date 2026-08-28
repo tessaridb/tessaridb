@@ -14,13 +14,13 @@
 use std::collections::BTreeSet;
 use std::ops::ControlFlow;
 
-use tessari_ql::{Expr, Projected};
+use tessari_ql::Expr;
 use tessari_storage::Transaction;
 use tessari_types::{RecordId, Value};
 
 use crate::budget::Budget;
 use crate::error::Result;
-use crate::evaluate::Scope;
+use crate::evaluate::{Scope, Shaped};
 use crate::noticed::Noticed;
 use crate::search::Searched;
 use crate::session::Session;
@@ -144,9 +144,10 @@ impl Consumer for Collecting<'_> {
 /// the reading is what the index-served orders already avoid.
 pub(crate) struct Shaping<'a, 's> {
     session: &'a Session<'s>,
-    /// The projection, folded once, or nothing when the records arrive already
-    /// projected — which is the case when a barrier stage ran before this one.
-    wanted: Option<Vec<Projected>>,
+    /// The projection, worked out once, or nothing when the records arrive
+    /// already projected — which is the case when a barrier stage ran before
+    /// this one — or when the read answers with the record unchanged.
+    wanted: Option<Shaped>,
     /// The order's keys, folded once: a key's constant parts are constant across
     /// every record it is applied to.
     keys: Vec<Expr>,
@@ -177,7 +178,7 @@ pub(crate) struct Shaping<'a, 's> {
 impl<'a, 's> Shaping<'a, 's> {
     pub(crate) fn new(
         session: &'a Session<'s>,
-        wanted: Option<Vec<Projected>>,
+        wanted: Option<Shaped>,
         keys: Vec<Expr>,
         searched: &'a Searched,
         topmost: Topmost<'a>,
@@ -188,7 +189,7 @@ impl<'a, 's> Shaping<'a, 's> {
         // — see `Budget::stage`.
         budget.stage();
         Self {
-            keys_reach_past_the_projection: reach_past(wanted.as_deref(), &keys),
+            keys_reach_past_the_projection: reach_past(wanted.as_ref(), &keys),
             session,
             wanted,
             keys,
@@ -224,12 +225,25 @@ impl<'a, 's> Shaping<'a, 's> {
 /// Whether any of the order's keys reads a name the projection does not offer.
 ///
 /// `false` when there is no projection at all: nothing was dropped, so nothing
-/// is out of reach.
-pub(crate) fn reach_past(wanted: Option<&[Projected]>, keys: &[Expr]) -> bool {
+/// is out of reach. A projection that **stars** answers the same way for the same
+/// reason — it offers the record's own names — *unless* an `OMIT` took some of
+/// them back out, and then the overlay is built without asking which: a route
+/// like `address.postcode` leaves the root `address` offered while removing what
+/// a key naming it would read, and a root-level comparison cannot see that. The
+/// cost is one allocation per record on the reads that star, omit and order all
+/// at once, which is the trade Q-143 already settled in this direction.
+pub(crate) fn reach_past(wanted: Option<&Shaped>, keys: &[Expr]) -> bool {
     let Some(wanted) = wanted else {
         return false;
     };
-    let offered: BTreeSet<&str> = wanted.iter().map(|one| one.name.text.as_str()).collect();
+    if wanted.everything {
+        return !wanted.omit.is_empty();
+    }
+    let offered: BTreeSet<&str> = wanted
+        .values
+        .iter()
+        .map(|one| one.name.text.as_str())
+        .collect();
     let mut read = BTreeSet::new();
     for key in keys {
         crate::plan::roots_read(key, &mut read);
@@ -289,6 +303,32 @@ mod tests {
     use tessari_types::Path;
 
     use super::reach_past;
+    use crate::evaluate::Shaped;
+
+    /// A projection that writes out these values and no star.
+    fn listing(values: Vec<Projected>) -> Shaped {
+        Shaped {
+            everything: false,
+            omit: Vec::new(),
+            values,
+        }
+    }
+
+    /// A projection that stars, leaving these routes out.
+    fn starring(omit: Vec<FieldPath>) -> Shaped {
+        Shaped {
+            everything: true,
+            omit,
+            values: Vec::new(),
+        }
+    }
+
+    fn route(field: &str) -> FieldPath {
+        FieldPath {
+            path: Path::field(field),
+            span: somewhere(),
+        }
+    }
 
     fn somewhere() -> Span {
         Span::new(0, 1)
@@ -319,7 +359,7 @@ mod tests {
         // The common statement, and the one that must keep its current cost:
         // it orders by a name the answer already carries.
         assert!(!reach_past(
-            Some(&[offers("name", "name")]),
+            Some(&listing(vec![offers("name", "name")])),
             &[reads("name")]
         ));
     }
@@ -327,7 +367,7 @@ mod tests {
     #[test]
     fn a_key_naming_a_field_the_projection_dropped_needs_the_overlay() {
         assert!(reach_past(
-            Some(&[offers("name", "name")]),
+            Some(&listing(vec![offers("name", "name")])),
             &[reads("shape")]
         ));
     }
@@ -337,13 +377,13 @@ mod tests {
         // `SELECT address.city AS home … ORDER BY home` — the key names `home`,
         // which the projection offers, so no overlay and no change of behaviour.
         assert!(!reach_past(
-            Some(&[offers("home", "address")]),
+            Some(&listing(vec![offers("home", "address")])),
             &[reads("home")]
         ));
         // And the route it came from is *not* offered, so ordering by that
         // instead does need the source.
         assert!(reach_past(
-            Some(&[offers("home", "address")]),
+            Some(&listing(vec![offers("home", "address")])),
             &[reads("address")]
         ));
     }
@@ -356,8 +396,30 @@ mod tests {
     #[test]
     fn one_key_out_of_several_is_enough_to_need_the_overlay() {
         assert!(reach_past(
-            Some(&[offers("name", "name")]),
+            Some(&listing(vec![offers("name", "name")])),
             &[reads("name"), reads("shape")]
+        ));
+    }
+
+    #[test]
+    fn a_star_offers_every_name_the_record_has() {
+        // Nothing was dropped, so nothing is out of reach — the same answer the
+        // no-projection case gives, for the same reason said differently.
+        assert!(!reach_past(
+            Some(&starring(Vec::new())),
+            &[reads("anything")]
+        ));
+    }
+
+    #[test]
+    fn a_star_that_omits_needs_the_overlay_whatever_the_key_names() {
+        // Decided without asking which names the key reads, because a route
+        // like `address.postcode` leaves the root `address` offered while
+        // removing what a key naming it would read — so a root-level check
+        // would answer `false` and reintroduce Q-143 through the new clause.
+        assert!(reach_past(
+            Some(&starring(vec![route("age")])),
+            &[reads("name")]
         ));
     }
 }

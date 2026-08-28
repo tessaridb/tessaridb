@@ -672,7 +672,7 @@ fn projected_names(source: &str) -> Vec<String> {
         panic!("not a select");
     };
     match select.projection {
-        Projection::Values(values) => values.into_iter().map(|v| v.name.text).collect(),
+        Projection::Values { values, .. } => values.into_iter().map(|v| v.name.text).collect(),
         Projection::All => panic!("{source} projected everything"),
     }
 }
@@ -837,7 +837,7 @@ fn fetch_is_contextual_so_it_is_still_a_name() {
         panic!("not a select");
     };
     assert_eq!(select.fetch.len(), 1);
-    let Projection::Values(wanted) = &select.projection else {
+    let Projection::Values { values: wanted, .. } = &select.projection else {
         panic!("not a named projection");
     };
     assert_eq!(wanted[0].name.text, "fetch");

@@ -1,0 +1,82 @@
+# Projections: `*` composes, and `OMIT` subtracts from what it put there.
+# A corpus file is one session against one store, so these run in order.
+#
+# `SELECT *` and `SELECT a, b` used to be mutually exclusive, so "the record
+# plus one computed column" meant listing every field by hand — a list that
+# breaks the moment a field is added. `OMIT` is the other half, and it is the
+# one this store needs most: with a vector engine in the box, a `SELECT *` over
+# a table holding an embedding ships a wall of floats on every row.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+--- expect: ok
+
+--- case: a table with a nested field and a table with an embedding
+DEFINE TABLE people;
+CREATE people:1 = { name: 'ada', age: 36, address: { city: 'london', postcode: 'N1' } };
+CREATE people:2 = { name: 'grace', age: 45, address: { city: 'york', postcode: 'YO1' } };
+DEFINE TABLE notes;
+CREATE notes:1 = { title: 'first', embedding: [0.1, 0.2, 0.3] };
+--- expect: ok
+
+--- case: a star and a computed value answer together
+SELECT *, age + 1 AS next FROM people WHERE name = 'ada';
+--- expect: rows 1
+
+--- case: a name written out wins over the field the star offered under it
+SELECT *, 'shouted' AS name FROM people WHERE age = 36;
+--- expect: rows 1
+
+--- case: OMIT takes a field out of what the star put there
+SELECT * OMIT age FROM people;
+--- expect: rows 2
+
+--- case: OMIT reaches inside without taking the field that holds the route
+SELECT * OMIT address.postcode FROM people;
+--- expect: rows 2
+
+--- case: OMIT on a vector field keeps the floats out of the answer
+SELECT * OMIT embedding FROM notes;
+--- expect: rows 1
+
+--- case: several routes may be left out at once
+SELECT * OMIT age, address.postcode FROM people;
+--- expect: rows 2
+
+--- case: OMIT subtracts from the star and not from what was written out
+SELECT *, age + 1 AS age OMIT age FROM people WHERE name = 'ada';
+--- expect: rows 1
+
+--- case: a star still composes with the clauses that come after FROM
+SELECT *, age + 1 AS next FROM people ORDER BY age DESC LIMIT 1;
+--- expect: rows 1
+
+--- case: an order key still reads a field OMIT removed
+SELECT * OMIT age FROM people ORDER BY age DESC LIMIT 2;
+--- expect: rows 2
+
+--- case: OMIT with no star to subtract from is refused
+SELECT name OMIT age FROM people;
+--- expect: error UnexpectedToken
+
+--- case: OMIT cannot leave out a position, because the rest would renumber
+SELECT * OMIT embedding[0] FROM notes;
+--- expect: error UnexpectedToken
+
+--- case: a second star adds nothing the first did not
+SELECT *, * FROM people;
+--- expect: error DuplicateProjection
+
+--- case: the word is contextual, so it is still a field name
+CREATE people:3 = { name: 'alan', omit: 'a word, not a clause' };
+SELECT omit FROM people WHERE name = 'alan';
+--- expect: rows 1
+
+--- case: and still a table name
+DEFINE TABLE omit;
+CREATE omit:1 = { note: 'a table may be called that' };
+SELECT * FROM omit;
+--- expect: rows 1

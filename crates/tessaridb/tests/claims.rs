@@ -133,13 +133,17 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 11] = [
+const CROSS_CUTTING: [&str; 12] = [
     "bindings",
     "conditionals",
     "consumers",
     "functions",
     "grants",
     "node",
+    // What a read answers *with* is about no engine in particular: `SELECT *,
+    // x AS n` and `OMIT` shape a scan, a walk and a nearest-neighbour read the
+    // same way.
+    "projections",
     // The plan a read reports and the clause that asserts it are about every
     // engine and the work of none: `USING graph` and `USING index` are the same
     // question asked of two of them.

@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 573 conformance cases define the language and run in the build.
+Unreleased. 589 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -38,6 +38,16 @@ Unreleased. 573 conformance cases define the language and run in the build.
   script.
 - After `LET $x =` and after `RETURN`, a read may be written without
   parentheses.
+- **`SELECT *` composes.** A `*` may stand among the values written out, so
+  `SELECT *, price * quantity AS total` answers with the record **and** the
+  computed column — the shape that previously meant listing every field by hand,
+  and watching that list break the next time a field was added. Where both halves
+  offer a name the one written out wins, which is the rule an alias already
+  follows over the field it shadows.
+- **`OMIT <route>`** leaves fields out of what the star contributed, and out of
+  nothing else. It takes a route, so `OMIT address.postcode` keeps the address;
+  it refuses a position, because removing an element renumbers the rest. Without
+  it every `SELECT *` over a table holding an embedding shipped the embedding.
 - **A read standing in an expression holds at most ten thousand records**, and
   past that the statement is refused rather than answered from a prefix. Its
   answer is a value built whole, so an unbounded read there is an unbounded array

@@ -10,12 +10,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_constants::ORDERED_FILTER_REACH;
 use tessari_ql::{
-    BinaryOp, DeleteBound, Direction, Expr, ExprKind, Function, Hop, JoinSide, Projected,
-    Projection, RecordTarget, Select, Source, Span, TableRef, Using,
+    BinaryOp, DeleteBound, Direction, Expr, ExprKind, FieldPath, Function, Hop, JoinSide,
+    Projected, Projection, RecordTarget, Select, Source, Span, TableRef, Using,
 };
 use tessari_storage::{BUILD_VERSION, Catalog, RecordAddress, Store, Transaction};
 use tessari_types::{
-    Analyzer, Number, Path, RecordId, RecordRef, TableId, Value, ValueRange, apply,
+    Analyzer, Number, Path, RecordId, RecordRef, Step, TableId, Value, ValueRange, apply,
 };
 
 use crate::aggregate::folds;
@@ -442,10 +442,7 @@ impl Session<'_> {
             // The projection folded once, above the records rather than per
             // record: a projection's constant parts are constant across every
             // record it is applied to.
-            let wanted = match &select.projection {
-                Projection::All => None,
-                Projection::Values(wanted) => Some(self.folded_projection(transaction, wanted)?),
-            };
+            let wanted = self.shaped(transaction, select)?;
             let keys = self.folded_order(transaction, &select.order)?;
             let mut shaping = crate::consume::Shaping::new(
                 self,
@@ -498,26 +495,28 @@ impl Session<'_> {
             let context = self.context(transaction, None, select.span)?;
             self.follow(transaction, &mut records, &select.fetch, context)?;
         }
-        let records = match &select.projection {
-            Projection::All => records,
-            Projection::Values(wanted) if groups(select) => {
-                self.grouped(transaction, records, wanted, &select.group)?
+        let records = if groups(select) {
+            // A grouping folds many records into one, and a fold answers about
+            // the group rather than about a record — so the star has nothing to
+            // contribute here and the grammar has already refused one written
+            // beside a fold.
+            self.grouped(
+                transaction,
+                records,
+                select.projection.written(),
+                &select.group,
+            )?
+        } else if let Some(wanted) = self.shaped(transaction, select)? {
+            let mut projected = Vec::with_capacity(records.len());
+            for (id, record) in records {
+                projected.push((
+                    id,
+                    self.project(transaction, &record, &wanted, &searched, &noticed)?,
+                ));
             }
-            Projection::Values(wanted) => {
-                // Folded once, above the loop: a projection's constant parts are
-                // constant across every record it is applied to, and rebuilding
-                // them per record is what the benchmark harness found dominating
-                // a nearest-neighbour read.
-                let wanted = self.folded_projection(transaction, wanted)?;
-                let mut projected = Vec::with_capacity(records.len());
-                for (id, record) in records {
-                    projected.push((
-                        id,
-                        self.project(transaction, &record, &wanted, &searched, &noticed)?,
-                    ));
-                }
-                projected
-            }
+            projected
+        } else {
+            records
         };
         // Ordering comes after projection so that a key may name what the caller
         // can see: `SELECT address.city AS home … ORDER BY home` reads the name
@@ -561,6 +560,33 @@ impl Session<'_> {
         })
     }
 
+    /// What this read's projection produces, or nothing when it produces the
+    /// record unchanged.
+    ///
+    /// `None` is the read that copies nothing — a bare `*` with no `OMIT` — and
+    /// it is the commonest read in the language, so it keeps the path it had:
+    /// the records reach the answer as they were decoded.
+    ///
+    /// The projection is folded here, once above the records, because its
+    /// constant parts are constant across every record it is applied to.
+    /// Rebuilding them per record is what the benchmark harness once found
+    /// dominating a nearest-neighbour read.
+    fn shaped(&self, transaction: &mut Transaction<'_>, select: &Select) -> Result<Option<Shaped>> {
+        match &select.projection {
+            Projection::All if select.omit.is_empty() => Ok(None),
+            Projection::All => Ok(Some(Shaped {
+                everything: true,
+                omit: select.omit.clone(),
+                values: Vec::new(),
+            })),
+            Projection::Values { everything, values } => Ok(Some(Shaped {
+                everything: everything.is_some(),
+                omit: select.omit.clone(),
+                values: self.folded_projection(transaction, values)?,
+            })),
+        }
+    }
+
     /// One record, reduced to the values a read asked for.
     ///
     /// **A projection that reaches nothing omits its field** rather than
@@ -577,12 +603,34 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         record: &Value,
-        wanted: &[Projected],
+        wanted: &Shaped,
         searched: &Searched,
         noticed: &Noticed,
     ) -> Result<Value> {
-        let mut projected = BTreeMap::new();
-        for value in wanted {
+        // The star first, so a value written out by name is written **over** the
+        // field it shares a name with. `SELECT *, upper(name) AS name` answers
+        // with the computed one, which is the same rule the ordering stage's
+        // overlay already follows — an alias shadows the field it is named for.
+        let mut projected = match (wanted.everything, record) {
+            (true, Value::Object(fields)) => fields
+                .iter()
+                .filter(|(name, _)| !omits(&wanted.omit, name))
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+            // A star over something that is not an object contributes nothing
+            // rather than failing: a projection reaching nothing omits its field
+            // everywhere else here, and this is the same rule one level up.
+            _ => BTreeMap::new(),
+        };
+        // A route that reaches inside is removed after the copy rather than
+        // filtered during it, because the field it names still belongs in the
+        // answer — `OMIT address.postcode` keeps the address.
+        for route in &wanted.omit {
+            if !route.path.steps().is_empty() {
+                omit_within(&mut projected, &route.path);
+            }
+        }
+        for value in &wanted.values {
             // A route reaching several values is **collected** here rather than
             // resolved, and the rule lives in the projection the way the
             // existential rule lives in the comparison. Reading it in the
@@ -2195,7 +2243,7 @@ fn streams(select: &Select) -> bool {
 pub(crate) fn groups(select: &Select) -> bool {
     match &select.projection {
         Projection::All => false,
-        Projection::Values(wanted) => folds(wanted) || !select.group.is_empty(),
+        Projection::Values { values, .. } => folds(values) || !select.group.is_empty(),
     }
 }
 
@@ -2208,6 +2256,53 @@ fn order_bound(select: &Select) -> Option<usize> {
     select.limit.map(|limit| {
         usize::try_from(limit.saturating_add(select.start.unwrap_or(0))).unwrap_or(usize::MAX)
     })
+}
+
+/// Whether a route names this field at the top of the record.
+///
+/// A route with steps below it names something *inside* the field, so the field
+/// itself stays — which is why the deeper case is handled after the copy rather
+/// than by filtering it out here.
+fn omits(omit: &[FieldPath], name: &str) -> bool {
+    omit.iter()
+        .any(|route| route.path.steps().is_empty() && route.path.root() == name)
+}
+
+/// Remove what a route names from inside an already-copied record.
+///
+/// Silent where the route reaches nothing: a record that does not hold the field
+/// already answers without it, and there is nothing for an error to tell anyone.
+fn omit_within(fields: &mut BTreeMap<String, Value>, route: &Path) {
+    let Some((Step::Field(last), above)) = route.steps().split_last() else {
+        return;
+    };
+    let mut held = Value::Object(std::mem::take(fields));
+    let holder = Path::new(route.root().to_owned(), above.to_vec());
+    if let Some(Value::Object(inside)) = holder.resolve_mut(&mut held) {
+        inside.remove(last);
+    }
+    if let Value::Object(back) = held {
+        *fields = back;
+    }
+}
+
+/// What a read's projection produces, worked out once above the records.
+///
+/// One type rather than three parameters, because the three are one decision —
+/// what the answer is built from — and they were about to be added to the same
+/// signatures one at a time, which is the drift `Reporting` was made to stop.
+#[derive(Debug)]
+pub(crate) struct Shaped {
+    /// Whether the record's own fields start the answer.
+    pub(crate) everything: bool,
+    /// The routes the record's fields must not reach the answer by.
+    ///
+    /// Subtracts from what the star put there and from nothing else, so it is
+    /// empty and unread whenever `everything` is false — which the grammar
+    /// already guarantees by refusing `OMIT` without a `*`.
+    pub(crate) omit: Vec<FieldPath>,
+    /// The values written out by name, with their constant parts folded once.
+    pub(crate) values: Vec<Projected>,
 }
 
 /// The two channels a read reports on, which travel together everywhere.
@@ -2338,7 +2433,7 @@ impl<'a> Scope<'a> {
 /// rather than the record, which is a different question and is not this one.
 fn shown(select: &Select) -> Vec<&Expr> {
     let mut found = Vec::new();
-    if let Projection::Values(wanted) = &select.projection {
+    if let Projection::Values { values: wanted, .. } = &select.projection {
         for projected in wanted {
             found.push(&projected.value);
         }

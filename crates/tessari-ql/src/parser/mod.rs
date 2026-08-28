@@ -166,6 +166,18 @@ impl Parser<'_> {
     ///
     /// Matched case-insensitively, like a keyword, because that is what it is
     /// everywhere except in the token table.
+    /// Whether the next token is this contextual word, without consuming it.
+    ///
+    /// For a clause that has something to refuse *before* it starts reading, so
+    /// that the refusal points at the clause word rather than at whatever
+    /// followed it.
+    fn peek_word(&self, word: &str) -> bool {
+        matches!(
+            self.peek(),
+            Some(Token::Ident(found)) if found.eq_ignore_ascii_case(word)
+        )
+    }
+
     fn eat_word(&mut self, word: &str) -> bool {
         let matched = matches!(
             self.peek(),

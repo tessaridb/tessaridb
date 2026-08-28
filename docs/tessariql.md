@@ -866,6 +866,9 @@ SELECT * FROM users WHERE email = 'ada@example.com';
 SELECT name, address.city FROM users;
 SELECT address.city AS home, tags[0] AS first_tag FROM users;
 SELECT price * quantity AS total, string::upper(name) AS shout FROM users;
+SELECT *, price * quantity AS total FROM users;
+SELECT * OMIT embedding FROM users;
+SELECT * OMIT address.postcode FROM users;
 SELECT * FROM users ORDER BY name;
 SELECT * FROM users ORDER BY city, joined DESC START 20 LIMIT 10;
 SELECT count(*) AS n FROM users;
@@ -880,6 +883,28 @@ UPSERT users:1 = { name: 'ada' };
 UPSERT users:1 SET visits = 1;
 DELETE users:1;
 ```
+
+**`*` composes.** It may stand among the values written out —
+`SELECT *, price * quantity AS total FROM users` answers with the record **and**
+the computed column, which is the shape a hand-written list breaks on the moment
+a field is added. Where both halves offer a name, the one written out **wins**:
+`SELECT *, string::upper(name) AS name` answers with the computed one, the same
+rule an alias already follows over the field it shadows. Where the star stands
+among the values cannot be observed, because the answer is ordered by name.
+
+**`OMIT <route>` subtracts from what the star put there**, and from nothing
+else — a value written out by name was asked for on purpose, so the clause is
+refused where there is no star to subtract from rather than accepted and quietly
+doing nothing. It takes a **route** and not a name, so
+`OMIT address.postcode` keeps the address; it cannot leave out a *position*
+(`OMIT tags[0]`), because the rest would renumber and what the answer held at
+position one would then depend on what was left out.
+
+The clause this store needs it for is the vector field: without `OMIT`, every
+`SELECT *` over a table holding an embedding ships a wall of floats on every row,
+and the only escape is to enumerate every other field — the fragile list again.
+`omit` is contextual like every other clause word here, so a field or a table
+called `omit` still works.
 
 `CREATE`, `UPDATE` and `UPSERT` are not three spellings of one verb. They differ
 in what each asserts about the record **before** the write: `CREATE` says it is

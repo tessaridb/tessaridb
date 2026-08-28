@@ -121,6 +121,14 @@ const fn unrenderable(statement: &'static str, span: Span) -> Error {
 fn write_select(out: &mut String, select: &Select) -> Result<()> {
     out.push_str("SELECT ");
     write_projection(out, &select.projection)?;
+    if let Some((first, rest)) = select.omit.split_first() {
+        out.push_str(" OMIT ");
+        write_path(out, first);
+        for route in rest {
+            out.push_str(", ");
+            write_path(out, route);
+        }
+    }
     out.push_str(" FROM ");
     write_source(out, &select.from, select.span)?;
 
@@ -195,8 +203,14 @@ fn write_projection(out: &mut String, projection: &Projection) -> Result<()> {
             out.push('*');
             Ok(())
         }
-        Projection::Values(values) => {
-            let mut written = false;
+        Projection::Values { everything, values } => {
+            // The star first, always, whatever position it was written in: the
+            // answer is ordered by name, so where it stood cannot be observed,
+            // and one canonical place is what keeps a rendered statement stable.
+            let mut written = everything.is_some();
+            if written {
+                out.push('*');
+            }
             for value in values {
                 if written {
                     out.push_str(", ");

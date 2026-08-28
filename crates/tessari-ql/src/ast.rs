@@ -805,6 +805,17 @@ pub struct Assignment {
 pub struct Select {
     /// Which values each record answers with.
     pub projection: Projection,
+    /// The routes `*` must not contribute, when `OMIT` named any.
+    ///
+    /// Empty means the clause was not written. It subtracts from what the star
+    /// put there and from nothing else: a value written out by name was asked
+    /// for explicitly, so removing it would be answering a question nobody
+    /// asked, and the parser refuses the clause where there is no star to
+    /// subtract from rather than accepting one that does nothing.
+    ///
+    /// A route rather than a name, because the field to leave out may be inside
+    /// the record: `OMIT address.postcode` keeps the address.
+    pub omit: Vec<FieldPath>,
     /// Which access path the statement resolves to.
     pub from: Source,
     /// The routes whose record references are followed before anything else
@@ -918,14 +929,56 @@ pub struct Ordering {
 /// Which values a read answers with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Projection {
-    /// `*` — the record as it is stored.
+    /// `*` — the record as it is stored, with nothing added.
+    ///
+    /// Kept apart from the composed form below rather than expressed as one of
+    /// its cases, because it is the read that copies nothing: the records go to
+    /// the answer as they were decoded, and giving it a projection to apply
+    /// would give the commonest read in the language a per-record allocation to
+    /// pay for a list that is empty.
     All,
-    /// A named list, in the order it was written.
+    /// A named list, in the order it was written, and whether the record's own
+    /// fields join them.
     ///
     /// Order is carried even though the answer is a name-ordered object, because
     /// an error naming the second of two colliding projections should point at
-    /// the one the author wrote second.
-    Values(Vec<Projected>),
+    /// the one the author wrote second. It is also why `*` needs no position of
+    /// its own here: the answer is ordered by name whatever order the list was
+    /// written in, so *where* the star stands among the values cannot be
+    /// observed.
+    Values {
+        /// `*` written among the values, if it was.
+        ///
+        /// The span is what a message about a field the record and the list both
+        /// name would point at.
+        everything: Option<Span>,
+        /// The values written out, each with the name it answers under.
+        values: Vec<Projected>,
+    },
+}
+
+impl Projection {
+    /// Whether the record's own fields reach the answer.
+    ///
+    /// The one question two clauses ask of a projection — `OMIT`, which has
+    /// nothing to subtract from without it, and the projection stage, which
+    /// starts from the record rather than from nothing.
+    #[must_use]
+    pub const fn stars(&self) -> bool {
+        match self {
+            Self::All => true,
+            Self::Values { everything, .. } => everything.is_some(),
+        }
+    }
+
+    /// The values written out by name, which is none for a bare `*`.
+    #[must_use]
+    pub fn written(&self) -> &[Projected] {
+        match self {
+            Self::All => &[],
+            Self::Values { values, .. } => values,
+        }
+    }
 }
 
 /// One projected value, and the name it answers under.
