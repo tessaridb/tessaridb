@@ -236,6 +236,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::IndexNotUsed { .. } => "IndexNotUsed",
         Error::TimedOut { .. } => "TimedOut",
         Error::Unbounded { .. } => "Unbounded",
+        Error::UnboundedCollection { .. } => "UnboundedCollection",
         Error::NotAlone { .. } => "NotAlone",
         Error::AnchorGone { .. } => "AnchorGone",
         _ => "Unnamed",

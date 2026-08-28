@@ -246,10 +246,20 @@ for the reason the required `LIMIT` on a materialised source gives: unbounded,
 that read is expensive and right, while a silent prefix of it is cheap and wrong,
 and here there is not even a note to say so — a value has no room beside it.
 
-A read that **folds** is exempt, because its answer does not grow with the table:
-`LET $n = SELECT count(*) AS n FROM events;` needs no bound, and `LIMIT` would
-not have been one, since over a grouped read it bounds the groups answered rather
-than the records read.
+A read that **folds** is usually exempt, because its answer does not grow with
+the table: `LET $n = SELECT count(*) AS n FROM events;` needs no bound, and
+`LIMIT` would not have been one, since over a grouped read it bounds the groups
+answered rather than the records read.
+
+**Two folds are not exempt**, and they are the two whose answers *do* grow with
+the table: `median` has to see every value to find the middle, and `collect`'s
+answer is the collection. A held read using either gets the ceiling like any
+other, and — for the same reason the exemption existed — a `LIMIT` on that read
+will not lift it. Bound what it reads instead:
+
+```
+LET $some = SELECT collect(id) AS every FROM (SELECT id FROM events LIMIT 1000);
+```
 
 ### Naming a value inside a record
 
@@ -1604,6 +1614,48 @@ SELECT city, count(*) AS n FROM users GROUP BY city ORDER BY n DESC LIMIT 3;
 | `sum(<expr>)` | the total; over nothing, `0` |
 | `mean(<expr>)` | the average; over nothing, `NONE` |
 | `min(<expr>)` / `max(<expr>)` | the smallest and largest, in the value system's order |
+| `variance(<expr>)` | the **sample** variance, dividing by `n − 1`; over fewer than two numbers, `NONE` |
+| `stddev(<expr>)` | its square root, sample for the same reason |
+| `median(<expr>)` | the middle number, or the mean of the two middles; over no numbers, `NONE` |
+| `collect(<expr>)` | every present value, as an array, in the order the records arrived; over nothing, `[]` |
+
+**`variance` and `stddev` are the sample forms**, dividing by `n − 1`, because a
+table's rows are usually a sample of something — the same reason the SQL
+standard's bare `VARIANCE` is `VAR_SAMP`. There is one name rather than two
+because the population form is already sayable:
+
+```
+SELECT variance(x) * (count(*) - 1) / count(*) AS population FROM readings;
+```
+
+Over a single number both answer `NONE` rather than `0`, by the rule `mean`
+follows over an empty group: the spread of one observation is not zero, it is a
+question nobody has enough data to answer, and zero would be a claim.
+
+**`median` is numeric like `mean`** and refuses the kinds `min` and `max` accept.
+It answers exactly, and normalised — not the middle value as it was written —
+because `3`, `3.0` and the decimal `3.0` are three *equal* values and three
+different answers on the wire, so "the value as written" would be decided by
+where a sort happened to leave them rather than by the data. An even count
+answers the mean of the two middles, which is a number that was never in the
+data; that is tolerable only because the fold is numeric.
+
+**`collect` is the identity fold.** It computes nothing from the values, so it
+has no reason to demand they be numbers, and it keeps every kind. Like every
+other fold it passes over absent values.
+
+**Two of these folds cost what they read.** `count`, `sum`, `mean`, `min`,
+`max`, `variance` and `stddev` each reduce to a running value as the records go
+past, so what such a read holds is set by its folds and not by its records.
+`median` and `collect` cannot: an exact median has to see every value before it
+knows which is the middle, and `collect`'s answer *is* the collection. Where such
+a read stands **inside another statement**, the ten-thousand-record ceiling on a
+held read applies to it, and a `LIMIT` will not lift it — a `LIMIT` bounds what a
+fold answers with, not what it reads. Bound the source instead:
+
+```
+SELECT collect(price) AS every FROM (SELECT price FROM sales LIMIT 100);
+```
 
 **`GROUP BY` is not required.** `SELECT count(*) AS n FROM users` answers with
 one row, because the commonest question the language can be asked should not

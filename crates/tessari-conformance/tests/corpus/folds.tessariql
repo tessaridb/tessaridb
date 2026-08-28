@@ -1,0 +1,212 @@
+# The statistical folds, and the two that hold what they are folding.
+#
+# Before this wave every fold in the language reduced as it went: `count`, `sum`,
+# `mean`, `min` and `max` each need one running value however long the group is,
+# and a test in the executor asserted that as a property of *folding*.
+#
+# `variance` and `stddev` keep the property — Welford's recurrence carries a
+# count, a mean and a sum of squared deviations, three numbers whatever arrives.
+# `median` and `collect` cannot: an exact median has to see every value before it
+# knows which one is the middle, and `collect`'s answer **is** the collection.
+#
+# So the property became a classification with its exceptions named, and the
+# memory ceiling on a read held inside another statement now reads the same
+# classification instead of exempting anything that folds. `SELECT collect(x)
+# FROM huge` in an expression is exactly the unbounded read that ceiling exists
+# to refuse, and it used to be waved through by the word `fold`. The ceiling
+# itself is ten thousand records, which is more than a corpus should create, so
+# the refusal is asserted in the executor's own tests and what is asserted here
+# is the classification those tests rest on.
+#
+# A read standing in an expression answers with a **list of records**, and a path
+# may not be written on a subquery, so a scalar claim is made by comparing that
+# list to the record it should be.
+#
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+--- expect: ok
+
+--- case: a table of readings whose spread is known by hand
+# 2, 4, 4, 4, 5, 5, 7, 9 — the textbook set. Mean 5, population variance exactly
+# 4, population deviation exactly 2, sample variance 32/7 = 4.5714…
+DEFINE TABLE readings;
+CREATE readings:1 = { n: 2 };
+CREATE readings:2 = { n: 4 };
+CREATE readings:3 = { n: 4 };
+CREATE readings:4 = { n: 4 };
+CREATE readings:5 = { n: 5 };
+CREATE readings:6 = { n: 5 };
+CREATE readings:7 = { n: 7 };
+CREATE readings:8 = { n: 9 };
+--- expect: ok
+
+--- case: the mean of those readings is five, which the rest are read against
+RETURN (SELECT mean(n) AS m FROM readings) = [{ m: 5 }];
+--- expect: value true
+
+--- case: the variance is the sample form and not the population one
+# The population variance of this set is exactly 4. Answering 4 would mean the
+# divisor is `n`, where the SQL standard's bare `VARIANCE` — and Postgres's — is
+# `VAR_SAMP`, dividing by `n - 1`. Bounded rather than equated because the answer
+# is a float and a float is not written down exactly.
+RETURN (SELECT variance(n) > 4.5 AND variance(n) < 4.6 AS sample FROM readings)
+     = [{ sample: true }];
+--- expect: value true
+
+--- case: and the deviation is its square root, so it is not exactly two either
+# The population deviation of this set is exactly 2, which is the answer to rule
+# out; the sample one is 2.1380…
+RETURN (SELECT stddev(n) > 2.13 AND stddev(n) < 2.14 AS sample FROM readings)
+     = [{ sample: true }];
+--- expect: value true
+
+--- case: the deviation is the root of the variance and not something else
+RETURN (SELECT stddev(n) - math::sqrt(variance(n)) < 0.000001 AS rooted FROM readings)
+     = [{ rooted: true }];
+--- expect: value true
+
+--- case: the population form is sayable, which is why there is only one name
+# Strictness is affordable where the language already holds the sentence the
+# caller should write instead. It does — the conversion is arithmetic — so
+# `variance` is the sample form and the language does not carry two names for
+# one idea.
+RETURN (SELECT variance(n) * (count(*) - 1) / count(*) > 3.999
+        AND variance(n) * (count(*) - 1) / count(*) < 4.001 AS population
+        FROM readings)
+     = [{ population: true }];
+--- expect: value true
+
+--- case: the spread of one number is NONE and not zero
+# The rule `mean` already follows over an empty group: zero would be a claim.
+# `n - 1` is zero here, and the spread of a single observation is not zero — it
+# is a question nobody has enough data to answer. A projected `NONE` is absent
+# rather than written, so the record answers with no field at all.
+DEFINE TABLE lonely;
+CREATE lonely:1 = { n: 41 };
+RETURN (SELECT variance(n) AS v FROM lonely) = [{}];
+--- expect: value true
+
+--- case: and a group holding no numbers has no spread either
+# Not an empty table — a fold over one of those answers with no records, so it
+# could not tell a NONE from a missing group. These records exist and hold no
+# `n`, which is the case that separates the two.
+DEFINE TABLE blank;
+CREATE blank:1 = { other: 'no n here' };
+CREATE blank:2 = { other: 'nor here' };
+RETURN (SELECT stddev(n) AS s FROM blank) = [{}];
+--- expect: value true
+
+--- case: the median of an odd count is the middle number
+RETURN (SELECT median(n) AS m FROM readings) = [{ m: 4.5 }];
+--- expect: value true
+
+--- case: an even count answers the mean of the two middles
+# 1, 2, 3, 4 has no middle member, so the answer is a number that was never in
+# the data. That is tolerable only because the fold is numeric — which is also
+# why `median` refuses the kinds `min` and `max` accept.
+DEFINE TABLE four;
+CREATE four:1 = { n: 1 };
+CREATE four:2 = { n: 2 };
+CREATE four:3 = { n: 3 };
+CREATE four:4 = { n: 4 };
+RETURN (SELECT median(n) AS m FROM four) = [{ m: 2.5 }];
+--- expect: value true
+
+--- case: an odd count answers a number that was in the data
+DEFINE TABLE three;
+CREATE three:1 = { n: 10 };
+CREATE three:2 = { n: 2 };
+CREATE three:3 = { n: 90 };
+RETURN (SELECT median(n) AS m FROM three) = [{ m: 10 }];
+--- expect: value true
+
+--- case: the median does not depend on the order the records arrived in
+# The same three numbers written the other way round. This is the property that
+# made the answer exact rather than the middle value as written: `10` and `10.0`
+# are equal values and different answers on the wire, so "the value as written"
+# is decided by where a sort left them and is not a property of the data.
+DEFINE TABLE reversed;
+CREATE reversed:1 = { n: 90 };
+CREATE reversed:2 = { n: 10.0 };
+CREATE reversed:3 = { n: 2 };
+RETURN (SELECT median(n) AS m FROM reversed) = (SELECT median(n) AS m FROM three);
+--- expect: value true
+
+--- case: the median of no numbers is NONE, by the same rule
+RETURN (SELECT median(n) AS m FROM blank) = [{}];
+--- expect: value true
+
+--- case: median refuses what it cannot average, the way mean does
+DEFINE TABLE names;
+CREATE names:1 = { who: 'ada' };
+SELECT median(who) AS m FROM names;
+--- expect: error NotSummable
+
+--- case: collect answers every present value, in the order they arrived
+RETURN (SELECT collect(n) AS every FROM four) = [{ every: [1, 2, 3, 4] }];
+--- expect: value true
+
+--- case: collecting nothing answers an empty array and never NONE
+# `sum`'s rule: an answer every caller has to write `?? []` after is the wrong
+# answer. And it is the case above read the other way — where `variance` and
+# `median` answer NONE over a group holding no numbers, `collect` answers `[]`,
+# so the field is written rather than absent.
+RETURN (SELECT collect(n) AS every FROM blank) = [{ every: [] }];
+--- expect: value true
+
+--- case: collect passes over absent values, as every other fold does
+DEFINE TABLE patchy;
+CREATE patchy:1 = { n: 1 };
+CREATE patchy:2 = { other: 'no n here' };
+CREATE patchy:3 = { n: 3 };
+RETURN (SELECT collect(n) AS every FROM patchy) = [{ every: [1, 3] }];
+--- expect: value true
+
+--- case: collect keeps kinds a numeric fold would refuse
+# It is the identity fold: it computes nothing from the values, so it has no
+# reason to demand they be numbers.
+RETURN (SELECT collect(who) AS every FROM names) = [{ every: ['ada'] }];
+--- expect: value true
+
+--- case: the new folds group like the old ones
+DEFINE TABLE sales;
+CREATE sales:1 = { city: 'lisbon', price: 10 };
+CREATE sales:2 = { city: 'lisbon', price: 20 };
+CREATE sales:3 = { city: 'lisbon', price: 60 };
+CREATE sales:4 = { city: 'porto',  price: 5 };
+SELECT city, median(price) AS middle, collect(price) AS every FROM sales GROUP BY city ORDER BY city;
+--- expect: rows 2
+
+--- case: and a fold is still an expression, so it composes
+RETURN (SELECT array::len(collect(price)) AS held FROM sales) = [{ held: 4 }];
+--- expect: value true
+
+--- case: the median of a group is that group's median and not the table's
+RETURN (SELECT median(price) AS middle FROM sales WHERE city = 'lisbon')
+     = [{ middle: 20 }];
+--- expect: value true
+
+--- case: a collecting read in a held position is bounded at its source
+# A `LIMIT` on the collecting read itself would not do: it bounds what a fold
+# answers with, not what it reads, so it would lift the memory ceiling while
+# collecting exactly as much as before. Bounding the source is the sentence that
+# works, and it is the one the refusal names.
+LET $some = (SELECT collect(price) AS every FROM (SELECT price FROM sales LIMIT 2));
+RETURN $some = [{ every: [10, 20] }];
+--- expect: value true
+
+--- case: a constant-space fold in a held position needs no bound at all
+# If the repair for `collect` had been "folding no longer exempts", this read
+# would have begun demanding a bound that protects nothing.
+LET $spread = (SELECT variance(price) > 0 AS positive FROM sales);
+RETURN $spread = [{ positive: true }];
+--- expect: value true
+
+--- case: a new fold still refuses a star it cannot fold over
+SELECT median(*) AS m FROM readings;
+--- expect: error StarIsOnlyForCount

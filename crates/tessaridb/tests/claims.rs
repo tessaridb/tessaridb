@@ -133,7 +133,7 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 19] = [
+const CROSS_CUTTING: [&str; 20] = [
     "bindings",
     // The vocabulary is cross-cutting by construction: a function is a value's
     // value, and every engine hands over values. `type::int(count)` reads the
@@ -149,6 +149,11 @@ const CROSS_CUTTING: [&str; 19] = [
     "cursor",
     "conditionals",
     "consumers",
+    // A fold reduces records to an answer and does not care where the records
+    // came from: `median(price)` reads the same over a scan, an index read and a
+    // walk. What the two collecting folds *do* belong to is the memory ceiling,
+    // which is not an engine either.
+    "folds",
     "functions",
     "grants",
     // A generated identifier is a value like any other, and every engine

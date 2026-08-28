@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use tessari_ql::{Expr, ExprKind, Projected};
+use tessari_ql::{Expr, ExprKind, Projected, Retention};
 use tessari_storage::Transaction;
 use tessari_types::{Number, RecordId, Value};
 
@@ -27,6 +27,27 @@ pub(crate) fn folds(wanted: &[Projected]) -> bool {
 /// Whether this expression holds a fold anywhere inside it.
 fn holds_a_fold(expr: &Expr) -> bool {
     matches!(expr.kind, ExprKind::Fold { .. }) || children(expr).into_iter().any(holds_a_fold)
+}
+
+/// The first fold in this projection that holds its whole group, if any.
+///
+/// Read by the memory ceiling, which exempts a folding read on the stated
+/// grounds that its answer does not grow with the table. That is a claim about
+/// the fold and not about folding, and two folds falsify it — so the exemption
+/// asks this rather than assuming it (Q-227). The spelling comes back so the
+/// refusal can say which fold it is about.
+pub(crate) fn retains_its_group(wanted: &[Projected]) -> Option<&'static str> {
+    wanted.iter().find_map(|value| growing_fold(&value.value))
+}
+
+/// The first whole-group fold anywhere inside this expression.
+fn growing_fold(expr: &Expr) -> Option<&'static str> {
+    if let ExprKind::Fold { fold, .. } = expr.kind
+        && fold.retention() == Retention::WholeGroup
+    {
+        return Some(fold.spelling());
+    }
+    children(expr).into_iter().find_map(growing_fold)
 }
 
 /// The expressions one expression is built out of.
@@ -306,7 +327,137 @@ pub(crate) fn fold(aggregate: Aggregate, values: &[Value], span: Span) -> Result
         Aggregate::Mean => mean(values, span),
         Aggregate::Min => Ok(extreme(values, true)),
         Aggregate::Max => Ok(extreme(values, false)),
+        Aggregate::Variance => spread(values, false, span),
+        Aggregate::Stddev => spread(values, true, span),
+        Aggregate::Median => median(values, span),
+        Aggregate::Collect => Ok(collect(values)),
     }
+}
+
+/// The sample spread, in two passes over the values.
+///
+/// **Deliberately not Welford.** The accumulator computes this incrementally,
+/// and an oracle that used the same recurrence would only prove the
+/// implementation agrees with itself. Two passes — the mean, then the squared
+/// deviations from it — is the definition the recurrence is derived from, and
+/// the one the textbook `E[x²] − E[x]²` form is *also* derived from while losing
+/// every significant digit on data whose spread is small next to its magnitude.
+///
+/// Two different float algorithms do not agree bit for bit, which is why the
+/// equivalence test compares these two folds within a tolerance and the exact
+/// folds structurally.
+#[cfg(test)]
+fn spread(values: &[Value], rooted: bool, span: Span) -> Result<Value> {
+    let fold = if rooted { "stddev" } else { "variance" };
+    let numbers = numbers(values, fold, span)?;
+    if numbers.len() < 2 {
+        // The spread of one observation is not zero, it is unasked.
+        return Ok(Value::None);
+    }
+    let mut held = Vec::new();
+    for number in &numbers {
+        held.push(approximate(number).ok_or(Error::NotSummable {
+            fold,
+            found: "a number no float can hold",
+            span,
+        })?);
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a count past 2^53 has already made every other number here meaningless"
+    )]
+    let counted = held.len() as f64;
+    let mean = held.iter().sum::<f64>() / counted;
+    let m2: f64 = held
+        .iter()
+        .map(|value| (value - mean) * (value - mean))
+        .sum();
+    let variance = m2 / (counted - 1.0);
+    Ok(Value::Number(Number::float(if rooted {
+        variance.sqrt()
+    } else {
+        variance
+    })))
+}
+
+/// The middle number, selected by the **definition** of a rank rather than by
+/// sorting.
+///
+/// The k-th smallest value is the one with at most `k` values below it and more
+/// than `k` values at or below it. That holds with duplicates, needs no sort,
+/// and shares no line with the accumulator's sort-and-index — which is what
+/// makes it worth keeping as an oracle for a fold whose implementation is
+/// otherwise too short to be worth checking.
+#[cfg(test)]
+fn median(values: &[Value], span: Span) -> Result<Value> {
+    let numbers: Vec<Value> = values
+        .iter()
+        .filter(|value| present(value))
+        .cloned()
+        .collect();
+    for value in &numbers {
+        if !matches!(value, Value::Number(_)) {
+            return Err(Error::NotSummable {
+                fold: "median",
+                found: value.type_name(),
+                span,
+            });
+        }
+    }
+    let held = numbers.len();
+    if held == 0 {
+        return Ok(Value::None);
+    }
+    let ranked = |k: usize| -> Option<&Value> {
+        numbers.iter().find(|candidate| {
+            let below = numbers.iter().filter(|other| other < candidate).count();
+            let upto = numbers.iter().filter(|other| other <= candidate).count();
+            below <= k && upto > k
+        })
+    };
+    let failed = |found: &'static str| Error::NotSummable {
+        fold: "median",
+        found,
+        span,
+    };
+    let decimal = |value: &Value| match value {
+        Value::Number(number) => number
+            .as_decimal()
+            .ok_or_else(|| failed("a number outside the exact range")),
+        other => Err(failed(other.type_name())),
+    };
+    // Exact and normalised, for the reason the accumulator's `middle` gives:
+    // "the value as written" is not a function of the data when three equal
+    // values are three different answers on the wire.
+    if held % 2 == 1 {
+        let Some(middle) = ranked(held / 2) else {
+            return Ok(Value::None);
+        };
+        return Ok(Value::Number(Number::Decimal(decimal(middle)?.normalize())));
+    }
+    let above = held / 2;
+    let (Some(lower), Some(upper)) = (ranked(above.saturating_sub(1)), ranked(above)) else {
+        return Ok(Value::None);
+    };
+    let pair = decimal(lower)?
+        .checked_add(decimal(upper)?)
+        .ok_or_else(|| failed("a total outside the exact range"))?;
+    let averaged = pair
+        .checked_div(Decimal::from(2))
+        .ok_or_else(|| failed("a group of no size"))?;
+    Ok(Value::Number(Number::Decimal(averaged.normalize())))
+}
+
+/// Every present value, in the order they arrived.
+#[cfg(test)]
+fn collect(values: &[Value]) -> Value {
+    Value::Array(
+        values
+            .iter()
+            .filter(|value| present(value))
+            .cloned()
+            .collect(),
+    )
 }
 
 /// How many of these are values at all.

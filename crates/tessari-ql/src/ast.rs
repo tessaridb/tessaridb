@@ -1593,11 +1593,71 @@ pub enum Aggregate {
     Min,
     /// `max(<expr>)`, in the same order.
     Max,
+    /// `variance(<expr>)` — the **sample** variance, dividing by `n − 1`.
+    ///
+    /// Sample rather than population because a table's rows are usually a
+    /// sample of something, which is why the SQL standard's bare `VARIANCE` is
+    /// `VAR_SAMP` and why Postgres spells it the same way. The population form
+    /// is not a second name because the language can already say it:
+    /// `variance(x) * (count(x) - 1) / count(x)`.
+    ///
+    /// Over fewer than two numbers, `NONE` — `n − 1` is zero there, and the
+    /// spread of one value is not zero, it is unasked.
+    Variance,
+    /// `stddev(<expr>)` — the square root of [`Self::Variance`], and sample for
+    /// the same reason.
+    Stddev,
+    /// `median(<expr>)` — the middle number, or the mean of the two middles.
+    ///
+    /// Numeric like `mean`, and refusing anything else for the same reason. An
+    /// even count answers the mean of the two middles, which is a value that
+    /// was never in the data — acceptable only because the fold is numeric; the
+    /// same rule over a `datetime` or a `uuid` column would have to construct a
+    /// value of a kind that has no arithmetic.
+    Median,
+    /// `collect(<expr>)` — every present value, in the order the records arrived.
+    ///
+    /// Over nothing, `[]` and not `NONE`, by `sum`'s rule: an answer every
+    /// caller has to write `?? []` after is the wrong answer.
+    Collect,
+}
+
+/// How much a fold holds while its group is still arriving.
+///
+/// The question exists because two answers to it are not interchangeable, and
+/// the difference is invisible in the fold's *signature*: every fold takes many
+/// values and answers one. What separates them is whether the one answer can be
+/// computed as the values go past.
+///
+/// It is a property of the fold and not a rule about aggregation, for the same
+/// reason [`crate::Purity`] is a property of the function: a single rule would
+/// get one of them wrong in silence. `count`, `sum`, `mean`, `min`, `max`,
+/// `variance` and `stddev` all reduce one value at a time — Welford's algorithm
+/// carries `(count, mean, M2)` and is three numbers however long the group is.
+/// `collect` and `median` cannot: `collect`'s answer **is** the collection, and
+/// an exact median has to see every value before it knows which one is the
+/// middle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retention {
+    /// The answer is reducible one value at a time, in space that does not grow.
+    Constant,
+    /// The answer is a function of the whole group, so the whole group is held.
+    WholeGroup,
 }
 
 impl Aggregate {
     /// Every fold, so a listing cannot drift from the set.
-    pub const ALL: &'static [Self] = &[Self::Count, Self::Sum, Self::Mean, Self::Min, Self::Max];
+    pub const ALL: &'static [Self] = &[
+        Self::Count,
+        Self::Sum,
+        Self::Mean,
+        Self::Min,
+        Self::Max,
+        Self::Variance,
+        Self::Stddev,
+        Self::Median,
+        Self::Collect,
+    ];
 
     /// How the fold is written.
     #[must_use]
@@ -1608,6 +1668,30 @@ impl Aggregate {
             Self::Mean => "mean",
             Self::Min => "min",
             Self::Max => "max",
+            Self::Variance => "variance",
+            Self::Stddev => "stddev",
+            Self::Median => "median",
+            Self::Collect => "collect",
+        }
+    }
+
+    /// What this fold holds while its group arrives.
+    ///
+    /// Read by the executor's memory ceiling, which used to exempt every folding
+    /// read by name on the grounds that *"its answer does not grow with the
+    /// table"*. That was true of every fold the language had; it is false of
+    /// `collect`, whose answer is the table (Q-227).
+    #[must_use]
+    pub const fn retention(self) -> Retention {
+        match self {
+            Self::Count
+            | Self::Sum
+            | Self::Mean
+            | Self::Min
+            | Self::Max
+            | Self::Variance
+            | Self::Stddev => Retention::Constant,
+            Self::Median | Self::Collect => Retention::WholeGroup,
         }
     }
 
@@ -1767,4 +1851,59 @@ pub struct RecordTarget {
     pub id: Identity,
     /// Where the whole reference sits.
     pub span: Span,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Aggregate, Retention};
+
+    /// The whole membership of [`Retention::WholeGroup`], asserted as a set.
+    ///
+    /// The same guard `Purity`'s membership tests give, for the same reason and
+    /// against a sharper failure. `retention` forces a new fold to be
+    /// *classified*, but the classification is a claim about what the fold costs
+    /// and the two can be written apart. Both directions are wrong and only one
+    /// is loud: a constant-space fold listed here is merely refused a memory
+    /// exemption it deserved, while a whole-group fold left out keeps the
+    /// exemption that says *"its answer does not grow with the table"* — and
+    /// then `SELECT collect(x) FROM huge` is exactly the unbounded read the
+    /// ceiling exists to refuse, waved through by name (Q-227).
+    ///
+    /// Adding a member is therefore allowed and cheap; the test exists so that
+    /// **failing to** add one cannot happen quietly.
+    #[test]
+    fn the_folds_that_hold_their_whole_group_are_exactly_the_two_that_must() {
+        let holding: Vec<&str> = Aggregate::ALL
+            .iter()
+            .filter(|fold| fold.retention() == Retention::WholeGroup)
+            .map(|fold| fold.spelling())
+            .collect();
+        assert_eq!(holding, ["median", "collect"]);
+    }
+
+    /// Every fold is in `ALL`, and every spelling parses back to itself.
+    ///
+    /// `ALL` is what the parser reads to recognise a fold at all, so a variant
+    /// missing from it is a fold nobody can write — and no other test would
+    /// notice, because the grammar simply treats the word as a field name.
+    #[test]
+    fn every_fold_is_listed_and_every_spelling_names_it_back() {
+        for fold in Aggregate::ALL {
+            assert_eq!(
+                Aggregate::parse(fold.spelling()),
+                Some(*fold),
+                "{} did not parse back to itself",
+                fold.spelling()
+            );
+        }
+        let spellings: Vec<&str> = Aggregate::ALL.iter().map(|fold| fold.spelling()).collect();
+        let mut sorted = spellings.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            spellings.len(),
+            "two folds share a spelling: {spellings:?}"
+        );
+    }
 }

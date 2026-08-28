@@ -151,10 +151,30 @@ const UNSTATED: u64 = 10_000;
 /// escape does not lift it is a lie in the error message. What a fold holds
 /// while folding is transient and is the same cost the identical statement pays
 /// at the top level, where nothing refuses it either (Q-210).
+///
+/// # The exemption is now asked rather than assumed
+///
+/// Both halves of that paragraph were true of every fold the language had when
+/// it was written, and both are **false of `collect`** — whose answer *is* the
+/// collection, and what it holds while folding is the answer rather than
+/// something transient. `SELECT collect(x) FROM huge` standing in an expression
+/// is precisely the unbounded read this ceiling exists to refuse, and it was
+/// being waved through by the word `fold`. `median` fails the second half only:
+/// it must see every value to find the middle.
+///
+/// So the exemption asks [`Aggregate::retention`](tessari_ql::Aggregate::retention)
+/// instead of asking whether a fold is present, and a read holding a whole-group
+/// fold gets the ordinary ceiling. The refusal's stated escape is honest there:
+/// `LIMIT` genuinely bounds what such a fold collects (Q-227).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Ceiling {
     /// The most records the read may hold.
     most: u64,
+    /// The whole-group fold this read holds, when it holds one.
+    ///
+    /// Carried so the refusal can name the fold and the escape that actually
+    /// bounds it, rather than the one that bounds an ordinary read.
+    collecting: Option<&'static str>,
     /// Where the read is, for the refusal to point at.
     span: Span,
 }
@@ -162,20 +182,55 @@ pub(crate) struct Ceiling {
 impl Ceiling {
     /// The ceiling a held read runs under, or none when it needs no ceiling.
     pub(crate) fn over(read: &Select) -> Option<Self> {
+        // Neither escape reaches a read that collects its group, so it is asked
+        // first and gets the ceiling whatever else it says.
+        if let Some(fold) = holds_its_group(read) {
+            return Some(Self {
+                most: UNSTATED,
+                collecting: Some(fold),
+                span: read.span,
+            });
+        }
         if read.limit.is_some() || crate::evaluate::groups(read) {
             return None;
         }
         Some(Self {
             most: UNSTATED,
+            collecting: None,
             span: read.span,
         })
     }
 
     /// The refusal this ceiling raises once it is passed.
+    ///
+    /// Two refusals, because they name two different escapes and a refusal whose
+    /// escape does not work is worse than none: it sends the author to write a
+    /// clause that changes nothing and leaves them with no way to read the
+    /// message as anything but wrong.
     const fn reached(self) -> Error {
-        Error::Unbounded {
-            most: self.most,
-            span: self.span,
+        match self.collecting {
+            Some(fold) => Error::UnboundedCollection {
+                fold,
+                most: self.most,
+                span: self.span,
+            },
+            None => Error::Unbounded {
+                most: self.most,
+                span: self.span,
+            },
+        }
+    }
+}
+
+/// The whole-group fold this read holds, if it holds one.
+///
+/// `Projection::All` cannot hold a fold at all, so only a projection of values
+/// is asked. The fold's spelling comes back so the refusal can name it.
+fn holds_its_group(read: &Select) -> Option<&'static str> {
+    match &read.projection {
+        tessari_ql::Projection::All => None,
+        tessari_ql::Projection::Values { values, .. } => {
+            crate::aggregate::retains_its_group(values)
         }
     }
 }

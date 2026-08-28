@@ -148,3 +148,80 @@ fn a_scalar_read_is_never_troubled_by_this() {
     );
     assert!(matches!(answered, Outcome::Value(_)), "{answered:?}");
 }
+
+/// The exemption is per fold, and `collect` does not get it.
+///
+/// The ceiling used to wave through any read that folds, on the stated grounds
+/// that *"its answer does not grow with the table"*. That was true of every fold
+/// the language had; `collect`'s answer **is** the table, so this read is
+/// precisely the unbounded allocation the ceiling exists to refuse and it was
+/// being exempted by the word `fold` (Q-227).
+#[test]
+fn a_read_whose_fold_collects_the_whole_table_is_not_exempted_by_folding() {
+    let store = store();
+    let mut session = holding(&store, CEILING + 1);
+    let refused = refusal(
+        &mut session,
+        "LET $all = (SELECT collect(n) AS every FROM events); RETURN $all;",
+    );
+    assert!(
+        refused.contains(&CEILING.to_string()),
+        "the refusal does not name the ceiling: {refused}"
+    );
+}
+
+/// A `LIMIT` does not lift this ceiling, because it does not bound this read.
+///
+/// The ordinary held read is exempted by its own `LIMIT`, which is what makes
+/// the refusal's advice honest there. A fold is different and the difference is
+/// the whole reason grouping was exempted in the first place: `LIMIT` bounds
+/// what a fold **answers with**, not what it reads. So a `collect` read carrying
+/// one would have had the ceiling lifted while collecting exactly as much as
+/// before — the memory unprotected and the author told they had fixed it.
+#[test]
+fn a_limit_does_not_lift_the_ceiling_on_a_collecting_read() {
+    let store = store();
+    let mut session = holding(&store, CEILING + 1);
+    let refused = refusal(
+        &mut session,
+        "LET $some = (SELECT collect(n) AS every FROM events LIMIT 10); RETURN $some;",
+    );
+    assert!(
+        refused.contains("collect") && refused.contains("bound its source"),
+        "the refusal does not name the escape that works: {refused}"
+    );
+}
+
+/// And the escape it names does work.
+///
+/// A refusal whose advice changes nothing is worse than one with no advice, so
+/// the sentence the message tells the author to write is executed here.
+#[test]
+fn bounding_the_source_of_a_collecting_read_answers() {
+    let store = store();
+    let mut session = holding(&store, CEILING + 1);
+    let answered = run(
+        &mut session,
+        "LET $some = (SELECT collect(n) AS every FROM (SELECT n FROM events LIMIT 10)); \
+         RETURN $some;",
+    );
+    assert!(matches!(answered, Outcome::Value(_)), "{answered:?}");
+}
+
+/// A statistical fold keeps the exemption, which is what makes it a
+/// classification rather than a retreat from one.
+///
+/// `variance` reduces to three numbers by Welford's recurrence however long the
+/// group is, so the sentence the exemption rests on is still true of it. If the
+/// fix for `collect` had been "folding no longer exempts", this read would have
+/// started demanding a `LIMIT` that bounds nothing it needs.
+#[test]
+fn a_constant_space_fold_is_still_exempt() {
+    let store = store();
+    let mut session = holding(&store, CEILING + 1);
+    let answered = run(
+        &mut session,
+        "LET $v = (SELECT variance(n) AS spread FROM events); RETURN $v;",
+    );
+    assert!(matches!(answered, Outcome::Value(_)), "{answered:?}");
+}

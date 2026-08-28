@@ -85,6 +85,29 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// The same ceiling reached by a read whose fold holds its whole group.
+    ///
+    /// A separate refusal because it names a different escape, and naming the
+    /// wrong one is worse than refusing without advice: a `LIMIT` bounds what a
+    /// fold **answers with** and not what it reads, so the sentence
+    /// [`Self::Unbounded`] tells the author to write would lift the ceiling here
+    /// and change nothing about the memory it was protecting. The escape that
+    /// does work is bounding what the fold reads (Q-227).
+    #[error(
+        "the read standing here folded `{fold}` over more than {most} records \
+         (at {span}); `{fold}` keeps every value it is given, and a `LIMIT` bounds \
+         what a fold answers with rather than what it reads — bound its source \
+         instead, as in `FROM (SELECT … LIMIT {most})`"
+    )]
+    UnboundedCollection {
+        /// The fold that holds its group, as it is written.
+        fold: &'static str,
+        /// The ceiling this node applies to a read that named none.
+        most: u64,
+        /// Where the held read is.
+        span: tessari_ql::Span,
+    },
+
     /// An `ONLY` read that more than one record answered.
     ///
     /// Refused rather than answered with the first, for the reason a timeout

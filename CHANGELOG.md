@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 732 conformance cases define the language and run in the build.
+Unreleased. 757 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -28,6 +28,26 @@ Unreleased. 732 conformance cases define the language and run in the build.
   as a disclosure of everything in that database to every such user.
 
 ### Added
+
+- **`variance`, `stddev`, `median` and `collect`, and a memory ceiling that stopped
+  believing every fold is cheap.** The two statistical folds reduce as they go —
+  Welford's recurrence carries a count, a mean and a sum of squared deviations, so
+  they cost three numbers whatever the group's size — and they are the **sample**
+  forms, dividing by `n − 1`, with the population form left sayable as arithmetic
+  rather than given a second name. `median` and `collect` cannot reduce: an exact
+  median must see every value to find the middle, and `collect`'s answer *is* the
+  collection. That distinction was not merely a cost note. A read held inside
+  another statement is capped at ten thousand records unless it folds, and the
+  reason written in the code was that a fold's answer "does not grow with the
+  table" — true of every fold that existed, false of `collect`, so
+  `SELECT collect(x) FROM huge` in an expression was the exact unbounded
+  allocation the cap exists to refuse, waved through by the word *fold*. Folds now
+  carry a retention classification, the cap reads it, and a `LIMIT` no longer
+  lifts it for a collecting read, because a `LIMIT` bounds what a fold answers
+  with rather than what it reads — the refusal names the escape that does work.
+  `median` answers exactly and normalised rather than returning the middle value
+  as written, so that three equal numbers of three kinds cannot give three
+  different answers depending on where a sort left them.
 
 - **`rand::uuid()` generates an identifier, and the planner learned that reading
   no record is not the same as being safe to evaluate once.** A field can now say
