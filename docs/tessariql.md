@@ -925,6 +925,41 @@ and in the data — so it is tested **when the read has run**:
 - **`LIMIT` is applied first**, so `FROM ONLY users LIMIT 1` is the author saying
   which one they want rather than a contradiction.
 
+**`SPLIT ON <route>` opens an array into one record per element**, each carrying
+the element where the array stood — which is what makes *"each tag, and how many
+notes carry it"* sayable:
+
+```
+SELECT tags, count(*) AS n FROM notes SPLIT ON tags GROUP BY tags;
+SELECT * FROM people SPLIT ON address.tags;
+```
+
+It is applied **after `FETCH`** and before anything that groups, projects or
+sorts. After the fetch because a reference resolved once and then opened is the
+same answer as one opened and then resolved *n* times, and cheaper; before the
+rest because every one of them counts records and this is the stage that decides
+how many there are — so an `ORDER BY` sorts the rows and a `LIMIT` bounds them,
+not the records they came from.
+
+The identity rides onto every row, so an answer may hold one record id more than
+once. That is what "one row per element" means, and it is why the clause is
+written rather than implied.
+
+What the route reaches decides the rest, and the four shapes are not one rule
+with exceptions:
+
+| At the route | Rows |
+|---|---|
+| an array of *n* | *n*, each holding one element |
+| an **empty** array | **none** — zero elements is zero rows, and any other rule would make the count depend on a special case |
+| **nothing** — the field is absent | **one**, unchanged. An array says what the elements are; an absence says nothing about elements at all, so it is not an empty one |
+| a scalar or an object | **one**, unchanged. A field's kind is per record here, not per table, so refusing would let one record in ten thousand decide the whole read |
+
+One route and not a list: two would be a cartesian product, which is a different
+question and should have to say so. `ON` is required, because `SPLIT tags` reads
+as a verb taking an object and what the clause names is the route the rows come
+*from*. `split` is contextual, so a field or table of that name still works.
+
 `ONLY` is the one clause word here that is **reserved** rather than contextual, so
 a table or field called `only` is not addressable. The reason is where it
 stands — exactly where a table name goes. `FROM only limit 1` cannot be told

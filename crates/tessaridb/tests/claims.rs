@@ -133,7 +133,7 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 13] = [
+const CROSS_CUTTING: [&str; 14] = [
     "bindings",
     "conditionals",
     "consumers",
@@ -152,6 +152,10 @@ const CROSS_CUTTING: [&str; 13] = [
     // question asked of two of them.
     "plans",
     "refusals",
+    // Opening an array into a row per element belongs to no engine either: the
+    // records a walk or a nearest-neighbour read hands over split the same way
+    // a scan's do.
+    "split",
     // A ceiling on how long a read may run belongs to no engine either: the same
     // clause bounds a scan, a walk and a nearest-neighbour read.
     "timeouts",

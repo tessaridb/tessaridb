@@ -54,6 +54,24 @@ impl Parser<'_> {
         Ok(routes)
     }
 
+    /// `SPLIT ON tags` after the `FETCH`, when it is there.
+    ///
+    /// Written where it is applied, like every other clause here. Contextual, so
+    /// a field or a table called `split` still works — the position it stands in
+    /// holds clause words and never a name, which is the whole difference
+    /// between this word and `ONLY`.
+    ///
+    /// `ON` is required rather than optional. `SPLIT tags` would read as a verb
+    /// taking an object, and what the clause does is name the route the rows
+    /// come *from*.
+    pub(super) fn split_path(&mut self) -> Result<Option<FieldPath>> {
+        if !self.eat_word("split") {
+            return Ok(None);
+        }
+        self.expect_keyword(Keyword::On, "`ON` and the route to open")?;
+        Ok(Some(self.field_path()?))
+    }
+
     /// `OMIT embedding, address.postcode` after the projection, when it is
     /// there.
     ///

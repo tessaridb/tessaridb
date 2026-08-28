@@ -235,6 +235,10 @@ impl Select<Sourced> {
             // a builder cannot make one on the caller's behalf.
             only: None,
             fetch: Vec::new(),
+            // Nor `SPLIT ON`: it changes how many records answer, which is a
+            // question the caller asks in the language rather than a shape a
+            // builder assembles.
+            split: None,
             group: Vec::new(),
             order: self.order,
             approximate: false,

@@ -1190,6 +1190,9 @@ impl Parser<'_> {
         // The grammar keeps clause order and application order the same on
         // purpose — see `START` before `LIMIT` below.
         let fetch = self.fetch_paths()?;
+        // After the fetch and before everything that counts records, which is
+        // where it is applied: the split is what decides how many there are.
+        let split = self.split_path()?;
         let group = self.group_by()?;
         let order = self.order_by()?;
         // `START` before `LIMIT`, because that is the order they are applied in
@@ -1253,6 +1256,7 @@ impl Parser<'_> {
             from,
             only,
             fetch,
+            split,
             group,
             order,
             approximate,

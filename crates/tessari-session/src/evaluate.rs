@@ -497,6 +497,13 @@ impl Session<'_> {
             let context = self.context(transaction, None, select.span)?;
             self.follow(transaction, &mut records, &select.fetch, context)?;
         }
+        // After the fetch — a reference resolved once and then opened is the
+        // same answer as one opened and then resolved n times, and cheaper — and
+        // before everything that counts records, because this is the stage that
+        // decides how many there are.
+        if let Some(route) = &select.split {
+            records = opened(records, &route.path, &mut budget)?;
+        }
         let records = if groups(select) {
             // A grouping folds many records into one, and a fold answers about
             // the group rather than about a record — so the star has nothing to
@@ -2060,6 +2067,56 @@ fn ceiling_reached(read: &Select, held: usize) -> Option<Note> {
 /// planner's own choice already contradicts the assertion is a real improvement
 /// and a separate one (Q-203), because the planner may name a path the read then
 /// falls back from.
+/// `SPLIT ON <route>` — one record per element of the array the route reaches.
+///
+/// # What each shape at the route means
+///
+/// **An array** is the case the clause is for: one record per element, each
+/// carrying the element where the array stood, so `GROUP BY tags` after a
+/// `SPLIT ON tags` groups by a tag. The identity is carried unchanged onto every
+/// row, so an answer may hold one id more than once — which is what "one row per
+/// element" means and is why the clause is written rather than implied.
+///
+/// **An empty array** answers with no rows at all. Zero elements, zero rows: any
+/// other rule would make the count depend on a special case, and a read that
+/// asked for a row per tag over a record with no tags asked for nothing.
+///
+/// **Anything else — an absence, a scalar, an object — passes through once,
+/// unchanged.** An array says "these are the elements"; an absence says nothing
+/// about elements at all, so it is not an empty one. In a store where a field's
+/// kind is per record rather than per table, the alternative is a read that
+/// refuses because one record out of ten thousand holds a string.
+///
+/// # The budget
+///
+/// This is a stage of the read in the sense [`Budget::stage`] means, and it is
+/// the one stage that can produce *more* records than it consumed — so it is
+/// counted, or a held read could pass its ceiling here after honouring it above.
+fn opened(
+    records: Vec<(RecordId, Value)>,
+    route: &Path,
+    budget: &mut Budget,
+) -> Result<Vec<(RecordId, Value)>> {
+    budget.stage();
+    let mut opened = Vec::with_capacity(records.len());
+    for (id, record) in records {
+        let Some(Value::Array(items)) = route.resolve(&record).cloned() else {
+            budget.spend()?;
+            opened.push((id, record));
+            continue;
+        };
+        for item in items {
+            budget.spend()?;
+            let mut row = record.clone();
+            if let Some(slot) = route.resolve_mut(&mut row) {
+                *slot = item;
+            }
+            opened.push((id.clone(), row));
+        }
+    }
+    Ok(opened)
+}
+
 /// `ONLY` is an assertion about how many records answer, and this is where it is
 /// tested.
 ///
@@ -2266,7 +2323,12 @@ fn hand_over(
 /// order by record id instead, which is a different answer from the one a scan
 /// gives.
 fn streams(select: &Select) -> bool {
-    select.fetch.is_empty() && !select.order.is_empty() && !groups(select)
+    // `SPLIT` joins `FETCH` on the barrier side rather than becoming a stage of
+    // the streaming path: it changes how many records there are, and the
+    // ordering stage below it keeps only as many as the bound can still reach.
+    // Streamed, the two would decide that together — the sort discarding rows
+    // the split had not produced yet.
+    select.fetch.is_empty() && select.split.is_none() && !select.order.is_empty() && !groups(select)
 }
 
 /// Whether the read folds many records into one.

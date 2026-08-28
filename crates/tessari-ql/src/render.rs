@@ -143,6 +143,10 @@ fn write_select(out: &mut String, select: &Select) -> Result<()> {
             write_path(out, route);
         }
     }
+    if let Some(route) = &select.split {
+        out.push_str(" SPLIT ON ");
+        write_path(out, route);
+    }
     if let Some((first, rest)) = select.group.split_first() {
         out.push_str(" GROUP BY ");
         write_expr(out, first)?;

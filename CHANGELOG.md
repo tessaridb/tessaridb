@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 605 conformance cases define the language and run in the build.
+Unreleased. 619 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -48,6 +48,16 @@ Unreleased. 605 conformance cases define the language and run in the build.
   nothing else. It takes a route, so `OMIT address.postcode` keeps the address;
   it refuses a position, because removing an element renumbers the rest. Without
   it every `SELECT *` over a table holding an embedding shipped the embedding.
+- **`SPLIT ON <route>`** opens an array into one record per element, each
+  carrying the element where the array stood — which is what makes "each tag, and
+  how many notes carry it" sayable in a document store. It is applied after
+  `FETCH` and before anything that groups, projects or sorts, so an `ORDER BY`
+  sorts the rows and a `LIMIT` bounds them rather than the records they came
+  from, and the identity rides onto every row a record produces. An empty array
+  answers with no rows, because zero elements is zero rows; an absence, a scalar
+  or an object passes through once, because an array says what the elements are
+  and an absence says nothing about elements at all. One route, not a list: two
+  would be a cartesian product and should have to say so.
 - **`SELECT … FROM ONLY <source>`** says at most one record answers the read, so
   the answer is the record rather than a list of one and a caller reading one
   thing stops unwrapping. It is an assertion the author makes — a uniqueness that

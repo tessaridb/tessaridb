@@ -844,6 +844,21 @@ pub struct Select {
     /// which is the only ordering that makes the clause useful for the
     /// statements that want it.
     pub fetch: Vec<FieldPath>,
+    /// The route whose array is opened into one record per element, when
+    /// `SPLIT ON` named one.
+    ///
+    /// A route rather than a name, like `OMIT` and `FETCH`, so the array may be
+    /// inside the record: `SPLIT ON address.tags`.
+    ///
+    /// Applied **after** `FETCH` and before everything that groups, projects or
+    /// sorts — after the fetch because a reference resolved once and then opened
+    /// is the same answer as one opened and then resolved n times, and before
+    /// the rest because every one of them counts records and the split is what
+    /// decides how many there are.
+    ///
+    /// One route and not a list. Two would be a cartesian product, which is a
+    /// different question and should have to say so.
+    pub split: Option<FieldPath>,
     /// The keys the records are grouped by, when the read groups.
     ///
     /// Empty means no grouping — which is not the same as no aggregate:

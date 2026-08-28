@@ -255,6 +255,9 @@ fn erase_select(select: &mut Select) {
         }
     }
     erase_source(&mut select.from);
+    if let Some(route) = &mut select.split {
+        erase_path(route);
+    }
     for route in &mut select.omit {
         erase_path(route);
     }

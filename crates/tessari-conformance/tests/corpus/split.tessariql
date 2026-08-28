@@ -1,0 +1,77 @@
+# `SPLIT ON <route>`: one record per element of an array field.
+# A corpus file is one session against one store, so these run in order.
+#
+# An array field could not be unnested, so `GROUP BY tags` grouped by the whole
+# array and "each tag, and how many notes carry it" — the first question anybody
+# asks of a tagged document — was unsayable in a document store.
+#
+# Every decision in this clause is about which shape the route reaches, so that
+# is what these cases walk.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+--- expect: ok
+
+--- case: five notes, covering every shape a route can reach
+DEFINE TABLE notes;
+CREATE notes:1 = { title: 'first', tags: ['rust', 'db'] };
+CREATE notes:2 = { title: 'second', tags: ['db'] };
+CREATE notes:3 = { title: 'third', tags: [] };
+CREATE notes:4 = { title: 'fourth' };
+CREATE notes:5 = { title: 'fifth', tags: 'not-a-list' };
+--- expect: ok
+
+--- case: an array becomes one record per element
+SELECT * FROM notes WHERE title = 'first' SPLIT ON tags;
+--- expect: rows 2
+
+--- case: an empty array answers with no rows, because zero elements is zero rows
+SELECT * FROM notes WHERE title = 'third' SPLIT ON tags;
+--- expect: rows 0
+
+--- case: an absence passes through once, because it is not an empty array
+SELECT * FROM notes WHERE title = 'fourth' SPLIT ON tags;
+--- expect: rows 1
+
+--- case: and a value that is not a list passes through rather than refusing
+SELECT * FROM notes WHERE title = 'fifth' SPLIT ON tags;
+--- expect: rows 1
+
+--- case: the whole table is its elements plus its unopened records
+SELECT * FROM notes SPLIT ON tags;
+--- expect: rows 5
+
+--- case: each tag and how many notes carry it, which is the reason for the clause
+SELECT tags, count(*) AS n FROM notes SPLIT ON tags GROUP BY tags;
+--- expect: rows 4
+
+--- case: an ordering sees the rows the split produced
+SELECT * FROM notes WHERE title = 'first' SPLIT ON tags ORDER BY tags;
+--- expect: rows 2
+
+--- case: and a bound bounds the rows rather than the records
+SELECT * FROM notes WHERE title = 'first' SPLIT ON tags LIMIT 1;
+--- expect: rows 1
+
+--- case: a route reaches an array inside the record
+DEFINE TABLE people;
+CREATE people:1 = { name: 'ada', address: { city: 'london', tags: ['a', 'b'] } };
+SELECT * FROM people SPLIT ON address.tags;
+--- expect: rows 2
+
+--- case: a projection may name the field the split opened
+SELECT title, tags FROM notes WHERE title = 'first' SPLIT ON tags;
+--- expect: rows 2
+
+--- case: the word is contextual, so a field called split is still a field
+DEFINE TABLE runs;
+CREATE runs:1 = { split: 'yes' };
+SELECT split FROM runs;
+--- expect: rows 1
+
+--- case: and ON is required, because SPLIT names the route the rows come from
+SELECT * FROM notes SPLIT tags;
+--- expect: error UnexpectedToken
