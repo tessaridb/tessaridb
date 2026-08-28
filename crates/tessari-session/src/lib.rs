@@ -23,6 +23,7 @@ mod accumulate;
 mod aggregate;
 mod arithmetic;
 mod authorize;
+mod budget;
 mod call;
 mod condition;
 mod consume;

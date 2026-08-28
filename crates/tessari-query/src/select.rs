@@ -233,6 +233,9 @@ impl Select<Sourced> {
             // something an author writes on purpose, and a builder that carried
             // one by default would refuse reads nobody asked it to police.
             using: None,
+            // And no ceiling, for the same reason: a budget the caller did not
+            // ask for is a refusal the caller did not ask for.
+            timeout: None,
             span: BUILT,
         };
         Ok(Query {

@@ -20,7 +20,7 @@
 //!
 //! [`TableId`]: tessari_types::TableId
 
-use tessari_types::{Assertion, FieldKind, Filter, Path, RecordId, Value};
+use tessari_types::{Assertion, Duration, FieldKind, Filter, Path, RecordId, Value};
 
 use crate::function::Function;
 use crate::token::Span;
@@ -849,7 +849,26 @@ pub struct Select {
     /// `None` is the ordinary case: the statement asks a question and the store
     /// answers it however it can.
     pub using: Option<Using>,
+    /// How long the read may take before it is refused.
+    ///
+    /// `None` is the ordinary case: a read takes as long as it takes.
+    pub timeout: Option<Timeout>,
     /// Where the statement sits in the source.
+    pub span: Span,
+}
+
+/// A ceiling on how long a read may run.
+///
+/// **Refused, never truncated.** A read that reaches its ceiling fails; it does
+/// not answer with the part it had. A partial answer that looks whole is the
+/// failure this store spends its rules removing, and a timeout is the easiest
+/// place in a language to introduce one — the records are already in hand and
+/// returning them costs nothing, which is exactly why it must not be done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timeout {
+    /// The ceiling, as the statement wrote it.
+    pub after: Duration,
+    /// Where the clause sits, for the refusal to point at.
     pub span: Span,
 }
 

@@ -18,6 +18,7 @@ use tessari_ql::{Expr, Projected};
 use tessari_storage::Transaction;
 use tessari_types::{RecordId, Value};
 
+use crate::budget::Budget;
 use crate::error::Result;
 use crate::evaluate::Scope;
 use crate::search::Searched;
@@ -63,14 +64,16 @@ pub(crate) trait Consumer {
 /// The consumer for a read holding a stage that must see the whole set before it
 /// may emit anything: a `FETCH`, which batches every reference into one ask, or
 /// a grouping, which folds many records into one.
-pub(crate) struct Collecting {
+pub(crate) struct Collecting<'b> {
     records: Vec<(RecordId, Value)>,
+    budget: &'b mut Budget,
 }
 
-impl Collecting {
-    pub(crate) fn new() -> Self {
+impl<'b> Collecting<'b> {
+    pub(crate) const fn new(budget: &'b mut Budget) -> Self {
         Self {
             records: Vec::new(),
+            budget,
         }
     }
 
@@ -80,7 +83,7 @@ impl Collecting {
     }
 }
 
-impl Consumer for Collecting {
+impl Consumer for Collecting<'_> {
     fn expecting(&mut self, records: usize) {
         self.records.reserve(records);
     }
@@ -91,6 +94,7 @@ impl Consumer for Collecting {
         id: RecordId,
         record: Value,
     ) -> Result<ControlFlow<()>> {
+        self.budget.spend()?;
         self.records.push((id, record));
         Ok(ControlFlow::Continue(()))
     }
@@ -149,6 +153,15 @@ pub(crate) struct Shaping<'a, 's> {
     keys_reach_past_the_projection: bool,
     searched: &'a Searched,
     topmost: Topmost<'a>,
+    /// The read's ceiling, spent one record at a time.
+    ///
+    /// Checked here rather than by the source, because every record a source
+    /// produces passes through a consumer and nothing else in the read path is
+    /// true of all of them. **Borrowed** rather than owned, because one read may
+    /// run two consumers in turn — a barrier stage collects, then an ordering
+    /// stage re-offers what it collected — and two counters would each report
+    /// half of how far the read got.
+    budget: &'a mut Budget,
 }
 
 impl<'a, 's> Shaping<'a, 's> {
@@ -158,6 +171,7 @@ impl<'a, 's> Shaping<'a, 's> {
         keys: Vec<Expr>,
         searched: &'a Searched,
         topmost: Topmost<'a>,
+        budget: &'a mut Budget,
     ) -> Self {
         Self {
             keys_reach_past_the_projection: reach_past(wanted.as_deref(), &keys),
@@ -166,6 +180,7 @@ impl<'a, 's> Shaping<'a, 's> {
             keys,
             searched,
             topmost,
+            budget,
         }
     }
 
@@ -232,6 +247,7 @@ impl Consumer for Shaping<'_, '_> {
         id: RecordId,
         record: Value,
     ) -> Result<ControlFlow<()>> {
+        self.budget.spend()?;
         let Some(wanted) = &self.wanted else {
             // Already projected by a barrier stage above, so there is no source
             // left to overlay and nothing was dropped that a key could want.

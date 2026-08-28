@@ -1,0 +1,72 @@
+# Timeouts: a read that passes its ceiling is refused, not truncated.
+#
+# The property under test is not that a slow read stops — it is that a read
+# which stops answers *nothing*. When the ceiling passes, the records are
+# already in hand and returning them costs nothing and looks like success. A
+# caller counting them, summing them or writing them somewhere would be wrong
+# and would have no way to find out, so the answer is withheld and the refusal
+# carries how far the read got.
+#
+# The ceilings here are extreme on purpose. `1ns` has passed before the first
+# record exists and `1h` will not pass while a corpus runs, so nothing here
+# depends on how fast the machine reading it is.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+DEFINE TABLE events;
+CREATE events:1 = { at: 1, rare: 0 };
+CREATE events:2 = { at: 2, rare: 1 };
+CREATE events:3 = { at: 3, rare: 0 };
+--- expect: ok
+
+--- case: a read inside its ceiling answers in full
+SELECT * FROM events TIMEOUT 1h;
+--- expect: rows 3
+
+--- case: and a read that passes it is refused rather than shortened
+SELECT * FROM events TIMEOUT 1ns;
+--- expect: error TimedOut
+
+--- case: a ceiling that could only refuse is caught when the statement is read
+SELECT * FROM events TIMEOUT 0s;
+--- expect: error EmptyTimeout
+
+--- case: the sorted path is bounded too, since the ceiling is spent per record
+SELECT * FROM events ORDER BY at DESC LIMIT 2 TIMEOUT 1ns;
+--- expect: error TimedOut
+
+--- case: and the held path, which a grouping forces
+SELECT rare, count(*) AS n FROM events GROUP BY rare TIMEOUT 1ns;
+--- expect: error TimedOut
+
+--- case: an inner ceiling refuses the statement holding it
+SELECT * FROM (SELECT * FROM events LIMIT 3 TIMEOUT 1ns);
+--- expect: error TimedOut
+
+--- case: and an inner clause cannot lift the ceiling its caller set
+SELECT * FROM (SELECT * FROM events LIMIT 3 TIMEOUT 1h) TIMEOUT 1ns;
+--- expect: error TimedOut
+
+--- case: two ceilings that hold, so the pair above is about narrowing
+SELECT * FROM (SELECT * FROM events LIMIT 3 TIMEOUT 1h) TIMEOUT 1h;
+--- expect: rows 3
+
+--- case: a ceiling sits beside an assertion and each still means what it means
+SELECT * FROM events USING scan TIMEOUT 1h;
+--- expect: rows 3
+
+--- case: an index may still be called `timeout`, which is why the word is not reserved
+DEFINE INDEX timeout ON events FIELDS rare;
+SELECT * FROM events WHERE rare = 0 USING INDEX timeout;
+--- expect: rows 2
+
+--- case: and the same word reads as the clause when a duration follows it
+SELECT * FROM events USING scan TIMEOUT 1h;
+--- expect: rows 3
+
+--- case: a read with no ceiling is never refused for time
+SELECT * FROM events;
+--- expect: rows 3

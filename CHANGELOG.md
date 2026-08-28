@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 560 conformance cases define the language and run in the build.
+Unreleased. 573 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -167,6 +167,28 @@ Unreleased. 560 conformance cases define the language and run in the build.
   `USING INDEX by_city` says which. An unrecognised word is refused before the
   read runs, naming the words that exist. An assertion inside a materialised
   source is about the inner read.
+
+- **`TIMEOUT <duration>`** puts a wall-clock ceiling on a read, and a read that
+  passes it is **refused, not truncated**. When the ceiling passes the records
+  are already in hand, so returning them costs nothing and looks like success —
+  and a caller counting, summing or storing a partial answer would be wrong with
+  no way to find out. The refusal carries how far the read got, which is the one
+  thing a shortened answer would have told the caller, in a place it cannot be
+  mistaken for the result.
+
+  The ceiling is spent once per record, as the read produces it. That bounds
+  where a long read spends its time — decoding, testing, projecting, sorting —
+  and it is stated rather than implied: it does not interrupt a single storage
+  call, and it does not reach a read standing in an expression, which has no
+  channel to carry a budget into.
+
+  A subquery's ceiling narrows and never widens: whichever of the inner and outer
+  budgets expires first refuses, because an inner clause able to raise its
+  caller's budget would make the outer ceiling a suggestion. `TIMEOUT 0s` and any
+  negative span are refused when the statement is read, since neither names a
+  budget a statement could satisfy. The word stays unreserved — an index may
+  still be called `timeout`, and which reading is meant is settled by whether a
+  duration follows.
 
 ### Changed — breaking
 

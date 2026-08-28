@@ -412,7 +412,9 @@ impl Session<'_> {
                 Ok(Outcome::Value(self.read_key(transaction, target)?))
             }
             StatementKind::Select(select) => {
-                let answered = self.read(transaction, select)?;
+                // `None`: a statement is the outermost read there is, so its own
+                // clause is the only ceiling in force.
+                let answered = self.read(transaction, select, None)?;
                 Ok(Outcome::Records {
                     records: answered.records,
                     plan: answered.plan,

@@ -184,6 +184,20 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `TIMEOUT` names a ceiling no statement could satisfy.
+    ///
+    /// `TIMEOUT 0s` and `TIMEOUT -5s` can only refuse, whatever the read does and
+    /// however fast the store is. A clause that can only refuse is a mistake in
+    /// the statement rather than a budget, so it is caught where the statement is
+    /// read — before a scan runs to be refused by it.
+    #[error("a timeout of {written} (at {span}) can only refuse; a ceiling is a positive duration")]
+    EmptyTimeout {
+        /// The ceiling as it was written.
+        written: String,
+        /// Where the clause is.
+        span: Span,
+    },
+
     /// Two projections in one read answer under the same name.
     ///
     /// `SELECT address.city, work.city` would write one field twice into a
@@ -539,7 +553,8 @@ impl Error {
             | Self::NotARecordIdentity { span, .. }
             | Self::Unrenderable { span, .. }
             | Self::MalformedGeometry { span, .. }
-            | Self::ComputedGeometry { span, .. } => *span,
+            | Self::ComputedGeometry { span, .. }
+            | Self::EmptyTimeout { span, .. } => *span,
         }
     }
 }

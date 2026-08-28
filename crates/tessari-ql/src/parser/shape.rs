@@ -12,7 +12,9 @@
 use tessari_types::Number;
 
 use super::Parser;
-use crate::ast::{DeleteBound, Expr, ExprKind, FieldPath, Ordering, Projection, Source, Using};
+use crate::ast::{
+    DeleteBound, Expr, ExprKind, FieldPath, Ordering, Projection, Source, Timeout, Using,
+};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Span, Token};
 
@@ -116,6 +118,7 @@ impl Parser<'_> {
         // asks whether *an* index answered, `USING INDEX by_email` asks which.
         if self.peek_keyword() == Some(Keyword::Index)
             && matches!(self.peek_ahead(1), Some(Token::Ident(_)))
+            && !self.opens_the_next_clause()
         {
             self.advance();
             return Ok(Some(Using::Index(self.name()?)));
@@ -124,6 +127,58 @@ impl Parser<'_> {
         // `index`, `join`, `record` — and a clause that accepted only the ones
         // that happen not to be would be a vocabulary decided by the lexer.
         Ok(Some(Using::Path(self.word_or_name()?)))
+    }
+
+    /// Whether the word one token ahead opens the next clause rather than being
+    /// a name belonging to the clause being parsed.
+    ///
+    /// `USING INDEX by_email` takes a name, and every clause word in this
+    /// grammar is contextual — so `USING index TIMEOUT 5s` looks exactly like
+    /// `USING INDEX timeout` followed by a stray duration, and the first reading
+    /// swallows the next clause. Reserving `timeout` would settle it and would
+    /// also take the word away from anyone with an index called `timeout`, which
+    /// is the trade this language has already refused seven times.
+    ///
+    /// So it is settled by what follows instead: `timeout` is a clause only when
+    /// a duration comes after it, and a name in every other position. Both
+    /// readings stay sayable and neither is guessed at.
+    fn opens_the_next_clause(&self) -> bool {
+        let Some(Token::Ident(word)) = self.peek_ahead(1) else {
+            return false;
+        };
+        word.eq_ignore_ascii_case("timeout")
+            && matches!(self.peek_ahead(2), Some(Token::Duration(_)))
+    }
+
+    /// `TIMEOUT 200ms`, when it is there.
+    ///
+    /// The duration is a literal rather than an expression, and a parameter is
+    /// not accepted in its place. A ceiling that a bound value could set is a
+    /// ceiling a caller could raise, and the statement is where this one is meant
+    /// to be readable — an operator reading a slow query wants the budget in
+    /// front of them, not in a bindings map somewhere else.
+    pub(super) fn timeout(&mut self) -> Result<Option<Timeout>> {
+        if !self.eat_word("timeout") {
+            return Ok(None);
+        }
+        let expected = "a duration, like `200ms` or `5s`";
+        let Some(Token::Duration(after)) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let after = *after;
+        let at = self.span_here();
+        self.advance();
+        // A ceiling of zero or less is refused here rather than at the read.
+        // Neither names a budget a statement could satisfy, so the clause could
+        // only ever refuse — and a clause that can only refuse is a mistake in
+        // the statement, which is a thing to say when the statement is read.
+        if after.seconds() < 0 || (after.seconds() == 0 && after.nanos() == 0) {
+            return Err(Error::EmptyTimeout {
+                written: after.to_literal(),
+                span: at,
+            });
+        }
+        Ok(Some(Timeout { after, span: at }))
     }
 
     /// The bound a conditional delete must carry: `LIMIT 100` or `LIMIT ALL`.

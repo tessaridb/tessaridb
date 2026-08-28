@@ -49,6 +49,25 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// A read passed the ceiling its statement set.
+    ///
+    /// Refused rather than answered in part. The records it had produced are
+    /// dropped, and the count is reported here — which is the same thing a
+    /// truncated answer would have told the caller, in the one place a caller
+    /// cannot mistake for the result.
+    #[error(
+        "the read passed its ceiling of {after} after {produced} records (at {span}); \
+         it is refused rather than answered in part"
+    )]
+    TimedOut {
+        /// The ceiling, as the statement wrote it.
+        after: String,
+        /// How many records the read had produced when the ceiling passed.
+        produced: u64,
+        /// Where the clause is.
+        span: tessari_ql::Span,
+    },
+
     /// A `USING <path>` the read did not satisfy.
     ///
     /// The whole point of the clause. It is checked against what the read

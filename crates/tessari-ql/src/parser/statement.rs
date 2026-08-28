@@ -1200,6 +1200,10 @@ impl Parser<'_> {
         // anything. Contextual like the rest, so a field called `using` stays a
         // field.
         let using = self.using()?;
+        // After `USING`, so the tail reads in the order a statement is thought
+        // about: what to read, how much of it, what it should have done, and how
+        // long it may take doing it.
+        let timeout = self.timeout()?;
         super::shape::check_grouping(&projection, &group)?;
         super::shape::check_fold_positions(&from, &group, &order)?;
         // Where `[*]` may stand. A condition admits one on the left of a
@@ -1247,6 +1251,7 @@ impl Parser<'_> {
             start: skip,
             limit,
             using,
+            timeout,
             span: start.to(self.span_behind()),
         })
     }

@@ -233,12 +233,14 @@ fn kind_name(error: &Error) -> &'static str {
         Error::NoSuchAccessPath { .. } => "NoSuchAccessPath",
         Error::PathNotTaken { .. } => "PathNotTaken",
         Error::IndexNotUsed { .. } => "IndexNotUsed",
+        Error::TimedOut { .. } => "TimedOut",
         _ => "Unnamed",
     }
 }
 
 fn script_kind(error: &tessari_ql::Error) -> &'static str {
     match error {
+        tessari_ql::Error::EmptyTimeout { .. } => "EmptyTimeout",
         tessari_ql::Error::UnexpectedCharacter { .. } => "UnexpectedCharacter",
         tessari_ql::Error::UnterminatedString { .. } => "UnterminatedString",
         tessari_ql::Error::InvalidEscape { .. } => "InvalidEscape",

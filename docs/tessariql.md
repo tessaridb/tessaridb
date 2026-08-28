@@ -2506,6 +2506,47 @@ An assertion inside a materialised source is about the **inner** read. The outer
 statement is `materialised` whatever the inner one did, so the two are about
 different reads and both hold at once.
 
+## 7b‴. Saying how long a read may take
+
+```
+SELECT * FROM events WHERE at > 0 TIMEOUT 200ms;
+SELECT * FROM huge ORDER BY at DESC LIMIT 10 TIMEOUT 5s;
+```
+
+`TIMEOUT` is **optional** and puts a wall-clock ceiling on the read. A read that
+passes it is **refused, not truncated** — it answers nothing, and the refusal
+says how far it got.
+
+That is the whole decision. When the ceiling passes, the records already found
+are correct and handing them back would cost nothing and look like success; a
+caller counting them, summing them or writing them somewhere would be wrong and
+would have no way to find out. A partial answer that looks whole is the failure
+this language spends its rules removing, and a timeout is the cheapest place to
+introduce one. The count that a shortened answer would have carried is in the
+refusal instead, where it cannot be mistaken for a result.
+
+**What it bounds, exactly.** The ceiling is checked once per record, as the read
+produces it. That covers where a long read spends its time — decoding a record,
+testing it, projecting it, offering it to a sort — and it is stated rather than
+implied: it does not interrupt a single call to the storage layer, and it does
+not reach a read standing in an *expression*, which has no channel to carry a
+budget into. So a read that goes on producing records stops; a read blocked
+below the language does not, and no clause here can make it.
+
+**Nesting narrows and never widens.** A subquery may set a tighter ceiling than
+the read holding it, and may not set a looser one — whichever budget expires
+first refuses. An inner clause able to raise its caller's budget would make the
+outer ceiling a suggestion, which is not what a ceiling is.
+
+**A ceiling that could only refuse is refused when the statement is read.**
+`TIMEOUT 0s`, and any negative span, name no budget a statement could satisfy, so
+they are caught before a scan runs to be refused by them.
+
+`timeout` is **not** a reserved word — an index may still be called `timeout`,
+and `SELECT … USING INDEX timeout` still names it. Which reading is meant is
+settled by whether a duration follows, the same way every other contextual word
+in this grammar is settled.
+
 ## 7b′. What the answer says without being asked
 
 `EXPLAIN` answers a question you have to know to ask. A **note** is the other

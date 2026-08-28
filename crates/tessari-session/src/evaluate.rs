@@ -20,6 +20,7 @@ use tessari_types::{
 
 use crate::aggregate::folds;
 use crate::arithmetic::{arithmetic, negate};
+use crate::budget::{Budget, Deadline};
 use crate::call::call;
 use crate::condition::boolean;
 use crate::consume::Consumer;
@@ -386,6 +387,7 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
+        within: Option<Deadline>,
     ) -> Result<Answered> {
         // The searched context is resolved before the source produces anything,
         // because a sort key is an expression too and one holding a `MATCHES` or
@@ -398,7 +400,14 @@ impl Session<'_> {
         // it, and a note reported against the *next* answer is worse than no note
         // at all.
         let mut notes = Vec::new();
-        let (prepared, searched) = self.prepare_source(transaction, select, &mut notes)?;
+        // Narrowed by this statement's own clause, and never widened by it: a
+        // subquery may set a tighter ceiling than the read holding it and may
+        // not set a looser one.
+        let within = Deadline::under(within, select.timeout);
+        // One budget for the whole read, so a two-stage path counts each record
+        // once and the refusal says how far the *read* got.
+        let mut budget = Budget::of(within);
+        let (prepared, searched) = self.prepare_source(transaction, select, &mut notes, within)?;
         // The bound the sort may keep to. `bounded` is applied to the ordering
         // stage's output below, so keeping only what it will keep is an identity
         // between two adjacent stages rather than a decision about the
@@ -421,6 +430,7 @@ impl Session<'_> {
                 keys,
                 &searched,
                 crate::shape::Topmost::keeping(&select.order, bound),
+                &mut budget,
             );
             let plan = self.produce_source(
                 transaction,
@@ -438,7 +448,7 @@ impl Session<'_> {
             });
         }
 
-        let mut collecting = crate::consume::Collecting::new();
+        let mut collecting = crate::consume::Collecting::new(&mut budget);
         let plan = self.produce_source(
             transaction,
             select,
@@ -498,6 +508,7 @@ impl Session<'_> {
                 keys,
                 &searched,
                 crate::shape::Topmost::keeping(&select.order, bound),
+                &mut budget,
             );
             for (id, record) in records {
                 if shaping.take(transaction, id, record)?.is_break() {
@@ -633,6 +644,7 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         select: &'a Select,
         notes: &mut Vec<Note>,
+        within: Option<Deadline>,
     ) -> Result<(Prepared<'a>, Searched)> {
         match &select.from {
             // Resolved from `meta` rather than read from a table, because that
@@ -711,6 +723,7 @@ impl Session<'_> {
                     right_key,
                     condition.as_deref(),
                     notes,
+                    within,
                 )?;
                 Ok((Prepared::Held(found, plan), searched))
             }
@@ -721,7 +734,7 @@ impl Session<'_> {
             // a held vector. The inner plan is a plan of its own, and one field
             // for it would describe only the shallowest case.
             Source::Subquery { read, condition } => {
-                let inner = self.read(transaction, read)?;
+                let inner = self.read(transaction, read, within)?;
                 notes.extend(inner.notes);
                 notes.extend(ceiling_reached(read, inner.records.len()));
                 let (found, plan) = (inner.records, Plan::new(AccessPath::Materialised));
@@ -1005,6 +1018,7 @@ impl Session<'_> {
         right_key: &tessari_ql::FieldPath,
         condition: Option<&Expr>,
         notes: &mut Vec<Note>,
+        within: Option<Deadline>,
     ) -> Result<Joined> {
         let left_name = left.name().to_owned();
         let right_name = right.name().to_owned();
@@ -1034,7 +1048,7 @@ impl Session<'_> {
                 }
             }
             JoinSide::Read { read, .. } => {
-                let answered = self.read(transaction, read)?;
+                let answered = self.read(transaction, read, within)?;
                 notes.extend(answered.notes);
                 notes.extend(ceiling_reached(read, answered.records.len()));
                 collect_by_key(&mut built, answered.records, right_key);
@@ -1053,7 +1067,7 @@ impl Session<'_> {
                 (self.records_of(found, &visible)?, searched)
             }
             JoinSide::Read { read, .. } => {
-                let answered = self.read(transaction, read)?;
+                let answered = self.read(transaction, read, within)?;
                 notes.extend(answered.notes);
                 notes.extend(ceiling_reached(read, answered.records.len()));
                 (answered.records, Searched::default())
@@ -1779,7 +1793,10 @@ impl Session<'_> {
         // value, and a value has no room beside it. Reported at the statement
         // that holds this one would be worse than silence — a note about an
         // inner read, attached to an outer answer it does not describe.
-        let Answered { records, .. } = self.read(transaction, select)?;
+        // `None` for the budget, for the same reason the notes are dropped: an
+        // expression position has no channel to carry one *in* either, so a read
+        // standing here enforces its own ceiling and not its caller's.
+        let Answered { records, .. } = self.read(transaction, select, None)?;
         // `$node` alongside `Source::Record` because it is one record too: a
         // read of one answers with its own value, and wrapping it in an array of
         // one would make the shape of the answer follow the source rather than
