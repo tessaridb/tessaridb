@@ -1,0 +1,285 @@
+//! Undeclaring a catalog object, and the four refusals that make it safe.
+//!
+//! # What this wave was for
+//!
+//! The language could declare twelve kinds of thing and undeclare six. That is
+//! not a missing-feature list — it is a store reachable into a shape no
+//! statement gets it out of, whose only exit was editing the catalog by hand.
+//!
+//! # The property the corpus cannot assert, and this file can
+//!
+//! Three of these refusals are about **what is still pointing at the thing**,
+//! and the interesting half of each is not that it fires. It is:
+//!
+//! - that the refusal **names the dependant**, so acting on it needs no second
+//!   query — a message reading only *not empty* leaves the reader to go and run
+//!   the query this statement already ran;
+//! - that it **writes nothing**, so a refused drop leaves the object usable
+//!   rather than half-removed;
+//! - and that it **stops firing** once the dependant is gone, which is the half
+//!   that would otherwise make the rule worse than the hole it fills.
+//!
+//! The corpus asserts the variant name. Only a test can read the message.
+
+#![allow(clippy::panic, clippy::unwrap_used)]
+
+use std::sync::Arc;
+
+use tessari_kv::{KvBackend, MemoryBackend};
+use tessari_session::Session;
+use tessari_storage::Store;
+
+const SCHEMA: &str = "\
+DEFINE NAMESPACE prod; USE NAMESPACE prod;
+DEFINE DATABASE shop; USE DATABASE shop;
+";
+
+fn store() -> Store {
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+}
+
+fn opened(store: &Store) -> Session<'_> {
+    let mut session = Session::new(store);
+    session.run(SCHEMA).unwrap();
+    session
+}
+
+fn ok(session: &mut Session<'_>, script: &str) {
+    session
+        .run(script)
+        .unwrap_or_else(|error| panic!("{script}: {error}"));
+}
+
+/// The refusal, as a caller reads it.
+fn refusal(session: &mut Session<'_>, script: &str) -> String {
+    session
+        .run(script)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| panic!("{script}: answered instead of refusing"))
+}
+
+/// The refusal carries the field, not just the fact that there was one.
+///
+/// A field attaches an analyzer **by name**, so nothing in the catalog enforces
+/// the link. Removing the analyzer would leave `posts.body` naming something
+/// that no longer resolves, and the symptom of that is a search which quietly
+/// stops matching — a wrong answer indistinguishable from a right one.
+#[test]
+fn dropping_an_analyzer_a_field_names_refuses_and_says_which_field() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(
+        &mut session,
+        "DEFINE ANALYZER simple FILTERS lowercase;
+         DEFINE TABLE posts;
+         DEFINE FIELD body ON posts TYPE string ANALYZER simple;",
+    );
+    let message = refusal(&mut session, "DROP ANALYZER simple;");
+    assert!(
+        message.contains("body"),
+        "does not name the field: {message}"
+    );
+    assert!(message.contains("simple"), "does not name it: {message}");
+    assert!(
+        message.contains("CASCADE"),
+        "does not say why there is no cascade: {message}"
+    );
+}
+
+/// A refused drop leaves the analyzer usable, not half-removed.
+///
+/// The refusal happens before the catalog write, but that is an implementation
+/// detail; what a caller is owed is that the failed statement changed nothing,
+/// and the only way to see it is to use the object afterwards.
+#[test]
+fn a_refused_analyzer_drop_leaves_it_attachable_to_another_field() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(
+        &mut session,
+        "DEFINE ANALYZER simple FILTERS lowercase;
+         DEFINE TABLE posts;
+         DEFINE FIELD body ON posts TYPE string ANALYZER simple;",
+    );
+    refusal(&mut session, "DROP ANALYZER simple;");
+    ok(
+        &mut session,
+        "DEFINE FIELD title ON posts TYPE string ANALYZER simple;",
+    );
+}
+
+/// And it stops refusing, which is the half that makes the rule usable.
+#[test]
+fn an_analyzer_goes_once_the_last_field_naming_it_is_gone() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(
+        &mut session,
+        "DEFINE ANALYZER simple FILTERS lowercase;
+         DEFINE TABLE posts;
+         DEFINE FIELD body ON posts TYPE string ANALYZER simple;
+         DEFINE FIELD title ON posts TYPE string ANALYZER simple;",
+    );
+    // One of the two is not enough, and the count says so rather than the
+    // refusal simply repeating itself.
+    ok(&mut session, "DROP FIELD body ON posts;");
+    let message = refusal(&mut session, "DROP ANALYZER simple;");
+    assert!(
+        message.contains("title"),
+        "names the wrong field: {message}"
+    );
+    ok(&mut session, "DROP FIELD title ON posts;");
+    ok(&mut session, "DROP ANALYZER simple;");
+}
+
+/// A field that names no analyzer holds nothing back.
+///
+/// The half that would make this rule worse than the hole: if the check asked
+/// whether any field existed rather than whether any field named *this*
+/// analyzer, every store with a schema would be unable to remove one.
+#[test]
+fn a_field_that_names_a_different_analyzer_does_not_hold_this_one() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(
+        &mut session,
+        "DEFINE ANALYZER simple FILTERS lowercase;
+         DEFINE ANALYZER folded FILTERS lowercase, ascii;
+         DEFINE TABLE posts;
+         DEFINE FIELD body ON posts TYPE string ANALYZER folded;
+         DEFINE FIELD plain ON posts TYPE string;",
+    );
+    ok(&mut session, "DROP ANALYZER simple;");
+}
+
+/// The tenancy refusals count what they found and name the first.
+#[test]
+fn dropping_a_database_that_holds_tables_refuses_and_counts_them() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(&mut session, "DEFINE TABLE orders; DEFINE TABLE invoices;");
+    let message = refusal(&mut session, "DROP DATABASE shop;");
+    assert!(message.contains('2'), "does not count them: {message}");
+    assert!(message.contains("tables"), "does not say what: {message}");
+    assert!(
+        message.contains("orders") || message.contains("invoices"),
+        "does not name one: {message}"
+    );
+}
+
+#[test]
+fn an_empty_database_goes_and_a_namespace_follows_once_it_is_the_last() {
+    let store = store();
+    let mut session = opened(&store);
+    // `prod` holds `shop`, so the namespace is refused first.
+    let message = refusal(&mut session, "DROP NAMESPACE prod;");
+    assert!(message.contains("shop"), "does not name it: {message}");
+    assert!(message.contains("databases"), "wrong noun: {message}");
+    ok(&mut session, "DROP DATABASE shop;");
+    ok(&mut session, "DROP NAMESPACE prod;");
+}
+
+/// Tightening a populated table is refused while a row does not fit.
+///
+/// This is the same stance `DEFINE FIELD` takes over data that already violates
+/// it, and the check runs where the store's own schema pass runs rather than in
+/// a scan the executor writes — the comment in `schema.rs` named this statement
+/// as the reason that pass would one day need a second trigger.
+#[test]
+fn tightening_a_table_is_refused_while_a_stored_row_carries_an_undeclared_field() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(
+        &mut session,
+        "DEFINE TABLE notes;
+         CREATE notes:1 = { title: 'first', extra: 'whatever' };
+         DEFINE FIELD title ON notes TYPE string;",
+    );
+    let message = refusal(&mut session, "ALTER TABLE notes SET SCHEMAFULL;");
+    assert!(message.contains("extra"), "does not name it: {message}");
+    // Nothing was written, so the table is still schemaless and still takes it.
+    ok(
+        &mut session,
+        "CREATE notes:2 = { title: 'second', extra: 'again' };",
+    );
+    // Declare what the rows carry, and it goes through.
+    ok(
+        &mut session,
+        "DEFINE FIELD extra ON notes TYPE string;
+         ALTER TABLE notes SET SCHEMAFULL;",
+    );
+    session
+        .run("CREATE notes:3 = { title: 'third', beyond: 'no' };")
+        .expect_err("a schemafull table took an undeclared field");
+}
+
+/// Widening is never refused, because no stored row can contradict it.
+#[test]
+fn loosening_a_table_is_never_refused() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(
+        &mut session,
+        "DEFINE TABLE notes;
+         DEFINE FIELD title ON notes TYPE string;
+         ALTER TABLE notes SET SCHEMAFULL;",
+    );
+    session
+        .run("CREATE notes:1 = { title: 'first', extra: 'no' };")
+        .expect_err("a schemafull table took an undeclared field");
+    ok(&mut session, "ALTER TABLE notes SET SCHEMALESS;");
+    ok(
+        &mut session,
+        "CREATE notes:1 = { title: 'first', extra: 'yes' };",
+    );
+}
+
+/// A bucket takes its chunk table with it.
+///
+/// The chunk table's name carries a byte no identifier can hold, so no statement
+/// can ever name it — which makes an orphaned one permanent. The symptom is that
+/// redefining the bucket fails on a name nobody can see.
+#[test]
+fn a_dropped_bucket_can_be_defined_again() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(&mut session, "DEFINE BUCKET media;");
+    ok(&mut session, "DROP BUCKET media;");
+    ok(&mut session, "DEFINE BUCKET media;");
+    // And by the other spelling, because a bucket is a table.
+    ok(&mut session, "DROP TABLE media;");
+    ok(&mut session, "DEFINE BUCKET media;");
+}
+
+/// `DROP NODE` is declined rather than missing, and the message does the work.
+///
+/// A refusal that only said *unexpected token* would leave a reader who guessed
+/// the obvious spelling with nowhere to go. This one names the configuration as
+/// the place to change and `DROP REPLICA` as the statement for the related job.
+#[test]
+fn dropping_a_node_is_declined_and_points_at_what_to_do_instead() {
+    let store = store();
+    let mut session = opened(&store);
+    let message = refusal(&mut session, "DROP NODE second;");
+    assert!(
+        message.contains("configuration"),
+        "does not say where the change belongs: {message}"
+    );
+    assert!(
+        message.contains("DROP REPLICA"),
+        "does not point at the related statement: {message}"
+    );
+}
+
+/// A peer is declared and undeclared, and undeclaring an absent one refuses.
+#[test]
+fn a_replica_goes_and_going_twice_is_refused() {
+    let store = store();
+    let mut session = opened(&store);
+    ok(&mut session, "DEFINE REPLICA warsaw AT 'warsaw:9001';");
+    ok(&mut session, "DROP REPLICA warsaw;");
+    let message = refusal(&mut session, "DROP REPLICA warsaw;");
+    assert!(message.contains("replica"), "wrong noun: {message}");
+    assert!(message.contains("warsaw"), "does not name it: {message}");
+}

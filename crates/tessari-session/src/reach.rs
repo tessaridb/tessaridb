@@ -36,6 +36,16 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DefineNamespace { .. }
         | StatementKind::DefineDatabase { .. }
         | StatementKind::DefineAnalyzer { .. }
+        // Undeclaring one names no table either. That an analyzer is still
+        // attached to a field somewhere is a question this statement asks for
+        // itself before it acts; it is not a table this statement *reaches*,
+        // and listing it here would make a grant on that table a condition of
+        // removing a store-wide name.
+        | StatementKind::DropAnalyzer { .. }
+        // A tenancy is not a table. Whether either still holds anything is,
+        // again, a question the statement asks itself.
+        | StatementKind::DropDatabase { .. }
+        | StatementKind::DropNamespace { .. }
         | StatementKind::DefineUser { .. }
         | StatementKind::AlterUser { .. }
         | StatementKind::DropUser { .. }
@@ -47,6 +57,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // are `Needs::Administer`, decided before this list is consulted.
         | StatementKind::DefineNode { .. }
         | StatementKind::DefineReplica { .. }
+        | StatementKind::DropReplica { .. }
         // Forgetting a consumer names no table. Declaring one does, and it is
         // listed below rather than here — see the arm that returns its
         // destination.
@@ -101,6 +112,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DropField { table, .. }
         | StatementKind::DropTable { table }
         | StatementKind::DropIndex { table, .. }
+        | StatementKind::AlterTable { table, .. }
         | StatementKind::RebuildIndex { table, .. } => vec![table],
 
         // The condition is walked for the same reason a read's is: a subquery

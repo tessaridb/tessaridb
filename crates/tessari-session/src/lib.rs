@@ -58,7 +58,7 @@ mod ticket;
 mod vector;
 
 pub use effect::{Effect, admits};
-pub use error::{Error, Result};
+pub use error::{Depended, Error, Result};
 pub use outcome::{AccessPath, Note, Outcome};
 pub use plan::Plan;
 pub use session::Session;

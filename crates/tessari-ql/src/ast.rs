@@ -395,6 +395,58 @@ pub enum StatementKind {
         /// The table it indexes.
         table: TableRef,
     },
+    /// `DROP ANALYZER simple` — refused while a field still names it.
+    ///
+    /// A field attaches an analyzer by **name**, so nothing in the catalog
+    /// enforces the link and a removal would leave a field pointing at a name
+    /// that no longer resolves. The symptom of that is a search which quietly
+    /// stops matching, which is why this refuses rather than cascades.
+    DropAnalyzer {
+        /// The analyzer to undeclare.
+        name: Name,
+    },
+    /// `DROP REPLICA warsaw` — stops counting an endpoint as a peer.
+    ///
+    /// The peer is not told and its data is not chased. Replication here is
+    /// declarative, so this statement says only that we no longer count that
+    /// endpoint, and a peer that disagrees is an operator's question.
+    DropReplica {
+        /// The peer to undeclare.
+        name: Name,
+    },
+    /// `DROP DATABASE staging` — refused while it still holds a table.
+    ///
+    /// The bound is inherited from `DELETE … LIMIT`: a destructive statement
+    /// with no predicate at all is the widest one this language can be asked to
+    /// run, so it refuses while anything is inside and counts what it found. A
+    /// `CASCADE` word is deliberately absent — it is the unbounded form under
+    /// another spelling.
+    DropDatabase {
+        /// The database to undefine.
+        name: Name,
+    },
+    /// `DROP NAMESPACE acme` — refused while it still holds a database.
+    DropNamespace {
+        /// The namespace to undefine.
+        name: Name,
+    },
+    /// `ALTER TABLE users SET SCHEMAFULL` · `… SET SCHEMALESS`
+    ///
+    /// The one thing about a table worth changing after it exists.
+    ///
+    /// **It changes the declaration and does not re-check the rows already
+    /// stored.** A schema here is a rule about what may be *written*, so going
+    /// schemafull binds every write from that commit onwards and leaves earlier
+    /// records exactly as they are — which is also what keeps this statement
+    /// bounded. Scanning the table would make a `DEFINE`-shaped statement do
+    /// work proportional to the data, and this wave refuses that in
+    /// `DROP DATABASE` for the same reason it declines it here (Q-233).
+    AlterTable {
+        /// The table to change.
+        table: TableRef,
+        /// What to change about it.
+        change: TableChange,
+    },
     /// `REBUILD INDEX by_embedding ON papers`
     ///
     /// Makes the index's entries exactly what its table's rows imply, discarding
@@ -1797,6 +1849,24 @@ pub enum UserChange {
     /// `SET ROLE editor` — what the user may do, within the tenancy they
     /// already hold. The tenancy itself does not move.
     Role(Name),
+}
+
+/// The one thing an [`AlterTable`](StatementKind::AlterTable) statement changes.
+///
+/// One variant rather than a bool, for the reason [`UserChange`] is an enum:
+/// `SET SCHEMAFULL` and `SET SCHEMALESS` are two statements a reader writes,
+/// and a `schemafull: bool` field would make a third shape — *change nothing* —
+/// expressible in a statement that exists only to change something.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableChange {
+    /// `SET SCHEMAFULL` — from the commit onwards the declared fields are the
+    /// whole story. Records written before it are not revisited.
+    Schemafull,
+    /// `SET SCHEMALESS` — a record may carry a field nobody declared.
+    ///
+    /// Never refused: it only widens what is admissible, so no stored row can
+    /// contradict it.
+    Schemaless,
 }
 
 /// Which endpoint of an edge a traversal starts from.

@@ -273,9 +273,9 @@ impl Needs {
             // where the other `DEFINE`s sit: an `editor` is expected to shape
             // the data they own, and neither what this machine is for nor which
             // other machines hold the data is that.
-            StatementKind::DefineNode { .. } | StatementKind::DefineReplica { .. } => {
-                Self::AdministerStore
-            }
+            StatementKind::DefineNode { .. }
+            | StatementKind::DefineReplica { .. }
+            | StatementKind::DropReplica { .. } => Self::AdministerStore,
             // Declaring a consumer is administering, not writing — the same
             // reasoning that puts `DEFINE USER` here. It hands a broker address
             // and a group name to a process that will then write into somebody's
@@ -312,7 +312,15 @@ impl Needs {
             // own, it is adding to the store's top-level list. Left with the
             // `Write` block below, an `editor` of one database could do it: a
             // caller with authority over no tenancy at all, adding one.
-            StatementKind::DefineNamespace { .. } => Self::WriteStore,
+            //
+            // `DROP NAMESPACE` sits here for the same reason and not one step
+            // lower: removing from the store's top-level list is the same
+            // authority as adding to it, and an `editor` of one database
+            // undeclaring a namespace they hold no tenancy in is exactly what
+            // this level exists to refuse.
+            StatementKind::DefineNamespace { .. } | StatementKind::DropNamespace { .. } => {
+                Self::WriteStore
+            }
             // Everything else changes something: the records, or the structure
             // they are held in. Defining and dropping sit here rather than under
             // `Administer` because an `editor` is expected to shape the data
@@ -328,6 +336,15 @@ impl Needs {
             | StatementKind::DropIndex { .. }
             | StatementKind::RebuildIndex { .. }
             | StatementKind::DropField { .. }
+            // Each of these pairs with the `DEFINE` two lines above it, and a
+            // drop is deliberately given the same authority as the declaration
+            // it undoes rather than a higher one: the person who may shape a
+            // structure is the person who may unshape it, and a level that
+            // differed would leave a tenant able to create what they then need
+            // somebody else to remove.
+            | StatementKind::DropDatabase { .. }
+            | StatementKind::DropAnalyzer { .. }
+            | StatementKind::AlterTable { .. }
             | StatementKind::Relate { .. }
             | StatementKind::Create { .. }
             | StatementKind::Update { .. }

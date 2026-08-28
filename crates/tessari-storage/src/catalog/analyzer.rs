@@ -13,10 +13,10 @@
 use std::collections::BTreeMap;
 
 use tessari_encoding::decode_payload;
-use tessari_types::{Analyzer, Filter, Value};
+use tessari_types::{Analyzer, Filter, RecordId, Value};
 
 use super::definition::{field_id, field_name, number, object};
-use super::{Catalog, Level, qualify, system};
+use super::{Catalog, Level, id_key, qualify, system};
 use crate::error::{Error, Result};
 
 const FIELD_ID: &str = "id";
@@ -137,6 +137,36 @@ impl Catalog<'_, '_> {
             .as_ref()
             .map(AnalyzerDefinition::from_value)
             .transpose()
+    }
+
+    /// Remove an analyzer's declaration and release its name.
+    ///
+    /// Answers `false` when there was nothing under that id, so the caller can
+    /// tell "removed" from "was not there" without a second read.
+    ///
+    /// **Whether anything still attaches this analyzer is not asked here.** A
+    /// field names its analyzer by name rather than by id
+    /// (see [`super::FieldDefinition::analyzer`]), so nothing in the catalog
+    /// enforces the link and nothing here can. The refusal lives with the
+    /// statement, where the span that names the offending field lives too —
+    /// the same division [`Self::drop_table`] keeps by not removing the records
+    /// of the table it drops.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub fn drop_analyzer(&mut self, id: u32) -> Result<bool> {
+        let Some(definition) = self.analyzer(id)? else {
+            return Ok(false);
+        };
+        let qualified = qualify(Level::Analyzer, &[], &definition.name);
+        self.transaction.delete(system::address(
+            system::ANALYZERS,
+            RecordId::Int(id_key(id)),
+        ));
+        self.transaction
+            .delete(system::address(system::NAMES, RecordId::from(qualified)));
+        Ok(true)
     }
 
     /// Every declared analyzer.

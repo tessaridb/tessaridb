@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use tessari_encoding::{Roles, decode_payload, encode_payload};
 use tessari_ql::{
     Answer, Assignment, ConsumerSource, Edit, FieldMapping, FieldPath, Name, RecordTarget, Span,
-    StatementKind, TableRef,
+    StatementKind, TableChange, TableRef,
 };
 use tessari_storage::{
     Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, FieldShape, IndexDefinition, IndexShape,
@@ -15,7 +15,7 @@ use tessari_types::{
     Analyzer, FieldId, FieldKind, Filter, Path, RecordId, RecordRef, Step, TableId, Value,
 };
 
-use crate::error::{Error, Result};
+use crate::error::{Depended, Error, Result};
 use crate::evaluate::{key_bound, within};
 use crate::geometry::on_the_grid;
 use crate::outcome::Outcome;
@@ -231,7 +231,26 @@ impl Session<'_> {
                 value,
             } => self.relate(transaction, from, edges, to, value.as_deref()),
             StatementKind::DropTable { table } => {
-                let (_, id) = self.resolve_table(transaction, table)?;
+                let (context, id) = self.resolve_table(transaction, table)?;
+                // A bucket's bytes live in a companion table `DEFINE BUCKET`
+                // created alongside it, and whose name carries a byte no
+                // identifier can hold — so nothing can drop it by naming it, and
+                // dropping the bucket alone orphans it forever. The corpus found
+                // this by redefining a bucket it had just dropped and being told
+                // the chunk table's name was taken.
+                let chunks = Catalog::new(transaction)
+                    .table(id)?
+                    .filter(|definition| definition.bucket)
+                    .map(|definition| Catalog::chunks_named(&definition.name));
+                if let Some(name) = chunks
+                    && let Some(chunk_id) = Catalog::new(transaction).table_id(
+                        context.namespace,
+                        context.database,
+                        &name,
+                    )?
+                {
+                    Catalog::new(transaction).drop_table(chunk_id)?;
+                }
                 Catalog::new(transaction).drop_table(id)?;
                 Ok(Outcome::Done)
             }
@@ -239,6 +258,16 @@ impl Session<'_> {
                 let (_, id) = self.resolve_table(transaction, table)?;
                 let index = self.index_named(transaction, id, name)?;
                 Catalog::new(transaction).drop_index(index.id)?;
+                Ok(Outcome::Done)
+            }
+            StatementKind::DropAnalyzer { name } => self.drop_analyzer(transaction, name, span),
+            StatementKind::DropReplica { name } => self.drop_replica(transaction, name, span),
+            StatementKind::DropDatabase { name } => self.drop_database(transaction, name, span),
+            StatementKind::DropNamespace { name } => self.drop_namespace(transaction, name, span),
+            StatementKind::AlterTable { table, change } => {
+                let (_, id) = self.resolve_table(transaction, table)?;
+                Catalog::new(transaction)
+                    .set_schemafull(id, matches!(change, TableChange::Schemafull))?;
                 Ok(Outcome::Done)
             }
             // Writing the definition again is the whole statement: the entries
@@ -857,6 +886,140 @@ impl Session<'_> {
             });
         };
         Catalog::new(transaction).drop_consumer(&consumer)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP ANALYZER simple` — refused while a field still names it.
+    ///
+    /// The reference is by **name** rather than by id
+    /// (`FieldDefinition::analyzer`), so nothing in the catalog enforces it and
+    /// nothing would notice it break. What a dangling reference produces is a
+    /// search that quietly stops matching — a wrong answer indistinguishable
+    /// from a right one, which is the shape this store refuses everywhere.
+    ///
+    /// Every field in the store is read, not every field on one table: an
+    /// analyzer is declared once for the whole store, so no single table can
+    /// answer whether it is still attached.
+    fn drop_analyzer(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let found = Catalog::new(transaction)
+            .analyzers()?
+            .into_iter()
+            .find(|held| held.name == name.text);
+        let Some(analyzer) = found else {
+            return Err(Error::Unknown {
+                entity: "analyzer",
+                name: name.text.clone(),
+                span,
+            });
+        };
+        let attached: Vec<String> = Catalog::new(transaction)
+            .fields()?
+            .into_iter()
+            .filter(|field| field.analyzer.as_deref() == Some(name.text.as_str()))
+            .map(|field| field.name)
+            .collect();
+        if let Some(first) = attached.first() {
+            return Err(Error::StillDepended {
+                depended: Depended::AnalyzerByField,
+                name: name.text.clone(),
+                count: attached.len(),
+                first: first.clone(),
+                span,
+            });
+        }
+        Catalog::new(transaction).drop_analyzer(analyzer.id)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP REPLICA warsaw` — stops counting an endpoint as a peer.
+    ///
+    /// Nothing depends on a peer the way a field depends on an analyzer, so
+    /// there is no refusal here: a replica declaration is a statement about who
+    /// we send to, and withdrawing it is complete on its own.
+    fn drop_replica(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let found = Catalog::new(transaction)
+            .replicas()?
+            .into_iter()
+            .find(|held| held.name == name.text);
+        let Some(replica) = found else {
+            return Err(Error::Unknown {
+                entity: "replica",
+                name: name.text.clone(),
+                span,
+            });
+        };
+        Catalog::new(transaction).drop_replica(replica.id)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP DATABASE staging` — refused while it still holds a table.
+    ///
+    /// The bound is the one `DELETE … LIMIT` established: a destructive
+    /// statement carrying no predicate at all is the widest thing this language
+    /// can be asked to run, and the person writing it is thinking about one
+    /// name. The refusal counts and names, so acting on it needs no second
+    /// query.
+    fn drop_database(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, Some(name.text.as_str()), span)?;
+        let held = Catalog::new(transaction).tables_in(context.namespace, context.database)?;
+        if let Some(first) = held.first() {
+            return Err(Error::StillDepended {
+                depended: Depended::DatabaseByTable,
+                name: name.text.clone(),
+                count: held.len(),
+                first: first.name.clone(),
+                span,
+            });
+        }
+        Catalog::new(transaction).drop_database(context.database)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP NAMESPACE acme` — refused while it still holds a database.
+    ///
+    /// One level up from [`Self::drop_database`] and refusing on the same
+    /// ground. Resolved by name against the catalog rather than through the
+    /// session's tenancy, because a namespace is what a tenancy is selected
+    /// *within* — asking the context for it would require having selected it.
+    fn drop_namespace(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let id = Catalog::new(transaction)
+            .namespace_id(&name.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "namespace",
+                name: name.text.clone(),
+                span,
+            })?;
+        let held = Catalog::new(transaction).databases_in(id)?;
+        if let Some(first) = held.first() {
+            return Err(Error::StillDepended {
+                depended: Depended::NamespaceByDatabase,
+                name: name.text.clone(),
+                count: held.len(),
+                first: first.name.clone(),
+                span,
+            });
+        }
+        Catalog::new(transaction).drop_namespace(id)?;
         Ok(Outcome::Done)
     }
 

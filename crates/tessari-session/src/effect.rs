@@ -103,6 +103,10 @@ impl Effect {
             | StatementKind::DropTable { .. }
             | StatementKind::DropIndex { .. }
             | StatementKind::DropField { .. }
+            | StatementKind::DropAnalyzer { .. }
+            | StatementKind::DropDatabase { .. }
+            | StatementKind::DropNamespace { .. }
+            | StatementKind::AlterTable { .. }
             | StatementKind::RebuildIndex { .. } => Self::Write,
 
             // Who may reach it. Administering in `Needs`, and a write here:
@@ -133,7 +137,11 @@ impl Effect {
             // `DEFINE REPLICA` is the opposite half and stays a write: it is a
             // catalog record, commits in the transaction that issued it, and
             // reaches every node through the ordinary apply path (ADR-0009).
-            StatementKind::DefineReplica { .. } => Self::Write,
+            // `DROP REPLICA` is the inverse of that half and travels the same
+            // way: it removes a catalog record, so it is a write and it reaches
+            // every node. `DROP NODE` has no arm here because it has no
+            // statement — the parser refuses it and says why.
+            StatementKind::DefineReplica { .. } | StatementKind::DropReplica { .. } => Self::Write,
             // A consumer's **declaration** is a catalog record and replicates,
             // exactly as a replica's does; whether it is running on this machine
             // is local and is not part of the record. So both forms are writes,

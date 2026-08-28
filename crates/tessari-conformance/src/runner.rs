@@ -239,6 +239,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::UnboundedCollection { .. } => "UnboundedCollection",
         Error::NotAlone { .. } => "NotAlone",
         Error::AnchorGone { .. } => "AnchorGone",
+        Error::StillDepended { .. } => "StillDepended",
         _ => "Unnamed",
     }
 }

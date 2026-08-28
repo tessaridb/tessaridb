@@ -316,6 +316,41 @@ pub enum Error {
         span: Span,
     },
 
+    /// A catalog object was asked to go while something still points at it.
+    ///
+    /// Refused rather than cascaded, and the choice is the same one
+    /// [`Error::Unbounded`] makes about a read: a statement that removes an
+    /// unbounded amount on the strength of one name is the widest thing this
+    /// language can be asked to run, and the person writing it is thinking
+    /// about the one name. So the refusal counts what it found and names the
+    /// first of them, because a message saying only *not empty* leaves the
+    /// reader to go and run the query this statement already ran.
+    ///
+    /// There is deliberately no `CASCADE`: it is the unbounded form under
+    /// another spelling.
+    #[error(
+        "{} `{name}` still {} {count} {} (at {span}), the first being `{first}` \
+         — remove {} first; there is no `CASCADE`, because a statement that \
+         removes an unbounded amount from one name is the mistake this refusal \
+         exists to catch",
+        .depended.entity(),
+        .depended.relation(),
+        .depended.dependants(*count),
+        .depended.dependants(2),
+    )]
+    StillDepended {
+        /// Which of the three dependencies this is.
+        depended: Depended,
+        /// The name that was asked to go, as written.
+        name: String,
+        /// How many dependants were found.
+        count: usize,
+        /// One of them, named so the reader can act without a second query.
+        first: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A `LET` produced something that is not a single value.
     ///
     /// Unreachable while the executor answers a binding with a value, and named
@@ -959,4 +994,55 @@ pub enum Error {
         /// Where it was written.
         span: Span,
     },
+}
+
+/// Which catalog dependency a [`Error::StillDepended`] refusal is about.
+///
+/// An enum rather than the three `&'static str` fields this began as, for two
+/// reasons and only one of them is size. The other is that the strings had to
+/// agree — `analyzer` with `is named by` with `fields` — and nothing made them:
+/// the first draft shipped *"still is named by 1 fields"*, which is what a free
+/// pairing of a verb and a plural noun produces the first time somebody writes
+/// the third one. Here the three are one value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Depended {
+    /// An analyzer a field still names. The reference is by name, so nothing in
+    /// the catalog enforces it and a dangling one is a search that quietly stops
+    /// matching.
+    AnalyzerByField,
+    /// A database that still holds tables.
+    DatabaseByTable,
+    /// A namespace that still holds databases.
+    NamespaceByDatabase,
+}
+
+impl Depended {
+    /// What was asked to go.
+    pub(crate) const fn entity(self) -> &'static str {
+        match self {
+            Self::AnalyzerByField => "analyzer",
+            Self::DatabaseByTable => "database",
+            Self::NamespaceByDatabase => "namespace",
+        }
+    }
+
+    /// How the dependants stand to it, as the sentence needs it.
+    pub(crate) const fn relation(self) -> &'static str {
+        match self {
+            Self::AnalyzerByField => "is named by",
+            Self::DatabaseByTable | Self::NamespaceByDatabase => "holds",
+        }
+    }
+
+    /// What they are, agreeing with how many there are.
+    pub(crate) const fn dependants(self, count: usize) -> &'static str {
+        match (self, count) {
+            (Self::AnalyzerByField, 1) => "field",
+            (Self::AnalyzerByField, _) => "fields",
+            (Self::DatabaseByTable, 1) => "table",
+            (Self::DatabaseByTable, _) => "tables",
+            (Self::NamespaceByDatabase, 1) => "database",
+            (Self::NamespaceByDatabase, _) => "databases",
+        }
+    }
 }

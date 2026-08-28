@@ -6,7 +6,7 @@ use tessari_types::{FieldKind, Filter, Path, Step};
 use crate::ast::{
     Answer, Assignment, ConsumerSource, Direction, Edit, Expr, ExprKind, FieldMapping, FieldPath,
     Hop, InfoSubject, JoinSide, Name, OnFailure, Password, Projection, RangeExpr, RecordTarget,
-    Select, Source, Statement, StatementKind, UserChange,
+    Select, Source, Statement, StatementKind, TableChange, UserChange,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -723,16 +723,28 @@ impl Parser<'_> {
         })
     }
 
-    /// `ALTER USER ada SET PASSWORD '…'` · `ALTER USER ada SET ROLE editor`
+    /// `ALTER USER ada SET PASSWORD '…'` · `ALTER TABLE users SET SCHEMAFULL`
     ///
-    /// `USER` is the only thing this verb takes, and it is still spelled out.
-    /// The alternative — `ALTER ada SET …` — reads as though there were one
-    /// namespace of alterable things, and the first time a table becomes
-    /// alterable that reading is wrong everywhere it was written.
+    /// The target is spelled out, and the comment this replaces predicted why:
+    /// `ALTER ada SET …` reads as though there were one namespace of alterable
+    /// things, and a table becoming alterable is exactly the case that would
+    /// have made that reading wrong everywhere it was already written.
     fn alter_statement(&mut self) -> Result<StatementKind> {
         self.advance();
+        if self.eat_keyword(Keyword::Table) {
+            let table = self.table_ref()?;
+            self.expect_keyword(Keyword::Set, "`SET` and the one thing to change")?;
+            let change = if self.eat_keyword(Keyword::Schemafull) {
+                TableChange::Schemafull
+            } else if self.eat_word("schemaless") {
+                TableChange::Schemaless
+            } else {
+                return Err(self.error_here("`SCHEMAFULL` or `SCHEMALESS`"));
+            };
+            return Ok(StatementKind::AlterTable { table, change });
+        }
         if !self.eat_keyword(Keyword::User) {
-            return Err(self.error_here("`USER` and the user to change"));
+            return Err(self.error_here("`USER` or `TABLE` and the thing to change"));
         }
         let name = self.name()?;
         self.expect_keyword(Keyword::Set, "`SET` and the one thing to change")?;
@@ -870,7 +882,10 @@ impl Parser<'_> {
     fn drop_statement(&mut self) -> Result<StatementKind> {
         self.advance();
         match self.peek_keyword() {
-            Some(Keyword::Table | Keyword::Space) => {
+            // A bucket is a table row carrying `bucket: true` — `DEFINE BUCKET`
+            // reaches `define_table` — so the three words undefine the same
+            // catalog entry and differ only in which one the reader wrote.
+            Some(Keyword::Table | Keyword::Space | Keyword::Bucket) => {
                 self.advance();
                 Ok(StatementKind::DropTable {
                     table: self.table_ref()?,
@@ -879,6 +894,18 @@ impl Parser<'_> {
             Some(Keyword::User) => {
                 self.advance();
                 Ok(StatementKind::DropUser { name: self.name()? })
+            }
+            Some(Keyword::Analyzer) => {
+                self.advance();
+                Ok(StatementKind::DropAnalyzer { name: self.name()? })
+            }
+            Some(Keyword::Database) => {
+                self.advance();
+                Ok(StatementKind::DropDatabase { name: self.name()? })
+            }
+            Some(Keyword::Namespace) => {
+                self.advance();
+                Ok(StatementKind::DropNamespace { name: self.name()? })
             }
             Some(Keyword::Index) => {
                 self.advance();
@@ -904,7 +931,26 @@ impl Parser<'_> {
             _ if self.eat_word("consumer") => {
                 Ok(StatementKind::DropConsumer { name: self.name()? })
             }
-            _ => Err(self.error_here("`TABLE`, `SPACE`, `INDEX`, `FIELD` or `CONSUMER`")),
+            // Contextual for the same reason `consumer` is, and listed before
+            // `node` so that reading these two in order tells you which of them
+            // a bare word reaches.
+            _ if self.eat_word("replica") => Ok(StatementKind::DropReplica { name: self.name()? }),
+            // Declined rather than missing, and it says so. `DEFINE NODE` writes
+            // this process's own configuration outside the transaction, so its
+            // inverse is an edit to a config file rather than a statement — and
+            // a store that let one node undeclare another's identity over the
+            // wire would be answering a question no reader asked it.
+            _ if self.eat_word("node") => Err(self.error_here(
+                "a node to undeclare — but a node is not undeclared by a \
+                 statement: `DEFINE NODE` writes this process's own \
+                 configuration, so change the configuration and restart it. \
+                 `DROP REPLICA <name>` is the statement that stops counting \
+                 another endpoint as a peer",
+            )),
+            _ => Err(self.error_here(
+                "`TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, \
+                 `DATABASE`, `NAMESPACE`, `USER`, `CONSUMER` or `REPLICA`",
+            )),
         }
     }
 

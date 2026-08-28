@@ -42,6 +42,11 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DropIndex { .. } => "DROP INDEX",
         StatementKind::RebuildIndex { .. } => "REBUILD INDEX",
         StatementKind::DropField { .. } => "DROP FIELD",
+        StatementKind::DropAnalyzer { .. } => "DROP ANALYZER",
+        StatementKind::DropReplica { .. } => "DROP REPLICA",
+        StatementKind::DropDatabase { .. } => "DROP DATABASE",
+        StatementKind::DropNamespace { .. } => "DROP NAMESPACE",
+        StatementKind::AlterTable { .. } => "ALTER TABLE",
         StatementKind::Relate { .. } => "RELATE",
         StatementKind::Create { .. } => "CREATE",
         StatementKind::Select(_) => "SELECT",
@@ -94,6 +99,11 @@ pub const FORMS: &[&str] = &[
     "DROP INDEX",
     "REBUILD INDEX",
     "DROP FIELD",
+    "DROP ANALYZER",
+    "DROP REPLICA",
+    "DROP DATABASE",
+    "DROP NAMESPACE",
+    "ALTER TABLE",
     "RELATE",
     "CREATE",
     "SELECT",
@@ -161,6 +171,11 @@ mod tests {
              DROP INDEX i ON t;\
              REBUILD INDEX i ON t;\
              DROP FIELD f ON t;\
+             DROP ANALYZER a;\
+             DROP REPLICA second;\
+             DROP DATABASE d;\
+             DROP NAMESPACE n;\
+             ALTER TABLE t SET SCHEMAFULL;\
              DEFINE ANALYZER a FILTERS lowercase;\
              DEFINE USER u ROLE owner PASSWORD 'x';\
              DEFINE NODE ROLES serving;\

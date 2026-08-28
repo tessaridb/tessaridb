@@ -80,7 +80,14 @@ fn erase_statement(statement: &mut Statement) {
         | StatementKind::DefineTable { name, .. }
         | StatementKind::DefineSpace { name, .. }
         | StatementKind::DefineBucket { name, .. }
-        | StatementKind::DropUser { name } => erase_name(name),
+        | StatementKind::DropUser { name }
+        | StatementKind::DropAnalyzer { name }
+        | StatementKind::DropReplica { name }
+        | StatementKind::DropDatabase { name }
+        | StatementKind::DropNamespace { name } => erase_name(name),
+        // The change is a word the statement was written with rather than a
+        // value, so there is nothing under it to normalise.
+        StatementKind::AlterTable { table, .. } => erase_table(table),
         StatementKind::DefineIndex {
             name,
             table,

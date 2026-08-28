@@ -240,6 +240,15 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::DropField { .. }
         | StatementKind::DropTable { .. }
         | StatementKind::DropIndex { .. }
+        // Every one of these carries a catalog **name** and nothing else, and a
+        // name is never supplied by a parameter here — the same rule
+        // `bind_target` states for a table. `ALTER TABLE`'s change is a word the
+        // statement was written with, not a value.
+        | StatementKind::DropAnalyzer { .. }
+        | StatementKind::DropReplica { .. }
+        | StatementKind::DropDatabase { .. }
+        | StatementKind::DropNamespace { .. }
+        | StatementKind::AlterTable { .. }
         | StatementKind::RebuildIndex { .. }
         | StatementKind::Backup { .. }
         // A subject is a name and never a value. `INFO FOR TABLE $t` would be a

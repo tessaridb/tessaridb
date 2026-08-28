@@ -290,16 +290,29 @@ impl Catalog<'_, '_> {
     ///
     /// Returns an error when a stored definition cannot be read.
     pub fn fields_on(&self, table: TableId) -> Result<Vec<FieldDefinition>> {
+        let mut found = self.fields()?;
+        found.retain(|definition| definition.table == table);
+        Ok(found)
+    }
+
+    /// Every field declared anywhere in the store.
+    ///
+    /// The unfiltered form of [`Self::fields_on`], which is what a question
+    /// about a **store-wide** name needs: an analyzer is declared once for the
+    /// whole store rather than per database, so asking whether one is still
+    /// attached is a question no single table can answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a stored definition cannot be read.
+    pub fn fields(&self) -> Result<Vec<FieldDefinition>> {
         let mut found = Vec::new();
         for (_, bytes) in self.transaction.scan_table(
             system::SYSTEM_NAMESPACE,
             system::SYSTEM_DATABASE,
             system::FIELDS,
         )? {
-            let definition = FieldDefinition::from_value(&decode_payload(&bytes)?)?;
-            if definition.table == table {
-                found.push(definition);
-            }
+            found.push(FieldDefinition::from_value(&decode_payload(&bytes)?)?);
         }
         Ok(found)
     }

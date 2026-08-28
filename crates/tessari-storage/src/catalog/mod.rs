@@ -118,9 +118,11 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
 
     /// Create a table inside an existing database.
     ///
-    /// The shape is fixed at creation. Changing `schemafull` on a populated
-    /// table is a migration, and the honest spelling of one is a drop and a
-    /// redefinition, which re-checks every row through the same path.
+    /// The shape is fixed at creation except for `schemafull`, which
+    /// [`Self::set_schemafull`] rewrites in place. That one moves because a
+    /// schema is a rule about what may be *written*, so changing it binds the
+    /// writes that follow and leaves the stored rows alone; `edge` and `bucket`
+    /// do not move, because both describe what the records already **are**.
     ///
     /// An edge table additionally gets an index on `out` and one on `in`, in
     /// this same commit, so that traversal is an index read without the caller
@@ -494,8 +496,11 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     ///
     /// The table's records are **not** removed here — that is a bulk operation
     /// with its own cost and its own decisions, and doing it silently inside a
-    /// catalog call would hide it. Dropping a namespace or a database cascades
-    /// into everything below it and is not built yet.
+    /// catalog call would hide it. [`Self::drop_database`] and
+    /// [`Self::drop_namespace`] take the same stance one and two levels up:
+    /// each removes its own definition and nothing beneath it, and whether
+    /// anything is still down there is a question the statement asks, where the
+    /// span to refuse with lives.
     ///
     /// The id is not released. A reused id would let a stale key or an in-flight
     /// reference resolve against a different table, and nothing in the store
@@ -519,6 +524,79 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         ));
         self.transaction
             .delete(system::address(system::NAMES, RecordId::from(qualified)));
+        Ok(true)
+    }
+
+    /// Remove a database's definition and release its name.
+    ///
+    /// Answers `false` when there was nothing under that id.
+    ///
+    /// Nothing inside is touched, for the reason [`Self::drop_table`] leaves the
+    /// records: cascading here would be unbounded work hidden inside a catalog
+    /// call. Whether the database still holds anything is asked by the
+    /// statement, which has the span to say so with.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub fn drop_database(&mut self, id: DatabaseId) -> Result<bool> {
+        let Some(definition) = self.database(id)? else {
+            return Ok(false);
+        };
+        let qualified = qualify(
+            Level::Database,
+            &[definition.namespace.get()],
+            &definition.name,
+        );
+        self.transaction.delete(system::address(
+            system::DATABASES,
+            RecordId::Int(id_key(id.get())),
+        ));
+        self.transaction
+            .delete(system::address(system::NAMES, RecordId::from(qualified)));
+        Ok(true)
+    }
+
+    /// Remove a namespace's definition and release its name.
+    ///
+    /// Answers `false` when there was nothing under that id. Nothing inside is
+    /// touched — see [`Self::drop_database`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub fn drop_namespace(&mut self, id: NamespaceId) -> Result<bool> {
+        let Some(definition) = self.namespace(id)? else {
+            return Ok(false);
+        };
+        let qualified = qualify(Level::Namespace, &[], &definition.name);
+        self.transaction.delete(system::address(
+            system::NAMESPACES,
+            RecordId::Int(id_key(id.get())),
+        ));
+        self.transaction
+            .delete(system::address(system::NAMES, RecordId::from(qualified)));
+        Ok(true)
+    }
+
+    /// Rewrite a table's `schemafull` flag, leaving everything else as it is.
+    ///
+    /// Answers `false` when there was nothing under that id.
+    ///
+    /// The name is not touched, so the definition keeps its identity and every
+    /// index, field and record already pointing at this id stays pointed at it.
+    /// The rows are not visited: a schema is a rule about what may be written,
+    /// and this writes the rule.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub fn set_schemafull(&mut self, id: TableId, schemafull: bool) -> Result<bool> {
+        let Some(mut definition) = self.table(id)? else {
+            return Ok(false);
+        };
+        definition.schemafull = schemafull;
+        self.write(system::TABLES, id.get(), &definition.to_value());
         Ok(true)
     }
 

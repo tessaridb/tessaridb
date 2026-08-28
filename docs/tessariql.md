@@ -397,6 +397,14 @@ DROP FIELD opened_at ON accounts;
 DROP INDEX by_email ON users;
 DROP TABLE users;
 DROP SPACE sessions;
+DROP BUCKET media;
+DROP ANALYZER simple;
+DROP REPLICA warsaw;
+DROP DATABASE staging;
+DROP NAMESPACE acme;
+
+ALTER TABLE notes SET SCHEMAFULL;
+ALTER TABLE notes SET SCHEMALESS;
 ```
 
 **A store with no users is open**, and declaring the first one closes it —
@@ -590,7 +598,88 @@ commit, exactly as `DEFINE INDEX` does, and fails the same way on a table whose
 pass outlasts the gap between writes.
 
 `DROP TABLE` removes the definition. It does not delete the table's records,
-because that is bulk work whose cost belongs where a caller can see it.
+because that is bulk work whose cost belongs where a caller can see it. Dropping
+a **bucket** is the one exception, and it is not really one: a bucket's bytes
+live in a companion table created alongside it whose name carries a byte no
+identifier can hold, so nothing could ever name it to drop it — it goes with the
+bucket or it is orphaned permanently.
+
+### Undeclaring, and what refuses
+
+Every catalog object this language can declare can be undeclared, except one:
+
+| Declared with | Undeclared with |
+|---|---|
+| `DEFINE NAMESPACE` | `DROP NAMESPACE` |
+| `DEFINE DATABASE` | `DROP DATABASE` |
+| `DEFINE TABLE` · `DEFINE SPACE` · `DEFINE BUCKET` | `DROP TABLE` · `DROP SPACE` · `DROP BUCKET` |
+| `DEFINE INDEX` | `DROP INDEX` |
+| `DEFINE FIELD` | `DROP FIELD` |
+| `DEFINE ANALYZER` | `DROP ANALYZER` |
+| `DEFINE USER` | `DROP USER` |
+| `DEFINE REPLICA` | `DROP REPLICA` |
+| `DEFINE CONSUMER` | `DROP CONSUMER` |
+| `DEFINE NODE` | **nothing — see below** |
+
+**A drop removes its own definition and nothing beneath it**, and refuses while
+anything still points at it:
+
+```tessariql
+DROP ANALYZER simple;
+-- analyzer `simple` still is named by 1 fields, the first being `body`
+--   — remove fields first
+
+DROP DATABASE shop;
+-- database `shop` still holds 3 tables, the first being `accounts`
+--   — remove tables first
+```
+
+The refusal **counts and names**, so acting on it does not need a second query.
+
+**There is no `CASCADE`, deliberately.** A destructive statement carrying no
+predicate at all is the widest thing this language can be asked to run, and the
+person writing `DROP DATABASE staging` is thinking about one name rather than
+about everything under it. This is the same rule that made `DELETE FROM t WHERE
+c` require a bound — `CASCADE` is that unbounded form under another spelling.
+
+`DROP ANALYZER` is worth its own sentence. A field attaches an analyzer **by
+name**, so nothing in the catalog enforces the link and nothing would notice it
+break; what a dangling one produces is a search that quietly stops matching,
+which is a wrong answer indistinguishable from a right one.
+
+**`DROP NODE` does not exist, and the refusal says why.** `DEFINE NODE` writes
+this process's own configuration outside the transaction, so its inverse is an
+edit to a configuration file and a restart — and a store where one node could
+undeclare another's identity over the wire would be answering a question nobody
+asked it. `DROP REPLICA` is the statement that stops counting another endpoint
+as a peer.
+
+### Changing a table after it exists
+
+```tessariql
+ALTER TABLE notes SET SCHEMAFULL;
+ALTER TABLE notes SET SCHEMALESS;
+```
+
+**`SET SCHEMAFULL` holds the rows already in the table to the declaration, in
+the same commit**, and is refused when any of them carries a field nobody
+declared — writing nothing at all, not even the flag. That is the same stance
+`DEFINE FIELD` takes one paragraph below, and for the same reason: a constraint
+that could be declared over data violating it is a comment.
+
+So the way to tighten a populated table is to declare the fields its rows
+actually carry, or remove the rows that do not fit, and then alter it:
+
+```tessariql
+DEFINE FIELD extra ON notes TYPE string;
+ALTER TABLE notes SET SCHEMAFULL;
+```
+
+`SET SCHEMALESS` is never refused: it only widens what is admissible, so no
+stored row can contradict it.
+
+`edge` and `bucket` do not move, because both describe what the records already
+**are** rather than what may be written next.
 
 ### What a table declares about its fields
 
@@ -624,9 +713,10 @@ type name can appear.
 still accepts a field nobody declared — which is the mistake worth catching,
 because writing `stauts` where `status` was meant creates a field, raises
 nothing, and quietly drops the record out of every query that filters on the name
-that was meant. A `SCHEMAFULL` table refuses it instead. The flag is fixed when
-the table is defined; changing it on a populated table is a migration, and the
-honest spelling of one is a drop and a redefinition, which re-checks every row.
+that was meant. A `SCHEMAFULL` table refuses it instead. The flag is set at
+definition or changed later with `ALTER TABLE … SET SCHEMAFULL`, which holds the
+rows already there to it in the same commit and is refused if any of them does
+not fit.
 
 **A declaration constrains the rows that predate it.** `DEFINE FIELD` holds every
 row already in the table to what it declares, in the same commit — and declaring

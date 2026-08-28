@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 767 conformance cases define the language and run in the build.
+Unreleased. 796 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -28,6 +28,31 @@ Unreleased. 767 conformance cases define the language and run in the build.
   as a disclosure of everything in that database to every such user.
 
 ### Added
+
+- **Six more of the twelve catalog objects can now be undeclared, and one says
+  why it cannot.** `DROP BUCKET`, `DROP ANALYZER`, `DROP REPLICA`,
+  `DROP DATABASE` and `DROP NAMESPACE` join the five drops that already existed;
+  `ALTER TABLE … SET SCHEMAFULL | SCHEMALESS` joins `ALTER USER`. A store could
+  previously be put into a shape no statement could get it out of, and the way
+  out was editing the catalog by hand.
+
+  **Each of these refuses while something still points at it**, counting what it
+  found and naming the first, so acting on the refusal needs no second query.
+  `DROP ANALYZER` refuses while a field names it — the attachment is by name, so
+  nothing enforces it and a dangling one produces a search that quietly stops
+  matching. `DROP DATABASE` and `DROP NAMESPACE` refuse while anything is inside.
+  **There is deliberately no `CASCADE`**: a statement that removes an unbounded
+  amount on the strength of one name is exactly what `DELETE … LIMIT` was added
+  to prevent, under another spelling.
+
+  `ALTER TABLE … SET SCHEMAFULL` binds what may be *written* from its commit
+  onwards and does not revisit the rows already stored, which is what keeps a
+  `DEFINE`-shaped statement from doing work proportional to the data.
+
+  `DROP NODE` is **declined rather than missing**, and the refusal says so:
+  `DEFINE NODE` writes this process's own configuration outside the transaction,
+  so its inverse is a configuration edit — the message names that, and names
+  `DROP REPLICA` as the statement that stops counting another endpoint as a peer.
 
 - **`crypto::sha256` and `crypto::sha512`.** Two pure functions, text in and
   lowercase hex out, so that `crypto::sha256(body) = $expected` is writable — an
@@ -365,6 +390,15 @@ Unreleased. 767 conformance cases define the language and run in the build.
   budget a statement could satisfy. The word stays unreserved — an index may
   still be called `timeout`, and which reading is meant is settled by whether a
   duration follows.
+
+### Fixed
+
+- **Dropping a bucket orphaned the table its bytes lived in.** `DEFINE BUCKET`
+  creates a companion chunk table whose name carries a byte no identifier can
+  hold, so nothing could ever drop it by naming it — and `DROP TABLE` on the
+  bucket left it behind permanently, after which redefining the bucket failed
+  with the chunk table's name already in use. Found by the new corpus, which
+  redefines a bucket it has just dropped.
 
 ### Changed — breaking
 

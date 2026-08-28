@@ -303,15 +303,26 @@ fn build_schema(
 fn tightened_tables(record: &LogRecord) -> Result<BTreeSet<TableAddress>> {
     let mut tables = BTreeSet::new();
     for mutation in record.mutations() {
-        // Only a field declaration is here. A table being *declared* schemafull
-        // is deliberately not: the flag is fixed at creation, and a table being
-        // created has no rows to re-check — the rows a transaction writes
-        // alongside the creation are caught by the first pass, against a schema
-        // this record's own declaration is folded into. If `SCHEMAFULL` ever
-        // becomes something a populated table can be given, this is where the
-        // existing rows are made to answer for it.
-        if let Some(CatalogChange::FieldDefined(declared)) = catalog_change(mutation)? {
-            tables.insert((declared.namespace, declared.database, declared.table));
+        // Two things tighten a table, and the second one arrived when
+        // `SCHEMAFULL` stopped being fixed at creation — this is the place the
+        // comment that used to stand here pointed at.
+        match catalog_change(mutation)? {
+            Some(CatalogChange::FieldDefined(declared)) => {
+                tables.insert((declared.namespace, declared.database, declared.table));
+            }
+            // `ALTER TABLE … SET SCHEMAFULL` rewrites the definition, so the
+            // rows already stored are made to answer for it here — the same
+            // stance `DEFINE FIELD` takes, and the reason it is not enough to
+            // check the writes this transaction happens to carry.
+            //
+            // Creation writes a definition too and reaches this arm; that costs
+            // nothing, because a table being created has no rows to re-check and
+            // the ones the transaction writes alongside it are caught by the
+            // first pass anyway.
+            Some(CatalogChange::TableDefined(defined)) if defined.schemafull => {
+                tables.insert((defined.namespace, defined.database, defined.id));
+            }
+            _ => {}
         }
     }
     Ok(tables)
