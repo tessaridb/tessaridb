@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 678 conformance cases define the language and run in the build.
+Unreleased. 716 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -29,6 +29,22 @@ Unreleased. 678 conformance cases define the language and run in the build.
 
 ### Added
 
+- **Fourteen functions open an object and reshape an array** —
+  `object::keys values len`, `array::distinct sort reverse flatten join slice`,
+  `string::split slice replace`, `math::sqrt pow`. A path takes a literal name
+  or position and no range, so none of these was sayable. One rule settles most
+  of what they do: **of two candidate behaviours, the one the other can be
+  written from wins.** `array::sort` is ascending and there is no `sort_desc`
+  because `array::reverse(array::sort(x))` is it; `array::distinct` keeps the
+  first occurrence because sorting throws away an order nothing recovers;
+  `array::flatten` removes one level because two is the function written twice.
+  `object::keys` and `object::values` correspond position by position, which
+  nothing else in the language could establish. `array::join` reads elements by
+  `type::string`'s rule rather than a rule of its own. Positions count
+  characters, never bytes. `math::sqrt` refuses a negative rather than answering
+  a NaN that would compare false against everything and travel silently, and
+  `math::pow` keeps two whole numbers whole while refusing a result outside the
+  integer range rather than saturating to the largest number in the store.
 - **Eight `time::` functions read the calendar out of an instant** — `year`,
   `month`, `day`, `hour`, `minute`, `second`, `unix` and `from_unix`. A reading
   is a value like any other, so it filters, orders, groups and projects, which

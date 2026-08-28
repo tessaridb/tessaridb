@@ -129,9 +129,23 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::StringUpper
         | Function::StringTrim
         | Function::StringConcat
+        | Function::StringSplit
+        | Function::StringSlice
+        | Function::StringReplace
+        | Function::MathSqrt
+        | Function::MathPow
         | Function::ArrayLen
         | Function::ArrayFirst
         | Function::ArrayLast
+        | Function::ObjectKeys
+        | Function::ObjectValues
+        | Function::ObjectLen
+        | Function::ArrayDistinct
+        | Function::ArraySort
+        | Function::ArrayReverse
+        | Function::ArrayFlatten
+        | Function::ArrayJoin
+        | Function::ArraySlice
         | Function::MathAbs
         | Function::MathFloor
         | Function::MathCeil

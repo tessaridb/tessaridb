@@ -69,6 +69,83 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
             .last()
             .cloned()
             .unwrap_or(Value::None)),
+        Function::ObjectKeys => Ok(crate::collection::keys(object_at(
+            function, arguments, 0, span,
+        )?)),
+        Function::ObjectValues => Ok(crate::collection::values(object_at(
+            function, arguments, 0, span,
+        )?)),
+        Function::ObjectLen => {
+            let object = object_at(function, arguments, 0, span)?;
+            count(object.len(), function, span)
+        }
+        Function::ArrayDistinct => Ok(crate::collection::distinct(array_at(
+            function, arguments, 0, span,
+        )?)),
+        Function::ArraySort => Ok(crate::collection::sort(array_at(
+            function, arguments, 0, span,
+        )?)),
+        Function::ArrayReverse => Ok(crate::collection::reverse(array_at(
+            function, arguments, 0, span,
+        )?)),
+        Function::ArrayFlatten => Ok(crate::collection::flatten(array_at(
+            function, arguments, 0, span,
+        )?)),
+        Function::ArrayJoin => {
+            let items = array_at(function, arguments, 0, span)?;
+            let separator = text_at(function, arguments, 1, span)?;
+            crate::collection::join(items, separator, span)
+        }
+        Function::ArraySlice => {
+            let items = array_at(function, arguments, 0, span)?;
+            let start = whole(function, arguments, 1, span)?;
+            let count = whole(function, arguments, 2, span)?;
+            crate::collection::slice(items, start, count, span)
+        }
+        Function::StringSplit => {
+            let text = text_at(function, arguments, 0, span)?;
+            let separator = text_at(function, arguments, 1, span)?;
+            crate::text::split(text, separator, span)
+        }
+        Function::StringSlice => {
+            let text = text_at(function, arguments, 0, span)?;
+            let start = whole(function, arguments, 1, span)?;
+            let count = whole(function, arguments, 2, span)?;
+            crate::text::slice(text, start, count, span)
+        }
+        Function::StringReplace => {
+            let text = text_at(function, arguments, 0, span)?;
+            let from = text_at(function, arguments, 1, span)?;
+            let to = text_at(function, arguments, 2, span)?;
+            crate::text::replace(text, from, to, span)
+        }
+        // A root is a float whatever it was given, because most roots are not
+        // exact in any of the three numeric kinds — so keeping the argument's
+        // kind, which `math::abs` and its neighbours do, would mean rounding
+        // `math::sqrt(2)` to `1` and calling it an integer.
+        Function::MathSqrt => {
+            let number = number_at(function, arguments, 0, span)?;
+            let Some(held) = number.as_float() else {
+                return Err(Error::CallFailed {
+                    function,
+                    reason: "that number is outside the range a float holds",
+                    span,
+                });
+            };
+            // A negative root is refused rather than answered with a NaN. A NaN
+            // compares false against everything including itself, so it would
+            // travel through a filter and an ordering silently; `math::abs`
+            // says what a caller who meant the magnitude should write.
+            if held < 0.0 {
+                return Err(Error::CallFailed {
+                    function,
+                    reason: "a square root of a negative number is not a number; math::abs says the magnitude",
+                    span,
+                });
+            }
+            Ok(Value::Number(Number::float(held.sqrt())))
+        }
+        Function::MathPow => power(function, arguments, span),
         Function::MathAbs | Function::MathFloor | Function::MathCeil | Function::MathRound => {
             let number = number_at(function, arguments, 0, span)?;
             Ok(Value::Number(reshape(function, number)))
@@ -315,6 +392,72 @@ fn array_at(function: Function, arguments: &[Value], at: usize, span: Span) -> R
         Some(Value::Array(items)) => Ok(items),
         other => Err(wrong_type(function, at, "an array", named(other), span)),
     }
+}
+
+/// A base raised to an exponent.
+///
+/// **Two whole numbers answer a whole number**, which is the rule `math::abs`
+/// and its neighbours already follow — a kind is kept where keeping it is
+/// exact. `math::pow(2, 10)` is therefore `1024` and not `1024.0`. Anything
+/// else — a fractional base, a fractional or negative exponent — answers a
+/// float, since that is the only kind that holds the answer.
+///
+/// An integer result too large to hold is **refused rather than saturated**. A
+/// saturated power is a wrong number that looks like a right one, and it would
+/// be the largest number in the store, which is exactly the value most likely
+/// to pass a sanity check unnoticed.
+fn power(function: Function, arguments: &[Value], span: Span) -> Result<Value> {
+    let base = number_at(function, arguments, 0, span)?;
+    let exponent = number_at(function, arguments, 1, span)?;
+    let failed = |reason: &'static str| Error::CallFailed {
+        function,
+        reason,
+        span,
+    };
+    if let (Some(base), Some(exponent)) = (base.as_exact_integer(), exponent.as_exact_integer())
+        && exponent >= 0
+    {
+        let Ok(exponent) = u32::try_from(exponent) else {
+            return Err(failed("that exponent is larger than any integer answer"));
+        };
+        return base
+            .checked_pow(exponent)
+            .map(|held| Value::Number(Number::Integer(held)))
+            .ok_or_else(|| failed("that power is outside the integer range"));
+    }
+    let (Some(base), Some(exponent)) = (base.as_float(), exponent.as_float()) else {
+        return Err(failed("that number is outside the range a float holds"));
+    };
+    let held = base.powf(exponent);
+    if held.is_nan() || held.is_infinite() {
+        return Err(failed("that power is not a number a float holds"));
+    }
+    Ok(Value::Number(Number::float(held)))
+}
+
+fn object_at(
+    function: Function,
+    arguments: &[Value],
+    at: usize,
+    span: Span,
+) -> Result<&std::collections::BTreeMap<String, Value>> {
+    match arguments.get(at) {
+        Some(Value::Object(fields)) => Ok(fields),
+        other => Err(wrong_type(function, at, "an object", named(other), span)),
+    }
+}
+
+/// An argument that has to be a whole number, for a position or a count.
+///
+/// A fraction is refused rather than truncated, on the rule the casts follow:
+/// `math::round` already says which whole number was meant.
+fn whole(function: Function, arguments: &[Value], at: usize, span: Span) -> Result<i64> {
+    let number = number_at(function, arguments, at, span)?;
+    number.as_exact_integer().ok_or(Error::CallFailed {
+        function,
+        reason: "a position is a whole number; math::round says which one was meant",
+        span,
+    })
 }
 
 fn datetime_at(

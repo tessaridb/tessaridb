@@ -92,12 +92,40 @@ pub enum Function {
     StringTrim,
     /// `string::concat(a, b)`
     StringConcat,
+    /// `string::split(text, separator)` — the parts between occurrences.
+    StringSplit,
+    /// `string::slice(text, start, count)` — a run of characters.
+    StringSlice,
+    /// `string::replace(text, from, to)` — every occurrence replaced.
+    StringReplace,
+    /// `math::sqrt(number)` — the square root, as a float.
+    MathSqrt,
+    /// `math::pow(base, exponent)`
+    MathPow,
     /// `array::len(items)`
     ArrayLen,
     /// `array::first(items)` — `none` when there are none.
     ArrayFirst,
     /// `array::last(items)` — the one a path cannot reach.
     ArrayLast,
+    /// `object::keys(o)` — the field names, in the object's own order.
+    ObjectKeys,
+    /// `object::values(o)` — the values, in the same order as the names.
+    ObjectValues,
+    /// `object::len(o)` — how many fields.
+    ObjectLen,
+    /// `array::distinct(items)` — each value once, first occurrence kept.
+    ArrayDistinct,
+    /// `array::sort(items)` — ascending, in the value system's declared order.
+    ArraySort,
+    /// `array::reverse(items)` — the same values, back to front.
+    ArrayReverse,
+    /// `array::flatten(items)` — one level of nesting removed.
+    ArrayFlatten,
+    /// `array::join(items, separator)` — the elements as one text.
+    ArrayJoin,
+    /// `array::slice(items, start, count)` — a run of elements.
+    ArraySlice,
     /// `math::abs(number)`
     MathAbs,
     /// `math::floor(number)`
@@ -189,9 +217,23 @@ impl Function {
         Self::StringUpper,
         Self::StringTrim,
         Self::StringConcat,
+        Self::StringSplit,
+        Self::StringSlice,
+        Self::StringReplace,
+        Self::MathSqrt,
+        Self::MathPow,
         Self::ArrayLen,
         Self::ArrayFirst,
         Self::ArrayLast,
+        Self::ObjectKeys,
+        Self::ObjectValues,
+        Self::ObjectLen,
+        Self::ArrayDistinct,
+        Self::ArraySort,
+        Self::ArrayReverse,
+        Self::ArrayFlatten,
+        Self::ArrayJoin,
+        Self::ArraySlice,
         Self::MathAbs,
         Self::MathFloor,
         Self::MathCeil,
@@ -238,9 +280,23 @@ impl Function {
             Self::StringUpper => "string::upper",
             Self::StringTrim => "string::trim",
             Self::StringConcat => "string::concat",
+            Self::StringSplit => "string::split",
+            Self::StringSlice => "string::slice",
+            Self::StringReplace => "string::replace",
+            Self::MathSqrt => "math::sqrt",
+            Self::MathPow => "math::pow",
             Self::ArrayLen => "array::len",
             Self::ArrayFirst => "array::first",
             Self::ArrayLast => "array::last",
+            Self::ObjectKeys => "object::keys",
+            Self::ObjectValues => "object::values",
+            Self::ObjectLen => "object::len",
+            Self::ArrayDistinct => "array::distinct",
+            Self::ArraySort => "array::sort",
+            Self::ArrayReverse => "array::reverse",
+            Self::ArrayFlatten => "array::flatten",
+            Self::ArrayJoin => "array::join",
+            Self::ArraySlice => "array::slice",
             Self::MathAbs => "math::abs",
             Self::MathFloor => "math::floor",
             Self::MathCeil => "math::ceil",
@@ -303,6 +359,14 @@ impl Function {
             | Self::ArrayLen
             | Self::ArrayFirst
             | Self::ArrayLast
+            | Self::MathSqrt
+            | Self::ObjectKeys
+            | Self::ObjectValues
+            | Self::ObjectLen
+            | Self::ArrayDistinct
+            | Self::ArraySort
+            | Self::ArrayReverse
+            | Self::ArrayFlatten
             | Self::MathAbs
             | Self::MathFloor
             | Self::MathCeil
@@ -324,6 +388,9 @@ impl Function {
             | Self::TypeUuid
             | Self::GeoArea => 1,
             Self::StringConcat
+            | Self::StringSplit
+            | Self::MathPow
+            | Self::ArrayJoin
             | Self::VectorCosine
             | Self::VectorEuclidean
             | Self::VectorDot
@@ -338,6 +405,7 @@ impl Function {
             | Self::GeoEquals
             | Self::GeoTouches
             | Self::GeoDistance => 2,
+            Self::ArraySlice | Self::StringSlice | Self::StringReplace => 3,
         }
     }
 
@@ -367,9 +435,23 @@ impl Function {
             | Self::StringUpper
             | Self::StringTrim
             | Self::StringConcat
+            | Self::StringSplit
+            | Self::StringSlice
+            | Self::StringReplace
+            | Self::MathSqrt
+            | Self::MathPow
             | Self::ArrayLen
             | Self::ArrayFirst
             | Self::ArrayLast
+            | Self::ObjectKeys
+            | Self::ObjectValues
+            | Self::ObjectLen
+            | Self::ArrayDistinct
+            | Self::ArraySort
+            | Self::ArrayReverse
+            | Self::ArrayFlatten
+            | Self::ArrayJoin
+            | Self::ArraySlice
             | Self::MathAbs
             | Self::MathFloor
             | Self::MathCeil

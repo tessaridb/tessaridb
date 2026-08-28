@@ -1995,9 +1995,10 @@ SELECT * FROM users WHERE string::len(name) = 3;
 
 | Group | Functions |
 |---|---|
-| `string` | `len` (characters, not bytes) · `lower` · `upper` · `trim` · `concat(a, b)` |
-| `array` | `len` · `first` · `last` |
-| `math` | `abs` · `floor` · `ceil` · `round` (half away from zero) |
+| `string` | `len` (characters, not bytes) · `lower` · `upper` · `trim` · `concat(a, b)` · `split(text, separator)` · `slice(text, start, count)` · `replace(text, from, to)` — the [collections](#collections) |
+| `array` | `len` · `first` · `last` · `distinct` · `sort` · `reverse` · `flatten` · `join(items, separator)` · `slice(items, start, count)` — the [collections](#collections) |
+| `object` | `keys` · `values` · `len` — the [collections](#collections) |
+| `math` | `abs` · `floor` · `ceil` · `round` (half away from zero) · `sqrt` · `pow(base, exponent)` |
 | `time` | `now()` · `bucket(instant, width)` — the start of the window an instant is in · `year` · `month` · `day` · `hour` · `minute` · `second` · `unix` · `from_unix(seconds)` — the [calendar](#the-calendar) |
 | `type` | `of(value)` — the type's name, as §3 spells it · `bool` · `int` · `float` · `string` · `datetime` · `uuid` — the [casts](#casts) |
 | `vector` | `cosine(a, b)` · `euclidean(a, b)` · `dot(a, b)` |
@@ -2100,6 +2101,87 @@ opposite reason, that it accepts all three. `type::decimal` is deferred rather
 than refused: an exact decimal is the kind money is kept in, so a cast producing
 one from a float has to say what it does with a value no decimal holds exactly,
 and that deserves its own answer.
+
+### Collections
+
+A path takes a literal name or a literal position and no range. So there is no
+way to reach an object's field names, to reorder an array, or to take a run out
+of the middle of one — which is what these fourteen are for:
+
+```
+SELECT object::keys(address) AS names FROM people;
+SELECT array::sort(array::distinct(tags)) AS tags FROM people;
+SELECT array::first(string::split(email, '@')) AS handle FROM people;
+```
+
+| Written | Answers |
+|---|---|
+| `object::keys(o)` · `object::values(o)` | the names and the values, in the same order |
+| `object::len(o)` | how many fields |
+| `array::distinct(items)` | each value once, first occurrence kept |
+| `array::sort(items)` | ascending, in the value system's declared order |
+| `array::reverse(items)` | the same values, back to front |
+| `array::flatten(items)` | one level of nesting removed |
+| `array::join(items, sep)` | the elements as one text |
+| `array::slice(items, start, count)` | a run of elements |
+| `string::split(text, sep)` | the parts between occurrences |
+| `string::slice(text, start, count)` | a run of characters |
+| `string::replace(text, from, to)` | every occurrence replaced |
+| `math::sqrt(n)` · `math::pow(base, exp)` | a root and a power |
+
+**Of two candidate behaviours, the one the other can be written from wins.**
+That single rule settles most of the questions above, and it is why several
+obvious neighbours do not exist:
+
+- `array::sort` sorts **ascending**, and there is no `array::sort_desc`, because
+  `array::reverse(array::sort(x))` is it.
+- `array::distinct` keeps the **first** occurrence, so the given order survives.
+  `array::sort(array::distinct(x))` recovers the sorted form; nothing recovers
+  an order already thrown away.
+- `array::flatten` removes **one** level. Two levels is the function written
+  twice; a caller handed a deep flatten has no way back.
+
+**`object::keys` and `object::values` correspond position by position.** Nothing
+in the language zips two arrays, so a caller reading them separately would have
+no way to pair them if they ever disagreed. Both walk the object's own order,
+which is name order, because an object is stored keyed by name so that two
+objects with the same content encode to the same bytes.
+
+**`array::sort` uses the value system's declared order, which spans types.** A
+mixed array sorts rather than failing, and sorts the way the same values sort in
+an index — a comparison here that disagreed with the stored order would be an
+answer that changes when an index appears. `array::distinct` uses the same
+system's equality, so `1`, `1.0` and `dec 1` are one value, exactly as they are
+one member of a set.
+
+**`array::join` reads each element by `type::string`'s rule**, so a number joins
+and an array is refused. It shares the rule rather than having one of its own
+because the language cannot convert an array's elements one by one — a stricter
+`join` would leave a caller holding `[1, 2]` with no sentence to write. That is
+the same test `type::float` had to pass.
+
+**Positions count characters, not bytes**, in `string::slice` as in
+`string::len`. A byte position can land inside a character, and the answer is
+then a broken string. Both `slice` functions share one bounds rule: a start past
+the end is empty, a count reaching past it takes what is there, and a **negative**
+bound is refused — an empty answer would hide a caller who meant "from the end",
+which neither function does.
+
+**An empty separator is refused** by `string::split` and `string::replace`.
+Each has two defensible readings and no obvious one, so it is named as a
+mistake rather than guessed at.
+
+**`math::sqrt` always answers a float**, because most roots are not exact in any
+of the three numeric kinds — keeping the argument's kind would round
+`math::sqrt(2)` to `1`. A negative root is **refused rather than answered with a
+NaN**: a NaN compares false against everything including itself, so it would
+travel through a filter and an ordering silently. `math::abs` says the magnitude.
+
+**`math::pow` keeps a whole number whole**, so `math::pow(2, 10)` is `1024` and
+not `1024.0`; a fractional base or a negative exponent answers a float. A result
+outside the integer range is refused rather than saturated — a saturated power
+is a wrong number that looks right, and it is the largest number in the store,
+which is the value most likely to pass a check unnoticed.
 
 ### The calendar
 
@@ -3358,6 +3440,7 @@ be, because it is confined to the run its fixed values name.
 | A function is added only when the language cannot already say it | **contract** — the rule that keeps the surface from growing by association |
 | An absent or null argument makes a call answer `none` | **contract** — except `type::of`, which asks about the value rather than computing from it |
 | A cast produces the kind it names or refuses, never something near it | **contract** — an absent argument still answers `none`, so a cast narrows a read; a value that is there and does not convert fails it, because a filter silently returning fewer rows is the one wrong answer nothing downstream detects |
+| Of two candidate behaviours for a collection function, the one the other can be written from wins | **contract** — `array::reverse(array::sort(x))` is why there is no `sort_desc`, and `array::distinct` keeps the first occurrence because sorting throws away an order nothing recovers; `object::keys` and `object::values` correspond position by position; positions count characters, not bytes |
 | A date read from an instant is UTC, and `time::second` is the second of the minute | **contract** — an instant has no zone, and `time::unix` is the other question; `time::from_unix` refuses a fraction because `math::round` says which second was meant, while `time::unix` drops a remainder because nothing else could say that conversion |
 | Anything computed in a projection needs `AS` | **contract** |
 | Comparison is the value system's declared order, including across types | **contract** — a comparison disagreeing with the order its index is stored in is an answer that changes when an index appears |
