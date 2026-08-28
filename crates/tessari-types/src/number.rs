@@ -40,6 +40,7 @@ use core::cmp::Ordering;
 use core::fmt;
 
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive as _;
 
 /// A number: an integer, a float, or an exact decimal.
 #[derive(Debug, Clone)]
@@ -113,6 +114,67 @@ impl Number {
             Self::Integer(value) => Some(Decimal::from(*value)),
             Self::Decimal(value) => Some(*value),
             Self::Float(value) => Decimal::try_from(*value).ok(),
+        }
+    }
+
+    /// This number as an integer, when it is one exactly.
+    ///
+    /// `None` for a number with a fractional part, for one outside the integer
+    /// range, and for the three floats that sit outside the finite numbers.
+    ///
+    /// **A fraction is refused rather than truncated.** The language already has
+    /// `math::floor`, `math::ceil` and `math::round` to say which whole number
+    /// was meant, so a conversion that quietly picked one of the three would be
+    /// answering a question nobody asked — and answering it with a number
+    /// indistinguishable from a correct one.
+    ///
+    /// Decided through [`Number::as_decimal`] rather than per kind, so that "is
+    /// this a whole number" cannot disagree with "does this compare equal to
+    /// that whole number".
+    #[must_use]
+    pub fn as_exact_integer(&self) -> Option<i64> {
+        let exact = self.as_decimal()?;
+        if exact.fract() != Decimal::ZERO {
+            return None;
+        }
+        exact.to_i64()
+    }
+
+    /// This number as a float.
+    ///
+    /// A float already is one — infinities and not-a-number included, since
+    /// those are floats and nothing is lost in saying so.
+    ///
+    /// **A decimal converts to its nearest float**, which is the one place this
+    /// type rounds, and it rounds here for the same reason the module header
+    /// gives for comparison: a decimal like `19.99` has no exact float at all,
+    /// so a rule demanding exactness would refuse nearly every decimal anybody
+    /// holds and leave no way to express the conversion. The nearest float is
+    /// what "as a float" means for a decimal.
+    ///
+    /// **An integer converts only when a float holds it exactly.** The
+    /// asymmetry is not a matter of taste: past 2^53 consecutive integers share
+    /// one float, so the answer would be a *different integer* rather than a
+    /// nearby quantity — `9007199254740993` coming back as
+    /// `9007199254740992` — and integers here are counts and identities, where
+    /// off by one is a wrong answer and not a rounding.
+    #[must_use]
+    pub fn as_float(&self) -> Option<f64> {
+        match self {
+            Self::Float(value) => Some(*value),
+            Self::Decimal(value) => value.to_f64(),
+            Self::Integer(value) => {
+                // 2^53: the last integer with a float of its own.
+                const EXACT: i64 = 9_007_199_254_740_992;
+                if *value > EXACT || *value < -EXACT {
+                    return None;
+                }
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "the bound above is what makes this conversion exact"
+                )]
+                Some(*value as f64)
+            }
         }
     }
 

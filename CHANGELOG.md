@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 635 conformance cases define the language and run in the build.
+Unreleased. 655 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -28,6 +28,23 @@ Unreleased. 635 conformance cases define the language and run in the build.
   as a disclosure of everything in that database to every such user.
 
 ### Added
+
+- **Six `type::` casts** — `bool`, `int`, `float`, `string`, `datetime`, `uuid` —
+  turn a value into a kind, and are named after the kinds themselves, so a cast
+  and a `DEFINE FIELD … TYPE` spell the same word. **A cast is an assertion, not
+  a projection**: it produces the kind it names or it refuses naming the value,
+  never something near it. So `type::int('2.5')` is refused rather than
+  truncated (`math::round` says which whole number was meant), `type::bool(1)`
+  is refused rather than read as `true`, and `type::string([1, 2])` is refused
+  rather than answered with a rendering. An **absent** argument still answers
+  `none`, so a cast narrows a read over records of differing shapes; a value
+  that is there and does not convert fails the read, because a filter that
+  silently returned fewer rows than the question asked for is the one wrong
+  answer nothing downstream can detect. `type::float` is deliberately the one
+  place that rounds — `dec 19.99` has no exact float, and unlike `type::int`
+  there is no other function that could say the conversion — while an integer
+  past 2^53 still refuses, since there the nearest float is a *different*
+  integer.
 
 - **`LET $name = <expr>`** binds a value for the statements below it, which is
   what lets one engine's answer become the next statement's question: a vector

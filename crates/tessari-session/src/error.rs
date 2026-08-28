@@ -453,6 +453,34 @@ pub enum Error {
         span: Span,
     },
 
+    /// A value the cast asked for cannot hold.
+    ///
+    /// Distinct from [`Error::WrongArgument`], because the argument's *type* is
+    /// not the complaint: `type::int` takes a string happily and answers `42`
+    /// for `'42'`. What failed is this particular value, so this is the one
+    /// refusal in the function surface that names the value rather than its
+    /// type — a message saying only "wants a number, found string" would be
+    /// describing an argument the function accepts.
+    ///
+    /// **Why it refuses instead of answering `none`.** An absent argument
+    /// already answers `none`, and a store built on the distinction between
+    /// "the field is not there" and "the field is there and holds nothing"
+    /// cannot then use `none` for a third thing — "the field is there, holds
+    /// something, and that something is not what you asked for". A caller who
+    /// wants the lenient reading can say so with `IF`; a caller who gets it by
+    /// default has no way back.
+    #[error("{function} cannot read {value} as {target} (at {span})")]
+    NotCastable {
+        /// The cast called.
+        function: Function,
+        /// The value as it was written, quoted when it is text.
+        value: String,
+        /// The kind that was asked for.
+        target: &'static str,
+        /// Where the call is.
+        span: Span,
+    },
+
     /// A default that cannot satisfy the type its own field declares.
     ///
     /// Checked when the declaration is made rather than when it first bites: by

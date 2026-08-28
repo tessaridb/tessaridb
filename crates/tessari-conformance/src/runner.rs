@@ -219,6 +219,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::WrongArgument { .. } => "WrongArgument",
         Error::GeometryRefused { .. } => "GeometryRefused",
         Error::CallFailed { .. } => "CallFailed",
+        Error::NotCastable { .. } => "NotCastable",
         Error::NotABucket { .. } => "NotABucket",
         Error::NotWrittenByHand { .. } => "NotWrittenByHand",
         Error::FileNeedsAPath { .. } => "FileNeedsAPath",

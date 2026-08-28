@@ -1,0 +1,105 @@
+# The six casts, and the one rule they all follow: a cast produces the kind it
+# names or it refuses. It never produces something near it.
+#
+# The three outcomes are deliberately distinguishable, because they are three
+# different facts: `none` for a field that was not there, the value for one that
+# converts, and a refusal naming the value for one that does not.
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE intake;
+USE DATABASE intake;
+--- expect: ok
+
+--- case: rows carrying values as text, the way they arrive from outside
+DEFINE TABLE arrivals;
+CREATE arrivals:1 = { count: '42', ratio: '2.5', flag: 'true', seen: '2026-08-28T12:30:15Z', tag: '550e8400-e29b-41d4-a716-446655440000' };
+CREATE arrivals:2 = { count: 'ada', flag: 'yes' };
+--- expect: ok
+
+--- case: text becomes the kind it spells
+SELECT type::int(count) AS count, type::float(ratio) AS ratio, type::bool(flag) AS flag FROM arrivals:1;
+--- expect: rows 1
+
+--- case: and so do an instant and an identifier
+SELECT type::datetime(seen) AS seen, type::uuid(tag) AS tag FROM arrivals:1;
+--- expect: rows 1
+
+--- case: text that does not spell the kind is refused, not answered
+SELECT type::int(count) AS count FROM arrivals:2;
+--- expect: error NotCastable
+
+--- case: and a near-spelling of a boolean is a guess, which is also refused
+SELECT type::bool(flag) AS flag FROM arrivals:2;
+--- expect: error NotCastable
+
+--- case: a field that is not there answers with an absence, which is a different fact
+SELECT type::int(missing) AS count FROM arrivals:1;
+--- expect: rows 1
+
+--- case: so a cast over a table narrows to the records that have the field
+SELECT type::int(missing) AS count FROM arrivals;
+--- expect: rows 2
+
+--- case: but a value that is there and does not convert fails the read
+# The line the value system draws, and it is drawn here on purpose. An absent
+# field is a shape, so it narrows. A field that is there and holds `'ada'` is a
+# question with no answer, and a filter that quietly dropped the record would be
+# returning fewer rows than the question asked for, with nothing said.
+SELECT * FROM arrivals WHERE type::int(count) > 40;
+--- expect: error NotCastable
+
+--- case: numbers the store already holds, whole and fractional
+CREATE arrivals:3 = { whole: 2.0, part: 2.5, price: dec 19.99 };
+--- expect: ok
+
+--- case: a whole number has an integer whichever kind it arrived as
+SELECT type::int(whole) AS whole FROM arrivals:3;
+--- expect: rows 1
+
+--- case: a fraction is refused rather than truncated
+SELECT type::int(part) AS whole FROM arrivals:3;
+--- expect: error NotCastable
+
+--- case: because math::round is how a caller says which whole number was meant
+SELECT type::int(math::round(part)) AS whole FROM arrivals:3;
+--- expect: rows 1
+
+--- case: a decimal takes its nearest float, since an exact one would refuse every price
+SELECT type::float(price) AS price FROM arrivals:3;
+--- expect: rows 1
+
+--- case: a number is not a boolean, in either direction
+SELECT type::bool(whole) AS flag FROM arrivals:3;
+--- expect: error NotCastable
+
+--- case: a cast to text produces the text the matching cast reads back
+SELECT type::string(type::datetime(seen)) AS seen, type::string(type::uuid(tag)) AS tag FROM arrivals:1;
+--- expect: rows 1
+
+--- case: but a rendering is not text a value reads back from
+# `Display` writes `<array of 2>` for an array. That is a sentence about a
+# value, and putting it where the value belonged is a thing nothing downstream
+# could detect.
+CREATE arrivals:4 = { tags: ['a', 'b'] };
+SELECT type::string(tags) AS tags FROM arrivals:4;
+--- expect: error NotCastable
+
+--- case: a cast names the kind a field declaration names, spelled the same way
+DEFINE TABLE readings SCHEMAFULL;
+DEFINE FIELD taken ON readings TYPE datetime;
+DEFINE FIELD reading ON readings TYPE float;
+CREATE readings:1 = { taken: type::datetime('2026-08-28T00:00:00Z'), reading: type::float('2.5') };
+--- expect: ok
+
+--- case: and the declared field holds what the cast produced
+SELECT taken, reading FROM readings:1;
+--- expect: rows 1
+
+--- case: a cast standing in a default runs when the field is not written
+DEFINE FIELD noted ON readings TYPE datetime DEFAULT type::datetime('2026-01-01T00:00:00Z');
+CREATE readings:2 = { taken: type::datetime('2026-08-28T01:00:00Z'), reading: 1.0 };
+SELECT noted FROM readings:2;
+--- expect: rows 1

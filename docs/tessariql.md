@@ -1999,7 +1999,7 @@ SELECT * FROM users WHERE string::len(name) = 3;
 | `array` | `len` · `first` · `last` |
 | `math` | `abs` · `floor` · `ceil` · `round` (half away from zero) |
 | `time` | `now()` · `bucket(instant, width)` — the start of the window an instant is in |
-| `type` | `of(value)` — the type's name, as §3 spells it |
+| `type` | `of(value)` — the type's name, as §3 spells it · `bool` · `int` · `float` · `string` · `datetime` · `uuid` — the [casts](#casts) |
 | `vector` | `cosine(a, b)` · `euclidean(a, b)` · `dot(a, b)` |
 | `search` | `score(field, 'query')` — see [Ranking](#ranking) |
 | `geo` | `intersects` · `disjoint` · `covers` · `covered_by` · `contains` · `within` · `equals` · `distance(a, b)` · `area(shape)` — see [Shapes](#shapes) |
@@ -2032,6 +2032,74 @@ propagated one, are `type::of` — the type of an absence is `none` — the thre
 `vector` distances, which answer `+∞` because a distance to something that is not
 there is unbounded, and `search::score`, which answers `0` because a record
 holding none of the query's words scores zero.
+
+### Casts
+
+Six functions turn a value into a kind, and they are **named after the kinds
+themselves**, so a cast and a field declaration say the same word:
+
+```
+SELECT type::int(count) AS count FROM arrivals;
+SELECT type::datetime(seen) AS seen, type::uuid(tag) AS tag FROM arrivals;
+DEFINE FIELD reading ON readings TYPE float;
+CREATE readings:1 = { reading: type::float('2.5') };
+```
+
+| Written | Reads |
+|---|---|
+| `type::bool(v)` | a boolean, or the text `'true'` / `'false'` |
+| `type::int(v)` | a whole number of any numeric kind, or text spelling one |
+| `type::float(v)` | a number a float can stand for, or text spelling one |
+| `type::string(v)` | a value that has text it reads back from |
+| `type::datetime(v)` | an instant, or RFC 3339 text |
+| `type::uuid(v)` | a UUID, or either of its two written forms |
+
+**A cast is an assertion, not a projection.** It produces the kind it names or
+it refuses; it never produces something *near* it. So `type::int('2.5')` is
+refused rather than truncated, `type::bool(1)` is refused rather than read as
+`true`, and `type::string([1, 2])` is refused rather than answered with
+`<array of 2>`. Every one of those alternatives returns a value a caller cannot
+tell from a correct one, which is the failure this language spends its refusals
+on.
+
+**There are three outcomes and they mean three different things**:
+
+| The argument | The answer |
+|---|---|
+| not there | `none` — the general rule for a function of an absence |
+| there, and convertible | the value |
+| there, and not convertible | a refusal naming the value and the kind |
+
+The middle row is why a cast narrows a read rather than breaking it —
+`type::int(count)` over a table where some records have no `count` answers for
+the ones that do. The last row is why a record whose `count` is `'ada'` **fails
+the read** instead of quietly dropping out of it: a filter that silently
+returned fewer rows than the question asked for would be the one kind of wrong
+answer nothing downstream can detect.
+
+**`math::round` is why `type::int` can afford to refuse a fraction.** The
+language already says which whole number was meant, three ways, so a cast that
+picked one would be answering a question nobody asked:
+
+```
+SELECT type::int(math::round(part)) AS whole FROM arrivals;
+```
+
+**`type::float` is deliberately not symmetric with that.** A decimal takes its
+*nearest* float, because `dec 19.99` has no exact float and a rule demanding one
+would refuse nearly every price anybody stores — and unlike `type::int`, there
+is no second function to say the conversion instead. An integer past 2^53 still
+refuses, because there the nearest float is a **different integer**, and an
+integer here is a count or an identity where off by one is a wrong answer rather
+than a rounding.
+
+**Two casts were not admitted.** `type::number` names three numeric kinds
+without choosing one, so it could only mean "whichever kind it already was",
+which is not a conversion — `TYPE number` on a *declaration* is useful for the
+opposite reason, that it accepts all three. `type::decimal` is deferred rather
+than refused: an exact decimal is the kind money is kept in, so a cast producing
+one from a float has to say what it does with a value no decimal holds exactly,
+and that deserves its own answer.
 
 ### Shapes
 
@@ -3236,6 +3304,7 @@ be, because it is confined to the run its fixed values name.
 | `ORDER BY` takes an expression | **contract** |
 | A function is added only when the language cannot already say it | **contract** — the rule that keeps the surface from growing by association |
 | An absent or null argument makes a call answer `none` | **contract** — except `type::of`, which asks about the value rather than computing from it |
+| A cast produces the kind it names or refuses, never something near it | **contract** — an absent argument still answers `none`, so a cast narrows a read; a value that is there and does not convert fails it, because a filter silently returning fewer rows is the one wrong answer nothing downstream detects |
 | Anything computed in a projection needs `AS` | **contract** |
 | Comparison is the value system's declared order, including across types | **contract** — a comparison disagreeing with the order its index is stored in is an answer that changes when an index appears |
 | An ordered comparison against `NONE` or `NULL` is false | **contract** — they are the absence of a value, not a small one |

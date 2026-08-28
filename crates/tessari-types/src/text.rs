@@ -11,6 +11,8 @@
 //! not silently rounded, clamped or reinterpreted, because every one of those
 //! produces a stored value the author did not write.
 
+use core::fmt::Write as _;
+
 use crate::time::Datetime;
 
 /// Seconds in the units the wall-clock fields carry.
@@ -113,6 +115,32 @@ pub fn parse_uuid(text: &str) -> Option<[u8; 16]> {
         *bytes.get_mut(index)? = high.checked_mul(16)?.checked_add(low)?;
     }
     Some(bytes)
+}
+
+/// Write sixteen bytes in a UUID's canonical `8-4-4-4-12` text form.
+///
+/// The inverse of [`parse_uuid`], and it lives beside it for the reason this
+/// module's header gives for the readers: two writers for one literal disagree
+/// eventually.
+///
+/// `Value`'s `Display` writes `uuid:` and thirty-two undivided digits, and that
+/// is a *rendering* — tagged so a reader of a log cannot mistake it for a
+/// string, and never read back. This is the form a person writes and every
+/// other system reads, so it is the one a cast to text produces: that text is a
+/// value, and a value gets stored, sent, and read again.
+#[must_use]
+pub fn uuid_to_text(bytes: &[u8; 16]) -> String {
+    let mut text = String::with_capacity(36);
+    for (index, byte) in bytes.iter().enumerate() {
+        if matches!(index, 4 | 6 | 8 | 10) {
+            text.push('-');
+        }
+        // Two digits together, so a byte below sixteen keeps its leading zero —
+        // the difference between a UUID and a shorter string that looks like
+        // one. Writing into a `String` has no failure to handle.
+        let _infallible = write!(text, "{byte:02x}");
+    }
+    text
 }
 
 /// The sub-second digits, and whatever follows them.
@@ -330,6 +358,41 @@ mod tests {
             parse_uuid("550e8400e29b41d4a716446655440000"),
             Some(expected)
         );
+    }
+
+    #[test]
+    fn a_uuid_round_trips_through_its_canonical_text() {
+        // The property the reader and the writer share, asserted in both
+        // directions — the same one the instant has above, and for the same
+        // reason: a writer that was never checked against the reader is how a
+        // value comes back as something else.
+        for bytes in [
+            [0_u8; 16],
+            [0xff; 16],
+            [
+                0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44,
+                0x00, 0x00,
+            ],
+            // A leading zero in the first byte, which a writer that formats
+            // without a width silently drops.
+            [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+                0x0f, 0x00,
+            ],
+        ] {
+            let text = uuid_to_text(&bytes);
+            assert_eq!(text.len(), 36, "{text}");
+            assert_eq!(parse_uuid(&text), Some(bytes), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_canonical_form_is_the_one_everybody_writes() {
+        let bytes = [
+            0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44,
+            0x00, 0x00,
+        ];
+        assert_eq!(uuid_to_text(&bytes), "550e8400-e29b-41d4-a716-446655440000");
     }
 
     #[test]

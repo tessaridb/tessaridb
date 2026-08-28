@@ -25,6 +25,7 @@ mod arithmetic;
 mod authorize;
 mod budget;
 mod call;
+mod cast;
 mod condition;
 mod consume;
 mod context;

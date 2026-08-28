@@ -122,6 +122,20 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
             };
             Ok(Value::from(value.type_name()))
         }
+        // A cast either produces the kind it names or refuses; `crate::cast`
+        // holds the reading for each, and the reason it refuses rather than
+        // answering `none`.
+        Function::TypeBool
+        | Function::TypeInt
+        | Function::TypeFloat
+        | Function::TypeString
+        | Function::TypeDatetime
+        | Function::TypeUuid => {
+            let Some(value) = arguments.first() else {
+                return Err(wrong_type(function, 0, "a value", "nothing", span));
+            };
+            crate::cast::read(function, value, span)
+        }
     }
 }
 

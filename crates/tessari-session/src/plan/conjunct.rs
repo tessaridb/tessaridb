@@ -139,6 +139,12 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::TimeNow
         | Function::TimeBucket
         | Function::TypeOf
+        | Function::TypeBool
+        | Function::TypeInt
+        | Function::TypeFloat
+        | Function::TypeString
+        | Function::TypeDatetime
+        | Function::TypeUuid
         | Function::VectorCosine
         | Function::VectorEuclidean
         | Function::VectorDot

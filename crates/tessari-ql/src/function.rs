@@ -12,6 +12,21 @@
 //! path takes a literal position, and there is no length to subtract from, so
 //! "the last element" is genuinely unsayable without it.
 //!
+//! The `type::` casts pass the rule for the same reason: text arriving from
+//! outside is text, and nothing else in the language turns `'42'` into a number
+//! or `'2026-01-01T00:00:00Z'` into an instant. Two candidates were **rejected**
+//! while admitting them:
+//!
+//! - **`type::number`** names three numeric kinds without choosing one, so it
+//!   could only mean "whichever kind the argument already had", which is not a
+//!   conversion. [`FieldKind::Number`](tessari_types::FieldKind::Number) exists
+//!   because a *declaration* can usefully accept all three; a cast cannot
+//!   usefully produce all three.
+//! - **`type::decimal`** is deferred rather than refused. An exact decimal is
+//!   the kind money is kept in, so a cast that produced one from a float would
+//!   have to say what it does with a value no decimal holds exactly — and that
+//!   question deserves its own answer rather than an arm in this wave.
+//!
 //! # Why a name is namespaced
 //!
 //! `string::len` rather than `len`, for three reasons: the function surface can
@@ -95,6 +110,18 @@ pub enum Function {
     TimeNow,
     /// `type::of(value)` — the type's name, as §3 spells it.
     TypeOf,
+    /// `type::bool(value)` — the value as a boolean, or a refusal.
+    TypeBool,
+    /// `type::int(value)` — the value as an integer, or a refusal.
+    TypeInt,
+    /// `type::float(value)` — the value as a float, or a refusal.
+    TypeFloat,
+    /// `type::string(value)` — the value as the text it reads back from.
+    TypeString,
+    /// `type::datetime(value)` — the value as an instant, or a refusal.
+    TypeDatetime,
+    /// `type::uuid(value)` — the value as a UUID, or a refusal.
+    TypeUuid,
     /// `vector::cosine(a, b)` — the angle between two vectors, as a distance.
     VectorCosine,
     /// `vector::euclidean(a, b)` — the distance between two points.
@@ -154,6 +181,12 @@ impl Function {
         Self::MathRound,
         Self::TimeNow,
         Self::TypeOf,
+        Self::TypeBool,
+        Self::TypeInt,
+        Self::TypeFloat,
+        Self::TypeString,
+        Self::TypeDatetime,
+        Self::TypeUuid,
         Self::VectorCosine,
         Self::VectorEuclidean,
         Self::VectorDot,
@@ -189,6 +222,12 @@ impl Function {
             Self::MathRound => "math::round",
             Self::TimeNow => "time::now",
             Self::TypeOf => "type::of",
+            Self::TypeBool => "type::bool",
+            Self::TypeInt => "type::int",
+            Self::TypeFloat => "type::float",
+            Self::TypeString => "type::string",
+            Self::TypeDatetime => "type::datetime",
+            Self::TypeUuid => "type::uuid",
             Self::VectorCosine => "vector::cosine",
             Self::VectorEuclidean => "vector::euclidean",
             Self::VectorDot => "vector::dot",
@@ -236,6 +275,12 @@ impl Function {
             | Self::MathCeil
             | Self::MathRound
             | Self::TypeOf
+            | Self::TypeBool
+            | Self::TypeInt
+            | Self::TypeFloat
+            | Self::TypeString
+            | Self::TypeDatetime
+            | Self::TypeUuid
             | Self::GeoArea => 1,
             Self::StringConcat
             | Self::VectorCosine
@@ -289,6 +334,12 @@ impl Function {
             | Self::MathCeil
             | Self::MathRound
             | Self::TypeOf
+            | Self::TypeBool
+            | Self::TypeInt
+            | Self::TypeFloat
+            | Self::TypeString
+            | Self::TypeDatetime
+            | Self::TypeUuid
             | Self::VectorCosine
             | Self::VectorEuclidean
             | Self::VectorDot
@@ -323,6 +374,13 @@ impl Function {
     ///   field holds none of the query's words, and a document holding none of
     ///   them scores zero. That is the computed answer and not a stand-in for
     ///   one.
+    ///
+    /// The `type::` **casts** are deliberately not in the list, though
+    /// [`Function::TypeOf`] beside them is. `type::of` asks what a value is, and
+    /// an absence has an answer to that. A cast asks for the value *as* a kind,
+    /// and there is no `int` that a missing field is — so the general rule
+    /// applies and the answer is `none`, which is what lets `type::int(price)`
+    /// run over a table where some records have no price.
     ///
     /// [`Function::GeoDistance`] is in the list for the distance reason and not
     /// by analogy: `ORDER BY geo::distance(…) LIMIT 10` over a table where some
@@ -394,6 +452,40 @@ mod tests {
                 Purity::Pure
             };
             assert_eq!(function.purity(), expected, "{function} is misclassified");
+        }
+    }
+
+    /// Every cast names a kind a field can be declared as, spelled identically.
+    ///
+    /// The decision this holds in place: a cast and a `DEFINE FIELD … TYPE` say
+    /// the same word for the same kind. Two vocabularies for one type system is
+    /// the sort of thing that reads fine in each file and forces every author to
+    /// remember which side of the language they are on — `type::integer(x)` into
+    /// a field declared `int`, and no error anywhere to point at it.
+    ///
+    /// `type::of` is excluded because it is not a cast: it answers *about* a
+    /// value rather than producing one of a kind.
+    #[test]
+    fn every_cast_spells_its_kind_the_way_a_field_declaration_does() {
+        let casts: Vec<&str> = Function::ALL
+            .iter()
+            .filter_map(|function| {
+                function
+                    .spelling()
+                    .strip_prefix("type::")
+                    .filter(|name| *name != "of")
+            })
+            .collect();
+        assert_eq!(
+            casts,
+            ["bool", "int", "float", "string", "datetime", "uuid"],
+            "the cast set moved"
+        );
+        for name in casts {
+            assert!(
+                tessari_types::FieldKind::parse(name).is_some_and(|kind| kind.name() == name),
+                "`type::{name}` is not the spelling a field declaration uses"
+            );
         }
     }
 
