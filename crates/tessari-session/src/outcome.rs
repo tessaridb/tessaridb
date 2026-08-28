@@ -134,6 +134,24 @@ pub enum Note {
     /// an exact one are the same shape, the same length, and usually the same
     /// records.
     Approximate,
+    /// The read compared values of two different kinds.
+    ///
+    /// A schemaless store lets one record hold a number where the next holds the
+    /// text of one, and `WHERE age = 30` then matches some of them. Nothing goes
+    /// wrong — the comparison is well defined and the answer is right for the
+    /// values that are there — and the read quietly answers a narrower question
+    /// than the one that was asked.
+    ///
+    /// An absence never raises this. A record without the field is how a
+    /// schemaless read narrows rather than fails, and a note on it would fire on
+    /// nearly every read in the language.
+    ComparedAcrossKinds {
+        /// One kind, whichever sorts first, so the note reads the same way
+        /// whichever side it was written on.
+        left: &'static str,
+        /// The other.
+        right: &'static str,
+    },
     /// A materialised source produced as many records as its ceiling allows.
     ///
     /// Its answer is therefore a prefix of what the inner read would have
@@ -154,6 +172,7 @@ impl Note {
         match self {
             Self::FellBack { .. } => "fell-back",
             Self::Approximate => "approximate",
+            Self::ComparedAcrossKinds { .. } => "compared-across-kinds",
             Self::SubqueryCeiling { .. } => "subquery-ceiling",
         }
     }
@@ -170,6 +189,10 @@ impl Note {
             Self::Approximate => {
                 "an approximate index answered this, so a nearer record may exist".to_owned()
             }
+            Self::ComparedAcrossKinds { left, right } => format!(
+                "this read compared a {left} with a {right}, \
+                 so it answered about the records whose kinds happened to line up",
+            ),
             Self::SubqueryCeiling { rows } => format!(
                 "the materialised source reached its ceiling of {rows}, \
                  so this answers about a prefix of what it would hold unbounded",

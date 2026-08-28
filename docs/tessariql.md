@@ -2586,11 +2586,26 @@ There are three today:
 | `fell-back` | an index held the order and could **not** fill the bound, so the read took the path it names instead |
 | `approximate` | the answer is the best the graph found, not provably the best there is (§5, *Asking for an approximate ordering*) |
 | `subquery-ceiling` | a materialised source reached the `LIMIT` it stated, so the outer statement asked its question of a prefix |
+| `compared-across-kinds` | the read compared values of two different kinds — a number against the text of one, say — so it answered about the records whose kinds happened to line up |
 
 **`fell-back` fires on an index that declined, never on a table that has none.**
 A bounded ordered read over an unindexed table is the most ordinary read in the
 language and gave nothing up; a note on it would fire so often that nobody would
 read the ones that matter.
+
+**`compared-across-kinds` fires on a real crossing and never on an absence.**
+A schemaless store lets one record hold `age: 30` and the next `age: '30'`, and
+`WHERE age = 30` then matches some of them — correctly, and narrower than the
+author meant. A record with **no** `age` compares `none` instead, and that is the
+ordinary case a schemaless read is built for: it is how a read over records of
+differing shapes narrows rather than failing. A note there would fire on nearly
+every read in the language, which is worse than no note because it looks like a
+feature. `null` is left out from the other side, being a value deliberately
+written rather than a mistake.
+
+The note names a **pair of kinds, once**. A comparison runs per record, so a read
+over a million mixed records has one thing to say and not a million; and the pair
+reads the same way whichever side of the `=` each half was written on.
 
 **`subquery-ceiling` is not a truncation.** The bound is the caller's own word
 and a materialised source is required to state it (§5, *Reading what another read

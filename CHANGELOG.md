@@ -168,6 +168,17 @@ Unreleased. 573 conformance cases define the language and run in the build.
   read runs, naming the words that exist. An assertion inside a materialised
   source is about the inner read.
 
+- **A fourth note, `compared-across-kinds`.** A schemaless store lets one record
+  hold `age: 30` and the next `age: '30'`, and `WHERE age = 30` then matches some
+  of them — correctly, and narrower than the author meant, with no error
+  anywhere. The read now says so.
+
+  It never fires on an **absence**: a record without the field compares `none`,
+  which is how a schemaless read narrows rather than fails, and a note there
+  would fire on nearly every read in the language. The note names a pair of kinds
+  **once** however many records produced it, and reads the same way whichever
+  side of the `=` each half was written on.
+
 - **`TIMEOUT <duration>`** puts a wall-clock ceiling on a read, and a read that
   passes it is **refused, not truncated**. When the ceiling passes the records
   are already in hand, so returning them costs nothing and looks like success —

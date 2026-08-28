@@ -26,6 +26,7 @@ use crate::condition::boolean;
 use crate::consume::Consumer;
 use crate::context::Context;
 use crate::error::{Error, Result};
+use crate::noticed::Noticed;
 use crate::outcome::{AccessPath, Note};
 use crate::plan;
 use crate::plan::Plan;
@@ -186,6 +187,7 @@ impl Session<'_> {
                         if *op == BinaryOp::Matches {
                             matches_terms(analyzer, value, &other)
                         } else {
+                            scope.compared(value, &other);
                             apply(*op, value, &other)
                         }
                     })));
@@ -202,6 +204,11 @@ impl Session<'_> {
                     };
                     return Ok(Value::Bool(matches_terms(analyzer, &held, &other)));
                 }
+                // Beside the comparison rather than inside it: what an operator
+                // means once both sides are values belongs to `tessari_types`,
+                // which the store's `ASSERT` path shares and which has no notes
+                // and should not grow any.
+                scope.compared(&held, &other);
                 Ok(Value::Bool(apply(*op, &held, &other)))
             }
             ExprKind::Literal(value) => Ok(value.clone()),
@@ -407,7 +414,19 @@ impl Session<'_> {
         // One budget for the whole read, so a two-stage path counts each record
         // once and the refusal says how far the *read* got.
         let mut budget = Budget::of(within);
-        let (prepared, searched) = self.prepare_source(transaction, select, &mut notes, within)?;
+        // Owned by the read and borrowed by everything it evaluates, so the
+        // lifetime rather than the discipline is what stops a note outliving the
+        // statement that earned it.
+        let noticed = Noticed::default();
+        let (prepared, searched) = self.prepare_source(
+            transaction,
+            select,
+            Reporting {
+                collected: &mut notes,
+                noticed: &noticed,
+            },
+            within,
+        )?;
         // The bound the sort may keep to. `bounded` is applied to the ordering
         // stage's output below, so keeping only what it will keep is an identity
         // between two adjacent stages rather than a decision about the
@@ -431,6 +450,7 @@ impl Session<'_> {
                 &searched,
                 crate::shape::Topmost::keeping(&select.order, bound),
                 &mut budget,
+                &noticed,
             );
             let plan = self.produce_source(
                 transaction,
@@ -438,9 +458,13 @@ impl Session<'_> {
                 prepared,
                 &searched,
                 &mut shaping,
-                &mut notes,
+                Reporting {
+                    collected: &mut notes,
+                    noticed: &noticed,
+                },
             )?;
             asserted(select, &plan)?;
+            notes.extend(noticed.drained());
             return Ok(Answered {
                 records: crate::shape::bounded(shaping.finish(), select.start, select.limit),
                 plan,
@@ -455,7 +479,10 @@ impl Session<'_> {
             prepared,
             &searched,
             &mut collecting,
-            &mut notes,
+            Reporting {
+                collected: &mut notes,
+                noticed: &noticed,
+            },
         )?;
         let mut records = collecting.finish();
         // Before anything groups, projects or sorts, so a projection and a sort
@@ -480,7 +507,10 @@ impl Session<'_> {
                 let wanted = self.folded_projection(transaction, wanted)?;
                 let mut projected = Vec::with_capacity(records.len());
                 for (id, record) in records {
-                    projected.push((id, self.project(transaction, &record, &wanted, &searched)?));
+                    projected.push((
+                        id,
+                        self.project(transaction, &record, &wanted, &searched, &noticed)?,
+                    ));
                 }
                 projected
             }
@@ -509,6 +539,7 @@ impl Session<'_> {
                 &searched,
                 crate::shape::Topmost::keeping(&select.order, bound),
                 &mut budget,
+                &noticed,
             );
             for (id, record) in records {
                 if shaping.take(transaction, id, record)?.is_break() {
@@ -518,6 +549,7 @@ impl Session<'_> {
             shaping.finish()
         };
         asserted(select, &plan)?;
+        notes.extend(noticed.drained());
         Ok(Answered {
             records: crate::shape::bounded(records, select.start, select.limit),
             plan,
@@ -543,6 +575,7 @@ impl Session<'_> {
         record: &Value,
         wanted: &[Projected],
         searched: &Searched,
+        noticed: &Noticed,
     ) -> Result<Value> {
         let mut projected = BTreeMap::new();
         for value in wanted {
@@ -577,7 +610,7 @@ impl Session<'_> {
             let held = self.evaluate_in(
                 transaction,
                 &value.value,
-                Scope::searching(record, searched),
+                Scope::searching(record, searched).noticing(noticed),
             )?;
             if held.is_present() {
                 projected.insert(value.name.text.clone(), held);
@@ -643,7 +676,7 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         select: &'a Select,
-        notes: &mut Vec<Note>,
+        reporting: Reporting<'_>,
         within: Option<Deadline>,
     ) -> Result<(Prepared<'a>, Searched)> {
         match &select.from {
@@ -722,7 +755,7 @@ impl Session<'_> {
                     left_key,
                     right_key,
                     condition.as_deref(),
-                    notes,
+                    reporting,
                     within,
                 )?;
                 Ok((Prepared::Held(found, plan), searched))
@@ -735,8 +768,10 @@ impl Session<'_> {
             // for it would describe only the shallowest case.
             Source::Subquery { read, condition } => {
                 let inner = self.read(transaction, read, within)?;
-                notes.extend(inner.notes);
-                notes.extend(ceiling_reached(read, inner.records.len()));
+                reporting.collected.extend(inner.notes);
+                reporting
+                    .collected
+                    .extend(ceiling_reached(read, inner.records.len()));
                 let (found, plan) = (inner.records, Plan::new(AccessPath::Materialised));
                 let Some(condition) = condition else {
                     return Ok((Prepared::Held(found, plan), Searched::default()));
@@ -752,7 +787,7 @@ impl Session<'_> {
                     let held = self.evaluate_in(
                         transaction,
                         condition,
-                        Scope::searching(&record, &searched),
+                        Scope::searching(&record, &searched).noticing(reporting.noticed),
                     )?;
                     if boolean(&held, condition.span)? {
                         kept.push((id, record));
@@ -776,7 +811,7 @@ impl Session<'_> {
         prepared: Prepared<'_>,
         searched: &Searched,
         consumer: &mut dyn Consumer,
-        notes: &mut Vec<Note>,
+        reporting: Reporting<'_>,
     ) -> Result<Plan> {
         let named = table_named(&select.from);
         // The table every plan below reports, resolved once: which table a read
@@ -803,7 +838,7 @@ impl Session<'_> {
                     // The one place the note is not about a cost but about the
                     // answer: these records are the best the graph found, and
                     // nothing in their shape says so.
-                    notes.push(Note::Approximate);
+                    reporting.collected.push(Note::Approximate);
                     hand_over(found, transaction, consumer)?;
                     return Ok(Plan {
                         index: Some(index),
@@ -825,7 +860,7 @@ impl Session<'_> {
                                 ..over(AccessPath::Ordered)
                             });
                         }
-                        Walked::Declined => notes.push(Note::FellBack {
+                        Walked::Declined => reporting.collected.push(Note::FellBack {
                             from: AccessPath::Ordered,
                             to: AccessPath::Scan,
                         }),
@@ -850,7 +885,7 @@ impl Session<'_> {
                         // ones it does not hold. The scan below finds them, and
                         // this is the note saying the index did not earn its
                         // keep on this read.
-                        Walked::Declined => notes.push(Note::FellBack {
+                        Walked::Declined => reporting.collected.push(Note::FellBack {
                             from: AccessPath::Ordered,
                             to: AccessPath::Scan,
                         }),
@@ -910,7 +945,7 @@ impl Session<'_> {
                         id,
                         &bound,
                         condition,
-                        searched,
+                        Scope::over(searched, reporting.noticed),
                     )? {
                         Walked::Served { found, index } => {
                             hand_over(found, transaction, consumer)?;
@@ -926,7 +961,7 @@ impl Session<'_> {
                 let (candidates, plan) =
                     self.candidates(transaction, id, context, condition, searched, named)?;
                 if declined {
-                    notes.push(Note::FellBack {
+                    reporting.collected.push(Note::FellBack {
                         from: AccessPath::Ordered,
                         to: plan.access,
                     });
@@ -945,7 +980,7 @@ impl Session<'_> {
                     let held = self.evaluate_in(
                         transaction,
                         condition,
-                        Scope::searching(&record, searched),
+                        Scope::searching(&record, searched).noticing(reporting.noticed),
                     )?;
                     if boolean(&held, condition.span)?
                         && consumer.take(transaction, id, record)?.is_break()
@@ -1017,7 +1052,7 @@ impl Session<'_> {
         left_key: &tessari_ql::FieldPath,
         right_key: &tessari_ql::FieldPath,
         condition: Option<&Expr>,
-        notes: &mut Vec<Note>,
+        reporting: Reporting<'_>,
         within: Option<Deadline>,
     ) -> Result<Joined> {
         let left_name = left.name().to_owned();
@@ -1049,8 +1084,10 @@ impl Session<'_> {
             }
             JoinSide::Read { read, .. } => {
                 let answered = self.read(transaction, read, within)?;
-                notes.extend(answered.notes);
-                notes.extend(ceiling_reached(read, answered.records.len()));
+                reporting.collected.extend(answered.notes);
+                reporting
+                    .collected
+                    .extend(ceiling_reached(read, answered.records.len()));
                 collect_by_key(&mut built, answered.records, right_key);
             }
         }
@@ -1068,8 +1105,10 @@ impl Session<'_> {
             }
             JoinSide::Read { read, .. } => {
                 let answered = self.read(transaction, read, within)?;
-                notes.extend(answered.notes);
-                notes.extend(ceiling_reached(read, answered.records.len()));
+                reporting.collected.extend(answered.notes);
+                reporting
+                    .collected
+                    .extend(ceiling_reached(read, answered.records.len()));
                 (answered.records, Searched::default())
             }
         };
@@ -1104,7 +1143,7 @@ impl Session<'_> {
                     let held = self.evaluate_in(
                         transaction,
                         condition,
-                        Scope::searching(&row, &searched),
+                        Scope::searching(&row, &searched).noticing(reporting.noticed),
                     )?;
                     if !boolean(&held, condition.span)? {
                         continue;
@@ -1485,7 +1524,7 @@ impl Session<'_> {
         table: TableId,
         wanted: &plan::Bounded<'_>,
         condition: &Expr,
-        searched: &Searched,
+        scope: Scope<'_>,
     ) -> Result<Walked> {
         // Descending, stated rather than taken from the bound: this walk's whole
         // argument rests on absences sorting *last*, and passing the caller's
@@ -1511,8 +1550,7 @@ impl Session<'_> {
             };
             let mut matched = Vec::new();
             for (id, record) in self.records_of(found, &visible)? {
-                let held =
-                    self.evaluate_in(transaction, condition, Scope::searching(&record, searched))?;
+                let held = self.evaluate_in(transaction, condition, scope.with(&record))?;
                 if boolean(&held, condition.span)? {
                     matched.push((id, record));
                 }
@@ -2158,6 +2196,22 @@ fn order_bound(select: &Select) -> Option<usize> {
     })
 }
 
+/// The two channels a read reports on, which travel together everywhere.
+///
+/// A note the source *decides* to raise — a fall-back, an approximate path, a
+/// subquery that reached its ceiling — is pushed straight onto `collected`. A
+/// note the *evaluator* discovers while comparing values is recorded in
+/// `noticed` and drained when the read reports. One parameter rather than two,
+/// because they were being added to the same signatures one at a time and were
+/// drifting apart at the call sites.
+#[derive(Debug)]
+pub(crate) struct Reporting<'a> {
+    /// Notes the source raised.
+    pub(crate) collected: &'a mut Vec<Note>,
+    /// Where the evaluator records a comparison across two kinds.
+    pub(crate) noticed: &'a Noticed,
+}
+
 /// What the evaluator can see besides the expression itself.
 ///
 /// The record a condition is being tested against, and what its searched fields
@@ -2169,6 +2223,12 @@ pub(crate) struct Scope<'a> {
     pub(crate) record: Option<&'a Value>,
     /// The analyzers and collection statistics the searched paths need.
     searched: Option<&'a Searched>,
+    /// Where a comparison across two kinds is recorded, when this evaluation is
+    /// part of a read that reports notes.
+    ///
+    /// Borrowed, so it cannot outlive the read — which is the whole reason it
+    /// hangs here rather than on the session.
+    noticed: Option<&'a Noticed>,
 }
 
 impl<'a> Scope<'a> {
@@ -2182,6 +2242,7 @@ impl<'a> Scope<'a> {
         Self {
             record: None,
             searched: None,
+            noticed: None,
         }
     }
 
@@ -2190,6 +2251,7 @@ impl<'a> Scope<'a> {
         Self {
             record: Some(record),
             searched: None,
+            noticed: None,
         }
     }
 
@@ -2198,6 +2260,49 @@ impl<'a> Scope<'a> {
         Self {
             record: Some(record),
             searched: Some(searched),
+            noticed: None,
+        }
+    }
+
+    /// The same scope, reporting what it compares to this read's notes.
+    ///
+    /// Added by the read path and left off everywhere else, so an evaluation in
+    /// a value position — which has no answer to hang a note on — costs nothing
+    /// and says nothing.
+    pub(crate) const fn noticing(self, noticed: &'a Noticed) -> Self {
+        Self {
+            noticed: Some(noticed),
+            ..self
+        }
+    }
+
+    /// The same environment, over this record.
+    ///
+    /// A `Scope` with no record is what an evaluation needs *besides* the record
+    /// — the analyzers, and where to note a crossing — so a walk that evaluates
+    /// per record is handed one of those and attaches each record in turn. It is
+    /// one parameter where `searched` and `noticed` were two, and it stops the
+    /// pair drifting apart at the call sites.
+    pub(crate) const fn with(self, record: &'a Value) -> Self {
+        Self {
+            record: Some(record),
+            ..self
+        }
+    }
+
+    /// The environment alone: what evaluation needs besides a record.
+    pub(crate) const fn over(searched: &'a Searched, noticed: &'a Noticed) -> Self {
+        Self {
+            record: None,
+            searched: Some(searched),
+            noticed: Some(noticed),
+        }
+    }
+
+    /// Record a comparison, when this scope is reporting them.
+    fn compared(self, left: &Value, right: &Value) {
+        if let Some(noticed) = self.noticed {
+            noticed.compared(left, right);
         }
     }
 

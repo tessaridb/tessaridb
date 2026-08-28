@@ -21,6 +21,7 @@ use tessari_types::{RecordId, Value};
 use crate::budget::Budget;
 use crate::error::Result;
 use crate::evaluate::Scope;
+use crate::noticed::Noticed;
 use crate::search::Searched;
 use crate::session::Session;
 use crate::shape::Topmost;
@@ -153,6 +154,12 @@ pub(crate) struct Shaping<'a, 's> {
     keys_reach_past_the_projection: bool,
     searched: &'a Searched,
     topmost: Topmost<'a>,
+    /// Where a comparison across two kinds is recorded.
+    ///
+    /// The shaping stage evaluates the projection and the order's keys, and a
+    /// comparison written in either of those is as able to compare a number with
+    /// the text of one as the `WHERE` is.
+    noticed: &'a Noticed,
     /// The read's ceiling, spent one record at a time.
     ///
     /// Checked here rather than by the source, because every record a source
@@ -172,6 +179,7 @@ impl<'a, 's> Shaping<'a, 's> {
         searched: &'a Searched,
         topmost: Topmost<'a>,
         budget: &'a mut Budget,
+        noticed: &'a Noticed,
     ) -> Self {
         Self {
             keys_reach_past_the_projection: reach_past(wanted.as_deref(), &keys),
@@ -180,6 +188,7 @@ impl<'a, 's> Shaping<'a, 's> {
             keys,
             searched,
             topmost,
+            noticed,
             budget,
         }
     }
@@ -199,7 +208,7 @@ impl<'a, 's> Shaping<'a, 's> {
             keys.push(self.session.evaluate_in(
                 transaction,
                 key,
-                Scope::searching(record, self.searched),
+                Scope::searching(record, self.searched).noticing(self.noticed),
             )?);
         }
         Ok(keys)
@@ -255,9 +264,9 @@ impl Consumer for Shaping<'_, '_> {
             self.topmost.offer(keys, id, record);
             return Ok(ControlFlow::Continue(()));
         };
-        let projected = self
-            .session
-            .project(transaction, &record, wanted, self.searched)?;
+        let projected =
+            self.session
+                .project(transaction, &record, wanted, self.searched, self.noticed)?;
         let keys = if self.keys_reach_past_the_projection {
             self.keys_against(transaction, &overlaid(record, &projected))?
         } else {
