@@ -2613,10 +2613,16 @@ answered*). What the note adds is that the bound was *reached*: a prefix of an
 answer and a whole one are the same shape, so the outer statement's question was
 asked of less than the inner read could have given.
 
-Notes reach the embedded API — `Outcome::notes()` — and the HTTP body above.
-They do **not** cross the binary protocol yet: a decoder there checks it consumed
-every byte of a body, so a field appended to one is not something an older client
-ignores, and carrying notes needs the protocol's minor version to gate them.
+Notes reach every surface: the embedded API (`Outcome::notes()`), the HTTP body
+above, and the binary protocol, where a `Records` answer carries each note's kind
+and message. The `tessaridb` shell prints them under the answer.
+
+They cross the wire without a version gate, because an outcome is
+length-prefixed and a reader advances by the declared length rather than by what
+it consumed — so a client built before the notes existed steps over them, exactly
+as it steps over an outcome kind it has never heard of. The other direction is
+the one that needed saying: a body that **ends** after the records is a node with
+nothing to say, not a truncation.
 
 ## 7c. Asking the catalog what it holds
 

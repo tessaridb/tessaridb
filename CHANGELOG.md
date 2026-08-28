@@ -168,6 +168,20 @@ Unreleased. 573 conformance cases define the language and run in the build.
   read runs, naming the words that exist. An assertion inside a materialised
   source is about the inner read.
 
+- **Notes now travel over the binary protocol.** A `Records` answer carries the
+  kind and message of each note, so a client on the wire sees what the embedded
+  and HTTP surfaces already showed. The `tessaridb` shell prints them under the
+  answer.
+
+  They were held back on the belief that the decoder asserted it had consumed
+  every byte, which would have made an appended field indistinguishable from
+  trailing garbage to an older client. That was wrong: an outcome is
+  length-prefixed and the reader advances by the declared length, and the
+  published protocol has always required a client to skip bytes it has no field
+  for. No version gate was needed. The other direction — a newer client reading
+  an older node — is the one that needed code: a body that ends after the records
+  is a node with nothing to say, not a truncation.
+
 - **A fourth note, `compared-across-kinds`.** A schemaless store lets one record
   hold `age: 30` and the next `age: '30'`, and `WHERE age = 30` then matches some
   of them — correctly, and narrower than the author meant, with no error

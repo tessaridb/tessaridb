@@ -20,7 +20,7 @@
 //! scripts — so they belong to the embedded path alone, and asking for one over
 //! an address is refused in `main` rather than quietly ignored.
 
-use tessari_wire::{Answer, Client, Names};
+use tessari_wire::{Answer, Client, Names, Remark};
 use tessaridb::{Db, Outcome, Parameters, Session};
 
 /// Somewhere statements can be run.
@@ -143,17 +143,29 @@ impl Store for Remote {
 /// An outcome, as a client would have received it.
 fn into_answer(outcome: &Outcome, names: Names) -> Answer {
     match outcome {
-        // The notes stop here, and so does the plan beyond its access path, for
-        // the same reason: an `Answer` is what a client receives, and it cannot
-        // carry a field the protocol does not encode. The embedded and HTTP
-        // surfaces report both.
-        Outcome::Records { records, plan, .. } => Answer::Records {
+        // The plan stops at its access path, because that is what the protocol
+        // encodes and an embedded answer that carried more would make the two
+        // surfaces disagree about what a client can see. The notes no longer
+        // stop here: the wire carries them now, so reporting them from the
+        // embedded path keeps the two identical rather than making them differ.
+        Outcome::Records {
+            records,
+            plan,
+            notes,
+        } => Answer::Records {
             records: records
                 .iter()
                 .map(|(id, held)| (id.to_string(), held.clone()))
                 .collect(),
             path: plan.access.name().to_owned(),
             names,
+            notes: notes
+                .iter()
+                .map(|note| Remark {
+                    kind: note.kind().to_owned(),
+                    message: note.message(),
+                })
+                .collect(),
         },
         Outcome::Value(held) => Answer::Value {
             value: held.clone(),

@@ -249,6 +249,7 @@ fn report(out: &mut impl Write, answer: &Answer, shape: Shape) -> std::io::Resul
             records,
             path,
             names,
+            notes,
         } => {
             // The trailer is the same either way, and deliberately so: how many
             // and by which path is the part an operator reads for the answer
@@ -261,7 +262,14 @@ fn report(out: &mut impl Write, answer: &Answer, shape: Shape) -> std::io::Resul
                     }
                 }
             }
-            writeln!(out, "({} record(s), via {path})", records.len())
+            writeln!(out, "({} record(s), via {path})", records.len())?;
+            // After the trailer, because a note is about the answer above it.
+            // One line each and none at all for almost every read, which is what
+            // makes a note worth reading when one appears.
+            for note in notes {
+                writeln!(out, "note: {}", note.message)?;
+            }
+            Ok(())
         }
         Answer::Value { value, names } => writeln!(out, "{}", render::value(value, names)),
         // `Keys` and `Removed` have never had a rendering of their own and keep
