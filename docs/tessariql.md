@@ -2054,8 +2054,10 @@ SELECT * FROM users WHERE string::len(name) = 3;
 | `time` | `now()` · `bucket(instant, width)` — the start of the window an instant is in · `year` · `month` · `day` · `hour` · `minute` · `second` · `unix` · `from_unix(seconds)` — the [calendar](#the-calendar) |
 | `type` | `of(value)` — the type's name, as §3 spells it · `bool` · `int` · `float` · `string` · `datetime` · `uuid` — the [casts](#casts) |
 | `vector` | `cosine(a, b)` · `euclidean(a, b)` · `dot(a, b)` |
+| `rand` | `uuid()` — see [Generated identifiers](#generated-identifiers) |
+| `crypto` | `sha256(text)` · `sha512(text)` — lowercase hex; see [Digests](#digests) |
 | `search` | `score(field, 'query')` — see [Ranking](#ranking) |
-| `geo` | `intersects` · `disjoint` · `covers` · `covered_by` · `contains` · `within` · `equals` · `distance(a, b)` · `area(shape)` — see [Shapes](#shapes) |
+| `geo` | `intersects` · `disjoint` · `covers` · `covered_by` · `contains` · `within` · `equals` · `touches` · `distance(a, b)` · `area(shape)` — see [Shapes](#shapes) |
 
 **What earns a place: a function is here when it cannot be expressed by what the
 language already has.** That is why there is no `array::contains` (`CONTAINS`
@@ -3564,6 +3566,13 @@ be, because it is confined to the run its fixed values name.
 | A date read from an instant is UTC, and `time::second` is the second of the minute | **contract** — an instant has no zone, and `time::unix` is the other question; `time::from_unix` refuses a fraction because `math::round` says which second was meant, while `time::unix` drops a remainder because nothing else could say that conversion |
 | Reading no record and being safe to evaluate once are two properties, and a function says which it has | **contract** — every record-independent expression is evaluated once above the records, so `rand::uuid()` is asked again per record while `time::now()` is not; the two impure functions want opposite treatment, and a single rule about impurity would get one of them wrong in silence |
 | A generated identifier is a real UUID, and a machine that cannot read its randomness source refuses | **contract** — the canonical text is parsed by something else, and a fallback to a clock or a counter is how a collision arrives on the day two containers start from one image |
+| A fold says whether its answer can be computed as the records go past | **contract** — `count`, `sum`, `mean`, `min`, `max`, `variance` and `stddev` cost a running value whatever the group's size; `median` and `collect` hold the group, and the ceiling on a held read is decided by that answer rather than by the presence of a fold |
+| `variance` and `stddev` are the sample forms, and the population form is arithmetic | **contract** — `variance(x) * (count(*) - 1) / count(*)`; one name exists rather than two because the language already says the other, and over fewer than two numbers both answer `NONE` because zero would be a claim |
+| `median` answers exactly rather than returning the value it selected | **contract** — `3`, `3.0` and the decimal `3.0` are one value in this system and three answers on the wire, so "the middle value as written" would be decided by a sort rather than by the data |
+| `collect` over nothing is `[]`, not `NONE` | **contract** — the rule `sum` follows: an answer every caller writes `?? []` after is the wrong answer |
+| A refusal names an escape that works | **contract** — a `LIMIT` bounds what a fold answers with and not what it reads, so a collecting read is told to bound its source instead; a ceiling whose stated escape does not lift it is worse than one with no advice |
+| A digest takes text and answers lowercase hexadecimal text | **contract** — the comparison `crypto::sha256(body) = $expected` is the reason the function exists, and hashing any value's rendering would promise one digest for three numeric kinds that compare equal |
+| No function exposes the credential hasher to a query | **contract** — SHA-2 is fast by design, which is what a stored password must not be |
 | Anything computed in a projection needs `AS` | **contract** |
 | Comparison is the value system's declared order, including across types | **contract** — a comparison disagreeing with the order its index is stored in is an answer that changes when an index appears |
 | An ordered comparison against `NONE` or `NULL` is false | **contract** — they are the absence of a value, not a small one |
