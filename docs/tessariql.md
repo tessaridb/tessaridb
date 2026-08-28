@@ -869,6 +869,8 @@ SELECT price * quantity AS total, string::upper(name) AS shout FROM users;
 SELECT *, price * quantity AS total FROM users;
 SELECT * OMIT embedding FROM users;
 SELECT * OMIT address.postcode FROM users;
+SELECT * FROM ONLY users:1;
+SELECT * FROM ONLY users WHERE email = 'ada@example.com';
 SELECT * FROM users ORDER BY name;
 SELECT * FROM users ORDER BY city, joined DESC START 20 LIMIT 10;
 SELECT count(*) AS n FROM users;
@@ -905,6 +907,31 @@ The clause this store needs it for is the vector field: without `OMIT`, every
 and the only escape is to enumerate every other field — the fragile list again.
 `omit` is contextual like every other clause word here, so a field or a table
 called `omit` still works.
+
+**`FROM ONLY <source>` says at most one record answers**, and the answer is
+shaped to match: the record itself rather than a list holding it, so a caller
+reading one thing does not unwrap a list of one everywhere. It is an assertion
+the author makes, not one the store can check in advance —
+`FROM ONLY users WHERE email = $e` rests on a uniqueness that lives in the schema
+and in the data — so it is tested **when the read has run**:
+
+- **more than one answered** → the read is **refused**, and the refusal says how
+  many, because two is a duplicate and four thousand is the wrong `WHERE`. It
+  does not hand back the first one: the records are already correct, so a prefix
+  of them costs nothing and looks exactly like success;
+- **none answered** → `NONE`. `ONLY` says *at most* one, and an absence is a
+  legitimate answer to a question about one thing — which is what lets
+  `SELECT * FROM ONLY users:99 ?? { }` mean something;
+- **`LIMIT` is applied first**, so `FROM ONLY users LIMIT 1` is the author saying
+  which one they want rather than a contradiction.
+
+`ONLY` is the one clause word here that is **reserved** rather than contextual, so
+a table or field called `only` is not addressable. The reason is where it
+stands — exactly where a table name goes. `FROM only limit 1` cannot be told
+apart by any amount of lookahead: it is either the table `only` bounded to one
+row or this marker in front of a table called `limit`, and `limit` lexes as a
+plain name because *it* is contextual. A word whose meaning is settled by
+guessing is worse than a name that cannot be used.
 
 `CREATE`, `UPDATE` and `UPSERT` are not three spellings of one verb. They differ
 in what each asserts about the record **before** the write: `CREATE` says it is

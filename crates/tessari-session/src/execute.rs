@@ -422,6 +422,7 @@ impl Session<'_> {
                     records: answered.records,
                     plan: answered.plan,
                     notes: answered.notes,
+                    only: select.only.is_some(),
                 })
             }
             StatementKind::Explain(select) => self.explain(transaction, select),

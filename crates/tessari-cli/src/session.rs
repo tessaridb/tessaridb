@@ -245,11 +245,18 @@ pub fn run(
 fn report(out: &mut impl Write, answer: &Answer, shape: Shape) -> std::io::Result<()> {
     match answer {
         Answer::Records { records, .. } if records.is_empty() => writeln!(out, "(no records)"),
+        // `only` is read and deliberately not drawn. The console already prints
+        // a record per line, so a read of one already looks like one record —
+        // the flag exists for a caller assembling a value, and the surface where
+        // it shows is the wire and the JSON, not this one. Named rather than
+        // swept up by `..` so that the next field added here has to be decided
+        // about instead of ignored.
         Answer::Records {
             records,
             path,
             names,
             notes,
+            only: _,
         } => {
             // The trailer is the same either way, and deliberately so: how many
             // and by which path is the part an operator reads for the answer

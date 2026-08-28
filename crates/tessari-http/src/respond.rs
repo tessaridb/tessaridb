@@ -577,6 +577,7 @@ fn encode(body: &mut String, outcome: &Outcome, names: &json::Names) {
             records,
             plan,
             notes,
+            only,
         } => {
             body.push_str(r#"{"kind":"records","path":"#);
             json::string(body, name_of(plan.access));
@@ -604,6 +605,15 @@ fn encode(body: &mut String, outcome: &Outcome, names: &json::Names) {
                     body.push('}');
                 }
                 body.push(']');
+            }
+            // Written only when true, for the same reason the notes are written
+            // only when there are some: every response from a read that did not
+            // say `ONLY` stays byte-identical to what it was before the clause
+            // existed. `records` stays an array holding at most one, because
+            // changing a key's *type* would break every reader, and the flag is
+            // what lets a reader that wants the record take it.
+            if *only {
+                body.push_str(r#","only":true"#);
             }
             body.push_str(r#","records":["#);
             for (position, (id, record)) in records.iter().enumerate() {

@@ -223,6 +223,7 @@ fn encode_outcome_body(outcome: &Outcome, names: &Names) -> Vec<u8> {
             records,
             plan,
             notes,
+            only,
         } => {
             body.push(tag::RECORDS);
             body.push(path_tag(plan.access));
@@ -241,6 +242,11 @@ fn encode_outcome_body(outcome: &Outcome, names: &Names) -> Vec<u8> {
                 put_text(&mut body, note.kind());
                 put_text(&mut body, &note.message());
             }
+            // After the notes, for the reason the notes are after the records:
+            // a client that stops before it reads `false`, which is the truth
+            // about every read written by somebody who has never heard of
+            // `ONLY`.
+            body.push(u8::from(*only));
         }
         Outcome::Value(held) => {
             body.push(tag::VALUE);
@@ -287,6 +293,12 @@ pub enum Answer {
         /// is older than this client — a body that ends before the notes is a
         /// node that had none to send, not a malformed one.
         notes: Vec<Remark>,
+        /// Whether the read said `ONLY`, so `records` holds the one record the
+        /// caller asked about rather than a list to unwrap.
+        ///
+        /// `false` from a node older than this client, which is what every read
+        /// such a node serves actually is.
+        only: bool,
     },
     /// One value, and the names of the tables it references.
     Value {
@@ -370,11 +382,15 @@ fn decode_outcome_body(body: &[u8]) -> Result<Answer> {
             } else {
                 Vec::new()
             };
+            // Same rule one field further along: absent means `false`, which is
+            // what an older node's every read was.
+            let only = body.get(at).copied().unwrap_or(0) != 0;
             Answer::Records {
                 records,
                 path,
                 names,
                 notes,
+                only,
             }
         }
         tag::VALUE => {
@@ -552,6 +568,7 @@ mod tests {
                 records: vec![(RecordId::Int(7), Value::from("ada"))],
                 plan: Plan::new(AccessPath::Index),
                 notes: Vec::new(),
+                only: false,
             },
         ];
         for outcome in &outcomes {
@@ -603,6 +620,7 @@ mod tests {
             )],
             plan: Plan::new(AccessPath::Record),
             notes: Vec::new(),
+            only: false,
         };
         let (answer, used) = decode_outcome(&encode_outcome(&held, &names), 0).expect("an answer");
         assert_eq!(used, encode_outcome(&held, &names).len());
@@ -645,6 +663,7 @@ mod tests {
             records: vec![(RecordId::Int(7), Value::from("ada"))],
             plan: Plan::new(AccessPath::Scan),
             notes: vec![tessari_session::Note::Approximate],
+            only: false,
         }
     }
 
@@ -679,6 +698,7 @@ mod tests {
                 records: vec![(RecordId::Int(7), Value::from("ada"))],
                 plan: Plan::new(AccessPath::Scan),
                 notes: Vec::new(),
+                only: false,
             },
             &unnamed(),
         );
@@ -707,22 +727,64 @@ mod tests {
                 records: vec![(RecordId::Int(7), Value::from("ada"))],
                 plan: Plan::new(AccessPath::Scan),
                 notes: Vec::new(),
+                only: false,
             },
             &unnamed(),
         );
-        // Drop the note count the current encoder writes, and shrink the
-        // declared length to match — which is exactly the body an older node
-        // would have produced.
-        let inner = &full[4..full.len() - 4];
+        // Drop the tail the current encoder writes — the note count and the
+        // `ONLY` flag, five bytes — and shrink the declared length to match,
+        // which is exactly the body an older node would have produced. The
+        // count is written from the constants rather than as a literal, so the
+        // next field appended here fails to compile instead of quietly making
+        // this test assert about the wrong byte.
+        const NOTE_COUNT: usize = 4;
+        const ONLY_FLAG: usize = 1;
+        let inner = &full[4..full.len() - NOTE_COUNT - ONLY_FLAG];
         let mut older = Vec::new();
         older.extend_from_slice(&u32::try_from(inner.len()).expect("small").to_be_bytes());
         older.extend_from_slice(inner);
         let (answer, used) = decode_outcome(&older, 0).expect("an older answer");
         assert_eq!(used, older.len());
-        let Answer::Records { notes, records, .. } = answer else {
+        let Answer::Records {
+            notes,
+            records,
+            only,
+            ..
+        } = answer
+        else {
             panic!("not records")
         };
         assert_eq!(records.len(), 1, "an older body lost its records");
         assert!(notes.is_empty(), "notes appeared from nowhere");
+        assert!(!only, "a body that ends early claimed to be an `ONLY` read");
+    }
+
+    #[test]
+    fn the_only_flag_survives_the_wire_and_does_not_desynchronise_a_stream() {
+        let alone = encode_outcome(
+            &Outcome::Records {
+                records: vec![(RecordId::Int(7), Value::from("ada"))],
+                plan: Plan::new(AccessPath::Record),
+                notes: Vec::new(),
+                only: true,
+            },
+            &unnamed(),
+        );
+        let (answer, used) = decode_outcome(&alone, 0).expect("an answer");
+        assert_eq!(used, alone.len(), "the flag left bytes unread");
+        assert!(
+            matches!(answer, Answer::Records { only: true, .. }),
+            "the flag did not survive"
+        );
+        // Back to back with a second outcome, which is the property an appended
+        // field actually needs: the second is found only if the first's flag was
+        // stepped over.
+        let mut stream = alone.clone();
+        stream.extend_from_slice(&alone);
+        let (_, after) = decode_outcome(&stream, 0).expect("the first");
+        assert_eq!(after, alone.len(), "the flag desynchronised the stream");
+        let (second, end) = decode_outcome(&stream, after).expect("the second");
+        assert_eq!(end, stream.len());
+        assert!(matches!(second, Answer::Records { only: true, .. }));
     }
 }

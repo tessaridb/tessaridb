@@ -1180,6 +1180,9 @@ impl Parser<'_> {
         // because it says what the star contributes and not what the read does.
         let omit = self.omit_paths(&projection)?;
         self.expect_keyword(Keyword::From, "`FROM` and what to read")?;
+        // Between `FROM` and the source because that is what it qualifies: how
+        // many of them there are to answer with, said before the thing itself.
+        let only = self.eat_keyword(Keyword::Only).then(|| self.span_behind());
 
         let from = self.select_source()?;
         // Written in the order it is applied: references are followed before
@@ -1248,6 +1251,7 @@ impl Parser<'_> {
             projection,
             omit,
             from,
+            only,
             fetch,
             group,
             order,

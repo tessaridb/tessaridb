@@ -85,6 +85,7 @@ fn answered(session: &mut Session<'_>, script: &str) -> (Vec<RecordId>, Vec<Note
         records,
         plan,
         notes,
+        ..
     }) = outcomes.last()
     else {
         panic!("a read answered with {:?}", outcomes.last());

@@ -234,6 +234,8 @@ fn kind_name(error: &Error) -> &'static str {
         Error::PathNotTaken { .. } => "PathNotTaken",
         Error::IndexNotUsed { .. } => "IndexNotUsed",
         Error::TimedOut { .. } => "TimedOut",
+        Error::Unbounded { .. } => "Unbounded",
+        Error::NotAlone { .. } => "NotAlone",
         _ => "Unnamed",
     }
 }

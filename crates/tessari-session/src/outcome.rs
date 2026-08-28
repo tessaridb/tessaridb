@@ -31,6 +31,14 @@ pub enum Outcome {
         /// Empty for almost every read, which is the point: a note is worth
         /// reading because it is rare.
         notes: Vec<Note>,
+        /// Whether the read said `ONLY`, and so answers with the record rather
+        /// than a list holding it.
+        ///
+        /// A flag beside the records rather than an [`Self::Value`], because the
+        /// two things `Value` would drop — the plan and the notes — are exactly
+        /// what a read owes its caller. `records` holds at most one when this is
+        /// set; the read refuses before it gets here otherwise.
+        only: bool,
     },
     /// One value — or [`Value::None`] when the key holds nothing.
     ///
@@ -298,6 +306,19 @@ impl Outcome {
         match self {
             Self::Records { notes, .. } => notes,
             _ => &[],
+        }
+    }
+
+    /// Whether the read said `ONLY`, and so answers with the one record rather
+    /// than a list holding it.
+    ///
+    /// `false` for every other outcome, which is what they are: a read that did
+    /// not claim to answer with one.
+    #[must_use]
+    pub const fn only(&self) -> bool {
+        match self {
+            Self::Records { only, .. } => *only,
+            _ => false,
         }
     }
 

@@ -818,6 +818,23 @@ pub struct Select {
     pub omit: Vec<FieldPath>,
     /// Which access path the statement resolves to.
     pub from: Source,
+    /// Where `ONLY` was written, when it was.
+    ///
+    /// The clause is an **assertion by the author** that at most one record
+    /// answers, and the answer is shaped to match: the record itself rather than
+    /// a list holding it, so that a caller reading one thing does not unwrap a
+    /// list of one everywhere.
+    ///
+    /// Its span rather than a bare `bool` because the refusal points at the word
+    /// — the author either meant a different read or did not mean the word, and
+    /// both are decided by looking at it.
+    ///
+    /// Nothing about it is checked before the read runs. A parse-time rule would
+    /// have to say which sources can answer with one, and it cannot know:
+    /// `FROM ONLY users WHERE email = $e` is the commonest correct use of the
+    /// clause and carries no bound the parser can see, because the uniqueness it
+    /// rests on lives in the schema and in the data.
+    pub only: Option<Span>,
     /// The routes whose record references are followed before anything else
     /// looks at the record.
     ///

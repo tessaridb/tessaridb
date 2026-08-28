@@ -85,6 +85,27 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// An `ONLY` read that more than one record answered.
+    ///
+    /// Refused rather than answered with the first, for the reason a timeout
+    /// refuses rather than truncating: the records are already correct, so
+    /// handing back one of them costs nothing and looks like success. The count
+    /// is reported because it is what tells a mistaken assertion from a mistaken
+    /// condition — two is a duplicate, four thousand is the wrong `WHERE`.
+    ///
+    /// None is not this error. `ONLY` asserts at most one, and an absence
+    /// answers `NONE`.
+    #[error(
+        "`ONLY` says one record answers this read and {found} did (at {span}); \
+         narrow it, or drop the word and take the list"
+    )]
+    NotAlone {
+        /// How many answered.
+        found: usize,
+        /// Where the word is.
+        span: tessari_ql::Span,
+    },
+
     /// A `USING <path>` the read did not satisfy.
     ///
     /// The whole point of the clause. It is checked against what the read

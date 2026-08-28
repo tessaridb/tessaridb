@@ -152,6 +152,7 @@ fn into_answer(outcome: &Outcome, names: Names) -> Answer {
             records,
             plan,
             notes,
+            only,
         } => Answer::Records {
             records: records
                 .iter()
@@ -166,6 +167,7 @@ fn into_answer(outcome: &Outcome, names: Names) -> Answer {
                     message: note.message(),
                 })
                 .collect(),
+            only: *only,
         },
         Outcome::Value(held) => Answer::Value {
             value: held.clone(),

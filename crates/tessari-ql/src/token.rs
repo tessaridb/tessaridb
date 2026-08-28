@@ -286,6 +286,17 @@ pub enum Keyword {
     Select,
     /// `FROM`
     From,
+    /// `ONLY` — the read answers with the record rather than a list holding it.
+    ///
+    /// Reserved rather than contextual, unlike every other clause word this
+    /// language added, and the reason is where it stands: exactly where a table
+    /// name goes. `FROM only limit 1` cannot be told apart with any finite
+    /// lookahead — the table `only` bounded to one row, or this marker in front
+    /// of a table called `limit`, which lexes as a bare identifier because
+    /// `LIMIT` *is* contextual. A word whose meaning is settled by guessing is
+    /// worse than a name that cannot be used, and `TABLE`, `FIELD`, `INDEX`,
+    /// `TYPE`, `SPACE` and `READ` are already reserved here.
+    Only,
     /// `WHERE`
     Where,
     /// `AS` — names a projected value.
@@ -424,6 +435,7 @@ impl Keyword {
             Self::Create => "CREATE",
             Self::Select => "SELECT",
             Self::From => "FROM",
+            Self::Only => "ONLY",
             Self::Where => "WHERE",
             Self::As => "AS",
             Self::Required => "REQUIRED",
@@ -505,6 +517,7 @@ impl Keyword {
         Self::Create,
         Self::Select,
         Self::From,
+        Self::Only,
         Self::Where,
         Self::As,
         Self::Required,

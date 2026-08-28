@@ -133,13 +133,16 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 12] = [
+const CROSS_CUTTING: [&str; 13] = [
     "bindings",
     "conditionals",
     "consumers",
     "functions",
     "grants",
     "node",
+    // How many records a read says it answers with is about no engine either:
+    // `ONLY` asserts the same thing of a scan, a walk and an index read.
+    "only",
     // What a read answers *with* is about no engine in particular: `SELECT *,
     // x AS n` and `OMIT` shape a scan, a walk and a nearest-neighbour read the
     // same way.

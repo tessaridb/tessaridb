@@ -231,6 +231,9 @@ impl Select<Sourced> {
             // has no way to write.
             omit: Vec::new(),
             from,
+            // Nor `ONLY`: it is an assertion about how many records answer, and
+            // a builder cannot make one on the caller's behalf.
+            only: None,
             fetch: Vec::new(),
             group: Vec::new(),
             order: self.order,

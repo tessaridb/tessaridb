@@ -239,6 +239,9 @@ fn erase_statement(statement: &mut Statement) {
 /// One read, and everything under it.
 fn erase_select(select: &mut Select) {
     select.span = CANONICAL;
+    if let Some(at) = &mut select.only {
+        *at = CANONICAL;
+    }
     match &mut select.projection {
         Projection::All => {}
         Projection::Values { everything, values } => {

@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 589 conformance cases define the language and run in the build.
+Unreleased. 602 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -48,6 +48,19 @@ Unreleased. 589 conformance cases define the language and run in the build.
   nothing else. It takes a route, so `OMIT address.postcode` keeps the address;
   it refuses a position, because removing an element renumbers the rest. Without
   it every `SELECT *` over a table holding an embedding shipped the embedding.
+- **`SELECT … FROM ONLY <source>`** says at most one record answers the read, so
+  the answer is the record rather than a list of one and a caller reading one
+  thing stops unwrapping. It is an assertion the author makes — a uniqueness that
+  lives in the schema and in the data, which no parse-time rule could see — so it
+  is tested once the read has run: more than one is **refused**, and the refusal
+  says how many, because two is a duplicate and four thousand is the wrong
+  `WHERE`. None answers `NONE`, since `ONLY` says *at most* one and an absence is
+  a real answer to a question about one thing. `LIMIT` is applied first. On the
+  wire and in the JSON the flag is carried beside the records, so a client that
+  has never heard of the clause reads exactly what it read before. `ONLY` is the
+  one clause word here that is **reserved** rather than contextual: it stands
+  where a table name goes, and `FROM only limit 1` cannot be told apart from the
+  marker in front of a table called `limit` by any amount of lookahead.
 - **A read standing in an expression holds at most ten thousand records**, and
   past that the statement is refused rather than answered from a prefix. Its
   answer is a value built whole, so an unbounded read there is an unbounded array

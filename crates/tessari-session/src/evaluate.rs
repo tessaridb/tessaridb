@@ -466,8 +466,10 @@ impl Session<'_> {
             )?;
             asserted(select, &plan)?;
             notes.extend(noticed.drained());
+            let records = crate::shape::bounded(shaping.finish(), select.start, select.limit);
+            alone(select, &records)?;
             return Ok(Answered {
-                records: crate::shape::bounded(shaping.finish(), select.start, select.limit),
+                records,
                 plan,
                 notes,
             });
@@ -553,8 +555,10 @@ impl Session<'_> {
         };
         asserted(select, &plan)?;
         notes.extend(noticed.drained());
+        let records = crate::shape::bounded(records, select.start, select.limit);
+        alone(select, &records)?;
         Ok(Answered {
-            records: crate::shape::bounded(records, select.start, select.limit),
+            records,
             plan,
             notes,
         })
@@ -1901,7 +1905,12 @@ impl Session<'_> {
         // read of one answers with its own value, and wrapping it in an array of
         // one would make the shape of the answer follow the source rather than
         // the question.
-        if matches!(select.from, Source::Record(_) | Source::Node) {
+        //
+        // `ONLY` says the same thing about a source that could have answered
+        // with many — `FROM ONLY users WHERE email = $e` — which is the half of
+        // this rule the source alone cannot tell. The read has already refused
+        // if more than one answered, so there is at most one here either way.
+        if select.only.is_some() || matches!(select.from, Source::Record(_) | Source::Node) {
             return Ok(records
                 .into_iter()
                 .next()
@@ -2051,6 +2060,32 @@ fn ceiling_reached(read: &Select, held: usize) -> Option<Note> {
 /// planner's own choice already contradicts the assertion is a real improvement
 /// and a separate one (Q-203), because the planner may name a path the read then
 /// falls back from.
+/// `ONLY` is an assertion about how many records answer, and this is where it is
+/// tested.
+///
+/// After the bound, so `FROM ONLY users LIMIT 1` is the author saying which one
+/// they want rather than a contradiction.
+///
+/// **None passes, more than one refuses**, and the two are not the same mistake.
+/// `ONLY` asserts *at most* one, so an absence is a legitimate answer to a
+/// question about one thing — refusing it would make
+/// `SELECT * FROM ONLY users:99 ?? {}` unsayable, and that is the shape `??`
+/// exists for. More than one falsifies what the author wrote, and it refuses
+/// rather than answering with the first: the records found are already correct,
+/// so a prefix of them costs nothing and looks exactly like success.
+fn alone(select: &Select, records: &[(RecordId, Value)]) -> Result<()> {
+    let Some(span) = select.only else {
+        return Ok(());
+    };
+    if records.len() <= 1 {
+        return Ok(());
+    }
+    Err(Error::NotAlone {
+        found: records.len(),
+        span,
+    })
+}
+
 fn asserted(select: &Select, plan: &Plan) -> Result<()> {
     match &select.using {
         None => Ok(()),

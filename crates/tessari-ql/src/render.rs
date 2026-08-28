@@ -130,6 +130,9 @@ fn write_select(out: &mut String, select: &Select) -> Result<()> {
         }
     }
     out.push_str(" FROM ");
+    if select.only.is_some() {
+        out.push_str("ONLY ");
+    }
     write_source(out, &select.from, select.span)?;
 
     if let Some((first, rest)) = select.fetch.split_first() {

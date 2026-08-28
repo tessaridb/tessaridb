@@ -1,0 +1,66 @@
+# `ONLY`: a read that says at most one record answers it.
+# A corpus file is one session against one store, so these run in order.
+#
+# A read by identity answered with a list of one, and every caller unwrapped it
+# by hand. `ONLY` says so in the statement instead, and the answer is shaped to
+# match. It is an assertion the author makes rather than one the store can check
+# in advance — `FROM ONLY people WHERE email = $e` rests on a uniqueness that
+# lives in the schema and in the data — so it is tested when the read has run.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+--- expect: ok
+
+--- case: three people, two of them in one city
+DEFINE TABLE people;
+CREATE people:1 = { name: 'ada', email: 'ada@example.com', city: 'london' };
+CREATE people:2 = { name: 'grace', email: 'grace@example.com', city: 'york' };
+CREATE people:3 = { name: 'alan', email: 'alan@example.com', city: 'london' };
+--- expect: ok
+
+--- case: a read by identity answers with the one record
+SELECT * FROM ONLY people:1;
+--- expect: rows 1
+
+--- case: a condition matching one is the case no source-shaped rule could reach
+SELECT * FROM ONLY people WHERE email = 'grace@example.com';
+--- expect: rows 1
+
+--- case: more than one falsifies the assertion and the read is refused
+SELECT * FROM ONLY people WHERE city = 'london';
+--- expect: error NotAlone
+
+--- case: a whole table of more than one is refused rather than truncated
+SELECT * FROM ONLY people;
+--- expect: error NotAlone
+
+--- case: none answers with nothing, because ONLY says at most one
+SELECT * FROM ONLY people:99;
+--- expect: rows 0
+
+--- case: the bound is applied before the assertion is tested
+SELECT * FROM ONLY people LIMIT 1;
+--- expect: rows 1
+
+--- case: an absent record and a fallback, which refusing on none would forbid
+RETURN (SELECT * FROM ONLY people:99) ?? 'nobody';
+--- expect: value 'nobody'
+
+--- case: a projection and an ordering compose with it
+SELECT name FROM ONLY people ORDER BY name LIMIT 1;
+--- expect: rows 1
+
+--- case: OMIT composes with it too
+SELECT * OMIT email FROM ONLY people:1;
+--- expect: rows 1
+
+--- case: the word is reserved, so a table cannot be called `only`
+DEFINE TABLE only;
+--- expect: error UnexpectedToken
+
+--- case: and a read of such a table cannot be written either
+SELECT * FROM only;
+--- expect: error UnexpectedToken
