@@ -412,9 +412,12 @@ impl Session<'_> {
                 Ok(Outcome::Value(self.read_key(transaction, target)?))
             }
             StatementKind::Select(select) => {
-                // `None`: a statement is the outermost read there is, so its own
-                // clause is the only ceiling in force.
-                let answered = self.read(transaction, select, None)?;
+                // `None` twice: a statement is the outermost read there is, so
+                // its own clause is the only ceiling in force, and nothing is
+                // holding its records except the caller who asked for them —
+                // which is the case the held ceiling exists to tell apart from a
+                // read built into memory for somebody else (Q-209).
+                let answered = self.read(transaction, select, None, None)?;
                 Ok(Outcome::Records {
                     records: answered.records,
                     plan: answered.plan,

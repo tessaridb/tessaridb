@@ -68,6 +68,23 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// A read standing in an expression grew past the ceiling this node applies
+    /// when the read named none.
+    ///
+    /// Refused rather than truncated, and the refusal names the one word that
+    /// lifts it. A default that quietly kept a prefix would turn a read that is
+    /// expensive and right into one that is cheap and wrong.
+    #[error(
+        "the read standing here passed {most} records without a bound of its own \
+         (at {span}); give it a `LIMIT` to say how many of them the question is about"
+    )]
+    Unbounded {
+        /// The ceiling this node applies to a read that named none.
+        most: u64,
+        /// Where the held read is.
+        span: tessari_ql::Span,
+    },
+
     /// A `USING <path>` the read did not satisfy.
     ///
     /// The whole point of the clause. It is checked against what the read

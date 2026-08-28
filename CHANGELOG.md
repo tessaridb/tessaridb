@@ -38,6 +38,14 @@ Unreleased. 573 conformance cases define the language and run in the build.
   script.
 - After `LET $x =` and after `RETURN`, a read may be written without
   parentheses.
+- **A read standing in an expression holds at most ten thousand records**, and
+  past that the statement is refused rather than answered from a prefix. Its
+  answer is a value built whole, so an unbounded read there is an unbounded array
+  inside one statement — and it is the one position where a truncating default
+  could not even have reported itself, since a value has no room beside it for a
+  note. The refusal names `LIMIT` as the word that lifts it. A read that folds is
+  exempt: its answer does not grow with the table. A materialised source and a
+  join side already had to state a `LIMIT` and are unchanged.
 - **`IF <test> THEN <a> [ELSE IF <test> THEN <b>]* [ELSE <c>] END`** computes a
   value that depends on a test, in any position a value stands — a projection,
   an assignment, a filter, an ordering. Only the arm that is taken is evaluated,

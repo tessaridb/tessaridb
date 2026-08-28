@@ -71,7 +71,10 @@ pub(crate) struct Collecting<'b> {
 }
 
 impl<'b> Collecting<'b> {
-    pub(crate) const fn new(budget: &'b mut Budget) -> Self {
+    pub(crate) fn new(budget: &'b mut Budget) -> Self {
+        // A stage of the read begins here, which is what the held ceiling counts
+        // — see `Budget::stage`.
+        budget.stage();
         Self {
             records: Vec::new(),
             budget,
@@ -181,6 +184,9 @@ impl<'a, 's> Shaping<'a, 's> {
         budget: &'a mut Budget,
         noticed: &'a Noticed,
     ) -> Self {
+        // A stage of the read begins here, which is what the held ceiling counts
+        // — see `Budget::stage`.
+        budget.stage();
         Self {
             keys_reach_past_the_projection: reach_past(wanted.as_deref(), &keys),
             session,

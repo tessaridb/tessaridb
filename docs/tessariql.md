@@ -232,6 +232,25 @@ parentheses, because it runs to the end of the statement and there is nothing fo
 a parenthesis to disambiguate. Inside a larger expression — `IN (SELECT …)` — the
 parentheses say where the read stops, and are required.
 
+**A read standing in an expression holds at most ten thousand records.** Its
+answer is a value, and a value is built whole, so a read here with no bound of
+its own is an unbounded array inside one statement:
+
+```
+LET $some = SELECT id FROM events LIMIT 1000;
+```
+
+Past the ceiling the statement is **refused**, and the refusal names `LIMIT` as
+the word that lifts it. It is refused rather than cut at a number nobody wrote,
+for the reason the required `LIMIT` on a materialised source gives: unbounded,
+that read is expensive and right, while a silent prefix of it is cheap and wrong,
+and here there is not even a note to say so — a value has no room beside it.
+
+A read that **folds** is exempt, because its answer does not grow with the table:
+`LET $n = SELECT count(*) AS n FROM events;` needs no bound, and `LIMIT` would
+not have been one, since over a grouped read it bounds the groups answered rather
+than the records read.
+
 ### Naming a value inside a record
 
 A record payload is a tree: an object may hold objects and arrays, and those may

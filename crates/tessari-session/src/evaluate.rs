@@ -20,7 +20,7 @@ use tessari_types::{
 
 use crate::aggregate::folds;
 use crate::arithmetic::{arithmetic, negate};
-use crate::budget::{Budget, Deadline};
+use crate::budget::{Budget, Ceiling, Deadline};
 use crate::call::call;
 use crate::condition::boolean;
 use crate::consume::Consumer;
@@ -395,6 +395,7 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         select: &Select,
         within: Option<Deadline>,
+        holding: Option<Ceiling>,
     ) -> Result<Answered> {
         // The searched context is resolved before the source produces anything,
         // because a sort key is an expression too and one holding a `MATCHES` or
@@ -412,8 +413,11 @@ impl Session<'_> {
         // not set a looser one.
         let within = Deadline::under(within, select.timeout);
         // One budget for the whole read, so a two-stage path counts each record
-        // once and the refusal says how far the *read* got.
-        let mut budget = Budget::of(within);
+        // once and the refusal says how far the *read* got. `holding` comes from
+        // the caller and never from this statement: how long a read may take is
+        // the statement's own business, but whether it is being built into
+        // memory for somebody else is a fact only its caller knows.
+        let mut budget = Budget::of(within, holding);
         // Owned by the read and borrowed by everything it evaluates, so the
         // lifetime rather than the discipline is what stops a note outliving the
         // statement that earned it.
@@ -767,7 +771,11 @@ impl Session<'_> {
             // a held vector. The inner plan is a plan of its own, and one field
             // for it would describe only the shallowest case.
             Source::Subquery { read, condition } => {
-                let inner = self.read(transaction, read, within)?;
+                // `None` for the held ceiling: the grammar already refuses a
+                // materialised source that names no `LIMIT`, so the bound here
+                // is the author's own and a second one below it would be a rule
+                // in two places that could only ever disagree.
+                let inner = self.read(transaction, read, within, None)?;
                 reporting.collected.extend(inner.notes);
                 reporting
                     .collected
@@ -1083,7 +1091,7 @@ impl Session<'_> {
                 }
             }
             JoinSide::Read { read, .. } => {
-                let answered = self.read(transaction, read, within)?;
+                let answered = self.read(transaction, read, within, None)?;
                 reporting.collected.extend(answered.notes);
                 reporting
                     .collected
@@ -1104,7 +1112,7 @@ impl Session<'_> {
                 (self.records_of(found, &visible)?, searched)
             }
             JoinSide::Read { read, .. } => {
-                let answered = self.read(transaction, read, within)?;
+                let answered = self.read(transaction, read, within, None)?;
                 reporting.collected.extend(answered.notes);
                 reporting
                     .collected
@@ -1831,10 +1839,16 @@ impl Session<'_> {
         // value, and a value has no room beside it. Reported at the statement
         // that holds this one would be worse than silence — a note about an
         // inner read, attached to an outer answer it does not describe.
-        // `None` for the budget, for the same reason the notes are dropped: an
+        // `None` for the deadline, for the same reason the notes are dropped: an
         // expression position has no channel to carry one *in* either, so a read
         // standing here enforces its own ceiling and not its caller's.
-        let Answered { records, .. } = self.read(transaction, select, None)?;
+        //
+        // The held ceiling is the one thing that does reach here, and this is the
+        // position that most needs it: the answer is a `Value` built whole, so an
+        // unbounded read is an unbounded array, and there is no note channel a
+        // truncating default could have reported through.
+        let Answered { records, .. } =
+            self.read(transaction, select, None, Ceiling::over(select))?;
         // `$node` alongside `Source::Record` because it is one record too: a
         // read of one answers with its own value, and wrapping it in an array of
         // one would make the shape of the answer follow the source rather than
@@ -2178,7 +2192,7 @@ fn streams(select: &Select) -> bool {
 /// because the two must not drift apart. A grouping routed to the streaming path
 /// would be a fold evaluated against one record at a time, which is the one
 /// thing a fold is not.
-fn groups(select: &Select) -> bool {
+pub(crate) fn groups(select: &Select) -> bool {
     match &select.projection {
         Projection::All => false,
         Projection::Values(wanted) => folds(wanted) || !select.group.is_empty(),
