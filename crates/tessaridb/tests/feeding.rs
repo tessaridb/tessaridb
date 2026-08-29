@@ -112,3 +112,84 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
         "one poll round took {bound:?}"
     );
 }
+
+#[test]
+fn a_subscription_is_never_told_about_a_tenancy_the_session_could_not_select() {
+    // The crossing at the feed. It is not expressible as "ask for the other
+    // tenancy", because a scoped session cannot select one — so the crossing a
+    // feed can actually make is to be *handed* it: the change log is the whole
+    // store's, and a subscription that did not confine itself would push every
+    // write in every namespace to whoever was watching.
+    let db = Db::in_memory().unwrap();
+    let mut owner = db.session();
+    owner
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE TABLE orders;\n\
+             DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
+        )
+        .unwrap();
+    let mut root = db.session();
+    root.sign_in("root", PASSWORD).unwrap();
+    root.run(
+        "DEFINE NAMESPACE staging; USE NAMESPACE staging; DEFINE DATABASE shop; \
+         USE DATABASE shop; DEFINE TABLE orders;",
+    )
+    .unwrap();
+    root.run(
+        "USE NAMESPACE prod; USE DATABASE shop; \
+         DEFINE USER nina ON prod.shop ROLE owner PASSWORD 'correct horse battery';",
+    )
+    .unwrap();
+
+    // One write in each tenancy, the other one first, so a feed that ignored
+    // the tenancy would deliver it before the record nina is entitled to.
+    root.run("USE NAMESPACE staging; USE DATABASE shop; CREATE orders:1 = { total: 9 };")
+        .unwrap();
+    root.run("USE NAMESPACE prod; USE DATABASE shop; CREATE orders:1 = { total: 5 };")
+        .unwrap();
+
+    let mut nina = db.session();
+    nina.sign_in("nina", PASSWORD).unwrap();
+    nina.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+
+    let mine = db.tenancy_in("prod", "shop").unwrap().expect("her tenancy");
+    let seen = Cell::new(Vec::new());
+    let rounds = Cell::new(0_u32);
+    let committed = Commits::default();
+    let following = Following {
+        from: Sequence::new(0),
+        table: None,
+    };
+    drop(follow(
+        &db,
+        &mut nina,
+        &following,
+        &committed,
+        &|| {
+            rounds.set(rounds.get().saturating_add(1));
+            // Two rounds: the first drains what is already in the log, the
+            // second is where anything wrongly queued would still arrive.
+            rounds.get() > 2
+        },
+        &mut |change, _name, _allowed| {
+            let mut held = seen.take();
+            held.push((change.namespace, change.database));
+            seen.set(held);
+            true
+        },
+    ));
+
+    let delivered = seen.take();
+    assert!(
+        !delivered.is_empty(),
+        "the feed delivered nothing at all, so it proves nothing"
+    );
+    for reached in &delivered {
+        assert_eq!(
+            *reached, mine,
+            "a write from another tenancy reached the subscriber"
+        );
+    }
+}

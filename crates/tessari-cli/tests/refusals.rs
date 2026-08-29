@@ -136,3 +136,65 @@ fn a_viewer_is_refused_the_write_in_every_script_mode_and_the_owner_is_not() {
     let (ok, said) = run(&store, Some("root"), &["-e", WRITING], "");
     assert!(ok, "the owner was refused too: {said}");
 }
+
+#[test]
+fn a_scoped_user_cannot_reach_another_tenancy_from_the_command_line() {
+    // The crossing, on the path a deployment script actually takes. It is here
+    // rather than only in the session tests because a coverage matrix counts
+    // paths, and this one carries its own argument parsing, its own sign-in and
+    // its own script source before it ever reaches a statement.
+    let store = store("crossing");
+    let (ok, said) = run(
+        &store,
+        None,
+        &[
+            "-e",
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
+             DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders; \
+             CREATE orders:1 = { total: 5 }; \
+             DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
+        ],
+        "",
+    );
+    assert!(ok, "the store would not set up: {said}");
+    let (ok, said) = run(
+        &store,
+        Some("root"),
+        &[
+            "-e",
+            "DEFINE NAMESPACE staging; USE NAMESPACE staging; \
+             DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders; \
+             CREATE orders:1 = { total: 9 }; \
+             USE NAMESPACE prod; USE DATABASE shop; \
+             DEFINE USER nina ON prod.shop ROLE owner PASSWORD 'correct horse battery';",
+        ],
+        "",
+    );
+    assert!(ok, "the second tenancy would not be built: {said}");
+
+    // Her own tenancy answers, so the refusal below is about the crossing.
+    let (ok, said) = run(
+        &store,
+        Some("nina"),
+        &[
+            "-e",
+            "USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;",
+        ],
+        "",
+    );
+    assert!(ok, "her own tenancy was refused: {said}");
+    assert!(
+        said.contains('5'),
+        "her own record did not come back: {said}"
+    );
+
+    let (ok, said) = run(&store, Some("nina"), &["-e", "USE NAMESPACE staging;"], "");
+    assert!(!ok, "she selected another namespace: {said}");
+    // On what it says rather than on a digit: the output carries a log line
+    // with a timestamp, and asserting a digit is absent reads that timestamp as
+    // if it were a record.
+    assert!(
+        said.contains("outside"),
+        "she was refused for some other reason: {said}"
+    );
+}
