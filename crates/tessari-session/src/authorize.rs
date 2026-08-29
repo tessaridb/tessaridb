@@ -33,7 +33,7 @@ use tessari_storage::{Catalog, Reach, Role, Store, Verb};
 use tessari_types::TableId;
 
 use crate::error::{Error, Result};
-use crate::identity::{At, Needs};
+use crate::identity::{At, Identity, Needs};
 use crate::session::Session;
 
 impl<'a> Session<'a> {
@@ -129,20 +129,76 @@ impl<'a> Session<'a> {
     ///
     /// The check is one catalog read per statement. It reads `is_open` — whether
     /// the store has any user at all — because an empty store must stay usable,
-    /// and that is a property of the data rather than of the session.
+    /// and that is a property of the data rather than of the session, and it
+    /// re-reads this session's own user in the same transaction, for the reason
+    /// [`Session::refresh`] gives.
     pub(crate) fn authorize(
-        &self,
+        &mut self,
         store: &'a Store,
         kind: &StatementKind,
         span: tessari_ql::Span,
     ) -> Result<()> {
-        let mut transaction = store.begin()?;
-        let open = Catalog::new(&mut transaction).is_open()?;
-        transaction.rollback();
+        let open = self.refresh(store)?;
         self.identity.allows(kind, open, span)?;
         self.within_tenancy(kind, span)?;
         self.within_authority(store, kind, span)?;
         self.within_grants(store, kind, span)
+    }
+
+    /// Re-read this session's own user, and answer whether the store is open.
+    ///
+    /// # Why a session cannot trust the record it signed in with
+    ///
+    /// Because half of what a user holds lives in that record and half does
+    /// not, and until this existed the two halves revoked on different
+    /// schedules. Grants are read from the catalog inside the statement's own
+    /// transaction, so `REVOKE … ON TABLE` binds on the next statement. The
+    /// role, the tenancy and — since authorities became a set — **everything
+    /// this store's permission model is about** lived in a copy taken once at
+    /// `sign_in` and never read again, so `ALTER USER`, `DROP USER` and
+    /// `REVOKE … ON REACH` reached a connection that was already open **never**.
+    /// Both halves are called permissions from outside and nothing distinguished
+    /// them, which is the shape a permission cache failure always has.
+    ///
+    /// So the bound is now the same for both: **one statement**. A surface where
+    /// the connection is the session — the wire protocol — used to be bounded by
+    /// the connection's lifetime, which is to say by nothing.
+    ///
+    /// # It costs no transaction and no scan
+    ///
+    /// The `is_open` read was already here and already scans the users table.
+    /// This adds a point read beside it in the same transaction, which is why
+    /// the honest description of the cost is one key lookup per statement rather
+    /// than one catalog round-trip.
+    ///
+    /// # A user who has gone
+    ///
+    /// leaves the session [`Identity::Anonymous`] — the store no longer knows
+    /// you — and the ordinary rule then answers, rather than a second rule
+    /// invented here. On a store whose *last* user was just dropped that means
+    /// the session may do anything, because an empty store is open and there
+    /// would otherwise be no way back into it.
+    ///
+    /// # It reads committed state
+    ///
+    /// deliberately: it opens its own transaction, so a script that alters its
+    /// own user mid-transaction does not re-authorize against a change nobody
+    /// has committed yet.
+    fn refresh(&mut self, store: &'a Store) -> Result<bool> {
+        let signed = self.identity.user().map(|user| user.id);
+        let mut transaction = store.begin()?;
+        let catalog = Catalog::new(&mut transaction);
+        let open = catalog.is_open()?;
+        let found = match signed {
+            Some(id) => catalog.user(id)?,
+            None => None,
+        };
+        transaction.rollback();
+        if signed.is_some() {
+            self.identity =
+                found.map_or(Identity::Anonymous, |user| Identity::Signed(Box::new(user)));
+        }
+        Ok(open)
     }
 
     /// Refuse a container this user holds no authority over.

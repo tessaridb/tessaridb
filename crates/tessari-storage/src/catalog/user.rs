@@ -292,6 +292,23 @@ impl Catalog<'_, '_> {
         Ok(found)
     }
 
+    /// One declared user, by id.
+    ///
+    /// A point read rather than a scan, because the caller is the authorization
+    /// path: it runs on every statement, and it already knows which id it wants.
+    /// `None` is how a dropped user looks, which is what makes dropping one
+    /// reach a session that is already open.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub fn user(&self, id: u32) -> Result<Option<UserDefinition>> {
+        let Some(value) = self.read(system::USERS, id)? else {
+            return Ok(None);
+        };
+        UserDefinition::from_value(&value).map(Some)
+    }
+
     /// Whether this store has any user at all.
     ///
     /// A store with none is **open**: requiring a signin against one would lock
