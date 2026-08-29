@@ -267,3 +267,88 @@ fn a_closed_store_answers_401_without_a_credential_and_403_when_the_grant_forbid
     );
     assert_eq!(status, 403, "a caller without the grant reached a file");
 }
+
+#[test]
+fn the_write_and_head_methods_refuse_a_caller_without_the_grant_and_serve_one_with_it() {
+    // `GET` had a negative test and the other four methods did not, on the
+    // argument that they share a code path with something that is tested. That
+    // is an argument, and an argument is what a handler added next month
+    // silently stops satisfying — so each method is probed here as a path.
+    //
+    // The probe is the same caller against two buckets, which is what keeps the
+    // refusals meaningful: a test where everything is refused would pass just as
+    // well against a surface that refuses everybody.
+    let (_node, address) = node();
+    assert_eq!(script(&address, READY, None), 200);
+    assert_eq!(
+        script(
+            &address,
+            "DEFINE USER root ROLE owner PASSWORD 'a long one';",
+            None
+        ),
+        200
+    );
+    // `root:a long one` in base64.
+    let root = "Basic cm9vdDphIGxvbmcgb25l";
+    assert_eq!(
+        script(
+            &address,
+            "USE NAMESPACE prod; USE DATABASE library; DEFINE BUCKET archive; \
+             DEFINE USER ada ON prod.library ROLE editor PASSWORD 'a long one'; \
+             GRANT read, write ON media TO ada;",
+            Some(root)
+        ),
+        200
+    );
+    // `ada:a long one` in base64. Granted on `media` and not on `archive`.
+    let ada = Some("Basic YWRhOmEgbG9uZyBvbmU=");
+
+    let (status, _) = send(
+        &address,
+        "PUT",
+        "/files/prod/library/media/note.txt",
+        b"granted",
+        ada,
+    );
+    assert_eq!(status, 201, "the grant did not let a write through");
+
+    for method in ["PUT", "POST"] {
+        let (status, _) = send(
+            &address,
+            method,
+            "/files/prod/library/archive/note.txt",
+            b"not granted",
+            ada,
+        );
+        assert_eq!(status, 403, "{method} wrote into a bucket nobody granted");
+    }
+
+    let (status, _) = send(
+        &address,
+        "DELETE",
+        "/files/prod/library/archive/note.txt",
+        b"",
+        ada,
+    );
+    assert_eq!(status, 403, "a delete reached a bucket nobody granted");
+
+    let (status, _) = send(
+        &address,
+        "HEAD",
+        "/files/prod/library/archive/note.txt",
+        b"",
+        ada,
+    );
+    assert_eq!(status, 403, "a head reached a bucket nobody granted");
+
+    // And the same method, on the bucket the same caller *was* granted, so the
+    // 403s above are about the grant rather than about the method.
+    let (status, _) = send(
+        &address,
+        "HEAD",
+        "/files/prod/library/media/note.txt",
+        b"",
+        ada,
+    );
+    assert_eq!(status, 200, "the grant did not let a head through");
+}
