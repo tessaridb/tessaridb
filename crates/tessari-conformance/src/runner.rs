@@ -211,6 +211,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::NoSuchRole { .. } => "NoSuchRole",
         Error::NoSuchVerb { .. } => "NoSuchVerb",
         Error::NoSuchAuthority { .. } => "NoSuchAuthority",
+        Error::CannotHandOut { .. } => "CannotHandOut",
         Error::NotGranted { .. } => "NotGranted",
         Error::GrantedUserCannotDeclare { .. } => "GrantedUserCannotDeclare",
         Error::LastGrant { .. } => "LastGrant",

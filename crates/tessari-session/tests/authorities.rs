@@ -500,3 +500,109 @@ fn governing_does_not_confer_reading_the_records_of_the_place_governed() {
     let refusal = refused(&mut gwen, "SELECT * FROM orders;");
     assert!(refusal.contains("read"), "{refusal}");
 }
+
+#[test]
+fn nobody_can_hand_out_an_authority_they_do_not_hold() {
+    // **The one statement in the store that can escalate.** Every other is
+    // bounded by what the caller may do now; a grant is bounded by what somebody
+    // may do later, so a mistake here compounds — mint an identity above your
+    // own and every other check becomes decorative, because the way past them
+    // all is to be somebody else.
+    //
+    // `paula` governs `prod` and manages it. She may hand both out inside `prod`
+    // and may hand out neither over the store, and the second half is the test:
+    // containment runs downward and only downward.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run(
+            "DEFINE USER paula ON NAMESPACE prod AUTHORITIES govern, manage \
+             PASSWORD 'correct horse battery'; \
+             DEFINE USER junior ON NAMESPACE prod AUTHORITIES read \
+             PASSWORD 'correct horse battery';",
+        )
+        .unwrap();
+
+    let mut paula = signed_in(&store, "paula");
+    paula
+        .run("GRANT manage ON DATABASE prod.shop TO junior;")
+        .expect("inside her own namespace, and she holds manage there");
+
+    // Refused on `govern` and not on `manage`, and the order is the point: she
+    // has no business handing out *anything* at store reach, so the broader gate
+    // answers first and the kind is never consulted. The narrower failure is
+    // asserted below, where the reach is one she does govern.
+    let refusal = refused(&mut paula, "GRANT manage ON STORE TO junior;");
+    assert!(
+        refusal.contains("govern"),
+        "a namespace authority must not mint a store-wide one: {refusal}"
+    );
+
+    // And the kind she was never given, at a reach she does govern. The reach
+    // being right is exactly what makes this the interesting half: the refusal
+    // has to come from the *kind*.
+    let refusal = refused(&mut paula, "GRANT operate ON NAMESPACE prod TO junior;");
+    assert!(
+        refusal.contains("operate"),
+        "you cannot give away what you were never given: {refusal}"
+    );
+
+    let mut root = signed_in(&store, "root");
+    assert_eq!(
+        held(&mut root, "junior"),
+        vec!["manage@prod.shop".to_owned(), "read@prod".to_owned()],
+        "only the grant that was permitted landed"
+    );
+}
+
+#[test]
+fn handing_out_authority_needs_governing_the_place_it_is_handed_out_in() {
+    // The other question, and it is the same rule read from the other end.
+    // `mo` holds every other kind over `prod` and does not govern it, so she may
+    // do everything there herself and decide nothing about who else may.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run(
+            "DEFINE USER mo ON NAMESPACE prod AUTHORITIES read, write, manage, operate \
+             PASSWORD 'correct horse battery'; \
+             DEFINE USER junior ON NAMESPACE prod AUTHORITIES read \
+             PASSWORD 'correct horse battery';",
+        )
+        .unwrap();
+
+    let mut mo = signed_in(&store, "mo");
+    let refusal = refused(&mut mo, "GRANT read ON NAMESPACE prod TO junior;");
+    assert!(
+        refusal.contains("govern"),
+        "handing out authority is an act of governing, whatever else is held: {refusal}"
+    );
+}
+
+#[test]
+fn a_namespace_authority_can_now_hand_out_authority_inside_it() {
+    // The case the M4 under-grant refused, paid off. `GRANT` demanded `govern`
+    // at the **store** while nothing compared the caller's holdings to the reach
+    // in the statement — safe, and too strict by exactly the rule the owner
+    // asked for. The comparison exists now, so the class can come down.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run(
+            "DEFINE USER nia ON NAMESPACE prod AUTHORITIES govern, read, write \
+             PASSWORD 'correct horse battery'; \
+             DEFINE USER junior ON NAMESPACE prod AUTHORITIES read \
+             PASSWORD 'correct horse battery';",
+        )
+        .unwrap();
+
+    let mut nia = signed_in(&store, "nia");
+    nia.run("GRANT write ON DATABASE prod.shop TO junior;")
+        .expect("a namespace authority hands out authority inside their namespace");
+
+    let mut root = signed_in(&store, "root");
+    assert!(
+        held(&mut root, "junior").contains(&"write@prod.shop".to_owned()),
+        "the grant did not land"
+    );
+}

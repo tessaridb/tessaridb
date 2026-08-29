@@ -671,10 +671,14 @@ pub(crate) fn failure(error: &Error) -> Answer {
         // thing they could not fix.
         // `NotTheWholeStore` belongs with these and not with `401`: the node
         // knows exactly who is asking, and signing in again will never help.
+        // `CannotHandOut` is here for the same reason and not with the 400s: a
+        // caller trying to grant past their own holdings wrote the statement
+        // exactly right, and the refusal is about who they are.
         Error::RoleForbids { .. }
         | Error::OutsideTenancy { .. }
         | Error::NotGranted { .. }
-        | Error::NotTheWholeStore { .. } => 403,
+        | Error::NotTheWholeStore { .. }
+        | Error::CannotHandOut { .. } => 403,
         // The caller wrote it wrong, and no amount of changing the data helps.
         // A new password that is not one is a bad request rather than a
         // refusal: nothing about the caller's authority is in question.

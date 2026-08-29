@@ -754,6 +754,25 @@ pub enum Error {
         span: Span,
     },
 
+    /// Handing out an authority the caller does not hold at that reach.
+    ///
+    /// Two refusals wear this one message because they are the same rule read
+    /// from both ends: you may not hand out an authority you were never given,
+    /// and you may not hand out anything at all somewhere you do not govern.
+    /// Together they are the property the whole model exists for — **no
+    /// statement can mint an identity above the one running it**.
+    ///
+    /// Separate from [`Error::WiderThanYou`], which is about the `ON` clause of
+    /// a declaration and sends an operator to a smaller tenancy. This one is
+    /// about an authority, and sends them to whoever holds it.
+    #[error("you do not hold {kind} at that reach yourself (at {span})")]
+    CannotHandOut {
+        /// The authority that is missing — the one being granted, or `govern`.
+        kind: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A role this language does not have.
     #[error("there is no role called {name:?} (at {span})")]
     NoSuchRole {

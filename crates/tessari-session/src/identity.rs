@@ -352,20 +352,21 @@ impl Needs {
             | StatementKind::DropUser { .. }
             | StatementKind::Grant { .. }
             | StatementKind::Revoke { .. } => Self::GOVERN,
-            // Handing out an authority is `AdministerStore` and not
-            // `Administer`, which is deliberately **stricter than it will
-            // finally be**. `Administer` says the caller owns something, and
-            // the reach in the statement says how far the grant goes; nothing
-            // yet compares the two, so an owner of one database could name
-            // `ON STORE` and mint an identity above their own. Until the
-            // enforcement wave puts the caller's own held set beside the reach
-            // they are granting, the safe direction is the one that refuses too
-            // much: an under-grant is a support request, an over-grant is the
-            // escalation this whole model exists to make unrepresentable.
-            StatementKind::GrantAuthority { .. } | StatementKind::RevokeAuthority { .. } => Self {
-                kinds: &[Kind::Govern],
-                at: At::Store,
-            },
+            // Handing out an authority is `govern`, like every other statement
+            // about who may do what — **and this class is not what bounds it**.
+            // The bound is `Session::may_hand_out`, which puts the caller's own
+            // held set beside the reach in the statement: you must govern there,
+            // and you must already hold what you are giving away.
+            //
+            // It has to be there rather than here because this class cannot see
+            // the reach the statement names, and that reach is the whole
+            // question. Until the check existed the class was `govern` at the
+            // **store** — safe, and too strict by exactly the case the model was
+            // asked for, since a namespace authority could not hand out
+            // authority inside their own namespace.
+            StatementKind::GrantAuthority { .. } | StatementKind::RevokeAuthority { .. } => {
+                Self::GOVERN
+            }
             // A backup is every record in the store, past every grant and every
             // tenancy boundary. There is no permission smaller than "may see all
             // of it", so the role is the whole check — and a grant can never add
@@ -733,12 +734,61 @@ impl Session<'_> {
         // kind reads as a mistyped kind rather than as an unknown user.
         let kinds = kinds.iter().map(kind_named).collect::<Result<Vec<_>>>()?;
         let reach = self.reach_of(transaction, reach)?;
+        self.may_hand_out(&kinds, reach, span)?;
         let mut found = self.user_to_change(transaction, user, span)?;
         for kind in kinds {
             found.authorities.add(Authority::new(kind, reach));
         }
         self.rewrite_authorities(transaction, found);
         Ok(Outcome::Done)
+    }
+
+    /// Refuse a grant that would reach past the caller's own holdings.
+    ///
+    /// # The one statement that can escalate, and the two questions that stop it
+    ///
+    /// Every other statement is bounded by what the caller may do *now*. A grant
+    /// is bounded by what somebody may do *later*, which is why it is the only
+    /// place in the store where a mistake compounds: mint an identity above your
+    /// own and every other check becomes decorative, because the way past them
+    /// all is to be somebody else.
+    ///
+    /// So two questions, and they are the same rule read from both ends:
+    ///
+    /// 1. **Do you govern there?** Handing out authority in a namespace is an
+    ///    act *in* that namespace, and `govern` is the kind that covers it.
+    /// 2. **Do you hold what you are handing out?** Containment does the work:
+    ///    a holder of `manage` over `prod` passes for `prod.shop` and fails for
+    ///    the store, because [`Reach::contains`] runs downward and only downward.
+    ///
+    /// Until this existed the statement demanded `govern` at the **store**,
+    /// which was safe and too strict by exactly the case the model was asked
+    /// for: a namespace authority could not hand out authority inside their own
+    /// namespace. The under-grant was deliberate and is now paid off — an
+    /// under-grant is a support request, and an over-grant is unrecoverable.
+    ///
+    /// Anonymous callers are unbounded here, and that is the same rule that lets
+    /// an empty store declare its first user: a store with nobody in it hides
+    /// nothing from anybody, and a closed one refuses long before this.
+    fn may_hand_out(&self, kinds: &[Kind], reach: Reach, span: Span) -> Result<()> {
+        let Some(user) = self.identity.user() else {
+            return Ok(());
+        };
+        if !user.authorities.permits(Kind::Govern, reach) {
+            return Err(Error::CannotHandOut {
+                kind: Kind::Govern.name(),
+                span,
+            });
+        }
+        for kind in kinds {
+            if !user.authorities.permits(*kind, reach) {
+                return Err(Error::CannotHandOut {
+                    kind: kind.name(),
+                    span,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// `REVOKE manage ON NAMESPACE prod FROM ada` — take exactly what is named.
@@ -758,6 +808,11 @@ impl Session<'_> {
     ) -> Result<Outcome> {
         let kinds = kinds.iter().map(kind_named).collect::<Result<Vec<_>>>()?;
         let reach = self.reach_of(transaction, reach)?;
+        // Only the first of the two questions. Taking an authority away can
+        // never mint one, so holding what is being revoked is not required —
+        // and requiring it would mean a namespace administrator could not clean
+        // up a grant somebody above them made.
+        self.may_hand_out(&[], reach, span)?;
         let mut found = self.user_to_change(transaction, user, span)?;
         for kind in kinds {
             found.authorities.remove(&Authority::new(kind, reach));
