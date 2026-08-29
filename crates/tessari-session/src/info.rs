@@ -934,7 +934,7 @@ impl Session<'_> {
 /// contains a sibling. `None` on the left is the node's administrator and
 /// contains everything; `None` on the right is the whole store and is contained
 /// by nobody but them.
-fn within(
+pub(crate) fn within(
     namespace: Option<NamespaceId>,
     database: Option<DatabaseId>,
     their_namespace: Option<NamespaceId>,

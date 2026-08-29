@@ -754,6 +754,36 @@ pub enum Error {
         span: Span,
     },
 
+    /// Granting an authority over a reach the subject is confined outside of.
+    ///
+    /// The refusal exists because the alternative is worse than either obvious
+    /// answer. A declared tenancy is a second, independent confinement asked
+    /// before the held set is consulted, so an authority granted outside it can
+    /// never be used — which meant `GRANT read ON NAMESPACE staging TO nina`,
+    /// where `nina` was declared `ON NAMESPACE prod`, **succeeded and did
+    /// nothing**. A statement that returns `ok` and has no effect is the worst
+    /// of the three available designs, because the operator's only evidence that
+    /// they did the thing *is* the `ok`; the next person reads the holding in
+    /// `INFO FOR USER` and believes it.
+    ///
+    /// It is the subject-side twin of [`Error::WiderThanYou`], which refuses the
+    /// same escalation on the declaring side. Without it the escalation simply
+    /// moves: declare somebody narrow, then grant them out of their own `ON`.
+    ///
+    /// `REVOKE` is deliberately **not** refused this way. Taking away a holding
+    /// that could never be used is harmless, and the store may already hold such
+    /// a holding from before this refusal existed — a revocation is how that is
+    /// cleaned up, so refusing it would trap the very rows this rule is about.
+    #[error(
+        "{user:?} is confined to a tenancy that does not contain that reach, so the authority could never be used (at {span})"
+    )]
+    OutsideTheirTenancy {
+        /// The subject of the grant.
+        user: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// Handing out an authority the caller does not hold at that reach.
     ///
     /// Two refusals wear this one message because they are the same rule read

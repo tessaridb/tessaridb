@@ -672,3 +672,66 @@ fn a_database_scoped_user_can_still_select_the_namespace_above_their_own() {
         .expect("a database-scoped user reaches their own database through its namespace");
     dana.run("SELECT * FROM orders;").expect("and reads it");
 }
+
+#[test]
+fn a_grant_outside_the_subjects_own_tenancy_is_refused_rather_than_stored_inert() {
+    // Q-255, found by the M7 differential and decided here. `GRANT read ON
+    // NAMESPACE staging TO nina`, nina being of `prod`, used to **succeed and do
+    // nothing**: a declared tenancy is asked before the held set, so the holding
+    // was stored where nothing would ever consult it.
+    //
+    // Accepted-and-inert is the worst of the three designs available, because
+    // the operator's only evidence that the grant landed is the statement not
+    // complaining — and the next person reads the holding back out of
+    // `INFO FOR USER` and believes it.
+    let store = store();
+    governed(&store);
+    let mut root = signed_in(&store, "root");
+    root.run(
+        "DEFINE USER nina ON NAMESPACE prod AUTHORITIES read PASSWORD 'correct horse battery';",
+    )
+    .unwrap();
+
+    let refusal = refused(&mut root, "GRANT read ON NAMESPACE staging TO nina;");
+    assert!(
+        refusal.contains("confined"),
+        "she was refused for some other reason: {refusal}"
+    );
+    // And nothing was written, which is the half a refusal message cannot prove.
+    assert_eq!(
+        held(&mut root, "nina"),
+        vec!["read@prod".to_owned()],
+        "the refused grant was stored anyway"
+    );
+}
+
+#[test]
+fn a_reach_that_contains_the_subjects_tenancy_is_not_inert_and_is_allowed() {
+    // The half the rule must not over-reach on. `read ON STORE` granted to a
+    // user confined to `prod` is perfectly usable *inside* `prod`, because
+    // containment runs downward — so refusing it would be refusing a working
+    // grant on the grounds that part of it is unreachable, which is true of
+    // every store-wide grant to every tenant.
+    //
+    // Overlap in either direction, then, and not containment in one.
+    let store = store();
+    governed(&store);
+    let mut root = signed_in(&store, "root");
+    root.run(
+        "DEFINE USER pia ON NAMESPACE prod AUTHORITIES read PASSWORD 'correct horse battery';",
+    )
+    .unwrap();
+
+    root.run("GRANT manage ON STORE TO pia;").unwrap();
+    let mut hers = held(&mut root, "pia");
+    hers.sort();
+    assert_eq!(
+        hers,
+        vec!["manage@store".to_owned(), "read@prod".to_owned()]
+    );
+
+    // And it works where she can reach: `manage` at the store contains `prod`.
+    let mut pia = signed_in(&store, "pia");
+    pia.run("USE NAMESPACE prod; DEFINE DATABASE extra;")
+        .unwrap();
+}

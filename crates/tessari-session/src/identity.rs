@@ -47,6 +47,7 @@ use tessari_ql::{
 use tessari_storage::{Authority, Catalog, Held, Kind, Reach, Role, Transaction, UserDefinition};
 
 use crate::error::{Error, Result};
+use crate::info::within;
 use crate::outcome::Outcome;
 use crate::session::Session;
 
@@ -744,6 +745,30 @@ impl Session<'_> {
         let reach = self.reach_of(transaction, reach)?;
         self.may_hand_out(&kinds, reach, span)?;
         let mut found = self.user_to_change(transaction, user, span)?;
+        // And the reach has to meet the subject's own `ON` somewhere, or the
+        // grant would be stored and never usable: a declared tenancy is a second
+        // confinement asked before the held set, so `GRANT read ON NAMESPACE
+        // staging TO nina` — nina being of `prod` — used to return `ok` and do
+        // nothing at all. Refused rather than accepted-and-inert because the
+        // operator's only evidence that a grant landed is the statement not
+        // complaining, and because the escalation `WiderThanYou` refuses at
+        // declaration would otherwise simply move here.
+        //
+        // **Overlap in either direction, not containment in one.** A reach
+        // inside her tenancy is usable there, and so is a reach that *contains*
+        // it — `read ON STORE` granted to a user of `prod` is not inert, because
+        // containment runs downward and `prod` is inside the store. Only two
+        // tenancies that miss each other entirely produce a holding nothing can
+        // ever consult.
+        let (namespace, database) = reach.parts();
+        let overlaps = within(found.namespace, found.database, namespace, database)
+            || within(namespace, database, found.namespace, found.database);
+        if !overlaps {
+            return Err(Error::OutsideTheirTenancy {
+                user: user.text.clone(),
+                span,
+            });
+        }
         for kind in kinds {
             found.authorities.add(Authority::new(kind, reach));
         }

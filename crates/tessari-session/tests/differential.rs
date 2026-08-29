@@ -342,13 +342,23 @@ fn declare(root: &mut Session<'_>, rolling: &mut Rolling, ordinal: u32) -> Ident
     let mut held = vec![(first, home)];
 
     // Between none and two further holdings, anywhere the store owner can hand
-    // one out — which is everywhere, because they govern the store.
+    // one out — which is everywhere they govern, and they govern the store.
+    //
+    // Everywhere except a tenancy this identity's own `ON` misses entirely: the
+    // store refuses that grant rather than storing a holding nothing could ever
+    // consult (Q-255). A refusal there is the store declining to build the
+    // identity, not a disagreement about one, so the holding is dropped from the
+    // model too — recording it would have the document assert an authority the
+    // subject provably does not have.
     for _ in 0..rolling.below(3) {
         let kind = KINDS[rolling.below(KINDS.len())];
         let reach = REACHES[rolling.below(REACHES.len())];
-        root.run(&format!("GRANT {kind} ON {} TO {name};", reach.named()))
-            .unwrap();
-        held.push((kind, reach));
+        let asked = root.run(&format!("GRANT {kind} ON {} TO {name};", reach.named()));
+        match asked {
+            Ok(_) => held.push((kind, reach)),
+            Err(refusal) if refusal.to_string().contains("confined") => {}
+            Err(refusal) => panic!("the generator could not build {name}: {refusal}"),
+        }
     }
     Identity { name, home, held }
 }

@@ -581,13 +581,23 @@ make refusable, and narrowing it on upgrade would be an outage delivered as a
 migration. What the model changes is what can now be **said**, not what was
 already promised.
 
-**A declared tenancy is a second confinement, and it is asked first.** A user
-declared `ON NAMESPACE prod` who is granted `read ON NAMESPACE staging` still
-cannot reach `staging`: the `ON` is not a default that a grant overrides, it is
-the boundary the session is inside. Otherwise `ON` would be decoration, and the
-escalation refused at the declaring side would simply move to the granting side.
-The confinement is enforced where a session **selects** a container — `USE` — so
-it is also the first thing that has to succeed.
+**A declared tenancy is a second confinement, and it is asked first.** The `ON`
+is not a default that a grant overrides; it is the boundary the session is
+inside, and it is checked before the held set is consulted. Otherwise `ON` would
+be decoration, and the escalation refused at the declaring side would simply move
+to the granting side. The confinement is enforced where a session **selects** a
+container — `USE` — so that is also the first thing that has to succeed.
+
+Because of that, `GRANT read ON NAMESPACE staging TO nina`, where `nina` was
+declared `ON NAMESPACE prod`, is **refused**. The two tenancies miss each other,
+so the holding could never be consulted, and a statement that returns `ok` and
+has no effect is worse than either honest answer: the operator's only evidence
+that a grant landed is the statement not complaining, and the next person reads
+the holding back out of `INFO FOR USER` and believes it. The test is **overlap in
+either direction**, not containment in one — `manage ON STORE` granted to a user
+of `prod` is usable inside `prod`, because containment runs downward. `REVOKE` is
+not refused this way, because taking away a holding that could never be used is
+how one stored before this rule existed gets cleaned up.
 
 **Taking authority away reaches a connection that is already open.** A session
 re-reads its own user from the catalog on every statement, so `ALTER USER`,

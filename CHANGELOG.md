@@ -29,6 +29,15 @@ Unreleased. 862 conformance cases define the language and run in the build.
 
 ### Added
 
+- **A grant whose reach misses the subject's own tenancy is refused.**
+  `GRANT read ON NAMESPACE staging TO nina`, where `nina` was declared
+  `ON NAMESPACE prod`, previously **succeeded and did nothing**: a declared
+  tenancy is asked before the held set, so the holding was stored where nothing
+  would ever consult it, and the only evidence the operator had that it landed
+  was the statement not complaining. The test is overlap in either direction —
+  `manage ON STORE` granted to a user of `prod` stays legal, because containment
+  runs downward and it is usable there. `REVOKE` is unchanged, because removing
+  an inert holding stored before this rule is how it gets cleaned up.
 - **`INFO FOR ACCESS TO TABLE orders` answers who reaches one table**, one row
   per user the caller administers, each saying whether that user may read it and
   whether they may write it. Every row is obtained by signing a throwaway session
