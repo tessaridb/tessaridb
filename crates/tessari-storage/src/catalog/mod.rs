@@ -20,6 +20,7 @@
 //! read below it is an early, friendlier refusal — not the enforcement.
 
 mod analyzer;
+mod authority;
 mod change;
 mod consumer;
 mod definition;
@@ -33,6 +34,7 @@ use tessari_encoding::{decode_payload, encode_payload};
 use tessari_types::{DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId, TableId, Value};
 
 pub use analyzer::AnalyzerDefinition;
+pub use authority::{Authority, Held, Kind, Reach};
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{

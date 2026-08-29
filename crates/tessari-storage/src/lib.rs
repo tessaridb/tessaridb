@@ -36,10 +36,10 @@ mod store;
 mod transaction;
 
 pub use catalog::{
-    AnalyzerDefinition, Catalog, ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT,
-    FieldDefinition, FieldShape, GrantDefinition, IndexDefinition, IndexShape, Mapped,
-    NamespaceDefinition, OnFailure, ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE,
-    TableDefinition, TableShape, UserDefinition, VectorDistance, Verb,
+    AnalyzerDefinition, Authority, Catalog, ConsumerDefinition, DatabaseDefinition, EDGE_IN,
+    EDGE_OUT, FieldDefinition, FieldShape, GrantDefinition, Held, IndexDefinition, IndexShape,
+    Kind, Mapped, NamespaceDefinition, OnFailure, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE,
+    SYSTEM_NAMESPACE, TableDefinition, TableShape, UserDefinition, VectorDistance, Verb,
 };
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.

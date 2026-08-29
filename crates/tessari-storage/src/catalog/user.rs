@@ -25,8 +25,9 @@ use std::collections::BTreeMap;
 use tessari_encoding::decode_payload;
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Value};
 
+use super::authority::{FIELD_AUTHORITIES, held_of};
 use super::definition::{field_id, field_name, number, object};
-use super::{Catalog, Level, id_key, qualify, system};
+use super::{Catalog, Held, Level, Reach, id_key, qualify, system};
 use crate::error::{Error, Result};
 
 const FIELD_ID: &str = "id";
@@ -127,7 +128,17 @@ pub struct UserDefinition {
     /// The database within it, or `None`.
     pub database: Option<DatabaseId>,
     /// What the user may do.
+    ///
+    /// Still written, and still read, for two reasons that outlive it: a binary
+    /// predating [`Self::authorities`] can read a record this one writes, and a
+    /// record predating the field derives its set from this. It is no longer
+    /// what *decides* — `authorities` is.
     pub role: Role,
+    /// What the user may actually do, and how far it reaches.
+    ///
+    /// The set the store asks. Derived from [`Self::role`] for a record written
+    /// before this field existed, which is the whole of the migration.
+    pub authorities: Held,
     /// The password hash, opaque to this layer.
     pub secret: String,
 }
@@ -148,6 +159,7 @@ impl UserDefinition {
         if let Some(database) = self.database {
             fields.insert(FIELD_DATABASE.to_owned(), number(database.get()));
         }
+        fields.insert(FIELD_AUTHORITIES.to_owned(), self.authorities.to_value());
         Value::Object(fields)
     }
 
@@ -182,18 +194,26 @@ impl UserDefinition {
                 fields.get(FIELD_SECRET).map_or("none", Value::type_name),
             ));
         };
+        let namespace = fields
+            .contains_key(FIELD_NAMESPACE)
+            .then(|| field_id(fields, FIELD_NAMESPACE, ENTITY).map(NamespaceId::new))
+            .transpose()?;
+        let database = fields
+            .contains_key(FIELD_DATABASE)
+            .then(|| field_id(fields, FIELD_DATABASE, ENTITY).map(DatabaseId::new))
+            .transpose()?;
+        // A database named without a namespace is not a place. Corruption here
+        // rather than a bad request: nothing can write one through this layer.
+        let Some(reach) = Reach::of(namespace, database) else {
+            return Err(malformed(FIELD_NAMESPACE, "a database with no namespace"));
+        };
         Ok(Self {
             id: field_id(fields, FIELD_ID, ENTITY)?,
             name: field_name(fields, ENTITY)?,
-            namespace: fields
-                .contains_key(FIELD_NAMESPACE)
-                .then(|| field_id(fields, FIELD_NAMESPACE, ENTITY).map(NamespaceId::new))
-                .transpose()?,
-            database: fields
-                .contains_key(FIELD_DATABASE)
-                .then(|| field_id(fields, FIELD_DATABASE, ENTITY).map(DatabaseId::new))
-                .transpose()?,
+            namespace,
+            database,
             role,
+            authorities: held_of(fields, role, reach)?,
             secret: secret.clone(),
         })
     }
@@ -219,12 +239,22 @@ impl Catalog<'_, '_> {
         let qualified = qualify(Level::User, &[], name);
         self.reserve_name(&qualified)?;
         let id = self.allocate(Level::User)?;
+        // A database without its namespace never reaches here through the
+        // language; refusing it keeps that true for a caller of this layer too.
+        let Some(reach) = Reach::of(namespace, database) else {
+            return Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_NAMESPACE,
+                found: "a database with no namespace",
+            });
+        };
         let definition = UserDefinition {
             id,
             name: name.to_owned(),
             namespace,
             database,
             role,
+            authorities: Held::from_role(role, reach),
             secret: secret.to_owned(),
         };
         self.write(system::USERS, id, &definition.to_value());
