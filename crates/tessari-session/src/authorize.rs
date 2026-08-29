@@ -50,14 +50,22 @@ impl<'a> Session<'a> {
     /// rule, and a second copy of it in a network surface is a second place for
     /// it to be answered differently.
     ///
+    /// # Why it re-reads, and why that makes it `&mut`
+    ///
+    /// Because its caller is a *loop*. A subscription that asked this once and
+    /// then pushed for an hour would be bounded by the connection rather than by
+    /// anything a revocation could reach — the same defect a statement path had
+    /// until [`Session::refresh`] existed, but lasting longer. So this is the
+    /// identity gate a feed re-asks every round, and what it establishes is what
+    /// the rest of that round reads: [`Session::readable`] and the field
+    /// visibility both run against the record this call just read.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::NotSignedIn`] on a closed store with no identity, and
     /// [`Error::RoleForbids`] when the role is not enough.
-    pub fn may_read(&self, store: &'a Store) -> Result<()> {
-        let mut transaction = store.begin()?;
-        let open = Catalog::new(&mut transaction).is_open()?;
-        transaction.rollback();
+    pub fn may_read(&mut self, store: &Store) -> Result<()> {
+        let open = self.refresh(store)?;
         // A span over nothing, because there is no script here to point into —
         // and inventing one would put a caret under a character nobody wrote.
         self.identity
@@ -184,7 +192,7 @@ impl<'a> Session<'a> {
     /// deliberately: it opens its own transaction, so a script that alters its
     /// own user mid-transaction does not re-authorize against a change nobody
     /// has committed yet.
-    fn refresh(&mut self, store: &'a Store) -> Result<bool> {
+    fn refresh(&mut self, store: &Store) -> Result<bool> {
         let signed = self.identity.user().map(|user| user.id);
         let mut transaction = store.begin()?;
         let catalog = Catalog::new(&mut transaction);

@@ -254,7 +254,7 @@ fn feed(
     let mut broken = false;
     let outcome = tessaridb::feed::follow(
         db,
-        &session,
+        &mut session,
         &following,
         committed,
         &|| stopping.asked(),

@@ -272,7 +272,7 @@ fn converse(
                 db,
                 committed,
                 stopping,
-                &session,
+                &mut session,
                 &mut writer,
                 &Follow::decode(&body)?,
             );
@@ -434,7 +434,7 @@ fn follow(
     db: &Db,
     committed: &Commits,
     stopping: &Stopping,
-    session: &tessaridb::Session<'_>,
+    session: &mut tessaridb::Session<'_>,
     writer: &mut BufWriter<TcpStream>,
     asked: &Follow,
 ) -> Result<()> {
