@@ -117,7 +117,9 @@ impl Effect {
             | StatementKind::AlterUser { .. }
             | StatementKind::DropUser { .. }
             | StatementKind::Grant { .. }
-            | StatementKind::Revoke { .. } => Self::Write,
+            | StatementKind::Revoke { .. }
+            | StatementKind::GrantAuthority { .. }
+            | StatementKind::RevokeAuthority { .. } => Self::Write,
 
             // Topology, and the two halves part company here (ADR-0020 §3).
             //

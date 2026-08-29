@@ -122,6 +122,21 @@ impl Reach {
         }
     }
 
+    /// The tenancy this reach describes — the inverse of [`Self::of`].
+    ///
+    /// Paired with `of` so that the two directions cannot drift: a caller
+    /// holding a reach never has to rebuild the pair by hand and never has to
+    /// handle the database-without-a-namespace case, which this type makes
+    /// unconstructible.
+    #[must_use]
+    pub const fn parts(self) -> (Option<NamespaceId>, Option<DatabaseId>) {
+        match self {
+            Self::Store => (None, None),
+            Self::Namespace(namespace) => (Some(namespace), None),
+            Self::Database(namespace, database) => (Some(namespace), Some(database)),
+        }
+    }
+
     /// Whether this reach contains `other`.
     ///
     /// The only implication in this model. Downward and nothing else: the store
@@ -266,6 +281,29 @@ impl Held {
         }
     }
 
+    /// The widest role whose bundle this set contains, if any role does.
+    ///
+    /// The inverse of [`Self::from_role`], and it is a *summary* rather than a
+    /// round trip: a set is written to the catalog alongside the role it can be
+    /// described as, so that a binary predating the set field reads a role and
+    /// under-grants rather than misreading. Widest-that-fits, never
+    /// nearest — a role wider than the set would grant an older binary
+    /// something the user does not hold, which is the one direction this must
+    /// never fail in.
+    ///
+    /// `None` is the honest answer for the sets a ladder could never express —
+    /// `manage` at a namespace without `read` is the case the whole model
+    /// exists for. It is written as an **absent** role, which an older binary
+    /// refuses to read rather than guessing at.
+    #[must_use]
+    pub fn role_within(&self, reach: Reach) -> Option<Role> {
+        Role::ALL
+            .iter()
+            .rev()
+            .copied()
+            .find(|role| Self::from_role(*role, reach).0.is_subset(&self.0))
+    }
+
     /// The set, as it is written to the catalog.
     ///
     /// One string per authority — `"read@store"`, `"write@3"`, `"manage@3.7"` —
@@ -352,17 +390,29 @@ pub(super) const FIELD_AUTHORITIES: &str = "authorities";
 /// The authorities a stored user record stands for.
 ///
 /// Reads the explicit set when the record carries one, and derives it from the
-/// role when it does not. Both forms are current: the role is still written, so
-/// a binary that predates this can still read a record this one wrote.
+/// role when it does not. Both forms are current: a role is still written
+/// whenever one summarises the set, so a binary that predates this can still
+/// read a record this one wrote.
 ///
 /// # Errors
 ///
 /// Returns [`Error::CatalogMalformed`] when the field is present and is not an
-/// authority set.
-pub(super) fn held_of(fields: &BTreeMap<String, Value>, role: Role, reach: Reach) -> Result<Held> {
-    match fields.get(FIELD_AUTHORITIES) {
-        None => Ok(Held::from_role(role, reach)),
-        Some(value) => Held::from_value(value),
+/// authority set, and when a record carries **neither** — a user with no role
+/// and no set says nothing about what they may do, and the safe reading of
+/// nothing is not "nothing is permitted" but "this record is not intelligible".
+pub(super) fn held_of(
+    fields: &BTreeMap<String, Value>,
+    role: Option<Role>,
+    reach: Reach,
+) -> Result<Held> {
+    match (fields.get(FIELD_AUTHORITIES), role) {
+        (Some(value), _) => Held::from_value(value),
+        (None, Some(role)) => Ok(Held::from_role(role, reach)),
+        (None, None) => Err(Error::CatalogMalformed {
+            entity: ENTITY,
+            field: FIELD_AUTHORITIES,
+            found: "neither a role nor an authority set",
+        }),
     }
 }
 
@@ -508,20 +558,20 @@ mod tests {
         let fields = BTreeMap::new();
         let reach = Reach::Database(PROD, LIBRARY);
 
-        let viewer = held_of(&fields, Role::Viewer, reach).expect("a viewer");
+        let viewer = held_of(&fields, Some(Role::Viewer), reach).expect("a viewer");
         assert!(viewer.permits(Kind::Read, reach));
         assert!(!viewer.permits(Kind::Write, reach));
 
         // The bundle the new rule forbids, preserved on purpose: an editor was
         // declared under a promise that they may define structure.
-        let editor = held_of(&fields, Role::Editor, reach).expect("an editor");
+        let editor = held_of(&fields, Some(Role::Editor), reach).expect("an editor");
         assert!(editor.permits(Kind::Read, reach));
         assert!(editor.permits(Kind::Write, reach));
         assert!(editor.permits(Kind::Manage, reach));
         assert!(!editor.permits(Kind::Govern, reach));
         assert!(!editor.permits(Kind::Operate, reach));
 
-        let owner = held_of(&fields, Role::Owner, reach).expect("an owner");
+        let owner = held_of(&fields, Some(Role::Owner), reach).expect("an owner");
         for kind in Kind::ALL {
             assert!(owner.permits(*kind, reach));
         }
@@ -537,11 +587,61 @@ mod tests {
             Authority::new(Kind::Write, Reach::Namespace(PROD)),
         ]);
         let fields = BTreeMap::from([(FIELD_AUTHORITIES.to_owned(), narrowed.to_value())]);
-        let held = held_of(&fields, Role::Editor, Reach::Namespace(PROD)).expect("the set");
+        let held = held_of(&fields, Some(Role::Editor), Reach::Namespace(PROD)).expect("the set");
         assert_eq!(held, narrowed);
         assert!(
             !held.permits(Kind::Manage, Reach::Namespace(PROD)),
             "the stored set decides, not the role the record still carries"
+        );
+    }
+
+    #[test]
+    fn a_role_summary_is_the_widest_that_fits_and_never_a_near_miss() {
+        let reach = Reach::Database(PROD, LIBRARY);
+
+        // Each role summarises as itself, which is what makes the two spellings
+        // of a declaration one declaration.
+        for role in Role::ALL {
+            assert_eq!(
+                Held::from_role(*role, reach).role_within(reach),
+                Some(*role),
+                "{role:?} must summarise as itself"
+            );
+        }
+
+        // Widest that fits, not nearest. An owner's set contains a viewer's, so
+        // a search that stopped at the first match would report `viewer` for a
+        // user holding everything — and this is the direction that matters,
+        // because the summary is what an older binary reads.
+        assert_eq!(
+            Held::every_kind_at(reach).role_within(reach),
+            Some(Role::Owner)
+        );
+
+        // A superset of `editor` that is not `owner` still summarises as the
+        // editor it contains, and never as the owner it does not.
+        let more = Held::of([
+            Authority::new(Kind::Read, reach),
+            Authority::new(Kind::Write, reach),
+            Authority::new(Kind::Manage, reach),
+            Authority::new(Kind::Operate, reach),
+        ]);
+        assert_eq!(more.role_within(reach), Some(Role::Editor));
+
+        // And the case the whole model exists for has no summary at all. Every
+        // role begins with `read`, so a set without it fits none of them —
+        // reporting the nearest would hand an older binary a read this user does
+        // not hold.
+        let ungovernable = Held::of([Authority::new(Kind::Manage, reach)]);
+        assert_eq!(ungovernable.role_within(reach), None);
+        assert_eq!(Held::nothing().role_within(reach), None);
+
+        // A set held at a *different* reach summarises as nothing here, so a
+        // namespace authority is never reported as a role over one database in
+        // it. Containment runs downward through holding, not through summary.
+        assert_eq!(
+            Held::from_role(Role::Owner, Reach::Namespace(PROD)).role_within(reach),
+            None
         );
     }
 

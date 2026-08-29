@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 847 conformance cases define the language and run in the build.
+Unreleased. 860 conformance cases define the language and run in the build.
 
 ### Security
 

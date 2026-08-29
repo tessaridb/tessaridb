@@ -27,9 +27,9 @@ mod token;
 pub use ast::{
     Aggregate, Answer, ArithmeticOp, Assignment, ColumnDeclaration, ConsumerSource, DeleteBound,
     Direction, Edit, Expr, ExprKind, Field, FieldMapping, FieldPath, Hop, Identity, InfoSubject,
-    JoinSide, Name, OnFailure, Ordering, Password, Projected, Projection, RangeExpr, RecordTarget,
-    Retention, Script, Select, Source, Statement, StatementKind, TableChange, TableRef, Timeout,
-    UserChange, Using, Version, Written,
+    JoinSide, Name, OnFailure, Ordering, Password, Projected, Projection, RangeExpr, ReachRef,
+    RecordTarget, Retention, Script, Select, Source, Statement, StatementKind, TableChange,
+    TableRef, Timeout, UserChange, UserGrant, Using, Version, Written,
 };
 pub use bind::Parameters;
 pub use error::{Error, Result};

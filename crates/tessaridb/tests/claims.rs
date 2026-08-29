@@ -133,7 +133,13 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 23] = [
+const CROSS_CUTTING: [&str; 24] = [
+    // Who may do what, and how far it reaches, is asked before any engine is
+    // chosen and answered the same whichever one runs: a `read` at a namespace
+    // covers a scan, an index read, a walk and a nearest-neighbour read alike.
+    // It sits beside `grants` for that reason — one says which tables, the other
+    // says how much of the store, and neither is an access path.
+    "authorities",
     "bindings",
     // Declaring a table's fields with the table is a spelling, and a spelling
     // belongs to no engine: the columns desugar into the field declarations the

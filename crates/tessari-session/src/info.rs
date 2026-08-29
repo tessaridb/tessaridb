@@ -39,7 +39,7 @@ use std::collections::BTreeMap;
 use tessari_ql::{InfoSubject, Name, Span, TableRef};
 use tessari_storage::{
     BUILD_VERSION, Catalog, ConsumerDefinition, FieldDefinition, GrantDefinition, IndexDefinition,
-    Progress, ReplicaDefinition, TableDefinition, Transaction, UserDefinition,
+    Progress, Reach, ReplicaDefinition, TableDefinition, Transaction, UserDefinition,
 };
 use tessari_types::{DatabaseId, NamespaceId, TableId, Value};
 
@@ -258,6 +258,10 @@ impl Session<'_> {
             report.insert("database".to_owned(), Value::from(found.name.as_str()));
         }
         report.insert("grants".to_owned(), Value::Array(described));
+        report.insert(
+            "authorities".to_owned(),
+            described_authorities(&catalog, &user)?,
+        );
         Ok(report)
     }
 
@@ -779,10 +783,57 @@ fn within(
 
 /// One user, without the secret.
 fn described_user(user: &UserDefinition) -> BTreeMap<String, Value> {
-    BTreeMap::from([
-        ("user".to_owned(), Value::from(user.name.as_str())),
-        ("role".to_owned(), Value::from(user.role.name())),
-    ])
+    let mut described = BTreeMap::from([("user".to_owned(), Value::from(user.name.as_str()))]);
+    // Absent rather than a placeholder when no role summarises what the user
+    // holds. A listing that printed `viewer` there would be describing an
+    // authority they do not have, and the field below is the true answer.
+    if let Some(role) = user.role {
+        described.insert("role".to_owned(), Value::from(role.name()));
+    }
+    described
+}
+
+/// One user's authorities, with every reach named rather than numbered.
+///
+/// Named because a numbered reach is unreadable to the person who has to decide
+/// whether it is right, and deciding that is the only reason to ask. Until the
+/// enforcement wave lands this is also the **only** observable effect a grant
+/// has, so a report without it would leave a grant unverifiable.
+fn described_authorities(catalog: &Catalog<'_, '_>, user: &UserDefinition) -> Result<Value> {
+    let mut described = Vec::new();
+    for held in user.authorities.iter() {
+        let reach = match held.reach {
+            Reach::Store => "store".to_owned(),
+            Reach::Namespace(namespace) => named_namespace(catalog, namespace)?,
+            Reach::Database(namespace, database) => format!(
+                "{}.{}",
+                named_namespace(catalog, namespace)?,
+                named_database(catalog, database)?
+            ),
+        };
+        described.push(Value::Object(BTreeMap::from([
+            ("authority".to_owned(), Value::from(held.kind.name())),
+            ("reach".to_owned(), Value::from(reach.as_str())),
+        ])));
+    }
+    Ok(Value::Array(described))
+}
+
+/// A namespace's name, or its number when the definition is gone.
+///
+/// A dropped namespace can still be named by an authority somebody holds, and
+/// the number is a truthful answer where inventing a name would not be.
+fn named_namespace(catalog: &Catalog<'_, '_>, namespace: NamespaceId) -> Result<String> {
+    Ok(catalog
+        .namespace(namespace)?
+        .map_or_else(|| namespace.get().to_string(), |found| found.name))
+}
+
+/// A database's name, on the same terms.
+fn named_database(catalog: &Catalog<'_, '_>, database: DatabaseId) -> Result<String> {
+    Ok(catalog
+        .database(database)?
+        .map_or_else(|| database.get().to_string(), |found| found.name))
 }
 
 /// One grant, with the table named rather than numbered.

@@ -237,6 +237,8 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::DropUser { .. }
         | StatementKind::Grant { .. }
         | StatementKind::Revoke { .. }
+        | StatementKind::GrantAuthority { .. }
+        | StatementKind::RevokeAuthority { .. }
         | StatementKind::DropField { .. }
         | StatementKind::DropTable { .. }
         | StatementKind::DropIndex { .. }

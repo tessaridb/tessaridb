@@ -93,6 +93,8 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::RebuildIndex { .. } => Err(unrenderable("REBUILD INDEX", span)),
         StatementKind::Grant { .. } => Err(unrenderable("GRANT", span)),
         StatementKind::Revoke { .. } => Err(unrenderable("REVOKE", span)),
+        StatementKind::GrantAuthority { .. } => Err(unrenderable("GRANT", span)),
+        StatementKind::RevokeAuthority { .. } => Err(unrenderable("REVOKE", span)),
         StatementKind::Relate { .. } => Err(unrenderable("RELATE", span)),
         StatementKind::Create { .. } => Err(unrenderable("CREATE", span)),
         StatementKind::Update { .. } => Err(unrenderable("UPDATE", span)),

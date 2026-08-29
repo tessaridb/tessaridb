@@ -210,6 +210,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::SignInThrottled => "SignInThrottled",
         Error::NoSuchRole { .. } => "NoSuchRole",
         Error::NoSuchVerb { .. } => "NoSuchVerb",
+        Error::NoSuchAuthority { .. } => "NoSuchAuthority",
         Error::NotGranted { .. } => "NotGranted",
         Error::GrantedUserCannotDeclare { .. } => "GrantedUserCannotDeclare",
         Error::LastGrant { .. } => "LastGrant",

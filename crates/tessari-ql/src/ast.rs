@@ -198,10 +198,10 @@ pub enum StatementKind {
     DefineUser {
         /// The name signed in with.
         name: Name,
-        /// The tenancy the user belongs to, or the store when absent.
-        scope: Option<TableRef>,
+        /// How far the user reaches, or the store when absent.
+        scope: Option<ReachRef>,
         /// What the user may do.
-        role: Name,
+        role: UserGrant,
         /// The password, as written. Prints as `<redacted>`.
         password: Password,
         /// Whether re-defining an existing name is accepted.
@@ -352,6 +352,46 @@ pub enum StatementKind {
         /// story, and naming nothing names no limit.
         fields: Vec<Name>,
         /// Who it is for.
+        user: Name,
+    },
+    /// `GRANT manage ON NAMESPACE prod TO ada`
+    ///
+    /// # A different thing from the grant above it, on purpose
+    ///
+    /// [`StatementKind::Grant`] narrows a user *within* the tenancy they were
+    /// declared in, by naming a table. This one says what they may do and how
+    /// far it goes, and the two do not compose into one statement because they
+    /// answer different questions: one is "which of my tables", the other is
+    /// "how much of this store".
+    ///
+    /// The reach is keyword-led in all three spellings, so a table can never be
+    /// read as a reach — see [`ReachRef`].
+    GrantAuthority {
+        /// What is being given — one or more kinds, as written.
+        kinds: Vec<Name>,
+        /// How far it goes.
+        reach: ReachRef,
+        /// Who it is for.
+        user: Name,
+    },
+    /// `REVOKE manage ON NAMESPACE prod FROM ada`
+    ///
+    /// # Taking away the last one is allowed here
+    ///
+    /// The opposite of [`StatementKind::Revoke`]'s rule, and for the reason
+    /// that rule exists: a table grant going from one to none *widens* a user
+    /// back to their role, so the last one is refused. An authority going from
+    /// one to none leaves them holding nothing, which is the narrowest a user
+    /// can be and cannot be a surprise.
+    RevokeAuthority {
+        /// What is being taken away.
+        kinds: Vec<Name>,
+        /// The reach it was at. Taking away `manage` at a namespace leaves
+        /// `manage` at a database inside it exactly where it was: the model's
+        /// only implication runs downward through *holding*, not through
+        /// removal.
+        reach: ReachRef,
+        /// Who it was for.
         user: Name,
     },
     /// `REVOKE write ON orders FROM ada`
@@ -2000,6 +2040,42 @@ pub struct TableRef {
     pub name: Name,
     /// Where the whole reference sits.
     pub span: Span,
+}
+
+/// How far an authority goes, as the statement wrote it.
+///
+/// Every spelling is led by a keyword — `STORE`, `NAMESPACE`, `DATABASE` — so
+/// that no table name can be read as a reach. The exception is the bare
+/// `<namespace>.<database>` that `DEFINE USER … ON prod.orders` has always
+/// accepted, which is kept meaning what it has always meant.
+///
+/// Ids are absent here because a reach is written with names and stored with
+/// ids, and the resolution needs a transaction this tree does not have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReachRef {
+    /// `STORE` — every namespace, and the store-level surface above them.
+    Store,
+    /// `NAMESPACE prod` — one namespace and every database in it.
+    Namespace(Name),
+    /// `DATABASE prod.orders`, or the bare `prod.orders` — one database.
+    Database(TableRef),
+}
+
+/// What a `DEFINE USER` says the user may do.
+///
+/// Two spellings of one thing: a role is a *name for a set*, and the set is
+/// what the store keeps. Both are kept because dropping the role would make
+/// every existing statement and every existing record wrong to gain nothing —
+/// three names cover the common cases, and the set covers the rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserGrant {
+    /// `ROLE editor` — the bundle that name stands for.
+    Role(Name),
+    /// `AUTHORITIES manage, read` — the set, said directly.
+    ///
+    /// This is what makes the rule a role could not express sayable: a holder
+    /// of `manage` at a namespace who holds neither `read` nor `write` there.
+    Authorities(Vec<Name>),
 }
 
 /// One record, by table and identity: `users:1`.

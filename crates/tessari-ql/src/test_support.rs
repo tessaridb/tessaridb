@@ -33,8 +33,9 @@
 //! exhaustive matches below are what keep it complete as the language grows.
 
 use crate::ast::{
-    Edit, Expr, ExprKind, FieldPath, InfoSubject, JoinSide, Name, Projection, RecordTarget, Script,
-    Select, Source, Statement, StatementKind, TableRef, UserChange, Written,
+    Edit, Expr, ExprKind, FieldPath, InfoSubject, JoinSide, Name, Projection, ReachRef,
+    RecordTarget, Script, Select, Source, Statement, StatementKind, TableRef, UserChange,
+    UserGrant, Written,
 };
 use crate::token::Span;
 
@@ -146,9 +147,18 @@ fn erase_statement(statement: &mut Statement) {
         } => {
             erase_name(name);
             if let Some(scope) = scope {
-                erase_table(scope);
+                erase_reach(scope);
             }
-            erase_name(role);
+            match role {
+                UserGrant::Role(role) => erase_name(role),
+                UserGrant::Authorities(kinds) => erase_names(Some(kinds)),
+            }
+        }
+        StatementKind::GrantAuthority { kinds, reach, user }
+        | StatementKind::RevokeAuthority { kinds, reach, user } => {
+            erase_names(Some(kinds));
+            erase_reach(reach);
+            erase_name(user);
         }
         StatementKind::AlterUser { name, change } => {
             erase_name(name);
@@ -433,6 +443,15 @@ fn erase_table(table: &mut TableRef) {
         erase_name(database);
     }
     erase_name(&mut table.name);
+}
+
+/// A reach, in whichever of its three spellings the statement used.
+fn erase_reach(reach: &mut ReachRef) {
+    match reach {
+        ReachRef::Store => {}
+        ReachRef::Namespace(name) => erase_name(name),
+        ReachRef::Database(table) => erase_table(table),
+    }
 }
 
 /// A route into a record.

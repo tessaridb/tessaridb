@@ -51,6 +51,11 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DropUser { .. }
         | StatementKind::Grant { .. }
         | StatementKind::Revoke { .. }
+        // An authority names a reach rather than a table, which is the whole
+        // point of it: a namespace and a store are not tables, and the one
+        // spelling that does name a database still names no table inside it.
+        | StatementKind::GrantAuthority { .. }
+        | StatementKind::RevokeAuthority { .. }
         // Configuring the node names no table either, and here that emptiness is
         // the `BACKUP` shape again rather than the harmless kind: what a node is
         // for, and which machines hold its data, are not anybody's tables. Both

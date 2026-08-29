@@ -6,8 +6,8 @@ use tessari_types::{Assertion, FieldKind, Filter, Path, Step};
 use crate::ast::{
     Answer, Assignment, ColumnDeclaration, ConsumerSource, Direction, Edit, Expr, ExprKind,
     FieldMapping, FieldPath, Hop, InfoSubject, JoinSide, Name, OnFailure, Password, Projection,
-    RangeExpr, RecordTarget, Select, Source, Statement, StatementKind, TableChange, TableRef,
-    UserChange, Written,
+    RangeExpr, ReachRef, RecordTarget, Select, Source, Statement, StatementKind, TableChange,
+    TableRef, UserChange, UserGrant, Written,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -234,6 +234,12 @@ impl Parser<'_> {
                 self.advance();
                 InfoSubject::Namespace
             }
+            // A keyword since a reach could be granted; a bare word before
+            // that, which is why this arm reads like the two beside it now.
+            Some(Keyword::Store) => {
+                self.advance();
+                InfoSubject::Store
+            }
             Some(Keyword::Database) => {
                 self.advance();
                 InfoSubject::Database
@@ -249,7 +255,6 @@ impl Parser<'_> {
             // Before the `Keyword::User` arm cannot reach it: `USERS` is a word
             // and `USER` is a keyword, so the two never collide at the lexer.
             _ if self.eat_word("users") => InfoSubject::Users,
-            _ if self.eat_word("store") => InfoSubject::Store,
             _ if self.eat_word("node") => InfoSubject::Node,
             // Plural first, as with `USERS` above, so that reading this arm in
             // order tells you which of the two a bare word reaches.
@@ -727,12 +732,20 @@ impl Parser<'_> {
         let if_not_exists = self.eat_if_not_exists()?;
         let name = self.name()?;
         let scope = if self.eat_keyword(Keyword::On) {
-            Some(self.table_ref()?)
+            Some(self.reach_ref()?)
         } else {
             None
         };
-        self.expect_keyword(Keyword::Role, "`ROLE` and what the user may do")?;
-        let role = self.name()?;
+        // `ROLE` first because it is what every existing statement says, and
+        // `AUTHORITIES` reached only when the statement does not say `ROLE` —
+        // so no spelling that parses today parses differently now.
+        let role = if self.eat_keyword(Keyword::Role) {
+            UserGrant::Role(self.name()?)
+        } else if self.eat_word("authorities") {
+            UserGrant::Authorities(self.kind_list()?)
+        } else {
+            return Err(self.error_here("`ROLE` or `AUTHORITIES` and what the user may do"));
+        };
         self.expect_keyword(Keyword::Password, "`PASSWORD` and the credential")?;
         let (password, _) = self.text("the password, as text")?;
         Ok(StatementKind::DefineUser {
@@ -1232,7 +1245,29 @@ impl Parser<'_> {
         while self.eat_punct(Punct::Comma) {
             verbs.push(self.word_or_name()?);
         }
-        self.expect_keyword(Keyword::On, "`ON` and the table")?;
+        self.expect_keyword(Keyword::On, "`ON` and the table or reach")?;
+        // A reach is keyword-led in all three spellings and a table name can
+        // never be a keyword, so this decision is made by the grammar rather
+        // than by looking anything up. That is the whole reason `STORE` was
+        // reserved: deciding it any other way would silently widen a table
+        // grant somebody already wrote.
+        if let Some(reach) = self.reach_keyword()? {
+            let kinds = verbs;
+            if giving {
+                self.expect_keyword(Keyword::To, "`TO` and the user")?;
+                return Ok(StatementKind::GrantAuthority {
+                    kinds,
+                    reach,
+                    user: self.name()?,
+                });
+            }
+            self.expect_keyword(Keyword::From, "`FROM` and the user")?;
+            return Ok(StatementKind::RevokeAuthority {
+                kinds,
+                reach,
+                user: self.name()?,
+            });
+        }
         let table = self.table_ref()?;
         if giving {
             // `FIELDS` narrows what may be *read*. It sits where the same word
@@ -1258,6 +1293,54 @@ impl Parser<'_> {
             table,
             user: self.name()?,
         })
+    }
+
+    /// A reach, when the next token opens one, and nothing consumed when not.
+    ///
+    /// Returning `None` rather than erroring is what lets one `ON` serve both
+    /// the table grant and the authority grant: the caller falls through to a
+    /// table reference having consumed nothing.
+    fn reach_keyword(&mut self) -> Result<Option<ReachRef>> {
+        match self.peek_keyword() {
+            Some(Keyword::Store) => {
+                self.advance();
+                Ok(Some(ReachRef::Store))
+            }
+            Some(Keyword::Namespace) => {
+                self.advance();
+                Ok(Some(ReachRef::Namespace(self.name()?)))
+            }
+            Some(Keyword::Database) => {
+                self.advance();
+                Ok(Some(ReachRef::Database(self.table_ref()?)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// A reach in any of its spellings, including the bare `prod.orders`.
+    ///
+    /// The bare form is a **database** and has been since `DEFINE USER … ON
+    /// prod.orders` existed. It is kept rather than deprecated because every
+    /// statement already written says it.
+    fn reach_ref(&mut self) -> Result<ReachRef> {
+        match self.reach_keyword()? {
+            Some(reach) => Ok(reach),
+            None => Ok(ReachRef::Database(self.table_ref()?)),
+        }
+    }
+
+    /// `manage, read` — one or more authority kinds, as written.
+    ///
+    /// Words rather than names because every kind is a bare word, and the
+    /// kind is checked where the store knows the set rather than here, so a
+    /// misspelling is one error at one place.
+    fn kind_list(&mut self) -> Result<Vec<Name>> {
+        let mut kinds = vec![self.word_or_name()?];
+        while self.eat_punct(Punct::Comma) {
+            kinds.push(self.word_or_name()?);
+        }
+        Ok(kinds)
     }
 
     /// What the `FROM` names, resolved to exactly one access path.

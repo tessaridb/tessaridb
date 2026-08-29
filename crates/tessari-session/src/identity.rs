@@ -41,9 +41,10 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use argon2::{Algorithm, Argon2, Params, Version};
 use tessari_constants::{PASSWORD_HASH_LANES, PASSWORD_HASH_MEMORY_KIB, PASSWORD_HASH_PASSES};
 use tessari_ql::{
-    Expr, ExprKind, InfoSubject, Name, Password, Span, StatementKind, TableRef, UserChange,
+    Expr, ExprKind, InfoSubject, Name, Password, ReachRef, Span, StatementKind, UserChange,
+    UserGrant,
 };
-use tessari_storage::{Catalog, Role, Transaction, UserDefinition};
+use tessari_storage::{Authority, Catalog, Held, Kind, Reach, Role, Transaction, UserDefinition};
 
 use crate::error::{Error, Result};
 use crate::outcome::Outcome;
@@ -242,6 +243,19 @@ impl Needs {
             | StatementKind::DropUser { .. }
             | StatementKind::Grant { .. }
             | StatementKind::Revoke { .. } => Self::Administer,
+            // Handing out an authority is `AdministerStore` and not
+            // `Administer`, which is deliberately **stricter than it will
+            // finally be**. `Administer` says the caller owns something, and
+            // the reach in the statement says how far the grant goes; nothing
+            // yet compares the two, so an owner of one database could name
+            // `ON STORE` and mint an identity above their own. Until the
+            // enforcement wave puts the caller's own held set beside the reach
+            // they are granting, the safe direction is the one that refuses too
+            // much: an under-grant is a support request, an over-grant is the
+            // escalation this whole model exists to make unrepresentable.
+            StatementKind::GrantAuthority { .. } | StatementKind::RevokeAuthority { .. } => {
+                Self::AdministerStore
+            }
             // A backup is every record in the store, past every grant and every
             // tenancy boundary. There is no permission smaller than "may see all
             // of it", so the role is the whole check — and a grant can never add
@@ -359,7 +373,16 @@ impl Needs {
     }
 
     /// Whether this role is enough.
-    const fn granted_to(self, role: Role) -> bool {
+    ///
+    /// `None` is a user whose authorities no role summarises, and the answer is
+    /// **no** for every demand — the ladder cannot describe what they hold, so
+    /// it must not answer on their behalf. Reading the held set instead is the
+    /// enforcement wave's work; until then such a user is refused rather than
+    /// approximated, which is the direction that cannot escalate.
+    const fn granted_to(self, role: Option<Role>) -> bool {
+        let Some(role) = role else {
+            return false;
+        };
         match self {
             Self::Read => true,
             Self::Write => matches!(role, Role::Editor | Role::Owner),
@@ -399,7 +422,9 @@ impl Identity {
             // role, and telling them about reach sends them to ask for the
             // wrong grant.
             Self::Signed(user) if !needs.granted_to(user.role) => Err(Error::RoleForbids {
-                role: user.role.name(),
+                // A user with no role holds a set no role describes, and
+                // saying so is more use than naming a role they do not have.
+                role: user.role.map_or("authorities", Role::name),
                 needs: match needs {
                     Needs::Read => "read",
                     Needs::Write => "write",
@@ -447,8 +472,8 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
-        scope: Option<&TableRef>,
-        role: &Name,
+        scope: Option<&ReachRef>,
+        role: &UserGrant,
         password: &Password,
         if_not_exists: bool,
         span: Span,
@@ -460,21 +485,12 @@ impl Session<'_> {
         if if_not_exists && declared {
             return Ok(Outcome::Done);
         }
-        let Some(role) = Role::parse(&role.text) else {
-            return Err(Error::NoSuchRole {
-                name: role.text.clone(),
-                span,
-            });
+        let reach = match scope {
+            None => Reach::Store,
+            Some(named) => self.reach_of(transaction, named)?,
         };
-        // `prod.orders` names a tenancy here the way it names a table
-        // elsewhere: the qualifier is the namespace and the name the database.
-        let (namespace, database) = match scope {
-            None => (None, None),
-            Some(named) => {
-                let context = self.tenancy_of(transaction, named)?;
-                (Some(context.namespace), Some(context.database))
-            }
-        };
+        let (namespace, database) = reach.parts();
+        let authorities = self.held_from(role, reach, span)?;
         // You may not declare somebody who reaches further than you do. Without
         // this, an owner of one database declares an owner of the **whole node**
         // — no `ON`, so no tenancy, so no bound — and then signs in as them.
@@ -490,8 +506,165 @@ impl Session<'_> {
             });
         }
         let secret = hash(password.expose(), span)?;
-        Catalog::new(transaction).create_user(&name.text, namespace, database, role, &secret)?;
+        Catalog::new(transaction).create_user(
+            &name.text,
+            namespace,
+            database,
+            &authorities,
+            &secret,
+        )?;
         Ok(Outcome::Done)
+    }
+
+    /// The reach a statement named, resolved against the catalog.
+    ///
+    /// The database spelling goes through `tenancy_of`, which is where the
+    /// existing reach check for `DEFINE USER … ON prod.orders` lives; the
+    /// namespace spelling checks the same thing one level up, because a
+    /// namespace nobody may reach is not a namespace they may grant in.
+    fn reach_of(&self, transaction: &mut Transaction<'_>, named: &ReachRef) -> Result<Reach> {
+        match named {
+            ReachRef::Store => Ok(Reach::Store),
+            ReachRef::Namespace(name) => {
+                let namespace = Catalog::new(transaction)
+                    .namespace_id(&name.text)?
+                    .ok_or_else(|| Error::Unknown {
+                        entity: "namespace",
+                        name: name.text.clone(),
+                        span: name.span,
+                    })?;
+                Ok(Reach::Namespace(namespace))
+            }
+            ReachRef::Database(table) => {
+                let context = self.tenancy_of(transaction, table)?;
+                Ok(Reach::Database(context.namespace, context.database))
+            }
+        }
+    }
+
+    /// The set a `DEFINE USER` declares, however it spelled it.
+    ///
+    /// A role is a name for a set, so both spellings arrive here as one — which
+    /// is what stops the two from meaning different things in different places.
+    fn held_from(&self, grant: &UserGrant, reach: Reach, span: Span) -> Result<Held> {
+        match grant {
+            UserGrant::Role(named) => {
+                let Some(role) = Role::parse(&named.text) else {
+                    return Err(Error::NoSuchRole {
+                        name: named.text.clone(),
+                        span,
+                    });
+                };
+                Ok(Held::from_role(role, reach))
+            }
+            UserGrant::Authorities(kinds) => {
+                let mut held = Held::nothing();
+                for named in kinds {
+                    held.add(Authority::new(kind_named(named)?, reach));
+                }
+                Ok(held)
+            }
+        }
+    }
+
+    /// `GRANT manage ON NAMESPACE prod TO ada` — add to what a user holds.
+    ///
+    /// Adding rather than replacing, because a user reaches more than one place
+    /// and a grant names one of them: replacing would make every grant a silent
+    /// revocation of every other.
+    pub(crate) fn grant_authority(
+        &self,
+        transaction: &mut Transaction<'_>,
+        kinds: &[Name],
+        reach: &ReachRef,
+        user: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        // Kinds first: what the statement says is wrong with *itself* is
+        // answered before anything about the store is looked up, so a mistyped
+        // kind reads as a mistyped kind rather than as an unknown user.
+        let kinds = kinds.iter().map(kind_named).collect::<Result<Vec<_>>>()?;
+        let reach = self.reach_of(transaction, reach)?;
+        let mut found = self.user_to_change(transaction, user, span)?;
+        for kind in kinds {
+            found.authorities.add(Authority::new(kind, reach));
+        }
+        self.rewrite_authorities(transaction, found);
+        Ok(Outcome::Done)
+    }
+
+    /// `REVOKE manage ON NAMESPACE prod FROM ada` — take exactly what is named.
+    ///
+    /// Removing an authority the user does not hold is not an error: the
+    /// statement asks for a user without it, and a user without it is what it
+    /// leaves. That is `DROP USER`'s rule and it is the same rule, because a
+    /// revocation that fails halfway through a list is worse than one that is
+    /// idempotent.
+    pub(crate) fn revoke_authority(
+        &self,
+        transaction: &mut Transaction<'_>,
+        kinds: &[Name],
+        reach: &ReachRef,
+        user: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let kinds = kinds.iter().map(kind_named).collect::<Result<Vec<_>>>()?;
+        let reach = self.reach_of(transaction, reach)?;
+        let mut found = self.user_to_change(transaction, user, span)?;
+        for kind in kinds {
+            found.authorities.remove(&Authority::new(kind, reach));
+        }
+        self.rewrite_authorities(transaction, found);
+        Ok(Outcome::Done)
+    }
+
+    /// The user a grant names, refused when they are not this caller's to touch.
+    ///
+    /// The same `administers` check every other statement about a user makes,
+    /// and it is not the `Needs` check that already ran: that one says the
+    /// caller administers *something*.
+    fn user_to_change(
+        &self,
+        transaction: &mut Transaction<'_>,
+        user: &Name,
+        span: Span,
+    ) -> Result<UserDefinition> {
+        let Some(found) = Catalog::new(transaction)
+            .users()?
+            .into_iter()
+            .find(|found| found.name == user.text)
+        else {
+            return Err(Error::Unknown {
+                entity: "user",
+                name: user.text.clone(),
+                span,
+            });
+        };
+        if !self.administers(&found) {
+            return Err(Error::NotYours {
+                user: found.name.clone(),
+                span,
+            });
+        }
+        Ok(found)
+    }
+
+    /// Write a changed authority set back, with the role summary re-derived.
+    ///
+    /// Re-derived rather than carried, for `create_user`'s reason: a stored role
+    /// left behind by a revocation would describe authorities the user no longer
+    /// holds, and it is the field an older binary believes.
+    /// A tenancy that is not a place summarises as no role at all, rather than
+    /// leaving the old one behind. Nothing reachable through the language builds
+    /// that record — `from_value` refuses it — but `UserDefinition` is a public
+    /// struct with public fields, so the shape is constructible by a caller of
+    /// this crate, and the two ways to be wrong here are not symmetric: a stale
+    /// role describes authorities the user no longer holds, and it is the field
+    /// an older binary believes.
+    fn rewrite_authorities(&self, transaction: &mut Transaction<'_>, mut user: UserDefinition) {
+        user.role = Reach::of(user.namespace, user.database)
+            .and_then(|reach| user.authorities.role_within(reach));
+        Catalog::new(transaction).update_user(&user);
     }
 
     /// Change one thing about a user who already exists.
@@ -541,7 +714,15 @@ impl Session<'_> {
                         span: named.span,
                     });
                 };
-                user.role = role;
+                // The set moves with the name, or neither moves. Leaving the set
+                // behind would make `SET ROLE viewer` read as a demotion while
+                // changing nothing the store consults; writing the role without
+                // the set would leave the record describing authorities nobody
+                // holds. Both halves under one condition is what stops either.
+                if let Some(reach) = Reach::of(user.namespace, user.database) {
+                    user.authorities = Held::from_role(role, reach);
+                    user.role = Some(role);
+                }
             }
         }
         Catalog::new(transaction).update_user(&user);
@@ -589,6 +770,23 @@ impl Session<'_> {
         }
         Ok(Outcome::Done)
     }
+}
+
+/// The kind a word names, refused when it names none.
+///
+/// The refusal carries the whole set rather than only the rejection, because
+/// there are five of them and a reader who mistyped one is a reader who does not
+/// yet know which five.
+fn kind_named(named: &Name) -> Result<Kind> {
+    Kind::parse(&named.text).ok_or_else(|| Error::NoSuchAuthority {
+        name: named.text.clone(),
+        known: Kind::ALL
+            .iter()
+            .map(|kind| kind.name())
+            .collect::<Vec<_>>()
+            .join(", "),
+        span: named.span,
+    })
 }
 
 /// Whether an expression reads this node's own identity anywhere inside it.

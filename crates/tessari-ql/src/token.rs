@@ -224,6 +224,15 @@ pub enum Keyword {
     Namespace,
     /// `DATABASE`
     Database,
+    /// `STORE` — the whole store, the widest of the three reaches.
+    ///
+    /// Reserved rather than matched as a bare word, which `INFO FOR STORE` did
+    /// until an authority could be granted at a reach. `GRANT read ON store TO
+    /// ada` is a statement that already parses today and already means the
+    /// *table* `store`; a reach spelled as a word would have silently widened
+    /// it to the whole store. Reserving the word costs a table the name and
+    /// makes the ambiguity unrepresentable instead of resolved.
+    Store,
     /// `DEFINE`
     Define,
     /// `DROP`
@@ -411,6 +420,7 @@ impl Keyword {
             Self::Use => "USE",
             Self::Namespace => "NAMESPACE",
             Self::Database => "DATABASE",
+            Self::Store => "STORE",
             Self::Define => "DEFINE",
             Self::Drop => "DROP",
             Self::Alter => "ALTER",
@@ -493,6 +503,7 @@ impl Keyword {
         Self::Use,
         Self::Namespace,
         Self::Database,
+        Self::Store,
         Self::Define,
         Self::Drop,
         Self::Alter,

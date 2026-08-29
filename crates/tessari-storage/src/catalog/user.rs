@@ -127,13 +127,19 @@ pub struct UserDefinition {
     pub namespace: Option<NamespaceId>,
     /// The database within it, or `None`.
     pub database: Option<DatabaseId>,
-    /// What the user may do.
+    /// The role [`Self::authorities`] can be summarised as, when one can.
     ///
     /// Still written, and still read, for two reasons that outlive it: a binary
     /// predating [`Self::authorities`] can read a record this one writes, and a
     /// record predating the field derives its set from this. It is no longer
     /// what *decides* — `authorities` is.
-    pub role: Role,
+    ///
+    /// `None` for the sets no role describes — `manage` at a namespace without
+    /// `read` is the case this model exists for. It is written as an absent
+    /// field rather than as a nearest-fitting role, because the nearest role
+    /// wider than the set would hand an older binary an authority the user does
+    /// not hold, and an absent field makes that binary refuse instead.
+    pub role: Option<Role>,
     /// What the user may actually do, and how far it reaches.
     ///
     /// The set the store asks. Derived from [`Self::role`] for a record written
@@ -150,9 +156,11 @@ impl UserDefinition {
         let mut fields = BTreeMap::from([
             (FIELD_ID.to_owned(), number(self.id)),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
-            (FIELD_ROLE.to_owned(), Value::from(self.role.name())),
             (FIELD_SECRET.to_owned(), Value::from(self.secret.as_str())),
         ]);
+        if let Some(role) = self.role {
+            fields.insert(FIELD_ROLE.to_owned(), Value::from(role.name()));
+        }
         if let Some(namespace) = self.namespace {
             fields.insert(FIELD_NAMESPACE.to_owned(), number(namespace.get()));
         }
@@ -176,17 +184,18 @@ impl UserDefinition {
             field,
             found,
         };
-        let Some(Value::String(role)) = fields.get(FIELD_ROLE) else {
-            return Err(malformed(
-                FIELD_ROLE,
-                fields.get(FIELD_ROLE).map_or("none", Value::type_name),
-            ));
-        };
-        // An unknown role is corruption rather than a bad request: it was
-        // written by something that knew a role this binary does not, and
-        // guessing would grant or refuse the wrong thing.
-        let Some(role) = Role::parse(role) else {
-            return Err(malformed(FIELD_ROLE, "an unknown role"));
+        // Absent and unknown are different claims. Absent means no role
+        // summarises the set this record carries, and the set is what decides.
+        // Present-but-unknown is corruption: it was written by something that
+        // knew a role this binary does not, and guessing would grant or refuse
+        // the wrong thing.
+        let role = match fields.get(FIELD_ROLE) {
+            None => None,
+            Some(Value::String(role)) => match Role::parse(role) {
+                Some(role) => Some(role),
+                None => return Err(malformed(FIELD_ROLE, "an unknown role")),
+            },
+            Some(other) => return Err(malformed(FIELD_ROLE, other.type_name())),
         };
         let Some(Value::String(secret)) = fields.get(FIELD_SECRET) else {
             return Err(malformed(
@@ -233,7 +242,7 @@ impl Catalog<'_, '_> {
         name: &str,
         namespace: Option<NamespaceId>,
         database: Option<DatabaseId>,
-        role: Role,
+        authorities: &Held,
         secret: &str,
     ) -> Result<UserDefinition> {
         let qualified = qualify(Level::User, &[], name);
@@ -248,13 +257,17 @@ impl Catalog<'_, '_> {
                 found: "a database with no namespace",
             });
         };
+        // The role is derived from the set and never given alongside it. Two
+        // parameters would be two sources for one fact, and the pair that
+        // disagreed would be a user whose stored role said more than their
+        // authorities did — readable by an older binary as the wider of the two.
         let definition = UserDefinition {
             id,
             name: name.to_owned(),
             namespace,
             database,
-            role,
-            authorities: Held::from_role(role, reach),
+            role: authorities.role_within(reach),
+            authorities: authorities.clone(),
             secret: secret.to_owned(),
         };
         self.write(system::USERS, id, &definition.to_value());

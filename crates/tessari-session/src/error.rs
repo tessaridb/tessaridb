@@ -763,6 +763,21 @@ pub enum Error {
         span: Span,
     },
 
+    /// An authority kind this store does not have.
+    ///
+    /// Its own error rather than [`Error::NoSuchRole`], because the two sets do
+    /// not overlap and being told there is no role called `manage` sends the
+    /// reader looking for the wrong thing entirely.
+    #[error("there is no authority called {name:?} — the kinds are {known} (at {span})")]
+    NoSuchAuthority {
+        /// The name as written.
+        name: String,
+        /// Every kind there is, so the answer is in the refusal.
+        known: String,
+        /// Where it was written.
+        span: Span,
+    },
+
     /// A password that is not one.
     ///
     /// An empty password is not a weak credential, it is the absence of one

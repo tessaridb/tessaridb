@@ -38,6 +38,8 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DropUser { .. } => "DROP USER",
         StatementKind::Grant { .. } => "GRANT",
         StatementKind::Revoke { .. } => "REVOKE",
+        StatementKind::GrantAuthority { .. } => "GRANT ON REACH",
+        StatementKind::RevokeAuthority { .. } => "REVOKE ON REACH",
         StatementKind::DropTable { .. } => "DROP TABLE",
         StatementKind::DropIndex { .. } => "DROP INDEX",
         StatementKind::RebuildIndex { .. } => "REBUILD INDEX",
@@ -96,6 +98,8 @@ pub const FORMS: &[&str] = &[
     "DROP USER",
     "GRANT",
     "REVOKE",
+    "GRANT ON REACH",
+    "REVOKE ON REACH",
     "DROP TABLE",
     "DROP INDEX",
     "REBUILD INDEX",
@@ -189,6 +193,8 @@ mod tests {
              DROP USER u;\
              GRANT read ON t TO u;\
              REVOKE read ON t FROM u;\
+             GRANT manage ON NAMESPACE n TO u;\
+             REVOKE manage ON STORE FROM u;\
              RELATE t:1->e->t:2;\
              CREATE t:1 = 1;\
              SELECT * FROM t;\

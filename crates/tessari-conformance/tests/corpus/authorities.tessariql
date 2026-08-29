@@ -1,0 +1,77 @@
+# Authority: what a user may do, and how far it reaches.
+#
+# A role is a name for a set of authorities. An authority is a **kind** at a
+# **reach** — `read`, `write`, `manage`, `govern` or `operate`, over the store,
+# over one namespace, or over one database. Nothing is implied by anything else
+# except containment down the tenancy, and that one-way implication is the whole
+# model: holding `write` over a namespace does not confer `manage` over it, so
+# writing records where databases live does not confer creating or dropping
+# them.
+#
+# The reach is keyword-led in every spelling — `STORE`, `NAMESPACE x`,
+# `DATABASE x.y` — so that a table can never be read as a reach. `STORE` is a
+# reserved word for exactly that reason: `GRANT read ON store TO ada` is a
+# statement that already meant the *table* `store`, and a reach spelled as a
+# bare word would have silently widened it.
+#
+# A corpus file is one anonymous session, the same as `grants.tessariql`, so
+# what these cases pin is the shape of the statements and the refusals reachable
+# before the first `DEFINE USER` closes the store. What an authority *does* to a
+# signed-in session is asserted in `crates/tessari-session/tests/authorities.rs`,
+# where a session can sign in.
+
+--- case: two namespaces and a database, to reach at
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+DEFINE TABLE orders;
+--- expect: ok
+
+--- case: a second namespace, so that a reach can be wrong rather than absent
+DEFINE NAMESPACE staging;
+--- expect: ok
+
+--- case: an authority names a kind this store has
+GRANT scribble ON STORE TO nobody;
+--- expect: error NoSuchAuthority
+
+--- case: and so does a revocation
+REVOKE scribble ON NAMESPACE prod FROM nobody;
+--- expect: error NoSuchAuthority
+
+--- case: a reach names a namespace that exists
+GRANT manage ON NAMESPACE nonesuch TO nobody;
+--- expect: error Unknown
+
+--- case: a reach names a database that exists
+GRANT manage ON DATABASE prod.nonesuch TO nobody;
+--- expect: error Unknown
+
+--- case: an authority names a user, and there is none yet
+GRANT manage ON NAMESPACE prod TO nobody;
+--- expect: error Unknown
+
+--- case: a role is one spelling of a set, and it still works
+DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse';
+--- expect: ok
+
+--- case: handing out authority is administering, so an anonymous session may not
+GRANT manage ON NAMESPACE prod TO ada;
+--- expect: error NotSignedIn
+
+--- case: and neither may it take one back
+REVOKE manage ON NAMESPACE prod FROM ada;
+--- expect: error NotSignedIn
+
+--- case: the set is the other spelling, and declaring one is administering too
+DEFINE USER nadia ON NAMESPACE prod AUTHORITIES manage PASSWORD 'x';
+--- expect: error NotSignedIn
+
+--- case: reading who holds what is reading the permission system
+INFO FOR USER ada;
+--- expect: error NotSignedIn
+
+--- case: a table may no longer be named `store`, which is what reserving it cost
+DEFINE TABLE store;
+--- expect: error UnexpectedToken
