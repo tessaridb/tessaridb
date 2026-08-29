@@ -386,8 +386,16 @@ impl Needs {
             // already read — but this one cannot: there is no smaller truthful
             // answer about who may do what, and a partial one reads as the whole
             // answer. So it refuses, and only an owner is answered.
+            //
+            // `INFO FOR ACCESS TO TABLE` is the same act asked from the other
+            // end — who reaches this object rather than what this person
+            // reaches — and the answer is made of the same material, so it sits
+            // in the same class. A narrower class would be the mistake the two
+            // above avoid: a listing of everyone who can read a table, handed to
+            // somebody who may only read it, is a map of the permission system
+            // drawn for a caller with no business in it.
             StatementKind::Info {
-                subject: InfoSubject::User(_) | InfoSubject::Users,
+                subject: InfoSubject::User(_) | InfoSubject::Users | InfoSubject::Access(_),
             } => Self::GOVERN,
             // Asking about **this node** is the `$node` read wearing a
             // statement's clothes, and it lands here for exactly the reason that

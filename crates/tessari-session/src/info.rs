@@ -36,7 +36,10 @@
 
 use std::collections::BTreeMap;
 
-use tessari_ql::{InfoSubject, Name, Span, TableRef};
+use tessari_ql::{
+    Answer, Identity as RecordIdentity, InfoSubject, Name, Projection, RecordTarget, Select,
+    Source, Span, StatementKind, TableRef,
+};
 use tessari_storage::{
     BUILD_VERSION, Catalog, ConsumerDefinition, FieldDefinition, GrantDefinition, IndexDefinition,
     Progress, Reach, ReplicaDefinition, TableDefinition, Transaction, UserDefinition,
@@ -64,6 +67,7 @@ impl Session<'_> {
             InfoSubject::Table(table) => self.info_table(transaction, table)?,
             InfoSubject::User(name) => self.info_user(transaction, name, span)?,
             InfoSubject::Users => self.info_users(transaction)?,
+            InfoSubject::Access(table) => self.info_access(transaction, table, span)?,
             InfoSubject::Node => self.info_node(transaction)?,
             InfoSubject::Consumer(name) => self.info_consumer(transaction, name, span)?,
             InfoSubject::Consumers => self.info_consumers(transaction)?,
@@ -302,6 +306,93 @@ impl Session<'_> {
             listed.push(Value::Object(described));
         }
         Ok(BTreeMap::from([("users".to_owned(), Value::Array(listed))]))
+    }
+
+    /// Who can reach one table, answered by asking rather than by deriving.
+    ///
+    /// # Why this does not read a grant
+    ///
+    /// Because a report that read grants and authorities and worked out what
+    /// they add up to would be a **second evaluator**, and the store already has
+    /// one — `Session::authorize`, the function every statement passes through.
+    /// Two evaluators of one rule agree until they do not, and the moment they
+    /// stop is invisible: nothing fails, the report simply becomes fiction, and
+    /// the person reading it is by definition somebody auditing a system they
+    /// cannot otherwise see into. So each answer here is obtained by signing a
+    /// throwaway session in as that user and putting a real `SELECT` and a real
+    /// `DELETE` to the real check.
+    ///
+    /// That also means every rule holds without being restated: the tenancy
+    /// gate, the held set, the grant loop and the open-store rule all apply
+    /// because they are the same code. A user declared in another namespace
+    /// reports `false` for the reason they would be refused, not because this
+    /// function remembered to exclude them.
+    ///
+    /// # Everybody administered is listed, including the ones who cannot
+    ///
+    /// A row saying `bob` reaches nothing looks like noise until you notice that
+    /// leaving it out makes two different facts look identical — *bob cannot
+    /// reach this* and *the caller cannot see bob*. An audit answer has to
+    /// distinguish those, and only the caller's own tenancy boundary decides who
+    /// appears, exactly as it does for `INFO FOR USERS`.
+    ///
+    /// The probes never run. `authorize` decides from the statement's shape, so
+    /// the record id below names nothing that has to exist.
+    fn info_access(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: &TableRef,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        // Resolved first, so a report is never produced for a table that is not
+        // there: an empty access list is the same shape as a typo.
+        let (_, id) = self.resolve_table(transaction, table)?;
+        let catalog = Catalog::new(transaction);
+        let Some(definition) = catalog.table(id)? else {
+            return Err(Error::Unknown {
+                entity: "table",
+                name: table.name.text.clone(),
+                span: table.span,
+            });
+        };
+        let users = catalog.users()?;
+        // Three statements and not two. Reaching a table starts with selecting
+        // the container it is in, and that first step is where a declared
+        // tenancy is enforced — `within_tenancy` looks at `USE` and at nothing
+        // else, because a selection is a name until something resolves it. A
+        // probe handed the asker's selection outright would therefore skip the
+        // only gate confining a tenant, and report that somebody from another
+        // namespace reads this table. The first draft of this function did
+        // exactly that, and the cross-product test caught it.
+        let selecting = selecting(
+            self.namespace(),
+            table
+                .database
+                .as_ref()
+                .map_or_else(|| self.database(), |name| Some(name.text.as_str())),
+            table.span,
+        );
+        let reading = reading(table);
+        let writing = writing(table);
+        let mut listed = Vec::new();
+        for user in users {
+            if !self.administers(&user) {
+                continue;
+            }
+            let mut probe = self.probing(user.id)?;
+            let arrived = probe.authorize(self.store, &selecting, span).is_ok();
+            let read = arrived && probe.authorize(self.store, &reading, span).is_ok();
+            let write = arrived && probe.authorize(self.store, &writing, span).is_ok();
+            listed.push(Value::Object(BTreeMap::from([
+                ("user".to_owned(), Value::from(user.name.as_str())),
+                ("read".to_owned(), Value::Bool(read)),
+                ("write".to_owned(), Value::Bool(write)),
+            ])));
+        }
+        Ok(BTreeMap::from([
+            ("table".to_owned(), Value::from(definition.name.as_str())),
+            ("access".to_owned(), Value::Array(listed)),
+        ]))
     }
 
     /// This node's own settings, and the peers it knows.
@@ -674,6 +765,68 @@ fn readable_index(visible: &Visible, index: &IndexDefinition) -> bool {
         .fields
         .iter()
         .all(|path| readable_field(visible, path.root()))
+}
+
+/// `USE NAMESPACE <ns> DATABASE <db>` — getting to where the table is.
+///
+/// The step a report about a table is most likely to leave out, and the one that
+/// carries the tenancy rule: a user declared in another namespace is stopped
+/// here and nowhere later, because every check after this one reads a selection
+/// that has already been made.
+fn selecting(namespace: Option<&str>, database: Option<&str>, span: Span) -> StatementKind {
+    let named = |text: Option<&str>| {
+        text.map(|text| Name {
+            text: text.to_owned(),
+            span,
+        })
+    };
+    StatementKind::Use {
+        namespace: named(namespace),
+        database: named(database),
+    }
+}
+
+/// `SELECT * FROM <table>` — the ordinary read, as a statement to be judged.
+///
+/// Built rather than rendered and re-parsed. The object arrives here as a
+/// [`TableRef`] the parser already produced, and turning it back into text would
+/// give the one statement whose answer must not depend on spelling a quoting
+/// rule to get wrong.
+fn reading(table: &TableRef) -> StatementKind {
+    StatementKind::Select(Select {
+        projection: Projection::All,
+        omit: Vec::new(),
+        from: Source::Table(table.clone()),
+        only: None,
+        fetch: Vec::new(),
+        split: None,
+        group: Vec::new(),
+        order: Vec::new(),
+        after: None,
+        approximate: false,
+        start: None,
+        limit: None,
+        using: None,
+        timeout: None,
+        version: None,
+        span: table.span,
+    })
+}
+
+/// `DELETE <table>:0` — the ordinary write, as a statement to be judged.
+///
+/// A delete rather than a create, because a create carries a value and this is
+/// never executed: the record id is a placeholder for a shape, and choosing the
+/// verb with the least payload keeps that obvious.
+fn writing(table: &TableRef) -> StatementKind {
+    StatementKind::Delete {
+        target: RecordTarget {
+            table: table.clone(),
+            id: RecordIdentity::Fixed(tessari_types::RecordId::Int(0)),
+            span: table.span,
+        },
+        answer: Answer::Nothing,
+    }
 }
 
 /// What a table declares about itself.

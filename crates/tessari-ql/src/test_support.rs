@@ -138,7 +138,7 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Users
             | InfoSubject::Node
             | InfoSubject::Consumers => {}
-            InfoSubject::Table(table) => erase_table(table),
+            InfoSubject::Table(table) | InfoSubject::Access(table) => erase_table(table),
             InfoSubject::User(name) | InfoSubject::Consumer(name) => erase_name(name),
         },
         StatementKind::DefineAnalyzer { name, .. } => erase_name(name),

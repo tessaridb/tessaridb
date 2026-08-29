@@ -3570,6 +3570,7 @@ INFO FOR NAMESPACE;
 INFO FOR DATABASE;
 INFO FOR TABLE users;
 INFO FOR USER ada;
+INFO FOR ACCESS TO TABLE users;
 INFO FOR NODE;
 ```
 
@@ -3618,6 +3619,33 @@ permission that declares a user. Its content is the permission system itself,
 and there is no smaller truthful answer about who may do what — a grant list
 with rows quietly removed reads as the whole of what that user can reach. The
 report never carries the password hash, which the stored definition does hold.
+
+`INFO FOR ACCESS TO TABLE` asks the same question from the other end — *who
+reaches this object*, rather than *what does this person reach* — and refuses for
+`INFO FOR USER`'s reason, since it is made of the same material. It answers with
+one row per user the caller administers, each saying whether that user may read
+the table and whether they may write it:
+
+```json
+{"table": "orders",
+ "access": [{"user": "ada", "read": true, "write": true},
+            {"user": "vic", "read": true, "write": false}]}
+```
+
+**Every answer is obtained by asking, never by deriving.** For each user the
+store signs a throwaway session in as them and puts a real `USE`, a real `SELECT`
+and a real `DELETE` to the ordinary authorization path — the same function every
+statement goes through. A report that worked out reachability from grants and
+roles would be a second opinion about a rule that already has one, and two
+opinions agree until they do not; the moment they stop, nothing fails and the
+report simply becomes fiction, read by the one person who cannot check it.
+
+The `USE` is not a formality. A declared tenancy is enforced where a session
+*selects* a container and nowhere afterwards, so a user of another namespace
+answers `false` because they could not have got there — which is the same reason
+their `SELECT` is refused, rather than a second rule that remembers to exclude
+them. Users who reach nothing are still listed: an absent row would say *cannot
+reach this* and *the caller cannot see this person* with the same silence.
 
 `INFO FOR NODE` is the sixth, and it refuses for the same reason in a different
 key: it names no table, so a grant check would pass over it for reasons unrelated

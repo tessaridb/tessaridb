@@ -82,8 +82,16 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // about it exactly as a `SELECT` from it would — which is the rule the
         // statement is meant to follow: it reports what the caller could have
         // found out anyway.
+        //
+        // `INFO FOR ACCESS TO TABLE users` names it for a stricter reason. The
+        // subject already needs `govern`, so this list is never the check that
+        // lets it through — what naming the table adds is the one case `govern`
+        // alone does not cover: a **grant-governed** owner, whose authority is
+        // bounded to the tables they were granted, may not learn who reaches a
+        // table they were not. An owner with no grants passes here vacuously, as
+        // they do everywhere else.
         StatementKind::Info {
-            subject: InfoSubject::Table(table),
+            subject: InfoSubject::Table(table) | InfoSubject::Access(table),
         } => vec![table],
 
         // A consumer names the table it will write into, and that is the whole

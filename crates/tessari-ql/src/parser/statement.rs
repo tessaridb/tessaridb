@@ -255,6 +255,14 @@ impl Parser<'_> {
             // Before the `Keyword::User` arm cannot reach it: `USERS` is a word
             // and `USER` is a keyword, so the two never collide at the lexer.
             _ if self.eat_word("users") => InfoSubject::Users,
+            // `ACCESS TO TABLE orders` — the object named the way every other
+            // statement names one, so that a table whose name is a keyword is
+            // reachable here for the same reason it is reachable anywhere else.
+            _ if self.eat_word("access") => {
+                self.expect_keyword(Keyword::To, "`TO` and the object to report on")?;
+                self.expect_keyword(Keyword::Table, "`TABLE` and its name")?;
+                InfoSubject::Access(self.table_ref()?)
+            }
             _ if self.eat_word("node") => InfoSubject::Node,
             // Plural first, as with `USERS` above, so that reading this arm in
             // order tells you which of the two a bare word reaches.
@@ -262,7 +270,7 @@ impl Parser<'_> {
             _ if self.eat_word("consumer") => InfoSubject::Consumer(self.name()?),
             _ => {
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `NODE`, `CONSUMER` or `CONSUMERS`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER` or `CONSUMERS`",
                 ));
             }
         };

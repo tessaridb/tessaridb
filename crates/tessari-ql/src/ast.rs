@@ -760,6 +760,28 @@ pub enum InfoSubject {
     /// Grants are per-user detail and stay in `INFO FOR USER <name>`, where one
     /// subject is being examined rather than counted.
     Users,
+    /// `INFO FOR ACCESS TO TABLE orders` — who can reach this table, and how.
+    ///
+    /// The other direction of [`InfoSubject::User`]. That one answers *what may
+    /// this user reach*, starting from a person; this one starts from an object
+    /// and answers *who reaches it* — and an operator holding an incident needs
+    /// the second question far more often than the first, because the thing they
+    /// have is the table that leaked.
+    ///
+    /// # It is answered by asking, not by reading
+    ///
+    /// The answer is **not** derived from grants and authorities a second time.
+    /// For every user the caller administers, the store signs a throwaway session
+    /// in as that user and puts a real statement to the ordinary authorization
+    /// path — the same function every `SELECT` and every `DELETE` goes through.
+    /// A report that re-derived reachability would be a second evaluator, and two
+    /// evaluators of one rule disagree eventually; the one that disagrees
+    /// silently here is the one an auditor was trusting.
+    ///
+    /// Refuses rather than filters, for [`InfoSubject::User`]'s reason: its
+    /// content *is* the permission system, and a partial account of who may do
+    /// what reads as the whole account.
+    Access(TableRef),
     /// `INFO FOR NODE` — this node's own settings, and the peers it knows.
     ///
     /// The one subject that reads **two stores**: the local `META` keyspace and

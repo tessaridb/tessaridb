@@ -290,6 +290,43 @@ impl<'a> Session<'a> {
         Ok(())
     }
 
+    /// A throwaway session on this store, selecting what this one selects, as
+    /// somebody else.
+    ///
+    /// The only caller is `INFO FOR ACCESS TO TABLE`, and it exists because that
+    /// statement must not answer from a second reading of the catalog. The
+    /// function that decides whether a user may reach a table takes a session
+    /// and a statement, so the report builds the session and hands it the
+    /// statement — and gets the store's real answer rather than a re-derivation
+    /// of it.
+    ///
+    /// It carries the **asker's** namespace and database rather than the
+    /// subject's, because the object being reported on lives in the asker's
+    /// selection. A subject declared somewhere else is then refused by the
+    /// ordinary tenancy check, which is the report's answer rather than a gap
+    /// in it.
+    ///
+    /// Like [`Session::acting_as`] this hands out an identity and not a
+    /// permission: every check downstream is the ordinary one, it takes an id so
+    /// nothing a caller types can reach it, and the statement that uses it
+    /// already needs `govern`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnknownUser`] when no user carries that id — which a
+    /// caller iterating the catalog it just read will not see, and which is
+    /// still an error rather than a silent omission.
+    pub(crate) fn probing(&self, id: u32) -> Result<Self> {
+        let mut probe = Self {
+            store: self.store,
+            namespace: self.namespace.clone(),
+            database: self.database.clone(),
+            identity: Identity::Anonymous,
+        };
+        probe.acting_as(id)?;
+        Ok(probe)
+    }
+
     /// Change **this session's own** password, proving the current one.
     ///
     /// **Not a statement**, for the same reason `sign_in` is not: it carries a
