@@ -1085,8 +1085,42 @@ It follows the rules `TYPE` already follows, for the same reasons:
 - a violation **fails the whole commit**, so a transaction never lands half
   constrained.
 
+**The comparison may name another field of the same record**:
+
+```
+DEFINE FIELD ends_at ON bookings TYPE datetime ASSERT $value > starts_at;
+DEFINE FIELD low ON ledgers TYPE int ASSERT $value < high;
+```
+
+A bare name on the right is the same thing it is in a `WHERE` — a value read out
+of the record being tested — so `ASSERT $value > starts_at` and
+`WHERE ends_at > starts_at` read the record through one function and cannot
+disagree about it. It is still a closed constraint: the route is **data the
+store resolves**, not an expression it evaluates, and the record it resolves
+against is the one already being written. Nothing is read from any other record,
+so the verdict remains a pure function of the record and the catalog and a
+replica reaches it without consulting anything.
+
+The route may reach into a nested value (`window.opens`), and it composes with
+`AND`, `OR` and `NOT` like any other comparison. A route holding `[*]` reaches
+**several** values and a comparison wants one, so it is refused where it is
+written rather than resolving to nothing at the write.
+
+The field it names does **not** have to be declared. The route reads the record,
+not the catalog, which is what keeps a lenient table lenient. If that field is
+absent or `null`, the comparison is false and the write is refused — the same
+answer an ordered comparison against a non-value gives anywhere else in the
+language, from the same function.
+
+Refusing names both fields: *"record 21 of table 6 holds a low its declaration
+refuses (it is compared with high)"*. Both came from the statement the writer
+just sent, so naming the second discloses nothing they did not supply — and
+without it, "`low` is refused" leaves them guessing which constraint they broke.
+A refusal never names a value, and never names a second **record**.
+
 An assertion is a **closed vocabulary** — `$value` compared against a written
-value, combined with `AND`, `OR` and `NOT` — and anything outside it is refused
+value or a route into the record being checked, combined with `AND`, `OR` and
+`NOT` — and anything outside it is refused
 where it is written. That is not a limit for its own sake. The check runs on the
 store's apply path, where validation has to live so a replica reaches the same
 verdict from the record alone; an arbitrary expression is not a pure function of
@@ -3996,7 +4030,7 @@ be, because it is confined to the run its fixed values name.
 | tokens, or a session that outlives a request | a token is a second credential with its own lifetime, revocation and storage |
 | `SIGNIN` as a statement | deliberate, and stated above rather than missing |
 | rate-limiting a signin | Argon2 is slow on purpose, which is most of the defence; a lockout policy has its own decisions about who it locks out |
-| an **assertion over more than one field** | `ASSERT $value < high` needs a rule for which record the other field is read from, and for what a declaration means when the field it names is declared later or dropped. §4 |
+| an assertion reading a **second record** | a comparison against another field of the *same* record is built (§4) — the record is already in hand. Reading another one is a different thing: the verdict would stop being a function of the record being written, so a replica would have to reproduce a read, and the refusal would report the existence of a record the writer never named |
 | a **computed assertion** (`string::len($value) > 3`) | the useful ones are pure, and the vocabulary could take them — but a function set that is pure *today* is a property somebody would have to re-establish every time the set grows, so the door opens with a marked-pure function set rather than by trusting the current one. §4 |
 | changing a declared type in place | `DROP FIELD` then `DEFINE FIELD` re-checks every row through the one path; a migration primitive is its own work |
 

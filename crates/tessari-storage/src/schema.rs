@@ -168,6 +168,16 @@ pub(crate) fn validate(store: &Store, record: &LogRecord) -> Result<()> {
     Ok(())
 }
 
+/// The other fields a constraint compares against, as one phrase for a refusal.
+///
+/// `None` for a constraint that compares against literals alone, so the message
+/// keeps the shape it has always had for the assertions that existed before a
+/// declaration could name a second field.
+fn compared_with(assertion: &Assertion) -> Option<String> {
+    let named = assertion.compared_fields();
+    (!named.is_empty()).then(|| named.join(", "))
+}
+
 /// One record's fields, against the table's declarations.
 fn check(schema: &TableSchema, value: &Value, table: TableId, id: &RecordId) -> Result<()> {
     // A record that is not an object has no named fields to constrain. The
@@ -197,12 +207,13 @@ fn check(schema: &TableSchema, value: &Value, table: TableId, id: &RecordId) -> 
                     && declared
                         .assert
                         .as_ref()
-                        .is_some_and(|assertion| !assertion.holds(held)) =>
+                        .is_some_and(|assertion| !assertion.holds(held, value)) =>
             {
                 return Err(Error::AssertionViolation {
                     table: table.get(),
                     record: id.to_string(),
                     field: name.clone(),
+                    compared_with: declared.assert.as_ref().and_then(compared_with),
                 });
             }
             Some(_) => {}

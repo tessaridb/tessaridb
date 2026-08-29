@@ -27,7 +27,7 @@ mod time;
 mod value;
 
 pub use analyzer::{Analyzer, Filter};
-pub use assertion::Assertion;
+pub use assertion::{Assertion, Operand};
 pub use calendar::Civil;
 pub use condition::{BinaryOp, apply};
 pub use field_kind::FieldKind;

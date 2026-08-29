@@ -11,7 +11,7 @@
 //! branch for one and no way for two replicas to differ over what a constraint
 //! meant.
 
-use tessari_types::{Assertion, Value};
+use tessari_types::{Assertion, Operand, Value};
 
 use crate::ast::{Expr, ExprKind};
 use crate::error::{Error, Result};
@@ -24,8 +24,8 @@ const VALUE: &str = "value";
 /// # Errors
 ///
 /// Returns [`Error::AssertionNotAConstraint`] for anything outside the
-/// vocabulary — a call, an arithmetic expression, a path into the record, a
-/// parameter other than `$value`, a fold, a bare literal.
+/// vocabulary — a call, an arithmetic expression, a parameter other than
+/// `$value`, a fold, a bare literal, and a route reaching several values.
 pub(super) fn lower(expr: &Expr) -> Result<Assertion> {
     match &expr.kind {
         ExprKind::And(left, right) => Ok(Assertion::All(vec![lower(left)?, lower(right)?])),
@@ -38,11 +38,33 @@ pub(super) fn lower(expr: &Expr) -> Result<Assertion> {
         ExprKind::Binary { op, left, right } if matches!(&left.kind, ExprKind::Parameter(name) if name == VALUE) => {
             Ok(Assertion::Compare {
                 op: *op,
-                against: literal(right)
+                against: operand(right)
                     .ok_or(Error::AssertionNotAConstraint { span: right.span })?,
             })
         }
         _ => Err(Error::AssertionNotAConstraint { span: expr.span }),
+    }
+}
+
+/// The right-hand side of a comparison: a literal, or a route into the record.
+///
+/// A route is admitted because it is the same thing a `WHERE` means by the same
+/// spelling — `ExprKind::Path` is *"a value read out of the record being
+/// tested"* — so `ASSERT $value > starts_at` and `WHERE ends_at > starts_at`
+/// read the record through one function and cannot disagree about it. It stays a
+/// closed constraint: the route is data the store resolves, not an expression it
+/// evaluates.
+///
+/// A route holding `[*]` reaches several values and a comparison wants one, so
+/// it is refused here rather than resolving to nothing at the write and becoming
+/// a constraint that always fails.
+fn operand(expr: &Expr) -> Option<Operand> {
+    match &expr.kind {
+        ExprKind::Path(field) if !field.path.is_several() => {
+            Some(Operand::Field(field.path.clone()))
+        }
+        ExprKind::Path(_) => None,
+        _ => literal(expr).map(Operand::Literal),
     }
 }
 

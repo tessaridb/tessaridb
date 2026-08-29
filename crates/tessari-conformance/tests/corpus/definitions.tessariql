@@ -162,13 +162,50 @@ DEFINE FIELD tier ON ledgers TYPE string ASSERT $value IN ['bronze', 'gold'];
 DEFINE FIELD seen ON ledgers TYPE datetime ASSERT $value < time::now();
 --- expect: error AssertionNotAConstraint
 
---- case: nor is a field of the record
-DEFINE FIELD low ON ledgers TYPE int ASSERT $value < high;
---- expect: error AssertionNotAConstraint
-
 --- case: nor any parameter but the value being checked
 DEFINE FIELD cap ON ledgers TYPE int ASSERT $limit > 3;
 --- expect: error AssertionNotAConstraint
+
+# Another field of the **same record** is inside the vocabulary, because the
+# record is already in hand: the route is data the store resolves, not an
+# expression it evaluates, so the verdict stays a pure function of the record and
+# the catalog and a replica reaches it without reading anything.
+
+--- case: a comparison may name another field of the same record
+DEFINE FIELD low ON ledgers TYPE int ASSERT $value < high;
+--- expect: ok
+
+--- case: and a route may reach into a nested value
+DEFINE FIELD ends_at ON ledgers TYPE int ASSERT $value > window.opens;
+--- expect: ok
+
+--- case: a route composes with AND
+DEFINE FIELD mid ON ledgers TYPE int ASSERT $value > floor AND $value < ceiling;
+--- expect: ok
+
+--- case: with OR
+DEFINE FIELD outer ON ledgers TYPE int ASSERT $value < floor OR $value > ceiling;
+--- expect: ok
+
+--- case: and under NOT
+DEFINE FIELD above ON ledgers TYPE int ASSERT NOT ($value < floor);
+--- expect: ok
+
+--- case: but a route reaching several values has no single value to compare
+DEFINE FIELD each ON ledgers TYPE int ASSERT $value > slots[*].opens;
+--- expect: error AssertionNotAConstraint
+
+--- case: a record the comparison accepts lands
+CREATE ledgers:20 = { holder: 'ada', low: 1, high: 5 };
+--- expect: ok
+
+--- case: one it refuses does not
+CREATE ledgers:21 = { holder: 'ada', low: 9, high: 5 };
+--- expect: error AssertionViolation
+
+--- case: and neither does one whose compared field is absent, the way an ordered comparison against a non-value is false anywhere else
+CREATE ledgers:22 = { holder: 'ada', low: 1 };
+--- expect: error AssertionViolation
 
 # `INFO FOR` — what the catalog holds, read from the catalog itself. Five
 # subjects, because each one has exactly one rule deciding what the caller may

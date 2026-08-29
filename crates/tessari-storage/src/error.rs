@@ -127,7 +127,16 @@ pub enum Error {
     /// Checked on the apply path beside the type check, and for the same reason:
     /// the verdict is a pure function of the record and the catalog, so every
     /// replica reaches it without anything being sent.
-    #[error("record {record} of table {table} holds a {field} its declaration refuses")]
+    ///
+    /// The message names the other field when the declaration compares against
+    /// one, because "`ends_at` is refused" without "compared with `starts_at`"
+    /// leaves the writer to guess which of the record's fields the constraint
+    /// was about. Both fields came from the statement they just sent, so naming
+    /// the second discloses nothing they did not supply — which is the line this
+    /// message stays on: it never names a value, and never names a second
+    /// **record**.
+    #[error("record {record} of table {table} holds a {field} its declaration refuses{}",
+        .compared_with.as_ref().map_or_else(String::new, |other| format!(" (it is compared with {other})")))]
     AssertionViolation {
         /// The table whose declaration was violated.
         table: u32,
@@ -135,6 +144,9 @@ pub enum Error {
         record: String,
         /// The field that disagreed.
         field: String,
+        /// The other fields of the same record the declaration compares against,
+        /// when it names any.
+        compared_with: Option<String>,
     },
 
     /// A required field that holds nothing.
