@@ -949,6 +949,10 @@ impl Session<'_> {
             // already refused a zero, so this cannot be a consumer that runs
             // nothing.
             parallelism: declared.parallelism.unwrap_or(1),
+            // Whose authority the writes will carry. `None` only on an open
+            // store, where there is nobody to record and nothing to enforce —
+            // the same condition under which the first user is declared.
+            declarer: self.identity.user().map(|user| user.id),
         };
         // A name already taken is refused by the catalog itself, which is where
         // every other declaration's collision is decided.

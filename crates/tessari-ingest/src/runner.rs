@@ -413,6 +413,27 @@ impl Consuming {
         let mut attempt = 0_u32;
         loop {
             let mut session = Session::new(&self.store);
+            // The declarer's authority, re-established from the catalog on every
+            // batch rather than captured once. That is what makes a revocation
+            // take effect on the next batch instead of never: until this, the
+            // loop wrote as nobody, so demoting the declarer, revoking their
+            // authority or deleting the account outright did not stop it.
+            //
+            // A declaration predating the field keeps writing unbound, which is
+            // deliberate — narrowing an existing consumer on upgrade would be an
+            // outage delivered as a migration — and `INFO FOR CONSUMER` reports
+            // the absence so an operator can find it and redeclare.
+            if let Some(declarer) = self.definition.declarer
+                && let Err(refused) = session.acting_as(declarer)
+            {
+                // A deleted declarer. Reported and retried rather than swallowed,
+                // because the batch is not written and a consumer that silently
+                // dropped messages here would be worse than one that stops.
+                return Err(format!(
+                    "consumer {} cannot act as the user that declared it: {refused}",
+                    self.definition.name
+                ));
+            }
             match session.run_with(&script, &parameters) {
                 Ok(_) => return Ok(()),
                 Err(failure) => {

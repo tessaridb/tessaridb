@@ -542,6 +542,19 @@ fn described_consumer(consumer: &ConsumerDefinition, destination: &str) -> Value
                 consumer.parallelism,
             ))),
         ),
+        // Whose authority its writes carry. Reported as a **word** and not as
+        // an absent field when there is none, because the absence is the one
+        // an operator has to act on: a consumer declared before this existed
+        // writes unbound, and a field that simply vanished would leave no way
+        // to find which ones. `NULL` here would read as *no information*; this
+        // reads as *nobody*, which is what it is.
+        (
+            "declarer".to_owned(),
+            consumer.declarer.map_or_else(
+                || Value::from("unbound — declared before writes carried an identity"),
+                |id| Value::Number(tessari_types::Number::Integer(i64::from(id))),
+            ),
+        ),
     ]))
 }
 

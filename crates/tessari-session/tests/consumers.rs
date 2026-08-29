@@ -532,3 +532,75 @@ fn a_grant_governed_caller_may_only_feed_the_tables_they_were_granted() {
         "a granted caller aimed a consumer at a table they hold no grant on: {failure}"
     );
 }
+
+#[test]
+fn a_consumer_records_who_declared_it_and_writes_with_their_authority() {
+    // The path the coverage matrix found unenforced, closed. The authority
+    // question used to be asked once, at `DEFINE CONSUMER`, and never again:
+    // the runner built a session and never signed in, so every batch was
+    // written as **nobody**. Demoting the declarer, revoking their authority or
+    // deleting the account outright did not stop the writing, because there was
+    // no identity in the loop for any of those to act on.
+    //
+    // What is asserted here is the mechanism rather than the broker loop: the
+    // declaration carries the declarer, the identity is re-established from the
+    // catalog, and the write the consumer performs is then subject to the
+    // ordinary checks — which is what makes a revocation take effect on the next
+    // batch instead of never.
+    let backend = backend();
+    let store = shaped(&backend);
+    peopled(&store);
+    signed_in(&store, "nina").run(DECLARE).unwrap();
+
+    let mut root = Session::new(&store);
+    root.sign_in("root", PASSWORD).unwrap();
+    let report = reported(
+        root.run("USE NAMESPACE prod; USE DATABASE shop; INFO FOR CONSUMER orders_in;")
+            .unwrap(),
+    );
+    let declared = group(&report, "declared");
+    let Some(Value::Number(tessari_types::Number::Integer(id))) = declared.get("declarer") else {
+        panic!("the declaration does not record who made it: {declared:?}");
+    };
+    // The reported id is the whole point of the field, so the test reads it
+    // from the report rather than from the catalog: an id nothing surfaces is
+    // an identity nobody can audit, and the runner is not the only reader that
+    // needs to know which consumer writes as whom.
+    let id = u32::try_from(*id).unwrap();
+
+    let mut acting = Session::new(&store);
+    acting.acting_as(id).unwrap();
+    acting
+        .run("USE NAMESPACE prod; USE DATABASE shop; UPSERT orders:1 = { total: 5 };")
+        .expect("the consumer writes with the authority of whoever declared it");
+
+    // And the half that was impossible before: take the authority away, and the
+    // next batch is refused rather than written.
+    root.run("REVOKE write ON DATABASE prod.shop FROM nina;")
+        .unwrap();
+    let mut again = Session::new(&store);
+    again.acting_as(id).unwrap();
+    let refusal = again
+        .run("USE NAMESPACE prod; USE DATABASE shop; UPSERT orders:2 = { total: 6 };")
+        .unwrap_err()
+        .to_string();
+    assert!(refusal.contains("write"), "{refusal}");
+}
+
+#[test]
+fn deleting_the_declarer_stops_the_consumer_rather_than_freeing_it() {
+    // The behaviour this closure was chosen for, and it is new: a consumer whose
+    // declarer no longer exists cannot write. That is a fresh way for ingestion
+    // to halt, which is why it is asserted out loud rather than left to be
+    // discovered by whoever deletes an account on a Friday.
+    let backend = backend();
+    let store = shaped(&backend);
+    peopled(&store);
+
+    let mut acting = Session::new(&store);
+    let refusal = acting.acting_as(9999).unwrap_err().to_string();
+    assert!(
+        refusal.contains("no user"),
+        "a deleted declarer must refuse rather than fall back to nobody: {refusal}"
+    );
+}

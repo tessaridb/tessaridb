@@ -56,6 +56,7 @@ const FIELD_DATABASE: &str = "database";
 const FIELD_TABLE: &str = "table";
 const FIELD_ON_FAILURE: &str = "on_failure";
 const FIELD_PARALLELISM: &str = "parallelism";
+const FIELD_DECLARER: &str = "declarer";
 
 const ENTITY: &str = "consumer";
 
@@ -148,6 +149,24 @@ pub struct ConsumerDefinition {
     /// Never zero: a declaration that runs nothing is a consumer an operator
     /// believes is consuming.
     pub parallelism: u32,
+    /// The user who declared it, and whose authority its writes carry.
+    ///
+    /// # Why a consumer has an identity at all
+    ///
+    /// Without one, the authority question is asked **once**, at
+    /// `DEFINE CONSUMER`, and never again — so demoting the declarer, revoking
+    /// their authority or deleting the account outright does not stop the
+    /// writing, because there is no identity in the loop for any of those to act
+    /// on. The rule the rest of this store follows is that a thing acts with the
+    /// authority of whoever asked for it, and this is that rule reaching the one
+    /// path that had escaped it.
+    ///
+    /// `None` for a consumer declared before this field existed. Those keep
+    /// running unbound rather than stopping on upgrade — narrowing them would be
+    /// an outage delivered as a migration — and `INFO FOR CONSUMER` reports the
+    /// absence so an operator can find them and redeclare. An absence that
+    /// nothing surfaces is the same as no field at all.
+    pub declarer: Option<u32>,
 }
 
 impl ConsumerDefinition {
@@ -169,7 +188,7 @@ impl ConsumerDefinition {
                 ]))
             })
             .collect();
-        Value::Object(BTreeMap::from([
+        let mut fields = BTreeMap::from([
             (FIELD_ID.to_owned(), number(self.id)),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
             (FIELD_BROKERS.to_owned(), Value::Array(brokers)),
@@ -189,7 +208,14 @@ impl ConsumerDefinition {
                 Value::from(self.on_failure.spelling()),
             ),
             (FIELD_PARALLELISM.to_owned(), number(self.parallelism)),
-        ]))
+        ]);
+        // Written only when there is one, so a record predating the field and a
+        // record whose declarer is unknown are the same shape rather than two
+        // that a reader has to tell apart.
+        if let Some(declarer) = self.declarer {
+            fields.insert(FIELD_DECLARER.to_owned(), number(declarer));
+        }
+        Value::Object(fields)
     }
 
     /// Read a definition back.
@@ -237,6 +263,15 @@ impl ConsumerDefinition {
             destination: TableId::new(field_id(fields, FIELD_TABLE, ENTITY)?),
             on_failure,
             parallelism,
+            // Absent means *declared before this field existed*, which is the
+            // rule a replica's `roles` follows and the opposite of every other
+            // field here. It is admissible precisely because it was never
+            // optional at declaration: a consumer written by this binary always
+            // carries one, so an absence is an age rather than a choice.
+            declarer: match fields.get(FIELD_DECLARER) {
+                None => None,
+                Some(_) => Some(field_id(fields, FIELD_DECLARER, ENTITY)?),
+            },
         })
     }
 }

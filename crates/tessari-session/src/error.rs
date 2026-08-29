@@ -773,6 +773,19 @@ pub enum Error {
         span: Span,
     },
 
+    /// No user carries that id.
+    ///
+    /// Carries an id and no span because nothing typed it: it is reached when a
+    /// stored declaration names a user who has since been deleted, and a caret
+    /// under a character nobody wrote would point at the wrong thing. For a
+    /// consumer this is not a fault — it is how deleting a declarer stops the
+    /// background writer they declared.
+    #[error("no user has id {id}")]
+    UnknownUser {
+        /// The id the stored declaration named.
+        id: u32,
+    },
+
     /// A role this language does not have.
     #[error("there is no role called {name:?} (at {span})")]
     NoSuchRole {

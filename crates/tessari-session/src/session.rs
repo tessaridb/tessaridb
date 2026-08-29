@@ -246,6 +246,50 @@ impl<'a> Session<'a> {
         Ok(())
     }
 
+    /// Act as a user the store already declared, without a credential.
+    ///
+    /// # Why this exists, and what it is not
+    ///
+    /// A declared consumer writes records long after the session that declared
+    /// it has gone, and until this existed it wrote them as **nobody** — so the
+    /// authority question was asked once, at `DEFINE CONSUMER`, and never again.
+    /// Demoting the declarer, revoking their authority or deleting the account
+    /// outright did not stop the writing, because there was no identity in the
+    /// loop for any of those to act on.
+    ///
+    /// This is the rule the rest of the store already follows — *a thing acts
+    /// with the authority of whoever asked for it* — reaching the one path that
+    /// had escaped it. Because the identity is re-established from the catalog
+    /// on every batch, a revocation takes effect on the next one rather than
+    /// never.
+    ///
+    /// **It is not a way around a password.** It takes an id rather than a name
+    /// so it cannot be reached from anything a caller types, and every authority
+    /// check downstream is the ordinary one — this hands out an identity, not a
+    /// permission. It is `pub` only because the ingestion runner is another
+    /// crate; an embedder able to call it is already linked against the store
+    /// and holds every byte in it, so it crosses no boundary that was not
+    /// already open. Nothing reachable over the wire calls it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnknownUser`] when no user carries that id — which is
+    /// what a deleted declarer looks like, and is therefore how deleting one
+    /// stops the consumer they declared.
+    pub fn acting_as(&mut self, id: u32) -> Result<()> {
+        let mut transaction = self.store.begin()?;
+        let found = tessari_storage::Catalog::new(&mut transaction)
+            .users()?
+            .into_iter()
+            .find(|user| user.id == id);
+        transaction.rollback();
+        let Some(user) = found else {
+            return Err(Error::UnknownUser { id });
+        };
+        self.identity = Identity::Signed(Box::new(user));
+        Ok(())
+    }
+
     /// Change **this session's own** password, proving the current one.
     ///
     /// **Not a statement**, for the same reason `sign_in` is not: it carries a

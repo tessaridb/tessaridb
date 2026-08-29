@@ -132,6 +132,9 @@ mod tests {
             destination: TableId::new(1),
             on_failure: OnFailure::Quarantine,
             parallelism: 1,
+            // Shaping a message is the half that has no identity in it: these
+            // tests turn a payload into fields and never reach the store.
+            declarer: None,
         }
     }
 
