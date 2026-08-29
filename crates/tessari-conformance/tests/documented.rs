@@ -48,18 +48,13 @@ use tessari_types::FieldKind;
 /// A reason is not a formality: the only defensible entry is syntax the
 /// released engine does not yet enforce, because documenting protection that
 /// does not exist is worse than the silence.
-const UNDOCUMENTED: &[(&str, &str)] = &[
-    (
-        "GRANT ON REACH",
-        "committed but unreleased, and enforcement lands with the authority \
-         milestone — a page describing `GRANT manage ON NAMESPACE prod` reads \
-         as a promise the store does not yet keep",
-    ),
-    (
-        "REVOKE ON REACH",
-        "the other half of the same unreleased pair",
-    ),
-];
+/// Empty, and that is the state it is supposed to be in. The two entries it
+/// held — `GRANT ON REACH` and `REVOKE ON REACH` — were excused while the
+/// authority model was committed and unenforced, on the ground that documenting
+/// protection the store does not yet keep is worse than the silence. Enforcement
+/// shipped and §4 now describes both, so the excuse expired and the entries went
+/// with it, which is the direction of this check that usually goes unexercised.
+const UNDOCUMENTED: &[(&str, &str)] = &[];
 
 /// Whether `unit` is on the allow-list.
 fn excused(unit: &str) -> bool {

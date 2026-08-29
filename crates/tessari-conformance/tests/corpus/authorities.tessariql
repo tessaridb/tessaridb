@@ -72,6 +72,14 @@ DEFINE USER nadia ON NAMESPACE prod AUTHORITIES manage PASSWORD 'x';
 INFO FOR USER ada;
 --- expect: error NotSignedIn
 
+--- case: and so is the same question asked from the object's end
+INFO FOR ACCESS TO TABLE orders;
+--- expect: error NotSignedIn
+
+--- case: the object is named the way every other statement names one
+INFO FOR ACCESS TO orders;
+--- expect: error UnexpectedToken
+
 --- case: a table may no longer be named `store`, which is what reserving it cost
 DEFINE TABLE store;
 --- expect: error UnexpectedToken

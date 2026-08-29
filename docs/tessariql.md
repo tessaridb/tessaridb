@@ -521,6 +521,85 @@ in a statement. The refusal names the tenancy and never says whether the table o
 the record exists, because a refusal that leaks that has answered the question it
 declined. A user declared without `ON` belongs to the store.
 
+### Authority: a kind and a reach
+
+A role is a rank, and a rank can only say *more* or *less*. The rules an operator
+actually has are not ranked: the person who runs the cluster has no business
+reading the records, the ingestion identity writes and should not be able to drop
+a table, and — the case this exists for — **reading or writing inside a namespace
+must not confer creating and dropping databases in it.** No position on a ladder
+of three says any of that, because each of them is *some of one rung and none of
+the next*.
+
+So an authority is a pair: a **kind**, and the **reach** it holds over.
+
+| Kind | What it is |
+|---|---|
+| `read` | read records |
+| `write` | write records |
+| `manage` | create and drop the container's children — databases in a namespace, tables in a database — and define structure on them |
+| `govern` | declare users and move authority around |
+| `operate` | topology, replicas and the backup file: running the thing rather than using it |
+
+The reach is `STORE`, `NAMESPACE <name>` or `DATABASE <namespace>.<name>`, and
+it is written as a keyword so that no table name can be read as a reach. A kind
+held at a container is held over everything inside it and over nothing outside.
+
+A user may be declared with the set directly:
+
+```
+DEFINE USER ops AUTHORITIES operate PASSWORD 'a long one';
+DEFINE USER ingest ON prod.shop AUTHORITIES write PASSWORD 'a long one';
+DEFINE USER nadia ON NAMESPACE prod AUTHORITIES manage PASSWORD 'a long one';
+```
+
+`ops` runs the node and reads no records. `ingest` writes into one database and
+cannot define a table there. `nadia` creates and drops databases in `prod` and
+reads nothing in them — the headline rule, said in one statement.
+
+Authority moves the way a grant does, and the statements are the same two words:
+
+```
+GRANT manage ON DATABASE prod.shop TO kim;
+GRANT read ON NAMESPACE prod TO kim;
+REVOKE manage ON DATABASE prod.shop FROM kim;
+REVOKE operate ON STORE FROM kim;
+```
+
+**Nobody hands out what they do not hold.** `GRANT` is refused when the kind or
+the reach exceeds the granter's own — an owner of one database cannot mint an
+authority over the store, and cannot widen somebody sideways into a kind they do
+not hold themselves. Without that, every other rule here would be one statement
+away from being decoration.
+
+**The three roles are still spellings of sets, and they still mean what they
+meant.** `ROLE viewer` is `read`, `ROLE editor` is `read, write, manage`, and
+`ROLE owner` is all five, each at the reach the user was declared at. That
+mapping is deliberately unchanged for users who already exist: `editor` bundles
+`write` with `manage`, which is exactly the combination this model was built to
+make refusable, and narrowing it on upgrade would be an outage delivered as a
+migration. What the model changes is what can now be **said**, not what was
+already promised.
+
+**A declared tenancy is a second confinement, and it is asked first.** A user
+declared `ON NAMESPACE prod` who is granted `read ON NAMESPACE staging` still
+cannot reach `staging`: the `ON` is not a default that a grant overrides, it is
+the boundary the session is inside. Otherwise `ON` would be decoration, and the
+escalation refused at the declaring side would simply move to the granting side.
+The confinement is enforced where a session **selects** a container — `USE` — so
+it is also the first thing that has to succeed.
+
+**Taking authority away reaches a connection that is already open.** A session
+re-reads its own user from the catalog on every statement, so `ALTER USER`,
+`DROP USER` and `REVOKE` take effect on that session's **next statement**; a
+running subscription re-asks on every poll round, so it ends within **one round,
+at most 250 ms**. Neither waits for the connection to close, which is the wait a
+revocation is least able to afford.
+
+To see what one user reaches, ask `INFO FOR USER`. To see who reaches one table,
+ask `INFO FOR ACCESS TO TABLE` (§7c) — both answer from the same check the
+statements themselves pass through.
+
 **Signing in is not a statement.** A script is text a caller composes, logs,
 pastes into an issue and sends through a proxy, and a password in one is a
 password in all of those. It is a method on a session, and over HTTP an

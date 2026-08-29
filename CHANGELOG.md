@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 860 conformance cases define the language and run in the build.
+Unreleased. 862 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -29,6 +29,15 @@ Unreleased. 860 conformance cases define the language and run in the build.
 
 ### Added
 
+- **`INFO FOR ACCESS TO TABLE orders` answers who reaches one table**, one row
+  per user the caller administers, each saying whether that user may read it and
+  whether they may write it. Every row is obtained by signing a throwaway session
+  in as that user and putting a real `USE`, `SELECT` and `DELETE` to the ordinary
+  authorization path — the report is the deciding check rather than a second
+  opinion about it, because two opinions of one rule agree until they do not, and
+  when they stop nothing fails: the report simply becomes fiction, read by the one
+  person with no way to check it. It needs `govern`, and refuses rather than
+  narrows, for the reason `INFO FOR USER` does.
 - **A read can answer from an earlier point in the store's history.**
   `SELECT * FROM docs VERSION 4102` reads the store as it stood at that log
   sequence. Records were already versioned by a suffix on their own key, so this
