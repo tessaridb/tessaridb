@@ -313,7 +313,7 @@ fn asking_about_a_user_needs_an_owner() {
     let refused = ada
         .run("INFO FOR USER ada;")
         .expect_err("an editor may not read the permission system");
-    assert!(refused.to_string().contains("administer"), "{refused}");
+    assert!(refused.to_string().contains("govern"), "{refused}");
 }
 
 #[test]
@@ -328,7 +328,7 @@ fn listing_users_needs_an_owner_and_refuses_rather_than_narrowing() {
     let refused = ada
         .run("INFO FOR USERS;")
         .expect_err("an editor may not read the permission system");
-    assert!(refused.to_string().contains("administer"), "{refused}");
+    assert!(refused.to_string().contains("govern"), "{refused}");
 }
 
 #[test]

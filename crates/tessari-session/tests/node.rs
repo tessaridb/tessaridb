@@ -168,7 +168,7 @@ fn a_viewer_is_refused_rather_than_passed_over_by_an_empty_grant_check() {
     let refused = viewer.run("SELECT * FROM $node;").unwrap_err().to_string();
     // Refused for what the statement *needs*, not for a table it failed to name
     // — which is the difference between a rule and an emptiness.
-    assert!(refused.contains("administer"), "{refused}");
+    assert!(refused.contains("operate"), "{refused}");
 
     // And the same refusal for the plan, which would otherwise report the
     // source through a statement the caller may not run.

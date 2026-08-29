@@ -335,26 +335,50 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
 }
 
 #[test]
-fn an_editor_may_not_declare_a_consumer() {
-    // Declaring one is administering, not writing. It hands a broker address and
-    // a group to a process that then writes into somebody's table with nobody
-    // watching, which is a decision about what runs rather than about what the
-    // data looks like.
+fn declaring_a_consumer_demands_the_write_it_will_perform() {
+    // A consumer writes records on the declarer's behalf, later, with nobody
+    // present — so declaring one demands every authority it will exercise, and
+    // the write is the one that matters. This is the whole of why the demand is
+    // `{manage, write}` and not an administrative rank: under a rank the two
+    // travelled together and the requirement was invisible.
+    //
+    // `pat` manages `prod.shop` and cannot write a record in it. Under the
+    // ladder this case could not be constructed at all, which is what let the
+    // confused deputy sit here unexamined.
     let backend = backend();
     let store = shaped(&backend);
     peopled(&store);
-    let failure = signed_in(&store, "ada")
+    let mut root = Session::new(&store);
+    root.sign_in("root", PASSWORD).unwrap();
+    root.run("DEFINE USER pat ON prod.shop AUTHORITIES manage PASSWORD 'correct horse battery';")
+        .unwrap();
+
+    let failure = signed_in(&store, "pat")
         .run(DECLARE)
         .unwrap_err()
         .to_string();
-    assert!(failure.contains("administer"), "{failure}");
+    assert!(failure.contains("write"), "{failure}");
+}
+
+#[test]
+fn an_editor_may_declare_a_consumer_into_their_own_table() {
+    // The other half, and it moved with the classification. An editor holds
+    // `write` over `prod.shop`, so a consumer writing into `prod.shop.orders`
+    // performs nothing they could not have performed themselves — which is the
+    // test the demand actually applies. Requiring an administrative rank on top
+    // was the ladder answering a question about *rank* when the question is
+    // about *reach*.
+    let backend = backend();
+    let store = shaped(&backend);
+    peopled(&store);
+    signed_in(&store, "ada").run(DECLARE).unwrap();
 }
 
 #[test]
 fn an_owner_of_one_database_may_declare_a_consumer_into_their_own_table() {
-    // The other half of the boundary, and the reason this is `Administer` rather
-    // than `AdministerStore`: an owner of `prod.shop` should be able to say what
-    // feeds `prod.shop.orders` without being the owner of the whole store.
+    // A consumer lives in the database its destination lives in: an owner of
+    // `prod.shop` says what feeds `prod.shop.orders` without being the owner of
+    // the whole store.
     let backend = backend();
     let store = shaped(&backend);
     peopled(&store);

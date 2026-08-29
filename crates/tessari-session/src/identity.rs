@@ -131,40 +131,131 @@ pub(crate) fn verifies(password: &str, stored: &str) -> bool {
     })
 }
 
-/// What a statement needs to be allowed to run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Needs {
-    /// Reading, which a `viewer` may do.
-    Read,
-    /// Writing records or defining structure, which an `editor` may do.
-    Write,
-    /// Declaring users, which only an `owner` may do.
-    Administer,
-    /// Administering the **store itself** — an owner holding no tenancy.
+/// What a statement demands: a set of authority kinds, and where they are held.
+///
+/// # A set, because a rank was the defect
+///
+/// This used to be one of five ordered classes, and the last arm of [`Needs::of`]
+/// assigned `Write` to **twenty-four** statements that are two different
+/// authorities: nine that change records, and fifteen that create and drop the
+/// containers records live in. So *writing in a namespace* and *creating
+/// databases in it* were one permission, and no repair that kept an ordering
+/// could separate them — put managing above writing and every manager writes,
+/// put it below and every writer manages, and there is no third position.
+/// Splitting that arm is the whole of the owner's fourth rule.
+///
+/// # Exhaustive, and the new way to be wrong
+///
+/// [`Needs::of`] still has no catch-all, so a statement added to the language
+/// cannot compile until somebody classifies it. That protects against a
+/// **missing** arm and not against a **thin** one: `{write}` type-checks exactly
+/// like `{read, write}`, so an arm with too few kinds is a silent privilege
+/// escalation the compiler cannot see. The three sets that exist *only* because
+/// something is disclosed — `BACKUP`, `CREATE`/`UPDATE`, `DEFINE CONSUMER` —
+/// each carry a negative test holding the lesser authority alone, and that test
+/// is the only thing standing where the compiler cannot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Needs {
+    /// Every kind the statement requires — all of them, never one of them.
+    kinds: &'static [Kind],
+    /// Where they must be held.
+    at: At,
+}
+
+/// Where a demand has to be answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum At {
+    /// The store itself, and nothing smaller.
     ///
-    /// Role and reach are two axes, and the pair below is what happens when a
-    /// statement's subject is the store: the role says what kind of act it is,
-    /// and the reach says that the caller's own tenancy has to be the whole
-    /// thing. The ordinary tenancy check cannot ask the second question here,
-    /// because it compares what a statement *names* against what the caller
-    /// holds — and these statements name nothing.
+    /// A caller holding a tenancy of their own does not qualify however much
+    /// they hold inside it, because the subject of these statements is the thing
+    /// that *contains* their tenancy. An owner of one database must not satisfy
+    /// this, or `BACKUP` hands them every record in every namespace.
+    Store,
+    /// Every container the statement reaches.
     ///
-    /// An owner of one database satisfies [`Needs::Administer`] and must not
-    /// satisfy this, or `BACKUP` hands them every record in every namespace.
-    AdministerStore,
-    /// Writing structure at **store level** — an editor or owner holding no
-    /// tenancy.
-    ///
-    /// `DEFINE NAMESPACE` is the whole of it. A namespace is a *sibling* of
-    /// every other namespace, so declaring one is not shaping the data you own
-    /// unless the store *is* what you own — which is why the reach is required
-    /// and the role is not raised. A store-wide editor may already define
-    /// databases, tables and records anywhere; a namespace is strictly less
-    /// than that. An editor of one database may not, and that was the defect.
-    WriteStore,
+    /// The resolved tenancy of each table it names, and the session's own when
+    /// it names none — which is what stops a statement naming no table from
+    /// passing a per-container loop vacuously, the shape this codebase has had
+    /// to refuse `BACKUP` by name for.
+    Reached,
 }
 
 impl Needs {
+    /// Nothing at all: the statement demands no authority.
+    ///
+    /// A transaction verb, which acts on nothing — the authority is demanded by
+    /// the statements inside it. On a closed store a caller still has to be
+    /// signed in, and that is a different question, asked in [`Identity`].
+    const NOTHING: Self = Self {
+        kinds: &[],
+        at: At::Reached,
+    };
+    /// Reading records or the catalog.
+    pub(crate) const READ: Self = Self {
+        kinds: &[Kind::Read],
+        at: At::Reached,
+    };
+    /// Changing records without learning anything about them.
+    const WRITE: Self = Self {
+        kinds: &[Kind::Write],
+        at: At::Reached,
+    };
+    /// Changing records by a statement whose refusal discloses prior state.
+    const READ_WRITE: Self = Self {
+        kinds: &[Kind::Read, Kind::Write],
+        at: At::Reached,
+    };
+    /// Creating and dropping a container's children, and shaping them.
+    const MANAGE: Self = Self {
+        kinds: &[Kind::Manage],
+        at: At::Reached,
+    };
+    /// The same, where the container is the store — declaring a namespace.
+    const MANAGE_STORE: Self = Self {
+        kinds: &[Kind::Manage],
+        at: At::Store,
+    };
+    /// Declaring users and moving authority around.
+    const GOVERN: Self = Self {
+        kinds: &[Kind::Govern],
+        at: At::Reached,
+    };
+    /// Running the node: topology and replicas.
+    const OPERATE_STORE: Self = Self {
+        kinds: &[Kind::Operate],
+        at: At::Store,
+    };
+    /// Running the node *and* seeing everything in it — the backup file.
+    const READ_OPERATE_STORE: Self = Self {
+        kinds: &[Kind::Read, Kind::Operate],
+        at: At::Store,
+    };
+    /// Declaring a thing that will later write on the declarer's behalf.
+    const MANAGE_WRITE: Self = Self {
+        kinds: &[Kind::Manage, Kind::Write],
+        at: At::Reached,
+    };
+
+    /// The kinds demanded.
+    pub(crate) const fn kinds(self) -> &'static [Kind] {
+        self.kinds
+    }
+
+    /// Where they must be held.
+    pub(crate) const fn at(self) -> At {
+        self.at
+    }
+
+    /// Whether this demand is satisfied by reading alone.
+    ///
+    /// The one question the table-grant loop asks of it: a grant is a verb on a
+    /// table, and there are two verbs. Everything that is not purely a read
+    /// needs the write, which is the mapping this had before the kinds existed.
+    pub(crate) const fn only_reads(self) -> bool {
+        matches!(self.kinds, [Kind::Read])
+    }
+
     /// What this statement needs.
     ///
     /// # Every statement is named, and there is no catch-all
@@ -194,14 +285,14 @@ impl Needs {
             // version of them to hand a `viewer` — the same reasoning that puts
             // `INFO FOR USER` here rather than beside the other four subjects.
             StatementKind::Select(select) if matches!(select.from, tessari_ql::Source::Node) => {
-                Self::AdministerStore
+                Self::OPERATE_STORE
             }
             // `EXPLAIN` of the same read needs the same permission, for the
             // reason `tables_named` gives it: a plan that named a source the
             // caller may not read is a disclosure wearing a diagnostic's
             // clothes.
             StatementKind::Explain(select) if matches!(select.from, tessari_ql::Source::Node) => {
-                Self::AdministerStore
+                Self::OPERATE_STORE
             }
             // A binding is only as privileged as what it holds. `LET $x =
             // (SELECT * FROM $node)` reads this node's identity through an
@@ -214,7 +305,7 @@ impl Needs {
             | StatementKind::Throw { value }
                 if holds_node_read(value) =>
             {
-                Self::AdministerStore
+                Self::OPERATE_STORE
             }
             StatementKind::Let { .. }
             | StatementKind::Return { .. }
@@ -229,20 +320,38 @@ impl Needs {
             // Explaining a read is reading: the catalog, about a table. The
             // caller must be allowed both, and `tables_named` says which.
             | StatementKind::Explain(_)
+            => Self::READ,
             // `USE` and the transaction verbs change what the *next* statement
-            // runs in rather than touching anything, and refusing them would
-            // make a viewer unable to say which database it is reading.
-            | StatementKind::Use { .. }
+            // runs in rather than touching anything, so they demand nothing.
+            //
+            // They used to demand `read`, which was harmless while every role
+            // began with it and is not any more: an ingestion identity holding
+            // `write` alone must be able to select its database and open a
+            // transaction, and demanding a read it does not hold would make the
+            // model's own headline case unusable.
+            //
+            // **`USE` should demand *something* at the container it names**, and
+            // does not yet. Without that a store-wide holder of one namespace can
+            // name any other and learn whether it exists. The check needs the
+            // named container resolved, which is not what the session's tenancy
+            // holds at the moment `USE` runs, so it is its own slice (Q-252).
+            // A scoped user is still refused by `within_tenancy`.
+            StatementKind::Use { .. }
             | StatementKind::Begin
             | StatementKind::Commit
-            | StatementKind::Cancel => Self::Read,
-            // Granting is administering: it decides what somebody else may do,
-            // which is the same kind of act as declaring them.
+            | StatementKind::Cancel => Self::NOTHING,
+            // Governing: deciding what somebody else may do, which is the same
+            // kind of act as declaring them.
+            //
+            // Its own kind rather than the top of a ladder, and that is what
+            // makes the owner's ninth rule expressible — an administrator can
+            // declare users in a namespace without holding `read` over a single
+            // record in it.
             StatementKind::DefineUser { .. }
             | StatementKind::AlterUser { .. }
             | StatementKind::DropUser { .. }
             | StatementKind::Grant { .. }
-            | StatementKind::Revoke { .. } => Self::Administer,
+            | StatementKind::Revoke { .. } => Self::GOVERN,
             // Handing out an authority is `AdministerStore` and not
             // `Administer`, which is deliberately **stricter than it will
             // finally be**. `Administer` says the caller owns something, and
@@ -253,15 +362,23 @@ impl Needs {
             // they are granting, the safe direction is the one that refuses too
             // much: an under-grant is a support request, an over-grant is the
             // escalation this whole model exists to make unrepresentable.
-            StatementKind::GrantAuthority { .. } | StatementKind::RevokeAuthority { .. } => {
-                Self::AdministerStore
-            }
+            StatementKind::GrantAuthority { .. } | StatementKind::RevokeAuthority { .. } => Self {
+                kinds: &[Kind::Govern],
+                at: At::Store,
+            },
             // A backup is every record in the store, past every grant and every
             // tenancy boundary. There is no permission smaller than "may see all
             // of it", so the role is the whole check — and a grant can never add
             // to it, which `within_grants` says out loud rather than leaving to
             // the fact that a backup names no table.
-            StatementKind::Backup { .. } => Self::AdministerStore,
+            //
+            // **`{read, operate}` and not `operate` alone**, which is the
+            // correction the ladder hid. Under a rank this was the store owner's
+            // class and that identity held `read` anyway, so the coincidence was
+            // invisible; decomposed, an `operate`-only identity is supposed to
+            // run the cluster and see no records, and a backup is every record
+            // there is.
+            StatementKind::Backup { .. } => Self::READ_OPERATE_STORE,
             // Asking about a **user** is asking what the permission system says,
             // so it is the same kind of act as writing it. The other four
             // subjects filter — they report the tables and fields the caller may
@@ -270,7 +387,7 @@ impl Needs {
             // answer. So it refuses, and only an owner is answered.
             StatementKind::Info {
                 subject: InfoSubject::User(_) | InfoSubject::Users,
-            } => Self::Administer,
+            } => Self::GOVERN,
             // Asking about **this node** is the `$node` read wearing a
             // statement's clothes, and it lands here for exactly the reason that
             // one did: it names no table, so the grant loop passes over it
@@ -282,14 +399,14 @@ impl Needs {
             // description of the caller's own tables.
             StatementKind::Info {
                 subject: InfoSubject::Node,
-            } => Self::AdministerStore,
+            } => Self::OPERATE_STORE,
             // Configuring the node is administering it. Not `Write`, which is
             // where the other `DEFINE`s sit: an `editor` is expected to shape
             // the data they own, and neither what this machine is for nor which
             // other machines hold the data is that.
             StatementKind::DefineNode { .. }
             | StatementKind::DefineReplica { .. }
-            | StatementKind::DropReplica { .. } => Self::AdministerStore,
+            | StatementKind::DropReplica { .. } => Self::OPERATE_STORE,
             // Declaring a consumer is administering, not writing — the same
             // reasoning that puts `DEFINE USER` here. It hands a broker address
             // and a group name to a process that will then write into somebody's
@@ -301,8 +418,16 @@ impl Needs {
             // should be able to declare what feeds `prod.shop.orders`. The reach
             // check still applies, because `tables_named` reports the
             // destination — which is the difference between this and `BACKUP`.
+            // **`{manage, write}`, which is the second correction the ladder
+            // hid.** A consumer writes records on the declarer's behalf, later,
+            // with nobody present. Demanding only the administrative half makes
+            // it a privilege-escalation channel: declare a consumer, and records
+            // appear in a table the declarer could not have written to
+            // themselves. The rule generalises — *a statement that declares a
+            // thing which will later act demands every authority that thing will
+            // exercise* — and this is the store's only instance of it.
             StatementKind::DefineConsumer { .. } | StatementKind::DropConsumer { .. } => {
-                Self::Administer
+                Self::MANAGE_WRITE
             }
             // Asking about a consumer is asking for a broker address, a group
             // name and a running position. It **refuses rather than filters**,
@@ -317,10 +442,10 @@ impl Needs {
             // subject added and forgotten would be answered to a `viewer`.
             StatementKind::Info {
                 subject: InfoSubject::Consumer(_) | InfoSubject::Consumers,
-            } => Self::Administer,
+            } => Self::MANAGE,
             // The other four are reads of the catalog, and what they report is
             // narrowed to what the caller could have found out anyway.
-            StatementKind::Info { .. } => Self::Read,
+            StatementKind::Info { .. } => Self::READ,
             // A namespace is a **sibling** of every other namespace, and nothing
             // contains a sibling — so declaring one is not shaping the data you
             // own, it is adding to the store's top-level list. Left with the
@@ -333,65 +458,88 @@ impl Needs {
             // undeclaring a namespace they hold no tenancy in is exactly what
             // this level exists to refuse.
             StatementKind::DefineNamespace { .. } | StatementKind::DropNamespace { .. } => {
-                Self::WriteStore
+                Self::MANAGE_STORE
             }
-            // Everything else changes something: the records, or the structure
-            // they are held in. Defining and dropping sit here rather than under
-            // `Administer` because an `editor` is expected to shape the data
-            // they own; only deciding what *another* person may do is reserved.
+            // **The fifteen that were `Write`, and this line is the owner's
+            // fourth rule.** Creating and dropping the containers records live
+            // in is `manage`, and changing the records is `write`, and neither
+            // implies the other in either direction. Under one class they were
+            // the same permission: a caller allowed to write a namespace's
+            // records could create and drop databases in it, and no ordering
+            // over roles could have said otherwise.
+            //
+            // A drop keeps the same authority as the declaration it undoes
+            // rather than a higher one: the person who may shape a structure is
+            // the person who may unshape it, and a level that differed would
+            // leave a tenant able to create what they then need somebody else to
+            // remove.
             StatementKind::DefineDatabase { .. }
+            | StatementKind::DropDatabase { .. }
             | StatementKind::DefineTable { .. }
+            | StatementKind::DropTable { .. }
             | StatementKind::DefineSpace { .. }
             | StatementKind::DefineBucket { .. }
             | StatementKind::DefineIndex { .. }
-            | StatementKind::DefineField { .. }
-            | StatementKind::DefineAnalyzer { .. }
-            | StatementKind::DropTable { .. }
             | StatementKind::DropIndex { .. }
             | StatementKind::RebuildIndex { .. }
+            | StatementKind::DefineField { .. }
             | StatementKind::DropField { .. }
-            // Each of these pairs with the `DEFINE` two lines above it, and a
-            // drop is deliberately given the same authority as the declaration
-            // it undoes rather than a higher one: the person who may shape a
-            // structure is the person who may unshape it, and a level that
-            // differed would leave a tenant able to create what they then need
-            // somebody else to remove.
-            | StatementKind::DropDatabase { .. }
-            | StatementKind::DropAnalyzer { .. }
             | StatementKind::AlterTable { .. }
             | StatementKind::AlterField { .. }
-            | StatementKind::Relate { .. }
-            | StatementKind::Create { .. }
+            | StatementKind::DefineAnalyzer { .. }
+            | StatementKind::DropAnalyzer { .. } => Self::MANAGE,
+            // **The three writes that are also reads**, and the classification
+            // is measured rather than reasoned. `CREATE t:1` on an existing
+            // record refuses with *record 1 already exists* and `UPDATE t:99` on
+            // an absent one with *no record 99* — each is defined by a claim
+            // about prior state, so each answers a question about it.
+            // `DELETE … WHERE` reads records to decide which to remove, and a
+            // condition that selects is a read whether or not rows come back.
+            //
+            // The cost is real and is stated rather than discovered: an
+            // append-only writer that wants `CREATE`'s duplicate refusal must
+            // also hold `read`. Letting `write` alone run it was considered and
+            // refused — an oracle over record ids is exactly what turns a
+            // write-only integration credential into an enumeration tool, and
+            // `UPSERT` is the supported answer that needs nothing extra.
+            StatementKind::Create { .. }
             | StatementKind::Update { .. }
-            | StatementKind::Upsert { .. }
+            | StatementKind::DeleteWhere { .. } => Self::READ_WRITE,
+            // **The six that are measurably silent about prior state.** Every
+            // one of them answers `ok` against an absent or conflicting record,
+            // so a holder of `write` alone can run them and learn nothing —
+            // which is what makes a pure ingestion identity a real thing here
+            // rather than a theoretical one.
+            StatementKind::Upsert { .. }
             | StatementKind::Delete { .. }
-            | StatementKind::DeleteWhere { .. }
+            | StatementKind::Relate { .. }
             | StatementKind::Set { .. }
             | StatementKind::Del { .. }
-            | StatementKind::Put { .. } => Self::Write,
+            | StatementKind::Put { .. } => Self::WRITE,
         }
     }
 
-    /// Whether this role is enough.
+    /// The first demanded kind this user holds nowhere at all.
     ///
-    /// `None` is a user whose authorities no role summarises, and the answer is
-    /// **no** for every demand — the ladder cannot describe what they hold, so
-    /// it must not answer on their behalf. Reading the held set instead is the
-    /// enforcement wave's work; until then such a user is refused rather than
-    /// approximated, which is the direction that cannot escalate.
-    const fn granted_to(self, role: Option<Role>) -> bool {
-        let Some(role) = role else {
-            return false;
-        };
-        match self {
-            Self::Read => true,
-            Self::Write => matches!(role, Role::Editor | Role::Owner),
-            // The store-wide pair needs a reach as well, and that half is asked
-            // in `allows_needs`, where the identity is in hand — a role on its
-            // own cannot answer it.
-            Self::WriteStore => matches!(role, Role::Editor | Role::Owner),
-            Self::Administer | Self::AdministerStore => matches!(role, Role::Owner),
-        }
+    /// # The role ladder used to answer this, and could not
+    ///
+    /// It asked whether a rank was high enough, so it could only say *more* or
+    /// *less* — and the rule this store had to express is that writing records
+    /// and managing containers are neither. The question now is whether the
+    /// user's stored set contains the kind, and a set answers it directly.
+    ///
+    /// **This is the coarse half of two.** It asks whether the authority is held
+    /// *anywhere*, which is what makes the refusal arrive with a useful message
+    /// before any name is resolved. Whether it is held at the container the
+    /// statement actually reaches is [`crate::Session::within_authority`], and
+    /// neither is sufficient alone: this one would let a holder of `manage` over
+    /// one database manage a sibling, and that one passes vacuously over a
+    /// statement that names no table.
+    fn unheld_by(self, user: &UserDefinition) -> Option<Kind> {
+        self.kinds
+            .iter()
+            .copied()
+            .find(|kind| !user.authorities.iter().any(|held| held.kind == *kind))
     }
 }
 
@@ -417,29 +565,29 @@ impl Identity {
             // "I do not know you" — a different answer from "I know you and no",
             // and a client needs to tell them apart to know whether to sign in.
             Self::Anonymous => Err(Error::NotSignedIn { span }),
-            // The role first, so an owner of a part and a viewer are told
-            // different things: for the viewer the missing piece really is the
-            // role, and telling them about reach sends them to ask for the
-            // wrong grant.
-            Self::Signed(user) if !needs.granted_to(user.role) => Err(Error::RoleForbids {
-                // A user with no role holds a set no role describes, and
-                // saying so is more use than naming a role they do not have.
-                role: user.role.map_or("authorities", Role::name),
-                needs: match needs {
-                    Needs::Read => "read",
-                    Needs::Write => "write",
-                    Needs::WriteStore => "write",
-                    Needs::Administer | Needs::AdministerStore => "administer",
-                },
-                span,
-            }),
-            // The reach, for the statements that have no subject to check it
-            // against. A tenancy of one's own is exactly what disqualifies:
-            // holding `prod.shop` means the store is not yours to act on.
-            Self::Signed(user)
-                if matches!(needs, Needs::AdministerStore | Needs::WriteStore)
-                    && user.namespace.is_some() =>
-            {
+            // The kind first, so a caller who holds the authority somewhere and
+            // a caller who holds it nowhere are told different things: for the
+            // second the missing piece really is the authority, and telling them
+            // about reach sends them to ask the wrong person.
+            Self::Signed(user) if needs.unheld_by(user).is_some() => {
+                let missing = needs.unheld_by(user).unwrap_or(Kind::Read);
+                Err(Error::RoleForbids {
+                    // A user whose set no role summarises has no role to name,
+                    // and saying so is more use than naming one they do not hold.
+                    role: user.role.map_or("authorities", Role::name),
+                    // The kind, not the class. `a viewer may not manage` sends
+                    // the reader to the authority they need; the old `may not
+                    // write` sent every one of the fifteen container statements
+                    // to ask for a permission that would not have helped.
+                    needs: missing.name(),
+                    span,
+                })
+            }
+            // The reach, for the statements whose subject is the store and which
+            // therefore have no name to check it against. A tenancy of one's own
+            // is exactly what disqualifies: holding `prod.shop` means the store
+            // is not yours to act on.
+            Self::Signed(user) if needs.at() == At::Store && user.namespace.is_some() => {
                 Err(Error::NotTheWholeStore {
                     user: user.name.clone(),
                     span,

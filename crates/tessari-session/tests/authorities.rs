@@ -1,10 +1,14 @@
 //! The four rules the authority model was asked for, each as a script that runs.
 //!
-//! These are acceptance tests for a *vocabulary*, not for enforcement. What they
-//! assert is that each rule can now be **said** and **read back** — that the
-//! store holds the set the statement described and no more. What a held set
-//! causes the store to refuse is decided one wave later, and asserting it here
-//! would be asserting against code that does not exist yet.
+//! The file has two halves and they were written a wave apart. The first
+//! asserts that each rule can be **said** and **read back** — that the store
+//! holds the set the statement described and no more. The second, below the
+//! divider, asserts what a held set causes the store to **refuse**, which is
+//! what makes this a permission system rather than a vocabulary.
+//!
+//! Keeping both matters: a rule that can be said and is not enforced is a
+//! promise the store does not keep, and a rule that is enforced and cannot be
+//! said is one nobody can ask for.
 //!
 //! The rules, in the words they were given in:
 //!
@@ -63,9 +67,10 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
 
 /// What `INFO FOR USER` says a user holds, as `kind@reach` strings.
 ///
-/// Read through the statement rather than out of the catalog on purpose: with
-/// enforcement a wave away, this report is the *only* observable effect a grant
-/// has, so a test that reached past it would pass over a grant nobody could see.
+/// Read through the statement rather than out of the catalog on purpose: a test
+/// that reached past the report would pass over a grant nobody could see, and
+/// the report was the *only* observable effect a grant had for the wave between
+/// the vocabulary landing and the enforcement below it.
 fn held(session: &mut Session<'_>, user: &str) -> Vec<String> {
     let outcomes = session.run(&format!("INFO FOR USER {user};")).unwrap();
     let Some(Outcome::Value(Value::Object(report))) = outcomes.last() else {
@@ -280,4 +285,218 @@ fn a_reach_is_named_by_keyword_so_a_table_can_never_be_read_as_one() {
     // evidence that the word was taken as a keyword rather than rejected for
     // some unrelated reason.
     assert!(refused.to_string().contains("STORE"), "{refused}");
+}
+
+// ---------------------------------------------------------------------------
+// Enforcement
+//
+// Everything above asserts what can be *said*. Everything below asserts what a
+// held set causes the store to *refuse*, which is the half that makes the model
+// a permission system rather than a vocabulary.
+//
+// The three sets that exist only because something is disclosed — `BACKUP`,
+// `CREATE`/`UPDATE`, and the consumer declaration in `consumers.rs` — each get a
+// test holding the lesser authority alone. That is not thoroughness for its own
+// sake: with a set rather than a rank, an arm carrying too *few* kinds is a
+// silent privilege escalation, and `{write}` type-checks exactly like
+// `{read, write}`. The compiler guards against a missing arm; only these guard
+// against a thin one.
+// ---------------------------------------------------------------------------
+
+/// A session signed in and selected onto `prod.shop`.
+fn working<'a>(store: &'a Store, name: &str) -> Session<'a> {
+    let mut session = signed_in(store, name);
+    session
+        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    session
+}
+
+/// The refusal a statement produces, as text.
+fn refused(session: &mut Session<'_>, statement: &str) -> String {
+    match session.run(statement) {
+        Ok(outcome) => panic!("{statement} was permitted: {outcome:?}"),
+        Err(refusal) => refusal.to_string(),
+    }
+}
+
+#[test]
+fn writing_a_namespace_does_not_confer_creating_a_database_in_it() {
+    // **Rule 4, enforced.** The one no ladder could hold, and the assertion the
+    // whole goal exists for: `wilma` reads and writes everything in `prod` and
+    // cannot create or drop a single container there.
+    //
+    // Both directions are asserted, because only the pair is the rule. A test
+    // that showed the refusal alone would pass just as well against a store that
+    // refused her everything.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run(
+            "DEFINE USER wilma ON NAMESPACE prod AUTHORITIES read, write \
+             PASSWORD 'correct horse battery';",
+        )
+        .unwrap();
+
+    let mut wilma = working(&store, "wilma");
+    wilma
+        .run("CREATE orders:1 = { total: 5 };")
+        .expect("wilma writes records in the namespace she holds");
+    wilma
+        .run("SELECT * FROM orders;")
+        .expect("and reads them back");
+
+    for statement in [
+        "DEFINE TABLE extra;",
+        "DROP TABLE orders;",
+        "DEFINE INDEX by_total ON orders FIELDS total;",
+        "DEFINE FIELD total ON orders TYPE int;",
+    ] {
+        let refusal = refused(&mut wilma, statement);
+        assert!(
+            refusal.contains("manage"),
+            "{statement} must name the authority she lacks: {refusal}"
+        );
+    }
+}
+
+#[test]
+fn managing_a_namespace_does_not_confer_reading_a_record_in_it() {
+    // The mirror, and it is the half that proves the independence runs both
+    // ways. Under any ordering one of these two tests has to fail: put `manage`
+    // above `write` and this user can read, put it below and the previous user
+    // can manage.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run(
+            "DEFINE USER nadia ON NAMESPACE prod AUTHORITIES manage \
+             PASSWORD 'correct horse battery';",
+        )
+        .unwrap();
+
+    let mut nadia = working(&store, "nadia");
+    nadia
+        .run("DEFINE TABLE ledgers;")
+        .expect("nadia manages the containers of the namespace she holds");
+
+    let refusal = refused(&mut nadia, "SELECT * FROM orders;");
+    assert!(refusal.contains("read"), "{refusal}");
+    let refusal = refused(&mut nadia, "UPSERT orders:1 = { total: 5 };");
+    assert!(refusal.contains("write"), "{refusal}");
+}
+
+#[test]
+fn an_authority_over_one_database_does_not_answer_for_its_sibling() {
+    // The case the coarse check cannot catch. `kim` holds `manage` *somewhere*,
+    // so asking only "does she hold manage at all" answers yes for every
+    // database in the store — and the containment that makes the answer right
+    // for `shop` makes it wrong for `depot`. This is what the per-container pass
+    // is for, and removing it leaves every other test in this file green.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run(
+            "USE NAMESPACE prod; DEFINE DATABASE depot; \
+             DEFINE USER kim ON NAMESPACE prod AUTHORITIES read \
+             PASSWORD 'correct horse battery'; \
+             GRANT manage ON DATABASE prod.shop TO kim;",
+        )
+        .unwrap();
+
+    let mut kim = working(&store, "kim");
+    kim.run("DEFINE TABLE invoices;")
+        .expect("kim manages the database she was granted");
+
+    kim.run("USE DATABASE depot;").unwrap();
+    let refusal = refused(&mut kim, "DEFINE TABLE invoices;");
+    assert!(
+        refusal.contains("manage"),
+        "a grant on one database must not answer for its sibling: {refusal}"
+    );
+}
+
+#[test]
+fn a_write_only_identity_can_write_and_can_learn_nothing() {
+    // The headline case of the decomposition, and the reason `CREATE` and
+    // `UPDATE` are classified `{read, write}` while `UPSERT` is not: those two
+    // are *defined* by a claim about prior state, so their refusals answer a
+    // question about it. Measured, not reasoned — `CREATE t:1` on an existing
+    // record says *record 1 already exists*, and an oracle over record ids is
+    // exactly what turns a write-only integration credential into an
+    // enumeration tool.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run(
+            "DEFINE USER ingest ON prod.shop AUTHORITIES write \
+             PASSWORD 'correct horse battery';",
+        )
+        .unwrap();
+
+    let mut ingest = working(&store, "ingest");
+    ingest
+        .run("UPSERT orders:1 = { total: 5 };")
+        .expect("the write that claims nothing about prior state");
+    ingest
+        .run("DELETE orders:9;")
+        .expect("and the delete that answers ok for an absent record");
+
+    for statement in [
+        "CREATE orders:2 = { total: 5 };",
+        "UPDATE orders:1 = { total: 6 };",
+    ] {
+        let refusal = refused(&mut ingest, statement);
+        assert!(
+            refusal.contains("read"),
+            "{statement} discloses prior state and must demand the read: {refusal}"
+        );
+    }
+    assert!(refused(&mut ingest, "SELECT * FROM orders;").contains("read"));
+}
+
+#[test]
+fn running_the_cluster_does_not_confer_taking_a_copy_of_it() {
+    // **The single most important row in the matrix.** Under the ladder this was
+    // the store owner's class and that identity held `read` anyway, so the
+    // requirement was invisible — a coincidence, not a rule. Decomposed, an
+    // `operate`-only identity is meant to run the cluster and see no records,
+    // and a backup file is every record there is.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run("DEFINE USER ops AUTHORITIES operate PASSWORD 'correct horse battery';")
+        .unwrap();
+
+    let mut ops = signed_in(&store, "ops");
+    ops.run("INFO FOR NODE;")
+        .expect("ops runs the node, which is what operate is");
+
+    let refusal = refused(&mut ops, "BACKUP;");
+    assert!(
+        refusal.contains("read"),
+        "a backup is a complete disclosure and must demand the read: {refusal}"
+    );
+}
+
+#[test]
+fn governing_does_not_confer_reading_the_records_of_the_place_governed() {
+    // Rule 9, enforced. An administrator declares users in a namespace without
+    // holding a read over a single record in it — which is what separates
+    // `govern` from the top of a ladder that had to contain everything below it.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run(
+            "DEFINE USER gwen ON prod.shop AUTHORITIES govern \
+             PASSWORD 'correct horse battery';",
+        )
+        .unwrap();
+
+    let mut gwen = working(&store, "gwen");
+    gwen.run("DEFINE USER junior ON prod.shop ROLE viewer PASSWORD 'correct horse battery';")
+        .expect("gwen governs the database she holds");
+
+    let refusal = refused(&mut gwen, "SELECT * FROM orders;");
+    assert!(refusal.contains("read"), "{refusal}");
 }

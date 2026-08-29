@@ -330,8 +330,10 @@ fn a_viewer_is_refused_all_three_rather_than_passed_over_by_an_empty_grant_check
     ] {
         let refused = viewer.run(statement).unwrap_err().to_string();
         // Refused for what the statement *needs*, not for a table it failed to
-        // name — which is the difference between a rule and an emptiness.
-        assert!(refused.contains("administer"), "{statement}: {refused}");
+        // name — which is the difference between a rule and an emptiness. The
+        // authority is named rather than a rank, so the reader is sent to
+        // `operate` and not to a role that would not have helped.
+        assert!(refused.contains("operate"), "{statement}: {refused}");
     }
 }
 

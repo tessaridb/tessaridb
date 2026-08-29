@@ -253,12 +253,14 @@ fn the_refusal_says_it_is_about_reach_and_not_about_role() {
     assert!(!refusal.contains("owner"), "{refusal}");
 
     // A viewer asking for the same thing is a different refusal, because for
-    // them the missing thing really is the role.
+    // them the missing thing really is an authority they hold nowhere. It is
+    // `operate` and not `read`: a backup demands both, and the one they are
+    // short of is the one worth naming.
     let mut vic = inside(&store, "vic");
     let refusal = vic.run("BACKUP;").unwrap_err().to_string();
     assert!(
-        refusal.contains("administer"),
-        "a viewer should still be told about the role: {refusal}"
+        refusal.contains("operate"),
+        "a viewer should still be told which authority is missing: {refusal}"
     );
 }
 

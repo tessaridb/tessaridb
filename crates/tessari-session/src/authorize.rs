@@ -1,15 +1,23 @@
 //! Whether a session may do what it is about to.
 //!
-//! Three questions, asked in order and never merged, because they fail for
-//! different reasons and send the reader to different places:
+//! Four questions, asked in order and never merged, because they fail for
+//! different reasons and send the reader to different people:
 //!
-//! 1. **The role** — may this identity use this verb at all? Changed by
-//!    re-declaring the user.
+//! 1. **The authority** — does this identity hold what the statement demands,
+//!    anywhere at all? Changed by a `GRANT … ON` at any reach.
 //! 2. **The tenancy** — is what it names its own? Fixed at the resolution of a
 //!    namespace and a database, which is the one place every path reaching a
 //!    record must pass.
-//! 3. **The grants** — has it been given this table? Changed by one more
+//! 3. **The authority again, at the container reached** — a holding over one
+//!    database must not answer for its sibling, and the first question cannot
+//!    see the difference because holding it *there* is still holding it.
+//! 4. **The grants** — has it been given this table? Changed by one more
 //!    `GRANT`.
+//!
+//! The first used to be *the role*, and a rank could not express the rule this
+//! store was asked for: writing records in a namespace and creating databases
+//! in it are independent in both directions, and in a total order they cannot
+//! be. What replaced it is a set of `(kind, reach)` pairs and a subset test.
 //!
 //! # Not everything that reads records is a statement
 //!
@@ -21,11 +29,11 @@
 //! are asked here rather than a second time somewhere else.
 
 use tessari_ql::StatementKind;
-use tessari_storage::{Catalog, Store, Verb};
+use tessari_storage::{Catalog, Reach, Role, Store, Verb};
 use tessari_types::TableId;
 
 use crate::error::{Error, Result};
-use crate::identity::Needs;
+use crate::identity::{At, Needs};
 use crate::session::Session;
 
 impl<'a> Session<'a> {
@@ -53,7 +61,7 @@ impl<'a> Session<'a> {
         // A span over nothing, because there is no script here to point into —
         // and inventing one would put a caret under a character nobody wrote.
         self.identity
-            .allows_needs(Needs::Read, open, tessari_ql::Span::new(0, 0))
+            .allows_needs(Needs::READ, open, tessari_ql::Span::new(0, 0))
     }
 
     /// Which tables this session may read, when its user is grant-governed.
@@ -133,7 +141,113 @@ impl<'a> Session<'a> {
         transaction.rollback();
         self.identity.allows(kind, open, span)?;
         self.within_tenancy(kind, span)?;
+        self.within_authority(store, kind, span)?;
         self.within_grants(store, kind, span)
+    }
+
+    /// Refuse a container this user holds no authority over.
+    ///
+    /// # Why this is beside the grant check and not inside the tenancy one
+    ///
+    /// [`Session::permits`] runs at every tenancy resolution and does not know
+    /// which statement it is resolving for, so it cannot know which authority
+    /// kinds are demanded — and giving it the statement would push a permission
+    /// decision into the reference resolver, which is statement-agnostic on
+    /// purpose. So the kinds are asked here, walking the same resolved tables
+    /// [`Session::within_grants`] walks, for the same reason.
+    ///
+    /// # The two halves, and why neither is sufficient
+    ///
+    /// `Needs::unheld_by` already refused a caller who holds the demanded kind
+    /// **nowhere**. That is the coarse half: it catches the common case — a
+    /// holder of `write` running `DEFINE TABLE` — and it gives the refusal a
+    /// message before any name is resolved. It cannot catch the other case,
+    /// because holding `manage` over one database is holding it *somewhere*, and
+    /// under the coarse question alone that would answer for a sibling database
+    /// too.
+    ///
+    /// This half closes that, and it is deliberately not vacuous: a statement
+    /// naming no table falls back to the tenancy the session is working in
+    /// rather than to an empty loop. An empty loop reading *every container it
+    /// names is held* passes for reasons that have nothing to do with
+    /// permission, which is the shape this store has already had to refuse
+    /// `BACKUP` by name for.
+    fn within_authority(
+        &self,
+        store: &'a Store,
+        kind: &StatementKind,
+        span: tessari_ql::Span,
+    ) -> Result<()> {
+        let Some(user) = self.identity.user() else {
+            return Ok(());
+        };
+        let needs = Needs::of(kind);
+        if needs.kinds().is_empty() {
+            return Ok(());
+        }
+        for reach in self.reaches(store, kind, needs, span)? {
+            for demanded in needs.kinds() {
+                if !user.authorities.permits(*demanded, reach) {
+                    return Err(Error::RoleForbids {
+                        role: user.role.map_or("authorities", Role::name),
+                        needs: demanded.name(),
+                        span,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The containers a statement's authority is demanded at.
+    ///
+    /// One entry per table it names, resolved to the database that table lives
+    /// in — so a statement naming two tables in two databases is authorized
+    /// twice, and a read reaching across a qualified name is asked about the
+    /// database it reached rather than the one the session selected.
+    ///
+    /// A table that does not resolve contributes nothing: it is refused by
+    /// whatever resolves it, with a message about the table rather than about an
+    /// authority, and answering here first would turn *no such table* into a
+    /// permission refusal that tells the reader less.
+    fn reaches(
+        &self,
+        store: &'a Store,
+        kind: &StatementKind,
+        needs: Needs,
+        span: tessari_ql::Span,
+    ) -> Result<Vec<Reach>> {
+        if needs.at() == At::Store {
+            return Ok(vec![Reach::Store]);
+        }
+        let mut reaches = Vec::new();
+        for table in crate::reach::tables_named(kind) {
+            let mut transaction = store.begin()?;
+            let resolved = self.resolve_table(&mut transaction, table);
+            transaction.rollback();
+            if let Ok((context, _)) = resolved {
+                reaches.push(Reach::Database(context.namespace, context.database));
+            }
+        }
+        if reaches.is_empty() {
+            // The fallback that stops the loop above passing vacuously. A
+            // statement naming no table still acts *somewhere*, and that
+            // somewhere is the tenancy the session selected — which is what
+            // `DEFINE TABLE`, `DROP DATABASE` and `INFO FOR DATABASE` are all
+            // asking about.
+            //
+            // A session that has selected nothing yet contributes no container,
+            // and that is correct rather than a hole: it has resolved no name,
+            // so there is nothing for an authority to be held over, and every
+            // statement that goes on to name one is asked again at the naming.
+            let mut transaction = store.begin()?;
+            let selected = self.context(&mut transaction, None, span).ok();
+            transaction.rollback();
+            if let Some(context) = selected {
+                reaches.push(Reach::Database(context.namespace, context.database));
+            }
+        }
+        Ok(reaches)
     }
 
     /// Refuse a table this user's grants do not name.
@@ -190,19 +304,15 @@ impl<'a> Session<'a> {
             });
         }
 
-        let needs = Needs::of(kind);
-        let verb = match needs {
-            Needs::Read => Verb::Read,
-            // Administering is a store-level act with no table to grant it on,
-            // and `allows` above has already decided it. Reaching a table while
-            // doing one still needs the write.
-            // A store-wide act reaching a table still needs the write. The
-            // statements themselves are refused above by name — a granted user
-            // cannot back up or declare — so this arm is about the reach rather
-            // than about them.
-            Needs::Write | Needs::Administer | Needs::AdministerStore | Needs::WriteStore => {
-                Verb::Write
-            }
+        // A grant is a verb on a table and there are two verbs, so the kinds
+        // collapse here: a demand answered by reading alone asks for the read,
+        // and everything else asks for the write. The statements with no table
+        // to grant on are refused above by name — a granted user cannot back up
+        // or declare — so this mapping is about the reach rather than about them.
+        let verb = if Needs::of(kind).only_reads() {
+            Verb::Read
+        } else {
+            Verb::Write
         };
         for table in crate::reach::tables_named(kind) {
             let mut transaction = store.begin()?;
@@ -298,26 +408,48 @@ impl<'a> Session<'a> {
         Ok(())
     }
 
-    /// Whether this name is one of the user's own tenancy names.
+    /// Whether this name is one the user's own reach covers.
+    ///
+    /// # A namespace contains its databases, and this used to forget that
+    ///
+    /// The first two cases are the user's own namespace and their own database,
+    /// and they were the whole check while a user's reach was always a namespace
+    /// *and* a database — a namespace-scoped user was not a thing that could be
+    /// declared. Now one can be, and without the third case they could select
+    /// their own namespace and then no database inside it, which makes the
+    /// authority the model exists to express unusable by the person holding it.
+    ///
+    /// The third case asks the reach rather than comparing another name: any
+    /// database that resolves inside the namespace the user holds is theirs,
+    /// because holding a namespace is holding what it contains. It fires only
+    /// when the user has no database of their own, so a database-scoped user is
+    /// still confined to exactly one.
     fn names_own_tenancy(&self, user: &tessari_storage::UserDefinition, named: &str) -> bool {
         let Ok(mut transaction) = self.store.begin() else {
             return false;
         };
         let catalog = Catalog::new(&mut transaction);
-        let matches = user.namespace.is_some_and(|id| {
+        let named_namespace = user.namespace.is_some_and(|id| {
             catalog
                 .namespace(id)
                 .ok()
                 .flatten()
                 .is_some_and(|found| found.name == named)
-        }) || user.database.is_some_and(|id| {
+        });
+        let named_database = user.database.is_some_and(|id| {
             catalog
                 .database(id)
                 .ok()
                 .flatten()
                 .is_some_and(|found| found.name == named)
         });
+        let inside_own_namespace = user.database.is_none()
+            && user.namespace.is_some_and(|id| {
+                catalog
+                    .database_id(id, named)
+                    .is_ok_and(|found| found.is_some())
+            });
         transaction.rollback();
-        matches
+        named_namespace || named_database || inside_own_namespace
     }
 }

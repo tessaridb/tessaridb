@@ -172,16 +172,16 @@ fn a_database_owner_may_administer_their_own_people() {
 #[test]
 fn an_editor_may_not_alter_anybody_including_themselves() {
     // Changing your own password without an owner is a reasonable thing for a
-    // database to offer and this one does not offer it yet: `ALTER USER` needs
-    // `Administer`, and that applies to the caller's own row too.
+    // database to offer and this one does not offer it yet: `ALTER USER`
+    // demands `govern`, and that applies to the caller's own row too.
     let store = store();
     peopled(&store);
 
     let mut ada = signed_in(&store, "ada");
     let refused = ada
         .run("ALTER USER ada SET PASSWORD 'a different horse entirely';")
-        .expect_err("an editor may not administer");
-    assert!(refused.to_string().contains("administer"), "{refused}");
+        .expect_err("an editor may not govern");
+    assert!(refused.to_string().contains("govern"), "{refused}");
     assert!(signs_in(&store, "ada", PASSWORD), "ada is unchanged");
 }
 
@@ -290,8 +290,8 @@ fn an_editor_may_not_drop_anybody() {
     let mut ada = signed_in(&store, "ada");
     let refused = ada
         .run("DROP USER vic;")
-        .expect_err("an editor may not administer");
-    assert!(refused.to_string().contains("administer"), "{refused}");
+        .expect_err("an editor may not govern");
+    assert!(refused.to_string().contains("govern"), "{refused}");
     assert!(signs_in(&store, "vic", PASSWORD), "vic is still there");
 }
 
