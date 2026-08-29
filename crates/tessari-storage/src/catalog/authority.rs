@@ -247,6 +247,34 @@ impl Held {
         self.0.iter().any(|held| held.reach.contains(reach))
     }
 
+    /// Whether this container is on the path between the store and something
+    /// held — at it, above it, or inside it.
+    ///
+    /// # Why `USE` needs both directions and [`Self::anything_at`] does not
+    ///
+    /// Containment runs downward: a namespace contains its databases and a
+    /// database contains nothing above it. That is right for a *demand*, which
+    /// must be answered **at** the container the statement reaches.
+    ///
+    /// Selecting is not a demand. A user scoped to `prod.shop` has to say
+    /// `USE NAMESPACE prod` before they can say `USE DATABASE shop`, so the
+    /// namespace is a step on the way to the only thing they hold — and asking
+    /// downward containment alone refuses them their own database. Measured, not
+    /// predicted: every database-scoped user in the suite was locked out of the
+    /// store by exactly that.
+    ///
+    /// The upward direction is not a widening of authority. It permits *naming*
+    /// a container, and every statement that then acts inside it is asked the
+    /// ordinary question at the ordinary reach. What it rules out is the case it
+    /// exists for: naming a container the caller has no business in at all, and
+    /// learning from the refusal whether it is there.
+    #[must_use]
+    pub fn touches(&self, reach: Reach) -> bool {
+        self.0
+            .iter()
+            .any(|held| held.reach.contains(reach) || reach.contains(held.reach))
+    }
+
     /// What is held, in a stable order.
     pub fn iter(&self) -> impl Iterator<Item = Authority> + '_ {
         self.0.iter().copied()
@@ -475,6 +503,30 @@ mod tests {
         assert!(held.permits(Kind::Manage, Reach::Database(PROD, LIBRARY)));
         assert!(!held.permits(Kind::Manage, Reach::Namespace(OTHER)));
         assert!(!held.permits(Kind::Manage, Reach::Database(OTHER, LIBRARY)));
+    }
+
+    #[test]
+    fn selecting_a_container_looks_both_up_and_down_while_a_demand_looks_only_down() {
+        // The asymmetry that matters, and getting it backwards locks a
+        // database-scoped user out of the namespace their database is in.
+        let held = Held::of([Authority::new(Kind::Read, Reach::Database(PROD, LIBRARY))]);
+
+        // A demand is answered at the container reached, and a database reach
+        // contains nothing above it.
+        assert!(!held.permits(Kind::Read, Reach::Namespace(PROD)));
+        assert!(!held.anything_at(Reach::Namespace(PROD)));
+
+        // Selecting looks both ways: `prod` is a step on the way to `prod.shop`.
+        assert!(held.touches(Reach::Namespace(PROD)));
+        assert!(held.touches(Reach::Database(PROD, LIBRARY)));
+        assert!(held.touches(Reach::Store));
+
+        // And it still refuses a container this holder has no business in, in
+        // either direction — which is the oracle it exists to close.
+        assert!(!held.touches(Reach::Namespace(OTHER)));
+        assert!(!held.touches(Reach::Database(PROD, ARCHIVE)));
+        assert!(!held.touches(Reach::Database(OTHER, LIBRARY)));
+        assert!(!Held::nothing().touches(Reach::Store));
     }
 
     #[test]

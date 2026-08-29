@@ -383,16 +383,16 @@ impl<'a> Session<'a> {
         let Some(user) = self.identity.user() else {
             return Ok(());
         };
-        let Some(_) = user.namespace else {
+        let StatementKind::Use {
+            namespace,
+            database,
+        } = kind
+        else {
             return Ok(());
         };
         // A scoped user may only work inside the namespace and database it was
         // declared in, and `USE` is where a session says which those are.
-        if let StatementKind::Use {
-            namespace,
-            database,
-        } = kind
-        {
+        if user.namespace.is_some() {
             for named in [namespace.as_ref(), database.as_ref()]
                 .into_iter()
                 .flatten()
@@ -405,7 +405,71 @@ impl<'a> Session<'a> {
                 }
             }
         }
-        Ok(())
+        self.holds_something_named(user, namespace.as_ref(), database.as_ref(), span)
+    }
+
+    /// Refuse a `USE` naming a container this user holds nothing at.
+    ///
+    /// # Selecting is not reading, and it is not nothing either
+    ///
+    /// `USE` demands **something at the container** rather than `read` on it,
+    /// which is the weakest predicate that still closes an oracle. Demanding
+    /// `read` would stop a `govern`-only administrator selecting the namespace
+    /// they administer, and demanding a read at all would stop a `write`-only
+    /// ingestion identity selecting its own database — the model's headline case.
+    /// Demanding nothing leaves a signed-in caller able to name any namespace in
+    /// the store and learn from the refusal whether it exists.
+    ///
+    /// The check applies to **every** signed-in caller and not only a
+    /// tenancy-scoped one. The scoped ones were already held by the name check
+    /// above; the hole was a store-reach caller holding one namespace, who was
+    /// bounded by nothing at all.
+    ///
+    /// # A container that is absent and one that is out of reach refuse alike
+    ///
+    /// Deliberately, and it is the whole point: telling them apart is the oracle
+    /// this closes, so a refusal that said *no such namespace* for one and
+    /// *not yours* for the other would leave it open with extra steps. The cost
+    /// is that a typo now reads as a permission refusal, which is the same trade
+    /// [`Error::OutsideTenancy`] already makes for a table.
+    fn holds_something_named(
+        &self,
+        user: &tessari_storage::UserDefinition,
+        namespace: Option<&tessari_ql::Name>,
+        database: Option<&tessari_ql::Name>,
+        span: tessari_ql::Span,
+    ) -> Result<()> {
+        let selected = self.namespace().map(ToOwned::to_owned);
+        let Some(within) = namespace.map(|named| named.text.clone()).or(selected) else {
+            // `USE DATABASE` with no namespace selected names no container at
+            // all, and fails on its own terms in the statement after it. There
+            // is nothing here to hold an authority over.
+            return Ok(());
+        };
+        let mut transaction = self.store.begin()?;
+        let catalog = Catalog::new(&mut transaction);
+        let found = catalog.namespace_id(&within).ok().flatten();
+        let reach = match (found, database) {
+            (None, _) => None,
+            (Some(id), None) => Some(tessari_storage::Reach::Namespace(id)),
+            (Some(id), Some(named)) => catalog
+                .database_id(id, &named.text)
+                .ok()
+                .flatten()
+                .map(|inner| tessari_storage::Reach::Database(id, inner)),
+        };
+        transaction.rollback();
+        if reach.is_some_and(|reach| user.authorities.touches(reach)) {
+            return Ok(());
+        }
+        Err(Error::OutsideTenancy {
+            // The deepest name written, because that is the one the author is
+            // looking at.
+            name: database
+                .or(namespace)
+                .map_or(within, |named| named.text.clone()),
+            span,
+        })
     }
 
     /// Whether this name is one the user's own reach covers.

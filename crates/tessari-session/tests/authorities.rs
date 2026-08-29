@@ -606,3 +606,69 @@ fn a_namespace_authority_can_now_hand_out_authority_inside_it() {
         "the grant did not land"
     );
 }
+
+#[test]
+fn selecting_a_container_you_have_no_business_in_says_nothing_about_whether_it_exists() {
+    // `USE` demanded nothing at all, which was right for an ingestion identity
+    // holding `write` alone — it must be able to select its own database, and
+    // demanding a read it does not hold would make the model's headline case
+    // unusable. It was also an oracle: a caller with no tenancy of their own,
+    // holding one namespace, could name every other namespace in the store and
+    // read existence off the refusal.
+    //
+    // What closes it is the weakest predicate that does: hold *something* on the
+    // path to the container named. Not `read`, which would stop a govern-only
+    // administrator selecting the namespace they administer.
+    let store = store();
+    governed(&store);
+    let mut root = signed_in(&store, "root");
+    root.run(
+        "DEFINE USER kip AUTHORITIES read PASSWORD 'correct horse battery'; \
+         REVOKE read ON STORE FROM kip; \
+         GRANT read ON NAMESPACE prod TO kip;",
+    )
+    .unwrap();
+
+    let mut kip = signed_in(&store, "kip");
+    kip.run("USE NAMESPACE prod;")
+        .expect("the namespace kip was granted");
+
+    // The two refusals that must be indistinguishable. Telling them apart is
+    // the oracle, so a message naming `staging` as real and `nowhere` as absent
+    // would leave it open with extra steps.
+    let present = refused(&mut kip, "USE NAMESPACE staging;");
+    let absent = refused(&mut kip, "USE NAMESPACE nowhere;");
+    assert!(present.contains("staging"), "{present}");
+    assert!(absent.contains("nowhere"), "{absent}");
+    assert_eq!(
+        present.replace("staging", "X"),
+        absent.replace("nowhere", "X"),
+        "a namespace that exists and one that does not must refuse alike"
+    );
+}
+
+#[test]
+fn a_database_scoped_user_can_still_select_the_namespace_above_their_own() {
+    // The direction that is easy to get backwards, and it locked every
+    // database-scoped user out of the store when it was. Containment runs
+    // downward, so a holding at `prod.shop` does not contain `prod` — but
+    // `USE NAMESPACE prod` is a *step on the way* to the only thing this user
+    // holds, not a claim on the namespace.
+    //
+    // It widens nothing: naming a container is all it permits, and every
+    // statement that then acts inside one is asked the ordinary question at the
+    // ordinary reach.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run(
+            "DEFINE USER dana ON prod.shop AUTHORITIES read \
+             PASSWORD 'correct horse battery';",
+        )
+        .unwrap();
+
+    let mut dana = signed_in(&store, "dana");
+    dana.run("USE NAMESPACE prod; USE DATABASE shop;")
+        .expect("a database-scoped user reaches their own database through its namespace");
+    dana.run("SELECT * FROM orders;").expect("and reads it");
+}
