@@ -405,7 +405,40 @@ DROP NAMESPACE acme;
 
 ALTER TABLE notes SET SCHEMAFULL;
 ALTER TABLE notes SET SCHEMALESS;
+
+ALTER USER grace SET ROLE editor;
+ALTER USER grace SET PASSWORD 'a longer one';
+
+DEFINE CONSUMER orders_in
+    FROM 'broker-1:9092', 'broker-2:9092'
+    TOPIC 'orders'
+    GROUP 'shop-orders'
+    FORMAT json
+    INTO orders
+    IDENTITY order_id
+    MAP amount AS total, placed.at AS placed_at
+    ON FAILURE quarantine
+    PARALLELISM 2;
+
+DROP CONSUMER orders_in;
 ```
+
+**`ALTER USER` is how a user changes after it exists**, and it changes one thing
+per statement: `SET ROLE` moves what the user may do, `SET PASSWORD` replaces the
+credential. Two statements rather than one with two optional halves, because a
+statement that changed only what it named would make *leave the role alone* and
+*reset the role* the same sentence — the reason `ALTER FIELD` replaces a
+declaration whole is the reason this one does not.
+
+**A consumer is ingestion the catalog holds rather than a script somebody
+remembered to start.** One `DEFINE CONSUMER` says what to read (`FROM` brokers,
+`TOPIC`), under which group, in what `FORMAT`, where it lands (`INTO`), which
+field is the record's `IDENTITY`, how incoming fields `MAP` onto stored ones,
+what happens `ON FAILURE`, and how many workers run it. The destination is
+resolved **when the declaration is made**, so there is no window in which a
+consumer is consuming into a table that does not exist. `DROP CONSUMER` stops it
+and removes the declaration; the records it already wrote stay, because they are
+records like any others.
 
 **A store with no users is open**, and declaring the first one closes it —
 requiring a signin against an empty store locks everybody out of it with no way
@@ -811,18 +844,71 @@ A table is schemaless until something is declared on it, and stays schemaless
 about everything nobody declared. `DEFINE FIELD` names one field and what it may
 hold:
 
-| Written | Meaning |
-|---|---|
-| `TYPE string` | a present, non-null value in that field must be text |
-| `TYPE int` / `float` / `decimal` | one numeric form, kept apart |
-| `TYPE number` | any of the three |
-| `TYPE any` | anything — a declaration that constrains nothing, so that a field can be *declared* without being narrowed |
+Every one of the fifteen literal types of §3 is a spelling, plus `any`,
+`number`, and a union of string literals. **This is the whole set — there are no
+others**, and the list is held to that by a test that reads this document and
+fails when the engine grows a kind the prose does not name:
 
-Every one of the fifteen literal types of §3 is a spelling, plus `any` and
-`number`. Five of them — `table`, `set`, `range`, `datetime`, `uuid` — are
-reserved words elsewhere, and are read as type names here for the same reason a
-field name inside an object literal may be reserved: after `TYPE`, nothing but a
-type name can appear.
+| Written | A present, non-null value in the field must be |
+|---|---|
+| `TYPE any` | anything — a declaration that constrains nothing, so a field can be *declared*, and so appear in a `SCHEMAFULL` table, without being narrowed |
+| `TYPE bool` | `true` or `false` |
+| `TYPE number` | any of the three numeric forms |
+| `TYPE int` | a signed integer |
+| `TYPE float` | a binary floating-point number |
+| `TYPE decimal` | an exact decimal — the kind money is kept in |
+| `TYPE string` | text |
+| `TYPE bytes` | opaque bytes |
+| `TYPE duration` | a span of time, `1h30m` |
+| `TYPE datetime` | a point in time |
+| `TYPE uuid` | a universally unique identifier |
+| `TYPE table` | a reference to a table |
+| `TYPE record` | a reference to one record, `users:ada` |
+| `TYPE array` | an ordered sequence |
+| `TYPE object` | a map from field name to value |
+| `TYPE range` | a span between two values |
+| `TYPE set` | a collection with no duplicates |
+| `TYPE geometry` | a shape on the sphere |
+| `TYPE regex` | a pattern, held rather than executed |
+| `TYPE 'draft' \| 'published'` | one of a fixed set of strings, and nothing else |
+
+Written out, so that each of them is shown being declared rather than only
+listed:
+
+```
+DEFINE FIELD anything ON samples TYPE any;
+DEFINE FIELD active ON samples TYPE bool;
+DEFINE FIELD quantity ON samples TYPE number;
+DEFINE FIELD attempts ON samples TYPE int;
+DEFINE FIELD ratio ON samples TYPE float;
+DEFINE FIELD balance ON samples TYPE decimal;
+DEFINE FIELD title ON samples TYPE string;
+DEFINE FIELD blob ON samples TYPE bytes;
+DEFINE FIELD took ON samples TYPE duration;
+DEFINE FIELD at ON samples TYPE datetime;
+DEFINE FIELD trace ON samples TYPE uuid;
+DEFINE FIELD source ON samples TYPE table;
+DEFINE FIELD author ON samples TYPE record;
+DEFINE FIELD tags ON samples TYPE array;
+DEFINE FIELD meta ON samples TYPE object;
+DEFINE FIELD window ON samples TYPE range;
+DEFINE FIELD labels ON samples TYPE set;
+DEFINE FIELD where_at ON samples TYPE geometry;
+DEFINE FIELD pattern ON samples TYPE regex;
+DEFINE FIELD status ON samples TYPE 'draft' | 'published';
+```
+
+Five of the names — `table`, `set`, `range`, `datetime`, `uuid` — are reserved
+words elsewhere, and are read as type names here for the same reason a field name
+inside an object literal may be reserved: after `TYPE`, nothing but a type name
+can appear.
+
+**A union of string literals is the one kind that is not a type of the value
+system but a subset of one.** `TYPE string` is true of a status column and says
+nothing; an `ASSERT` says it but says it where a reader of the schema does not
+look. The members are held sorted and deduplicated, because a declared type is a
+set and a set that remembers the order somebody typed it in is two values for one
+fact.
 
 **Two values satisfy every declaration**, and both are deliberate:
 
@@ -2259,6 +2345,20 @@ SELECT array::last(tags) AS newest FROM users;
 SELECT * FROM users WHERE string::len(name) = 3;
 ```
 
+Every group, shown being called rather than only named — the table below says
+what each one is for, and these say what one looks like:
+
+```
+SELECT string::lower(name) AS folded FROM users;
+SELECT string::trim(name) AS tidy FROM users;
+SELECT string::concat(name, '!') AS shouted FROM users;
+SELECT math::abs(balance) AS size FROM accounts;
+SELECT math::floor(ratio) AS down, math::ceil(ratio) AS up FROM samples;
+SELECT type::of(name) AS what FROM users;
+SELECT vector::euclidean(embedding, $probe) AS apart FROM documents;
+SELECT vector::dot(embedding, $probe) AS aligned FROM documents;
+```
+
 | Group | Functions |
 |---|---|
 | `string` | `len` (characters, not bytes) · `lower` · `upper` · `trim` · `concat(a, b)` · `split(text, separator)` · `slice(text, start, count)` · `replace(text, from, to)` — the [collections](#collections) |
@@ -3089,7 +3189,15 @@ BEGIN;
 COMMIT;
 ```
 
-`CANCEL` discards. A statement outside `BEGIN` is its own transaction.
+`CANCEL` discards what the transaction has done so far:
+
+```
+BEGIN;
+  CREATE users:2 = { name: 'grace' };
+CANCEL;
+```
+
+A statement outside `BEGIN` is its own transaction.
 
 A script that opens a transaction and never closes it **discards the work and
 raises an error**. Committing it would commit work the author never said was
