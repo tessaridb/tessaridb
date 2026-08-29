@@ -269,6 +269,37 @@ fn the_specification_calls_no_function_the_engine_does_not_have() {
 }
 
 #[test]
+fn the_units_the_documentation_must_cover_can_be_printed() {
+    // The documentation site is a separate repository and deliberately depends
+    // on this one by no mechanism — it reaches the database over the wire like
+    // any other caller. So it cannot import these sets, and its own ratchet
+    // reads a checked-in manifest instead. This test prints that manifest:
+    //
+    //     cargo test -p tessari-conformance --test documented \
+    //         the_units_the_documentation_must_cover_can_be_printed -- --nocapture
+    //
+    // Regenerating it by hand is the failure this whole file exists to stop, so
+    // the manifest is produced here and copied, never typed.
+    let mut lines = vec![
+        "# Generated. Do not edit by hand.".to_owned(),
+        "# Produced by tessari-conformance's `documented` suite from FieldKind,".to_owned(),
+        "# Function::ALL and FORMS. Regenerate when that suite tells you to.".to_owned(),
+    ];
+    for (heading, units) in [
+        ("kind", declarable_kinds()),
+        ("function", function_spellings()),
+        ("form", statement_forms()),
+    ] {
+        for unit in units {
+            let excused = if excused(&unit) { "\texcused" } else { "" };
+            lines.push(format!("{heading}\t{unit}{excused}"));
+        }
+    }
+    println!("{}", lines.join("\n"));
+    assert!(lines.len() > 100, "the manifest is suspiciously short");
+}
+
+#[test]
 fn the_allow_list_gives_a_reason_for_every_entry() {
     for (unit, reason) in UNDOCUMENTED {
         assert!(
