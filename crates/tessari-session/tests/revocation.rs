@@ -161,6 +161,36 @@ fn a_session_does_not_re_authorize_against_its_own_uncommitted_change() {
 }
 
 #[test]
+fn the_statement_bound_is_one_statement_and_it_is_measured_rather_than_asserted() {
+    let store = store();
+    peopled(&store);
+
+    let mut ada = signed_in(&store, "ada");
+    ada.run("CREATE orders:1 = { total: 5 };").unwrap();
+
+    let mut root = signed_in(&store, "root");
+    let taken = std::time::Instant::now();
+    root.run("ALTER USER ada SET ROLE viewer;").unwrap();
+    ada.run("CREATE orders:2 = { total: 5 };")
+        .expect_err("the demotion did not bind");
+    let bound = taken.elapsed();
+
+    // Printed rather than only asserted: the number is what goes in the
+    // readiness checklist, and a bound nobody measured is not a bound. Run with
+    // `--nocapture` to read it.
+    println!("revocation → first refusal on an open session: {bound:?}");
+
+    // The ceiling is deliberately far above anything this path can cost — one
+    // point read and one refusal. It is here to catch the bound becoming
+    // *unbounded* again, which is the defect this file exists for, and not to
+    // measure the machine it runs on.
+    assert!(
+        bound < std::time::Duration::from_secs(1),
+        "one statement took {bound:?}"
+    );
+}
+
+#[test]
 fn dropping_the_last_user_leaves_an_open_store_rather_than_a_locked_one() {
     let store = store();
     let mut session = Session::new(&store);

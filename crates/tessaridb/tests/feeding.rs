@@ -27,7 +27,7 @@ const PASSWORD: &str = "correct horse battery";
 /// A bound rather than a wait: if the revocation never reaches the loop this
 /// ends the test with a failed assertion instead of hanging a suite forever.
 /// Rounds are only slow when nothing is happening, and something is.
-const PATIENCE: u32 = 20;
+const ROUNDS_ALLOWED: u32 = 20;
 
 #[test]
 fn revoking_the_read_ends_a_subscription_that_is_already_running() {
@@ -56,6 +56,7 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
 
     let rounds = Cell::new(0_u32);
     let delivered = Cell::new(0_u32);
+    let taken = Cell::new(None);
     let committed = Commits::default();
     let following = Following {
         from: Sequence::new(0),
@@ -69,7 +70,7 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
         &committed,
         &|| {
             rounds.set(rounds.get().saturating_add(1));
-            rounds.get() > PATIENCE
+            rounds.get() > ROUNDS_ALLOWED
         },
         &mut |_change, _name, _allowed| {
             // The revocation happens *inside* the feed, on the first change it
@@ -81,6 +82,7 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
                 taking
                     .run("USE NAMESPACE prod; USE DATABASE shop; REVOKE read ON NAMESPACE prod FROM kim;")
                     .unwrap();
+                taken.set(Some(std::time::Instant::now()));
             }
             delivered.set(delivered.get().saturating_add(1));
             true
@@ -91,7 +93,22 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
     let refusal = outcome.expect_err("the revocation did not reach the running feed");
     assert!(refusal.contains("read"), "{refusal}");
     assert!(
-        rounds.get() <= PATIENCE,
+        rounds.get() <= ROUNDS_ALLOWED,
         "the feed ended because the test gave up, not because the read was revoked"
+    );
+
+    // The published bound for this point. It is one poll round, and a round is
+    // at most the quarter of a second the feed blocks for when nothing is
+    // happening — this measures the busy case, where the loop comes round at
+    // once. Printed rather than only asserted: the number is what goes in the
+    // readiness checklist.
+    let bound = taken
+        .get()
+        .expect("the revocation was never taken")
+        .elapsed();
+    println!("revocation → running feed ended: {bound:?}");
+    assert!(
+        bound < std::time::Duration::from_secs(5),
+        "one poll round took {bound:?}"
     );
 }
