@@ -10,6 +10,7 @@
 
 use tessari_ql::{Parameters, Statement, StatementKind, parse};
 use tessari_storage::{Catalog, Store, Transaction};
+use tessari_types::Sequence;
 
 use crate::effect::{Effect, admits};
 use crate::error::{Error, Result};
@@ -382,9 +383,27 @@ impl<'a> Session<'a> {
                 transaction.rollback();
                 Ok(Outcome::Done)
             }
-            other => match open.as_mut() {
-                Some((transaction, _)) => self.execute(transaction, other, span),
-                None => {
+            other => match (read_version(other), open.as_mut()) {
+                // A transaction is one point in the store's history — that is
+                // what a snapshot is — so a statement inside one cannot ask for
+                // a different one. Refused rather than silently answered at the
+                // transaction's own snapshot, which would make the clause read
+                // as though it had been honoured.
+                (Some(version), Some(_)) => {
+                    Err(Error::VersionInsideTransaction { span: version.span })
+                }
+                (Some(version), None) => {
+                    let mut transaction = store.begin_at(Sequence::new(version.at))?;
+                    let outcome = self.execute(&mut transaction, other, span)?;
+                    // Rolled back, not committed. A read of the past has nothing
+                    // to commit, and a transaction holding an old snapshot is
+                    // exactly what a commit would have to reconcile against the
+                    // present.
+                    transaction.rollback();
+                    Ok(outcome)
+                }
+                (None, Some((transaction, _))) => self.execute(transaction, other, span),
+                (None, None) => {
                     let mut transaction = store.begin()?;
                     let outcome = self.execute(&mut transaction, other, span)?;
                     transaction.commit()?;
@@ -392,5 +411,18 @@ impl<'a> Session<'a> {
                 }
             },
         }
+    }
+}
+
+/// The version clause a statement carries, if it carries one.
+///
+/// Only a read can: `VERSION` names which state answers the question, and every
+/// other statement changes state rather than asking about it. A free function so
+/// that the one place deciding which snapshot to open is also the one place that
+/// knows which statements may ask for a snapshot at all.
+const fn read_version(kind: &StatementKind) -> Option<tessari_ql::Version> {
+    match kind {
+        StatementKind::Select(select) => select.version,
+        _ => None,
     }
 }

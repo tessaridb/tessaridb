@@ -173,6 +173,47 @@ impl Store {
         Ok(Transaction::new(self, self.committed_tail()?))
     }
 
+    /// Begin a transaction reading the store as it stood at `at`.
+    ///
+    /// Records are versioned by a suffix on their own key, so reading the past
+    /// is the read this store already performs with a different sequence — not
+    /// a second mechanism. What has to be added is the honesty about when it
+    /// cannot be done.
+    ///
+    /// Two refusals, and they are refusals rather than best-effort answers
+    /// because both alternatives are a plausible wrong number that nothing
+    /// reports:
+    ///
+    /// - **Below the reclaim floor.** Reclamation removed the versions that
+    ///   would have answered, so the read would resolve to something older, or
+    ///   to nothing, and call that the past.
+    /// - **Above the committed tail.** There is no state there yet. Answering
+    ///   with the present would make a read of the future silently succeed and
+    ///   then change its answer the next time it is asked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::VersionReclaimed`] when `at` is below the reclaim floor,
+    /// [`Error::VersionInTheFuture`] when it is above the committed tail, or a
+    /// backend error when either bound cannot be read.
+    pub fn begin_at(&self, at: Sequence) -> Result<Transaction<'_>> {
+        let floor = self.reclaim_floor()?;
+        if at < floor {
+            return Err(Error::VersionReclaimed {
+                asked: at.get(),
+                floor: floor.get(),
+            });
+        }
+        let tail = self.committed_tail()?;
+        if at > tail {
+            return Err(Error::VersionInTheFuture {
+                asked: at.get(),
+                tail: tail.get(),
+            });
+        }
+        Ok(Transaction::new(self, at))
+    }
+
     /// The oldest sequence any live reader can still need.
     ///
     /// Versions strictly older than the newest version at or below this may be

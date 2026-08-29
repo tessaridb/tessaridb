@@ -1428,6 +1428,10 @@ impl Parser<'_> {
         // about: what to read, how much of it, what it should have done, and how
         // long it may take doing it.
         let timeout = self.timeout()?;
+        // Last of all. It qualifies the whole read the way `USING` and `TIMEOUT`
+        // do, and a reader who has taken in the question is then told which
+        // state answered it.
+        let version = self.version()?;
         super::shape::check_grouping(&projection, &group)?;
         super::shape::check_fold_positions(&from, &group, &order)?;
         super::shape::check_cursor(
@@ -1490,6 +1494,7 @@ impl Parser<'_> {
             limit,
             using,
             timeout,
+            version,
             span: start.to(self.span_behind()),
         })
     }

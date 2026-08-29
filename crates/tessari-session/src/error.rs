@@ -377,6 +377,25 @@ pub enum Error {
         span: Span,
     },
 
+    /// `VERSION` inside an open transaction.
+    ///
+    /// A transaction *is* a point in the store's history — one snapshot, held
+    /// for as long as it runs, which is what makes its reads agree with each
+    /// other. A statement inside it asking for a different point is asking for
+    /// something a transaction cannot be.
+    ///
+    /// Refused rather than answered at the transaction's own snapshot, which
+    /// would run the statement, return rows, and leave the clause reading as
+    /// though it had been honoured.
+    #[error(
+        "`VERSION` cannot be used inside a transaction — a transaction already \
+         reads at one point in history (at {span})"
+    )]
+    VersionInsideTransaction {
+        /// Where the clause is.
+        span: Span,
+    },
+
     /// A script that opened a transaction and never closed it.
     ///
     /// The work is discarded and this is raised, rather than committed: a script
@@ -420,6 +439,30 @@ pub enum Error {
         /// The table as written.
         table: String,
         /// Where it was written.
+        span: Span,
+    },
+
+    /// A graph traversal was asked for inside a read of the past.
+    ///
+    /// Edges are followed through the edge table's direction indexes, and an
+    /// index entry carries no version: it describes the committed tail. Every
+    /// other index-served read answers this by falling back to a scan, but a
+    /// traversal has nothing to fall back to — the indexes are the mechanism,
+    /// not a shortcut past it.
+    ///
+    /// So the choice is a refusal or a set of records reached through today's
+    /// edges and read at yesterday's snapshot. The second is a wrong answer with
+    /// nothing to distinguish it from a right one, in the query shape whose
+    /// working nobody can see.
+    #[error(
+        "a graph traversal cannot be read at an earlier version: edges{} are \
+         indexed at the present (at {span})",
+        if table.is_empty() { String::new() } else { format!(" in {table}") }
+    )]
+    NoHistoricalTraversal {
+        /// The first edge table in the traversal, when one was named.
+        table: String,
+        /// Where the traversal was written.
         span: Span,
     },
 

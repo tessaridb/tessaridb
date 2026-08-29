@@ -45,8 +45,8 @@ pub use index_keys::{
     VectorNodeKey,
 };
 pub use keys::{
-    AppliedPositionKey, FormatVersionKey, LogKey, NodeIdentityKey, RecordKey, StoreKey,
-    TABLE_PREFIX_LEN,
+    AppliedPositionKey, FormatVersionKey, LogKey, NodeIdentityKey, ReclaimFloorKey, RecordKey,
+    StoreKey, TABLE_PREFIX_LEN,
 };
 pub use kind::KeyKind;
 pub use node::{BUILD_VERSION, Membership, NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};

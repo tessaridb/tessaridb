@@ -1008,7 +1008,32 @@ pub struct Select {
     ///
     /// `None` is the ordinary case: a read takes as long as it takes.
     pub timeout: Option<Timeout>,
+    /// The point in the store's history the read answers from.
+    ///
+    /// `None` is the ordinary case: the read answers from the committed tail.
+    pub version: Option<Version>,
     /// Where the statement sits in the source.
+    pub span: Span,
+}
+
+/// A point in the store's history a read answers from.
+///
+/// # Why this is a sequence and not a timestamp
+///
+/// Records are versioned by a suffix on their own key, and that suffix is the
+/// log sequence the version was written at. The sequence is the store's only
+/// ordering authority: no log record carries a wall clock, and two commits
+/// within the same millisecond are ordered by sequence and by nothing else.
+///
+/// So a timestamp could not name a point *between* those two commits — it would
+/// be a spelling that looks more precise than the thing it addresses. The clause
+/// names the number the store actually orders by, which is the same number an
+/// answer reports and a caller can hand straight back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Version {
+    /// The sequence to read at.
+    pub at: u64,
+    /// Where the clause sits, for a refusal to point at.
     pub span: Span,
 }
 

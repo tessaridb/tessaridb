@@ -1365,7 +1365,17 @@ impl Session<'_> {
         // Once for the statement rather than once per conjunct: which indexes a
         // table carries is one question, and it used to be asked as many times
         // as the condition had clauses.
-        let declared = Catalog::new(transaction).indexes_on(table)?;
+        //
+        // An empty list rather than a check at the choice below, because this is
+        // the whole vocabulary the enumeration works from: an index the read
+        // cannot use is one this statement does not have, and saying so here
+        // keeps the reason in the one place that asks the catalog rather than
+        // spread across every candidate that could have been built from it.
+        let declared = if transaction.indexes_are_current()? {
+            Catalog::new(transaction).indexes_on(table)?
+        } else {
+            Vec::new()
+        };
         let offered = self.enumerate(transaction, condition, &declared, searched)?;
 
         // Resolved before either path, so an index-served read and a scan see
@@ -1531,7 +1541,7 @@ impl Session<'_> {
         if transaction.writes_in(context.namespace, context.database, table) {
             return Ok(None);
         }
-        if transaction.snapshot() != self.store.committed_tail()? {
+        if !transaction.indexes_are_current()? {
             return Ok(None);
         }
         Ok(Some((index, visible)))
@@ -1754,7 +1764,7 @@ impl Session<'_> {
         if transaction.writes_in(context.namespace, context.database, table) {
             return Ok(None);
         }
-        if transaction.snapshot() != self.store.committed_tail()? {
+        if !transaction.indexes_are_current()? {
             return Ok(None);
         }
         Ok(Some((index, visible)))
@@ -1877,6 +1887,31 @@ impl Session<'_> {
         direction: Direction,
         hops: &[Hop],
     ) -> Result<Vec<(RecordId, Value)>> {
+        // Refused rather than served, and refused here rather than at the index
+        // lookup below, which would report `NotAnEdgeTable` and send a reader
+        // looking at their schema for a fault that is not there.
+        //
+        // A traversal is the one read of the six that has no scan to fall back
+        // to: an edge table's direction indexes are how edges are followed, not
+        // an optimisation over following them, so `index_on_path` returning
+        // `None` is treated as catalog corruption everywhere else. Inventing a
+        // scan for the historical case would be a second traversal
+        // implementation with its own direction handling, built inside a wave
+        // whose subject is guarding the paths that already exist.
+        //
+        // Serving it from the present-day index is the alternative that must not
+        // happen: a traversal's answer is the least inspectable shape this
+        // language produces — a set of records reached through edges nobody
+        // sees — so an answer assembled from today's edges over yesterday's
+        // records would be believed.
+        if !transaction.indexes_are_current()? {
+            return Err(Error::NoHistoricalTraversal {
+                table: hops
+                    .first()
+                    .map_or_else(String::new, |hop| hop.edges.name.text.clone()),
+                span: from.span,
+            });
+        }
         let (_, start) = self.address(transaction, from)?;
         let mut anchors = vec![RecordRef::new(start.table, start.id.clone())];
         let mut answer = Vec::new();
@@ -2070,6 +2105,9 @@ pub(crate) fn ordered_index_on(
     table: TableId,
     key: &tessari_ql::FieldPath,
 ) -> Result<Option<tessari_storage::IndexDefinition>> {
+    if !transaction.indexes_are_current()? {
+        return Ok(None);
+    }
     Ok(Catalog::new(transaction)
         .indexes_on(table)?
         .into_iter()

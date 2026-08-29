@@ -108,6 +108,36 @@ impl<'a> Transaction<'a> {
         Ok(answers)
     }
 
+    /// Whether an index may answer a read taken through this transaction.
+    ///
+    /// An index entry is `<kind> <tenancy> <index> <values> <0x00> <record-id>`
+    /// and carries **no version**. Entries are derived at commit, so an index
+    /// describes the committed tail and nothing else. Consulted from a
+    /// transaction whose snapshot is behind that tail, it produces two different
+    /// wrong answers from the one cause:
+    ///
+    /// - a record that matched at the snapshot and has been updated since has no
+    ///   entry under its old value, so it is **missing** from the answer;
+    /// - a record that matches now but did not then has an entry, is resolved at
+    ///   the snapshot, and comes back **not satisfying the condition it was
+    ///   selected by**.
+    ///
+    /// Neither raises anything, which is why this is a method and not a rule
+    /// each caller remembers. Every read that would be served from an index asks
+    /// here first, and a `false` means take the scan.
+    ///
+    /// This is about the snapshot's *position*, not about how it was opened: a
+    /// transaction begun at the tail that is still running while somebody else
+    /// commits has fallen behind, and its indexes are stale in exactly the same
+    /// way as a deliberately historical one's.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the committed tail cannot be read or decoded.
+    pub fn indexes_are_current(&self) -> Result<bool> {
+        Ok(self.snapshot == self.store.committed_tail()?)
+    }
+
     /// Whether this transaction has written to one table without committing.
     ///
     /// Asked by a read that would otherwise be served from an index: an

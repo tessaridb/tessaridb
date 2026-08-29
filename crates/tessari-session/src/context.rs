@@ -145,6 +145,9 @@ impl Session<'_> {
         table: TableId,
         path: &Path,
     ) -> Result<Option<IndexDefinition>> {
+        if !transaction.indexes_are_current()? {
+            return Ok(None);
+        }
         Ok(Catalog::new(transaction)
             .indexes_on(table)?
             .into_iter()
@@ -177,6 +180,9 @@ impl Session<'_> {
         table: TableId,
         path: &Path,
     ) -> Result<Option<IndexDefinition>> {
+        if !transaction.indexes_are_current()? {
+            return Ok(None);
+        }
         let indexes = Catalog::new(transaction).indexes_on(table)?;
         if let Some(exact) = indexes
             .iter()

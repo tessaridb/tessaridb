@@ -255,6 +255,12 @@ impl Select<Sourced> {
             // And no ceiling, for the same reason: a budget the caller did not
             // ask for is a refusal the caller did not ask for.
             timeout: None,
+            // And no version: the builder reads the present. Naming a point in
+            // the store's history means holding a sequence read out of a
+            // previous answer, which is the same thing that keeps `AFTER` off
+            // this API — a builder that has not seen an answer has nothing to
+            // name.
+            version: None,
             span: BUILT,
         };
         Ok(Query {

@@ -3288,6 +3288,87 @@ and `SELECT … USING INDEX timeout` still names it. Which reading is meant is
 settled by whether a duration follows, the same way every other contextual word
 in this grammar is settled.
 
+## 7b‴′. Reading the store as it stood
+
+```
+SELECT * FROM docs VERSION 4102;
+SELECT * FROM orders WHERE status = 'open' VERSION 4102;
+```
+
+`VERSION` is **optional** and moves the whole read to an earlier point in the
+store's history. Records are versioned by a suffix on their own key, so this is
+the read the store already performs with a different sequence rather than a
+second mechanism bolted beside it.
+
+### Why it is a sequence and not a timestamp
+
+The number is a **log sequence** — the same one a transaction's snapshot is, and
+the same one the store reports as its committed tail. It is not a wall clock,
+and the clause deliberately does not accept one.
+
+No log record carries a timestamp, so a time would have to be resolved through a
+mapping. More importantly it would be a spelling that looks more precise than
+what it addresses: two commits within the same millisecond are ordered by
+sequence and by nothing else, so no timestamp can name a point between them.
+Naming the number the store actually orders by is the honest version, and it is
+the number a caller already has.
+
+### The schema is read at that version too
+
+A historical read answers *what did this store look like then*, and the schema is
+part of what it looked like. So a table, a database or a field defined after the
+version named is **not known** at it, and the read refuses rather than resolving
+today's name against yesterday's records — which would be a third state that
+never existed.
+
+### Indexes do not answer a historical read
+
+An index entry carries no version. Entries are derived at commit, so an index
+describes the present and nothing else, and consulting one for a read of the past
+gives two different wrong answers from one cause:
+
+- a record that matched then and has been updated since has no entry under its
+  old value, so it goes **missing** from the answer;
+- a record that matches now but did not then has an entry, is resolved at the old
+  snapshot, and comes back **not satisfying the condition it was selected by**.
+
+Neither raises anything, which is why a versioned read is served from the scan
+instead. The clause therefore has a cost, and it is the honest one: a read at an
+earlier version is a scan even where the same read in the present is not. The
+reported access path says so.
+
+**A graph traversal is refused rather than scanned.** Edges are followed through
+the edge table's direction indexes; that is the mechanism and not a shortcut past
+it, so there is nothing to fall back to. A traversal's answer is also the least
+inspectable shape this language produces, so one assembled from today's edges
+over yesterday's records would simply be believed.
+
+### The two refusals
+
+A version **ahead of the committed tail** is refused: there is no state there,
+and answering with the present would let the same statement return one answer now
+and a different one later while naming the same version.
+
+A version **below the reclaim floor** is refused: reclamation removed the
+versions that stood there, so the read would resolve to something older, or to
+nothing, and call that the past. The floor is raised only by a pass that actually
+removed something, and it is the store's only durable record of that boundary —
+without it a historical read could not tell *this record did not exist then* from
+*the version that said so has been removed*.
+
+### It cannot be used inside a transaction
+
+A transaction **is** a point in the store's history: one snapshot, held for as
+long as it runs, which is what makes its reads agree with one another. A
+statement inside one asking for a different point is asking for something a
+transaction cannot be, so it is refused rather than quietly answered at the
+transaction's own snapshot.
+
+`version` is **not** a reserved word — a field may still be called `version`, and
+`SELECT version FROM releases` still reads it. Which reading is meant is settled
+by whether a sequence follows, the same way every other contextual word in this
+grammar is settled.
+
 ## 7b′. What the answer says without being asked
 
 `EXPLAIN` answers a question you have to know to ask. A **note** is the other

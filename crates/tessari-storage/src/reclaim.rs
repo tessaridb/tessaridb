@@ -24,7 +24,7 @@
 //! is not there, so the answer is unchanged — and a deleted record stops costing
 //! space, which is the whole point of deleting it.
 
-use tessari_encoding::{RecordKey, RecordValue, StoreKey, StoreValue};
+use tessari_encoding::{ReclaimFloorKey, RecordKey, RecordValue, StoreKey, StoreValue};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
@@ -115,8 +115,41 @@ impl Store {
         }
 
         if removed.versions > 0 {
+            // In the same batch as the removals, for the reason the applied
+            // position is in the same batch as the state it describes: a floor
+            // written afterwards is a floor that a crash can lose, leaving a
+            // store that has forgotten history and does not know it.
+            //
+            // Raised rather than set. A pass can run at a *lower* floor than an
+            // earlier one — a long-held snapshot holds the floor down — and what
+            // this records is the oldest sequence still answerable exactly,
+            // which only ever moves forward as versions are removed.
+            let raised = self.reclaim_floor()?.max(floor);
+            batch = batch.put(
+                ReclaimFloorKey::keyspace(),
+                ReclaimFloorKey.encode(),
+                raised.encode(),
+            );
             self.backend().apply(batch)?;
         }
         Ok(removed)
+    }
+
+    /// The oldest sequence a read can still be answered at exactly.
+    ///
+    /// [`Sequence::ZERO`] when nothing has ever been reclaimed, which is every
+    /// store until reclamation is scheduled — and which is why a historical read
+    /// works at all today.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or the stored floor cannot be
+    /// decoded.
+    pub fn reclaim_floor(&self) -> Result<Sequence> {
+        let key = ReclaimFloorKey.encode();
+        match self.backend().get(ReclaimFloorKey::keyspace(), &key)? {
+            Some(value) => Ok(Sequence::decode(value.as_slice())?),
+            None => Ok(Sequence::ZERO),
+        }
     }
 }

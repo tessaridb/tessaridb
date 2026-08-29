@@ -14,7 +14,7 @@ use tessari_types::Number;
 use super::Parser;
 use crate::ast::{
     DeleteBound, Expr, ExprKind, FieldPath, Ordering, Projection, RecordTarget, Source, Timeout,
-    Using,
+    Using, Version,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Span, Token};
@@ -271,6 +271,42 @@ impl Parser<'_> {
             });
         }
         Ok(Some(Timeout { after, span: at }))
+    }
+
+    /// `VERSION 42`, when it is there.
+    ///
+    /// Contextual for the same reason `timeout` is, and with the same guard: a
+    /// field called `version` is at least as likely as one called `timeout`, so
+    /// the word opens a clause only when an integer follows it and reads as a
+    /// name everywhere else.
+    ///
+    /// A literal rather than an expression, and no parameter in its place. The
+    /// point of the read is that it is reproducible — the same statement asked
+    /// twice answers the same — and a version a binding could set is one a caller
+    /// could move between two runs of the statement that names it.
+    pub(super) fn version(&mut self) -> Result<Option<Version>> {
+        if !matches!(self.peek(), Some(Token::Ident(word)) if word.eq_ignore_ascii_case("version"))
+            || !matches!(self.peek_ahead(1), Some(Token::Number(Number::Integer(_))))
+        {
+            return Ok(None);
+        }
+        let at = self.span_here();
+        self.advance();
+        let expected = "a sequence, like `42` — the version a read answers from";
+        let Some(Token::Number(Number::Integer(sequence))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let sequence = *sequence;
+        self.advance();
+        // A negative sequence names no point in any store's history. Refused
+        // here rather than at the read, for the reason an empty timeout is: a
+        // clause that could only ever be refused is a mistake in the statement,
+        // and the statement is where it should be said.
+        let at_sequence = u64::try_from(sequence).map_err(|_| self.error_here(expected))?;
+        Ok(Some(Version {
+            at: at_sequence,
+            span: at,
+        }))
     }
 
     /// The bound a conditional delete must carry: `LIMIT 100` or `LIMIT ALL`.

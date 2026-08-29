@@ -133,7 +133,7 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 22] = [
+const CROSS_CUTTING: [&str; 23] = [
     "bindings",
     // Declaring a table's fields with the table is a spelling, and a spelling
     // belongs to no engine: the columns desugar into the field declarations the
@@ -161,6 +161,12 @@ const CROSS_CUTTING: [&str; 22] = [
     "folds",
     "functions",
     "grants",
+    // Which point in the store's history a read answers from is a property of
+    // the snapshot, not of an access path. `VERSION` is in fact the clause
+    // that takes every engine but the scan *away* — an index describes the
+    // present, so a historical read falls back — which makes it the opposite
+    // of an engine feature.
+    "history",
     // A generated identifier is a value like any other, and every engine
     // hands over values: `rand::uuid()` reads the same whether the record it
     // is written beside came from a scan, an index or a walk. What it does

@@ -192,11 +192,13 @@ fn kind_name(error: &Error) -> &'static str {
         Error::Unknown { .. } => "Unknown",
         Error::NestedTransaction { .. } => "NestedTransaction",
         Error::NoOpenTransaction { .. } => "NoOpenTransaction",
+        Error::VersionInsideTransaction { .. } => "VersionInsideTransaction",
         Error::UnclosedTransaction { .. } => "UnclosedTransaction",
         Error::RecordExists { .. } => "RecordExists",
         Error::NoSuchRecord { .. } => "NoSuchRecord",
         Error::InvalidKeyBound { .. } => "InvalidKeyBound",
         Error::NotAnEdgeTable { .. } => "NotAnEdgeTable",
+        Error::NoHistoricalTraversal { .. } => "NoHistoricalTraversal",
         Error::EdgePropertiesNotAnObject { .. } => "EdgePropertiesNotAnObject",
         Error::ConditionNotBoolean { .. } => "ConditionNotBoolean",
         Error::NoRecordInScope { .. } => "NoRecordInScope",
@@ -303,6 +305,8 @@ fn store_kind(error: &tessari_storage::Error) -> &'static str {
         tessari_storage::Error::MissingRequiredField { .. } => "MissingRequiredField",
         tessari_storage::Error::AssertionViolation { .. } => "AssertionViolation",
         tessari_storage::Error::NoSuchParent { .. } => "NoSuchParent",
+        tessari_storage::Error::VersionReclaimed { .. } => "VersionReclaimed",
+        tessari_storage::Error::VersionInTheFuture { .. } => "VersionInTheFuture",
         _ => "Unnamed",
     }
 }

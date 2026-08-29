@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 834 conformance cases define the language and run in the build.
+Unreleased. 847 conformance cases define the language and run in the build.
 
 ### Security
 
@@ -28,6 +28,22 @@ Unreleased. 834 conformance cases define the language and run in the build.
   as a disclosure of everything in that database to every such user.
 
 ### Added
+
+- **A read can answer from an earlier point in the store's history.**
+  `SELECT * FROM docs VERSION 4102` reads the store as it stood at that log
+  sequence. Records were already versioned by a suffix on their own key, so this
+  is the read the store performs anyway with a different sequence. The clause
+  names a sequence rather than a timestamp because the sequence is the store's
+  only ordering authority — two commits in one millisecond are ordered by it and
+  by nothing else, so no timestamp could name a point between them.
+- **An index no longer answers a read taken behind the committed tail.** Index
+  entries carry no version and are derived at commit, so consulting one for a
+  historical read drops records that have since changed and admits records that
+  have since started matching — neither with an error. Every index-served read
+  now falls back to the scan, and a graph traversal, which has no scan to fall
+  back to, is refused.
+- **Reclamation records the floor it ran at**, and a read below that floor is
+  refused rather than answered from whichever versions happen to survive.
 
 - **A field's declared type can be a union of string literals.**
   `DEFINE FIELD status ON articles TYPE 'draft' | 'published' | 'archived'`, and

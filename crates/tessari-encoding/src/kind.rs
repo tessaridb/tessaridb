@@ -61,6 +61,11 @@ pub enum KeyKind {
     /// replaying the log, so an identity that travelled in it would be inherited
     /// by whoever restored a backup (ADR-0018 §1).
     NodeIdentity,
+    /// The oldest sequence a read can still be answered at exactly.
+    ///
+    /// Raised by reclamation, which is the only thing that can make an older
+    /// answer unavailable.
+    ReclaimFloor,
 }
 
 impl KeyKind {
@@ -87,6 +92,7 @@ impl KeyKind {
         Self::IdAllocator,
         Self::BackfillWatermark,
         Self::NodeIdentity,
+        Self::ReclaimFloor,
     ];
 
     /// The leading byte that identifies this kind on disk.
@@ -116,6 +122,7 @@ impl KeyKind {
             Self::IdAllocator => 0x36,
             Self::BackfillWatermark => 0x37,
             Self::NodeIdentity => 0x38,
+            Self::ReclaimFloor => 0x39,
         }
     }
 
@@ -140,7 +147,8 @@ impl KeyKind {
             | Self::IndexCatalog
             | Self::IdAllocator
             | Self::BackfillWatermark
-            | Self::NodeIdentity => Keyspace::META,
+            | Self::NodeIdentity
+            | Self::ReclaimFloor => Keyspace::META,
         }
     }
 
@@ -169,6 +177,7 @@ impl KeyKind {
             Self::IdAllocator => "id-allocator",
             Self::BackfillWatermark => "backfill-watermark",
             Self::NodeIdentity => "node-identity",
+            Self::ReclaimFloor => "reclaim-floor",
         }
     }
 
@@ -246,6 +255,7 @@ mod tests {
             (KeyKind::IdAllocator, 0x36),
             (KeyKind::BackfillWatermark, 0x37),
             (KeyKind::NodeIdentity, 0x38),
+            (KeyKind::ReclaimFloor, 0x39),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

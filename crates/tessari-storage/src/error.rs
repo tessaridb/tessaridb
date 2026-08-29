@@ -205,6 +205,36 @@ pub enum Error {
         level: &'static str,
     },
 
+    /// A read was asked for a point the store can no longer answer exactly.
+    ///
+    /// Reclamation removed the versions that stood there. Answering anyway
+    /// would return an older value, or none, and present it as the state at the
+    /// asked-for point — a wrong answer indistinguishable from a right one,
+    /// which is the one outcome a historical read must not have.
+    #[error(
+        "sequence {asked} is below the reclaim floor {floor}; the versions that \
+         answered there have been removed"
+    )]
+    VersionReclaimed {
+        /// The sequence the read asked for.
+        asked: u64,
+        /// The oldest sequence still answerable exactly.
+        floor: u64,
+    },
+
+    /// A read was asked for a point the store has not reached.
+    ///
+    /// Serving the present instead would let the same query return one answer
+    /// now and a different one later while naming the same version, which makes
+    /// a historical read non-reproducible — the property it exists to have.
+    #[error("sequence {asked} is ahead of the committed tail {tail}")]
+    VersionInTheFuture {
+        /// The sequence the read asked for.
+        asked: u64,
+        /// The newest sequence the store has committed.
+        tail: u64,
+    },
+
     /// The operating system's randomness source could not be read.
     ///
     /// The store refuses to open rather than falling back to something
@@ -259,7 +289,13 @@ impl Error {
             | Self::SchemaViolation { .. }
             | Self::MissingRequiredField { .. }
             | Self::UndeclaredField { .. }
-            | Self::IdSpaceExhausted { .. } => ErrorCategory::Validation,
+            | Self::IdSpaceExhausted { .. }
+            // Validation and not `Unavailable`: the store is healthy and the
+            // sequence asked for is the thing that is wrong. Retrying the same
+            // read cannot succeed, and a floor only ever rises, so a caller that
+            // treated this as transient would retry forever.
+            | Self::VersionReclaimed { .. }
+            | Self::VersionInTheFuture { .. } => ErrorCategory::Validation,
             Self::CatalogMalformed { .. } => ErrorCategory::Corruption,
             // A dependency this process needs is not reachable, which is what
             // `Unavailable` names. Not `Internal`: nothing here is a bug in the
