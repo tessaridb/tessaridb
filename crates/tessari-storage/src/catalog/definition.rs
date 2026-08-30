@@ -481,6 +481,41 @@ pub(crate) fn number(id: u32) -> Value {
     Value::Number(Number::Integer(i64::from(id)))
 }
 
+/// A record counter as it is stored.
+///
+/// The ceiling belongs to the key grammar rather than to this function: a record
+/// identity is a [`tessari_types::RecordId::Int`], an `i64`, so a count past
+/// `i64::MAX` could be held here and could never be spent. It is refused where
+/// it is produced, which is the only place the refusal can still say something
+/// useful.
+pub(crate) fn count(value: u64) -> Result<Value> {
+    let held = i64::try_from(value).map_err(|_| Error::IdSpaceExhausted {
+        level: RECORD_LEVEL,
+    })?;
+    Ok(Value::Number(Number::Integer(held)))
+}
+
+/// A record counter read back out of a stored value.
+///
+/// A negative integer is malformed rather than wrapped into an enormous count:
+/// nothing writes one, so one being there means this record is not what this
+/// build takes it for, and reading it as `18446744073709551615` would hand the
+/// table an identity space it has already spent.
+pub(crate) fn count_of(value: &Value, entity: &'static str, field: &'static str) -> Result<u64> {
+    let malformed = |found: &'static str| Error::CatalogMalformed {
+        entity,
+        field,
+        found,
+    };
+    let Value::Number(Number::Integer(raw)) = value else {
+        return Err(malformed(value.type_name()));
+    };
+    u64::try_from(*raw).map_err(|_| malformed("number"))
+}
+
+/// The level a record counter reports when it runs out.
+pub(crate) const RECORD_LEVEL: &str = "record";
+
 pub(crate) fn object<'a>(
     value: &'a Value,
     entity: &'static str,
@@ -785,6 +820,35 @@ mod tests {
     #[test]
     fn a_definition_that_is_not_an_object_is_refused() {
         let error = NamespaceDefinition::from_value(&Value::from("prod")).unwrap_err();
+        assert_eq!(error.code(), "corruption");
+    }
+
+    #[test]
+    fn a_record_count_round_trips_through_the_value_it_is_stored_as() {
+        let stored = count(9_001).unwrap();
+        assert_eq!(count_of(&stored, "record sequence", "next").unwrap(), 9_001);
+    }
+
+    #[test]
+    fn a_record_count_the_key_grammar_could_never_spend_is_refused_where_it_is_produced() {
+        // A record identity is an `i64`. A count past that could be held here
+        // and could never become an identity, so the refusal belongs at the
+        // write rather than at the read that would have to explain it.
+        let error = count(u64::MAX).unwrap_err();
+        assert!(matches!(error, Error::IdSpaceExhausted { .. }), "{error}");
+    }
+
+    #[test]
+    fn a_stored_record_count_that_is_negative_is_refused_rather_than_wrapped() {
+        // Nothing writes one, so one being present means the record is not what
+        // this build takes it for — and wrapping would hand the table an
+        // identity space it has already spent.
+        let error = count_of(
+            &Value::Number(Number::Integer(-1)),
+            "record sequence",
+            "next",
+        )
+        .unwrap_err();
         assert_eq!(error.code(), "corruption");
     }
 

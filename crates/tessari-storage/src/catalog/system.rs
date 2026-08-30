@@ -68,8 +68,29 @@ pub const REPLICAS: TableId = TableId::new(11);
 /// replica, applied to the two halves of one object.
 pub const CONSUMERS: TableId = TableId::new(12);
 
+/// The next identity each table will give a record it is not given a name for,
+/// keyed by the table id.
+///
+/// One counter per table rather than one per store: two tables numbering their
+/// records independently is the point, and a shared counter would leave both of
+/// them full of gaps for no reason anyone could read.
+///
+/// A catalog record rather than a `META` key, and for the same reason as
+/// [`REPLICAS`]: this number must reach every node. A replica that derived its
+/// own would re-issue an identity that already names a record on the leader,
+/// after which the next write there replaces a record instead of adding one,
+/// with nothing anywhere in an error state.
+pub const RECORD_SEQUENCES: TableId = TableId::new(13);
+
 /// The first id handed out at any level. Zero belongs to the system.
 pub const FIRST_ID: u32 = 1;
+
+/// The first identity a table gives a record it names itself.
+///
+/// One rather than zero, for the reason [`FIRST_ID`] is one: zero reads as
+/// "unset" to everyone who has ever seen a counter, and a record legitimately
+/// called `users:0` would spend the rest of its life being taken for one.
+pub const FIRST_RECORD_NUMBER: u64 = 1;
 
 /// Address a record in a system table.
 #[must_use]
@@ -156,8 +177,19 @@ mod tests {
         // cannot be found duplicated however wrong it is. `GRANTS` was missing
         // from here until it was noticed while adding `REPLICAS`.
         let ids = [
-            NAMESPACES, DATABASES, TABLES, NAMES, ALLOCATORS, INDEXES, FIELDS, ANALYZERS, USERS,
-            GRANTS, REPLICAS, CONSUMERS,
+            NAMESPACES,
+            DATABASES,
+            TABLES,
+            NAMES,
+            ALLOCATORS,
+            INDEXES,
+            FIELDS,
+            ANALYZERS,
+            USERS,
+            GRANTS,
+            REPLICAS,
+            CONSUMERS,
+            RECORD_SEQUENCES,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(
