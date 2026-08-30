@@ -862,6 +862,14 @@ fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> {
         // so a report that omitted this would describe the two identically and a
         // declaration rebuilt from it would silently lose the word.
         ("collection".to_owned(), Value::Bool(definition.collection)),
+        // Reported for the same reason, and one more: it decides what the *next*
+        // unnamed write is called, so a table read back without it looks like
+        // every other table right up until a record is created under a scheme
+        // nobody asked for.
+        (
+            "identity".to_owned(),
+            Value::from(definition.identity.name()),
+        ),
     ])
 }
 

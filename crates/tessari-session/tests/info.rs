@@ -931,3 +931,109 @@ fn the_word_a_table_was_declared_with_survives_every_alteration_there_is() {
         "an alteration changed the word the table was declared with"
     );
 }
+
+#[test]
+fn a_table_reports_how_it_names_a_record_the_caller_did_not_name() {
+    // The property this asserts is not that the field is present but that it is
+    // *read from the catalog*: `staff` and `orders` were declared without the
+    // word, and a report that hard-coded a default would be indistinguishable
+    // from one that read it — right up until a table declared otherwise.
+    let store = store();
+    let mut session = ready(&store);
+    for table in ["staff", "orders"] {
+        let described = report(&mut session, &format!("INFO FOR TABLE {table};"));
+        let Value::Object(fields) = &described else {
+            panic!("expected an object");
+        };
+        assert_eq!(
+            fields.get("identity"),
+            Some(&Value::from("int")),
+            "{table} was reported as naming records some other way"
+        );
+    }
+
+    session
+        .run("DEFINE TABLE sessions IDENTITY uuid SCHEMALESS;")
+        .unwrap();
+    let described = report(&mut session, "INFO FOR TABLE sessions;");
+    let Value::Object(fields) = &described else {
+        panic!("expected an object");
+    };
+    assert_eq!(fields.get("identity"), Some(&Value::from("uuid")));
+}
+
+#[test]
+fn the_naming_scheme_survives_the_round_trip_through_the_definition() {
+    // The failure this refuses is the one the `collection` test above describes,
+    // in its worst form. A report can carry the flag and still not reach the
+    // text, and a declaration taken from `INFO FOR TABLE` and replayed onto
+    // another store would then build a table that names every record it is ever
+    // given by a different scheme — silently, because both schemes work.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE sessions IDENTITY uuid SCHEMALESS;\n\
+             DEFINE COLLECTION invitations IDENTITY uuid;",
+        )
+        .unwrap();
+
+    for (table, expected) in [
+        ("sessions", "DEFINE TABLE sessions"),
+        ("invitations", "DEFINE COLLECTION invitations"),
+    ] {
+        let described = report(&mut session, &format!("INFO FOR TABLE {table};"));
+        let script = text(&described, "definition").expect("a definition");
+        assert!(script.contains(expected), "{script}");
+        assert!(
+            script.contains("IDENTITY uuid"),
+            "the naming scheme did not reach the declaration:\n{script}"
+        );
+    }
+
+    // And the declaration a table without the word produces still says what it
+    // means, rather than leaning on whatever the reading build's default is.
+    let described = report(&mut session, "INFO FOR TABLE staff;");
+    let script = text(&described, "definition").expect("a definition");
+    assert!(script.contains("IDENTITY int"), "{script}");
+}
+
+#[test]
+fn a_definition_carrying_the_naming_scheme_can_be_replayed() {
+    // The round trip closed at both ends: the script `INFO FOR TABLE` hands out
+    // is fed back to the parser and the table it builds is asked the same
+    // question. A rendering that emitted a word the grammar does not accept
+    // would pass every assertion above and fail here.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE TABLE sessions IDENTITY uuid SCHEMALESS;")
+        .unwrap();
+    let script = text(
+        &report(&mut session, "INFO FOR TABLE sessions;"),
+        "definition",
+    )
+    .expect("a definition");
+
+    // `store` is the local binding by now, so the helper is named through the
+    // module rather than shadowed out of reach.
+    let elsewhere = self::store();
+    let mut replayed = Session::new(&elsewhere);
+    replayed
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;",
+        )
+        .unwrap();
+    replayed.run(&script).unwrap();
+
+    let described = report(&mut replayed, "INFO FOR TABLE sessions;");
+    let Value::Object(fields) = &described else {
+        panic!("expected an object");
+    };
+    assert_eq!(
+        fields.get("identity"),
+        Some(&Value::from("uuid")),
+        "the replayed table names records some other way"
+    );
+}

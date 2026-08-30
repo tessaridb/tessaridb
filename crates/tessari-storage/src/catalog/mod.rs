@@ -161,6 +161,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             edge: shape.edge,
             bucket: shape.bucket,
             collection: shape.collection,
+            identity: shape.identity,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

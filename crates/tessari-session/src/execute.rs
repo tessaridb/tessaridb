@@ -12,7 +12,8 @@ use tessari_storage::{
 };
 
 use tessari_types::{
-    Analyzer, FieldId, FieldKind, Filter, Path, RecordId, RecordRef, Step, TableId, Value,
+    Analyzer, FieldId, FieldKind, Filter, IdentityKind, Path, RecordId, RecordRef, Step, TableId,
+    Value,
 };
 
 use crate::error::{Depended, Error, Result};
@@ -67,6 +68,7 @@ impl Session<'_> {
                 columns,
                 schemafull,
                 edge,
+                identity,
                 if_not_exists,
             } => self.define_table_with_columns(
                 transaction,
@@ -77,6 +79,7 @@ impl Session<'_> {
                     edge: *edge,
                     bucket: false,
                     collection: false,
+                    identity: *identity,
                 },
                 *if_not_exists,
                 span,
@@ -452,6 +455,7 @@ impl Session<'_> {
                     edge: false,
                     bucket: true,
                     collection: false,
+                    identity: IdentityKind::default(),
                 },
                 *if_not_exists,
                 span,
@@ -462,6 +466,7 @@ impl Session<'_> {
             // keeps it distinguishable from a table that was told to be lenient.
             StatementKind::DefineCollection {
                 name,
+                identity,
                 if_not_exists,
             } => self.define_table(
                 transaction,
@@ -471,6 +476,7 @@ impl Session<'_> {
                     edge: false,
                     bucket: false,
                     collection: true,
+                    identity: *identity,
                 },
                 *if_not_exists,
                 span,

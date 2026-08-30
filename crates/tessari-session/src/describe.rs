@@ -36,7 +36,7 @@
 use std::fmt::Write as _;
 
 use tessari_storage::{FieldDefinition, IndexDefinition, TableDefinition};
-use tessari_types::{Assertion, Number, Operand, Value};
+use tessari_types::{Assertion, IdentityKind, Number, Operand, Value};
 
 /// The part of a declaration that had no faithful spelling.
 ///
@@ -100,12 +100,26 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
                 "table `{name}` carries flags its declaring word cannot say"
             )));
         }
+        // `DEFINE BUCKET` takes no `IDENTITY`, and a bucket names its records
+        // itself, so one storing anything but the default was reached by a route
+        // this module does not know about — the same judgement as the flags
+        // above, and refused the same way rather than written out as a statement
+        // that would not parse.
+        if definition.bucket && definition.identity != IdentityKind::default() {
+            return Err(Unwritable::at(format!(
+                "bucket `{name}` names records in a way its declaring word cannot say"
+            )));
+        }
         let word = if definition.bucket {
             "BUCKET"
         } else {
             "COLLECTION"
         };
-        let _ = writeln!(script, "DEFINE {word} {name};");
+        let _ = write!(script, "DEFINE {word} {name}");
+        if !definition.bucket {
+            write_identity(script, definition);
+        }
+        script.push_str(";\n");
         return Ok(());
     }
     let _ = write!(script, "DEFINE TABLE {name}");
@@ -117,8 +131,20 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
     } else {
         " SCHEMALESS"
     });
+    write_identity(script, definition);
     script.push_str(";\n");
     Ok(())
+}
+
+/// The naming scheme, written for the same reason the strictness word is.
+///
+/// Always, never left to the default. A declaration that omitted it would keep
+/// meaning what the build it was taken from meant, and would quietly mean
+/// something else on a build whose default had moved — and here the difference
+/// is not what a table *accepts* but what every record written to it is
+/// *called*, which no later read can undo.
+fn write_identity(script: &mut String, definition: &TableDefinition) {
+    let _ = write!(script, " IDENTITY {}", definition.identity);
 }
 
 /// One field's declaration.

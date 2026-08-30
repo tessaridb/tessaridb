@@ -229,6 +229,24 @@ pub enum Error {
         span: Span,
     },
 
+    /// `IDENTITY` was followed by a word that names no identity scheme.
+    ///
+    /// Refused rather than read as the default. A table declared under a scheme
+    /// this build does not know about would otherwise start naming records with
+    /// a counter while the author believed it was minting UUIDs, and nothing
+    /// would say so until two schemes shared one table.
+    #[error(
+        "`{word}` is not a way of naming a record — write `IDENTITY int` for a \
+         per-table counter or `IDENTITY uuid` for an identifier that discloses \
+         neither order nor count (at {span})"
+    )]
+    UnknownIdentityKind {
+        /// The word that was written.
+        word: String,
+        /// Where it is.
+        span: Span,
+    },
+
     /// A `START` was written beside an `AFTER`.
     ///
     /// Both say where the page begins, and applying both means the offset counts
@@ -619,6 +637,7 @@ impl Error {
             | Self::InvalidDuration { span, .. }
             | Self::InsertRowArity { span, .. }
             | Self::TableWithoutColumns { span, .. }
+            | Self::UnknownIdentityKind { span, .. }
             | Self::UnexpectedToken { span, .. }
             | Self::UnexpectedEnd { span, .. }
             | Self::Unsupported { span, .. }

@@ -1,7 +1,7 @@
 //! One statement at a time.
 
 use super::Parser;
-use tessari_types::{Assertion, FieldKind, Filter, Path, Step};
+use tessari_types::{Assertion, FieldKind, Filter, IdentityKind, Path, Step};
 
 use crate::ast::{
     Answer, Assignment, ColumnDeclaration, ConsumerSource, Direction, Edit, Expr, ExprKind,
@@ -385,6 +385,7 @@ impl Parser<'_> {
                 // the default moves again.
                 let mut strictness: Option<bool> = None;
                 let mut edge = false;
+                let mut identity: Option<IdentityKind> = None;
                 loop {
                     if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
                         strictness = Some(true);
@@ -392,6 +393,8 @@ impl Parser<'_> {
                         strictness = Some(false);
                     } else if !edge && self.eat_keyword(Keyword::Edge) {
                         edge = true;
+                    } else if identity.is_none() && self.eat_word("identity") {
+                        identity = Some(self.identity_kind()?);
                     } else {
                         break;
                     }
@@ -421,6 +424,7 @@ impl Parser<'_> {
                     columns,
                     schemafull,
                     edge,
+                    identity: identity.unwrap_or_default(),
                     if_not_exists,
                 })
             }
@@ -443,8 +447,18 @@ impl Parser<'_> {
             Some(Keyword::Collection) => {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
+                let name = self.name()?;
+                // After the name, where the table spelling also takes it. A
+                // collection has no strictness word and no columns, so this is
+                // the whole of what follows one.
+                let identity = if self.eat_word("identity") {
+                    self.identity_kind()?
+                } else {
+                    IdentityKind::default()
+                };
                 Ok(StatementKind::DefineCollection {
-                    name: self.name()?,
+                    name,
+                    identity,
                     if_not_exists,
                 })
             }
@@ -1218,6 +1232,26 @@ impl Parser<'_> {
                 value,
                 answer: self.answer(verb)?,
             },
+        })
+    }
+
+    /// The word after `IDENTITY`.
+    ///
+    /// `uuid` is a keyword — it already stands in `users:uuid '…'` — so it is
+    /// eaten as one rather than read as a name, which is why this is not a bare
+    /// [`IdentityKind::parse`] over the next identifier.
+    ///
+    /// An unrecognised word is refused and never defaulted: a table declared
+    /// under a scheme this build does not know would otherwise start naming
+    /// records with a counter while its author believed otherwise.
+    fn identity_kind(&mut self) -> Result<IdentityKind> {
+        if self.eat_keyword(Keyword::Uuid) {
+            return Ok(IdentityKind::Uuid);
+        }
+        let word = self.name()?;
+        IdentityKind::parse(&word.text.to_ascii_lowercase()).ok_or(Error::UnknownIdentityKind {
+            word: word.text,
+            span: word.span,
         })
     }
 

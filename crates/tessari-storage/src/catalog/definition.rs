@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use tessari_types::{DatabaseId, IndexId, NamespaceId, Number, Path, TableId, Value};
+use tessari_types::{DatabaseId, IdentityKind, IndexId, NamespaceId, Number, Path, TableId, Value};
 
 use crate::error::{Error, Result};
 
@@ -30,6 +30,7 @@ const FIELD_SCHEMAFULL: &str = "schemafull";
 const FIELD_EDGE: &str = "edge";
 const FIELD_BUCKET: &str = "bucket";
 const FIELD_COLLECTION: &str = "collection";
+const FIELD_IDENTITY: &str = "identity";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +103,19 @@ pub struct TableDefinition {
     /// an absent flag as unset — which is the right answer for every one of
     /// them, so no stored table is touched and no migration step is owed.
     pub collection: bool,
+    /// What the table names a record with when the caller does not.
+    ///
+    /// A record written before this field existed reads [`IdentityKind::Int`],
+    /// which is what such a table would have used had the choice existed — every
+    /// generated identity before this was an `INSERT`'s UUID, and no table had a
+    /// declaration to contradict. So no stored table is touched and no migration
+    /// step is owed, the same contract the flags carry.
+    ///
+    /// An **unrecognised** word is a different case and is refused: a table
+    /// written by a later build under a scheme this one does not know must not be
+    /// read as though it used the one this build prefers, because the two would
+    /// then name records into one table on two schemes.
+    pub identity: IdentityKind,
 }
 
 impl NamespaceDefinition {
@@ -169,6 +183,7 @@ impl TableDefinition {
             (FIELD_EDGE.to_owned(), Value::Bool(self.edge)),
             (FIELD_BUCKET.to_owned(), Value::Bool(self.bucket)),
             (FIELD_COLLECTION.to_owned(), Value::Bool(self.collection)),
+            (FIELD_IDENTITY.to_owned(), Value::from(self.identity.name())),
         ]))
     }
 
@@ -193,6 +208,7 @@ impl TableDefinition {
             edge: flag(fields, FIELD_EDGE, "table")?,
             bucket: flag(fields, FIELD_BUCKET, "table")?,
             collection: flag(fields, FIELD_COLLECTION, "table")?,
+            identity: identity_kind(fields, "table")?,
         })
     }
 }
@@ -214,6 +230,13 @@ pub struct TableShape {
     pub bucket: bool,
     /// Was declared with `DEFINE COLLECTION` rather than `DEFINE TABLE`.
     pub collection: bool,
+    /// What the table names a record with when the caller does not.
+    ///
+    /// Carried on the shape rather than passed beside it for the reason the
+    /// shape exists at all: a fifth positional argument next to four others is
+    /// one transposition away from a table that mints UUIDs where a counter was
+    /// meant, and nothing about the resulting store would look wrong.
+    pub identity: IdentityKind,
 }
 
 /// What a `DEFINE INDEX` says beyond which values it projects.
@@ -528,6 +551,32 @@ pub(crate) fn flag(
     }
 }
 
+/// How a table names a record the caller did not name.
+///
+/// Absent reads as [`IdentityKind::Int`] — the flags' contract, for the same
+/// reason: a table written before the property existed is one that used the
+/// default, not one whose declaration is unreadable.
+///
+/// A word this build does not recognise is **refused**, which is the one place
+/// this differs from a flag. An unknown flag can only be a `true` nobody wrote;
+/// an unknown identity scheme is a table already naming records some other way,
+/// and reading it as `int` would put two schemes in one table.
+fn identity_kind(fields: &BTreeMap<String, Value>, entity: &'static str) -> Result<IdentityKind> {
+    match fields.get(FIELD_IDENTITY) {
+        None => Ok(IdentityKind::Int),
+        Some(Value::String(word)) => IdentityKind::parse(word).ok_or(Error::CatalogMalformed {
+            entity,
+            field: FIELD_IDENTITY,
+            found: "an unknown identity scheme",
+        }),
+        Some(other) => Err(Error::CatalogMalformed {
+            entity,
+            field: FIELD_IDENTITY,
+            found: other.type_name(),
+        }),
+    }
+}
+
 pub(crate) fn field_name(fields: &BTreeMap<String, Value>, entity: &'static str) -> Result<String> {
     match fields.get(FIELD_NAME) {
         Some(Value::String(name)) => Ok(name.clone()),
@@ -575,11 +624,60 @@ mod tests {
             edge: false,
             bucket: false,
             collection: false,
+            // Deliberately not the default: a field that never travels round
+            // trips perfectly as long as both ends agree on what it is when
+            // absent, which is exactly the bug this assertion is for.
+            identity: IdentityKind::Uuid,
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),
             table
         );
+    }
+
+    #[test]
+    fn a_table_entry_written_before_identities_were_declared_names_records_with_a_counter() {
+        // Every table already in a store predates the field, and each one is
+        // already naming records with a counter. Reading them as anything else
+        // would rename what the *next* record in them is called.
+        let fields = BTreeMap::from([
+            (FIELD_ID.to_owned(), number(11)),
+            (FIELD_NAMESPACE.to_owned(), number(7)),
+            (FIELD_DATABASE.to_owned(), number(3)),
+            (FIELD_NAME.to_owned(), Value::from("line_items")),
+        ]);
+        let read = TableDefinition::from_value(&Value::Object(fields)).unwrap();
+        assert_eq!(read.identity, IdentityKind::Int);
+    }
+
+    #[test]
+    fn a_naming_scheme_this_build_does_not_know_is_refused_rather_than_read_as_the_default() {
+        // The asymmetry with the test above is the whole point. *Absent* means a
+        // store written before the field existed, and its answer is knowable.
+        // *Present and unrecognised* means a store written by a later build, and
+        // the one thing that must not happen is this build deciding the table
+        // uses the scheme it happens to prefer and minting ids under it.
+        let fields = BTreeMap::from([
+            (FIELD_ID.to_owned(), number(11)),
+            (FIELD_NAMESPACE.to_owned(), number(7)),
+            (FIELD_DATABASE.to_owned(), number(3)),
+            (FIELD_NAME.to_owned(), Value::from("line_items")),
+            (FIELD_IDENTITY.to_owned(), Value::from("ulid")),
+        ]);
+        let error = TableDefinition::from_value(&Value::Object(fields)).unwrap_err();
+        assert_eq!(error.code(), "corruption");
+
+        // And a scheme that is not even a word is refused for the same reason
+        // rather than falling through a `match` on the string.
+        let fields = BTreeMap::from([
+            (FIELD_ID.to_owned(), number(11)),
+            (FIELD_NAMESPACE.to_owned(), number(7)),
+            (FIELD_DATABASE.to_owned(), number(3)),
+            (FIELD_NAME.to_owned(), Value::from("line_items")),
+            (FIELD_IDENTITY.to_owned(), Value::Bool(true)),
+        ]);
+        let error = TableDefinition::from_value(&Value::Object(fields)).unwrap_err();
+        assert_eq!(error.code(), "corruption");
     }
 
     #[test]

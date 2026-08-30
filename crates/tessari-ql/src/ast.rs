@@ -20,7 +20,7 @@
 //!
 //! [`TableId`]: tessari_types::TableId
 
-use tessari_types::{Assertion, Duration, FieldKind, Filter, Path, RecordId, Value};
+use tessari_types::{Assertion, Duration, FieldKind, Filter, IdentityKind, Path, RecordId, Value};
 
 use crate::function::Function;
 use crate::token::Span;
@@ -86,6 +86,13 @@ pub enum StatementKind {
         schemafull: bool,
         /// Whether the table holds edges, with an index on each endpoint.
         edge: bool,
+        /// What the table names a record with when the caller does not:
+        /// `DEFINE TABLE sessions IDENTITY uuid`.
+        ///
+        /// A property of the table and not of the write, because two records in
+        /// one table named on two schemes sort into two regions of the keyspace
+        /// and read back as one table only by accident.
+        identity: IdentityKind,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -123,6 +130,9 @@ pub enum StatementKind {
     DefineCollection {
         /// The name to create.
         name: Name,
+        /// What the collection names a record with when the caller does not:
+        /// `DEFINE COLLECTION sessions IDENTITY uuid`.
+        identity: IdentityKind,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
