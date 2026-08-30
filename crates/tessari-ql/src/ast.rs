@@ -765,6 +765,16 @@ pub enum StatementKind {
     Commit,
     /// `CANCEL`
     Cancel,
+    /// `VERIFY` — run every check a `COMMIT` runs, then discard the work.
+    ///
+    /// A third thing to do with an open transaction, and therefore a third word
+    /// rather than a flag on one of the other two. `COMMIT` checks and keeps;
+    /// `CANCEL` discards **without** checking, because every check that refuses
+    /// a write runs inside the commit; this checks and discards.
+    ///
+    /// It exists because there was no way to ask *"would this be refused?"*
+    /// other than to be refused, and being refused means having sent the write.
+    Verify,
 }
 
 /// What an `INFO FOR` asks about.

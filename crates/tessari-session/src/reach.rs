@@ -71,6 +71,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::Begin
         | StatementKind::Commit
         | StatementKind::Cancel
+        | StatementKind::Verify
         // A backup names **no** table because it reaches every one. That is the
         // opposite of what an empty answer means everywhere else here, so the
         // authorization for it is a role check that does not consult this list

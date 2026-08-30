@@ -340,7 +340,8 @@ impl Needs {
             StatementKind::Use { .. }
             | StatementKind::Begin
             | StatementKind::Commit
-            | StatementKind::Cancel => Self::NOTHING,
+            | StatementKind::Cancel
+            | StatementKind::Verify => Self::NOTHING,
             // Governing: deciding what somebody else may do, which is the same
             // kind of act as declaring them.
             //

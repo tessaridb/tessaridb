@@ -21,6 +21,29 @@ pub enum Error {
     #[error(transparent)]
     Store(#[from] tessari_storage::Error),
 
+    /// A `SCHEMAFULL` table was written a field it does not declare, with the
+    /// statement that would make the same write succeed.
+    ///
+    /// The store raises the refusal; the suggestion is added here, because
+    /// writing a declaration needs the language and *proving* the text is a
+    /// declaration needs the parser — neither of which the store has, and both
+    /// of which are the difference between a remedy and a plausible-looking
+    /// string. It is the same rule `describe` follows for a rendered
+    /// declaration: offered only when it re-reads as what it claims to be, and
+    /// omitted rather than approximated otherwise, in which case the plain
+    /// [`Store`](Self::Store) refusal is what a caller sees.
+    #[error("{refusal}; declare it with `{suggestion}`")]
+    UndeclaredField {
+        /// The store's refusal, unchanged.
+        ///
+        /// Boxed because this is the only variant that carries a whole store
+        /// refusal **beside** something else, and the two together are wider
+        /// than every `Result` in this crate should be asked to reserve.
+        refusal: Box<tessari_storage::Error>,
+        /// A statement that would accept the write, proven to parse.
+        suggestion: String,
+    },
+
     /// A script refused itself with `THROW`.
     ///
     /// Carried as its own variant rather than folded into a generic failure, so

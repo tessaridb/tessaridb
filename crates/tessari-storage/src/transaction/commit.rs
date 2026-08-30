@@ -16,6 +16,15 @@ use tessari_types::Sequence;
 use super::{RecordAddress, Transaction};
 use crate::error::{Error, Result};
 
+/// What becomes of a settled transaction's batch.
+#[derive(Debug, Clone, Copy)]
+enum Settle {
+    /// Write it. This is a commit.
+    Apply,
+    /// Drop it, every check having run. This is a rehearsal.
+    Discard,
+}
+
 impl Drop for Transaction<'_> {
     fn drop(&mut self) {
         self.store.snapshot_registry().release(self.snapshot);
@@ -125,6 +134,36 @@ impl Transaction<'_> {
     /// record this one wrote, [`Error::CommitContention`] when every attempt
     /// lost the race for the committed tail, or a substrate error.
     pub fn commit(self) -> Result<Sequence> {
+        self.settle(Settle::Apply)
+    }
+
+    /// Run every check a commit runs, then discard the work.
+    ///
+    /// This is how a caller finds out whether a write would be refused without
+    /// writing it. `rollback` cannot answer that question: it discards without
+    /// checking, and **every** check that refuses a write runs inside the
+    /// commit — so a transaction that is cancelled is a transaction nothing ever
+    /// disagreed with.
+    ///
+    /// # Why it is this function and not a validation pass
+    ///
+    /// It is the commit with one line skipped, and it is written that way on
+    /// purpose. A second path that checks the same things would agree with this
+    /// one until it did not, and a rehearsal that disagrees with the performance
+    /// is worse than no rehearsal, because somebody trusted it. So the conflict
+    /// check, the schema validation and index maintenance are the same calls in
+    /// the same order — index maintenance especially, since a unique violation
+    /// is raised there and is exactly the refusal worth rehearsing.
+    ///
+    /// # Errors
+    ///
+    /// Every failure [`commit`](Self::commit) can return except those the write
+    /// itself would raise: nothing is applied, so the substrate is not asked to.
+    pub fn dry_run(self) -> Result<()> {
+        self.settle(Settle::Discard).map(|_| ())
+    }
+
+    fn settle(self, settle: Settle) -> Result<Sequence> {
         if self.writes.is_empty() {
             return Ok(self.snapshot);
         }
@@ -160,6 +199,13 @@ impl Transaction<'_> {
                 &record,
                 crate::log::apply_batch(commit_at, &record),
             )?;
+            // Everything above this ran. This is the whole difference between a
+            // rehearsal and a write, and it is one line so that it can only ever
+            // be the whole difference.
+            if matches!(settle, Settle::Discard) {
+                return Ok(commit_at);
+            }
+
             match self.store.backend().apply(batch) {
                 Ok(()) => return Ok(commit_at),
                 // The position moved between reading it and applying, so the

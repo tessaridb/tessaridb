@@ -74,6 +74,7 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::Begin => "BEGIN",
         StatementKind::Commit => "COMMIT",
         StatementKind::Cancel => "CANCEL",
+        StatementKind::Verify => "VERIFY",
     }
 }
 
@@ -136,6 +137,7 @@ pub const FORMS: &[&str] = &[
     "BEGIN",
     "COMMIT",
     "CANCEL",
+    "VERIFY",
 ];
 
 /// The forms a script uses.
@@ -224,7 +226,8 @@ mod tests {
              RETURN $x;\
              BEGIN;\
              COMMIT;\
-             CANCEL;",
+             CANCEL;\
+             VERIFY;",
         )
         .unwrap();
         let mut found = forms_in(&script);

@@ -277,7 +277,8 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::Info { .. }
         | StatementKind::Begin
         | StatementKind::Commit
-        | StatementKind::Cancel => Ok(()),
+        | StatementKind::Cancel
+        | StatementKind::Verify => Ok(()),
     }
 }
 

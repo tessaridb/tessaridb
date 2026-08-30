@@ -11,7 +11,7 @@
 //! be to do nothing.
 
 use tessari_kv::ErrorCategory;
-use tessari_types::{RecordId, Sequence};
+use tessari_types::{FieldKind, RecordId, Sequence};
 
 /// Result alias for every fallible operation in this crate.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -172,14 +172,57 @@ pub enum Error {
     /// This is the misspelling that a schemaless table accepts in silence: the
     /// record lands, nothing is raised, and every query filtering on the name
     /// that was meant is quietly missing it.
+    ///
+    /// # Why this one names its table and its siblings do not
+    ///
+    /// The refusals around it identify a table by id, which is what this layer
+    /// has. This one is the refusal a caller is expected to *act* on — the fix
+    /// is a declaration, and a declaration names its table — so the name is
+    /// carried here and the id would be useless. The name costs nothing to
+    /// obtain: the schema is built from the table's definition, which holds it.
     #[error("table {table} declares no field {field}, and record {record} carries one")]
     UndeclaredField {
-        /// The table that refused the write.
-        table: u32,
+        /// The table that refused the write, by the name a declaration uses.
+        table: String,
         /// The record that was being written.
         record: String,
         /// The field it carried.
         field: String,
+        /// The kind a declaration would have to give that field to accept it.
+        ///
+        /// Derived from the value the caller just sent, so it names nothing
+        /// about the table's other declarations — a field a caller's grants
+        /// hide is never mentioned by a refusal (ADR-0044). It is carried
+        /// rather than rendered because writing it as a statement needs the
+        /// language, and this layer deliberately does not have it.
+        ///
+        /// Boxed because every `Result` in this crate and the two above it
+        /// reserves room for the widest refusal there is, and this variant now
+        /// holds three names; unboxed it took that budget past what
+        /// `clippy::result_large_err` allows, which is a real cost paid on
+        /// every call that never fails.
+        kind: Box<FieldKind>,
+    },
+
+    /// Several records in one commit were refused, and here is each of them.
+    ///
+    /// A commit is all-or-nothing, so the first bad record already decides the
+    /// outcome and reporting only that one is *correct*. It is also the shape
+    /// that makes a caller fix a batch one round trip per mistake, discovering
+    /// the second problem only after the first is gone. So every record is
+    /// checked before any refusal is raised.
+    ///
+    /// Exactly one refusal is never wrapped: a batch of one is not a batch, and
+    /// the singular refusal is what everything already reads.
+    #[error(
+        "{} records were refused: {}",
+        refusals.len(),
+        refusals.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")
+    )]
+    RecordsRefused {
+        /// One refusal per record that disagreed, in the order the commit
+        /// walked them.
+        refusals: Vec<Error>,
     },
 
     /// The parent a catalog entry was to be created under does not exist.
@@ -301,6 +344,9 @@ impl Error {
             | Self::SchemaViolation { .. }
             | Self::MissingRequiredField { .. }
             | Self::UndeclaredField { .. }
+            // Every refusal it carries is a validation refusal — nothing else is
+            // ever collected into it — so it does not need to look inside.
+            | Self::RecordsRefused { .. }
             | Self::IdSpaceExhausted { .. }
             // Validation and not `Unavailable`: the store is healthy and the
             // sequence asked for is the thing that is wrong. Retrying the same

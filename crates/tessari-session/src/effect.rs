@@ -89,7 +89,11 @@ impl Effect {
             StatementKind::Use { .. }
             | StatementKind::Begin
             | StatementKind::Commit
-            | StatementKind::Cancel => Self::Read,
+            | StatementKind::Cancel
+            // A rehearsal writes nothing, and saying otherwise would make a
+            // read-only node refuse to tell a caller whether a write would be
+            // accepted — which is exactly the question worth asking there.
+            | StatementKind::Verify => Self::Read,
 
             // Structure.
             StatementKind::DefineNamespace { .. }

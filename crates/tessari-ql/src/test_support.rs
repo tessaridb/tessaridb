@@ -279,7 +279,8 @@ fn erase_statement(statement: &mut Statement) {
         StatementKind::Backup { .. }
         | StatementKind::Begin
         | StatementKind::Commit
-        | StatementKind::Cancel => {}
+        | StatementKind::Cancel
+        | StatementKind::Verify => {}
     }
 }
 

@@ -126,8 +126,11 @@ DEFINE FIELD tier ON ledgers TYPE int DEFAULT 'gold';
 --- expect: error DefaultDoesNotMatch
 
 --- case: requiring a field over rows that lack it writes nothing
+# Two rows lack it, and the refusal says so about both. A declaration is
+# checked against every row it would newly constrain, and naming the first one
+# would send its author back for the second after fixing the first.
 DEFINE FIELD nickname ON ledgers TYPE string REQUIRED;
---- expect: error MissingRequiredField
+--- expect: error RecordsRefused
 
 # `ASSERT` — what a value must satisfy beyond its type. Checked by the store on
 # its apply path, so what the catalog holds is the lowered constraint rather than

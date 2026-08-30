@@ -201,6 +201,10 @@ impl Parser<'_> {
                 self.advance();
                 StatementKind::Cancel
             }
+            Some(Keyword::Verify) => {
+                self.advance();
+                StatementKind::Verify
+            }
             _ => return Err(self.error_here("a statement")),
         };
         Ok(Statement {

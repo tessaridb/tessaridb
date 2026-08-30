@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 901 conformance cases define the language and run in the build.
+Unreleased. 905 conformance cases define the language and run in the build.
 
 ### Breaking — a table is not a document
 
@@ -46,6 +46,25 @@ became a reserved word; a field or table named `schemaless` needs renaming.
   order the rows were written. `CREATE` is unchanged and still asserts an
   identity the caller names.
 - **`DEFINE COLLECTION`** — see above.
+- **`VERIFY`** — the third way to close a transaction: run every check a `COMMIT`
+  runs, then discard the work. `CANCEL` could never answer *"would this be
+  refused?"*, because every check that refuses a write runs inside the commit, so
+  a cancelled transaction is one nothing ever disagreed with. The refusal is the
+  same one in the same words because it is the same code — `VERIFY` is the commit
+  with its last step, writing the batch, left out.
+- **The undeclared-field refusal carries the declaration that would accept the
+  write.** `table 7 declares no field nickname` became `table people declares no
+  field nickname, and record people:1 carries one; declare it with `DEFINE FIELD
+  nickname ON people TYPE string``. The kind comes from the value that was sent,
+  and the whole statement is parsed before it is offered — a field name can
+  arrive through a bound parameter rather than a script, so it is not always a
+  name this language can spell, and a suggestion that would not read back is
+  withheld rather than printed. It names only the field, table and value the
+  caller just sent: the more useful-sounding "did you mean `salary`?" would name
+  a field their grants may hide.
+- **A refused batch names every row that was wrong**, not the first, so a caller
+  fixing an `INSERT` sees all of it at once instead of one commit per mistake.
+  One bad row is still refused exactly as it was; a batch of one is not a batch.
 - **`INFO FOR TABLE` carries a `definition`** — the table, its fields and its
   indexes as TessariQL that re-creates them, rendered from the catalog at the
   moment of the read. Reading a schema and re-creating one become one operation.

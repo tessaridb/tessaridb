@@ -454,7 +454,7 @@ impl<'a> Session<'a> {
                 let Some((transaction, _)) = open.take() else {
                     return Err(Error::NoOpenTransaction { span });
                 };
-                transaction.commit()?;
+                settle(transaction)?;
                 Ok(Outcome::Done)
             }
             StatementKind::Cancel => {
@@ -462,6 +462,16 @@ impl<'a> Session<'a> {
                     return Err(Error::NoOpenTransaction { span });
                 };
                 transaction.rollback();
+                Ok(Outcome::Done)
+            }
+            // Closes the transaction exactly as its two siblings do. A rehearsal
+            // that left the transaction open would invite a second one against a
+            // snapshot the first had already answered for.
+            StatementKind::Verify => {
+                let Some((transaction, _)) = open.take() else {
+                    return Err(Error::NoOpenTransaction { span });
+                };
+                transaction.dry_run().map_err(advised)?;
                 Ok(Outcome::Done)
             }
             other => match (read_version(other), open.as_mut()) {
@@ -487,11 +497,52 @@ impl<'a> Session<'a> {
                 (None, None) => {
                     let mut transaction = store.begin()?;
                     let outcome = self.execute(&mut transaction, other, span)?;
-                    transaction.commit()?;
+                    settle(transaction)?;
                     Ok(outcome)
                 }
             },
         }
+    }
+}
+
+/// Commit, and let the one refusal a caller fixes with a statement carry that
+/// statement.
+///
+/// Every check that can refuse a write runs inside the commit, so this is the
+/// one place a caller's write can be refused by the store, and therefore the one
+/// place worth teaching. It is deliberately not a second validation pass: the
+/// commit is unchanged and only its failure is read.
+fn settle(transaction: Transaction<'_>) -> Result<()> {
+    match transaction.commit() {
+        Ok(_) => Ok(()),
+        Err(refusal) => Err(advised(refusal)),
+    }
+}
+
+/// A store refusal, with the remedy attached when the remedy is real.
+///
+/// The suggestion is built from the caller's own field, table and value — never
+/// from what else the table declares, which a caller's grants may hide
+/// (ADR-0044) — and then **parsed**. A name this store accepts is not always a
+/// name the language can spell: a record's fields can arrive from a bound
+/// parameter, so one may be a reserved word or hold a space, and the statement
+/// naming it would not read back. Suggesting it anyway would be worse than
+/// suggesting nothing, because it looks like something to paste. So the parse is
+/// the gate, and a suggestion that fails it is dropped rather than repaired.
+fn advised(refusal: tessari_storage::Error) -> Error {
+    let tessari_storage::Error::UndeclaredField {
+        table, field, kind, ..
+    } = &refusal
+    else {
+        return Error::Store(refusal);
+    };
+    let suggestion = format!("DEFINE FIELD {field} ON {table} TYPE {}", kind.name());
+    if parse(&suggestion).is_err() {
+        return Error::Store(refusal);
+    }
+    Error::UndeclaredField {
+        refusal: Box::new(refusal),
+        suggestion,
     }
 }
 

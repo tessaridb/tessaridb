@@ -540,6 +540,7 @@ impl Session<'_> {
             StatementKind::Begin
             | StatementKind::Commit
             | StatementKind::Cancel
+            | StatementKind::Verify
             | StatementKind::Use { .. } => Ok(Outcome::Done),
         }
     }

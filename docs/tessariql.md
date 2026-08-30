@@ -33,7 +33,7 @@ There are four families, and the split is deliberate:
 | session | `USE` | which namespace and database the rest of the script means |
 | definition | `DEFINE`, `DROP` | the catalog |
 | data | `CREATE`, `SELECT`, `UPDATE`, `DELETE`, `GET`, `SET`, `DEL`, `KEYS` | records |
-| transaction | `BEGIN`, `COMMIT`, `CANCEL` | the unit of work |
+| transaction | `BEGIN`, `COMMIT`, `CANCEL`, `VERIFY` | the unit of work |
 
 ## 2. Session context
 
@@ -1059,6 +1059,39 @@ that was meant. A `SCHEMAFULL` table refuses it instead. The flag is set at
 definition or changed later with `ALTER TABLE … SET SCHEMAFULL`, which holds the
 rows already there to it in the same commit and is refused if any of them does
 not fit.
+
+**The refusal says what to write next.** A `SCHEMAFULL` table that is written an
+undeclared field answers with the declaration that would accept it:
+
+```tessariql
+CREATE people:1 = { name: 'ada', nickname: 'the countess' };
+-- table people declares no field nickname, and record people:1 carries one;
+-- declare it with `DEFINE FIELD nickname ON people TYPE string`
+```
+
+The statement is meant to be pasted, so it is checked before it is offered: the
+kind is read off the value that was sent, and the whole statement is parsed. A
+field name can arrive through a bound parameter rather than a script, so it is
+not always a name this language can spell — and where the suggestion would not
+read back, the refusal carries none rather than one that looks pasteable and is
+not.
+
+It names your field, your table and your value, and nothing else the table
+declares. That is deliberate: a field you hold no grant on is a field a refusal
+must not mention, so the more helpful-sounding *"did you mean `salary`?"* is not
+offered at all.
+
+**A refused batch names every row that was wrong**, not the first:
+
+```tessariql
+INSERT INTO readings (n) VALUES (1), ('two'), (3), ('four');
+-- 2 records were refused: … field n is declared int and holds a string …
+```
+
+The commit is all-or-nothing either way, so the first refusal already decides the
+outcome — but naming only that one sends its author back for the next after
+fixing it. A single refusal keeps the shape it has always had; a batch of one is
+not a batch.
 
 **A declaration constrains the rows that predate it.** `DEFINE FIELD` holds every
 row already in the table to what it declares, in the same commit — and declaring
@@ -3405,6 +3438,34 @@ CANCEL;
 ```
 
 A statement outside `BEGIN` is its own transaction.
+
+### Trying a write without making it
+
+`VERIFY` is the third way to close a transaction. It runs every check a `COMMIT`
+runs and then discards the work:
+
+```
+BEGIN;
+  DEFINE TABLE notes (body string);
+  INSERT INTO notes (body) VALUES ('here'), (42);
+VERIFY;
+```
+
+That answers with the refusal the second row would have earned, and writes
+nothing — not the rows, and not the table.
+
+It exists because `CANCEL` cannot answer the question. Every check that refuses a
+write — the schema, an assertion, a required field, a unique index — runs
+**inside the commit**, so a cancelled transaction is a transaction nothing ever
+disagreed with. Until `VERIFY` there was no way to ask *"would this be
+refused?"* other than to be refused, which meant having sent the write.
+
+The refusal is the same one, in the same words, because it comes from the same
+code: `VERIFY` is the commit with its last step — writing the batch — left out.
+A second checking path would agree with the first until it did not, and a
+rehearsal that quietly disagrees with the performance is worse than no rehearsal.
+
+`VERIFY` needs an open transaction, exactly as `COMMIT` and `CANCEL` do.
 
 A script that opens a transaction and never closes it **discards the work and
 raises an error**. Committing it would commit work the author never said was

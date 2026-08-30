@@ -184,6 +184,11 @@ fn kind_name(error: &Error) -> &'static str {
     match error {
         Error::Script(inner) => script_kind(inner),
         Error::Store(inner) => store_kind(inner),
+        // Named for the refusal it carries, not for the wrapper. A corpus row
+        // asserts what was refused; whether the session could also say how to
+        // fix it is an improvement to the message, which is exactly what this
+        // function exists not to be sensitive to.
+        Error::UndeclaredField { refusal, .. } => store_kind(refusal),
         Error::Encoding(_) => "Encoding",
         Error::WriteWouldLeaveAHole { .. } => "WriteWouldLeaveAHole",
         Error::NoSuchRouteToAssign { .. } => "NoSuchRouteToAssign",
@@ -306,6 +311,7 @@ fn store_kind(error: &tessari_storage::Error) -> &'static str {
         tessari_storage::Error::UniqueViolation { .. } => "UniqueViolation",
         tessari_storage::Error::SchemaViolation { .. } => "SchemaViolation",
         tessari_storage::Error::UndeclaredField { .. } => "UndeclaredField",
+        tessari_storage::Error::RecordsRefused { .. } => "RecordsRefused",
         tessari_storage::Error::MissingRequiredField { .. } => "MissingRequiredField",
         tessari_storage::Error::AssertionViolation { .. } => "AssertionViolation",
         tessari_storage::Error::NoSuchParent { .. } => "NoSuchParent",

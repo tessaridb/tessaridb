@@ -409,6 +409,8 @@ pub enum Keyword {
     Commit,
     /// `CANCEL`
     Cancel,
+    /// `VERIFY`
+    Verify,
     /// `NONE` — the field is not there.
     None,
     /// `NULL` — the field is there and holds nothing.
@@ -504,6 +506,7 @@ impl Keyword {
             Self::Begin => "BEGIN",
             Self::Commit => "COMMIT",
             Self::Cancel => "CANCEL",
+            Self::Verify => "VERIFY",
             Self::None => "NONE",
             Self::Null => "NULL",
             Self::True => "TRUE",
@@ -590,6 +593,7 @@ impl Keyword {
         Self::Begin,
         Self::Commit,
         Self::Cancel,
+        Self::Verify,
         Self::None,
         Self::Null,
         Self::True,
