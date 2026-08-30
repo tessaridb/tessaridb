@@ -267,8 +267,13 @@ impl Parser<'_> {
         false
     }
 
+    /// Whether this punctuation stands at the cursor, without consuming it.
+    fn at_punct(&self, punct: Punct) -> bool {
+        self.peek() == Some(&Token::Punct(punct))
+    }
+
     fn eat_punct(&mut self, punct: Punct) -> bool {
-        if self.peek() == Some(&Token::Punct(punct)) {
+        if self.at_punct(punct) {
             self.position = self.position.saturating_add(1);
             return true;
         }

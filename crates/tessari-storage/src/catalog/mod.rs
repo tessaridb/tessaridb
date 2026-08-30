@@ -38,8 +38,8 @@ pub use authority::{Authority, Held, Kind, Reach};
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{
-    DatabaseDefinition, IndexDefinition, IndexShape, NamespaceDefinition, TableDefinition,
-    TableShape, VectorDistance,
+    DatabaseDefinition, IndexDefinition, IndexShape, NamespaceDefinition, RECORD_LEVEL,
+    TableDefinition, TableShape, VectorDistance,
 };
 pub use field::{FieldDefinition, FieldShape};
 pub use grant::GrantDefinition;

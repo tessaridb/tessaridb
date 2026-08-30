@@ -1,9 +1,13 @@
 # `INSERT`: several records at once, at identities the store produces.
 #
-# The statement `CREATE` is not. `CREATE` is handed an identity and asserts no
-# record holds it; this one asks the store for identities it has never used, and
-# answers with them. Both stay, and the file beside this one (`records`) is the
-# evidence that `CREATE` was left alone.
+# This is the batch form of a write the store names. `CREATE` writes one record;
+# this writes many, taking the fields once and the values per row. Both ask the
+# table for identities under the scheme it was declared with, and the file beside
+# this one (`records`) is the evidence that the addressed `CREATE` was left alone.
+#
+# The cases at the end are here because this file is where the two halves of one
+# identity space actually meet: rows the store named, and a record the caller
+# named, in the same table.
 
 --- case: the tenancy this file works in
 DEFINE NAMESPACE prod;
@@ -61,9 +65,37 @@ SELECT * FROM users WHERE score = 42;
 --- expect: rows 1
 
 --- case: `CREATE` is untouched — an identity may still be named
-CREATE users:1 = { name: 'katherine', email: 'katherine@example.com' };
+CREATE users:900 = { name: 'katherine', email: 'katherine@example.com' };
 --- expect: ok
 
 --- case: and naming one that is taken is still refused
+CREATE users:900 = { name: 'someone else' };
+--- expect: error RecordExists
+
+--- case: naming one the store already produced is refused for the same reason
 CREATE users:1 = { name: 'someone else' };
 --- expect: error RecordExists
+
+--- case: the caller's name does not move the counter — this is the sixth record
+INSERT INTO users (name) VALUES ('barbara');
+--- expect: keys 1
+
+--- case: and it landed at 6, not at 901
+SELECT * FROM users:6;
+--- expect: rows 1
+
+--- case: a generated identity walks past one the caller named
+CREATE users:7 = { name: 'named seven' };
+--- expect: ok
+
+--- case: so the next produced identity is 8 and not a refusal
+INSERT INTO users (name) VALUES ('grete');
+--- expect: keys 1
+
+--- case: 7 is still the record the caller wrote there
+SELECT * FROM users WHERE name = 'named seven';
+--- expect: rows 1
+
+--- case: and 8 is the one the store named
+SELECT * FROM users:8;
+--- expect: rows 1

@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 905 conformance cases define the language and run in the build.
+Unreleased. 912 conformance cases define the language and run in the build.
 
 ### Breaking — a table is not a document
 

@@ -146,7 +146,15 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // A written value may hold a read — `CREATE audit:1 = { copy: (SELECT
         // * FROM salaries) }` reaches `salaries` — so the value is walked
         // beside the target rather than trusted to be inert.
-        StatementKind::Create { target, value, .. } | StatementKind::Set { target, value } => {
+        // The table is reached whichever half of the target named it: a grant
+        // loop that saw only the addressed form would let the generated one
+        // through, which is the same silence this arm walks the value to avoid.
+        StatementKind::Create { target, value, .. } => {
+            let mut found = vec![target.table()];
+            found.extend(in_expr(value));
+            found
+        }
+        StatementKind::Set { target, value } => {
             let mut found = vec![&target.table];
             found.extend(in_expr(value));
             found

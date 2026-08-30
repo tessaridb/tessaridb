@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 use tessari_encoding::{Roles, decode_payload, encode_payload};
 use tessari_ql::{
-    Answer, Assignment, ColumnDeclaration, ConsumerSource, Edit, FieldMapping, FieldPath, Name,
-    RecordTarget, Span, StatementKind, TableChange, TableRef,
+    Answer, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, Edit, FieldMapping,
+    FieldPath, Name, RecordTarget, Span, StatementKind, TableChange, TableRef,
 };
 use tessari_storage::{
     Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, FieldShape, IndexDefinition, IndexShape,
@@ -16,6 +16,7 @@ use tessari_types::{
     Value,
 };
 
+use crate::context::Context;
 use crate::error::{Depended, Error, Result};
 use crate::evaluate::{key_bound, within};
 use crate::generate;
@@ -324,7 +325,7 @@ impl Session<'_> {
                 Ok(Outcome::Done)
             }
             StatementKind::Create {
-                target,
+                target: CreateTarget::Named(target),
                 value,
                 answer,
             } => {
@@ -344,6 +345,11 @@ impl Session<'_> {
                 self.put_record(transaction, address, payload.clone(), span)?;
                 Ok(answered(*answer, Value::None, payload))
             }
+            StatementKind::Create {
+                target: CreateTarget::Generated(table),
+                value,
+                answer,
+            } => self.create_named_by_the_store(transaction, table, value, *answer, span),
             StatementKind::Insert {
                 table,
                 columns,
@@ -576,6 +582,147 @@ impl Session<'_> {
         Ok(())
     }
 
+    /// Write one record the store names itself: `CREATE users = { … }`.
+    ///
+    /// # Why this is the path the documentation leads with
+    ///
+    /// Asking a caller to invent a name per record is asking for the collision
+    /// they will eventually write, and it puts a decision in front of every
+    /// example that the store is better placed to make. The addressed form
+    /// stays for the caller who has a name already — an import, a migration, a
+    /// foreign key — which is the case it was always right for.
+    ///
+    /// # What it answers with, and why the identity is the default answer
+    ///
+    /// Without a `RETURN` clause this answers the produced identity rather than
+    /// [`Outcome::Done`]. `Done` would be the one honest thing it must not say:
+    /// the caller did not choose the identity, cannot derive it, and has no
+    /// second statement that would find the record again — so a write that
+    /// reported only that it happened would be a write nothing can reach.
+    /// `RETURN AFTER` still answers the record, because a caller who asked for
+    /// the record asked for the record.
+    ///
+    /// The shape is [`Outcome::Keys`], which is what `INSERT` already answers
+    /// with for the same reason. One shape for one idea, so the surface that
+    /// renders it has one arm to add rather than two to keep in step — this
+    /// project's own scar on that is `plan/reported.rs`.
+    fn create_named_by_the_store(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: &TableRef,
+        value: &tessari_ql::Expr,
+        answer: Answer,
+        span: Span,
+    ) -> Result<Outcome> {
+        let (context, id) = self.resolve_table(transaction, table)?;
+        // The same refusal `Session::writable` gives, reached directly for the
+        // same reason `insert` reaches it directly: that one takes a record
+        // target and this statement names no record.
+        if Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|found| found.bucket)
+        {
+            return Err(Error::NotWrittenByHand {
+                table: table.name.text.clone(),
+                span: table.span,
+            });
+        }
+        // Evaluated before the identity is allocated, so a value that refuses
+        // does not spend a number. The counter is transactional and would roll
+        // back anyway; not spending it keeps the sequence gapless for a reader,
+        // and a gap in a sequence reads as a deletion.
+        let payload = self.evaluate(transaction, value)?;
+        let payload = self.with_defaults(transaction, id, payload)?;
+        // Free by construction — `free_identity` does the read that establishes
+        // it, so nothing here writes over a record that was already there.
+        let identity = self.free_identity(transaction, &context, id, table.span)?;
+        let address = RecordAddress::new(context.namespace, context.database, id, identity.clone());
+        self.put_record(transaction, address, payload.clone(), span)?;
+        Ok(match answer {
+            Answer::After => Outcome::Value(payload),
+            _ => Outcome::Keys(vec![identity]),
+        })
+    }
+
+    /// An identity the table will give a record it is not given a name for, and
+    /// which no record in it holds.
+    ///
+    /// # Why the scheme is the table's
+    ///
+    /// It is read from the declaration rather than decided here. A store that
+    /// chose per statement would name records into one table under two schemes,
+    /// and afterwards nothing could say which one a missing record had been
+    /// written under. A table with no stored scheme reads [`IdentityKind::Int`],
+    /// which is the default `DEFINE TABLE` writes and what the declaration would
+    /// have said had the choice existed when that table was made.
+    ///
+    /// # Why the counter walks past an identity somebody named
+    ///
+    /// One table has **one** identity space, and the caller may write into it by
+    /// hand: `CREATE users:1` and `CREATE users = { … }` address the same table.
+    /// A counter that started at 1 against a table whose low identities were
+    /// imported would collide, and — because a refusal discards the counter's
+    /// advance along with the rest of the transaction — it would collide again
+    /// on the next attempt, and every attempt after that. That is not a bad
+    /// error message; it is a table that can never again be written to without
+    /// naming the record. So the counter advances until it finds an identity
+    /// nothing holds.
+    ///
+    /// **The cost is a read per identity walked past, and it is paid once.** The
+    /// counter keeps its advance when the statement commits, so the skipping is
+    /// amortised over the table's life rather than repeated. The shape that is
+    /// genuinely slow is a table given millions of named identities from 1
+    /// upwards and *then* asked to generate — one statement pays for all of
+    /// them. `IDENTITY uuid` is the declaration for a table expecting that, and
+    /// it needs no counter at all.
+    ///
+    /// A repeated **UUID** is not walked past. It cannot happen unless the
+    /// machine's randomness is broken, and a store that quietly drew again would
+    /// be hiding that rather than reporting it.
+    fn free_identity(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: &Context,
+        table: TableId,
+        span: Span,
+    ) -> Result<RecordId> {
+        let kind = Catalog::new(transaction)
+            .table(table)?
+            .map_or_else(IdentityKind::default, |found| found.identity);
+        loop {
+            let identity = match kind {
+                IdentityKind::Uuid => RecordId::Uuid(generate::uuid_v7(span)?),
+                IdentityKind::Int => {
+                    let number = Catalog::new(transaction).next_record_number(table)?;
+                    // The counter is a `u64` and a record identity is an `i64`,
+                    // so the boundary is crossed with a check rather than an
+                    // `as`. It cannot refuse — the counter declines to *store* a
+                    // number past `i64::MAX`, so a number it answered is one
+                    // this store can spend — and the branch is written anyway
+                    // because a cast that wrapped here would hand out an
+                    // identity that already names a record, silently.
+                    let held = i64::try_from(number).map_err(|_| {
+                        tessari_storage::Error::IdSpaceExhausted {
+                            level: tessari_storage::RECORD_LEVEL,
+                        }
+                    })?;
+                    RecordId::Int(held)
+                }
+            };
+            let address =
+                RecordAddress::new(context.namespace, context.database, table, identity.clone());
+            if transaction.get(&address)?.is_none() {
+                return Ok(identity);
+            }
+            if matches!(kind, IdentityKind::Uuid) {
+                return Err(Error::RecordExists {
+                    id: identity.to_string(),
+                    span,
+                });
+            }
+        }
+    }
+
     /// Write a batch of records the store names itself.
     ///
     /// # One transaction, and why that needs no code here
@@ -590,11 +737,11 @@ impl Session<'_> {
     ///
     /// # Why the produced identity is checked against the store
     ///
-    /// [`generate::uuid_v7`] cannot hand back an identity the store already
-    /// holds unless the machine's randomness is broken, and a store that writes
-    /// over a record in that case loses it with nothing anywhere to notice —
-    /// the same reasoning `CREATE` gives for refusing an occupied identity.
-    /// A read per row is what that costs.
+    /// [`Self::free_identity`] does the read that makes the identity free, and a
+    /// read per row is what that costs. A store that skipped it and wrote over a
+    /// record would lose it with nothing anywhere to notice — and the case is not
+    /// hypothetical, because the caller may name identities in this same table
+    /// by hand.
     ///
     /// The refusal tells the caller nothing they could have used: they did not
     /// choose the identity and cannot choose the next one, so this is not the
@@ -631,15 +778,9 @@ impl Session<'_> {
             }
             let payload = self.with_defaults(transaction, id, Value::Object(fields))?;
 
-            let identity = RecordId::Uuid(generate::uuid_v7(table.span)?);
+            let identity = self.free_identity(transaction, &context, id, table.span)?;
             let address =
                 RecordAddress::new(context.namespace, context.database, id, identity.clone());
-            if transaction.get(&address)?.is_some() {
-                return Err(Error::RecordExists {
-                    id: identity.to_string(),
-                    span: table.span,
-                });
-            }
             self.put_record(transaction, address, payload, span)?;
             produced.push(identity);
         }

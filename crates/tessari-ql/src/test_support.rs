@@ -33,8 +33,8 @@
 //! exhaustive matches below are what keep it complete as the language grows.
 
 use crate::ast::{
-    Edit, Expr, ExprKind, FieldPath, InfoSubject, JoinSide, Name, Projection, ReachRef,
-    RecordTarget, Script, Select, Source, Statement, StatementKind, TableRef, UserChange,
+    CreateTarget, Edit, Expr, ExprKind, FieldPath, InfoSubject, JoinSide, Name, Projection,
+    ReachRef, RecordTarget, Script, Select, Source, Statement, StatementKind, TableRef, UserChange,
     UserGrant, Written,
 };
 use crate::token::Span;
@@ -241,9 +241,14 @@ fn erase_statement(statement: &mut Statement) {
                 }
             }
         }
-        StatementKind::Create { target, value, .. }
-        | StatementKind::Set { target, value }
-        | StatementKind::Put { target, value, .. } => {
+        StatementKind::Create { target, value, .. } => {
+            match target {
+                CreateTarget::Named(named) => erase_record(named),
+                CreateTarget::Generated(table) => erase_table(table),
+            }
+            erase_expr(value);
+        }
+        StatementKind::Set { target, value } | StatementKind::Put { target, value, .. } => {
             erase_record(target);
             erase_expr(value);
         }

@@ -41,8 +41,8 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use argon2::{Algorithm, Argon2, Params, Version};
 use tessari_constants::{PASSWORD_HASH_LANES, PASSWORD_HASH_MEMORY_KIB, PASSWORD_HASH_PASSES};
 use tessari_ql::{
-    Expr, ExprKind, InfoSubject, Name, Password, ReachRef, Span, StatementKind, UserChange,
-    UserGrant,
+    CreateTarget, Expr, ExprKind, InfoSubject, Name, Password, ReachRef, Span, StatementKind,
+    UserChange, UserGrant,
 };
 use tessari_storage::{Authority, Catalog, Held, Kind, Reach, Role, Transaction, UserDefinition};
 
@@ -500,8 +500,8 @@ impl Needs {
             | StatementKind::AlterField { .. }
             | StatementKind::DefineAnalyzer { .. }
             | StatementKind::DropAnalyzer { .. } => Self::MANAGE,
-            // **The three writes that are also reads**, and the classification
-            // is measured rather than reasoned. `CREATE t:1` on an existing
+            // **The writes that are also reads**, and the classification is
+            // measured rather than reasoned. `CREATE t:1` on an existing
             // record refuses with *record 1 already exists* and `UPDATE t:99` on
             // an absent one with *no record 99* — each is defined by a claim
             // about prior state, so each answers a question about it.
@@ -514,7 +514,13 @@ impl Needs {
             // refused — an oracle over record ids is exactly what turns a
             // write-only integration credential into an enumeration tool, and
             // `UPSERT` is the supported answer that needs nothing extra.
-            StatementKind::Create { .. }
+            // Only the **addressed** create is an oracle. The caller picked the
+            // identity, so the refusal answers a question they asked about
+            // prior state — which is what the paragraph above is about.
+            StatementKind::Create {
+                target: CreateTarget::Named(_),
+                ..
+            }
             | StatementKind::Update { .. }
             | StatementKind::DeleteWhere { .. } => Self::READ_WRITE,
             // **The six that are measurably silent about prior state.** Every
@@ -523,6 +529,15 @@ impl Needs {
             // which is what makes a pure ingestion identity a real thing here
             // rather than a theoretical one.
             StatementKind::Upsert { .. }
+            // `CREATE users = { … }` is the single-record shape of the same
+            // thing `INSERT` is below: the store chose the identity, so the
+            // caller cannot name the one that would conflict and cannot name
+            // the next one either. Its only refusal is a store whose randomness
+            // or counter is broken, which tells an attacker nothing.
+            | StatementKind::Create {
+                target: CreateTarget::Generated(_),
+                ..
+            }
             // `INSERT` writes at an identity the **store** chose, so there is no
             // claim about prior state a caller could have made and no answer
             // they could read one from: they cannot name the identity that would

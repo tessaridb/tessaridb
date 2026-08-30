@@ -514,7 +514,14 @@ pub(crate) fn count_of(value: &Value, entity: &'static str, field: &'static str)
 }
 
 /// The level a record counter reports when it runs out.
-pub(crate) const RECORD_LEVEL: &str = "record";
+///
+/// Public because the caller that turns a counter into a
+/// [`tessari_types::RecordId`] narrows a `u64` to an `i64` to do it, and must
+/// name the same level in the refusal. That narrowing cannot fail — [`count`]
+/// refuses to store a number past `i64::MAX`, so a number this store answered
+/// is a number it can spend — but "cannot fail" is not something to write an
+/// `unwrap` on, and the refusal it would need already exists here.
+pub const RECORD_LEVEL: &str = "record";
 
 pub(crate) fn object<'a>(
     value: &'a Value,

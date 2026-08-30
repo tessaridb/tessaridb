@@ -4,10 +4,10 @@ use super::Parser;
 use tessari_types::{Assertion, FieldKind, Filter, IdentityKind, Path, Step};
 
 use crate::ast::{
-    Answer, Assignment, ColumnDeclaration, ConsumerSource, Direction, Edit, Expr, ExprKind,
-    FieldMapping, FieldPath, Hop, InfoSubject, JoinSide, Name, OnFailure, Password, Projection,
-    RangeExpr, ReachRef, RecordTarget, Select, Source, Statement, StatementKind, TableChange,
-    TableRef, UserChange, UserGrant, Written,
+    Answer, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, Direction, Edit, Expr,
+    ExprKind, FieldMapping, FieldPath, Hop, InfoSubject, JoinSide, Name, OnFailure, Password,
+    Projection, RangeExpr, ReachRef, RecordTarget, Select, Source, Statement, StatementKind,
+    TableChange, TableRef, UserChange, UserGrant, Written,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -1195,9 +1195,25 @@ impl Parser<'_> {
     }
 
     /// The three statements shaped `<verb> <target> = <value>`.
+    ///
+    /// `CREATE` is the one whose target may stop at the table. The record it
+    /// writes does not exist yet, so there is nothing for an address to point
+    /// at, and the identity's absence is what asks the store to name it. The
+    /// other verbs here change a record that is already there, where an address
+    /// is the honest shape and stays required.
     fn write_statement(&mut self, verb: Keyword) -> Result<StatementKind> {
         self.advance();
-        let target = self.record_target()?;
+        let table = self.table_ref()?;
+        if matches!(verb, Keyword::Create) && !self.at_punct(Punct::Colon) {
+            self.expect_punct(Punct::Equals, "`=` and the value to write")?;
+            let value = self.expression()?;
+            return Ok(StatementKind::Create {
+                target: CreateTarget::Generated(table),
+                value,
+                answer: self.answer(verb)?,
+            });
+        }
+        let target = self.record_target_after(table)?;
         // `SET` is a key-value verb elsewhere and a clause here, which is the
         // trick this grammar already plays with `ORDER`, `FETCH` and `VECTOR`:
         // nothing but a clause can stand in this position, so nothing is
@@ -1228,7 +1244,7 @@ impl Parser<'_> {
             }
             Keyword::Set => StatementKind::Set { target, value },
             _ => StatementKind::Create {
-                target,
+                target: CreateTarget::Named(target),
                 value,
                 answer: self.answer(verb)?,
             },

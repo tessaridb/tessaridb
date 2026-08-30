@@ -25,11 +25,11 @@ pub mod test_support;
 mod token;
 
 pub use ast::{
-    Aggregate, Answer, ArithmeticOp, Assignment, ColumnDeclaration, ConsumerSource, DeleteBound,
-    Direction, Edit, Expr, ExprKind, Field, FieldMapping, FieldPath, Hop, Identity, InfoSubject,
-    JoinSide, Name, OnFailure, Ordering, Password, Projected, Projection, RangeExpr, ReachRef,
-    RecordTarget, Retention, Script, Select, Source, Statement, StatementKind, TableChange,
-    TableRef, Timeout, UserChange, UserGrant, Using, Version, Written,
+    Aggregate, Answer, ArithmeticOp, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget,
+    DeleteBound, Direction, Edit, Expr, ExprKind, Field, FieldMapping, FieldPath, Hop, Identity,
+    InfoSubject, JoinSide, Name, OnFailure, Ordering, Password, Projected, Projection, RangeExpr,
+    ReachRef, RecordTarget, Retention, Script, Select, Source, Statement, StatementKind,
+    TableChange, TableRef, Timeout, UserChange, UserGrant, Using, Version, Written,
 };
 pub use bind::Parameters;
 pub use error::{Error, Result};

@@ -1367,6 +1367,7 @@ here pretends otherwise.
 ## 5. Record statements
 
 ```
+CREATE users = { name: 'ada', email: 'ada@example.com' };
 CREATE users:1 = { name: 'ada', email: 'ada@example.com' };
 
 SELECT * FROM users:1;
@@ -1535,6 +1536,61 @@ into the record — `visits + 1` is the record's `visits`, the same reading a
 schema, the defaults, the indexes, the change feed and the grants all apply to it
 without knowing which shape produced it.
 
+### Who names the record
+
+```
+CREATE users = { name: 'ada' };        -- the store names it, and answers with the name
+CREATE users:1 = { name: 'ada' };      -- the caller already has a name for it
+```
+
+**The identity's absence is the whole difference.** There is no second verb and
+no flag: `CREATE users = { … }` says the caller has a record and no name for it,
+and `CREATE users:1 = { … }` says they have both. Write the first unless you have
+a reason for the second — a natural key, an import that must keep the identity it
+came with, a foreign key something else already holds.
+
+**The generated form answers with the identity it produced.** Not `done`: the
+caller did not choose the identity, cannot derive it, and has no second statement
+that would find the record again, so a write reporting only that it happened
+would be a write nothing can reach. `RETURN AFTER` still answers with the record.
+
+**What the identity is depends on the table, not on the statement.** By default a
+table counts its own records from `1` upwards, which makes them sort in the order
+they were written and a read of the most recent ones a bounded scan of adjacent
+keys. A table declared `IDENTITY uuid` mints a UUIDv7 instead — the right choice
+when identities must not disclose how many records the table holds, or must be
+minted by many writers without a shared counter:
+
+```
+DEFINE COLLECTION sessions IDENTITY uuid;
+CREATE sessions = { token: 'abc' };    -- 0195e0a1-… rather than 1
+```
+
+The counter is per table, so two tables number independently, and it is allocated
+inside the writing transaction — so two concurrent writers cannot receive the same
+number, and one of them retries. That cost is real and worth knowing: under
+concurrent writes to one table, the counter is a contended key. A table expecting
+many independent writers is the case `IDENTITY uuid` exists for.
+
+**The two forms share one identity space, and the counter walks around what you
+named.** Writing `users:9` by hand does not advance the counter — it is still on
+`1` — and when the counter does reach an identity a record already holds, it
+moves past it rather than refusing. It has to: a refusal would discard the
+counter's advance along with the rest of the transaction, so the very next
+attempt would collide in the same place, and a table whose low identities were
+imported could never again be written to without naming the record.
+
+**What that costs, and when to avoid it.** One read per identity walked past,
+paid once — the counter keeps its advance, so the skipping is not repeated. The
+shape that is genuinely slow is a table given millions of named identities from
+`1` upwards and *then* asked to generate: one statement pays for all of them.
+That table wants `IDENTITY uuid`, which needs no counter.
+
+**`UPDATE`, `UPSERT`, `DELETE`, `SET` and reads still take an address.** Each of
+them is pointing at a record that already exists, where `users:1` is the honest
+shape; only the statement that brings a record into being can be the one that does
+not name it.
+
 ### Several records at once, at identities the store produces
 
 ```
@@ -1546,11 +1602,10 @@ INSERT INTO users (name, email) VALUES
   ('edsger', 'edsger@example.com');
 ```
 
-`CREATE` is handed an identity and asserts that no record holds it. This one asks
-the store for identities it has never used, and answers with them. They are two
-words rather than one word with a flag because they differ in what the caller may
-do: a caller holding a natural key writes `CREATE`, and a caller loading records
-that carry none writes this.
+This is the **batch** form of the write above. `CREATE` writes one record; this
+writes many in one statement, taking the fields once and the values per row, which
+is the shape a load has. Both ask the table for identities under the scheme it was
+declared with, and both answer with what they produced.
 
 **It always answers with the identities it produced, in the order the rows were
 written.** There is no clause to ask for that and none to switch it off. A caller
@@ -1593,7 +1648,9 @@ replaced.
 
 **The clause is absent by default**, and a write without it still answers `done`.
 A store that shipped the changed record back on every write would make the common
-case pay for the rare one.
+case pay for the rare one. The one exception is `CREATE <table> = { … }`, which
+answers with the identity it produced — that is not the record, and it is the one
+thing the caller could not have known.
 
 Two pairings are **refused** rather than answered: `CREATE … RETURN BEFORE` and
 `DELETE … RETURN AFTER`. Each could only ever answer `NONE`, and answering

@@ -33,8 +33,8 @@ use tessari_types::Value;
 use tessari_types::{Number, RecordId};
 
 use crate::ast::{
-    Edit, Expr, ExprKind, Identity, JoinSide, Projection, RangeExpr, RecordTarget, Script, Select,
-    Source, Statement, StatementKind,
+    CreateTarget, Edit, Expr, ExprKind, Identity, JoinSide, Projection, RangeExpr, RecordTarget,
+    Script, Select, Source, Statement, StatementKind,
 };
 use crate::error::{Error, Result};
 use crate::token::Span;
@@ -160,9 +160,15 @@ impl Statement {
 /// this stays complete as the language grows.
 fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()> {
     match kind {
-        StatementKind::Create { target, value, .. }
-        | StatementKind::Set { target, value }
-        | StatementKind::Put { target, value, .. } => {
+        // A generated identity holds no parameter to replace: the statement
+        // never wrote an id, so there is no position for one to have stood in.
+        StatementKind::Create { target, value, .. } => {
+            if let CreateTarget::Named(named) = target {
+                bind_target(named, binding)?;
+            }
+            bind_expr(value, binding)
+        }
+        StatementKind::Set { target, value } | StatementKind::Put { target, value, .. } => {
             bind_target(target, binding)?;
             bind_expr(value, binding)
         }

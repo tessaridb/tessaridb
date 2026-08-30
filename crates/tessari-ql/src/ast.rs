@@ -564,10 +564,11 @@ pub enum StatementKind {
         /// The table it indexes.
         table: TableRef,
     },
-    /// `CREATE users:1 = { … }`
+    /// `CREATE users = { … }` — or `CREATE users:1 = { … }` when the caller has
+    /// a name for the record already.
     Create {
-        /// The record to write.
-        target: RecordTarget,
+        /// Where the record goes, and who named it.
+        target: CreateTarget,
         /// Its whole content.
         value: Expr,
         /// What the statement answers with. `BEFORE` is refused: there was no
@@ -2177,6 +2178,42 @@ pub struct RecordTarget {
     pub id: Identity,
     /// Where the whole reference sits.
     pub span: Span,
+}
+
+/// Who names the record a `CREATE` writes.
+///
+/// The verb carries the meaning and the identity's **absence** is the whole
+/// signal: `CREATE users = { … }` says the caller has a record and no name for
+/// it, and `CREATE users:1 = { … }` says they have both. Nothing else in the
+/// statement changes, which is why this is a target rather than a second verb.
+///
+/// # Why this is not a third [`Identity`] variant
+///
+/// `Identity` stands in `UPDATE`, `UPSERT`, `DELETE`, `GET`, `PUT`, `RELATE`
+/// and every graph reference, and in every one of them the caller is pointing
+/// at a record that already exists. *Generated* has no reading there. A variant
+/// added to `Identity` would be representable in seven statements to serve one,
+/// and [`Identity::fixed`] would have to invent an error for a case its own
+/// grammar can never produce. Keeping the choice here means the type says which
+/// statements can be written without a name — and the compiler enforces it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateTarget {
+    /// `CREATE users:1 = { … }` — the caller names the record.
+    Named(RecordTarget),
+    /// `CREATE users = { … }` — the store names it, under the scheme the table
+    /// was declared with.
+    Generated(TableRef),
+}
+
+impl CreateTarget {
+    /// The table the record is written to, either way.
+    #[must_use]
+    pub const fn table(&self) -> &TableRef {
+        match self {
+            Self::Named(target) => &target.table,
+            Self::Generated(table) => table,
+        }
+    }
 }
 
 #[cfg(test)]
