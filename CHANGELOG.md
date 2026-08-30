@@ -46,6 +46,21 @@ became a reserved word; a field or table named `schemaless` needs renaming.
   order the rows were written. `CREATE` is unchanged and still asserts an
   identity the caller names.
 - **`DEFINE COLLECTION`** — see above.
+- **`INFO FOR TABLE` carries a `definition`** — the table, its fields and its
+  indexes as TessariQL that re-creates them, rendered from the catalog at the
+  moment of the read. Reading a schema and re-creating one become one operation.
+  It is withheld rather than approximated: a part with no faithful spelling
+  makes the whole definition absent and an `undefinable` field names the part,
+  because a script that nearly re-creates a table is worse than none — it runs.
+  A caller whose field grant hides part of the table gets `undefinable` too,
+  since a declaration built from a narrowed list claims to re-create a table it
+  would not re-create.
+- **`INFO FOR TABLE` reports two things the catalog already stored.**
+  `collection` says the table was declared with `DEFINE COLLECTION` rather than
+  being a `SCHEMALESS` table that behaves alike, and an index now reports
+  `spatial` alongside `unique` and `search`. Both were absent from the report
+  while present in the store, so a collection described as a lenient table and a
+  spatial index described as an ordinary one were reports that read as complete.
 
 ### Security
 

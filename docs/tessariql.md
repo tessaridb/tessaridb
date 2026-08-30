@@ -3790,13 +3790,47 @@ kept beside it — so a report cannot describe a schema the store no longer has:
 
 ```json
 {"table": "users", "schemafull": true, "edge": false, "bucket": false,
+ "collection": false,
+ "definition": "DEFINE TABLE users SCHEMAFULL;\nDEFINE FIELD email ON users TYPE string REQUIRED;\nDEFINE INDEX by_email ON users FIELDS email UNIQUE;\n",
  "fields": [{"name": "email", "type": "string", "required": true}],
- "indexes": [{"name": "by_email", "fields": ["email"], "unique": true, "search": false}]}
+ "indexes": [{"name": "by_email", "fields": ["email"], "unique": true,
+              "search": false, "spatial": false}]}
 ```
 
 Names come back in **name order** rather than in the order they were declared,
 so two stores built from the same schema by differently ordered scripts describe
 themselves identically.
+
+### The declaration, written back out
+
+`INFO FOR TABLE` carries a **`definition`**: the table, its fields and its
+indexes as TessariQL that re-creates them. Reading a schema and re-creating one
+are then the same operation rather than two, and the second no longer depends on
+somebody having kept the script that made the first.
+
+It is rendered from the catalog at the moment of the read, like every other part
+of the report — not a copy of the statement that was once run, which is why it
+describes what the store holds now rather than what it was once told.
+
+Three properties are worth knowing before it is relied on.
+
+**It says every flag out loud.** `SCHEMAFULL` and `SCHEMALESS` are always
+written even where the default would supply them, because a script that leans on
+a default means something different after the default moves — and it changes
+meaning silently, in a file somebody kept.
+
+**It is withheld rather than approximated.** A part with no faithful spelling —
+a constraint comparing against a duration, say, which has a literal the store
+cannot yet write back — makes the whole `definition` absent, and an
+**`undefinable`** field names the part instead. There is no third outcome: a
+declaration that nearly re-creates a table is worse than none, because it runs.
+
+**A caller who cannot see the whole table gets none of it.** A field grant
+narrows the `fields` and `indexes` lists, and that narrowed list is a truthful
+*description*. A declaration built from it would not be: it claims to re-create
+the table and would re-create a different one, and it would disclose through the
+definition exactly what the grant removes from every read that caller makes. So
+those callers get `undefinable` too.
 
 A namespace and a database are the **selected** ones. A caller asking about
 another says `USE`, which is where this store already answers the tenancy

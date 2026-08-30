@@ -28,11 +28,19 @@
 //!
 //! # Read from the catalog, never from a rendering kept beside it
 //!
-//! Every value below comes from a `Catalog` reader. Nothing is cached, nothing
-//! is written at declaration time to be read back here, and no statement text is
-//! reconstructed — so a report cannot describe a schema the store no longer has.
-//! An assertion is reported as the value the catalog stores, which is the
-//! constraint itself rather than the sentence that once described it.
+//! Every value below comes from a `Catalog` reader. Nothing is cached and
+//! nothing is written at declaration time to be read back here, so a report
+//! cannot describe a schema the store no longer has. An assertion is reported as
+//! the value the catalog stores, which is the constraint itself rather than the
+//! sentence that once described it.
+//!
+//! `INFO FOR TABLE` also carries a `definition` — the declaration written back
+//! out as TessariQL — and that is the same rule rather than an exception to it.
+//! The text is rendered from the catalog **at the moment of the read**, from the
+//! very lists this report is built from, and it is never a rendering kept beside
+//! the definition to be handed back later. `describe.rs` holds the rendering and
+//! the rule that governs it: nothing is written on a guess, so a declaration
+//! with a part that has no faithful spelling is withheld and the part is named.
 
 use std::collections::BTreeMap;
 
@@ -46,6 +54,7 @@ use tessari_storage::{
 };
 use tessari_types::{DatabaseId, NamespaceId, TableId, Value};
 
+use crate::describe;
 use crate::error::{Error, Result};
 use crate::identity::Identity;
 use crate::outcome::Outcome;
@@ -179,27 +188,34 @@ impl Session<'_> {
         let mut indexes = catalog.indexes_on(id)?;
         fields.sort_by(|left, right| left.name.cmp(&right.name));
         indexes.sort_by(|left, right| left.name.cmp(&right.name));
+        let declared = (fields.len(), indexes.len());
+        fields.retain(|field| readable_field(&visible, &field.name));
+        indexes.retain(|index| readable_index(&visible, index));
+        let whole = declared == (fields.len(), indexes.len());
         let mut report = shape_of(&definition);
         report.insert(
             "fields".to_owned(),
-            Value::Array(
-                fields
-                    .iter()
-                    .filter(|field| readable_field(&visible, &field.name))
-                    .map(described_field)
-                    .collect(),
-            ),
+            Value::Array(fields.iter().map(described_field).collect()),
         );
         report.insert(
             "indexes".to_owned(),
-            Value::Array(
-                indexes
-                    .iter()
-                    .filter(|index| readable_index(&visible, index))
-                    .map(described_index)
-                    .collect(),
-            ),
+            Value::Array(indexes.iter().map(described_index).collect()),
         );
+        let (key, held) = match describe::declaration(&definition, &fields, &indexes) {
+            // A narrowed view gets no script. The report above is already the
+            // subset this caller may read, and that is a truthful *description*;
+            // a **declaration** built from the same subset is not, because it
+            // claims to re-create the table and would re-create a different one.
+            // Handing it over would also disclose through the definition exactly
+            // what the field grant removes from every read they make.
+            Ok(_) if !whole => (
+                "undefinable",
+                "fields or indexes of this table are hidden from this caller".to_owned(),
+            ),
+            Ok(script) => ("definition", script),
+            Err(unwritable) => ("undefinable", unwritable.part),
+        };
+        report.insert(key.to_owned(), Value::from(held.as_str()));
         Ok(report)
     }
 
@@ -841,6 +857,11 @@ fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> {
         ("schemafull".to_owned(), Value::Bool(definition.schemafull)),
         ("edge".to_owned(), Value::Bool(definition.edge)),
         ("bucket".to_owned(), Value::Bool(definition.bucket)),
+        // Reported because it is **stored** and behaves like nothing else in the
+        // report: a collection and a `SCHEMALESS` table accept the same writes,
+        // so a report that omitted this would describe the two identically and a
+        // declaration rebuilt from it would silently lose the word.
+        ("collection".to_owned(), Value::Bool(definition.collection)),
     ])
 }
 
@@ -881,6 +902,10 @@ fn described_index(index: &IndexDefinition) -> Value {
         ),
         ("unique".to_owned(), Value::Bool(index.unique)),
         ("search".to_owned(), Value::Bool(index.search)),
+        // The fourth kind. It was missing here while the catalog has carried it
+        // all along, so a spatial index read back as an ordinary one — a report
+        // that said the index answers ranges when it answers cells.
+        ("spatial".to_owned(), Value::Bool(index.spatial)),
     ]);
     if let Some(distance) = index.vector {
         described.insert("vector".to_owned(), Value::from(distance.name()));

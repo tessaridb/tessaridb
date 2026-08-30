@@ -30,6 +30,7 @@ mod collection;
 mod condition;
 mod consume;
 mod context;
+mod describe;
 mod digest;
 mod effect;
 mod error;

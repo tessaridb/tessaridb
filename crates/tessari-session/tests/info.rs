@@ -481,3 +481,165 @@ fn a_grant_outliving_the_table_it_names_reports_the_absence() {
     };
     assert_eq!(grant.get("table"), Some(&Value::None));
 }
+
+// The declaration a report carries, and the round trip that is the only proof
+// it is a declaration rather than a sentence that resembles one.
+//
+// A description can be checked by reading it. A declaration cannot: it is a
+// claim about what running it would produce, and the only way to check a claim
+// about running something is to run it. So every test below carries the script
+// to a **second, empty store** and compares the report it gets there with the
+// report it came from. Comparing whole reports rather than chosen fields is
+// deliberate — a field nobody thought to assert is exactly the field a
+// declaration silently drops.
+
+/// One named part of a report, as text.
+fn text(report: &Value, field: &str) -> Option<String> {
+    let Value::Object(fields) = report else {
+        panic!("expected an object, got {report:?}");
+    };
+    match fields.get(field) {
+        Some(Value::String(held)) => Some(held.clone()),
+        None => None,
+        other => panic!("expected {field} to be text in {other:?}"),
+    }
+}
+
+/// An empty store with the same tenancy selected, and nothing else.
+fn elsewhere(store: &Store) -> Session<'_> {
+    let mut session = Session::new(store);
+    session
+        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;")
+        .unwrap();
+    session
+}
+
+#[test]
+fn a_definition_re_creates_the_table_it_describes() {
+    let store = store();
+    let mut session = ready(&store);
+    // Every part of a field declaration at once, because each is rendered by a
+    // different branch and a script that carries four of five is the failure
+    // this test exists to catch.
+    session
+        .run(
+            "DEFINE FIELD tier ON staff TYPE 'draft' | 'live' REQUIRED DEFAULT 'draft';\n\
+             DEFINE FIELD level ON staff TYPE int ASSERT ($value > 0 AND $value < 150);\n\
+             DEFINE FIELD note ON staff TYPE string ASSERT $value != 'it\\'s';\n\
+             DEFINE INDEX by_tier ON staff FIELDS tier UNIQUE;",
+        )
+        .unwrap();
+
+    let described = report(&mut session, "INFO FOR TABLE staff;");
+    let script = text(&described, "definition").expect("a definition");
+
+    // `store` is the local binding by now, so the helper is named through the
+    // module rather than shadowed out of reach.
+    let second = self::store();
+    let mut fresh = elsewhere(&second);
+    fresh
+        .run(&script)
+        .unwrap_or_else(|error| panic!("the definition did not run: {error}\n{script}"));
+
+    let again = report(&mut fresh, "INFO FOR TABLE staff;");
+    assert_eq!(described, again, "\nfrom:\n{script}");
+}
+
+#[test]
+fn a_collection_is_declared_back_as_a_collection_and_not_as_a_lenient_table() {
+    // The two accept the same writes, so a round trip that only compared
+    // behaviour would pass while the word was lost. The report carries the flag
+    // and the script carries the word, and this asserts both — the flag because
+    // it is what makes the comparison able to fail, and the word because the
+    // flag could be reported and still not reach the text.
+    let store = store();
+    let mut session = ready(&store);
+    let described = report(&mut session, "INFO FOR TABLE orders;");
+    let Value::Object(fields) = &described else {
+        panic!("expected an object");
+    };
+    assert_eq!(fields.get("collection"), Some(&Value::Bool(true)));
+
+    let script = text(&described, "definition").expect("a definition");
+    assert!(
+        script.contains("DEFINE COLLECTION orders"),
+        "a collection was declared back as something else:\n{script}"
+    );
+
+    // `store` is the local binding by now, so the helper is named through the
+    // module rather than shadowed out of reach.
+    let second = self::store();
+    let mut fresh = elsewhere(&second);
+    fresh.run(&script).unwrap();
+    assert_eq!(described, report(&mut fresh, "INFO FOR TABLE orders;"));
+}
+
+#[test]
+fn a_spatial_index_is_reported_and_declared_as_spatial() {
+    // A spatial index writes the cells covering a shape; an ordinary one writes
+    // the value. The report carried three of the four kinds and a spatial index
+    // read back as ordinary — a report saying the index answers ranges when it
+    // answers candidates.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE FIELD ground ON staff TYPE geometry;\n\
+             DEFINE INDEX by_ground ON staff FIELDS ground SPATIAL;",
+        )
+        .unwrap();
+
+    let described = report(&mut session, "INFO FOR TABLE staff;");
+    let script = text(&described, "definition").expect("a definition");
+    assert!(script.contains("SPATIAL"), "{script}");
+
+    // `store` is the local binding by now, so the helper is named through the
+    // module rather than shadowed out of reach.
+    let second = self::store();
+    let mut fresh = elsewhere(&second);
+    fresh.run(&script).unwrap();
+    assert_eq!(described, report(&mut fresh, "INFO FOR TABLE staff;"));
+}
+
+#[test]
+fn a_caller_who_may_not_see_every_field_gets_no_definition_at_all() {
+    // The report is narrowed for this caller and that is a truthful
+    // *description*. A **declaration** built from the same subset is not: it
+    // claims to re-create the table and would re-create a different one, and it
+    // would disclose through the definition precisely what the field grant
+    // removes from every read they make.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run("GRANT read ON staff FIELDS name TO ada;")
+        .unwrap();
+
+    let mut ada = signed_in(&store, "ada");
+    let described = report(&mut ada, "INFO FOR TABLE staff;");
+    assert_eq!(text(&described, "definition"), None);
+    let said = text(&described, "undefinable").expect("a reason");
+    assert!(said.contains("hidden"), "{said}");
+    assert!(
+        !said.contains("salary"),
+        "the reason named the hidden field"
+    );
+}
+
+#[test]
+fn a_constraint_with_no_faithful_spelling_withholds_the_definition_and_names_the_field() {
+    // A duration is written `1h` and displayed `90.000000000s`, which lexes as a
+    // float and a stray name. Writing the display would produce a script that
+    // fails to parse — or, on another value, one that parses as something else.
+    // Withholding is the answer, and naming the field is what makes it fixable
+    // rather than merely safe.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE FIELD wait ON staff TYPE duration ASSERT $value > 1h;")
+        .unwrap();
+
+    let described = report(&mut session, "INFO FOR TABLE staff;");
+    assert_eq!(text(&described, "definition"), None);
+    let said = text(&described, "undefinable").expect("a reason");
+    assert!(said.contains("wait"), "{said}");
+}
