@@ -3837,6 +3837,38 @@ another says `USE`, which is where this store already answers the tenancy
 question — a second way to name one would be a second place for that check to be
 got wrong.
 
+### Changing what the report shows
+
+Reading a schema is worth less than it looks if reading it is the end of the
+road, so every part of a table report has a statement that changes it — or is
+listed here as one that does not, rather than left to be found out.
+
+| what the report shows | changed by |
+|---|---|
+| `schemafull` | `ALTER TABLE t SET SCHEMAFULL` · `… SET SCHEMALESS` |
+| a field's presence | `ALTER TABLE t ADD FIELD n …` · `… DROP FIELD n` |
+| a field's `type`, `required`, `default`, `analyzer`, `assert` | `ALTER TABLE t ALTER FIELD n …`, which replaces the whole declaration |
+| an index's presence, projected fields or kind | `DROP INDEX i ON t` then `DEFINE INDEX …` |
+| `table` — the name | nothing |
+| `edge`, `bucket`, `collection` — the declaring word | nothing |
+
+There is no `ALTER INDEX` because an index has nothing an alteration could
+change in place: the fields it projects and the kind it is are what its entries
+are keyed by, so changing either rewrites every entry. Dropping and re-declaring
+says that plainly, and the table's records are untouched throughout.
+
+The last two rows are not oversights. `edge`, `bucket` and `collection` say what
+a record **is** rather than what may be written to it, so changing one would
+reinterpret every row already stored; and a table's name is what its grants, its
+indexes and every reference to it are keyed by. Both are made by declaring the
+thing you meant and moving the records, which the language already says.
+
+`ALTER TABLE … SET SCHEMAFULL` binds writes from that commit onwards and does
+not revisit the records already there (§4). `ALTER TABLE … ALTER FIELD` is the
+exception in the other direction: it holds the rows already stored to the **new**
+declaration, so an alteration none of them satisfies is refused and writes
+nothing at all.
+
 ### What a caller may see of it
 
 **A report says only what the caller could have found out anyway.** That is the

@@ -643,3 +643,291 @@ fn a_constraint_with_no_faithful_spelling_withholds_the_definition_and_names_the
     let said = text(&described, "undefinable").expect("a reason");
     assert!(said.contains("wait"), "{said}");
 }
+
+// Listing the tenancies a caller may reach, and the one property that keeps the
+// listing safe.
+//
+// Both statements read every definition and drop the ones the caller may not
+// reach. That is a filter applied to the scan rather than pushed into it, and
+// the reason it is safe here is narrow and worth writing down: the report
+// carries **names and nothing else**. There is no total, no page, no aggregate
+// and no cursor, so there is no channel through which a dropped tenancy could
+// still say it exists. Add a count and that stops being true — which is what
+// the last test below is for.
+
+/// A store with an owner, a namespace-scoped editor and a database-scoped one.
+///
+/// Two scopes rather than one, because the difference between them is exactly
+/// what `INFO FOR NAMESPACE` answers differently and a single scoped user cannot
+/// show it.
+fn two_scopes(store: &Store) -> Session<'_> {
+    let session = governed(store);
+    let mut root = Session::new(store);
+    root.sign_in("root", PASSWORD).unwrap();
+    root.run("DEFINE USER nina ON NAMESPACE prod ROLE editor PASSWORD 'correct horse battery';")
+        .unwrap();
+    root.run("DEFINE NAMESPACE other;").unwrap();
+    root.run("USE NAMESPACE prod; DEFINE DATABASE payroll;")
+        .unwrap();
+    session
+}
+
+#[test]
+fn a_namespace_scoped_user_lists_every_database_in_it_and_no_namespace_beside_it() {
+    // The assertion is **nina's** list, not the difference between hers and
+    // somebody else's: a diff passes just as well when the filter drops the same
+    // row from both, and that is the failure it is supposed to catch.
+    let store = store();
+    two_scopes(&store);
+
+    let mut nina = signed_in(&store, "nina");
+    assert_eq!(
+        listed(&report(&mut nina, "INFO FOR STORE;"), "namespaces"),
+        vec!["prod".to_owned()],
+        "a namespace-scoped user was shown a namespace they cannot select"
+    );
+    // Every database in her own namespace, including the one she holds no grant
+    // in. That is not a leak: her tenancy lets her `USE DATABASE payroll`, which
+    // succeeds and tells her it exists, so the listing says nothing she could
+    // not already have found out. What it does not do is show her its tables —
+    // `INFO FOR DATABASE` narrows those to what she was granted.
+    assert_eq!(
+        listed(&report(&mut nina, "INFO FOR NAMESPACE;"), "databases"),
+        vec!["payroll".to_owned(), "shop".to_owned()]
+    );
+}
+
+#[test]
+fn a_database_scoped_user_lists_only_their_own_database() {
+    // The second user of the pair, asserted on her own answer. `ada` is declared
+    // `ON prod.shop` where `nina` is declared `ON NAMESPACE prod`, so the two
+    // ask the same statement of the same store and are owed different answers.
+    let store = store();
+    two_scopes(&store);
+
+    let mut ada = signed_in(&store, "ada");
+    assert_eq!(
+        listed(&report(&mut ada, "INFO FOR STORE;"), "namespaces"),
+        vec!["prod".to_owned()]
+    );
+    assert_eq!(
+        listed(&report(&mut ada, "INFO FOR NAMESPACE;"), "databases"),
+        vec!["shop".to_owned()],
+        "a database-scoped user was shown a database beside their own"
+    );
+}
+
+#[test]
+fn a_listing_carries_the_names_and_nothing_that_counts_what_was_dropped() {
+    // The ratchet under the two tests above. Both statements filter a scan
+    // rather than narrowing the read, and that is safe only while the report has
+    // no second field — a total, a page or an "of N" would report the tenancies
+    // the filter removed, in the one number nobody would think to redact.
+    //
+    // This fails the day a field is added, which is the point: adding one is a
+    // decision, and this is where it gets made rather than noticed later.
+    let store = store();
+    two_scopes(&store);
+    let mut nina = signed_in(&store, "nina");
+
+    for (statement, expected) in [
+        ("INFO FOR STORE;", "namespaces"),
+        ("INFO FOR NAMESPACE;", "databases"),
+    ] {
+        let Value::Object(fields) = report(&mut nina, statement) else {
+            panic!("expected an object from {statement}");
+        };
+        let keys: Vec<&str> = fields.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            vec![expected],
+            "{statement} grew a field beside the names"
+        );
+    }
+}
+
+// Every part the report shows, and the statement that changes it.
+//
+// A report is worth less than it looks if reading it is the end of the road: the
+// operator who can see that a field is `REQUIRED` and cannot make it optional
+// has been given a diagnosis and no treatment. So each part below is altered and
+// then **re-read**, because a statement that returns success is not evidence
+// that the catalog moved — that is the difference this file exists to hold.
+//
+// Three parts have no `ALTER`, and they are asserted as unchanging rather than
+// left to be discovered: the table's **name**, and the **word it was declared
+// with** (`edge`, `bucket`, `collection`). The last test says so out loud.
+
+/// One field of one field's declaration, out of a table report.
+fn declared(report: &Value, field: &str, part: &str) -> Option<Value> {
+    let Value::Object(fields) = report else {
+        panic!("expected an object, got {report:?}");
+    };
+    let Some(Value::Array(declared)) = fields.get("fields") else {
+        panic!("expected a field list in {report:?}");
+    };
+    declared.iter().find_map(|held| match held {
+        Value::Object(named) if named.get("name") == Some(&Value::from(field)) => {
+            named.get(part).cloned()
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn every_part_of_a_field_that_is_shown_can_be_altered_and_the_report_follows() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE ANALYZER simple FILTERS lowercase;")
+        .unwrap();
+    // An empty table, because altering a declaration re-checks the rows already
+    // stored and this test is about the catalog rather than about that check.
+    session.run("DEFINE TABLE shapes (label string);").unwrap();
+
+    let described = report(&mut session, "INFO FOR TABLE shapes;");
+    assert_eq!(
+        declared(&described, "label", "type"),
+        Some(Value::from("string"))
+    );
+    assert_eq!(
+        declared(&described, "label", "required"),
+        Some(Value::Bool(false))
+    );
+
+    // Type, required, default, analyzer and assert, all five in the one
+    // statement that replaces a declaration.
+    session
+        .run(
+            "ALTER TABLE shapes ALTER FIELD label TYPE 'round' | 'square' REQUIRED \
+             DEFAULT 'round' ANALYZER simple ASSERT $value != 'oval';",
+        )
+        .unwrap();
+    let after = report(&mut session, "INFO FOR TABLE shapes;");
+    assert_eq!(
+        declared(&after, "label", "type"),
+        Some(Value::from("'round' | 'square'"))
+    );
+    assert_eq!(
+        declared(&after, "label", "required"),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        declared(&after, "label", "default"),
+        Some(Value::from("'round'"))
+    );
+    assert_eq!(
+        declared(&after, "label", "analyzer"),
+        Some(Value::from("simple"))
+    );
+    assert!(declared(&after, "label", "assert").is_some());
+
+    // A field can be added and taken away, and the report follows both ways.
+    session
+        .run("ALTER TABLE shapes ADD FIELD note TYPE string;")
+        .unwrap();
+    assert!(
+        listed(&report(&mut session, "INFO FOR TABLE shapes;"), "fields")
+            .contains(&"note".to_owned())
+    );
+    session.run("ALTER TABLE shapes DROP FIELD note;").unwrap();
+    assert!(
+        !listed(&report(&mut session, "INFO FOR TABLE shapes;"), "fields")
+            .contains(&"note".to_owned())
+    );
+}
+
+#[test]
+fn strictness_is_altered_in_both_directions_and_the_report_follows_each_way() {
+    let store = store();
+    let mut session = ready(&store);
+
+    for (statement, expected) in [
+        ("ALTER TABLE staff SET SCHEMALESS;", false),
+        ("ALTER TABLE staff SET SCHEMAFULL;", true),
+    ] {
+        session.run(statement).unwrap();
+        let Value::Object(fields) = report(&mut session, "INFO FOR TABLE staff;") else {
+            panic!("expected an object");
+        };
+        assert_eq!(
+            fields.get("schemafull"),
+            Some(&Value::Bool(expected)),
+            "{statement} did not reach the report"
+        );
+    }
+}
+
+#[test]
+fn an_index_is_changed_by_replacing_it_and_the_table_is_never_dropped() {
+    // There is no `ALTER INDEX`, and an index has nothing an alteration could
+    // change in place: its projected fields and its kind are what its entries
+    // are keyed by, so changing either rewrites every entry. Dropping and
+    // re-declaring says that plainly, and the records are untouched throughout —
+    // which is the property this asserts, since it is the one a caller cares
+    // about and the one a rebuild would quietly break.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("INSERT INTO staff (name, salary) VALUES ('ada', 1), ('grace', 2);")
+        .unwrap();
+
+    session.run("DROP INDEX by_name ON staff;").unwrap();
+    session
+        .run("DEFINE INDEX by_name ON staff FIELDS name UNIQUE;")
+        .unwrap();
+
+    let after = report(&mut session, "INFO FOR TABLE staff;");
+    let Value::Object(fields) = &after else {
+        panic!("expected an object");
+    };
+    let Some(Value::Array(indexes)) = fields.get("indexes") else {
+        panic!("expected an index list");
+    };
+    let by_name = indexes
+        .iter()
+        .find_map(|held| match held {
+            Value::Object(named) if named.get("name") == Some(&Value::from("by_name")) => {
+                Some(named.clone())
+            }
+            _ => None,
+        })
+        .expect("by_name was re-declared");
+    assert_eq!(by_name.get("unique"), Some(&Value::Bool(true)));
+
+    // The rows are still there, and the new index answers over them.
+    let rows = session
+        .run("SELECT * FROM staff WHERE name = 'ada';")
+        .unwrap();
+    assert!(
+        !rows.is_empty(),
+        "the records did not survive the replacement"
+    );
+}
+
+#[test]
+fn the_word_a_table_was_declared_with_survives_every_alteration_there_is() {
+    // The three parts with no `ALTER`, asserted as unchanging rather than left
+    // for somebody to discover. They are not an oversight: `edge`, `bucket` and
+    // `collection` say what a record *is* rather than what may be written to it,
+    // so changing one would reinterpret every row already stored — and a table's
+    // name is what its grants, its indexes and every reference to it are keyed
+    // by. Both are changes made by declaring the thing you meant and moving the
+    // records, which the language already says.
+    let store = store();
+    let mut session = ready(&store);
+    let before = report(&mut session, "INFO FOR TABLE orders;");
+
+    session.run("ALTER TABLE orders SET SCHEMAFULL;").unwrap();
+    session.run("ALTER TABLE orders SET SCHEMALESS;").unwrap();
+    session
+        .run("ALTER TABLE orders ADD FIELD code TYPE string;")
+        .unwrap();
+    session.run("ALTER TABLE orders DROP FIELD code;").unwrap();
+
+    assert_eq!(
+        before,
+        report(&mut session, "INFO FOR TABLE orders;"),
+        "an alteration changed the word the table was declared with"
+    );
+}
