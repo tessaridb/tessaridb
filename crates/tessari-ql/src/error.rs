@@ -184,6 +184,29 @@ pub enum Error {
         span: Span,
     },
 
+    /// A row of an `INSERT` holds a different number of values than the
+    /// statement named fields.
+    ///
+    /// Refused at parse rather than at the write, and the reason is not tidiness:
+    /// a batch discovers this row while some of it is already decided, so a
+    /// typing mistake would arrive wearing the shape of a write failure. Here it
+    /// arrives as what it is, before anything is attempted, naming the row and
+    /// both counts so the author does not have to count the parentheses.
+    #[error(
+        "row {row} of the insert holds {found} values, \
+         and the field list names {expected} (at {span})"
+    )]
+    InsertRowArity {
+        /// Which row, counted from one as a reader counts them.
+        row: usize,
+        /// How many values the row holds.
+        found: usize,
+        /// How many fields the column list named.
+        expected: usize,
+        /// Where the row is.
+        span: Span,
+    },
+
     /// A `START` was written beside an `AFTER`.
     ///
     /// Both say where the page begins, and applying both means the offset counts
@@ -572,6 +595,7 @@ impl Error {
             | Self::InvalidNumber { span, .. }
             | Self::InvalidBytes { span, .. }
             | Self::InvalidDuration { span, .. }
+            | Self::InsertRowArity { span, .. }
             | Self::UnexpectedToken { span, .. }
             | Self::UnexpectedEnd { span, .. }
             | Self::Unsupported { span, .. }

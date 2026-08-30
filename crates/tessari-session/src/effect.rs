@@ -159,6 +159,7 @@ impl Effect {
             // their targets and then change them, which is exactly the shape a
             // keyword test gets wrong.
             StatementKind::Create { .. }
+            | StatementKind::Insert { .. }
             | StatementKind::Update { .. }
             | StatementKind::Upsert { .. }
             | StatementKind::Delete { .. }

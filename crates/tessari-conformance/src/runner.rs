@@ -291,6 +291,7 @@ fn script_kind(error: &tessari_ql::Error) -> &'static str {
         tessari_ql::Error::CursorBesideAnOffset { .. } => "CursorBesideAnOffset",
         tessari_ql::Error::CursorBesideAReshaping { .. } => "CursorBesideAReshaping",
         tessari_ql::Error::AnchorFromAnotherTable { .. } => "AnchorFromAnotherTable",
+        tessari_ql::Error::InsertRowArity { .. } => "InsertRowArity",
         _ => "Unnamed",
     }
 }

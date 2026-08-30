@@ -298,6 +298,15 @@ pub enum Keyword {
     Exists,
     /// `CREATE`
     Create,
+    /// `INSERT` — write records the store names itself.
+    ///
+    /// Its own verb rather than a spelling of `CREATE`, because the question it
+    /// answers is different: `CREATE` is handed an identity and asserts no
+    /// record holds it, while this one asks the store for identities it has
+    /// never used. `INTO` and `VALUES` are deliberately **not** reserved — they
+    /// are matched as plain words the way `BEFORE` and `AFTER` are, so a field
+    /// may still be called `values`.
+    Insert,
     /// `SELECT`
     Select,
     /// `FROM`
@@ -450,6 +459,7 @@ impl Keyword {
             Self::Not => "NOT",
             Self::Exists => "EXISTS",
             Self::Create => "CREATE",
+            Self::Insert => "INSERT",
             Self::Select => "SELECT",
             Self::From => "FROM",
             Self::Only => "ONLY",
@@ -533,6 +543,7 @@ impl Keyword {
         Self::Not,
         Self::Exists,
         Self::Create,
+        Self::Insert,
         Self::Select,
         Self::From,
         Self::Only,

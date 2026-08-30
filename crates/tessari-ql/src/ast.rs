@@ -548,6 +548,36 @@ pub enum StatementKind {
         /// not apply.
         answer: Answer,
     },
+    /// `INSERT INTO users (name, email) VALUES ('ada', 'a@x'), ('grace', 'g@x')`
+    ///
+    /// # Why the identity is absent from the statement
+    ///
+    /// There is nowhere to write one. A caller who has an identity already —
+    /// an import, a migration, a foreign key — writes `CREATE users:1 = { … }`,
+    /// which is unchanged and stays the way to say that. This statement is for
+    /// the other case, which is the common one: the caller has records and no
+    /// names for them, and asking a human to invent a name per record is asking
+    /// for the collision they will eventually write.
+    ///
+    /// # Why the columns are names and the values are values
+    ///
+    /// The column list is **grammar**. It is parsed as names, so a caller's text
+    /// cannot arrive in that position and be read as one — the same property the
+    /// query builder is built around, and the reason a supplied value binds
+    /// after the script is parsed rather than being formatted into it.
+    Insert {
+        /// The table the records are written to.
+        table: TableRef,
+        /// The fields every row supplies, in the order they were written.
+        columns: Vec<Name>,
+        /// One row per record.
+        ///
+        /// Every row holds exactly as many values as there are columns, and
+        /// that is checked **at parse**: a row of the wrong length is a
+        /// statement the author mistyped, and finding out at the write means
+        /// finding out after some of the batch is already decided.
+        rows: Vec<Vec<Expr>>,
+    },
     /// `SELECT * FROM …`
     Select(Select),
     /// `UPDATE users:1 = { … }` — the value is replaced, never merged.

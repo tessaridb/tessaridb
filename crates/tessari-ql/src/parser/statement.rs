@@ -73,6 +73,7 @@ impl Parser<'_> {
             Some(Keyword::Grant) => self.grant_statement(true)?,
             Some(Keyword::Revoke) => self.grant_statement(false)?,
             Some(Keyword::Create) => self.write_statement(Keyword::Create)?,
+            Some(Keyword::Insert) => self.insert_statement()?,
             Some(Keyword::Update) => self.write_statement(Keyword::Update)?,
             Some(Keyword::Upsert) => self.write_statement(Keyword::Upsert)?,
             Some(Keyword::Throw) => {
@@ -1177,6 +1178,81 @@ impl Parser<'_> {
                 value,
                 answer: self.answer(verb)?,
             },
+        })
+    }
+
+    /// `INSERT INTO users (name, email) VALUES ('ada', 'a@x'), ('grace', 'g@x')`
+    ///
+    /// # Why `INTO` and `VALUES` are not reserved words
+    ///
+    /// They are matched as plain words, the way `BEFORE` and `AFTER` are.
+    /// Reserving them would be a cost paid by every script that has a field
+    /// called `values`, for a benefit nobody collects: both appear in exactly
+    /// one position in exactly one statement, and neither is ambiguous there.
+    ///
+    /// # Why the arity is checked here
+    ///
+    /// A row of the wrong length is a mistyped statement, and the alternative is
+    /// finding out at the write with part of the batch already decided — which
+    /// makes a typing mistake arrive wearing the shape of a write failure.
+    fn insert_statement(&mut self) -> Result<StatementKind> {
+        self.advance();
+        if !self.eat_word("into") {
+            return Err(self.error_here("`INTO` and the table to write to"));
+        }
+        let table = self.table_ref()?;
+
+        // Named fields, not values: a caller's text cannot arrive in this
+        // position and be read as a field name, which is the same property the
+        // query builder is built around.
+        self.expect_punct(Punct::ParenOpen, "`(` and the fields each row supplies")?;
+        let mut columns = Vec::new();
+        loop {
+            columns.push(self.name()?);
+            if !self.eat_punct(Punct::Comma) {
+                break;
+            }
+        }
+        self.expect_punct(Punct::ParenClose, "`)` after the field list")?;
+
+        if !self.eat_word("values") {
+            return Err(self.error_here("`VALUES` and at least one row"));
+        }
+
+        let mut rows: Vec<Vec<Expr>> = Vec::new();
+        loop {
+            let opened = self.span_here();
+            self.expect_punct(Punct::ParenOpen, "`(` and a row of values")?;
+            let mut row = Vec::new();
+            loop {
+                row.push(self.expression()?);
+                if !self.eat_punct(Punct::Comma) {
+                    break;
+                }
+            }
+            self.expect_punct(Punct::ParenClose, "`)` after the row's values")?;
+
+            if row.len() != columns.len() {
+                return Err(Error::InsertRowArity {
+                    // Counted from one, because the author is counting rows on
+                    // the screen and not indexing an array.
+                    row: rows.len().saturating_add(1),
+                    found: row.len(),
+                    expected: columns.len(),
+                    span: opened,
+                });
+            }
+            rows.push(row);
+
+            if !self.eat_punct(Punct::Comma) {
+                break;
+            }
+        }
+
+        Ok(StatementKind::Insert {
+            table,
+            columns,
+            rows,
         })
     }
 

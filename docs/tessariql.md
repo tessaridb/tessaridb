@@ -1459,6 +1459,47 @@ into the record — `visits + 1` is the record's `visits`, the same reading a
 schema, the defaults, the indexes, the change feed and the grants all apply to it
 without knowing which shape produced it.
 
+### Several records at once, at identities the store produces
+
+```
+INSERT INTO users (name, email) VALUES ('ada', 'ada@example.com');
+
+INSERT INTO users (name, email) VALUES
+  ('grace', 'grace@example.com'),
+  ('alan', 'alan@example.com'),
+  ('edsger', 'edsger@example.com');
+```
+
+`CREATE` is handed an identity and asserts that no record holds it. This one asks
+the store for identities it has never used, and answers with them. They are two
+words rather than one word with a flag because they differ in what the caller may
+do: a caller holding a natural key writes `CREATE`, and a caller loading records
+that carry none writes this.
+
+**It always answers with the identities it produced, in the order the rows were
+written.** There is no clause to ask for that and none to switch it off. A caller
+who supplied no identity has no other way to name what they just wrote, so a
+statement answering `done` would force exactly the read this exists to avoid —
+and one answering only sometimes would make the shape of the answer depend on a
+clause. For the same reason there is no `RETURN` on it: it already answers.
+
+**Every row of a statement lands, or none of them does.** A refusal on the
+fourth row leaves the first three unwritten, so a batch cannot be half-applied by
+a value the store would not have taken anyway.
+
+**A row holding a different number of values than the field list names is
+refused where it is read**, naming both counts and the row that carries them.
+That is a property of the text, so nothing is written before it is found — the
+statement never begins.
+
+**The field list is grammar, not data.** A parameter is legal in a value
+position and refused in a name position, so a caller's text cannot arrive where
+a field name belongs.
+
+The rest is the ordinary write path — the schema, the defaults, the indexes, the
+change feed and the grants all apply. A bucket refuses it, as it refuses every
+write by hand: the records of a bucket arrive through `PUT`.
+
 ### A write answering with what it wrote
 
 ```

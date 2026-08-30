@@ -166,6 +166,18 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             bind_target(target, binding)?;
             bind_expr(value, binding)
         }
+        // A row's values bind exactly as any other value position does. The
+        // column list is not walked because it holds **names**, and a name is
+        // grammar: there is no stage at which a supplied value could arrive
+        // there and be read as one.
+        StatementKind::Insert { rows, .. } => {
+            for row in rows {
+                for value in row {
+                    bind_expr(value, binding)?;
+                }
+            }
+            Ok(())
+        }
         // Both shapes of an update hold expressions, and the field shape holds
         // one per assignment: a parameter is legal in each of them, the same as
         // it is anywhere else a value may stand.

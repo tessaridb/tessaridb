@@ -1,0 +1,69 @@
+# `INSERT`: several records at once, at identities the store produces.
+#
+# The statement `CREATE` is not. `CREATE` is handed an identity and asserts no
+# record holds it; this one asks the store for identities it has never used, and
+# answers with them. Both stay, and the file beside this one (`records`) is the
+# evidence that `CREATE` was left alone.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+DEFINE TABLE users;
+--- expect: ok
+
+--- case: one record, and the store answers with the identity it produced
+INSERT INTO users (name, email) VALUES ('ada', 'ada@example.com');
+--- expect: keys 1
+
+--- case: several records in one statement, and one identity per row
+INSERT INTO users (name, email) VALUES
+  ('grace', 'grace@example.com'),
+  ('alan', 'alan@example.com'),
+  ('edsger', 'edsger@example.com');
+--- expect: keys 3
+
+--- case: every one of them is there afterwards
+SELECT * FROM users;
+--- expect: rows 4
+
+--- case: two rows of one batch never share an identity
+SELECT * FROM users WHERE name = 'grace';
+--- expect: rows 1
+
+--- case: the produced identity is a real identity, not a placeholder
+SELECT * FROM users WHERE email = 'alan@example.com';
+--- expect: rows 1
+
+--- case: a row holding fewer values than the field list is refused
+INSERT INTO users (name, email) VALUES ('ada');
+--- expect: error InsertRowArity
+
+--- case: a row holding more values than the field list is refused
+INSERT INTO users (name) VALUES ('ada', 'ada@example.com');
+--- expect: error InsertRowArity
+
+--- case: the refusal is at parse, so a bad row writes nothing before it
+SELECT * FROM users;
+--- expect: rows 4
+
+--- case: a table nobody declared is refused
+INSERT INTO nowhere (name) VALUES ('ada');
+--- expect: error Unknown
+
+--- case: a value may be computed, because a value position holds an expression
+INSERT INTO users (name, email, score) VALUES ('hedy', 'hedy@example.com', 40 + 2);
+--- expect: keys 1
+
+--- case: and what was stored is the computed value, not the expression
+SELECT * FROM users WHERE score = 42;
+--- expect: rows 1
+
+--- case: `CREATE` is untouched — an identity may still be named
+CREATE users:1 = { name: 'katherine', email: 'katherine@example.com' };
+--- expect: ok
+
+--- case: and naming one that is taken is still refused
+CREATE users:1 = { name: 'someone else' };
+--- expect: error RecordExists

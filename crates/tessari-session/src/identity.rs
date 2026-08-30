@@ -521,6 +521,15 @@ impl Needs {
             // which is what makes a pure ingestion identity a real thing here
             // rather than a theoretical one.
             StatementKind::Upsert { .. }
+            // `INSERT` writes at an identity the **store** chose, so there is no
+            // claim about prior state a caller could have made and no answer
+            // they could read one from: they cannot name the identity that would
+            // conflict, and cannot name the next one either. That is what
+            // separates it from `CREATE` two arms above, whose refusal is an
+            // oracle precisely because the caller picked the identity it asks
+            // about. The append-only ingestion credential this arm exists for is
+            // exactly the caller `INSERT` was added for.
+            | StatementKind::Insert { .. }
             | StatementKind::Delete { .. }
             | StatementKind::Relate { .. }
             | StatementKind::Set { .. }

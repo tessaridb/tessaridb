@@ -149,6 +149,20 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             found.extend(in_expr(value));
             found
         }
+        // Every row's values are walked for the same reason a written value is:
+        // `INSERT INTO audit (copy) VALUES ((SELECT * FROM salaries))` reaches
+        // `salaries`, and a grant loop that saw only `audit` would let it
+        // through. The column list is **not** walked — those are field names, and
+        // a grant is a permission on a table.
+        StatementKind::Insert { table, rows, .. } => {
+            let mut found = vec![table];
+            for row in rows {
+                for value in row {
+                    found.extend(in_expr(value));
+                }
+            }
+            found
+        }
         StatementKind::Put {
             target,
             value: written,

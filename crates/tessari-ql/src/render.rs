@@ -97,6 +97,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::RevokeAuthority { .. } => Err(unrenderable("REVOKE", span)),
         StatementKind::Relate { .. } => Err(unrenderable("RELATE", span)),
         StatementKind::Create { .. } => Err(unrenderable("CREATE", span)),
+        StatementKind::Insert { .. } => Err(unrenderable("INSERT", span)),
         StatementKind::Update { .. } => Err(unrenderable("UPDATE", span)),
         StatementKind::Upsert { .. } => Err(unrenderable("UPSERT", span)),
         StatementKind::Throw { .. } => Err(unrenderable("THROW", span)),

@@ -17,6 +17,7 @@ use tessari_types::{
 
 use crate::error::{Depended, Error, Result};
 use crate::evaluate::{key_bound, within};
+use crate::generate;
 use crate::geometry::on_the_grid;
 use crate::outcome::Outcome;
 use crate::session::Session;
@@ -339,6 +340,11 @@ impl Session<'_> {
                 self.put_record(transaction, address, payload.clone(), span)?;
                 Ok(answered(*answer, Value::None, payload))
             }
+            StatementKind::Insert {
+                table,
+                columns,
+                rows,
+            } => self.insert(transaction, table, columns, rows, span),
             StatementKind::Update {
                 target,
                 edit,
@@ -540,6 +546,76 @@ impl Session<'_> {
         let payload = on_the_grid(payload, span)?;
         transaction.put(address, encode_payload(&payload).into_bytes());
         Ok(())
+    }
+
+    /// Write a batch of records the store names itself.
+    ///
+    /// # One transaction, and why that needs no code here
+    ///
+    /// The rows are written in a loop against the transaction this statement was
+    /// handed, and a row that refuses leaves through `?` — so `session::run`
+    /// never reaches its `commit`, and the rows already written go with it. The
+    /// batch is atomic because the transaction is, not because anything here
+    /// arranges it. The test for it uses a **middle** row, because an
+    /// implementation that committed as it went would still pass a batch whose
+    /// only bad row is the last.
+    ///
+    /// # Why the produced identity is checked against the store
+    ///
+    /// [`generate::uuid_v7`] cannot hand back an identity the store already
+    /// holds unless the machine's randomness is broken, and a store that writes
+    /// over a record in that case loses it with nothing anywhere to notice —
+    /// the same reasoning `CREATE` gives for refusing an occupied identity.
+    /// A read per row is what that costs.
+    ///
+    /// The refusal tells the caller nothing they could have used: they did not
+    /// choose the identity and cannot choose the next one, so this is not the
+    /// existence oracle that keeps `CREATE` at `read` + `write`. `INSERT` needs
+    /// `write` alone — see `identity::Needs::of`.
+    fn insert(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: &TableRef,
+        columns: &[Name],
+        rows: &[Vec<tessari_ql::Expr>],
+        span: Span,
+    ) -> Result<Outcome> {
+        let (context, id) = self.resolve_table(transaction, table)?;
+        // A bucket's records describe bytes the store holds, so one written by
+        // hand can lie about them. The same refusal `Session::writable` gives,
+        // for the same reason — reached here directly because that one takes a
+        // record target and an insert names no record.
+        if Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|found| found.bucket)
+        {
+            return Err(Error::NotWrittenByHand {
+                table: table.name.text.clone(),
+                span: table.span,
+            });
+        }
+
+        let mut produced = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut fields = BTreeMap::new();
+            for (column, value) in columns.iter().zip(row) {
+                fields.insert(column.text.clone(), self.evaluate(transaction, value)?);
+            }
+            let payload = self.with_defaults(transaction, id, Value::Object(fields))?;
+
+            let identity = RecordId::Uuid(generate::uuid_v7(table.span)?);
+            let address =
+                RecordAddress::new(context.namespace, context.database, id, identity.clone());
+            if transaction.get(&address)?.is_some() {
+                return Err(Error::RecordExists {
+                    id: identity.to_string(),
+                    span: table.span,
+                });
+            }
+            self.put_record(transaction, address, payload, span)?;
+            produced.push(identity);
+        }
+        Ok(Outcome::Keys(produced))
     }
 
     /// Write an edge between two records.

@@ -18,6 +18,7 @@
 use std::cell::RefCell;
 use std::fs::File;
 use std::io::Read;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tessari_ql::{Function, Span};
 use tessari_types::Value;
@@ -74,6 +75,69 @@ pub(crate) fn uuid(span: Span) -> Result<Value> {
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(Value::Uuid(bytes))
+}
+
+/// A fresh version-7 UUID's bytes, or a refusal.
+///
+/// # Why the store produces this one and `rand::uuid()` still produces version 4
+///
+/// A record identity is a **key**, and this store keeps its records in key
+/// order. Version 4 is 122 bits of randomness, so consecutive inserts land at
+/// unrelated points in the keyspace: every batch touches every level of the tree
+/// and the write amplification is paid on each one. Version 7 puts 48 bits of
+/// millisecond timestamp in front, so records written together sort together and
+/// a batch appends instead of scattering.
+///
+/// `rand::uuid()` is left alone at version 4 because a caller who wrote that
+/// asked for it. This function has no caller in the language — it is what the
+/// store reaches for when a caller supplied no identity at all — so nothing is
+/// changed under anybody.
+///
+/// The bytes below the timestamp come from the same source and the same refusal
+/// as [`uuid`]; this is that function with six of its random bytes replaced,
+/// not a second doctrine about randomness.
+///
+/// # Errors
+///
+/// Returns [`Error::IdentityUnavailable`] when the randomness source cannot be
+/// opened or read, or when the clock is set before 1970. There is no fallback,
+/// for this module's reason.
+pub(crate) fn uuid_v7(span: Span) -> Result<[u8; UUID_LEN]> {
+    let mut bytes = [0_u8; UUID_LEN];
+    fill(&mut bytes).map_err(|_| Error::IdentityUnavailable {
+        reason: "the operating system's randomness source could not be read",
+        span,
+    })?;
+
+    let since_epoch =
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| Error::IdentityUnavailable {
+                reason: "the system clock reads a time before 1970",
+                span,
+            })?;
+    // The low 48 bits of the millisecond count, taken as the low six bytes of
+    // the big-endian `u64`. Destructured rather than shifted and masked: the
+    // two leading bytes are dropped by the pattern, so there is no arithmetic
+    // here to overflow and no index to get wrong. The count exceeds 48 bits in
+    // the year 10889, at which point the leading bytes stop being zero and this
+    // wraps — which is the format's own limit and not this function's.
+    let millis = u64::try_from(since_epoch.as_millis()).unwrap_or(u64::MAX);
+    let [_, _, t0, t1, t2, t3, t4, t5] = millis.to_be_bytes();
+    bytes[0] = t0;
+    bytes[1] = t1;
+    bytes[2] = t2;
+    bytes[3] = t3;
+    bytes[4] = t4;
+    bytes[5] = t5;
+
+    // Version 7 in the high nibble of the seventh byte, and the RFC's variant in
+    // the top two bits of the ninth — the same six bits [`uuid`] spends, for the
+    // same reason: a value this store calls a UUID has to survive a strict
+    // reader on the other side.
+    bytes[6] = (bytes[6] & 0x0f) | 0x70;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Ok(bytes)
 }
 
 /// Fill the buffer from this thread's source, opening it on the first call.

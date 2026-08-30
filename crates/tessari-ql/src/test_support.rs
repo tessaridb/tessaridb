@@ -225,6 +225,21 @@ fn erase_statement(statement: &mut Statement) {
                 erase_expr(value);
             }
         }
+        StatementKind::Insert {
+            table,
+            columns,
+            rows,
+        } => {
+            erase_table(table);
+            for column in columns.iter_mut() {
+                erase_name(column);
+            }
+            for row in rows.iter_mut() {
+                for value in row.iter_mut() {
+                    erase_expr(value);
+                }
+            }
+        }
         StatementKind::Create { target, value, .. }
         | StatementKind::Set { target, value }
         | StatementKind::Put { target, value, .. } => {

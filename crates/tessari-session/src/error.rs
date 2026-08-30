@@ -554,6 +554,20 @@ pub enum Error {
         span: Span,
     },
 
+    /// The store could not produce a record identity.
+    ///
+    /// Its own refusal rather than [`Error::CallFailed`], which names the
+    /// function that failed: the caller of an `INSERT` called nothing. Reporting
+    /// this as `rand::uuid() has no answer here` would send them looking through
+    /// a statement that contains no such call.
+    #[error("the store cannot produce a record identity: {reason} (at {span})")]
+    IdentityUnavailable {
+        /// Why there is no identity.
+        reason: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A value the cast asked for cannot hold.
     ///
     /// Distinct from [`Error::WrongArgument`], because the argument's *type* is

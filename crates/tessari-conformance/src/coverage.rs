@@ -52,6 +52,7 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::AlterField { .. } => "ALTER TABLE ALTER FIELD",
         StatementKind::Relate { .. } => "RELATE",
         StatementKind::Create { .. } => "CREATE",
+        StatementKind::Insert { .. } => "INSERT",
         StatementKind::Select(_) => "SELECT",
         StatementKind::Update { .. } => "UPDATE",
         StatementKind::Upsert { .. } => "UPSERT",
@@ -112,6 +113,7 @@ pub const FORMS: &[&str] = &[
     "ALTER TABLE ALTER FIELD",
     "RELATE",
     "CREATE",
+    "INSERT",
     "SELECT",
     "UPDATE",
     "UPSERT",
@@ -197,6 +199,7 @@ mod tests {
              REVOKE manage ON STORE FROM u;\
              RELATE t:1->e->t:2;\
              CREATE t:1 = 1;\
+             INSERT INTO t (a) VALUES (1);\
              SELECT * FROM t;\
              UPDATE t:1 = 1;\
              UPSERT t:1 = 1;\
