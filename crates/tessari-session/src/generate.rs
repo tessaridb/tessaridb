@@ -83,10 +83,15 @@ pub(crate) fn uuid(span: Span) -> Result<Value> {
 ///
 /// A record identity is a **key**, and this store keeps its records in key
 /// order. Version 4 is 122 bits of randomness, so consecutive inserts land at
-/// unrelated points in the keyspace: every batch touches every level of the tree
-/// and the write amplification is paid on each one. Version 7 puts 48 bits of
-/// millisecond timestamp in front, so records written together sort together and
-/// a batch appends instead of scattering.
+/// unrelated points in the keyspace. Version 7 puts 48 bits of millisecond
+/// timestamp in front, so records written together sort together — an ordering
+/// property of the encoding, asserted by
+/// `tests/inserts.rs::a_batch_written_later_sorts_after_one_written_before_it`.
+///
+/// What that ordering is worth at the storage layer has not been measured here,
+/// so this comment does not say. Version 7 is the preference because the
+/// ordering is useful on its own; any claim about what it costs or saves waits
+/// on a benchmark rather than on an argument.
 ///
 /// `rand::uuid()` is left alone at version 4 because a caller who wrote that
 /// asked for it. This function has no caller in the language — it is what the
