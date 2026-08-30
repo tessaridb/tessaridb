@@ -1,0 +1,16 @@
+# How the tests are run here.
+#
+# `cargo t` is the per-wave command: every lib and integration test, and no doc
+# examples. Warm, it finishes in well under a minute.
+#
+# `cargo tdoc` runs the doc examples, and only that. It is slow — around
+# eighteen minutes — and the cost is not the tests: rustdoc compiles and runs
+# every example in this project's very heavy doc comments, which is roughly
+# 17.8 of those minutes. Run it when a goal closes, not per wave.
+#
+# The bare `cargo test --workspace` runs both and is therefore the slow path by
+# accident rather than by choice. Prefer the two names above, which say which
+# one is meant.
+[alias]
+t = "test --workspace --tests"
+tdoc = "test --workspace --doc"
