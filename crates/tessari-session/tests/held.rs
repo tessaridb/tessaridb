@@ -38,7 +38,7 @@ const CEILING: usize = 10_000;
 const SCHEMA: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;
 DEFINE DATABASE shop; USE DATABASE shop;
-DEFINE TABLE events;
+DEFINE COLLECTION events;
 ";
 
 fn store() -> Store {

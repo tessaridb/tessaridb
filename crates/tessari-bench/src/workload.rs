@@ -160,7 +160,7 @@ macro_rules! timed {
 fn write(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE TABLE people;")?;
+    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION people;")?;
 
     let mut samples = Samples::with_capacity(usize::try_from(RECORDS).unwrap_or(0));
     for n in 0..RECORDS {
@@ -273,7 +273,7 @@ fn search(db: &Db) -> Failable<Vec<Report>> {
     session.run(
         "USE NAMESPACE bench; USE DATABASE bench;\n\
          DEFINE ANALYZER simple FILTERS lowercase;\n\
-         DEFINE TABLE notes;\n\
+         DEFINE TABLE notes SCHEMALESS;\n\
          DEFINE FIELD body ON notes TYPE string ANALYZER simple;",
     )?;
 
@@ -341,7 +341,7 @@ fn search(db: &Db) -> Failable<Vec<Report>> {
 fn vector(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE TABLE items;")?;
+    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION items;")?;
 
     let mut written = Samples::with_capacity(usize::try_from(RECORDS).unwrap_or(0));
     for n in 0..RECORDS {
@@ -389,7 +389,7 @@ fn vector(db: &Db) -> Failable<Vec<Report>> {
 fn capacity(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE TABLE load;")?;
+    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION load;")?;
 
     let mut reports = Vec::new();
     let mut written = 0_u64;
@@ -450,7 +450,7 @@ fn restore(db: &Db) -> Failable<Vec<Report>> {
     let mut session = db.session();
     session.run(
         "USE NAMESPACE bench; USE DATABASE bench;\n\
-         DEFINE TABLE people;\n\
+         DEFINE COLLECTION people;\n\
          DEFINE INDEX by_city ON people FIELDS city;",
     )?;
     for n in 0..RECORDS {
@@ -497,7 +497,7 @@ fn restore(db: &Db) -> Failable<Vec<Report>> {
 fn vector_index(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE TABLE items;")?;
+    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION items;")?;
     for n in 0..RECORDS {
         session.run(&format!(
             "CREATE items:{n} = {{ embedding: {} }};",

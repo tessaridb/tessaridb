@@ -108,6 +108,24 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `DEFINE COLLECTION notes` — records that carry fields nobody declared.
+    ///
+    /// The fourth word in the row `TABLE`, `SPACE`, `BUCKET` already forms, and
+    /// it earns one on the same test they did: a difference in what a caller
+    /// may **do**. A table refuses a field it does not declare; a collection
+    /// accepts one, which is the whole of what a document is here.
+    ///
+    /// It carries no columns and no strictness marker, because there is nothing
+    /// for either to say. `DEFINE TABLE t (…) SCHEMALESS` is a *table* whose
+    /// declared fields are still constrained; a collection declares none. The
+    /// two are stored apart rather than collapsed, so `INFO` can answer with the
+    /// word that created the thing instead of one that merely behaves like it.
+    DefineCollection {
+        /// The name to create.
+        name: Name,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
     /// `DEFINE INDEX by_email ON users FIELDS email UNIQUE`
     DefineIndex {
         /// The index's name, unique within its table.

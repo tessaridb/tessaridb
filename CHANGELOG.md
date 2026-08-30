@@ -14,7 +14,38 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 884 conformance cases define the language and run in the build.
+Unreleased. 901 conformance cases define the language and run in the build.
+
+### Breaking — a table is not a document
+
+`DEFINE COLLECTION` is the word for records that carry fields nobody declared,
+and `DEFINE TABLE` now means what it says: a table that declares its fields
+refuses the ones it does not. Three changes follow, and each has a one-line
+answer.
+
+| a script that says | now | write instead |
+|---|---|---|
+| `DEFINE TABLE t;` | refused | `DEFINE COLLECTION t;` if its records carry undeclared fields, `DEFINE TABLE t SCHEMALESS;` to keep the old reading exactly |
+| `DEFINE TABLE t (a string);` then a record carrying `b` | refused | declare `b`, or add `SCHEMALESS` |
+| `DEFINE TABLE t EDGE;` | unchanged | — an edge table declares no columns because the store supplies `out` and `in` |
+
+**Nothing stored is redefined and no migration step is owed.** Strictness has
+always been a property of the stored table rather than of the default, so a
+table declared lenient before this release goes on being lenient, and the
+`collection` flag added to the catalog reads `false` on every record written
+before it existed — which is the right answer for all of them. The change is to
+what a *new* declaration means, and it is felt when an old script is run again.
+
+`SCHEMAFULL` is still accepted and now says what is already true. `SCHEMALESS`
+became a reserved word; a field or table named `schemaless` needs renaming.
+
+### Added
+
+- **`INSERT INTO t (cols) VALUES (…), (…)`** — several records in one statement
+  and one transaction, at identities the store produces, answered back in the
+  order the rows were written. `CREATE` is unchanged and still asserts an
+  identity the caller names.
+- **`DEFINE COLLECTION`** — see above.
 
 ### Security
 

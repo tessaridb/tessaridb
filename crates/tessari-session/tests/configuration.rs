@@ -369,7 +369,7 @@ fn a_table_called_node_is_still_an_ordinary_table() {
         .run("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE d; USE DATABASE d;")
         .unwrap();
     session
-        .run("DEFINE TABLE node; CREATE node:1 = { name: 'a' };")
+        .run("DEFINE COLLECTION node; CREATE node:1 = { name: 'a' };")
         .unwrap();
 
     let outcomes = session.run("SELECT * FROM node;").unwrap();

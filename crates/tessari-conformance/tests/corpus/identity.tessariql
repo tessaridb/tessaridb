@@ -54,7 +54,7 @@ RETURN rand::uuid(1);
 --- expect: error WrongArity
 
 --- case: three records to read over
-DEFINE TABLE accounts;
+DEFINE COLLECTION accounts;
 CREATE accounts:1 = { holder: 'ada' };
 CREATE accounts:2 = { holder: 'bob' };
 CREATE accounts:3 = { holder: 'cyd' };
@@ -78,7 +78,7 @@ RETURN array::len(array::distinct((SELECT type::string(rand::uuid()) AS id FROM 
 --- expect: value 3
 
 --- case: a field may default to a generated identifier
-DEFINE TABLE sessions;
+DEFINE TABLE sessions SCHEMALESS;
 DEFINE FIELD id ON sessions TYPE uuid DEFAULT rand::uuid();
 --- expect: ok
 

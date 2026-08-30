@@ -109,7 +109,7 @@ RETURN array::slice([1, 2, 3], 1.5, 1);
 --- expect: error CallFailed
 
 --- case: records to read the collections out of
-DEFINE TABLE people;
+DEFINE COLLECTION people;
 CREATE people:1 = { name: 'ada', tags: ['b', 'a', 'b'], address: { city: 'london', zone: 'n1' } };
 CREATE people:2 = { name: 'bo', tags: [], address: { city: 'oslo', zone: 'w2' } };
 --- expect: ok

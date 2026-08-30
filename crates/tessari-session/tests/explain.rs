@@ -33,7 +33,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              CREATE users:1 = { email: 'ada@example.com', city: 'Paris' };\n\
              CREATE users:2 = { email: 'grace@example.com', city: 'Paris' };\n\
              CREATE users:3 = { email: 'alan@example.com', city: 'Lyon' };",
@@ -247,7 +247,7 @@ fn it_needs_exactly_the_permission_the_read_needs() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE secrets;\n\
+            "DEFINE COLLECTION secrets;\n\
              CREATE secrets:1 = { held: 'x' };\n\
              DEFINE INDEX by_held ON secrets FIELDS held;\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",

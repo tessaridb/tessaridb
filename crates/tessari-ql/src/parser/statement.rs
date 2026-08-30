@@ -373,17 +373,45 @@ impl Parser<'_> {
                 // because there is no reading under which one has to precede the
                 // other, and a grammar that insisted would only be remembered
                 // wrong.
-                let mut schemafull = false;
+                //
+                // A declared table is **strict by default**, so `schemafull`
+                // starts true and `SCHEMALESS` is what turns it off. The pair is
+                // read as two words rather than one optional word, because a
+                // script that says which reading it wants keeps saying it after
+                // the default moves again.
+                let mut strictness: Option<bool> = None;
                 let mut edge = false;
                 loop {
-                    if !schemafull && self.eat_keyword(Keyword::Schemafull) {
-                        schemafull = true;
+                    if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
+                        strictness = Some(true);
+                    } else if strictness.is_none() && self.eat_keyword(Keyword::Schemaless) {
+                        strictness = Some(false);
                     } else if !edge && self.eat_keyword(Keyword::Edge) {
                         edge = true;
                     } else {
                         break;
                     }
                 }
+                // A table with no columns has nothing to be strict about, and
+                // the reader who wrote it wanted the other word. Refused rather
+                // than quietly read as lenient, and the refusal names the word,
+                // because "not allowed" without "write this instead" turns a
+                // one-word fix into a search through the specification.
+                //
+                // An edge table is the exception, and it is not a special case
+                // so much as the rule read properly: it declares no columns
+                // because nobody writes `out` and `in` by hand, so it is not a
+                // declaration with nothing in it — it is one whose fields the
+                // store supplies. It keeps the lenient reading it had, because
+                // an edge carries properties and none of them were ever
+                // declared here.
+                if columns.is_empty() && strictness.is_none() && !edge {
+                    return Err(Error::TableWithoutColumns {
+                        name: name.text.clone(),
+                        span: name.span,
+                    });
+                }
+                let schemafull = strictness.unwrap_or(!columns.is_empty());
                 Ok(StatementKind::DefineTable {
                     name,
                     columns,
@@ -404,6 +432,14 @@ impl Parser<'_> {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
                 Ok(StatementKind::DefineBucket {
+                    name: self.name()?,
+                    if_not_exists,
+                })
+            }
+            Some(Keyword::Collection) => {
+                self.advance();
+                let if_not_exists = self.eat_if_not_exists()?;
+                Ok(StatementKind::DefineCollection {
                     name: self.name()?,
                     if_not_exists,
                 })
@@ -802,7 +838,7 @@ impl Parser<'_> {
             )?;
             let change = if self.eat_keyword(Keyword::Schemafull) {
                 TableChange::Schemafull
-            } else if self.eat_word("schemaless") {
+            } else if self.eat_keyword(Keyword::Schemaless) {
                 TableChange::Schemaless
             } else {
                 return Err(self.error_here("`SCHEMAFULL` or `SCHEMALESS`"));

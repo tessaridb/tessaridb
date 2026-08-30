@@ -41,7 +41,7 @@ fn schemaless(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE maps; USE NAMESPACE maps;\n\
              DEFINE DATABASE world; USE DATABASE world;\n\
-             DEFINE TABLE places;",
+             DEFINE COLLECTION places;",
         )
         .unwrap();
     session
@@ -297,7 +297,7 @@ fn an_edge_carrying_a_shape_goes_through_it_as_well() {
         .run(
             "DEFINE NAMESPACE maps; USE NAMESPACE maps;\n\
              DEFINE DATABASE world; USE DATABASE world;\n\
-             DEFINE TABLE places;\n\
+             DEFINE COLLECTION places;\n\
              DEFINE TABLE roads EDGE;\n\
              CREATE places:1 = { name: 'here' };\n\
              CREATE places:2 = { name: 'there' };",

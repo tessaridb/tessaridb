@@ -97,6 +97,7 @@ impl Effect {
             | StatementKind::DefineTable { .. }
             | StatementKind::DefineSpace { .. }
             | StatementKind::DefineBucket { .. }
+            | StatementKind::DefineCollection { .. }
             | StatementKind::DefineIndex { .. }
             | StatementKind::DefineField { .. }
             | StatementKind::DefineAnalyzer { .. }

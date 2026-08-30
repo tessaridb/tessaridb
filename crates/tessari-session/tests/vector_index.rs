@@ -34,7 +34,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
-             DEFINE TABLE items;",
+             DEFINE COLLECTION items;",
         )
         .unwrap();
     session

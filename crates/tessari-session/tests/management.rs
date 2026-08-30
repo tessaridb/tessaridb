@@ -72,7 +72,7 @@ fn dropping_an_analyzer_a_field_names_refuses_and_says_which_field() {
     ok(
         &mut session,
         "DEFINE ANALYZER simple FILTERS lowercase;
-         DEFINE TABLE posts;
+         DEFINE TABLE posts SCHEMALESS;
          DEFINE FIELD body ON posts TYPE string ANALYZER simple;",
     );
     let message = refusal(&mut session, "DROP ANALYZER simple;");
@@ -99,7 +99,7 @@ fn a_refused_analyzer_drop_leaves_it_attachable_to_another_field() {
     ok(
         &mut session,
         "DEFINE ANALYZER simple FILTERS lowercase;
-         DEFINE TABLE posts;
+         DEFINE TABLE posts SCHEMALESS;
          DEFINE FIELD body ON posts TYPE string ANALYZER simple;",
     );
     refusal(&mut session, "DROP ANALYZER simple;");
@@ -117,7 +117,7 @@ fn an_analyzer_goes_once_the_last_field_naming_it_is_gone() {
     ok(
         &mut session,
         "DEFINE ANALYZER simple FILTERS lowercase;
-         DEFINE TABLE posts;
+         DEFINE TABLE posts SCHEMALESS;
          DEFINE FIELD body ON posts TYPE string ANALYZER simple;
          DEFINE FIELD title ON posts TYPE string ANALYZER simple;",
     );
@@ -146,7 +146,7 @@ fn a_field_that_names_a_different_analyzer_does_not_hold_this_one() {
         &mut session,
         "DEFINE ANALYZER simple FILTERS lowercase;
          DEFINE ANALYZER folded FILTERS lowercase, ascii;
-         DEFINE TABLE posts;
+         DEFINE TABLE posts SCHEMALESS;
          DEFINE FIELD body ON posts TYPE string ANALYZER folded;
          DEFINE FIELD plain ON posts TYPE string;",
     );
@@ -158,7 +158,10 @@ fn a_field_that_names_a_different_analyzer_does_not_hold_this_one() {
 fn dropping_a_database_that_holds_tables_refuses_and_counts_them() {
     let store = store();
     let mut session = opened(&store);
-    ok(&mut session, "DEFINE TABLE orders; DEFINE TABLE invoices;");
+    ok(
+        &mut session,
+        "DEFINE COLLECTION orders; DEFINE COLLECTION invoices;",
+    );
     let message = refusal(&mut session, "DROP DATABASE shop;");
     assert!(message.contains('2'), "does not count them: {message}");
     assert!(message.contains("tables"), "does not say what: {message}");
@@ -192,7 +195,7 @@ fn tightening_a_table_is_refused_while_a_stored_row_carries_an_undeclared_field(
     let mut session = opened(&store);
     ok(
         &mut session,
-        "DEFINE TABLE notes;
+        "DEFINE TABLE notes SCHEMALESS;
          CREATE notes:1 = { title: 'first', extra: 'whatever' };
          DEFINE FIELD title ON notes TYPE string;",
     );
@@ -221,7 +224,7 @@ fn loosening_a_table_is_never_refused() {
     let mut session = opened(&store);
     ok(
         &mut session,
-        "DEFINE TABLE notes;
+        "DEFINE TABLE notes SCHEMALESS;
          DEFINE FIELD title ON notes TYPE string;
          ALTER TABLE notes SET SCHEMAFULL;",
     );
@@ -296,7 +299,7 @@ fn a_refused_field_alteration_leaves_the_old_declaration_standing() {
     let mut session = opened(&store);
     ok(
         &mut session,
-        "DEFINE TABLE people;
+        "DEFINE COLLECTION people;
          ALTER TABLE people ADD FIELD name TYPE string;
          CREATE people:1 = { name: 'ada' };",
     );
@@ -327,7 +330,7 @@ fn the_columnar_spelling_takes_every_option_the_long_one_does() {
     let mut session = opened(&store);
     ok(
         &mut session,
-        "DEFINE TABLE people;
+        "DEFINE COLLECTION people;
          ALTER TABLE people ADD FIELD name TYPE string REQUIRED;
          ALTER TABLE people ADD FIELD rank TYPE string DEFAULT 'viewer';
          ALTER TABLE people ADD FIELD bio TYPE string;",
@@ -378,24 +381,33 @@ fn a_table_and_its_columns_are_one_statement() {
         .expect_err("the column's REQUIRED did not reach the field");
 }
 
-/// Declaring columns does not make the table refuse the ones it does not name.
+/// Declaring columns makes the table refuse the ones it does not name.
 ///
-/// Of the two candidate readings, this is the one the other can be written
-/// from: strictness is one word away, and a lenient table with declared columns
-/// has no other spelling at all if the parentheses imply `SCHEMAFULL`.
+/// The reading was the other way round until G018 node T: parentheses declared
+/// fields and constrained nothing else, so the mistake worth catching — a
+/// misspelled field name — wrote a new field and reported success. Both
+/// spellings survive the change: `SCHEMAFULL` still says what is now already
+/// true, and `SCHEMALESS` is the one word that buys the older reading back.
 #[test]
-fn columns_do_not_imply_schemafull_and_the_word_still_does() {
+fn columns_imply_strictness_and_schemaless_is_the_way_back() {
     let store = store();
     let mut session = opened(&store);
-    ok(&mut session, "DEFINE TABLE loose (name string);");
-    ok(&mut session, "CREATE loose:1 = { name: 'ada', extra: 1 };");
 
-    ok(&mut session, "DEFINE TABLE tight (name string) SCHEMAFULL;");
+    ok(&mut session, "DEFINE TABLE tight (name string);");
     let refused = refusal(&mut session, "CREATE tight:1 = { name: 'ada', extra: 1 };");
     assert!(
         refused.contains("extra"),
         "the refusal should name the undeclared field: {refused}"
     );
+
+    ok(
+        &mut session,
+        "DEFINE TABLE stated (name string) SCHEMAFULL;",
+    );
+    refusal(&mut session, "CREATE stated:1 = { name: 'ada', extra: 1 };");
+
+    ok(&mut session, "DEFINE TABLE loose (name string) SCHEMALESS;");
+    ok(&mut session, "CREATE loose:1 = { name: 'ada', extra: 1 };");
 }
 
 /// A column's constraint is checked against the rows already in the table.
@@ -408,7 +420,7 @@ fn columns_do_not_imply_schemafull_and_the_word_still_does() {
 fn a_column_declared_over_violating_rows_is_refused_and_writes_nothing() {
     let store = store();
     let mut session = opened(&store);
-    ok(&mut session, "DEFINE TABLE readings;");
+    ok(&mut session, "DEFINE COLLECTION readings;");
     ok(&mut session, "CREATE readings:1 = { level: 'high' };");
 
     let refused = refusal(

@@ -9,7 +9,7 @@ USE DATABASE orders;
 --- expect: ok
 
 --- case: a table to bind against
-DEFINE TABLE people;
+DEFINE COLLECTION people;
 CREATE people:1 = { name: 'ada', city: 'london', age: 36 };
 CREATE people:2 = { name: 'grace', city: 'london', age: 45 };
 CREATE people:3 = { name: 'alan', city: 'cambridge', age: 41 };

@@ -204,7 +204,7 @@ fn ready<'a>(store: &'a Store, indexes: &[&str]) -> Session<'a> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE people;",
+             DEFINE COLLECTION people;",
         )
         .unwrap();
     let mut script = String::new();

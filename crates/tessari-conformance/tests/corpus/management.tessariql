@@ -73,7 +73,7 @@ DROP ANALYZER simple;
 
 --- case: a field is attached to an analyzer
 DEFINE ANALYZER simple FILTERS lowercase;
-DEFINE TABLE posts;
+DEFINE TABLE posts SCHEMALESS;
 DEFINE FIELD body ON posts TYPE string ANALYZER simple;
 --- expect: ok
 
@@ -94,7 +94,7 @@ DROP ANALYZER simple;
 # --------------------------------------------------------------- ALTER TABLE
 
 --- case: a schemaless table takes a field nobody declared
-DEFINE TABLE notes;
+DEFINE TABLE notes SCHEMALESS;
 CREATE notes:1 = { title: 'first', extra: 'whatever' };
 --- expect: ok
 
@@ -140,7 +140,7 @@ ALTER TABLE nothing SET SCHEMAFULL;
 # ------------------------------ ALTER TABLE ADD / ALTER / DROP FIELD
 
 --- case: a field is added by the columnar spelling
-DEFINE TABLE people;
+DEFINE COLLECTION people;
 ALTER TABLE people ADD FIELD name TYPE string;
 CREATE people:1 = { name: 'ada' };
 --- expect: ok

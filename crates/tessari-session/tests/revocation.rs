@@ -40,7 +40,7 @@ fn peopled(store: &Store) {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE orders;\n\
+             DEFINE COLLECTION orders;\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
         )
         .unwrap();
@@ -198,7 +198,7 @@ fn dropping_the_last_user_leaves_an_open_store_rather_than_a_locked_one() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE orders;\n\
+             DEFINE COLLECTION orders;\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
         )
         .unwrap();

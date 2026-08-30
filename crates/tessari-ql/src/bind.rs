@@ -230,6 +230,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::DefineTable { .. }
         | StatementKind::DefineSpace { .. }
         | StatementKind::DefineBucket { .. }
+        | StatementKind::DefineCollection { .. }
         | StatementKind::DefineIndex { .. }
         | StatementKind::DefineField { .. }
         | StatementKind::DefineAnalyzer { .. }

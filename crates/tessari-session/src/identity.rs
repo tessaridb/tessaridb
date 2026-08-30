@@ -489,6 +489,7 @@ impl Needs {
             | StatementKind::DropTable { .. }
             | StatementKind::DefineSpace { .. }
             | StatementKind::DefineBucket { .. }
+            | StatementKind::DefineCollection { .. }
             | StatementKind::DefineIndex { .. }
             | StatementKind::DropIndex { .. }
             | StatementKind::RebuildIndex { .. }

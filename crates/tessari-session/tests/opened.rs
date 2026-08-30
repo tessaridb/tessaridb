@@ -31,13 +31,13 @@ use tessari_types::Value;
 const SCHEMA: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;
 DEFINE DATABASE shop; USE DATABASE shop;
-DEFINE TABLE notes;
+DEFINE COLLECTION notes;
 CREATE notes:1 = { title: 'first', tags: ['rust', 'db'] };
 CREATE notes:2 = { title: 'second', tags: ['db'] };
 CREATE notes:3 = { title: 'third', tags: [] };
 CREATE notes:4 = { title: 'fourth' };
 CREATE notes:5 = { title: 'fifth', tags: 'not-a-list' };
-DEFINE TABLE people;
+DEFINE COLLECTION people;
 CREATE people:1 = { name: 'ada', address: { city: 'london', tags: ['a', 'b'] } };
 ";
 
@@ -238,7 +238,7 @@ fn the_word_split_is_still_a_field_name() {
     let mut session = ready(&store);
     run(
         &mut session,
-        "DEFINE TABLE runs; CREATE runs:1 = { split: 'yes' };",
+        "DEFINE COLLECTION runs; CREATE runs:1 = { split: 'yes' };",
     );
     let answered = run(&mut session, "SELECT split FROM runs;");
     assert_eq!(column(&answered, "split"), vec![Value::from("yes")]);

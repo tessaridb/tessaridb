@@ -37,7 +37,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE atlas; USE NAMESPACE atlas;\n\
              DEFINE DATABASE world; USE DATABASE world;\n\
-             DEFINE TABLE places;",
+             DEFINE COLLECTION places;",
         )
         .unwrap();
     session
@@ -134,7 +134,7 @@ fn spatial_is_contextual_and_is_still_a_name() {
     session
         .run("CREATE places:1 = { spatial: 'a word, not an index kind' };")
         .unwrap();
-    session.run("DEFINE TABLE spatial;").unwrap();
+    session.run("DEFINE COLLECTION spatial;").unwrap();
 }
 
 #[test]

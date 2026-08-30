@@ -41,7 +41,7 @@ fn peopled(store: &Store) {
     session
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
-             DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders;",
+             DEFINE DATABASE shop; USE DATABASE shop; DEFINE COLLECTION orders;",
         )
         .unwrap();
     session

@@ -14,7 +14,7 @@ USE DATABASE intake;
 --- expect: ok
 
 --- case: rows carrying values as text, the way they arrive from outside
-DEFINE TABLE arrivals;
+DEFINE COLLECTION arrivals;
 CREATE arrivals:1 = { count: '42', ratio: '2.5', flag: 'true', seen: '2026-08-28T12:30:15Z', tag: '550e8400-e29b-41d4-a716-446655440000' };
 CREATE arrivals:2 = { count: 'ada', flag: 'yes' };
 --- expect: ok

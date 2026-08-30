@@ -34,7 +34,7 @@ fn ready(store: &Store) -> Session<'_> {
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
              DEFINE ANALYZER simple FILTERS lowercase;\n\
-             DEFINE TABLE users;\n\
+             DEFINE TABLE users SCHEMALESS;\n\
              DEFINE FIELD body ON users TYPE string ANALYZER simple;\n\
              DEFINE INDEX by_email ON users FIELDS email UNIQUE;\n\
              DEFINE INDEX by_city ON users FIELDS city;\n\

@@ -62,7 +62,7 @@ PUT media:'/wrong' = 42;
 --- expect: error FileIsNotBytes
 
 --- case: an ordinary table is not a bucket
-DEFINE TABLE users;
+DEFINE COLLECTION users;
 PUT users:'/x' = 0x00;
 --- expect: error NotABucket
 

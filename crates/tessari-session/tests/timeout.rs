@@ -38,7 +38,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE events;\n\
+             DEFINE COLLECTION events;\n\
              DEFINE INDEX by_at ON events FIELDS at;\n\
              DEFINE INDEX timeout ON events FIELDS rare;",
         )

@@ -104,7 +104,7 @@ pub(crate) fn spans(db: &Db, records: u64) -> Failable<Samples> {
     session.run(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench;\n\
          DEFINE DATABASE bench; USE DATABASE bench;\n\
-         DEFINE TABLE spans;\n\
+         DEFINE COLLECTION spans;\n\
          DEFINE INDEX by_n ON spans FIELDS n;",
     )?;
 

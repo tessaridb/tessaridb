@@ -346,9 +346,20 @@ impl<'a> Session<'a> {
         // A grant names a table that exists. Declaring one therefore has no
         // grant that could permit it, and saying so is better than a refusal
         // that reads like a bug.
+        //
+        // All four declarations of a table, because `reach::tables_named`
+        // returns an EMPTY list for every one of them and says in its own
+        // comment that the caller handles them. Anything named there and
+        // missing here is not refused by the loop below either — the loop
+        // iterates the tables a statement names, and these name none — so it
+        // is simply allowed. `DEFINE BUCKET` was in exactly that position
+        // before this line listed it.
         if matches!(
             kind,
-            StatementKind::DefineTable { .. } | StatementKind::DefineSpace { .. }
+            StatementKind::DefineTable { .. }
+                | StatementKind::DefineSpace { .. }
+                | StatementKind::DefineBucket { .. }
+                | StatementKind::DefineCollection { .. }
         ) {
             return Err(Error::GrantedUserCannotDeclare {
                 user: user.name.clone(),

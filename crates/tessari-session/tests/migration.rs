@@ -82,7 +82,7 @@ fn peopled(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE orders; CREATE orders:1 = { total: 5 };\n\
+             DEFINE COLLECTION orders; CREATE orders:1 = { total: 5 };\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
         )
         .unwrap();
@@ -153,7 +153,10 @@ fn an_editor_still_defines_structure_and_a_viewer_still_cannot() {
             "CREATE orders:'new%R%' = { total: 1 };",
             [false, true, true],
         ),
-        ("DEFINE TABLE shipments%R%;", [false, true, true]),
+        (
+            "DEFINE TABLE shipments%R% (code string);",
+            [false, true, true],
+        ),
         (
             "DEFINE USER extra%R% ON prod.shop ROLE viewer PASSWORD 'correct horse battery';",
             [false, false, true],

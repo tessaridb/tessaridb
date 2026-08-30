@@ -207,6 +207,28 @@ pub enum Error {
         span: Span,
     },
 
+    /// `DEFINE COLLECTION t;` — a table declaring no fields and saying no strictness.
+    ///
+    /// A declared table is strict about the fields it names, and this one names
+    /// none, so there is nothing for the declaration to mean. The reader wanted
+    /// one of two other things, and the message says both rather than leaving
+    /// them to find out which: a collection if the records carry fields nobody
+    /// declares, or the explicit lenient table if an older script is being run
+    /// unchanged. Refusing without naming the replacement would turn a one-word
+    /// fix into a search through the specification.
+    #[error(
+        "the table {name} declares no fields, so there is nothing for it to be \
+         strict about — write `DEFINE COLLECTION {name}` for records that carry \
+         fields nobody declared, or `DEFINE TABLE {name} SCHEMALESS` to keep the \
+         older lenient reading (at {span})"
+    )]
+    TableWithoutColumns {
+        /// The table the declaration named.
+        name: String,
+        /// Where the name is.
+        span: Span,
+    },
+
     /// A `START` was written beside an `AFTER`.
     ///
     /// Both say where the page begins, and applying both means the offset counts
@@ -596,6 +618,7 @@ impl Error {
             | Self::InvalidBytes { span, .. }
             | Self::InvalidDuration { span, .. }
             | Self::InsertRowArity { span, .. }
+            | Self::TableWithoutColumns { span, .. }
             | Self::UnexpectedToken { span, .. }
             | Self::UnexpectedEnd { span, .. }
             | Self::Unsupported { span, .. }

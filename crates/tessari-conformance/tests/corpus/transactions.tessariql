@@ -9,7 +9,7 @@ USE DATABASE orders;
 
 --- case: a definition and a write land together
 BEGIN;
-DEFINE TABLE users;
+DEFINE COLLECTION users;
 CREATE users:1 = { name: 'ada' };
 COMMIT;
 --- expect: ok
@@ -20,7 +20,7 @@ SELECT * FROM users;
 
 --- case: a cancelled transaction leaves nothing behind
 BEGIN;
-DEFINE TABLE accounts;
+DEFINE COLLECTION accounts;
 CREATE accounts:1 = { balance: 10 };
 CANCEL;
 --- expect: ok

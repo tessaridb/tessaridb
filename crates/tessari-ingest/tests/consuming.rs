@@ -47,7 +47,7 @@ fn declared_on(backend: &Arc<dyn KvBackend>, policy: &str, parallelism: &str) ->
     session
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
-             DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders;",
+             DEFINE DATABASE shop; USE DATABASE shop; DEFINE COLLECTION orders;",
         )
         .unwrap();
     session

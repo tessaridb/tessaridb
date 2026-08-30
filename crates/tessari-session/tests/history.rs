@@ -38,7 +38,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE library; USE DATABASE library;\n\
-             DEFINE TABLE docs;\n\
+             DEFINE COLLECTION docs;\n\
              DEFINE INDEX by_status ON docs FIELDS status;",
         )
         .unwrap();
@@ -312,7 +312,7 @@ fn a_traversal_cannot_be_read_at_an_earlier_version() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE social; USE DATABASE social;\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              DEFINE TABLE follows EDGE;\n\
              CREATE users:1 = { handle: 'ada' };\n\
              CREATE users:2 = { handle: 'grace' };\n\

@@ -68,6 +68,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DefineTable { .. } => Err(unrenderable("DEFINE TABLE", span)),
         StatementKind::DefineSpace { .. } => Err(unrenderable("DEFINE SPACE", span)),
         StatementKind::DefineBucket { .. } => Err(unrenderable("DEFINE BUCKET", span)),
+        StatementKind::DefineCollection { .. } => Err(unrenderable("DEFINE COLLECTION", span)),
         StatementKind::DefineIndex { .. } => Err(unrenderable("DEFINE INDEX", span)),
         StatementKind::DefineField { .. } => Err(unrenderable("DEFINE FIELD", span)),
         StatementKind::DefineAnalyzer { .. } => Err(unrenderable("DEFINE ANALYZER", span)),

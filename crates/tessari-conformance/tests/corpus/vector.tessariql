@@ -12,7 +12,7 @@ DEFINE NAMESPACE prod;
 USE NAMESPACE prod;
 DEFINE DATABASE atlas;
 USE DATABASE atlas;
-DEFINE TABLE points;
+DEFINE COLLECTION points;
 --- expect: ok
 
 --- case: four points in a plane

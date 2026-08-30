@@ -46,7 +46,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE events;",
+             DEFINE COLLECTION events;",
         )
         .unwrap();
     session
@@ -247,7 +247,7 @@ fn an_approximate_answer_says_that_it_is_one() {
     // leaving to whoever remembers writing `APPROXIMATE`.
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE items;").unwrap();
+    session.run("DEFINE COLLECTION items;").unwrap();
     let mut script = String::new();
     for n in 0..40_u32 {
         script.push_str(&format!(
@@ -287,7 +287,7 @@ fn a_read_that_did_not_ask_for_an_approximation_raises_nothing() {
     // that did not say it. The path already says so; the note must agree.
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE items;").unwrap();
+    session.run("DEFINE COLLECTION items;").unwrap();
     let mut script = String::new();
     for n in 0..40_u32 {
         script.push_str(&format!("CREATE items:{n} = {{ at: [{n}.0, 0.0] }};\n"));
@@ -335,7 +335,7 @@ fn a_note_from_a_joined_read_reaches_the_answer() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE people;\n\
+            "DEFINE COLLECTION people;\n\
              CREATE people:1 = { name: 'ada', slot: 0 };\n\
              CREATE people:2 = { name: 'grace', slot: 0 };\n\
              CREATE people:3 = { name: 'alan', slot: 1 };",
@@ -361,7 +361,7 @@ fn a_note_never_reaches_an_outcome_that_is_not_records() {
     populate(&mut session, 3);
 
     for script in [
-        "DEFINE TABLE other;",
+        "DEFINE COLLECTION other;",
         "DELETE FROM events WHERE slot = 0 LIMIT ALL;",
     ] {
         let outcomes = session.run(script).unwrap();

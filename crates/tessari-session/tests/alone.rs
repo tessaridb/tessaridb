@@ -33,7 +33,7 @@ use tessari_types::Value;
 const SCHEMA: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;
 DEFINE DATABASE shop; USE DATABASE shop;
-DEFINE TABLE people;
+DEFINE COLLECTION people;
 CREATE people:1 = { name: 'ada', email: 'ada@example.com', city: 'london' };
 CREATE people:2 = { name: 'grace', email: 'grace@example.com', city: 'york' };
 CREATE people:3 = { name: 'alan', email: 'alan@example.com', city: 'london' };
@@ -195,7 +195,7 @@ fn only_is_reserved_so_a_table_of_that_name_is_not_addressable() {
     // The cost of the decision, pinned rather than left to be discovered: the
     // word is reserved because `FROM only limit 1` cannot be told apart from
     // this marker in front of a table called `limit`.
-    let message = refusal(&mut session, "DEFINE TABLE only;");
+    let message = refusal(&mut session, "DEFINE COLLECTION only;");
     assert!(
         !message.is_empty(),
         "`only` was accepted as a table name after all"

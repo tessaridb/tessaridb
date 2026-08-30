@@ -59,7 +59,7 @@ fn ready(store: &Store) -> Session<'_> {
         "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;
 DEFINE DATABASE shop; USE DATABASE shop;
-DEFINE TABLE ticks;
+DEFINE COLLECTION ticks;
 ",
     );
     for at in 1..=MANY {
@@ -223,7 +223,7 @@ fn a_default_may_still_be_the_instant() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE events; \
+            "DEFINE TABLE events SCHEMALESS; \
              DEFINE FIELD seen ON events TYPE datetime DEFAULT time::now();",
         )
         .unwrap();

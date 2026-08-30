@@ -160,6 +160,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             schemafull: shape.schemafull,
             edge: shape.edge,
             bucket: shape.bucket,
+            collection: shape.collection,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

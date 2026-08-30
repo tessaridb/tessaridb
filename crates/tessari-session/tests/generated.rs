@@ -47,7 +47,7 @@ fn ready(store: &Store) -> Session<'_> {
         "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;
 DEFINE DATABASE shop; USE DATABASE shop;
-DEFINE TABLE ticks;
+DEFINE COLLECTION ticks;
 ",
     );
     for at in 1..=MANY {
@@ -204,7 +204,7 @@ fn a_default_of_a_generated_identifier_gives_each_record_its_own() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE events; \
+            "DEFINE TABLE events SCHEMALESS; \
              DEFINE FIELD id ON events TYPE uuid DEFAULT rand::uuid();",
         )
         .unwrap();

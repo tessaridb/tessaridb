@@ -25,7 +25,7 @@ DEFINE NAMESPACE prod;
 USE NAMESPACE prod;
 DEFINE DATABASE shop;
 USE DATABASE shop;
-DEFINE TABLE orders;
+DEFINE COLLECTION orders;
 --- expect: ok
 
 --- case: a second namespace, so that a reach can be wrong rather than absent
@@ -81,5 +81,5 @@ INFO FOR ACCESS TO orders;
 --- expect: error UnexpectedToken
 
 --- case: a table may no longer be named `store`, which is what reserving it cost
-DEFINE TABLE store;
+DEFINE COLLECTION store;
 --- expect: error UnexpectedToken

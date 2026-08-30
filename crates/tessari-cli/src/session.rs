@@ -547,7 +547,7 @@ mod tests {
         let (out, ended) = ran(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              CREATE users:1 = { name: 'ada' };\n\
              CREATE users:2 = { name: 'grace' };\n\
              SELECT * FROM users -- oops; a note\n\
@@ -581,7 +581,7 @@ mod tests {
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
              BEGIN;\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              CREATE users:1 = { name: 'ada' };\n\
              COMMIT;\n\
              SELECT * FROM users;\n",
@@ -597,7 +597,7 @@ mod tests {
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
              BEGIN;\n\
-             DEFINE TABLE accounts;\n\
+             DEFINE COLLECTION accounts;\n\
              CREATE accounts:1 = { balance: 10 };\n\
              CANCEL;\n\
              SELECT * FROM accounts;\n",
@@ -624,7 +624,7 @@ mod tests {
         let (out, ended) = ran(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              BEGIN;\n\
              CREATE users:2 = { name: 'grace' };\n",
             Mode::Script,
@@ -672,7 +672,7 @@ mod tests {
         let (out, ended) = ran(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              CREATE users:1 = {\n  name: 'ada'\n};\n\
              SELECT * FROM users:1;\n",
             Mode::Script,
@@ -685,7 +685,7 @@ mod tests {
     const ONE_RECORD: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
 DEFINE DATABASE orders; USE DATABASE orders;\n\
-DEFINE TABLE users;\n\
+DEFINE COLLECTION users;\n\
 CREATE users:1 = { name: 'ada' };\n\
 SELECT * FROM users:1;\n";
 
@@ -827,7 +827,7 @@ SELECT * FROM users:1;\n";
         let (out, ended) = ran(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              CREATE users:1 = { name: 'ada' };\n\
              SELECT * FROM users;\n",
             Mode::Script,

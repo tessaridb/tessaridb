@@ -38,7 +38,7 @@ fn ready(store: &Store) -> Session<'_> {
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE staff SCHEMAFULL;\n\
-             DEFINE TABLE orders;\n\
+             DEFINE COLLECTION orders;\n\
              DEFINE FIELD name ON staff TYPE string;\n\
              DEFINE FIELD salary ON staff TYPE int;\n\
              DEFINE INDEX by_name ON staff FIELDS name;\n\
@@ -118,7 +118,7 @@ fn a_database_lists_its_tables_and_a_new_one_appears() {
     let listing = listed(&report(&mut session, "INFO FOR DATABASE;"), "tables");
     assert_eq!(listing, vec!["orders".to_owned(), "staff".to_owned()]);
 
-    session.run("DEFINE TABLE audit;").unwrap();
+    session.run("DEFINE COLLECTION audit;").unwrap();
     let after = listed(&report(&mut session, "INFO FOR DATABASE;"), "tables");
     assert!(after.contains(&"audit".to_owned()), "{after:?}");
 }

@@ -15,7 +15,7 @@ USE DATABASE shop;
 --- expect: ok
 
 --- case: three people, two of them in one city
-DEFINE TABLE people;
+DEFINE COLLECTION people;
 CREATE people:1 = { name: 'ada', email: 'ada@example.com', city: 'london' };
 CREATE people:2 = { name: 'grace', email: 'grace@example.com', city: 'york' };
 CREATE people:3 = { name: 'alan', email: 'alan@example.com', city: 'london' };
@@ -58,7 +58,7 @@ SELECT * OMIT email FROM ONLY people:1;
 --- expect: rows 1
 
 --- case: the word is reserved, so a table cannot be called `only`
-DEFINE TABLE only;
+DEFINE COLLECTION only;
 --- expect: error UnexpectedToken
 
 --- case: and a read of such a table cannot be written either

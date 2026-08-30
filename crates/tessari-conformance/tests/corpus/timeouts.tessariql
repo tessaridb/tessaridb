@@ -16,7 +16,7 @@ DEFINE NAMESPACE prod;
 USE NAMESPACE prod;
 DEFINE DATABASE shop;
 USE DATABASE shop;
-DEFINE TABLE events;
+DEFINE COLLECTION events;
 CREATE events:1 = { at: 1, rare: 0 };
 CREATE events:2 = { at: 2, rare: 1 };
 CREATE events:3 = { at: 3, rare: 0 };

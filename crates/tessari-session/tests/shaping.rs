@@ -30,10 +30,10 @@ use tessari_types::Value;
 const SCHEMA: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;
 DEFINE DATABASE shop; USE DATABASE shop;
-DEFINE TABLE people;
+DEFINE COLLECTION people;
 CREATE people:1 = { name: 'ada', age: 36, address: { city: 'london', postcode: 'N1' } };
 CREATE people:2 = { name: 'grace', age: 45, address: { city: 'york', postcode: 'YO1' } };
-DEFINE TABLE notes;
+DEFINE COLLECTION notes;
 CREATE notes:1 = { title: 'first', embedding: [0.1, 0.2, 0.3] };
 ";
 

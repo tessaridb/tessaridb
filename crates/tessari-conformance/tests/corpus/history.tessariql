@@ -31,7 +31,7 @@ USE DATABASE library;
 --- expect: ok
 
 --- case: a table, an index on it, and a record
-DEFINE TABLE docs;
+DEFINE COLLECTION docs;
 DEFINE INDEX by_status ON docs FIELDS status;
 CREATE docs:1 = { status: 'draft' };
 --- expect: ok
@@ -55,7 +55,7 @@ COMMIT;
 --- expect: error VersionInsideTransaction
 
 --- case: the word is contextual, so a field called version is still a field
-DEFINE TABLE runs;
+DEFINE COLLECTION runs;
 CREATE runs:1 = { version: 3 };
 SELECT version FROM runs;
 --- expect: rows 1
@@ -73,7 +73,7 @@ SELECT * FROM docs VERSION 5s;
 --- expect: error UnexpectedToken
 
 --- case: an edge table, and a relation between two records
-DEFINE TABLE people;
+DEFINE COLLECTION people;
 DEFINE TABLE follows EDGE;
 CREATE people:1 = { handle: 'ada' };
 CREATE people:2 = { handle: 'grace' };

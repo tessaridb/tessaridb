@@ -33,8 +33,8 @@ fn store() -> Store {
 const SCHEMA: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;
 DEFINE DATABASE shop; USE DATABASE shop;
-DEFINE TABLE people;
-DEFINE TABLE sparse;
+DEFINE COLLECTION people;
+DEFINE COLLECTION sparse;
 CREATE sparse:1 = { a: 1 };
 CREATE sparse:2 = { b: 2 };
 CREATE people:1 = { name: 'ada', age: 30 };

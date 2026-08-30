@@ -242,15 +242,19 @@ fn every_definition_form_parses() {
         StatementKind::DefineDatabase { .. }
     ));
     assert!(matches!(
-        one("DEFINE TABLE users;"),
+        one("DEFINE TABLE users (name string);"),
         StatementKind::DefineTable { .. }
+    ));
+    assert!(matches!(
+        one("DEFINE COLLECTION notes;"),
+        StatementKind::DefineCollection { .. }
     ));
     assert!(matches!(
         one("DEFINE SPACE sessions;"),
         StatementKind::DefineSpace { .. }
     ));
     assert!(matches!(
-        one("DEFINE TABLE IF NOT EXISTS users;"),
+        one("DEFINE TABLE IF NOT EXISTS users SCHEMALESS;"),
         StatementKind::DefineTable {
             if_not_exists: true,
             ..
@@ -575,7 +579,7 @@ fn the_whole_specification_script_parses() {
     let parsed = script(
         "\
         USE NAMESPACE prod DATABASE orders;\n\
-        DEFINE TABLE users;\n\
+        DEFINE COLLECTION users;\n\
         DEFINE SPACE sessions;\n\
         DEFINE INDEX by_email ON users FIELDS email UNIQUE;\n\
         BEGIN;\n\

@@ -76,6 +76,7 @@ impl Session<'_> {
                     schemafull: *schemafull,
                     edge: *edge,
                     bucket: false,
+                    collection: false,
                 },
                 *if_not_exists,
                 span,
@@ -450,6 +451,26 @@ impl Session<'_> {
                     schemafull: false,
                     edge: false,
                     bucket: true,
+                    collection: false,
+                },
+                *if_not_exists,
+                span,
+            ),
+            // A collection is lenient because that is what the word means, not
+            // because a flag was left off: it declares no fields, so there is
+            // nothing for strictness to constrain. The `collection` flag is what
+            // keeps it distinguishable from a table that was told to be lenient.
+            StatementKind::DefineCollection {
+                name,
+                if_not_exists,
+            } => self.define_table(
+                transaction,
+                name,
+                TableShape {
+                    schemafull: false,
+                    edge: false,
+                    bucket: false,
+                    collection: true,
                 },
                 *if_not_exists,
                 span,

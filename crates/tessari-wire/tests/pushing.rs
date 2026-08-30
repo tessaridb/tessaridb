@@ -26,7 +26,7 @@ fn serving(db: Arc<Db>) -> (Arc<Node>, String) {
 
 const READY: &str = "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
                      DEFINE DATABASE orders; USE DATABASE orders; \
-                     DEFINE TABLE users; DEFINE TABLE orders;";
+                     DEFINE COLLECTION users; DEFINE COLLECTION orders;";
 
 /// A connection with a database selected, ready to run or to follow.
 fn selected(address: &str) -> Client {
@@ -337,7 +337,7 @@ fn a_subscription_is_confined_to_the_database_the_session_selected() {
     writer.run(READY, None).unwrap();
     writer
         .run(
-            "DEFINE DATABASE elsewhere; USE DATABASE elsewhere; DEFINE TABLE secrets;",
+            "DEFINE DATABASE elsewhere; USE DATABASE elsewhere; DEFINE COLLECTION secrets;",
             None,
         )
         .unwrap();

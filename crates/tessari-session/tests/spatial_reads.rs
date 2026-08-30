@@ -51,7 +51,7 @@ fn store() -> Store {
 const PLACES: &str = "\
 DEFINE NAMESPACE atlas; USE NAMESPACE atlas;
 DEFINE DATABASE world; USE DATABASE world;
-DEFINE TABLE places;
+DEFINE COLLECTION places;
 CREATE places:'spot' = { name: 'a point', at: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
 CREATE places:'corner' = { name: 'a block', at: geometry { type: 'LineString', coordinates: [[2.35, 48.85], [2.351, 48.851]] } };
 CREATE places:'quarter' = { name: 'a district', at: geometry { type: 'LineString', coordinates: [[2.3, 48.8], [2.4, 48.9]] } };

@@ -31,8 +31,8 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
-             DEFINE TABLE users;\n\
-             DEFINE TABLE posts;\n\
+             DEFINE COLLECTION users;\n\
+             DEFINE COLLECTION posts;\n\
              CREATE users:1 = { name: 'ada', city: 'london' };\n\
              CREATE users:2 = { name: 'grace', city: 'york' };\n\
              CREATE posts:1 = { title: 'first',  author: users:1 };\n\
@@ -403,8 +403,8 @@ fn crowded(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
-             DEFINE TABLE users;\n\
-             DEFINE TABLE posts;",
+             DEFINE COLLECTION users;\n\
+             DEFINE COLLECTION posts;",
         )
         .unwrap();
     for n in 1..=AUTHORS {

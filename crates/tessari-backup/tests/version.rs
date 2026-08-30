@@ -42,7 +42,7 @@ fn taken() -> Vec<u8> {
             .run(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
                  DEFINE DATABASE shop; USE DATABASE shop;\n\
-                 DEFINE TABLE orders;\n\
+                 DEFINE COLLECTION orders;\n\
                  CREATE orders:1 = { total: 3 };",
             )
             .unwrap();

@@ -33,7 +33,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE readings;\n\
+             DEFINE COLLECTION readings;\n\
              CREATE readings:1 = { value: 1, stale: true };\n\
              CREATE readings:2 = { value: 2, stale: false };\n\
              CREATE readings:3 = { value: 3, stale: true };\n\

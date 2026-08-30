@@ -100,7 +100,7 @@ RETURN time::year(type::datetime('2026-08-28T14:37:09Z'));
 --- expect: value 2026
 
 --- case: events carrying an instant each, to read over
-DEFINE TABLE events;
+DEFINE COLLECTION events;
 CREATE events:1 = { at: datetime '2026-08-28T14:37:09Z', label: 'summer' };
 CREATE events:2 = { at: datetime '2000-02-29T00:00:00Z', label: 'a leap day' };
 CREATE events:3 = { at: datetime '1969-12-31T23:59:59Z', label: 'before the epoch' };

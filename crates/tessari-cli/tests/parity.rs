@@ -46,8 +46,8 @@ mod table;
 const SEED: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod; \
 DEFINE DATABASE orders; USE DATABASE orders; \
-DEFINE TABLE users; DEFINE TABLE readings; \
-DEFINE TABLE sessions; DEFINE TABLE k; \
+DEFINE COLLECTION users; DEFINE COLLECTION readings; \
+DEFINE COLLECTION sessions; DEFINE COLLECTION k; \
 CREATE users:1 = { name: 'ada', rank: 1 }; \
 CREATE users:2 = { name: 'grace', rank: 2 }; \
 CREATE readings:1 = { at: datetime '2026-01-01T00:00:00Z', value: 1 }; \
@@ -72,7 +72,10 @@ fn scripts() -> Vec<(&'static str, &'static str)> {
         ("a value that is a reference", "SET k:1 = users:2; GET k:1;"),
         ("a plain value", "GET sessions:'def';"),
         ("keys", "KEYS FROM sessions;"),
-        ("a statement that only does work", "DEFINE TABLE later;"),
+        (
+            "a statement that only does work",
+            "DEFINE COLLECTION later;",
+        ),
         (
             "a conditional delete's count",
             "DELETE FROM readings WHERE value >= 1 LIMIT ALL;",

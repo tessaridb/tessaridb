@@ -13,7 +13,7 @@ USE DATABASE world;
 --- expect: ok
 
 --- case: every one of the seven shapes can be written and stored
-DEFINE TABLE shapes;
+DEFINE COLLECTION shapes;
 CREATE shapes:1 = { s: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
 CREATE shapes:2 = { s: geometry { type: 'LineString', coordinates: [[0, 0], [1, 1]] } };
 CREATE shapes:3 = { s: geometry { type: 'Polygon', coordinates: [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]] } };
@@ -28,7 +28,7 @@ CREATE shapes:8 = { s: geometry { type: 'Point', coordinates: [-73.99, 40.75] } 
 --- expect: ok
 
 --- case: the marker is contextual, so the word is still a table
-DEFINE TABLE geometry;
+DEFINE COLLECTION geometry;
 CREATE geometry:1 = { note: 'a table may be called that' };
 SELECT * FROM geometry;
 --- expect: rows 1
@@ -87,7 +87,7 @@ CREATE shapes:12 = { s: geometry { type: 'Polygon', coordinates: [
 --- expect: ok
 
 --- case: a place inside the query square is found, and one outside is not
-DEFINE TABLE places;
+DEFINE COLLECTION places;
 CREATE places:1 = { name: 'middle', at: geometry { type: 'Point', coordinates: [5, 5] } };
 CREATE places:2 = { name: 'edge',   at: geometry { type: 'Point', coordinates: [2, 5] } };
 CREATE places:3 = { name: 'away',   at: geometry { type: 'Point', coordinates: [20, 20] } };
@@ -107,7 +107,7 @@ SELECT * FROM places WHERE geo::within(at, geometry { type: 'Polygon', coordinat
 --- expect: rows 1
 
 --- case: equals is about the ground covered, not about how it was written
-DEFINE TABLE zones;
+DEFINE COLLECTION zones;
 CREATE zones:1 = { z: geometry { type: 'Polygon', coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] } };
 CREATE zones:2 = { z: geometry { type: 'Polygon', coordinates: [[[0, 0], [5, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] } };
 CREATE zones:3 = { z: geometry { type: 'Polygon', coordinates: [[[0, 0], [9, 0], [9, 9], [0, 9], [0, 0]]] } };
@@ -147,7 +147,7 @@ SELECT geo::distance(z, geometry { type: 'Point', coordinates: [0, 0] }) AS far 
 --- expect: error WrongArgument
 
 --- case: only a shape with an interior covers any ground
-DEFINE TABLE ground;
+DEFINE COLLECTION ground;
 CREATE ground:1 = { g: geometry { type: 'Point', coordinates: [0, 0] } };
 CREATE ground:2 = { g: geometry { type: 'LineString', coordinates: [[0, 0], [1, 1]] } };
 CREATE ground:3 = { g: geometry { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] } };
@@ -158,7 +158,7 @@ SELECT * FROM ground WHERE geo::area(g) > 0;
 # A degree of latitude is a hundred and ten kilometres, and the same span read as
 # degrees would be 1. The two differ by five orders of magnitude, so a filter at
 # a hundred kilometres cannot pass by accident.
-DEFINE TABLE marks;
+DEFINE COLLECTION marks;
 CREATE marks:1 = { m: geometry { type: 'Point', coordinates: [0, 0] } };
 CREATE marks:2 = { m: geometry { type: 'Point', coordinates: [0, 0.9] } };
 SELECT * FROM marks WHERE geo::distance(m, geometry { type: 'Point', coordinates: [0, 1] }) > 100000;
@@ -173,7 +173,7 @@ SELECT * FROM marks WHERE geo::distance(m, geometry { type: 'Point', coordinates
 # case pins is the property that matters across every implementation of this
 # language: the same query answers the same way with the index present as
 # without it. An index changes what a read costs and never what it says.
-DEFINE TABLE sites;
+DEFINE COLLECTION sites;
 CREATE sites:1 = { at: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
 CREATE sites:2 = { at: geometry { type: 'Point', coordinates: [-73.99, 40.75] } };
 DEFINE INDEX by_at ON sites FIELDS at SPATIAL;
@@ -205,7 +205,7 @@ DEFINE INDEX bad_spots ON sites FIELDS spots[*] SPATIAL;
 # the answer includes records far larger than the box asked about. A reader that
 # only scanned forward from the window's own cells would find the small ones and
 # silently lose the large ones — fewer rows and no error.
-DEFINE TABLE areas;
+DEFINE COLLECTION areas;
 CREATE areas:'spot' = { at: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
 CREATE areas:'town' = { at: geometry { type: 'Polygon', coordinates: [[[2.2, 48.8], [2.5, 48.8], [2.5, 49.0], [2.2, 49.0], [2.2, 48.8]]] } };
 CREATE areas:'landmass' = { at: geometry { type: 'Polygon', coordinates: [[[-20.0, 30.0], [40.0, 30.0], [40.0, 70.0], [-20.0, 70.0], [-20.0, 30.0]]] } };
@@ -244,7 +244,7 @@ SELECT * FROM areas WHERE NOT geo::intersects(at, geometry { type: 'Point', coor
 # `geo::distance` measures between two positions, so a nearest-first read is over
 # a field holding points. The areas above are the filter's corpus; this is the
 # order's.
-DEFINE TABLE stops;
+DEFINE COLLECTION stops;
 CREATE stops:'gate' = { at: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
 CREATE stops:'bridge' = { at: geometry { type: 'Point', coordinates: [2.41, 48.79] } };
 CREATE stops:'mill' = { at: geometry { type: 'Point', coordinates: [2.09, 48.93] } };

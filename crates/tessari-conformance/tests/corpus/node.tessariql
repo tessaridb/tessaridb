@@ -49,7 +49,7 @@ DEFINE NAMESPACE prod;
 USE NAMESPACE prod;
 DEFINE DATABASE orders;
 USE DATABASE orders;
-DEFINE TABLE node;
+DEFINE COLLECTION node;
 CREATE node:1 = { name: 'ada' };
 SELECT * FROM node;
 --- expect: ok

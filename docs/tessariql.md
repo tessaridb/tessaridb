@@ -372,7 +372,7 @@ reserved word is not available as a name.
 ```
 DEFINE NAMESPACE prod;
 DEFINE DATABASE orders;
-DEFINE TABLE users;
+DEFINE COLLECTION users;
 DEFINE SPACE sessions;
 DEFINE INDEX by_email ON users FIELDS email UNIQUE;
 DEFINE INDEX by_name ON users FIELDS last, first;
@@ -768,6 +768,30 @@ the write's fault.
 that is the word `OR` — and this language has no bitwise operators, so the
 character appears in exactly one position and costs nothing elsewhere.
 
+### A collection, for records that carry fields nobody declared
+
+```
+DEFINE COLLECTION notes;
+CREATE notes:1 = { title: 'first', author: 'ada', wordcount: 40 };
+```
+
+The fourth word in a row the language already has — `TABLE`, `SPACE` (records
+hold a single value), `BUCKET` (written through `PUT`) — and it is a word rather
+than a flag for the reason those are: it changes what a caller may **do**. A
+table refuses a field it does not declare; a collection accepts one. That is the
+whole of what a document is here.
+
+It takes no columns and no strictness marker, because there is nothing for
+either to say. `DEFINE TABLE t (…) SCHEMALESS` is a different thing that behaves
+the same way: it is a *table*, its declared fields are still constrained, and it
+has simply been told to tolerate the rest. The two are stored apart rather than
+collapsed, so `INFO` answers with the word that created the thing instead of one
+that merely behaves like it.
+
+Everything else a table has, a collection has. It is indexed the same way, read
+the same way, granted the same way, and reaches the store through the same write
+path — the difference is one question at the boundary, and no other.
+
 ### A table and its columns in one statement
 
 A table's fields can be declared with it, in parentheses after the name:
@@ -803,19 +827,38 @@ table does not do. A refusal at any column takes the columns before it and the
 table with it: the statement is one unit, and a half-declared table is not a
 state it can leave behind.
 
-**Columns do not make the table `SCHEMAFULL`.** A table declared this way still
-accepts a field nobody named:
+**Columns make the table strict.** A table that declares its fields refuses one
+it does not:
 
 ```
-DEFINE TABLE loose (name string);
-CREATE loose:1 = { name: 'ada', extra: 1 };   -- accepted
-DEFINE TABLE tight (name string) SCHEMAFULL;
-CREATE tight:1 = { name: 'ada', extra: 1 };   -- refused
+DEFINE TABLE tight (name string);
+CREATE tight:1 = { name: 'ada', extra: 1 };              -- refused
+DEFINE TABLE loose (name string) SCHEMALESS;
+CREATE loose:1 = { name: 'ada', extra: 1 };              -- accepted
 ```
 
-Of the two readings that is the one the other can be written from: strictness is
-one word away, while a lenient table with declared columns would have no
-spelling at all if the parentheses implied it.
+The reading was the other way round until the split, and it was the wrong way
+round: the mistake worth catching — a misspelled field name — writes a field
+nobody declared, and a table that accepts it reports success. Declaring the
+fields is the act that says which ones there are, so it is the act that says
+which ones there are not.
+
+`SCHEMAFULL` is still accepted and now says what is already true. `SCHEMALESS`
+is the one word that buys the older reading back, and a table that wants it says
+so where a reader can see it rather than by leaving something out.
+
+**A table declaring no fields is refused**, because there is nothing for it to
+be strict about, and the refusal names both of the things its author might have
+meant. `DEFINE TABLE notes;` is answered with *write `DEFINE COLLECTION notes`
+for records that carry fields nobody declared, or `DEFINE TABLE notes
+SCHEMALESS` to keep the older lenient reading* — because the author wanted one
+of those two and the statement cannot tell which, and a refusal that names
+neither turns a one-word fix into a search through this page.
+
+An edge table is the exception, and not really an exception: `DEFINE TABLE
+follows EDGE` declares no columns because nobody writes `out` and `in` by hand,
+so it is not a declaration with nothing in it — it is one whose fields the store
+supplies.
 
 The flags stand after the column list, never before it — `DEFINE TABLE t
 SCHEMAFULL (…)` reads as though the parentheses qualified `SCHEMAFULL`, so it is

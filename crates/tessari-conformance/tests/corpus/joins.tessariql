@@ -8,8 +8,8 @@ DEFINE NAMESPACE prod;
 USE NAMESPACE prod;
 DEFINE DATABASE shop;
 USE DATABASE shop;
-DEFINE TABLE users;
-DEFINE TABLE orders;
+DEFINE COLLECTION users;
+DEFINE COLLECTION orders;
 --- expect: ok
 
 --- case: two users and three orders, one of them for nobody

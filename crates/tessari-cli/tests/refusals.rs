@@ -86,7 +86,7 @@ fn peopled(store: &PathBuf) {
         &[
             "-e",
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
-             DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders; \
+             DEFINE DATABASE shop; USE DATABASE shop; DEFINE COLLECTION orders; \
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
         ],
         "",
@@ -150,7 +150,7 @@ fn a_scoped_user_cannot_reach_another_tenancy_from_the_command_line() {
         &[
             "-e",
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
-             DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders; \
+             DEFINE DATABASE shop; USE DATABASE shop; DEFINE COLLECTION orders; \
              CREATE orders:1 = { total: 5 }; \
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
         ],
@@ -163,7 +163,7 @@ fn a_scoped_user_cannot_reach_another_tenancy_from_the_command_line() {
         &[
             "-e",
             "DEFINE NAMESPACE staging; USE NAMESPACE staging; \
-             DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders; \
+             DEFINE DATABASE shop; USE DATABASE shop; DEFINE COLLECTION orders; \
              CREATE orders:1 = { total: 9 }; \
              USE NAMESPACE prod; USE DATABASE shop; \
              DEFINE USER nina ON prod.shop ROLE owner PASSWORD 'correct horse battery';",

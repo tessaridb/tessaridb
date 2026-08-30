@@ -281,7 +281,7 @@ fn the_request_the_console_builds_is_one_this_node_answers() {
     let (status, body) = script(
         &address,
         "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE library; \
-         USE DATABASE library; DEFINE TABLE users; CREATE users:1 = { name: 'ada' }; \
+         USE DATABASE library; DEFINE COLLECTION users; CREATE users:1 = { name: 'ada' }; \
          SELECT * FROM users;",
     );
     assert_eq!(status, 200, "the console's own request was refused: {body}");

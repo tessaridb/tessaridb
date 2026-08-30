@@ -32,7 +32,7 @@ use tessari_types::RecordId;
 const TENANCY: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
 DEFINE DATABASE orders; USE DATABASE orders;\n\
-DEFINE TABLE readings;";
+DEFINE COLLECTION readings;";
 
 fn store() -> Store {
     Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()

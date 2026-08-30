@@ -42,7 +42,7 @@ const CLASSIFIED: &[(&str, Effect)] = &[
     // --- writes: structure -------------------------------------------------
     ("DEFINE NAMESPACE prod;", Effect::Write),
     ("DEFINE DATABASE shop;", Effect::Write),
-    ("DEFINE TABLE users;", Effect::Write),
+    ("DEFINE TABLE users SCHEMALESS;", Effect::Write),
     ("DEFINE SPACE sessions;", Effect::Write),
     ("DEFINE BUCKET media;", Effect::Write),
     ("DEFINE FIELD name ON users TYPE string;", Effect::Write),

@@ -16,7 +16,7 @@ USE DATABASE shop;
 --- expect: ok
 
 --- case: five notes, covering every shape a route can reach
-DEFINE TABLE notes;
+DEFINE COLLECTION notes;
 CREATE notes:1 = { title: 'first', tags: ['rust', 'db'] };
 CREATE notes:2 = { title: 'second', tags: ['db'] };
 CREATE notes:3 = { title: 'third', tags: [] };
@@ -57,7 +57,7 @@ SELECT * FROM notes WHERE title = 'first' SPLIT ON tags LIMIT 1;
 --- expect: rows 1
 
 --- case: a route reaches an array inside the record
-DEFINE TABLE people;
+DEFINE COLLECTION people;
 CREATE people:1 = { name: 'ada', address: { city: 'london', tags: ['a', 'b'] } };
 SELECT * FROM people SPLIT ON address.tags;
 --- expect: rows 2
@@ -67,7 +67,7 @@ SELECT title, tags FROM notes WHERE title = 'first' SPLIT ON tags;
 --- expect: rows 2
 
 --- case: the word is contextual, so a field called split is still a field
-DEFINE TABLE runs;
+DEFINE COLLECTION runs;
 CREATE runs:1 = { split: 'yes' };
 SELECT split FROM runs;
 --- expect: rows 1

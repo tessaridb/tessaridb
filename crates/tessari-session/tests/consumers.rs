@@ -54,7 +54,7 @@ fn shaped(backend: &Arc<dyn KvBackend>) -> Store {
     session
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
-             DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders;",
+             DEFINE DATABASE shop; USE DATABASE shop; DEFINE COLLECTION orders;",
         )
         .unwrap();
     store
@@ -310,7 +310,7 @@ fn peopled(store: &Store) {
     session
         .run(
             "DEFINE NAMESPACE secret; USE NAMESPACE secret; \
-             DEFINE DATABASE vault; USE DATABASE vault; DEFINE TABLE holdings;",
+             DEFINE DATABASE vault; USE DATABASE vault; DEFINE COLLECTION holdings;",
         )
         .unwrap();
     session
@@ -402,7 +402,7 @@ fn a_consumer_cannot_be_aimed_at_a_table_the_caller_may_not_write() {
     setup
         .run(
             "USE NAMESPACE prod; DEFINE DATABASE payroll; USE DATABASE payroll; \
-             DEFINE TABLE salaries;",
+             DEFINE COLLECTION salaries;",
         )
         .unwrap();
     peopled(&store);
@@ -441,7 +441,7 @@ fn the_store_owner_may_aim_a_consumer_at_any_of_it() {
     setup
         .run(
             "USE NAMESPACE prod; DEFINE DATABASE payroll; USE DATABASE payroll; \
-             DEFINE TABLE salaries;",
+             DEFINE COLLECTION salaries;",
         )
         .unwrap();
     peopled(&store);
@@ -496,7 +496,7 @@ fn a_grant_governed_caller_may_only_feed_the_tables_they_were_granted() {
     let store = shaped(&backend);
     let mut setup = Session::new(&store);
     setup
-        .run("USE NAMESPACE prod; USE DATABASE shop; DEFINE TABLE salaries;")
+        .run("USE NAMESPACE prod; USE DATABASE shop; DEFINE COLLECTION salaries;")
         .unwrap();
     setup
         .run("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")

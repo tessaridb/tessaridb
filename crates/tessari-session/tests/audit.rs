@@ -54,7 +54,7 @@ fn peopled(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE orders; DEFINE TABLE payroll;\n\
+             DEFINE COLLECTION orders; DEFINE COLLECTION payroll;\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
         )
         .unwrap();
@@ -209,7 +209,7 @@ fn a_tenant_of_another_namespace_reaches_nothing_here_and_is_said_to() {
     let mut root = peopled(&store);
     root.run(
         "DEFINE NAMESPACE staging; USE NAMESPACE staging; DEFINE DATABASE shop;\n\
-         USE DATABASE shop; DEFINE TABLE orders;\n\
+         USE DATABASE shop; DEFINE COLLECTION orders;\n\
          DEFINE USER nina ON staging.shop ROLE owner PASSWORD 'correct horse battery';\n\
          USE NAMESPACE prod; USE DATABASE shop;",
     )

@@ -32,7 +32,7 @@ fn searchable(store: &Store) -> Session<'_> {
              DEFINE DATABASE orders;\n\
              USE DATABASE orders;\n\
              DEFINE ANALYZER simple FILTERS lowercase;\n\
-             DEFINE TABLE notes;\n\
+             DEFINE TABLE notes SCHEMALESS;\n\
              DEFINE FIELD body ON notes TYPE string ANALYZER simple;\n\
              DEFINE INDEX by_body ON notes FIELDS body SEARCH;",
         )
@@ -164,7 +164,7 @@ fn a_score_without_a_search_index_is_refused_and_names_the_field() {
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
              DEFINE ANALYZER simple FILTERS lowercase;\n\
-             DEFINE TABLE notes;\n\
+             DEFINE TABLE notes SCHEMALESS;\n\
              DEFINE FIELD body ON notes TYPE string ANALYZER simple;\n\
              CREATE notes:1 = { body: 'lock contention' };",
         )
@@ -218,7 +218,7 @@ fn defining_an_index_on_a_populated_table_counts_what_was_already_there() {
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
              DEFINE ANALYZER simple FILTERS lowercase;\n\
-             DEFINE TABLE notes;\n\
+             DEFINE TABLE notes SCHEMALESS;\n\
              DEFINE FIELD body ON notes TYPE string ANALYZER simple;\n\
              CREATE notes:1 = { body: 'one two three' };\n\
              CREATE notes:2 = { body: 'two three' };\n\

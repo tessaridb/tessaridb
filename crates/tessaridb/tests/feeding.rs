@@ -37,7 +37,7 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE orders;\n\
+             DEFINE COLLECTION orders;\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
         )
         .unwrap();
@@ -126,7 +126,7 @@ fn a_subscription_is_never_told_about_a_tenancy_the_session_could_not_select() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE orders;\n\
+             DEFINE COLLECTION orders;\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
         )
         .unwrap();
@@ -134,7 +134,7 @@ fn a_subscription_is_never_told_about_a_tenancy_the_session_could_not_select() {
     root.sign_in("root", PASSWORD).unwrap();
     root.run(
         "DEFINE NAMESPACE staging; USE NAMESPACE staging; DEFINE DATABASE shop; \
-         USE DATABASE shop; DEFINE TABLE orders;",
+         USE DATABASE shop; DEFINE COLLECTION orders;",
     )
     .unwrap();
     root.run(

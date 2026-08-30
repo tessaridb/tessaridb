@@ -89,7 +89,7 @@ fn two_tenants(address: &str) {
     let (status, said) = script(
         address,
         "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
-         DEFINE TABLE orders; CREATE orders:1 = { total: 5 }; DEFINE BUCKET media; \
+         DEFINE COLLECTION orders; CREATE orders:1 = { total: 5 }; DEFINE BUCKET media; \
          DEFINE USER root ROLE owner PASSWORD 'a long one';",
         None,
     );
@@ -97,10 +97,10 @@ fn two_tenants(address: &str) {
     let (status, said) = script(
         address,
         "DEFINE NAMESPACE staging; USE NAMESPACE staging; DEFINE DATABASE shop; \
-         USE DATABASE shop; DEFINE TABLE orders; CREATE orders:1 = { total: 9 }; \
+         USE DATABASE shop; DEFINE COLLECTION orders; CREATE orders:1 = { total: 9 }; \
          DEFINE BUCKET media; \
          USE NAMESPACE prod; DEFINE DATABASE archive; USE DATABASE archive; \
-         DEFINE TABLE orders; CREATE orders:1 = { total: 7 }; \
+         DEFINE COLLECTION orders; CREATE orders:1 = { total: 7 }; \
          USE DATABASE shop; \
          DEFINE USER nina ON prod.shop ROLE owner PASSWORD 'a long one';",
         Some(ROOT),

@@ -7,7 +7,7 @@ DEFINE NAMESPACE prod;
 USE NAMESPACE prod;
 DEFINE DATABASE social;
 USE DATABASE social;
-DEFINE TABLE users;
+DEFINE COLLECTION users;
 DEFINE TABLE follows EDGE;
 CREATE users:1 = { handle: 'ada' };
 CREATE users:2 = { handle: 'grace' };

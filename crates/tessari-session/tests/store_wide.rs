@@ -56,14 +56,14 @@ fn peopled(store: &Store) {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE orders; CREATE orders:1 = { total: 5 };",
+             DEFINE COLLECTION orders; CREATE orders:1 = { total: 5 };",
         )
         .unwrap();
     session
         .run(
             "DEFINE NAMESPACE secret; USE NAMESPACE secret;\n\
              DEFINE DATABASE vault; USE DATABASE vault;\n\
-             DEFINE TABLE holdings; CREATE holdings:1 = { value: 'the crown jewels' };",
+             DEFINE COLLECTION holdings; CREATE holdings:1 = { value: 'the crown jewels' };",
         )
         .unwrap();
     session

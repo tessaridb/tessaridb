@@ -41,7 +41,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE papers; USE DATABASE papers;\n\
-             DEFINE TABLE notes;",
+             DEFINE TABLE notes SCHEMALESS;",
         )
         .unwrap();
     session
@@ -316,7 +316,7 @@ fn rebuilding_a_vector_index_takes_back_the_edges_churn_left() {
     // a churned vector index answers it *worse and worse*, and says nothing.
     let (store, backend) = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE points;").unwrap();
+    session.run("DEFINE COLLECTION points;").unwrap();
     for n in 0..200 {
         let x = f64::from(n) * 0.5;
         session

@@ -41,10 +41,14 @@ INFO FOR TABLE people;
 --- expect: ok
 
 --- case: a column takes REQUIRED
-DEFINE TABLE staff (name string REQUIRED);
+DEFINE TABLE staff (name string REQUIRED, rank string);
 --- expect: ok
 
 --- case: and REQUIRED means what it means in the long spelling
+#
+# `rank` is declared so that the record fails for the reason this case is
+# about. Undeclared, it would now be refused as an undeclared field before
+# REQUIRED was ever consulted — a green case testing the wrong refusal.
 CREATE staff:1 = { rank: 'editor' };
 --- expect: error MissingRequiredField
 
@@ -79,15 +83,20 @@ DEFINE TABLE notes (body string ANALYZER simple);
 DEFINE TABLE drafts (body string ANALYZER missing);
 --- expect: ok
 
---- case: columns do not imply SCHEMAFULL
-DEFINE TABLE loose (name string);
-CREATE loose:1 = { name: 'ada', extra: 1 };
---- expect: ok
-
---- case: and the word still does what the word does
-DEFINE TABLE tight (name string) SCHEMAFULL;
+--- case: columns imply strictness, and the word is not needed to get it
+DEFINE TABLE tight (name string);
 CREATE tight:1 = { name: 'ada', extra: 1 };
 --- expect: error UndeclaredField
+
+--- case: SCHEMAFULL is still accepted, and says what is already true
+DEFINE TABLE stated (name string) SCHEMAFULL;
+CREATE stated:1 = { name: 'ada', extra: 1 };
+--- expect: error UndeclaredField
+
+--- case: SCHEMALESS is the way back, and it is the only way back
+DEFINE TABLE loose (name string) SCHEMALESS;
+CREATE loose:1 = { name: 'ada', extra: 1 };
+--- expect: ok
 
 --- case: EDGE stands beside SCHEMAFULL after the columns
 DEFINE TABLE follows (since datetime) EDGE;
@@ -114,10 +123,16 @@ DEFINE TABLE IF NOT EXISTS people (name string, age int);
 --- expect: ok
 
 --- case: a column declared over rows that contradict it is refused
-CREATE people:1 = { name: 'ada', age: 36, note: 'first' };
-DEFINE TABLE IF NOT EXISTS people (note int);
+#
+# The table is explicitly lenient, because that is the only way a row can
+# now carry a field nobody declared — which is the state this case needs
+# before the declaration can contradict it. Its own table rather than
+# `people`, so the assertion is not about whatever the cases above left there.
+DEFINE TABLE annotated (body string) SCHEMALESS;
+CREATE annotated:1 = { body: 'first', note: 'still text' };
+DEFINE TABLE IF NOT EXISTS annotated (note int);
 --- expect: error SchemaViolation
 
 --- case: and nothing was written, so the field is still undeclared
-CREATE people:2 = { name: 'grace', note: 'still text' };
+CREATE annotated:2 = { body: 'second', note: 'also text' };
 --- expect: ok

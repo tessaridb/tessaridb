@@ -41,10 +41,10 @@ fn store() -> Store {
 const SCHEMA: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;
 DEFINE DATABASE shop; USE DATABASE shop;
-DEFINE TABLE users;
-DEFINE TABLE orders;
+DEFINE COLLECTION users;
+DEFINE COLLECTION orders;
 DEFINE TABLE follows EDGE;
-DEFINE TABLE items;
+DEFINE COLLECTION items;
 DEFINE INDEX by_email ON users FIELDS email UNIQUE;
 DEFINE INDEX by_city ON users FIELDS city;
 DEFINE INDEX by_joined ON users FIELDS joined;
@@ -263,7 +263,7 @@ fn thin(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE events;\n\
+             DEFINE COLLECTION events;\n\
              DEFINE INDEX by_at ON events FIELDS at;",
         )
         .unwrap();

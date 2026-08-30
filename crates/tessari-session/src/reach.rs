@@ -30,6 +30,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         StatementKind::DefineTable { .. }
         | StatementKind::DefineSpace { .. }
         | StatementKind::DefineBucket { .. }
+        | StatementKind::DefineCollection { .. }
         // Nothing here touches a table: a tenancy, an analyzer, a user, a grant,
         // a selection or a transaction verb.
         | StatementKind::Use { .. }

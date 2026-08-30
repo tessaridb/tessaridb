@@ -254,6 +254,8 @@ pub enum Keyword {
     Space,
     /// `BUCKET` — a table whose records are files.
     Bucket,
+    /// `COLLECTION` — records that carry fields nobody declared.
+    Collection,
     /// `PUT` — write a file's bytes.
     Put,
     /// `READ` — answer a file's bytes.
@@ -284,6 +286,8 @@ pub enum Keyword {
     Type,
     /// `SCHEMAFULL` — the table refuses a field it does not declare.
     Schemafull,
+    /// `SCHEMALESS` — the table accepts a field it does not declare.
+    Schemaless,
     /// `EDGE` — the table holds edges, and carries an index on each endpoint.
     Edge,
     /// `RELATE` — record an edge between two records.
@@ -437,6 +441,7 @@ impl Keyword {
             Self::Table => "TABLE",
             Self::Space => "SPACE",
             Self::Bucket => "BUCKET",
+            Self::Collection => "COLLECTION",
             Self::Put => "PUT",
             Self::Read => "READ",
             Self::Backup => "BACKUP",
@@ -452,6 +457,7 @@ impl Keyword {
             Self::Field => "FIELD",
             Self::Type => "TYPE",
             Self::Schemafull => "SCHEMAFULL",
+            Self::Schemaless => "SCHEMALESS",
             Self::Edge => "EDGE",
             Self::Relate => "RELATE",
             Self::Unique => "UNIQUE",
@@ -521,6 +527,7 @@ impl Keyword {
         Self::Table,
         Self::Space,
         Self::Bucket,
+        Self::Collection,
         Self::Put,
         Self::Read,
         Self::Backup,
@@ -536,6 +543,7 @@ impl Keyword {
         Self::Field,
         Self::Type,
         Self::Schemafull,
+        Self::Schemaless,
         Self::Edge,
         Self::Relate,
         Self::Unique,

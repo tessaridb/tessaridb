@@ -31,7 +31,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              CREATE users:1 = { last: 'lovelace', first: 'ada' };\n\
              CREATE users:2 = { last: 'lovelace', first: 'byron' };\n\
              CREATE users:3 = { last: 'hopper', first: 'grace' };\n\
@@ -211,7 +211,7 @@ fn a_leading_value_that_is_a_prefix_of_another_is_not_confused_with_it() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE t;\n\
+             DEFINE COLLECTION t;\n\
              CREATE t:1 = { a: 'ab', b: 'x' };\n\
              CREATE t:2 = { a: 'abc', b: 'y' };\n\
              DEFINE INDEX by_ab ON t FIELDS a, b;",

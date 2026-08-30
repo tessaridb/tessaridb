@@ -137,7 +137,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE events;",
+             DEFINE COLLECTION events;",
         )
         .unwrap();
     // Written a hundred at a time rather than one at a time: four thousand

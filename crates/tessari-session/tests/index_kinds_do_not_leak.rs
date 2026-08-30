@@ -37,7 +37,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE atlas; USE NAMESPACE atlas;\n\
              DEFINE DATABASE world; USE DATABASE world;\n\
-             DEFINE TABLE notes;",
+             DEFINE TABLE notes SCHEMALESS;",
         )
         .unwrap();
     session

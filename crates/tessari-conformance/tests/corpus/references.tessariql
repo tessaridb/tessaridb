@@ -15,8 +15,8 @@ USE DATABASE orders;
 --- expect: ok
 
 --- case: two tables, one referring to the other
-DEFINE TABLE users;
-DEFINE TABLE posts;
+DEFINE COLLECTION users;
+DEFINE COLLECTION posts;
 CREATE users:1 = { name: 'ada', city: 'london' };
 CREATE users:2 = { name: 'grace', city: 'york' };
 CREATE posts:1 = { title: 'first', author: users:1 };

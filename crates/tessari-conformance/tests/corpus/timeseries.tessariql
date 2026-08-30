@@ -11,7 +11,7 @@ DEFINE NAMESPACE prod;
 USE NAMESPACE prod;
 DEFINE DATABASE metrics;
 USE DATABASE metrics;
-DEFINE TABLE readings;
+DEFINE COLLECTION readings;
 DEFINE INDEX by_at ON readings FIELDS at;
 --- expect: ok
 

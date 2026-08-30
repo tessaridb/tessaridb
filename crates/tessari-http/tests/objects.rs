@@ -107,7 +107,7 @@ fn a_path_that_looks_like_a_statement_is_a_file_name() {
     assert_eq!(
         script(
             &address,
-            "USE NAMESPACE prod; USE DATABASE library; DEFINE TABLE users; \
+            "USE NAMESPACE prod; USE DATABASE library; DEFINE COLLECTION users; \
              CREATE users:1 = { name: 'ada' };",
             None
         ),
@@ -239,7 +239,7 @@ fn a_closed_store_answers_401_without_a_credential_and_403_when_the_grant_forbid
     assert_eq!(
         script(
             &address,
-            "USE NAMESPACE prod; USE DATABASE library; DEFINE TABLE notes; \
+            "USE NAMESPACE prod; USE DATABASE library; DEFINE COLLECTION notes; \
              DEFINE USER ada ON prod.library ROLE editor PASSWORD 'a long one'; \
              GRANT read ON notes TO ada;",
             Some(root)

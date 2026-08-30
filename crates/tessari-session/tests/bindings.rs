@@ -34,7 +34,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              CREATE users:1 = { name: 'ada', city: 'london', age: 36 };\n\
              CREATE users:2 = { name: 'grace', city: 'london', age: 45 };\n\
              CREATE users:3 = { name: 'alan', city: 'cambridge', age: 41 };",

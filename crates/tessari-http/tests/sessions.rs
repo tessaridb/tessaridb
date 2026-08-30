@@ -102,7 +102,7 @@ fn peopled() -> (Arc<Node>, String) {
         "POST",
         "/script",
         "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
-         DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders; \
+         DEFINE DATABASE shop; USE DATABASE shop; DEFINE COLLECTION orders; \
          DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
         None,
     );

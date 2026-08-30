@@ -37,13 +37,13 @@ use tessari_types::{RecordId, Value};
 const SCHEMA: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;
 DEFINE DATABASE shop; USE DATABASE shop;
-DEFINE TABLE people;
+DEFINE COLLECTION people;
 CREATE people:1 = { name: 'ada', city: 'london', active: true };
 CREATE people:2 = { name: 'bo', city: 'paris', active: true };
 CREATE people:3 = { name: 'cy', city: 'london', active: false };
 CREATE people:4 = { name: 'di', city: 'paris', active: true };
 CREATE people:5 = { name: 'ed', city: 'london', active: true };
-DEFINE TABLE notes;
+DEFINE COLLECTION notes;
 CREATE notes:1 = { title: 'first' };
 ";
 
@@ -296,7 +296,7 @@ fn the_word_after_is_still_a_field_name() {
     let mut session = ready(&store);
     run(
         &mut session,
-        "DEFINE TABLE runs; CREATE runs:1 = { after: 'yes' };",
+        "DEFINE COLLECTION runs; CREATE runs:1 = { after: 'yes' };",
     );
     let answered = run(&mut session, "SELECT after FROM runs;");
     let records = answered.records().expect("records");

@@ -39,8 +39,8 @@ fn ready(store: &Store) {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE public; CREATE public:1 = { n: 1 };\n\
-             DEFINE TABLE salaries; CREATE salaries:1 = { pay: 999 };\n\
+             DEFINE COLLECTION public; CREATE public:1 = { n: 1 };\n\
+             DEFINE COLLECTION salaries; CREATE salaries:1 = { pay: 999 };\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery staple';",
         )
         .unwrap();

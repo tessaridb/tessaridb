@@ -33,7 +33,7 @@ const EVERYTHING: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
 DEFINE DATABASE orders; USE DATABASE orders;\n\
 DEFINE ANALYZER simple FILTERS lowercase, ascii;\n\
-DEFINE TABLE people;\n\
+DEFINE TABLE people SCHEMALESS;\n\
 DEFINE FIELD name ON people TYPE string;\n\
 DEFINE FIELD bio ON people TYPE string ANALYZER simple;\n\
 DEFINE FIELD joined ON people TYPE datetime DEFAULT time::now();\n\
@@ -54,7 +54,7 @@ DELETE people:4;\n\
 DEFINE TABLE follows EDGE;\n\
 RELATE people:1->follows->people:2;\n\
 RELATE people:2->follows->people:3;\n\
-DEFINE TABLE sessions;\n\
+DEFINE COLLECTION sessions;\n\
 SET sessions:'abc' = { user: people:1, level: 3 };\n\
 SET sessions:'def' = [1, 2, 3];\n\
 DEL sessions:'def';\n\

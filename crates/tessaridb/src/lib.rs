@@ -15,7 +15,7 @@
 //!      USE NAMESPACE prod;
 //!      DEFINE DATABASE orders;
 //!      USE DATABASE orders;
-//!      DEFINE TABLE users;
+//!      DEFINE COLLECTION users;
 //!      CREATE users:1 = { name: 'ada' };",
 //! )?;
 //!

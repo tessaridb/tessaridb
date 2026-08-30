@@ -28,7 +28,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE orders;\n\
+             DEFINE COLLECTION orders;\n\
              CREATE orders:1 = { paid: true, total: 30 };",
         )
         .unwrap();

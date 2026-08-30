@@ -38,7 +38,7 @@ const INDEX: &str = "DEFINE INDEX by_where ON stops FIELDS at SPATIAL;";
 const STOPS: &str = "\
 DEFINE NAMESPACE atlas; USE NAMESPACE atlas;
 DEFINE DATABASE world; USE DATABASE world;
-DEFINE TABLE stops;
+DEFINE COLLECTION stops;
 CREATE stops:'gate' = { at: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
 CREATE stops:'bridge' = { at: geometry { type: 'Point', coordinates: [2.41, 48.79] } };
 CREATE stops:'mill' = { at: geometry { type: 'Point', coordinates: [2.09, 48.93] } };

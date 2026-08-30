@@ -1,0 +1,101 @@
+# The split: a table declares its fields, a collection does not.
+#
+# `DEFINE COLLECTION` is the fourth word in the row `TABLE`, `SPACE` and
+# `BUCKET` already form, earned on the same test they were: a difference in
+# what a caller may **do**. A table refuses a field it does not declare; a
+# collection accepts one.
+#
+# Every pair here writes the *same record* to both, because either half alone is
+# satisfiable by the wrong implementation. A collection that accepts an
+# undeclared field proves nothing if a table accepts one too — that was the
+# behaviour before this word existed — and a table that refuses one proves
+# nothing if a collection refuses it as well, because then the word bought a
+# synonym rather than a distinction.
+#
+# A corpus file is one session against one store, so these run in order.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+--- expect: ok
+
+--- case: a collection is declared with a word and nothing else
+DEFINE COLLECTION notes;
+--- expect: ok
+
+--- case: and it takes a record carrying fields nobody declared
+CREATE notes:1 = { title: 'first', author: 'ada', wordcount: 40 };
+--- expect: ok
+
+--- case: a table declaring one of those fields refuses the same record
+DEFINE TABLE articles (title string);
+CREATE articles:1 = { title: 'first', author: 'ada', wordcount: 40 };
+--- expect: error UndeclaredField
+
+--- case: and takes it once the record says only what was declared
+CREATE articles:2 = { title: 'second' };
+--- expect: ok
+
+--- case: declaring columns is enough — the strict word is not needed
+DEFINE TABLE tight (name string);
+CREATE tight:1 = { name: 'ada', extra: 1 };
+--- expect: error UndeclaredField
+
+--- case: SCHEMAFULL is still accepted, and now says what is already true
+DEFINE TABLE stated (name string) SCHEMAFULL;
+CREATE stated:1 = { name: 'ada', extra: 1 };
+--- expect: error UndeclaredField
+
+--- case: SCHEMALESS is the one word that buys the older reading back
+DEFINE TABLE loose (name string) SCHEMALESS;
+CREATE loose:1 = { name: 'ada', extra: 1 };
+--- expect: ok
+
+--- case: a table declaring nothing at all is refused
+DEFINE TABLE empty;
+--- expect: error TableWithoutColumns
+
+--- case: and the refused declaration left no table behind
+SELECT * FROM empty;
+--- expect: error Unknown
+
+--- case: an edge table declares no columns and is not refused for it
+#
+# Nobody writes `out` and `in` by hand, so an edge table is not a declaration
+# with nothing in it — it is one whose fields the store supplies.
+DEFINE TABLE follows EDGE;
+--- expect: ok
+
+--- case: a collection is indexed like any other table
+DEFINE INDEX by_author ON notes FIELDS author;
+--- expect: ok
+
+--- case: and the index answers over the field nobody declared
+SELECT * FROM notes WHERE author = 'ada';
+--- expect: rows 1
+
+--- case: a script written to be re-runnable is re-runnable
+#
+# Every statement in it says what it wants to be true rather than what it wants
+# to happen, which is the whole of what surviving a re-run means here.
+DEFINE COLLECTION IF NOT EXISTS notes;
+DEFINE TABLE IF NOT EXISTS articles (title string);
+UPSERT notes:1 = { title: 'first', author: 'ada', wordcount: 40 };
+--- expect: ok
+
+--- case: and running it a second time leaves exactly what one run left
+DEFINE COLLECTION IF NOT EXISTS notes;
+DEFINE TABLE IF NOT EXISTS articles (title string);
+UPSERT notes:1 = { title: 'first', author: 'ada', wordcount: 40 };
+SELECT * FROM notes;
+--- expect: rows 1
+
+--- case: the same script written with CREATE does not, and says so
+#
+# Recorded rather than hidden: `CREATE` asserts that no record holds the
+# identity, so a second run is a refusal by design. The re-runnable spelling is
+# the one above, and this case is why the language needs both.
+CREATE notes:1 = { title: 'first' };
+--- expect: error RecordExists

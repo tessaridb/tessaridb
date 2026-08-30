@@ -50,7 +50,7 @@ fn governed(store: &Store) {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE orders;\n\
+             DEFINE TABLE orders SCHEMALESS;\n\
              DEFINE NAMESPACE staging; USE NAMESPACE staging;\n\
              DEFINE DATABASE sandbox;\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
@@ -279,7 +279,7 @@ fn a_reach_is_named_by_keyword_so_a_table_can_never_be_read_as_one() {
     governed(&store);
     let mut root = signed_in(&store, "root");
     let refused = root
-        .run("DEFINE TABLE store;")
+        .run("DEFINE COLLECTION store;")
         .expect_err("`store` is a reserved word");
     // The refusal names the keyword as the lexer spells it, which is the
     // evidence that the word was taken as a keyword rather than rejected for
@@ -347,7 +347,7 @@ fn writing_a_namespace_does_not_confer_creating_a_database_in_it() {
         .expect("and reads them back");
 
     for statement in [
-        "DEFINE TABLE extra;",
+        "DEFINE COLLECTION extra;",
         "DROP TABLE orders;",
         "DEFINE INDEX by_total ON orders FIELDS total;",
         "DEFINE FIELD total ON orders TYPE int;",
@@ -377,7 +377,7 @@ fn managing_a_namespace_does_not_confer_reading_a_record_in_it() {
 
     let mut nadia = working(&store, "nadia");
     nadia
-        .run("DEFINE TABLE ledgers;")
+        .run("DEFINE COLLECTION ledgers;")
         .expect("nadia manages the containers of the namespace she holds");
 
     let refusal = refused(&mut nadia, "SELECT * FROM orders;");
@@ -405,11 +405,11 @@ fn an_authority_over_one_database_does_not_answer_for_its_sibling() {
         .unwrap();
 
     let mut kim = working(&store, "kim");
-    kim.run("DEFINE TABLE invoices;")
+    kim.run("DEFINE COLLECTION invoices;")
         .expect("kim manages the database she was granted");
 
     kim.run("USE DATABASE depot;").unwrap();
-    let refusal = refused(&mut kim, "DEFINE TABLE invoices;");
+    let refusal = refused(&mut kim, "DEFINE COLLECTION invoices;");
     assert!(
         refusal.contains("manage"),
         "a grant on one database must not answer for its sibling: {refusal}"

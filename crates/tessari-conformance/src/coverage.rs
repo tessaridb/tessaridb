@@ -26,6 +26,7 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DefineTable { .. } => "DEFINE TABLE",
         StatementKind::DefineSpace { .. } => "DEFINE SPACE",
         StatementKind::DefineBucket { .. } => "DEFINE BUCKET",
+        StatementKind::DefineCollection { .. } => "DEFINE COLLECTION",
         StatementKind::DefineIndex { .. } => "DEFINE INDEX",
         StatementKind::DefineField { .. } => "DEFINE FIELD",
         StatementKind::DefineAnalyzer { .. } => "DEFINE ANALYZER",
@@ -87,6 +88,7 @@ pub const FORMS: &[&str] = &[
     "DEFINE TABLE",
     "DEFINE SPACE",
     "DEFINE BUCKET",
+    "DEFINE COLLECTION",
     "DEFINE INDEX",
     "DEFINE FIELD",
     "DEFINE ANALYZER",
@@ -170,9 +172,10 @@ mod tests {
             "USE NAMESPACE n;\
              DEFINE NAMESPACE n;\
              DEFINE DATABASE d;\
-             DEFINE TABLE t;\
+             DEFINE TABLE t SCHEMALESS;\
              DEFINE SPACE s;\
              DEFINE BUCKET b;\
+             DEFINE COLLECTION c;\
              DEFINE INDEX i ON t FIELDS f;\
              DEFINE FIELD f ON t TYPE string;\
              DROP TABLE t;\

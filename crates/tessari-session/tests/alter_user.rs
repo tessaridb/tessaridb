@@ -45,7 +45,7 @@ fn peopled(store: &Store) {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE orders;",
+             DEFINE COLLECTION orders;",
         )
         .unwrap();
     // The first user closes the store, so the rest are declared by the owner.

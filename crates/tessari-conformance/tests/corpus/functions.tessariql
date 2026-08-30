@@ -10,7 +10,7 @@ USE DATABASE orders;
 --- expect: ok
 
 --- case: rows carrying the three numeric kinds, and one missing a field
-DEFINE TABLE lines;
+DEFINE COLLECTION lines;
 CREATE lines:1 = { name: 'ada', price: dec 2.50, quantity: 3, weight: 1.5, tags: ['a', 'b'] };
 CREATE lines:2 = { name: 'grace', price: dec 1.00, quantity: 1 };
 --- expect: ok
@@ -80,7 +80,7 @@ SELECT -quantity AS owed FROM lines:1;
 --- expect: rows 1
 
 --- case: vectors to search
-DEFINE TABLE points;
+DEFINE COLLECTION points;
 CREATE points:1 = { name: 'east', at: [1.0, 0.0] };
 CREATE points:2 = { name: 'north-east', at: [0.7, 0.7] };
 CREATE points:3 = { name: 'north', at: [0.0, 1.0] };

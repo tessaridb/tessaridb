@@ -259,9 +259,9 @@ fn consumer_and_its_clause_words_are_still_available_as_names() {
     // already exists. `consumer`, `topic`, `group`, `format` and `map` are all
     // plausible tables and fields in an application that has customers.
     for source in [
-        "DEFINE TABLE consumer;",
-        "DEFINE TABLE topic;",
-        "DEFINE TABLE format;",
+        "DEFINE COLLECTION consumer;",
+        "DEFINE COLLECTION topic;",
+        "DEFINE COLLECTION format;",
         "SELECT * FROM consumer;",
         "SELECT group FROM topic;",
         "CREATE map:1 = { identity: 'a', parallelism: 2, failure: 'none' };",

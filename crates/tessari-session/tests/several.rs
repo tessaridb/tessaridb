@@ -31,7 +31,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE work; USE DATABASE work;\n\
-             DEFINE TABLE notes;\n\
+             DEFINE COLLECTION notes;\n\
              CREATE notes:1 = { title: 'first', tags: ['urgent', 'draft'] };\n\
              CREATE notes:2 = { title: 'second', tags: ['draft'] };\n\
              CREATE notes:3 = { title: 'third', tags: [] };\n\

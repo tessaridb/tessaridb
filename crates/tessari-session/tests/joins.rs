@@ -30,7 +30,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE users; DEFINE TABLE orders;\n\
+             DEFINE COLLECTION users; DEFINE COLLECTION orders;\n\
              CREATE users:1 = { name: 'ada', city: 'london' };\n\
              CREATE users:2 = { name: 'grace', city: 'new york' };\n\
              CREATE orders:1 = { who: 'ada', total: 3 };\n\
@@ -216,7 +216,7 @@ fn a_join_cannot_reach_a_table_outside_the_session_users_tenancy() {
     session
         .run(
             "DEFINE DATABASE elsewhere; USE DATABASE elsewhere;\n\
-             DEFINE TABLE secrets; CREATE secrets:1 = { who: 'ada' };\n\
+             DEFINE COLLECTION secrets; CREATE secrets:1 = { who: 'ada' };\n\
              USE DATABASE shop;\n\
              DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse';",
         )

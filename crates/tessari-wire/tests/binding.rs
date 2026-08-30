@@ -28,7 +28,7 @@ fn serving(db: Db) -> (Arc<Node>, String) {
 
 const READY: &str = "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
                      DEFINE DATABASE orders; USE DATABASE orders; \
-                     DEFINE TABLE users; \
+                     DEFINE COLLECTION users; \
                      CREATE users:1 = { name: 'ada', age: 36 }; \
                      CREATE users:2 = { name: 'grace', age: 45 };";
 

@@ -53,7 +53,7 @@ KEYS FROM sessions RANGE 'a'..='m';
 --- expect: keys 4
 
 --- case: a key-value read stands where a value stands
-DEFINE TABLE users;
+DEFINE COLLECTION users;
 DEFINE INDEX by_email ON users FIELDS email UNIQUE;
 CREATE users:1 = { name: 'ada', email: 'ada@example.com' };
 DEFINE SPACE emails;
@@ -62,7 +62,7 @@ SELECT * FROM users WHERE email = GET emails:'primary';
 --- expect: rows 1
 
 --- case: an embedded read of one record answers with that record's own value
-DEFINE TABLE audit;
+DEFINE COLLECTION audit;
 CREATE audit:1 = {
   actor:  GET emails:'primary',
   target: (SELECT * FROM users:1),

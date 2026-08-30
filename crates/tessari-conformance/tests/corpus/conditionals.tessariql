@@ -9,7 +9,7 @@ USE DATABASE orders;
 --- expect: ok
 
 --- case: four people, one with no nickname and one whose nickname is null
-DEFINE TABLE people;
+DEFINE COLLECTION people;
 CREATE people:1 = { name: 'ada', nickname: 'countess', age: 36 };
 CREATE people:2 = { name: 'grace', nickname: NULL, age: 45 };
 CREATE people:3 = { name: 'alan', age: 41 };

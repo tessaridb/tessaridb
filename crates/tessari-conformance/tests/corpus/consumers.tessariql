@@ -18,7 +18,7 @@ DEFINE NAMESPACE prod;
 USE NAMESPACE prod;
 DEFINE DATABASE shop;
 USE DATABASE shop;
-DEFINE TABLE orders;
+DEFINE COLLECTION orders;
 --- expect: ok
 
 --- case: the whole declaration, every clause in the order the grammar reads them

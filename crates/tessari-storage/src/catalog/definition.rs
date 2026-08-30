@@ -29,6 +29,7 @@ const FIELD_SPATIAL: &str = "spatial";
 const FIELD_SCHEMAFULL: &str = "schemafull";
 const FIELD_EDGE: &str = "edge";
 const FIELD_BUCKET: &str = "bucket";
+const FIELD_COLLECTION: &str = "collection";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +90,18 @@ pub struct TableDefinition {
     /// which is a query rather than an API call, and that is the point of a
     /// bucket being a table at all (ADR-0011).
     pub bucket: bool,
+    /// Whether the declaration that created this was `DEFINE COLLECTION`.
+    ///
+    /// Stored rather than derived from `schemafull: false`, because a collection
+    /// and a `SCHEMALESS` table behave alike and are not the same declaration:
+    /// `INFO FOR TABLE` must answer with the word that created the thing, and a
+    /// round trip emitting `DEFINE TABLE … SCHEMALESS` for a collection would
+    /// re-execute happily while losing the word.
+    ///
+    /// A record written before this field existed reads `false` — `flag` treats
+    /// an absent flag as unset — which is the right answer for every one of
+    /// them, so no stored table is touched and no migration step is owed.
+    pub collection: bool,
 }
 
 impl NamespaceDefinition {
@@ -155,6 +168,7 @@ impl TableDefinition {
             (FIELD_SCHEMAFULL.to_owned(), Value::Bool(self.schemafull)),
             (FIELD_EDGE.to_owned(), Value::Bool(self.edge)),
             (FIELD_BUCKET.to_owned(), Value::Bool(self.bucket)),
+            (FIELD_COLLECTION.to_owned(), Value::Bool(self.collection)),
         ]))
     }
 
@@ -178,6 +192,7 @@ impl TableDefinition {
             schemafull: flag(fields, FIELD_SCHEMAFULL, "table")?,
             edge: flag(fields, FIELD_EDGE, "table")?,
             bucket: flag(fields, FIELD_BUCKET, "table")?,
+            collection: flag(fields, FIELD_COLLECTION, "table")?,
         })
     }
 }
@@ -197,6 +212,8 @@ pub struct TableShape {
     /// Hold files: records carrying metadata the store fills in, with the bytes
     /// in a companion table nothing can name.
     pub bucket: bool,
+    /// Was declared with `DEFINE COLLECTION` rather than `DEFINE TABLE`.
+    pub collection: bool,
 }
 
 /// What a `DEFINE INDEX` says beyond which values it projects.
@@ -557,6 +574,7 @@ mod tests {
             schemafull: true,
             edge: false,
             bucket: false,
+            collection: false,
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),

@@ -15,10 +15,10 @@ USE DATABASE shop;
 --- expect: ok
 
 --- case: a table with a nested field and a table with an embedding
-DEFINE TABLE people;
+DEFINE COLLECTION people;
 CREATE people:1 = { name: 'ada', age: 36, address: { city: 'london', postcode: 'N1' } };
 CREATE people:2 = { name: 'grace', age: 45, address: { city: 'york', postcode: 'YO1' } };
-DEFINE TABLE notes;
+DEFINE COLLECTION notes;
 CREATE notes:1 = { title: 'first', embedding: [0.1, 0.2, 0.3] };
 --- expect: ok
 
@@ -76,7 +76,7 @@ SELECT omit FROM people WHERE name = 'alan';
 --- expect: rows 1
 
 --- case: and still a table name
-DEFINE TABLE omit;
+DEFINE COLLECTION omit;
 CREATE omit:1 = { note: 'a table may be called that' };
 SELECT * FROM omit;
 --- expect: rows 1

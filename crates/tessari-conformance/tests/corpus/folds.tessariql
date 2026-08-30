@@ -34,7 +34,7 @@ USE DATABASE shop;
 --- case: a table of readings whose spread is known by hand
 # 2, 4, 4, 4, 5, 5, 7, 9 — the textbook set. Mean 5, population variance exactly
 # 4, population deviation exactly 2, sample variance 32/7 = 4.5714…
-DEFINE TABLE readings;
+DEFINE COLLECTION readings;
 CREATE readings:1 = { n: 2 };
 CREATE readings:2 = { n: 4 };
 CREATE readings:3 = { n: 4 };
@@ -86,7 +86,7 @@ RETURN (SELECT variance(n) * (count(*) - 1) / count(*) > 3.999
 # `n - 1` is zero here, and the spread of a single observation is not zero — it
 # is a question nobody has enough data to answer. A projected `NONE` is absent
 # rather than written, so the record answers with no field at all.
-DEFINE TABLE lonely;
+DEFINE COLLECTION lonely;
 CREATE lonely:1 = { n: 41 };
 RETURN (SELECT variance(n) AS v FROM lonely) = [{}];
 --- expect: value true
@@ -95,7 +95,7 @@ RETURN (SELECT variance(n) AS v FROM lonely) = [{}];
 # Not an empty table — a fold over one of those answers with no records, so it
 # could not tell a NONE from a missing group. These records exist and hold no
 # `n`, which is the case that separates the two.
-DEFINE TABLE blank;
+DEFINE COLLECTION blank;
 CREATE blank:1 = { other: 'no n here' };
 CREATE blank:2 = { other: 'nor here' };
 RETURN (SELECT stddev(n) AS s FROM blank) = [{}];
@@ -109,7 +109,7 @@ RETURN (SELECT median(n) AS m FROM readings) = [{ m: 4.5 }];
 # 1, 2, 3, 4 has no middle member, so the answer is a number that was never in
 # the data. That is tolerable only because the fold is numeric — which is also
 # why `median` refuses the kinds `min` and `max` accept.
-DEFINE TABLE four;
+DEFINE COLLECTION four;
 CREATE four:1 = { n: 1 };
 CREATE four:2 = { n: 2 };
 CREATE four:3 = { n: 3 };
@@ -118,7 +118,7 @@ RETURN (SELECT median(n) AS m FROM four) = [{ m: 2.5 }];
 --- expect: value true
 
 --- case: an odd count answers a number that was in the data
-DEFINE TABLE three;
+DEFINE COLLECTION three;
 CREATE three:1 = { n: 10 };
 CREATE three:2 = { n: 2 };
 CREATE three:3 = { n: 90 };
@@ -130,7 +130,7 @@ RETURN (SELECT median(n) AS m FROM three) = [{ m: 10 }];
 # made the answer exact rather than the middle value as written: `10` and `10.0`
 # are equal values and different answers on the wire, so "the value as written"
 # is decided by where a sort left them and is not a property of the data.
-DEFINE TABLE reversed;
+DEFINE COLLECTION reversed;
 CREATE reversed:1 = { n: 90 };
 CREATE reversed:2 = { n: 10.0 };
 CREATE reversed:3 = { n: 2 };
@@ -142,7 +142,7 @@ RETURN (SELECT median(n) AS m FROM blank) = [{}];
 --- expect: value true
 
 --- case: median refuses what it cannot average, the way mean does
-DEFINE TABLE names;
+DEFINE COLLECTION names;
 CREATE names:1 = { who: 'ada' };
 SELECT median(who) AS m FROM names;
 --- expect: error NotSummable
@@ -160,7 +160,7 @@ RETURN (SELECT collect(n) AS every FROM blank) = [{ every: [] }];
 --- expect: value true
 
 --- case: collect passes over absent values, as every other fold does
-DEFINE TABLE patchy;
+DEFINE COLLECTION patchy;
 CREATE patchy:1 = { n: 1 };
 CREATE patchy:2 = { other: 'no n here' };
 CREATE patchy:3 = { n: 3 };
@@ -174,7 +174,7 @@ RETURN (SELECT collect(who) AS every FROM names) = [{ every: ['ada'] }];
 --- expect: value true
 
 --- case: the new folds group like the old ones
-DEFINE TABLE sales;
+DEFINE COLLECTION sales;
 CREATE sales:1 = { city: 'lisbon', price: 10 };
 CREATE sales:2 = { city: 'lisbon', price: 20 };
 CREATE sales:3 = { city: 'lisbon', price: 60 };

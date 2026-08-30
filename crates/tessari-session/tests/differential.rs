@@ -205,7 +205,7 @@ const SAMPLE: [Demand; 11] = [
         anything: false,
     },
     Demand {
-        script: "DEFINE TABLE probeNNN;",
+        script: "DEFINE TABLE probeNNN SCHEMALESS;",
         kinds: &["manage"],
         at: At::Reached,
         anything: false,
@@ -317,9 +317,9 @@ fn peopled(store: &Store) {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE orders; CREATE orders:1 = { total: 5 };\n\
+             DEFINE COLLECTION orders; CREATE orders:1 = { total: 5 };\n\
              DEFINE NAMESPACE staging; USE NAMESPACE staging;\n\
-             DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders;\n\
+             DEFINE DATABASE shop; USE DATABASE shop; DEFINE COLLECTION orders;\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
         )
         .unwrap();

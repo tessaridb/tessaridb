@@ -14,7 +14,7 @@ const READY: &str = "DEFINE NAMESPACE prod;\
                      USE NAMESPACE prod;\
                      DEFINE DATABASE orders;\
                      USE DATABASE orders;\
-                     DEFINE TABLE users;";
+                     DEFINE COLLECTION users;";
 
 fn name_of(record: &Value) -> Option<&str> {
     match record {

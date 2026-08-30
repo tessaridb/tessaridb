@@ -128,7 +128,7 @@ fn ready<'a>(store: &'a Store, index: &str) -> Session<'a> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE events;\n\
+             DEFINE TABLE events SCHEMALESS;\n\
              DEFINE FIELD at ON events TYPE int REQUIRED;",
         )
         .unwrap();
@@ -312,7 +312,7 @@ fn an_ascending_composite_order_is_still_refused_over_an_optional_leading_field(
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE events;\n\
+             DEFINE TABLE events SCHEMALESS;\n\
              DEFINE FIELD at ON events TYPE int;\n\
              CREATE events:1 = { at: 5, tag: 1 };\n\
              CREATE events:2 = { tag: 2 };\n\

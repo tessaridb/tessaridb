@@ -20,7 +20,7 @@ DEFINE NAMESPACE prod;
 USE NAMESPACE prod;
 DEFINE DATABASE orders;
 USE DATABASE orders;
-DEFINE TABLE notes;
+DEFINE COLLECTION notes;
 --- expect: ok
 
 --- case: an open store runs anything, which is what makes an empty one usable

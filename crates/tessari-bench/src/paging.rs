@@ -55,7 +55,7 @@ const DEPTHS: [u64; 4] = [0, 1_000, 10_000, 99_000];
 pub fn paging(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE TABLE paged;")?;
+    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION paged;")?;
     for n in 0..PAGED {
         session.run(&format!(
             "CREATE paged:{n} = {{ name: 'person {n}', city: 'city {}' }};",

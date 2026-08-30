@@ -133,7 +133,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE users;",
+             DEFINE COLLECTION users;",
         )
         .unwrap();
     for n in 1..=SHARED {

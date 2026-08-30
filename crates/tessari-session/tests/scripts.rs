@@ -47,7 +47,7 @@ fn a_script_defines_a_table_and_writes_to_it() {
     let mut session = ready(&store);
 
     session
-        .run("DEFINE TABLE users; CREATE users:1 = { name: 'ada' };")
+        .run("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { name: 'ada' };")
         .unwrap();
 
     let outcomes = session.run("SELECT * FROM users:1;").unwrap();
@@ -69,7 +69,7 @@ fn a_definition_and_a_write_land_together_or_not_at_all() {
 
     let failed = session.run(
         "BEGIN;\n\
-         DEFINE TABLE accounts;\n\
+         DEFINE COLLECTION accounts;\n\
          CREATE accounts:1 = { balance: 10 };\n\
          CANCEL;",
     );
@@ -92,7 +92,7 @@ fn a_definition_and_a_write_land_together_or_not_at_all() {
     session
         .run(
             "BEGIN;\n\
-             DEFINE TABLE accounts;\n\
+             DEFINE COLLECTION accounts;\n\
              CREATE accounts:1 = { balance: 10 };\n\
              COMMIT;",
         )
@@ -105,7 +105,7 @@ fn a_definition_and_a_write_land_together_or_not_at_all() {
 fn a_script_that_never_commits_discards_its_work_and_says_so() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE users;").unwrap();
+    session.run("DEFINE TABLE users SCHEMALESS;").unwrap();
 
     let error = session
         .run("BEGIN; CREATE users:1 = { name: 'ada' };")
@@ -127,7 +127,7 @@ fn the_three_access_paths_answer_from_the_store() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE users;\n\
+            "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE INDEX by_email ON users FIELDS email UNIQUE;\n\
              CREATE users:1 = { name: 'ada', email: 'ada@example.com' };\n\
              CREATE users:2 = { name: 'grace', email: 'grace@example.com' };",
@@ -156,7 +156,7 @@ fn the_access_path_follows_what_exists_rather_than_how_the_query_is_written() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE users;\n\
+            "DEFINE TABLE users SCHEMALESS;\n\
              CREATE users:1 = { name: 'ada lovelace', email: 'ada@example.com' };\n\
              CREATE users:2 = { name: 'grace hopper', email: 'grace@example.com' };",
         )
@@ -196,7 +196,7 @@ fn an_index_over_rows_that_predate_it_answers_exactly_as_the_scan_did() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE users; CREATE users:1 = { email: 'ada@example.com' };")
+        .run("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { email: 'ada@example.com' };")
         .unwrap();
 
     let by_scan = session
@@ -224,7 +224,7 @@ fn an_index_defined_inside_an_open_transaction_is_built_with_it() {
 
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE users;").unwrap();
+    session.run("DEFINE TABLE users SCHEMALESS;").unwrap();
     session
         .run("CREATE users:1 = { email: 'ada@example.com' };")
         .unwrap();
@@ -253,7 +253,7 @@ fn a_pattern_match_follows_sql_and_is_anchored_to_the_whole_value() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE notes;\n\
+            "DEFINE TABLE notes SCHEMALESS;\n\
              CREATE notes:1 = { body: 'Ada Lovelace wrote the first program' };\n\
              CREATE notes:2 = { body: 'Grace Hopper found the first bug' };",
         )
@@ -295,7 +295,7 @@ fn a_create_never_replaces_and_an_update_never_invents() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE users; CREATE users:1 = { name: 'ada' };")
+        .run("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { name: 'ada' };")
         .unwrap();
 
     let error = session
@@ -357,7 +357,7 @@ fn membership_asks_a_different_question_from_a_pattern() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE notes;\n\
+            "DEFINE TABLE notes SCHEMALESS;\n\
              CREATE notes:1 = { body: 'urgent review', tags: ['urgent', 'review'] };",
         )
         .unwrap();
@@ -442,7 +442,7 @@ fn a_key_value_read_composes_into_a_record_statement_at_one_snapshot() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE users;\n\
+            "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE SPACE emails;\n\
              DEFINE INDEX by_email ON users FIELDS email UNIQUE;\n\
              CREATE users:1 = { name: 'ada', email: 'ada@example.com' };\n\
@@ -467,8 +467,8 @@ fn an_embedded_read_stands_where_a_value_stands() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE users;\n\
-             DEFINE TABLE audit;\n\
+            "DEFINE TABLE users SCHEMALESS;\n\
+             DEFINE COLLECTION audit;\n\
              DEFINE SPACE sessions;\n\
              CREATE users:1 = { name: 'ada' };\n\
              SET sessions:'abc' = 'a-session';\n\
@@ -498,7 +498,7 @@ fn a_unique_index_refuses_a_second_record_with_the_same_value() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE users;\n\
+            "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE INDEX by_email ON users FIELDS email UNIQUE;\n\
              CREATE users:1 = { email: 'ada@example.com' };",
         )
@@ -518,7 +518,7 @@ fn a_statement_with_no_database_selected_is_an_error_and_not_a_guess() {
         .run("DEFINE NAMESPACE prod; USE NAMESPACE prod;")
         .unwrap();
 
-    let error = session.run("DEFINE TABLE users;").unwrap_err();
+    let error = session.run("DEFINE TABLE users SCHEMALESS;").unwrap_err();
     assert!(matches!(error, Error::NoDatabaseSelected { .. }), "{error}");
 }
 
@@ -539,12 +539,14 @@ fn a_name_the_catalog_does_not_hold_is_named_back() {
 fn if_not_exists_accepts_a_definition_that_already_stands() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE users;").unwrap();
+    session.run("DEFINE TABLE users SCHEMALESS;").unwrap();
 
-    let error = session.run("DEFINE TABLE users;").unwrap_err();
+    let error = session.run("DEFINE TABLE users SCHEMALESS;").unwrap_err();
     assert!(matches!(error, Error::Store(_)), "{error}");
 
-    session.run("DEFINE TABLE IF NOT EXISTS users;").unwrap();
+    session
+        .run("DEFINE TABLE IF NOT EXISTS users SCHEMALESS;")
+        .unwrap();
     session
         .run("DEFINE INDEX IF NOT EXISTS by_email ON users FIELDS email;")
         .unwrap();
@@ -560,14 +562,14 @@ fn a_session_resolves_a_name_afresh_for_every_statement() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE users; CREATE users:1 = { name: 'ada' };")
+        .run("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { name: 'ada' };")
         .unwrap();
     session.run("DROP TABLE users;").unwrap();
 
     let error = session.run("SELECT * FROM users;").unwrap_err();
     assert!(matches!(&error, Error::Unknown { .. }), "{error}");
 
-    session.run("DEFINE TABLE users;").unwrap();
+    session.run("DEFINE TABLE users SCHEMALESS;").unwrap();
     let outcomes = session.run("SELECT * FROM users;").unwrap();
     // The re-created table is a different table, and it holds nothing — the
     // records of the old one are not its records.
@@ -582,10 +584,10 @@ fn a_qualified_name_reaches_another_database_in_the_same_namespace() {
         .run(
             "DEFINE DATABASE archive;\n\
              USE DATABASE archive;\n\
-             DEFINE TABLE users;\n\
+             DEFINE TABLE users SCHEMALESS;\n\
              CREATE users:1 = { name: 'grace' };\n\
              USE DATABASE orders;\n\
-             DEFINE TABLE users;\n\
+             DEFINE TABLE users SCHEMALESS;\n\
              CREATE users:1 = { name: 'ada' };",
         )
         .unwrap();
@@ -611,7 +613,7 @@ fn a_prefix_pattern_on_an_indexed_field_is_a_range_read_answering_exactly_as_the
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE people;\n\
+            "DEFINE TABLE people SCHEMALESS;\n\
              CREATE people:1 = { name: 'ada lovelace' };\n\
              CREATE people:2 = { name: 'adam smith' };\n\
              CREATE people:3 = { name: 'grace hopper' };\n\
@@ -664,7 +666,7 @@ fn only_a_trailing_wildcard_uses_the_index_and_the_rest_keep_the_scan() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE people;\n\
+            "DEFINE TABLE people SCHEMALESS;\n\
              CREATE people:1 = { name: 'ada lovelace' };\n\
              DEFINE INDEX by_name ON people FIELDS name;",
         )
@@ -696,7 +698,7 @@ fn an_escaped_wildcard_in_the_prefix_is_read_as_the_character_it_escapes() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE codes;\n\
+            "DEFINE COLLECTION codes;\n\
              CREATE codes:1 = { label: '50% off' };\n\
              CREATE codes:2 = { label: '50 off' };\n\
              DEFINE INDEX by_label ON codes FIELDS label;",
@@ -720,7 +722,7 @@ fn a_prefix_read_sees_this_transactions_own_writes_and_not_its_stale_entries() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE people;\n\
+            "DEFINE TABLE people SCHEMALESS;\n\
              CREATE people:1 = { name: 'ada lovelace' };\n\
              DEFINE INDEX by_name ON people FIELDS name;",
         )
@@ -749,7 +751,7 @@ fn a_declared_type_is_enforced_through_the_language() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE people;\n\
+            "DEFINE TABLE people SCHEMALESS;\n\
              DEFINE FIELD age ON people TYPE int;\n\
              CREATE people:1 = { age: 34 };",
         )
@@ -777,7 +779,7 @@ fn a_reserved_word_is_read_as_a_type_name_after_type() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE events;\n\
+            "DEFINE TABLE events SCHEMALESS;\n\
              DEFINE FIELD at ON events TYPE datetime;\n\
              DEFINE FIELD who ON events TYPE record;\n\
              DEFINE FIELD span ON events TYPE range;\n\
@@ -796,7 +798,7 @@ fn a_reserved_word_is_read_as_a_type_name_after_type() {
 fn a_word_that_is_not_a_type_is_refused_where_a_type_belongs() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE shapes;").unwrap();
+    session.run("DEFINE TABLE shapes SCHEMALESS;").unwrap();
     // `geometry` used to stand here, and stopped being a counter-example the
     // moment the value system gained the type. The word chosen now is one no
     // type is ever likely to claim.
@@ -813,7 +815,7 @@ fn the_two_types_the_value_system_gained_are_type_names_the_language_accepts() {
     // drifting apart again.
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE shapes;").unwrap();
+    session.run("DEFINE TABLE shapes SCHEMALESS;").unwrap();
     session
         .run("DEFINE FIELD outline ON shapes TYPE geometry;")
         .expect("geometry is a type");
@@ -830,7 +832,7 @@ fn a_schemafull_table_refuses_a_misspelled_field_and_a_schemaless_one_does_not()
         .run(
             "DEFINE TABLE ledger SCHEMAFULL;\n\
              DEFINE FIELD amount ON ledger TYPE decimal;\n\
-             DEFINE TABLE notes;\n\
+             DEFINE TABLE notes SCHEMALESS;\n\
              DEFINE FIELD amount ON notes TYPE decimal;",
         )
         .unwrap();
@@ -853,7 +855,7 @@ fn a_declaration_and_the_rows_it_constrains_land_together_or_not_at_all() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE guests;\n\
+            "DEFINE TABLE guests SCHEMALESS;\n\
              CREATE guests:1 = { handle: 'ada' };",
         )
         .unwrap();
@@ -881,7 +883,7 @@ fn a_declaration_and_the_rows_it_constrains_land_together_or_not_at_all() {
 fn a_row_and_its_declaration_may_be_written_in_either_order_in_one_transaction() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE staff;").unwrap();
+    session.run("DEFINE TABLE staff SCHEMALESS;").unwrap();
 
     session
         .run(
@@ -909,7 +911,7 @@ fn dropping_a_declaration_leaves_the_data_and_removes_only_the_rule() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE members;\n\
+            "DEFINE TABLE members SCHEMALESS;\n\
              DEFINE FIELD handle ON members TYPE string;\n\
              CREATE members:1 = { handle: 'ada' };",
         )
@@ -931,7 +933,7 @@ fn a_traversal_is_a_walk_and_says_so() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE users;\n\
+            "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE TABLE follows EDGE;\n\
              CREATE users:1 = { handle: 'ada' };\n\
              CREATE users:2 = { handle: 'grace' };\n\
@@ -961,7 +963,7 @@ fn the_two_directions_answer_the_mirrored_question_over_the_same_data() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE users;\n\
+            "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE TABLE follows EDGE;\n\
              CREATE users:1 = { handle: 'ada' };\n\
              CREATE users:2 = { handle: 'grace' };\n\
@@ -992,7 +994,7 @@ fn an_edges_own_properties_survive_beside_its_endpoints() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE users;\n\
+            "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE TABLE follows EDGE;\n\
              CREATE users:1 = { handle: 'ada' };\n\
              CREATE users:2 = { handle: 'grace' };\n\
@@ -1015,7 +1017,7 @@ fn a_property_that_is_not_a_set_of_named_fields_is_refused_where_it_is_written()
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE users;\n\
+            "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE TABLE follows EDGE;\n\
              CREATE users:1 = { handle: 'ada' };\n\
              CREATE users:2 = { handle: 'grace' };",
@@ -1034,7 +1036,7 @@ fn a_second_arrow_pointing_the_other_way_is_refused_rather_than_answered() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE users;\nDEFINE TABLE follows EDGE;\nCREATE users:1 = { handle: 'ada' };")
+        .run("DEFINE TABLE users SCHEMALESS;\nDEFINE TABLE follows EDGE;\nCREATE users:1 = { handle: 'ada' };")
         .unwrap();
     assert!(
         session
@@ -1061,7 +1063,7 @@ fn a_schemafull_edge_table_still_accepts_the_endpoints_the_store_writes() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE users;\n\
+            "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE TABLE knows EDGE SCHEMAFULL;\n\
              CREATE users:1 = { handle: 'ada' };\n\
              CREATE users:2 = { handle: 'grace' };",
@@ -1077,7 +1079,7 @@ fn a_schemafull_edge_table_still_accepts_the_endpoints_the_store_writes() {
 fn people_with_addresses(session: &mut Session<'_>) {
     session
         .run(
-            "DEFINE TABLE people;\n\
+            "DEFINE COLLECTION people;\n\
              CREATE people:1 = { name: 'ada', address: { city: 'Paris', zip: '75001' }, tags: ['urgent', 'old'] };\n\
              CREATE people:2 = { name: 'grace', address: { city: 'Lyon' }, tags: ['old'] };\n\
              CREATE people:3 = { name: 'alan', address: 'Paris' };\n\
@@ -1382,7 +1384,7 @@ fn a_projection_shapes_a_read_standing_in_a_value_position() {
     people_with_addresses(&mut session);
 
     session
-        .run("DEFINE TABLE audit; CREATE audit:1 = { who: (SELECT name FROM people:1) };")
+        .run("DEFINE COLLECTION audit; CREATE audit:1 = { who: (SELECT name FROM people:1) };")
         .unwrap();
     let found = session.run("SELECT * FROM audit:1;").unwrap();
     let who = field(&found[0].records().unwrap()[0].1, "who");
@@ -1398,7 +1400,7 @@ fn a_projection_shapes_a_read_standing_in_a_value_position() {
 fn mixed_ages(session: &mut Session<'_>) {
     session
         .run(
-            "DEFINE TABLE people;\n\
+            "DEFINE COLLECTION people;\n\
              CREATE people:1 = { name: 'ada', age: 17, city: 'Paris' };\n\
              CREATE people:2 = { name: 'grace', age: 45, city: 'Lyon' };\n\
              CREATE people:3 = { name: 'alan', age: 'nineteen', city: 'Paris' };\n\
@@ -1507,7 +1509,7 @@ fn membership_reads_from_either_end() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE notes;\n\
+            "DEFINE TABLE notes SCHEMALESS;\n\
              CREATE notes:1 = { tags: ['urgent', 'old'] };\n\
              CREATE notes:2 = { tags: ['old'] };",
         )
@@ -1553,7 +1555,7 @@ fn a_bare_name_is_a_route_in_a_condition_and_a_table_in_a_value() {
 
     // In a value position `people` is the table itself.
     session
-        .run("DEFINE TABLE audit; CREATE audit:1 = { subject: people };")
+        .run("DEFINE COLLECTION audit; CREATE audit:1 = { subject: people };")
         .unwrap();
     let found = session.run("SELECT * FROM audit:1;").unwrap();
     assert!(matches!(
@@ -1622,7 +1624,7 @@ fn a_comparison_against_another_field_is_never_used_as_a_bound() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE pairs;\n\
+            "DEFINE COLLECTION pairs;\n\
              DEFINE INDEX by_left ON pairs FIELDS left;\n\
              CREATE pairs:1 = { left: 'a', right: 'a' };\n\
              CREATE pairs:2 = { left: 'a', right: 'b' };",
@@ -1683,7 +1685,7 @@ fn arithmetic_promotes_the_kinds_and_never_truncates_a_division() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE lines;\n\
+            "DEFINE COLLECTION lines;\n\
              CREATE lines:1 = { price: dec 2.50, quantity: 3, weight: 1.5 };",
         )
         .unwrap();
@@ -1710,7 +1712,7 @@ fn arithmetic_that_has_no_answer_fails_rather_than_producing_one() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE lines; CREATE lines:1 = { n: 1, name: 'ada' };")
+        .run("DEFINE COLLECTION lines; CREATE lines:1 = { n: 1, name: 'ada' };")
         .unwrap();
 
     for script in [
@@ -1827,7 +1829,7 @@ fn a_required_field_must_hold_a_value_and_null_is_not_one() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE users;\n\
+            "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE FIELD email ON users TYPE string REQUIRED;",
         )
         .unwrap();
@@ -1848,7 +1850,7 @@ fn requiring_a_field_over_rows_that_lack_it_writes_nothing_at_all() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE users; CREATE users:1 = { name: 'ada' };")
+        .run("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { name: 'ada' };")
         .unwrap();
 
     assert!(
@@ -1866,7 +1868,7 @@ fn a_default_fills_a_field_a_write_leaves_out() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE notes;\n\
+            "DEFINE TABLE notes SCHEMALESS;\n\
              DEFINE FIELD state ON notes TYPE string DEFAULT 'open';\n\
              DEFINE FIELD seen ON notes TYPE int DEFAULT 1 + 1;\n\
              CREATE notes:1 = { body: 'first' };\n\
@@ -1897,7 +1899,7 @@ fn a_default_is_evaluated_and_not_stored_as_an_expression() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE notes;\n\
+            "DEFINE TABLE notes SCHEMALESS;\n\
              DEFINE FIELD created ON notes TYPE datetime DEFAULT time::now();\n\
              CREATE notes:1 = { body: 'first' };",
         )
@@ -1914,7 +1916,7 @@ fn a_required_field_with_a_default_always_holds_a_value() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE notes;\n\
+            "DEFINE TABLE notes SCHEMALESS;\n\
              DEFINE FIELD state ON notes TYPE string REQUIRED DEFAULT 'open';\n\
              CREATE notes:1 = { body: 'first' };",
         )
@@ -1934,7 +1936,7 @@ fn a_default_does_not_reach_backwards_over_rows_already_written() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE notes; CREATE notes:1 = { body: 'first' };")
+        .run("DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { body: 'first' };")
         .unwrap();
     session
         .run("DEFINE FIELD state ON notes TYPE string DEFAULT 'open';")
@@ -1952,7 +1954,7 @@ fn a_default_does_not_reach_backwards_over_rows_already_written() {
 fn a_default_is_checked_when_it_is_declared_and_not_when_it_first_bites() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE notes;").unwrap();
+    session.run("DEFINE TABLE notes SCHEMALESS;").unwrap();
 
     // The wrong type, caught before the declaration lands.
     let error = session
@@ -1983,7 +1985,7 @@ fn a_default_is_checked_when_it_is_declared_and_not_when_it_first_bites() {
 fn sortable(session: &mut Session<'_>) {
     session
         .run(
-            "DEFINE TABLE people;\n\
+            "DEFINE COLLECTION people;\n\
              CREATE people:1 = { name: 'ada', age: 45, city: 'Paris' };\n\
              CREATE people:2 = { name: 'grace', age: 17, city: 'Lyon' };\n\
              CREATE people:3 = { name: 'alan', age: NULL, city: 'Paris' };\n\
@@ -2150,7 +2152,7 @@ fn the_words_that_shape_a_read_are_not_reserved_names() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE order;\n\
+            "DEFINE COLLECTION order;\n\
              CREATE order:1 = { limit: 10, by: 'ada', start: 1 };",
         )
         .unwrap();
@@ -2245,7 +2247,7 @@ fn the_folds_ignore_what_holds_nothing_and_say_so_when_there_is_nothing() {
     // about the value rather than about how many digits survived.
     session
         .run(
-            "DEFINE TABLE scores;\n\
+            "DEFINE COLLECTION scores;\n\
              CREATE scores:1 = { n: 10 };\n\
              CREATE scores:2 = { n: 20 };\n\
              CREATE scores:3 = { n: NULL };",
@@ -2262,7 +2264,7 @@ fn the_folds_ignore_what_holds_nothing_and_say_so_when_there_is_nothing() {
 
     // Over a group holding no numbers at all: sum is zero, mean is nothing.
     session
-        .run("DEFINE TABLE empty; CREATE empty:1 = { name: 'ada' };")
+        .run("DEFINE COLLECTION empty; CREATE empty:1 = { name: 'ada' };")
         .unwrap();
     let none = session
         .run("SELECT sum(age) AS total, mean(age) AS average FROM empty;")
@@ -2335,7 +2337,7 @@ fn grouping_by_several_keys_groups_by_the_combination() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE sales;\n\
+            "DEFINE COLLECTION sales;\n\
              CREATE sales:1 = { city: 'Paris', year: 2025, n: 1 };\n\
              CREATE sales:2 = { city: 'Paris', year: 2026, n: 2 };\n\
              CREATE sales:3 = { city: 'Paris', year: 2026, n: 4 };\n\
@@ -2362,7 +2364,7 @@ fn a_field_called_count_is_still_a_field() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE tallies; CREATE tallies:1 = { count: 7 };")
+        .run("DEFINE COLLECTION tallies; CREATE tallies:1 = { count: 7 };")
         .unwrap();
 
     assert_eq!(
@@ -2381,7 +2383,7 @@ fn searchable(session: &mut Session<'_>) {
     session
         .run(
             "DEFINE ANALYZER simple FILTERS lowercase, ascii;\n\
-             DEFINE TABLE notes;\n\
+             DEFINE TABLE notes SCHEMALESS;\n\
              DEFINE FIELD body ON notes TYPE string ANALYZER simple;\n\
              DEFINE FIELD note ON notes TYPE any ANALYZER simple;\n\
              CREATE notes:1 = { body: 'Ada Lovelace wrote the first program', title: 'Ada' };\n\
@@ -2494,7 +2496,7 @@ fn an_analyzer_is_declared_once_and_attached_where_it_is_needed() {
     // One declaration, two fields on two tables.
     session
         .run(
-            "DEFINE TABLE letters;\n\
+            "DEFINE TABLE letters SCHEMALESS;\n\
              DEFINE FIELD text ON letters TYPE string ANALYZER simple;\n\
              CREATE letters:1 = { text: 'Dear Ada' };",
         )
@@ -2734,7 +2736,7 @@ fn a_replica_builds_the_same_postings_from_the_same_log() {
 fn embedded(session: &mut Session<'_>) {
     session
         .run(
-            "DEFINE TABLE notes;\n\
+            "DEFINE COLLECTION notes;\n\
              CREATE notes:1 = { title: 'east', embedding: [1.0, 0.0] };\n\
              CREATE notes:2 = { title: 'north-east', embedding: [0.7, 0.7] };\n\
              CREATE notes:3 = { title: 'north', embedding: [0.0, 1.0] };\n\
@@ -2814,7 +2816,7 @@ fn ordering_by_an_expression_works_for_anything_computed() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE people;\n\
+            "DEFINE COLLECTION people;\n\
              CREATE people:1 = { name: 'barbara' };\n\
              CREATE people:2 = { name: 'ada' };\n\
              CREATE people:3 = { name: 'grace' };",
@@ -2848,7 +2850,7 @@ fn ordering_by_an_expression_works_for_anything_computed() {
 fn guarded(session: &mut Session<'_>) {
     session
         .run(
-            "DEFINE TABLE notes;\n\
+            "DEFINE COLLECTION notes;\n\
              CREATE notes:1 = { body: 'written while open' };\n\
              DEFINE USER root ROLE owner PASSWORD 'root secret';",
         )
@@ -2870,7 +2872,7 @@ fn a_store_with_no_users_is_open_and_the_first_one_closes_it() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE notes; CREATE notes:1 = { body: 'anyone' };")
+        .run("DEFINE COLLECTION notes; CREATE notes:1 = { body: 'anyone' };")
         .unwrap();
 
     session
@@ -2911,7 +2913,7 @@ fn a_role_decides_what_a_signed_in_session_may_do() {
         "CREATE notes:2 = { body: 'no' };",
         "UPDATE notes:1 = { body: 'no' };",
         "DELETE notes:1;",
-        "DEFINE TABLE more;",
+        "DEFINE COLLECTION more;",
         "DROP TABLE notes;",
     ] {
         let error = session.run(refused).unwrap_err();
@@ -2924,7 +2926,7 @@ fn a_role_decides_what_a_signed_in_session_may_do() {
     // An editor writes and defines structure, and may not declare users.
     session.sign_in("ada", "correct horse").unwrap();
     session.run("CREATE notes:2 = { body: 'yes' };").unwrap();
-    session.run("DEFINE TABLE more;").unwrap();
+    session.run("DEFINE COLLECTION more;").unwrap();
     let error = session
         .run("DEFINE USER intruder ROLE owner PASSWORD 'x';")
         .unwrap_err();
@@ -2950,7 +2952,7 @@ fn signing_in_again_replaces_the_identity_rather_than_adding_to_it() {
     session.sign_in("grace", "watch only").unwrap();
     // A session is one conversation with one user at a time, so the owner's
     // rights do not survive becoming a viewer.
-    assert!(session.run("DEFINE TABLE more;").is_err());
+    assert!(session.run("DEFINE COLLECTION more;").is_err());
 
     session.sign_out();
     assert!(matches!(
@@ -3005,7 +3007,7 @@ fn a_scoped_user_cannot_reach_another_database_by_naming_it() {
         .run(
             "DEFINE DATABASE archive;\n\
              USE DATABASE archive;\n\
-             DEFINE TABLE notes;\n\
+             DEFINE COLLECTION notes;\n\
              CREATE notes:1 = { body: 'another tenancy' };",
         )
         .unwrap();
@@ -3036,7 +3038,7 @@ fn the_system_namespace_has_no_name_and_so_no_statement_can_reach_it() {
     let mut session = ready(&store);
     for attempt in ["USE NAMESPACE system;", "USE NAMESPACE catalog;"] {
         session.run(attempt).unwrap();
-        let error = session.run("DEFINE TABLE intrusion;").unwrap_err();
+        let error = session.run("DEFINE COLLECTION intrusion;").unwrap_err();
         assert!(
             matches!(
                 error,
@@ -3071,7 +3073,7 @@ fn the_plan_chooses_the_index_and_never_the_answer() {
         let mut session = ready(&store);
         session
             .run(&format!(
-                "DEFINE TABLE users;\n\
+                "DEFINE COLLECTION users;\n\
                  {indexes}\n\
                  CREATE users:1 = {{ email: 'a@x', city: 'london', name: 'ada' }};\n\
                  CREATE users:2 = {{ email: 'b@x', city: 'london', name: 'anne' }};\n\
@@ -3118,7 +3120,7 @@ fn a_filter_reports_the_index_it_used_and_the_scan_when_there_is_none() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE users;\n\
+            "DEFINE COLLECTION users;\n\
              DEFINE INDEX by_email ON users FIELDS email UNIQUE;\n\
              CREATE users:1 = { email: 'a@x', city: 'london' };",
         )
@@ -3147,7 +3149,7 @@ fn one_statement_observes_one_instant() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE users;\n\
+            "DEFINE COLLECTION users;\n\
              CREATE users:1 = { name: 'ada' };\n\
              CREATE users:2 = { name: 'grace' };\n\
              CREATE users:3 = { name: 'edith' };",

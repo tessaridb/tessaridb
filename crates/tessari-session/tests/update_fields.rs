@@ -30,7 +30,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE users;\n\
+             DEFINE TABLE users SCHEMALESS;\n\
              CREATE users:1 = { name: 'ada', city: 'Paris', visits: 3, \
                                 address: { city: 'Paris', zip: '75001' } };\n\
              CREATE users:2 = { name: 'grace', city: 'Lyon', visits: 1 };",

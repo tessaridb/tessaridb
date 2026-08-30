@@ -197,7 +197,7 @@ fn a_parameter_called_node_is_still_the_callers_own() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE readings;\n\
+             DEFINE COLLECTION readings;\n\
              CREATE readings:1 = { at: 'kitchen' };\n\
              CREATE readings:2 = { at: 'hall' };",
         )

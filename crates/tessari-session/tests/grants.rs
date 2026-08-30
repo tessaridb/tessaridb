@@ -33,7 +33,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE users; DEFINE TABLE orders;\n\
+             DEFINE COLLECTION users; DEFINE COLLECTION orders;\n\
              CREATE users:1 = { name: 'ada' };\n\
              CREATE orders:1 = { total: 3 };\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
@@ -186,7 +186,9 @@ fn a_grant_governed_user_cannot_declare_a_table_and_is_told_why() {
         .unwrap();
 
     let mut ada = signed_in(&store, "ada");
-    let refused = ada.run("DEFINE TABLE invoices;").expect_err("a refusal");
+    let refused = ada
+        .run("DEFINE COLLECTION invoices;")
+        .expect_err("a refusal");
     let said = refused.to_string();
     assert!(said.contains("governed by grants"), "{said}");
 }
@@ -268,7 +270,7 @@ fn field_scoped(store: &Store) {
     ready(store);
     let mut root = signed_in(store, "root");
     root.run(
-        "DEFINE TABLE staff;\n\
+        "DEFINE COLLECTION staff;\n\
          CREATE staff:1 = { name: 'ada', title: 'engineer', salary: 120000 };\n\
          CREATE staff:2 = { name: 'grace', title: 'admiral', salary: 200000 };",
     )
@@ -288,7 +290,7 @@ fn a_multi_valued_projection_reaches_only_into_the_record_the_session_may_see() 
     ready(&store);
     let mut root = signed_in(&store, "root");
     root.run(
-        "DEFINE TABLE people;\n\
+        "DEFINE COLLECTION people;\n\
          CREATE people:1 = { name: 'ada', aliases: ['a.l.', 'countess'], \
                              secrets: ['a key', 'another'] };",
     )
@@ -464,7 +466,7 @@ fn fetch_into_a_field_scoped_table_hides_it_there_too() {
     let store = store();
     field_scoped(&store);
     let mut root = signed_in(&store, "root");
-    root.run("DEFINE TABLE notes; CREATE notes:1 = { about: staff:1 };")
+    root.run("DEFINE COLLECTION notes; CREATE notes:1 = { about: staff:1 };")
         .unwrap();
     root.run("GRANT read ON notes TO ada;").unwrap();
 
@@ -508,4 +510,35 @@ fn fields_with_a_write_is_refused_with_its_reason() {
         .run("GRANT read, write ON users FIELDS name TO ada;")
         .expect_err("a refusal");
     assert!(refused.to_string().contains("destroy"), "{refused}");
+}
+
+#[test]
+fn a_grant_governed_user_cannot_declare_any_of_the_four_table_words() {
+    // `reach::tables_named` returns an empty list for all four declarations and
+    // says the caller handles them; the caller listed two. A statement named
+    // there and missing here is not refused by the loop that follows either,
+    // because that loop iterates the tables a statement names and these name
+    // none — so it was simply allowed. `DEFINE BUCKET` sat in that position
+    // before this test existed, which is why the test takes all four rather
+    // than the one the node added.
+    let store = store();
+    ready(&store);
+    signed_in(&store, "root")
+        .run("GRANT read, write ON users TO ada;")
+        .unwrap();
+
+    for statement in [
+        "DEFINE TABLE invoices (total int);",
+        "DEFINE COLLECTION notes;",
+        "DEFINE SPACE sessions;",
+        "DEFINE BUCKET media;",
+    ] {
+        let mut ada = signed_in(&store, "ada");
+        let refused = ada
+            .run(statement)
+            .err()
+            .unwrap_or_else(|| panic!("a grant-governed user declared structure: {statement}"));
+        let said = refused.to_string();
+        assert!(said.contains("governed by grants"), "{statement}: {said}");
+    }
 }

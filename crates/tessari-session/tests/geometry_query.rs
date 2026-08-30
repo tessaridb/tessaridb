@@ -30,7 +30,7 @@ fn schemaless(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE maps; USE NAMESPACE maps;\n\
              DEFINE DATABASE world; USE DATABASE world;\n\
-             DEFINE TABLE places;",
+             DEFINE COLLECTION places;",
         )
         .unwrap();
     session

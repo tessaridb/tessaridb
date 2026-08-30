@@ -31,7 +31,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE bank; USE DATABASE bank;\n\
-             DEFINE TABLE accounts;\n\
+             DEFINE TABLE accounts SCHEMALESS;\n\
              DEFINE FIELD balance ON accounts TYPE int ASSERT $value >= 0;",
         )
         .unwrap();
@@ -113,7 +113,7 @@ fn declaring_one_over_rows_that_violate_it_is_refused_and_writes_nothing() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE bank; USE DATABASE bank;\n\
-             DEFINE TABLE accounts;\n\
+             DEFINE TABLE accounts SCHEMALESS;\n\
              CREATE accounts:1 = { balance: 10 };\n\
              CREATE accounts:2 = { balance: -5 };",
         )
@@ -134,7 +134,7 @@ fn a_range_is_two_comparisons_and_a_set_is_one_membership() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE orders;\n\
+             DEFINE TABLE orders SCHEMALESS;\n\
              DEFINE FIELD age ON orders TYPE int ASSERT $value > 0 AND $value < 150;\n\
              DEFINE FIELD status ON orders TYPE string ASSERT $value IN ['new', 'paid'];",
         )
@@ -171,7 +171,7 @@ fn assert_and_where_cannot_disagree() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE t; USE DATABASE t;\n\
-             DEFINE TABLE loose;\n\
+             DEFINE COLLECTION loose;\n\
              CREATE loose:1 = { v: 5 };\n\
              CREATE loose:2 = { v: -5 };\n\
              CREATE loose:3 = { v: 0 };\n\
@@ -188,7 +188,9 @@ fn assert_and_where_cannot_disagree() {
     // assertion admits both by the presence rule, so those two are held out and
     // asserted separately below.
     session
-        .run("DEFINE TABLE strict;\nDEFINE FIELD v ON strict TYPE any ASSERT $value > 0;")
+        .run(
+            "DEFINE TABLE strict SCHEMALESS;\nDEFINE FIELD v ON strict TYPE any ASSERT $value > 0;",
+        )
         .unwrap();
     let mut admitted = Vec::new();
     for (id, written) in [

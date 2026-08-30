@@ -36,9 +36,9 @@ fn ready(store: &Store) -> Session<'_> {
             "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;
 DEFINE DATABASE shop; USE DATABASE shop;
-DEFINE TABLE users;
+DEFINE COLLECTION users;
 DEFINE INDEX by_email ON users FIELDS email UNIQUE;
-DEFINE TABLE readings;
+DEFINE COLLECTION readings;
 ",
         )
         .unwrap();
