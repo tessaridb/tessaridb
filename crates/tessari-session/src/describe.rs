@@ -90,6 +90,18 @@ pub(crate) fn declaration(
 /// silently, in a script somebody kept.
 fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), Unwritable> {
     let name = &definition.name;
+    // A graph's declaration names its endpoints by **table id**, and this writer
+    // is handed a definition and no way to resolve one to a name. Written as
+    // `DEFINE TABLE … EDGE` it would parse, run, and quietly produce a table
+    // that accepts every `RELATE` the graph refuses — a script that restores
+    // something weaker than what it was taken from, with nothing at any point
+    // reporting a loss. Refused instead, by the mechanism this module already
+    // has for a part with no faithful spelling.
+    if definition.graph().is_some() {
+        return Err(Unwritable::at(format!(
+            "graph `{name}` declares endpoints this writer cannot name"
+        )));
+    }
     if definition.is_bucket() || definition.is_collection() {
         // Neither word takes a flag, so neither can express a table that has
         // one. `DEFINE BUCKET` and `DEFINE COLLECTION` both store

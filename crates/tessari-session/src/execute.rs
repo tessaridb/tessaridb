@@ -7,8 +7,9 @@ use tessari_ql::{
     FieldPath, Name, RecordTarget, Span, StatementKind, TableChange, TableRef,
 };
 use tessari_storage::{
-    Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, FieldShape, IndexDefinition, IndexShape,
-    Mapped, OnFailure, RecordAddress, TableKind, TableShape, Transaction, VectorDistance,
+    Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, FieldShape, GraphDeclaration, GraphOrder,
+    IndexDefinition, IndexShape, Mapped, OnFailure, RecordAddress, TableKind, TableShape,
+    Transaction, VectorDistance,
 };
 
 use tessari_types::{
@@ -485,6 +486,68 @@ impl Session<'_> {
                 *if_not_exists,
                 span,
             ),
+            // The endpoints are resolved **before** the graph is created, so a
+            // declaration naming a table that is not there refuses having
+            // written nothing. A graph whose endpoint is a dangling name could
+            // never refuse a `RELATE` against it, which is the whole capability
+            // the word was added for.
+            StatementKind::DefineGraph {
+                name,
+                from,
+                to,
+                columns,
+                order,
+                if_not_exists,
+            } => {
+                let (_, from_id) = self.resolve_table(transaction, from)?;
+                let (_, to_id) = self.resolve_table(transaction, to)?;
+                let order = match order {
+                    // The ordering field has to be one the graph declares.
+                    // Nothing else can guarantee an edge carries it, and the
+                    // order is the endpoint index's key suffix rather than a
+                    // sort applied afterwards: an edge missing the field has no
+                    // place to be written, and the failure would surface much
+                    // later as neighbours arriving in roughly the right
+                    // sequence.
+                    Some(ordering) => {
+                        if !columns
+                            .iter()
+                            .any(|column| column.name.text == ordering.field.text)
+                        {
+                            return Err(Error::Unknown {
+                                entity: "field",
+                                name: ordering.field.text.clone(),
+                                span: ordering.field.span,
+                            });
+                        }
+                        Some(GraphOrder {
+                            field: ordering.field.text.clone(),
+                            descending: ordering.descending,
+                        })
+                    }
+                    None => None,
+                };
+                self.define_table_with_columns(
+                    transaction,
+                    name,
+                    columns,
+                    TableShape {
+                        // Lenient for the reason an edge table is: the properties
+                        // a graph declares are the ones it knows about, and an
+                        // edge carrying one it was not told about is not the
+                        // error a strict table's would be.
+                        schemafull: false,
+                        kind: TableKind::Graph(GraphDeclaration {
+                            from: from_id,
+                            to: to_id,
+                            order,
+                        }),
+                        identity: IdentityKind::default(),
+                    },
+                    *if_not_exists,
+                    span,
+                )
+            }
             StatementKind::Put {
                 target,
                 start,
@@ -809,7 +872,7 @@ impl Session<'_> {
         let (context, edge_table) = self.resolve_table(transaction, edges)?;
         if !Catalog::new(transaction)
             .table(edge_table)?
-            .is_some_and(|found| found.is_edge())
+            .is_some_and(|found| found.holds_edges())
         {
             return Err(Error::NotAnEdgeTable {
                 table: edges.name.text.clone(),

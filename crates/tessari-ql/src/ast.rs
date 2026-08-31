@@ -136,6 +136,33 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `DEFINE GRAPH follows FROM users TO users (at datetime) ORDER BY at DESC`
+    ///
+    /// An edge table that says which pair of tables it joins, and it earns its
+    /// own word on the same test `BUCKET` and `COLLECTION` passed: a difference
+    /// in what a caller may **do**. `DEFINE TABLE follows EDGE` accepts a
+    /// `RELATE` between any two records at all; a graph refuses one whose
+    /// endpoints it does not declare. The permissive spelling stays, because a
+    /// store that discovers its shape as it goes still has a word for that.
+    DefineGraph {
+        /// The name to create.
+        name: Name,
+        /// The table an edge leads out of.
+        from: TableRef,
+        /// The table an edge leads into.
+        to: TableRef,
+        /// The properties an edge carries, in the order they were written.
+        ///
+        /// Empty is the ordinary case: an edge that is only a link declares
+        /// nothing, exactly as `DEFINE TABLE follows EDGE` declares nothing.
+        /// Unlike a table, empty parentheses are not refused here for lack of a
+        /// strictness word, because a graph has none to be missing.
+        columns: Vec<ColumnDeclaration>,
+        /// The order a node's edges are held in, when the statement gives one.
+        order: Option<GraphOrdering>,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
     /// `DEFINE INDEX by_email ON users FIELDS email UNIQUE`
     DefineIndex {
         /// The index's name, unique within its table.
@@ -2070,6 +2097,28 @@ pub struct ColumnDeclaration {
     pub analyzer: Option<Name>,
     /// What the value must satisfy, beyond its type.
     pub assert: Option<Assertion>,
+}
+
+/// The order a graph holds a node's edges in: `ORDER BY at DESC`.
+///
+/// A single field name and a direction, and deliberately not an [`Ordering`],
+/// which carries an expression because a `SELECT` sorts an answer it already
+/// has. This one is not a sort at all — it becomes the **suffix of the endpoint
+/// index's key**, so the edges arrive in this order because that is where they
+/// are written, and a bounded read of the first few is an adjacent-key read
+/// rather than a scan that throws most of its work away.
+///
+/// That is also why it is a field and not an expression: a key suffix has to be
+/// derivable from the record by the writer, at write time, identically on every
+/// replica. An expression would have to be evaluated to place a row, and any
+/// change to it would silently mean the stored keys no longer match the
+/// declaration they were written under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphOrdering {
+    /// The edge property the order reads.
+    pub field: Name,
+    /// Whether the newest, or largest, comes first.
+    pub descending: bool,
 }
 
 /// The one thing an [`AlterTable`](StatementKind::AlterTable) statement changes.

@@ -31,6 +31,12 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DefineSpace { .. }
         | StatementKind::DefineBucket { .. }
         | StatementKind::DefineCollection { .. }
+        // A graph names its two endpoints, but it does not *reach* them: it
+        // reads their identity to record a declaration, and touches no row in
+        // either. A grant over `users` is not what decides whether a graph may
+        // join it — declaring is the caller's tenancy level, exactly as it is
+        // for the four words above.
+        | StatementKind::DefineGraph { .. }
         // Nothing here touches a table: a tenancy, an analyzer, a user, a grant,
         // a selection or a transaction verb.
         | StatementKind::Use { .. }

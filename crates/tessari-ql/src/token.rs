@@ -256,6 +256,8 @@ pub enum Keyword {
     Bucket,
     /// `COLLECTION` — records that carry fields nobody declared.
     Collection,
+    /// `GRAPH` — an edge table that says which pair of tables it joins.
+    Graph,
     /// `PUT` — write a file's bytes.
     Put,
     /// `READ` — answer a file's bytes.
@@ -444,6 +446,7 @@ impl Keyword {
             Self::Space => "SPACE",
             Self::Bucket => "BUCKET",
             Self::Collection => "COLLECTION",
+            Self::Graph => "GRAPH",
             Self::Put => "PUT",
             Self::Read => "READ",
             Self::Backup => "BACKUP",
@@ -531,6 +534,7 @@ impl Keyword {
         Self::Space,
         Self::Bucket,
         Self::Collection,
+        Self::Graph,
         Self::Put,
         Self::Read,
         Self::Backup,

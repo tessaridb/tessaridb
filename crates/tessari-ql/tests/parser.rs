@@ -846,3 +846,97 @@ fn fetch_is_contextual_so_it_is_still_a_name() {
     };
     assert_eq!(wanted[0].name.text, "fetch");
 }
+
+#[test]
+fn a_graph_parses_its_endpoints_its_properties_and_the_order_its_edges_are_held_in() {
+    let StatementKind::DefineGraph {
+        name,
+        from,
+        to,
+        columns,
+        order,
+        if_not_exists,
+    } = one("DEFINE GRAPH follows FROM users TO users (at datetime) ORDER BY at DESC;")
+    else {
+        panic!("not a graph");
+    };
+    assert_eq!(name.text, "follows");
+    assert_eq!(from.name.text, "users");
+    assert_eq!(to.name.text, "users");
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].name.text, "at");
+    let order = order.expect("the order was written");
+    assert_eq!(order.field.text, "at");
+    assert!(order.descending);
+    assert!(!if_not_exists);
+}
+
+#[test]
+fn a_graph_that_is_only_a_link_declares_no_properties_and_no_order() {
+    let StatementKind::DefineGraph { columns, order, .. } =
+        one("DEFINE GRAPH wrote FROM users TO posts;")
+    else {
+        panic!("not a graph");
+    };
+    assert!(columns.is_empty());
+    assert!(order.is_none());
+}
+
+#[test]
+fn a_graph_ordering_defaults_to_ascending_and_says_so_the_same_way_a_read_does() {
+    // Written and unwritten reach the same value, which is what makes `ASC`
+    // safe to accept: a reader spelling the default out gets the default.
+    for source in [
+        "DEFINE GRAPH follows FROM users TO users (at datetime) ORDER BY at ASC;",
+        "DEFINE GRAPH follows FROM users TO users (at datetime) ORDER BY at;",
+    ] {
+        let StatementKind::DefineGraph { order, .. } = one(source) else {
+            panic!("not a graph");
+        };
+        assert!(
+            !order.expect("the order was written").descending,
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn a_graph_without_a_pair_is_refused_naming_the_word_that_is_missing() {
+    // Both endpoints are required, and the refusal says which one it wanted:
+    // "not allowed" without "write this instead" turns a one-word fix into a
+    // search through the specification.
+    let error = parse("DEFINE GRAPH follows;").unwrap_err();
+    assert!(error.to_string().contains("FROM"), "{error}");
+    let error = parse("DEFINE GRAPH follows FROM users;").unwrap_err();
+    assert!(error.to_string().contains("TO"), "{error}");
+}
+
+#[test]
+fn a_graph_ordering_missing_its_by_is_refused_rather_than_read_as_a_column_called_order() {
+    let error =
+        parse("DEFINE GRAPH follows FROM users TO users (at datetime) ORDER at;").unwrap_err();
+    assert!(error.to_string().contains("BY"), "{error}");
+}
+
+#[test]
+fn order_is_still_an_ordinary_name_because_the_clause_word_is_contextual() {
+    // The clause is read with contextual words, so a graph may carry a property
+    // called `order` and a table may still be called one.
+    let StatementKind::DefineGraph { columns, order, .. } =
+        one("DEFINE GRAPH ranked FROM users TO users (order int);")
+    else {
+        panic!("not a graph");
+    };
+    assert_eq!(columns[0].name.text, "order");
+    assert!(order.is_none());
+}
+
+#[test]
+fn dropping_a_graph_undefines_the_table_it_is() {
+    // The same statement `DROP TABLE`, `DROP SPACE` and `DROP BUCKET` produce: a
+    // graph is one catalog entry, so there is nothing else to take down.
+    let StatementKind::DropTable { table } = one("DROP GRAPH follows;") else {
+        panic!("not a drop");
+    };
+    assert_eq!(table.name.text, "follows");
+}

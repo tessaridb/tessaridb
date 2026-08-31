@@ -792,6 +792,46 @@ Everything else a table has, a collection has. It is indexed the same way, read
 the same way, granted the same way, and reaches the store through the same write
 path — the difference is one question at the boundary, and no other.
 
+### A graph, for edges between two tables you name
+
+```
+DEFINE GRAPH follows FROM users TO users (at datetime) ORDER BY at DESC;
+RELATE users:1->follows->users:2 = { at: datetime '2026-08-31T00:00:00Z' };
+```
+
+The fifth word in that row, and it earns one on the same test: it changes what a
+caller may **do**. `DEFINE TABLE follows EDGE` accepts a `RELATE` between any two
+records in the store; a graph accepts one only between the tables it declares.
+The permissive spelling stays, because a store still discovering its shape has a
+word for that.
+
+`FROM` and `TO` are required. A graph that named no pair would be the `EDGE`
+table wearing a longer word.
+
+The parenthesised columns are the properties an edge carries, and they are
+optional: an edge that is only a link declares nothing.
+
+`ORDER BY` names **one field**, and it is not a sort. It becomes the suffix of
+the key each endpoint index writes under, so a node's edges are held in that
+order on disk, and reading the first few of them is an adjacent-key read rather
+than a scan that fetches everything and throws most of it away. That is also why
+it must name a field the graph declares — a key suffix has to be readable off the
+edge, by the writer, at the moment it is placed — and why it cannot be an
+expression: an expression would have to be evaluated to decide where a row goes,
+and changing it later would leave every key already written no longer matching
+the declaration it was written under.
+
+`ASC` is accepted and is the default. Without an `ORDER BY` clause the edges are
+held in the order the endpoint index already used.
+
+`DROP GRAPH follows` removes it, and is the same statement as `DROP TABLE`:
+a graph is one catalog entry, and its declaration lives in that entry.
+
+`INFO FOR TABLE follows` reports the declaration under a `graph` key — the two
+endpoints and the order — beside the markers every table reports. There is no
+`INFO FOR GRAPH`, for the reason there is no `INFO FOR BUCKET`: the subject is
+the table, and the report says which word declared it.
+
 ### A table and its columns in one statement
 
 A table's fields can be declared with it, in parentheses after the name:

@@ -360,6 +360,7 @@ impl<'a> Session<'a> {
                 | StatementKind::DefineSpace { .. }
                 | StatementKind::DefineBucket { .. }
                 | StatementKind::DefineCollection { .. }
+                | StatementKind::DefineGraph { .. }
         ) {
             return Err(Error::GrantedUserCannotDeclare {
                 user: user.name.clone(),

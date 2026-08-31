@@ -5,9 +5,9 @@ use tessari_types::{Assertion, FieldKind, Filter, IdentityKind, Path, Step};
 
 use crate::ast::{
     Answer, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, Direction, Edit, Expr,
-    ExprKind, FieldMapping, FieldPath, Hop, InfoSubject, JoinSide, Name, OnFailure, Password,
-    Projection, RangeExpr, ReachRef, RecordTarget, Select, Source, Statement, StatementKind,
-    TableChange, TableRef, UserChange, UserGrant, Written,
+    ExprKind, FieldMapping, FieldPath, GraphOrdering, Hop, InfoSubject, JoinSide, Name, OnFailure,
+    Password, Projection, RangeExpr, ReachRef, RecordTarget, Select, Source, Statement,
+    StatementKind, TableChange, TableRef, UserChange, UserGrant, Written,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -462,6 +462,7 @@ impl Parser<'_> {
                     if_not_exists,
                 })
             }
+            Some(Keyword::Graph) => self.define_graph(),
             Some(Keyword::Index) => self.define_index(),
             Some(Keyword::Field) => self.define_field(),
             Some(Keyword::Analyzer) => self.define_analyzer(),
@@ -699,6 +700,61 @@ impl Parser<'_> {
         }
         self.advance();
         Ok(held)
+    }
+
+    /// `DEFINE GRAPH follows FROM users TO users (at datetime) ORDER BY at DESC`
+    ///
+    /// The endpoints are required and lead the statement, because they are the
+    /// whole of what distinguishes this from `DEFINE TABLE follows EDGE`: a
+    /// graph with no declared pair would be that statement wearing a longer
+    /// word.
+    fn define_graph(&mut self) -> Result<StatementKind> {
+        self.advance();
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        self.expect_keyword(Keyword::From, "`FROM` and the table an edge leads out of")?;
+        let from = self.table_ref()?;
+        self.expect_keyword(Keyword::To, "`TO` and the table an edge leads into")?;
+        let to = self.table_ref()?;
+        let columns = self.columns()?;
+        let order = self.graph_ordering()?;
+        Ok(StatementKind::DefineGraph {
+            name,
+            from,
+            to,
+            columns,
+            order,
+            if_not_exists,
+        })
+    }
+
+    /// `ORDER BY at DESC` after a graph's columns, when it is there.
+    ///
+    /// Read with contextual words for the reason `shape.rs` reads the same
+    /// clause that way: reserving `ORDER` would take a good column name out of
+    /// every table in the store to buy nothing, since only a clause word can
+    /// stand in this position.
+    ///
+    /// The key is a single field **name**, not the routed expression a `SELECT`
+    /// orders by. It becomes the endpoint index's key suffix, so it has to be
+    /// something the writer can read off the edge as it places it.
+    fn graph_ordering(&mut self) -> Result<Option<GraphOrdering>> {
+        if !self.eat_word("order") {
+            return Ok(None);
+        }
+        if !self.eat_word("by") {
+            return Err(self.error_here("`BY` after `ORDER`"));
+        }
+        let field = self.name()?;
+        // `ASC` is accepted and means nothing, exactly as it does in a `SELECT`:
+        // a reader who writes the default is saying what they mean.
+        let descending = if self.eat_word("desc") {
+            true
+        } else {
+            self.eat_word("asc");
+            false
+        };
+        Ok(Some(GraphOrdering { field, descending }))
     }
 
     /// `DEFINE INDEX by_email ON users FIELDS email, name UNIQUE`
@@ -1123,9 +1179,11 @@ impl Parser<'_> {
         self.advance();
         match self.peek_keyword() {
             // A bucket is a table row carrying `bucket: true` — `DEFINE BUCKET`
-            // reaches `define_table` — so the three words undefine the same
-            // catalog entry and differ only in which one the reader wrote.
-            Some(Keyword::Table | Keyword::Space | Keyword::Bucket) => {
+            // reaches `define_table` — so the words undefine the same catalog
+            // entry and differ only in which one the reader wrote. A graph is
+            // one too: its declaration lives in the same row, so dropping it is
+            // dropping that row and there is nothing extra to take down.
+            Some(Keyword::Table | Keyword::Space | Keyword::Bucket | Keyword::Graph) => {
                 self.advance();
                 Ok(StatementKind::DropTable {
                     table: self.table_ref()?,

@@ -117,6 +117,31 @@ impl TableDefinition {
     pub fn is_collection(&self) -> bool {
         self.kind == TableKind::Collection
     }
+
+    /// Whether the table's records are edges, however it was declared.
+    ///
+    /// Distinct from [`is_edge`](Self::is_edge), which asks which **word**
+    /// created the table. Both an `EDGE` table and a graph hold edges and carry
+    /// the endpoint indexes, so a caller deciding whether `RELATE` and a
+    /// traversal apply asks this one; a caller writing the declaration back out
+    /// asks the other, because the two words are not interchangeable there.
+    ///
+    /// The split is what stops a graph from reading as an ordinary table at the
+    /// three places that gate on edge-ness, which would have made `DEFINE GRAPH`
+    /// produce something nothing could write to.
+    #[must_use]
+    pub fn holds_edges(&self) -> bool {
+        matches!(self.kind, TableKind::Edge | TableKind::Graph(_))
+    }
+
+    /// The pair of tables the graph joins, when the table is one.
+    #[must_use]
+    pub fn graph(&self) -> Option<&GraphDeclaration> {
+        match &self.kind {
+            TableKind::Graph(graph) => Some(graph),
+            _ => None,
+        }
+    }
 }
 
 impl NamespaceDefinition {

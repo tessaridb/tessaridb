@@ -82,6 +82,7 @@ fn erase_statement(statement: &mut Statement) {
         | StatementKind::DefineSpace { name, .. }
         | StatementKind::DefineBucket { name, .. }
         | StatementKind::DefineCollection { name, .. }
+        | StatementKind::DefineGraph { name, .. }
         | StatementKind::DropUser { name }
         | StatementKind::DropAnalyzer { name }
         | StatementKind::DropReplica { name }
