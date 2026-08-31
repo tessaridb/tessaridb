@@ -229,6 +229,41 @@ fn compared_with(assertion: &Assertion) -> Option<String> {
     (!named.is_empty()).then(|| named.join(", "))
 }
 
+/// What to call the value that failed a declaration.
+///
+/// [`Value::type_name`] is the whole answer for every kind spelled as a single
+/// word: *declares `starts_at` as datetime, but record holds string there* leaves
+/// nothing to work out. A kind that carries a **width** is different, because the
+/// value that failed it has the right type name — *declares `embedding` as
+/// vector&lt;768&gt;, but record holds array there* is true and tells the reader
+/// nothing, since the width is the entire disagreement.
+///
+/// So a vector declaration reports the value the way it would have been declared
+/// had it been legal, and the two spellings sit side by side in the message. A
+/// value that is not an array of numbers at all keeps its plain type name: there
+/// is no width to report, and inventing one would describe a shape the value does
+/// not have.
+fn found_as(declared: &FieldKind, held: &Value) -> Box<str> {
+    let plain = || Box::from(held.type_name());
+    let FieldKind::Vector(_) = declared else {
+        return plain();
+    };
+    let Value::Array(components) = held else {
+        return plain();
+    };
+    if !components
+        .iter()
+        .all(|component| matches!(component, Value::Number(_)))
+    {
+        return plain();
+    }
+    // Spelled by the kind itself rather than formatted here, so the message and
+    // the declaration cannot disagree about how a width is written. The
+    // constructor also settles the empty array without a second rule: there is
+    // no `vector<0>`, so `[]` keeps its plain name.
+    FieldKind::vector(components.len()).map_or_else(plain, |kind| Box::from(kind.name().as_ref()))
+}
+
 /// One record's fields, against the table's declarations.
 ///
 /// Reports the **first** disagreement this record has rather than raising it, so
@@ -250,7 +285,7 @@ fn check(schema: &TableSchema, value: &Value, table: TableId, id: &RecordId) -> 
                     record: id.to_string(),
                     field: name.clone(),
                     declared: declared.kind.name().into_owned(),
-                    found: held.type_name(),
+                    found: found_as(&declared.kind, held),
                 });
             }
             // An assertion constrains a **present, non-null** value, exactly as

@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 960 conformance cases define the language and run in the build.
+Unreleased. 974 conformance cases define the language and run in the build.
 
 ### Breaking — a table is not a document
 
@@ -41,6 +41,18 @@ became a reserved word; a field or table named `schemaless` needs renaming.
 
 ### Added
 
+- **`TYPE vector<n>`** — a field declares how many components its vectors hold,
+  and a write of any other width is refused **at the write**. Without it `array`
+  was the only thing that could be said, which is true of a 768-wide embedding
+  and says nothing: a 512-wide row sat legally beside it, and the mistake
+  surfaced only where the distance functions met them — per read, long after the
+  write, and not as an error, because a vector of the wrong shape is infinitely
+  far from everything rather than wrong. Declared on the **field**, since a table
+  may hold two vectors of different widths and each is held to its own. Both
+  spellings take it — `DEFINE FIELD … TYPE` and the column list of
+  `DEFINE TABLE` — the width is written out rather than bound, there is no
+  width-less `vector` and no `vector<0>`, and `vector` stays a name a caller may
+  use.
 - **`DELETE a->edges->b`** — an edge is removed by naming the pair it joins.
   Its identity is derived from its endpoints, which is what makes `RELATE`
   idempotent, and it is never shown — so without this form the only way to

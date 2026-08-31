@@ -344,6 +344,19 @@ pub enum Error {
         span: Span,
     },
 
+    /// `vector<0>`.
+    ///
+    /// The only value such a field could hold is the empty array, which no
+    /// distance can measure and no index will keep — so the declaration refuses
+    /// every write anybody meant to make. Refused here rather than accepted and
+    /// discovered later, for the reason an empty literal union is: a type
+    /// nothing useful satisfies is a mistake and not a constraint.
+    #[error("a vector holds at least one component (at {span})")]
+    VectorWidthBelowOne {
+        /// Where the width is.
+        span: Span,
+    },
+
     /// `DEPTH 0`.
     ///
     /// A walk of no steps is the record the walk starts from, and `SELECT * FROM
@@ -706,7 +719,8 @@ impl Error {
             | Self::AnchorFromAnotherTable { span, .. }
             | Self::EmptyTimeout { span, .. }
             | Self::DepthNeedsOneHopToATable { span }
-            | Self::DepthBelowOne { span } => *span,
+            | Self::DepthBelowOne { span }
+            | Self::VectorWidthBelowOne { span } => *span,
         }
     }
 }

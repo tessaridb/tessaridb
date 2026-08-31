@@ -20,6 +20,13 @@
 //!   [`Decimal`](FieldKind::Decimal) each accept one. [`Value::type_name`]
 //!   reports all three as `number`, so a declaration that could only say
 //!   `number` would be unable to keep money exact.
+//!
+//! # Two kinds carry a parameter
+//!
+//! [`Literal`](FieldKind::Literal) and [`Vector`](FieldKind::Vector) are not
+//! words but shapes: a set of permitted strings, and a width. Both exist for the
+//! same reason — the kind that would otherwise describe them, `string` and
+//! `array`, is true of the value and says nothing useful about it.
 
 use std::borrow::Cow;
 
@@ -78,10 +85,46 @@ pub enum FieldKind {
     /// remembers the order somebody typed it in is two values for one fact —
     /// the same rule a grant's verbs and fields already follow.
     Literal(Vec<String>),
+    /// An array of exactly this many numbers. `vector<768>`.
+    ///
+    /// The width is the whole point. `array` is true of a 768-wide embedding and
+    /// says nothing, so nothing refuses a 512-wide row written beside it: the
+    /// two sit together legally, and the mistake surfaces only where the
+    /// distance functions meet them — per read, long after the bad write, at the
+    /// point furthest from the cause. A wrong-width vector is not an error there
+    /// either. It is infinitely far from everything, which is a plausible
+    /// ordering rather than a complaint.
+    ///
+    /// Declared on the **field**, because that is where a vector is: an array of
+    /// numbers in an ordinary field, with the index built over it. A table may
+    /// hold two of them — a title embedding and a body embedding, each with its
+    /// own index and its own distance — so a width declared for the *table*
+    /// could only govern one of them and would leave the other exactly as
+    /// unchecked as it is today.
+    ///
+    /// Zero is not a width; see [`FieldKind::vector`].
+    Vector(usize),
 }
 
 /// What separates the members of a literal union, in the catalog and on screen.
 const UNION: &str = " | ";
+
+/// `text` with `prefix` removed, comparing the prefix without regard to case.
+///
+/// [`str::strip_prefix`] is case-sensitive and [`FieldKind::parse`] is not, so
+/// without this `VECTOR<768>` would fail to read while `DATETIME` succeeds — one
+/// type answering a spelling rule differently from the other sixteen.
+fn strip_prefix_ignoring_case<'text>(text: &'text str, prefix: &str) -> Option<&'text str> {
+    let (head, rest) = text.split_at_checked(prefix.len())?;
+    head.eq_ignore_ascii_case(prefix).then_some(rest)
+}
+
+/// How a width-carrying vector kind opens, in the catalog and on screen.
+///
+/// One constant rather than the word at each of the three sites that write or
+/// read it: a spelling that appears in `name` and not in `parse` is a type that
+/// cannot be read back out of the catalog it was just written into.
+const VECTOR: &str = "vector";
 
 /// Every kind, in declaration order.
 ///
@@ -115,16 +158,17 @@ impl FieldKind {
     /// says what its author typed.
     #[must_use]
     pub fn name(&self) -> Cow<'static, str> {
-        if let Self::Literal(members) = self {
-            return Cow::Owned(
+        match self {
+            Self::Literal(members) => Cow::Owned(
                 members
                     .iter()
                     .map(|member| quote(member))
                     .collect::<Vec<_>>()
                     .join(UNION),
-            );
+            ),
+            Self::Vector(width) => Cow::Owned(format!("{VECTOR}<{width}>")),
+            _ => Cow::Borrowed(self.simple_name()),
         }
-        Cow::Borrowed(self.simple_name())
     }
 
     /// The spelling of a kind that has no parameters.
@@ -154,10 +198,10 @@ impl FieldKind {
             Self::Set => "set",
             Self::Geometry => "geometry",
             Self::Regex => "regex",
-            // Unreachable: the caller returns before this. Named rather than
-            // wildcarded so a second parameterised kind fails to compile here
+            // Unreachable: `name` answers these itself. Named rather than
+            // wildcarded so a third parameterised kind fails to compile here
             // instead of silently spelling itself as its own placeholder.
-            Self::Literal(_) => "",
+            Self::Literal(_) | Self::Vector(_) => "",
         }
     }
 
@@ -170,9 +214,31 @@ impl FieldKind {
         if trimmed.starts_with('\'') {
             return parse_union(trimmed);
         }
+        if let Some(width) = trimmed
+            .strip_suffix('>')
+            .and_then(|open| strip_prefix_ignoring_case(open, VECTOR))
+            .and_then(|rest| rest.strip_prefix('<'))
+        {
+            return width.parse().ok().and_then(Self::vector);
+        }
         ALL.iter()
             .find(|kind| kind.simple_name().eq_ignore_ascii_case(trimmed))
             .cloned()
+    }
+
+    /// A vector field of the given width.
+    ///
+    /// The constructor rather than the variant, for the reason
+    /// [`union`](FieldKind::union) is: **zero is not a width.** `vector<0>`
+    /// would declare a field whose only legal value is the empty array, which no
+    /// distance can measure and no index will hold — a declaration that refuses
+    /// every useful write, which is a mistake rather than a constraint.
+    #[must_use]
+    pub const fn vector(width: usize) -> Option<Self> {
+        if width == 0 {
+            return None;
+        }
+        Some(Self::Vector(width))
     }
 
     /// A union of the given members, sorted and deduplicated.
@@ -244,6 +310,17 @@ impl FieldKind {
             Self::Literal(members) => {
                 matches!(value, Value::String(held) if members.iter().any(|member| member == held))
             }
+            // Width **and** contents, because either alone lets through the
+            // value this kind exists to refuse: a 512-wide array of numbers is
+            // the wrong vector, and a 768-wide array of strings is not one at
+            // all. The length is checked first because it is the cheap half and
+            // the one that fails.
+            Self::Vector(width) => matches!(
+                value,
+                Value::Array(components)
+                    if components.len() == *width
+                        && components.iter().all(|held| matches!(held, Value::Number(_)))
+            ),
         }
     }
 }
@@ -504,5 +581,87 @@ mod tests {
     fn a_simple_kind_still_spells_itself_as_its_bare_word() {
         assert_eq!(FieldKind::String.name(), "string");
         assert_eq!(FieldKind::parse("string"), Some(FieldKind::String));
+    }
+
+    /// The round trip is the whole reason a width may be stored at all: the
+    /// catalog keeps the spelling, so a width that writes one way and reads
+    /// another is a declaration that changes meaning when the store reopens.
+    #[test]
+    fn a_width_survives_the_catalog_spelling_it_is_stored_as() {
+        for width in [1_usize, 2, 768, 1536, 4096] {
+            let kind = FieldKind::vector(width).expect("a width of at least one");
+            let spelled = kind.name().into_owned();
+            assert_eq!(spelled, format!("vector<{width}>"));
+            assert_eq!(
+                FieldKind::parse(&spelled),
+                Some(kind),
+                "{spelled} did not read back"
+            );
+        }
+    }
+
+    /// Case-insensitive like every other kind, so one type does not answer the
+    /// spelling rule differently from the other sixteen.
+    #[test]
+    fn a_width_reads_in_any_case() {
+        let expected = FieldKind::vector(8);
+        for spelling in ["vector<8>", "VECTOR<8>", "Vector<8>", "  vector<8>  "] {
+            assert_eq!(
+                FieldKind::parse(spelling),
+                expected,
+                "{spelling:?} was refused"
+            );
+        }
+    }
+
+    /// Zero and its neighbours: a width below one is refused at construction,
+    /// and a width-less `vector` is not a type — an array whose length nobody
+    /// declared is the `array` this language already has.
+    #[test]
+    fn a_width_below_one_is_refused_and_so_is_no_width_at_all() {
+        assert_eq!(FieldKind::vector(0), None);
+        for broken in [
+            "vector<0>",
+            "vector",
+            "vector<>",
+            "vector<-1>",
+            "vector<x>",
+            "vector<8",
+        ] {
+            assert_eq!(FieldKind::parse(broken), None, "{broken:?} was accepted");
+        }
+    }
+
+    /// The refusal this kind exists for. Width **and** contents, because either
+    /// alone lets through the value the declaration was written to stop.
+    #[test]
+    fn a_declared_width_accepts_that_width_and_nothing_else() {
+        let kind = FieldKind::vector(3).expect("a width of at least one");
+        let number = |held: i64| Value::Number(Number::Integer(held));
+
+        assert!(kind.accepts(&Value::Array(vec![number(1), number(2), number(3)])));
+        // Mixed numeric forms are still numbers; the distance functions read
+        // all three, so the declaration may not be narrower than they are.
+        assert!(kind.accepts(&Value::Array(vec![
+            number(1),
+            Value::Number(Number::Float(2.5)),
+            number(3),
+        ])));
+
+        // Too short, too long, not numbers, not an array at all.
+        assert!(!kind.accepts(&Value::Array(vec![number(1), number(2)])));
+        assert!(!kind.accepts(&Value::Array(vec![
+            number(1),
+            number(2),
+            number(3),
+            number(4)
+        ])));
+        assert!(!kind.accepts(&Value::Array(vec![number(1), Value::from("2"), number(3)])));
+        assert!(!kind.accepts(&Value::from("[1, 2, 3]")));
+
+        // And the two values every kind accepts, which a width does not change:
+        // a declared type does not make a field mandatory.
+        assert!(kind.accepts(&Value::None));
+        assert!(kind.accepts(&Value::Null));
     }
 }

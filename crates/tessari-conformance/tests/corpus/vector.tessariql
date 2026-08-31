@@ -61,3 +61,68 @@ SELECT * FROM points ORDER BY vector::manhattan(at, [0.0, 0.0]) LIMIT 1;
 --- case: a graph declared for a distance the engine does not have is refused
 DEFINE INDEX by_wrong ON points FIELDS at VECTOR manhattan;
 --- expect: error NoSuchDistance
+
+# A width, declared on the field the vector lives in.
+#
+# Before this, nothing said how wide a vector was, so a 512-wide row sat legally
+# beside a 768-wide one and only the distance function ever noticed — per read,
+# long after the write, and not as an error: a vector of the wrong shape is
+# infinitely far from everything, which is a plausible ordering.
+
+--- case: a field declares how many components its vectors hold
+DEFINE COLLECTION embeddings;
+DEFINE FIELD at ON embeddings TYPE vector<3>;
+--- expect: ok
+
+--- case: that width is accepted
+CREATE embeddings:1 = { at: [1.0, 2.0, 3.0] };
+--- expect: ok
+
+--- case: a narrower vector is refused at the write, not at the read
+CREATE embeddings:2 = { at: [1.0, 2.0] };
+--- expect: error SchemaViolation
+
+--- case: and a wider one
+CREATE embeddings:3 = { at: [1.0, 2.0, 3.0, 4.0] };
+--- expect: error SchemaViolation
+
+--- case: an array that is not numbers is not a vector of any width
+CREATE embeddings:4 = { at: ['a', 'b', 'c'] };
+--- expect: error SchemaViolation
+
+--- case: a declared width does not make the field mandatory
+CREATE embeddings:5 = { note: 'no vector here' };
+--- expect: ok
+
+--- case: the column list of a table says the same thing
+DEFINE TABLE documents (title string, at vector<3>);
+--- expect: ok
+
+--- case: and refuses the same write
+CREATE documents:1 = { title: 'short', at: [1.0, 2.0] };
+--- expect: error SchemaViolation
+
+--- case: two vectors of different widths on one table, each held to its own
+DEFINE TABLE pages (title_at vector<2>, body_at vector<4>);
+CREATE pages:1 = { title_at: [1.0, 2.0], body_at: [1.0, 2.0, 3.0, 4.0] };
+--- expect: ok
+
+--- case: the wider value in the narrower field is refused
+CREATE pages:2 = { title_at: [1.0, 2.0, 3.0, 4.0] };
+--- expect: error SchemaViolation
+
+--- case: a vector holds at least one component
+DEFINE FIELD nothing ON embeddings TYPE vector<0>;
+--- expect: error VectorWidthBelowOne
+
+--- case: and the width is written out rather than computed
+DEFINE FIELD parameterised ON embeddings TYPE vector<$width>;
+--- expect: error UnexpectedToken
+
+--- case: a width-less vector is not a type; an array whose length nobody declared is an array
+DEFINE FIELD loose ON embeddings TYPE vector;
+--- expect: error UnexpectedToken
+
+--- case: and `vector` is still a name a caller may use
+DEFINE FIELD vector ON embeddings TYPE vector<4>;
+--- expect: ok

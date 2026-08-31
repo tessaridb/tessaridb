@@ -768,6 +768,60 @@ the write's fault.
 that is the word `OR` — and this language has no bitwise operators, so the
 character appears in exactly one position and costs nothing elsewhere.
 
+### A vector, and how wide it is
+
+A field that holds vectors declares how many components they have:
+
+```
+DEFINE FIELD embedding ON documents TYPE vector<768>;
+DEFINE TABLE documents (title string, embedding vector<768>);
+```
+
+Both spellings take it, because it is a type rather than a spelling — the same
+rule the union follows.
+
+**The width is what the declaration is for.** `TYPE array` is true of a 768-wide
+embedding and says nothing, so without a width a 512-wide row sits legally beside
+a 768-wide one and nothing refuses either. The mistake surfaces only where the
+distance functions meet them: per read, long after the write, at the point
+furthest from the cause — and not as an error, because a vector of the wrong shape
+is *infinitely far* from everything. That is a plausible ordering rather than a
+complaint, so the wrong answer looks exactly like a right one.
+
+With a width, the refusal happens at the write and names both shapes:
+
+```
+CREATE documents:1 = { embedding: [0.1, 0.2, 0.3] };   -- into vector<3>: accepted
+CREATE documents:2 = { embedding: [0.1, 0.2] };        -- refused: holds vector<2>
+```
+
+**On the field, not on the table**, because that is where a vector is: an array
+of numbers in an ordinary field, with the index built over it. A table may hold
+two of them, and each is held to its own width:
+
+```
+DEFINE TABLE pages (title_at vector<2>, body_at vector<4>);
+```
+
+A width declared for the *table* could only govern one of those and would leave
+the other exactly as unchecked as it was before.
+
+**The width is written out.** There is no width-less `vector`: an array whose
+length nobody declared is the `array` this language already has, and a word that
+looked checked and was not would be worse than no word at all. There is no
+`vector<0>` either — the only value such a field could hold is the empty array,
+which no distance can measure and no index will keep, so the declaration would
+refuse every write anybody meant to make. And the width is a **literal**, not a
+parameter: a schema whose shape depended on what was bound when the declaration
+ran would leave the catalog with nothing single to store.
+
+A declared width does **not** make the field mandatory. That is `REQUIRED`, and
+it is a separate constraint — the same rule every other kind follows.
+
+`vector` stays a name a caller may use. It is contextual, like `order` and
+`fetch`, and for a reason a database of embeddings makes obvious: that is exactly
+where a field called `vector` turns up.
+
 ### A collection, for records that carry fields nobody declared
 
 ```
@@ -1142,9 +1196,10 @@ about everything nobody declared. `DEFINE FIELD` names one field and what it may
 hold:
 
 Every one of the fifteen literal types of §3 is a spelling, plus `any`,
-`number`, and a union of string literals. **This is the whole set — there are no
-others**, and the list is held to that by a test that reads this document and
-fails when the engine grows a kind the prose does not name:
+`number`, a union of string literals, and a vector of a declared width. **This is
+the whole set — there are no others**, and the list is held to that by a test that
+reads this document and fails when the engine grows a kind the prose does not
+name:
 
 | Written | A present, non-null value in the field must be |
 |---|---|
@@ -1168,6 +1223,7 @@ fails when the engine grows a kind the prose does not name:
 | `TYPE geometry` | a shape on the sphere |
 | `TYPE regex` | a pattern, held rather than executed |
 | `TYPE 'draft' \| 'published'` | one of a fixed set of strings, and nothing else |
+| `TYPE vector<768>` | an array of exactly 768 numbers |
 
 Written out, so that each of them is shown being declared rather than only
 listed:
@@ -1193,6 +1249,7 @@ DEFINE FIELD labels ON samples TYPE set;
 DEFINE FIELD where_at ON samples TYPE geometry;
 DEFINE FIELD pattern ON samples TYPE regex;
 DEFINE FIELD status ON samples TYPE 'draft' | 'published';
+DEFINE FIELD embedding ON samples TYPE vector<768>;
 ```
 
 Five of the names — `table`, `set`, `range`, `datetime`, `uuid` — are reserved

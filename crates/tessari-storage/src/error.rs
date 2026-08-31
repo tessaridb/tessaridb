@@ -119,7 +119,21 @@ pub enum Error {
         /// at compile time.
         declared: String,
         /// The type the record held instead.
-        found: &'static str,
+        ///
+        /// Owned for the same reason `declared` is, and it became necessary for
+        /// the same reason: against a parameterised declaration a bare type name
+        /// is true and useless. "declares embedding as vector<768>, but record
+        /// documents:1 holds array there" tells a reader nothing they did not
+        /// write themselves, because the value **is** an array — the width is
+        /// the whole disagreement, so the width has to be in the message.
+        ///
+        /// A `Box<str>` and not a `String`, which is not a micro-optimisation.
+        /// This enum travels in every `Result` the store returns, and the third
+        /// word a `String` carries — the spare capacity a message never grows
+        /// into — pushed the `Err` variant past the width
+        /// `clippy::result_large_err` allows. Boxed, it is exactly the size the
+        /// `&'static str` here used to be.
+        found: Box<str>,
     },
 
     /// A value its field's declaration refuses.

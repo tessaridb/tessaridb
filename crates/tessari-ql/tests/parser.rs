@@ -11,7 +11,7 @@ use tessari_ql::{
     BinaryOp, EdgeClause, Error, ExprKind, Identity, Projection, RecordTarget, Script, Source,
     StatementKind, parse,
 };
-use tessari_types::{Datetime, Number, RecordId, Value};
+use tessari_types::{Datetime, FieldKind, Number, RecordId, Value};
 
 fn script(source: &str) -> Script {
     match parse(source) {
@@ -1074,4 +1074,97 @@ fn depth_belongs_to_the_source_so_it_is_written_before_the_clauses() {
     // position the grammar has for it, which is the same rule that keeps
     // `START` before `LIMIT`.
     assert!(parse("SELECT * FROM users:1->follows->users LIMIT 5 DEPTH 2;").is_err());
+}
+
+#[test]
+fn a_vector_field_declares_the_width_every_value_must_have() {
+    // Both doorways, in one test on purpose: they are the two ways to say the
+    // same thing, and a width accepted by one and refused by the other is the
+    // failure C5 names. They go through one function, so this asserts that the
+    // arrangement is still one function rather than two that agree today.
+    let StatementKind::DefineField { kind, .. } =
+        one("DEFINE FIELD embedding ON documents TYPE vector<768>;")
+    else {
+        panic!("not a field declaration");
+    };
+    assert_eq!(kind, FieldKind::vector(768).unwrap());
+
+    let StatementKind::DefineTable { columns, .. } =
+        one("DEFINE TABLE documents (title string, embedding vector<768>);")
+    else {
+        panic!("not a table declaration");
+    };
+    assert_eq!(columns.len(), 2);
+    assert_eq!(columns[1].kind, FieldKind::vector(768).unwrap());
+}
+
+#[test]
+fn a_vector_holds_at_least_one_component() {
+    // The only value a `vector<0>` field could hold is the empty array, which
+    // no distance can measure and no index will keep — a declaration that
+    // refuses every write anybody meant to make.
+    //
+    // A negative width refuses too, but **not here and not as this error**:
+    // `<-` is one token in this language, the one an edge walks backwards
+    // along, so the width position never sees a minus sign. `vector<-4>` is
+    // refused where the `<` was expected, and it says `found <-` — which points
+    // at the two characters that are the mistake. Asserted below with the other
+    // shapes rather than pretended into this list.
+    for refused in [
+        "DEFINE FIELD embedding ON documents TYPE vector<0>;",
+        "DEFINE TABLE documents (embedding vector<0>);",
+        // With a space the `<-` collision does not arise, so a negative width
+        // does reach the check — and refuses as what it is, a width below one.
+        "DEFINE FIELD embedding ON documents TYPE vector< -4 >;",
+    ] {
+        assert!(
+            matches!(parse(refused), Err(Error::VectorWidthBelowOne { .. })),
+            "{refused}"
+        );
+    }
+}
+
+#[test]
+fn a_width_is_required_and_is_written_out() {
+    // No width-less `vector`: an array whose length nobody declared is the
+    // `array` this language already has, and a word that looked checked and was
+    // not would be worse than no word.
+    //
+    // And the width is a **literal**. A width bound at the moment the
+    // declaration ran would be a schema whose shape depends on what was passed,
+    // while the catalog has to store one answer — the same reason `DEPTH` takes
+    // a literal.
+    for refused in [
+        "DEFINE FIELD embedding ON documents TYPE vector;",
+        "DEFINE FIELD embedding ON documents TYPE vector<>;",
+        "DEFINE FIELD embedding ON documents TYPE vector<$width>;",
+        "DEFINE FIELD embedding ON documents TYPE vector<7.5>;",
+        "DEFINE FIELD embedding ON documents TYPE vector<8;",
+        "DEFINE FIELD embedding ON documents TYPE vector<-4>;",
+        "DEFINE TABLE documents (embedding vector);",
+    ] {
+        assert!(parse(refused).is_err(), "{refused} was accepted");
+    }
+}
+
+#[test]
+fn vector_stays_a_name_a_caller_may_use() {
+    // Contextual, like `order` and `fetch`. A database of embeddings is exactly
+    // where a field called `vector` turns up, so reserving the word would take
+    // the name away from the callers most likely to want it.
+    let StatementKind::DefineField { name, kind, .. } =
+        one("DEFINE FIELD vector ON documents TYPE vector<4>;")
+    else {
+        panic!("not a field declaration");
+    };
+    assert_eq!(name.text, "vector");
+    assert_eq!(kind, FieldKind::vector(4).unwrap());
+
+    let StatementKind::DefineTable { columns, .. } =
+        one("DEFINE TABLE documents (vector vector<4>, name string);")
+    else {
+        panic!("not a table declaration");
+    };
+    assert_eq!(columns[0].name.text, "vector");
+    assert_eq!(columns[0].kind, FieldKind::vector(4).unwrap());
 }

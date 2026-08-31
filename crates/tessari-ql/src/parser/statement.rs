@@ -1,7 +1,7 @@
 //! One statement at a time.
 
 use super::Parser;
-use tessari_types::{Assertion, FieldKind, Filter, IdentityKind, Path, Step};
+use tessari_types::{Assertion, FieldKind, Filter, IdentityKind, Number, Path, Step};
 
 use crate::ast::{
     Answer, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, Direction, EdgeClause,
@@ -1167,6 +1167,15 @@ impl Parser<'_> {
         if matches!(self.peek(), Some(Token::Str(_))) {
             return self.literal_union();
         }
+        // Read from the tokens rather than through `FieldKind::parse`, which
+        // takes a single spelling: a width is four tokens. Contextual like
+        // `order` and `fetch`, and for the reason `DEFINE INDEX … VECTOR`
+        // already gives — a field called `vector` in a database of embeddings is
+        // not a name to take away. It costs nothing here, because the name is
+        // read before the type in both declarations that reach this.
+        if self.eat_word("vector") {
+            return self.vector_width();
+        }
         let spelling = match self.peek() {
             Some(Token::Keyword(keyword)) => keyword.spelling().to_owned(),
             Some(Token::Ident(name)) => name.clone(),
@@ -1177,6 +1186,32 @@ impl Parser<'_> {
         };
         self.advance();
         Ok(kind)
+    }
+
+    /// `<768>` — how many numbers every vector in this field holds.
+    ///
+    /// The width is required, and there is no width-less `vector`. A vector
+    /// whose length is not declared is an `array`, which the language already
+    /// has: the word would say something about the author's intention and
+    /// nothing that could be checked, and a field that looks checked and is not
+    /// is worse than one that never claimed to be.
+    ///
+    /// A **literal**, like `DEPTH n` and for a related reason. A width read from
+    /// a parameter would be a schema whose shape depends on what was bound at
+    /// the moment the declaration ran, and the catalog has to store one answer.
+    fn vector_width(&mut self) -> Result<FieldKind> {
+        self.expect_punct(Punct::Less, "`<` and the width every vector here holds")?;
+        let span = self.span_here();
+        let Some(Token::Number(Number::Integer(width))) = self.peek() else {
+            return Err(self.error_here("a whole number of components, written out"));
+        };
+        // A negative and a zero refuse as the same thing, which they are: both
+        // say fewer than one component, and a field that can hold only the empty
+        // array is a declaration no useful write satisfies.
+        let width = usize::try_from(*width).unwrap_or(0);
+        self.advance();
+        self.expect_punct(Punct::Greater, "`>` closing the width")?;
+        FieldKind::vector(width).ok_or(Error::VectorWidthBelowOne { span })
     }
 
     /// `'draft' | 'published'` — a field that holds one of a fixed set of strings.
