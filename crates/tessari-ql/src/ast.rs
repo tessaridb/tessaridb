@@ -1297,7 +1297,14 @@ pub struct Select {
     /// say this gets the exact scan, and one that does may be served by the
     /// graph if there is one. With no such index it is still exact, which is
     /// better than what was asked for; the reported access path says which.
-    pub approximate: bool,
+    ///
+    /// An `Option` and not a `bool` beside a separate budget field, because the
+    /// budget is meaningless without the permission: an exact scan has nothing to
+    /// spend. Kept as one value so *"an effort with no approximation"* is
+    /// unrepresentable rather than merely unreachable — the same reasoning
+    /// `TableKind` records, and for the same reason, since a `Select` is built by
+    /// the query builder as well as by the parser.
+    pub approximate: Option<Approximation>,
     /// How many records to pass over before answering.
     pub start: Option<u64>,
     /// How many to answer with at most.
@@ -1338,6 +1345,31 @@ pub struct Version {
     pub at: u64,
     /// Where the clause sits, for a refusal to point at.
     pub span: Span,
+}
+
+/// What a caller accepted when they wrote `APPROXIMATE`, and what they will
+/// spend on it.
+///
+/// The budget is the walk's speed-against-recall dial: how many candidates it
+/// keeps in hand before it stops. Larger explores more and costs more, and the
+/// trade belongs to **this read** rather than to the declaration — a caller who
+/// needs a better answer for one query should not have to redeclare the store,
+/// and one who needs a cheaper answer should not degrade everybody else's.
+///
+/// It never reaches the index **build**. The build walks the same graph to choose
+/// a new node's neighbours, so a read's budget leaking into it would let two
+/// replicas replaying one log with different reads interleaved build different
+/// graphs — the determinism this index gave up its hierarchical layer to keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Approximation {
+    /// `APPROXIMATE` — the walk spends the budget the engine was built with.
+    Default,
+    /// `APPROXIMATE EFFORT 200` — the walk keeps this many candidates.
+    ///
+    /// At least one, refused below that where it is written, as `DEPTH n` and
+    /// `vector<n>` are: a walk that may keep no candidates is a search with no
+    /// way to answer.
+    Effort(usize),
 }
 
 /// A ceiling on how long a read may run.

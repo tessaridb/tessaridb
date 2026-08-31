@@ -245,7 +245,7 @@ impl Select<Sourced> {
             // out of a previous answer, and a builder that has not seen an
             // answer has no anchor to offer.
             after: None,
-            approximate: false,
+            approximate: None,
             start: self.start,
             limit: self.limit,
             // The builder states no expectation about the path. An assertion is

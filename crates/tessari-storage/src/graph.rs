@@ -198,10 +198,26 @@ impl Graph {
 
     /// The records nearest this vector, nearest first, at most `wanted` of them.
     ///
-    /// A greedy walk from the entry point, keeping the best [`EXPLORATION`]
-    /// candidates seen. Approximate by construction — see the module
-    /// documentation for why that is a language-level decision and not a detail.
-    pub(crate) fn nearest(&self, query: &[f64], wanted: usize) -> Vec<RecordId> {
+    /// A greedy walk from the entry point, keeping the best `effort` candidates
+    /// seen. Approximate by construction — see the module documentation for why
+    /// that is a language-level decision and not a detail.
+    ///
+    /// `effort` is `None` for the budget this engine was built with
+    /// ([`EXPLORATION`]) and `Some` for a budget the **read** named. It is raised
+    /// to at least `wanted`, because a walk that keeps fewer candidates than the
+    /// answer asks for cannot fill the answer, and a budget silently overriding a
+    /// `LIMIT` is a bound answering for a bound.
+    ///
+    /// **A read's budget never reaches the build.** [`Self::insert`] walks this
+    /// same graph to choose a new node's neighbours and passes `None` — see the
+    /// note there for what a leak would cost.
+    pub(crate) fn nearest(
+        &self,
+        query: &[f64],
+        wanted: usize,
+        effort: Option<usize>,
+    ) -> Vec<RecordId> {
+        let effort = effort.unwrap_or(EXPLORATION).max(wanted);
         let Some(entry) = self.entry() else {
             return Vec::new();
         };
@@ -224,7 +240,7 @@ impl Graph {
             // Stop when nothing in hand can improve on what is already held:
             // the classic greedy cut-off, and what keeps the walk sub-linear.
             if let Some((furthest, _)) = best.last() {
-                if best.len() >= EXPLORATION && self.at(current.clone(), query) > *furthest {
+                if best.len() >= effort && self.at(current.clone(), query) > *furthest {
                     break;
                 }
             }
@@ -242,7 +258,7 @@ impl Graph {
                 }
                 let distance = self.at(neighbour.clone(), query);
                 frontier.push((distance, neighbour.clone()));
-                insert_sorted(&mut best, distance, neighbour.clone(), EXPLORATION);
+                insert_sorted(&mut best, distance, neighbour.clone(), effort);
             }
         }
 
@@ -280,7 +296,13 @@ impl Graph {
         let chosen = if self.is_empty() {
             Vec::new()
         } else {
-            self.nearest(&vector, NEIGHBOURS)
+            // `None`, and never a caller's budget. The build walks the graph to
+            // choose this node's neighbours, so a read's `EFFORT` reaching here
+            // would make the index a function of the reads that happened to run
+            // beside the writes — and two replicas replaying one log would build
+            // different graphs. That is the determinism this index gave up its
+            // hierarchical layer to keep.
+            self.nearest(&vector, NEIGHBOURS, None)
         };
         let node = VectorNode::new(vector.clone(), chosen.clone());
         self.nodes.insert(id.clone(), node.clone());
@@ -482,7 +504,7 @@ mod tests {
     fn an_empty_graph_answers_with_nothing_rather_than_failing() {
         let graph = Graph::empty(VectorDistance::Euclidean);
         assert!(graph.is_empty());
-        assert!(graph.nearest(&[1.0, 1.0], 10).is_empty());
+        assert!(graph.nearest(&[1.0, 1.0], 10, None).is_empty());
     }
 
     #[test]
@@ -496,7 +518,7 @@ mod tests {
             (4, [3.0, 0.0]),
             (5, [4.0, 0.0]),
         ]);
-        let found = graph.nearest(&[0.1, 0.0], 2);
+        let found = graph.nearest(&[0.1, 0.0], 2, None);
         assert_eq!(found, vec![RecordId::Int(1), RecordId::Int(2)]);
     }
 
@@ -512,7 +534,7 @@ mod tests {
             (4, [30.0, 0.0]),
         ]);
         for (id, point) in [(2_i64, [10.0, 0.0]), (3, [20.0, 0.0]), (4, [30.0, 0.0])] {
-            let found = graph.nearest(&point, 1);
+            let found = graph.nearest(&point, 1, None);
             assert_eq!(found, vec![RecordId::Int(id)], "could not reach {id}");
         }
     }
@@ -537,7 +559,7 @@ mod tests {
     fn a_removed_record_is_no_longer_answered_with() {
         let mut graph = built(&[(1, [0.0, 0.0]), (2, [1.0, 0.0]), (3, [2.0, 0.0])]);
         graph.remove(&RecordId::Int(1));
-        let found = graph.nearest(&[0.0, 0.0], 3);
+        let found = graph.nearest(&[0.0, 0.0], 3, None);
         assert!(!found.contains(&RecordId::Int(1)), "{found:?}");
     }
 
@@ -623,7 +645,7 @@ mod tests {
                 .take(10)
                 .map(|(_, n)| RecordId::Int(*n))
                 .collect();
-            let found = graph.nearest(&query, 10);
+            let found = graph.nearest(&query, 10, None);
             hit = hit.saturating_add(found.iter().filter(|id| truth.contains(id)).count());
             asked = asked.saturating_add(truth.len());
         }
@@ -656,7 +678,86 @@ mod tests {
                 .take(10)
                 .map(|(_, n)| RecordId::Int(*n))
                 .collect();
-            let found = graph.nearest(&query, 10);
+            let found = graph.nearest(&query, 10, None);
+            hit = hit.saturating_add(found.iter().filter(|id| truth.contains(id)).count());
+            asked = asked.saturating_add(truth.len());
+        }
+        hit.saturating_mul(100).checked_div(asked).unwrap_or(0)
+    }
+
+    #[test]
+    fn a_smaller_budget_finds_less_and_a_larger_one_finds_more() {
+        // The knob has to *do* something, and the only honest proof is a recall
+        // curve: a walk that keeps four candidates in hand explores less than one
+        // that keeps two hundred and fifty-six, and finds fewer of the true
+        // nearest. Nothing smaller than this shows it — over a few dozen points
+        // every budget finds everything, which is why the session-level tests
+        // assert the plan and this one asserts the search.
+        const RECORDS: i64 = 2_000;
+        const DIMENSIONS: usize = 32;
+
+        let mut graph = Graph::empty(VectorDistance::Euclidean);
+        for n in 0..RECORDS {
+            graph.insert(&RecordId::Int(n), clustered(n, DIMENSIONS));
+        }
+        let live: Vec<i64> = (0..RECORDS).collect();
+
+        let mean = recall_over_with(&graph, &live, DIMENSIONS, Some(4));
+        let generous = recall_over_with(&graph, &live, DIMENSIONS, Some(256));
+
+        // Strictly greater, not merely different: the direction is the claim.
+        // The absolute figures are not asserted, for the reason the recall test
+        // above gives — the number to defend is that the dial turns the right
+        // way, not what it scored the day it was written.
+        assert!(
+            generous > mean,
+            "a budget of 256 scored {generous}% and a budget of 4 scored {mean}%"
+        );
+    }
+
+    #[test]
+    fn a_budget_below_the_answer_still_fills_the_answer() {
+        // `EFFORT 1 LIMIT 10` must not quietly become `LIMIT 1`. A budget that
+        // overrode a bound would be a bound answering for a bound, and the caller
+        // would read the short answer as "there were only that many".
+        let mut graph = Graph::empty(VectorDistance::Euclidean);
+        for n in 0..20_u32 {
+            graph.insert(&RecordId::Int(i64::from(n)), vec![f64::from(n), 0.0]);
+        }
+        assert_eq!(graph.nearest(&[0.0, 0.0], 10, Some(1)).len(), 10);
+    }
+
+    /// The recall of this graph over `live`, at a named budget.
+    fn recall_over_with(
+        graph: &Graph,
+        live: &[i64],
+        dimensions: usize,
+        effort: Option<usize>,
+    ) -> usize {
+        let mut hit = 0_usize;
+        let mut asked = 0_usize;
+        for q in 0..20 {
+            let query = clustered(100_000_i64.saturating_add(q), dimensions);
+            let mut exact: Vec<(f64, i64)> = live
+                .iter()
+                .map(|n| {
+                    (
+                        separation(
+                            VectorDistance::Euclidean,
+                            &clustered(*n, dimensions),
+                            &query,
+                        ),
+                        *n,
+                    )
+                })
+                .collect();
+            exact.sort_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
+            let truth: Vec<RecordId> = exact
+                .iter()
+                .take(10)
+                .map(|(_, n)| RecordId::Int(*n))
+                .collect();
+            let found = graph.nearest(&query, 10, effort);
             hit = hit.saturating_add(found.iter().filter(|id| truth.contains(id)).count());
             asked = asked.saturating_add(truth.len());
         }

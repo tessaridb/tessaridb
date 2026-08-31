@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 991 conformance cases define the language and run in the build.
+Unreleased. 996 conformance cases define the language and run in the build.
 
 ### Breaking — a table is not a document
 
@@ -40,6 +40,18 @@ what a *new* declaration means, and it is felt when an old script is run again.
 became a reserved word; a field or table named `schemaless` needs renaming.
 
 ### Added
+
+- **`APPROXIMATE EFFORT n`** — a read says how many candidates the walk may keep
+  in hand. Larger explores more, costs more, and finds more of the true nearest;
+  the engine's own budget applies when the clause is left out. It belongs to the
+  read rather than to the declaration, so a caller who needs a better answer for
+  one query does not have to redeclare the store and one who needs a cheaper
+  answer does not degrade everybody else's. It stands only after `APPROXIMATE`
+  and is at least one, and it never reaches the index's **construction**: the
+  build walks the same graph to choose a new record's neighbours, so a read's
+  budget leaking there would make the index a function of whichever reads
+  happened to run beside the writes, and two replicas replaying one log would
+  build different graphs.
 
 - **`DEFINE VECTOR`** — a store whose records are vectors, declared as one:
   `DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine`, then `CREATE` into

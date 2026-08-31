@@ -1433,7 +1433,7 @@ impl Session<'_> {
         };
         let visible = self.visible_in(transaction, table)?;
         let mut rows = Vec::new();
-        for id in transaction.records_by_vector(&index, &query, wanted.wanted)? {
+        for id in transaction.records_by_vector(&index, &query, wanted.wanted, wanted.effort)? {
             // Resolved at this reader's own snapshot, like every index read, so
             // a node left behind by a deleted record produces nothing.
             let at = RecordAddress::new(context.namespace, context.database, table, id);

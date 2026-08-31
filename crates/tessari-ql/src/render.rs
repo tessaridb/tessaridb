@@ -25,8 +25,8 @@
 //! than claimed.
 
 use crate::ast::{
-    Expr, ExprKind, FieldPath, Ordering, Projected, Projection, Script, Select, Source, Statement,
-    StatementKind, TableRef, Using,
+    Approximation, Expr, ExprKind, FieldPath, Ordering, Projected, Projection, Script, Select,
+    Source, Statement, StatementKind, TableRef, Using,
 };
 use crate::error::{Error, Result};
 use crate::token::Span;
@@ -197,8 +197,13 @@ fn write_select(out: &mut String, select: &Select) -> Result<()> {
         out.push_str(" LIMIT ");
         out.push_str(&limit.to_string());
     }
-    if select.approximate {
-        out.push_str(" APPROXIMATE");
+    match select.approximate {
+        None => {}
+        Some(Approximation::Default) => out.push_str(" APPROXIMATE"),
+        Some(Approximation::Effort(candidates)) => {
+            out.push_str(" APPROXIMATE EFFORT ");
+            out.push_str(&candidates.to_string());
+        }
     }
     match &select.using {
         Some(Using::Path(name)) => {

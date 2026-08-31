@@ -206,3 +206,23 @@ SELECT * FROM readings ORDER BY vector::euclidean(vector, [0.0, 0.0]) LIMIT 2 AP
 --- case: a distance the store was not built for gets the exact answer even with the word
 SELECT * FROM readings ORDER BY vector::cosine(vector, [1.0, 0.0]) LIMIT 2 APPROXIMATE;
 --- expect: rows 2
+
+--- case: a read may say what it will spend on an approximation
+SELECT * FROM readings ORDER BY vector::euclidean(vector, [0.0, 0.0]) LIMIT 2 APPROXIMATE EFFORT 200;
+--- expect: rows 2
+
+--- case: a budget smaller than the answer does not shorten the answer
+SELECT * FROM readings ORDER BY vector::euclidean(vector, [0.0, 0.0]) LIMIT 2 APPROXIMATE EFFORT 1;
+--- expect: rows 2
+
+--- case: a walk keeps at least one candidate
+SELECT * FROM readings ORDER BY vector::euclidean(vector, [0.0, 0.0]) LIMIT 2 APPROXIMATE EFFORT 0;
+--- expect: error EffortBelowOne
+
+--- case: a budget without the permission it qualifies is not a clause
+SELECT * FROM readings LIMIT 2 EFFORT 200;
+--- expect: error UnexpectedToken
+
+--- case: and effort is still a name a caller may use
+DEFINE FIELD effort ON readings TYPE int;
+--- expect: ok

@@ -4,10 +4,11 @@ use super::Parser;
 use tessari_types::{Assertion, FieldKind, Filter, IdentityKind, Number, Path, Step};
 
 use crate::ast::{
-    Answer, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, Direction, EdgeClause,
-    EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, FieldMapping, FieldPath, Hop, InfoSubject,
-    JoinSide, Name, OnFailure, Password, Projection, RangeExpr, ReachRef, RecordTarget, Select,
-    Source, Statement, StatementKind, TableChange, TableRef, UserChange, UserGrant, Written,
+    Answer, Approximation, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, Direction,
+    EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, FieldMapping, FieldPath, Hop,
+    InfoSubject, JoinSide, Name, OnFailure, Password, Projection, RangeExpr, ReachRef,
+    RecordTarget, Select, Source, Statement, StatementKind, TableChange, TableRef, UserChange,
+    UserGrant, Written,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -1234,6 +1235,38 @@ impl Parser<'_> {
     /// A **literal**, like `DEPTH n` and for a related reason. A width read from
     /// a parameter would be a schema whose shape depends on what was bound at
     /// the moment the declaration ran, and the catalog has to store one answer.
+    /// `APPROXIMATE`, and the budget it may carry.
+    ///
+    /// `EFFORT` stands only after `APPROXIMATE` — never on its own and never
+    /// before it — because a budget without the permission is a number with
+    /// nothing to spend it on: an exact scan visits every record by definition.
+    /// So the pair is read here as one thing and stored as one value, and the
+    /// illegal half is not expressible.
+    ///
+    /// Both words are contextual, like the rest of this tail: a field called
+    /// `approximate` or `effort` stays a field.
+    fn approximation(&mut self) -> Result<Option<Approximation>> {
+        if !self.eat_word("approximate") {
+            return Ok(None);
+        }
+        if !self.eat_word("effort") {
+            return Ok(Some(Approximation::Default));
+        }
+        let span = self.span_here();
+        let Some(Token::Number(Number::Integer(written))) = self.peek() else {
+            return Err(self.error_here("a whole number of candidates, written out"));
+        };
+        // A negative and a zero refuse as the same thing, as they do for a width
+        // and for a depth: both say fewer than one candidate, and a walk that may
+        // keep none is a search with no way to answer.
+        let candidates = usize::try_from(*written).unwrap_or(0);
+        self.advance();
+        if candidates == 0 {
+            return Err(Error::EffortBelowOne { span });
+        }
+        Ok(Some(Approximation::Effort(candidates)))
+    }
+
     fn vector_width(&mut self) -> Result<FieldKind> {
         self.expect_punct(Punct::Less, "`<` and the width every vector here holds")?;
         let span = self.span_here();
@@ -1882,7 +1915,7 @@ impl Parser<'_> {
         // Last, because it qualifies the whole read rather than any one clause,
         // and contextual like the rest: a field called `approximate` stays a
         // field.
-        let approximate = self.eat_word("approximate");
+        let approximate = self.approximation()?;
         // After everything, because it is an assertion *about* the read rather
         // than part of it — nothing below the parser reads it to decide
         // anything. Contextual like the rest, so a field called `using` stays a

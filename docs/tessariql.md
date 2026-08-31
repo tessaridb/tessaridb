@@ -869,6 +869,26 @@ answer, and it still carries the note saying a nearer record may exist. A store
 that became approximate by virtue of being declared would turn two
 identical-looking reads into two different contracts.
 
+A read that asks for the approximation may say what it will spend on it:
+
+```
+SELECT * FROM embeddings
+  ORDER BY vector::cosine(vector, $query) LIMIT 10 APPROXIMATE EFFORT 200;
+```
+
+`EFFORT` is how many candidates the walk keeps in hand. Larger explores more,
+costs more, and finds more of the true nearest; the engine's own budget applies
+when the clause is left out. It belongs to **this read** rather than to the
+declaration: a caller who needs a better answer for one query should not have to
+redeclare the store, and one who needs a cheaper answer should not degrade
+everybody else's.
+
+It stands only after `APPROXIMATE`, because an exact scan visits every record and
+has nothing to spend. It is at least one. And it never reaches the index's
+**construction** — the build walks the same graph to choose a new record's
+neighbours, and a read's budget leaking into that would make the index a function
+of whichever reads happened to run beside the writes.
+
 `INFO FOR VECTOR` reports the width, the distance, and the recall the index was
 **measured** at — or `NONE`, meaning nobody has measured it. It never computes a
 plausible figure from the build parameters, because a number derived that way is

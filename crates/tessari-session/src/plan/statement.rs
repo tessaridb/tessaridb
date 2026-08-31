@@ -1,4 +1,4 @@
-use tessari_ql::{Expr, ExprKind, Function, Projection, Select};
+use tessari_ql::{Approximation, Expr, ExprKind, Function, Projection, Select};
 use tessari_storage::VectorDistance;
 use tessari_types::Path;
 
@@ -30,13 +30,16 @@ pub(crate) struct Nearest<'a> {
     pub(crate) distance: Function,
     /// How many records to walk for, `START` included.
     pub(crate) wanted: usize,
+    /// What the read is willing to spend, or `None` for the engine's own budget.
+    pub(crate) effort: Option<usize>,
 }
 
 /// The nearest-neighbour read this statement is, if it is one.
 pub(crate) fn nearest(select: &Select) -> Option<Nearest<'_>> {
-    if !select.approximate || !select.group.is_empty() || resumes(select) {
+    let (Some(asked), true, false) = (select.approximate, select.group.is_empty(), resumes(select))
+    else {
         return None;
-    }
+    };
     let [ordering] = select.order.as_slice() else {
         return None;
     };
@@ -75,6 +78,10 @@ pub(crate) fn nearest(select: &Select) -> Option<Nearest<'_>> {
         query: second,
         distance: *function,
         wanted: usize::try_from(wanted).unwrap_or(usize::MAX),
+        effort: match asked {
+            Approximation::Default => None,
+            Approximation::Effort(candidates) => Some(candidates),
+        },
     })
 }
 
@@ -112,12 +119,19 @@ pub(crate) struct Closest<'a> {
     /// The position measured from, still an expression.
     pub(crate) query: &'a Expr,
     /// How many records to walk for, `START` included.
+    ///
+    /// No budget beside it, and deliberately: this traversal is **exact**, so
+    /// there is nothing to trade. `EFFORT` belongs to the one read in this
+    /// language that answers approximately.
     pub(crate) wanted: usize,
 }
 
 /// The nearest-first read this statement is, if it is one.
 pub(crate) fn closest(select: &Select) -> Option<Closest<'_>> {
-    if select.approximate || !select.group.is_empty() || !select.fetch.is_empty() || resumes(select)
+    if select.approximate.is_some()
+        || !select.group.is_empty()
+        || !select.fetch.is_empty()
+        || resumes(select)
     {
         return None;
     }
@@ -248,7 +262,10 @@ fn resumes(select: &Select) -> bool {
 
 /// The bounded ordered read this statement is, if it is one.
 pub(crate) fn ordered(select: &Select) -> Option<Bounded<'_>> {
-    if select.approximate || !select.group.is_empty() || !select.fetch.is_empty() || resumes(select)
+    if select.approximate.is_some()
+        || !select.group.is_empty()
+        || !select.fetch.is_empty()
+        || resumes(select)
     {
         return None;
     }

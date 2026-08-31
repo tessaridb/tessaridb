@@ -372,6 +372,19 @@ pub enum Error {
         span: Span,
     },
 
+    /// `APPROXIMATE EFFORT 0`.
+    ///
+    /// A walk that may keep no candidates is a search with no way to answer, so
+    /// the budget refuses below one where it is written — as a width and a depth
+    /// already do. A zero accepted here would return an empty answer to a read
+    /// that named records, and an empty answer is indistinguishable from a store
+    /// that holds none.
+    #[error("a walk keeps at least one candidate (at {span})")]
+    EffortBelowOne {
+        /// Where the budget is.
+        span: Span,
+    },
+
     /// `DEPTH 0`.
     ///
     /// A walk of no steps is the record the walk starts from, and `SELECT * FROM
@@ -736,7 +749,8 @@ impl Error {
             | Self::DepthNeedsOneHopToATable { span }
             | Self::DepthBelowOne { span }
             | Self::VectorWidthBelowOne { span }
-            | Self::VectorWidthAboveTheCeiling { span, .. } => *span,
+            | Self::VectorWidthAboveTheCeiling { span, .. }
+            | Self::EffortBelowOne { span } => *span,
         }
     }
 }

@@ -921,7 +921,7 @@ fn reading(table: &TableRef) -> StatementKind {
         group: Vec::new(),
         order: Vec::new(),
         after: None,
-        approximate: false,
+        approximate: None,
         start: None,
         limit: None,
         using: None,

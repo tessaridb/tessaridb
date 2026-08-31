@@ -8,8 +8,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use tessari_ql::{
-    BinaryOp, EdgeClause, Error, ExprKind, Identity, InfoSubject, Projection, RecordTarget, Script,
-    Source, StatementKind, parse,
+    Approximation, BinaryOp, EdgeClause, Error, ExprKind, Identity, InfoSubject, Projection,
+    RecordTarget, Script, Source, StatementKind, parse,
 };
 use tessari_types::{Datetime, FieldKind, Number, RecordId, Value};
 
@@ -1238,4 +1238,56 @@ fn vector_stays_a_name_a_caller_may_use_beside_the_new_word() {
     assert!(parse("SELECT vector FROM documents;").is_ok());
     assert!(parse("DEFINE TABLE vector (title string);").is_ok());
     assert!(parse("SELECT * FROM vector;").is_ok());
+}
+
+#[test]
+fn a_read_may_say_what_it_will_spend_on_an_approximation() {
+    let StatementKind::Select(select) = one("SELECT * FROM embeddings \
+         ORDER BY vector::cosine(vector, [1.0]) LIMIT 5 APPROXIMATE EFFORT 200;")
+    else {
+        panic!("not a select");
+    };
+    assert_eq!(select.approximate, Some(Approximation::Effort(200)));
+
+    // And the bare word still means the engine's own budget rather than none.
+    let StatementKind::Select(select) = one("SELECT * FROM embeddings \
+         ORDER BY vector::cosine(vector, [1.0]) LIMIT 5 APPROXIMATE;")
+    else {
+        panic!("not a select");
+    };
+    assert_eq!(select.approximate, Some(Approximation::Default));
+
+    let StatementKind::Select(select) = one("SELECT * FROM embeddings;") else {
+        panic!("not a select");
+    };
+    assert_eq!(select.approximate, None);
+}
+
+#[test]
+fn a_budget_without_the_permission_it_qualifies_is_not_expressible() {
+    // `EFFORT` stands only after `APPROXIMATE`: an exact scan visits every record
+    // by definition and has nothing to spend. Written alone the word is not a
+    // clause at all, so the read ends before it and the leftover is refused.
+    assert!(parse("SELECT * FROM embeddings LIMIT 5 EFFORT 200;").is_err());
+    assert!(parse("SELECT * FROM embeddings LIMIT 5 EFFORT 200 APPROXIMATE;").is_err());
+}
+
+#[test]
+fn a_walk_keeps_at_least_one_candidate() {
+    let error = parse(
+        "SELECT * FROM embeddings \
+         ORDER BY vector::cosine(vector, [1.0]) LIMIT 5 APPROXIMATE EFFORT 0;",
+    )
+    .unwrap_err();
+    assert!(matches!(error, Error::EffortBelowOne { .. }), "{error}");
+
+    // A budget is written out, not bound: a schema-free number the planner reads
+    // before anything is evaluated.
+    assert!(parse("SELECT * FROM t LIMIT 5 APPROXIMATE EFFORT $n;").is_err());
+}
+
+#[test]
+fn effort_stays_a_name_a_caller_may_use() {
+    assert!(parse("SELECT effort FROM tasks;").is_ok());
+    assert!(parse("DEFINE FIELD effort ON tasks TYPE int;").is_ok());
 }

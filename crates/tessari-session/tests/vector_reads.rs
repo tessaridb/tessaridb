@@ -205,3 +205,31 @@ fn the_word_alone_does_not_reach_the_graph_when_the_read_is_a_different_shape() 
         assert_ne!(path, AccessPath::Approximate, "{read}");
     }
 }
+
+#[test]
+fn a_budget_rides_with_the_word_and_reaches_the_walk() {
+    // The session-level half. What a budget *does* is a recall curve, which
+    // needs two thousand points and is asserted in the engine's own tests; what
+    // this asserts is that the word reaches the walk at all and does not turn a
+    // graph read back into a scan.
+    let held = store();
+    let mut session = through_the_store(&held);
+
+    let (exact, _, _) = answered(&mut session, &format!("{NEAR};"));
+    let (found, notes, path) = answered(&mut session, &format!("{NEAR} APPROXIMATE EFFORT 200;"));
+
+    assert_eq!(path, AccessPath::Approximate, "{path:?}");
+    assert_eq!(notes, vec![Note::Approximate]);
+    assert_eq!(found, exact);
+}
+
+#[test]
+fn a_budget_smaller_than_the_answer_does_not_shorten_the_answer() {
+    // A bound answering for a bound is the failure: read short, the caller
+    // concludes the store holds that many.
+    let held = store();
+    let mut session = through_the_store(&held);
+
+    let (found, _, _) = answered(&mut session, &format!("{NEAR} APPROXIMATE EFFORT 1;"));
+    assert_eq!(found.len(), 5);
+}

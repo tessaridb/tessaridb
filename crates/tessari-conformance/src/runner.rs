@@ -304,6 +304,7 @@ fn script_kind(error: &tessari_ql::Error) -> &'static str {
         tessari_ql::Error::DepthBelowOne { .. } => "DepthBelowOne",
         tessari_ql::Error::VectorWidthBelowOne { .. } => "VectorWidthBelowOne",
         tessari_ql::Error::VectorWidthAboveTheCeiling { .. } => "VectorWidthAboveTheCeiling",
+        tessari_ql::Error::EffortBelowOne { .. } => "EffortBelowOne",
         _ => "Unnamed",
     }
 }

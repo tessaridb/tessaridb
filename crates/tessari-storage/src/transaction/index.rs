@@ -191,18 +191,21 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a node cannot be decoded.
+    /// `effort` is the walk's budget: `None` for the engine's own, `Some` for a
+    /// budget the read named with `APPROXIMATE EFFORT n`.
     pub fn records_by_vector(
         &self,
         index: &IndexDefinition,
         query: &[f64],
         wanted: usize,
+        effort: Option<usize>,
     ) -> Result<Vec<RecordId>> {
         let Some(distance) = index.vector else {
             return Ok(Vec::new());
         };
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let graph = crate::graph::Graph::read(self.store, &address, distance)?;
-        Ok(graph.nearest(query, wanted))
+        Ok(graph.nearest(query, wanted, effort))
     }
 
     /// The records an index says hold `values`, as of this transaction's
