@@ -231,3 +231,81 @@ SELECT * FROM employee:1->works_at;
 --- case: and dropping an edge kind that was never declared refuses
 DROP EDGE works_at;
 --- expect: error Unknown
+
+# Removing an edge, and bounding a walk. An edge's identity is derived from its
+# endpoints and never shown, so the statement that removes one names the same
+# two records that made it.
+
+--- case: a graph to remove edges from
+DEFINE EDGE works_at IN org FROM employee TO employer;
+RELATE employee:1->works_at->employer:1;
+RELATE employee:2->works_at->employer:1;
+--- expect: ok
+
+--- case: an edge is removed by the pair it joins
+DELETE employee:1->works_at->employer:1;
+SELECT * FROM employee:1->works_at;
+--- expect: rows 0
+
+--- case: and the mirror goes with it, so the reverse walk agrees
+SELECT * FROM employer:1<-works_at<-employee;
+--- expect: rows 1
+
+--- case: the records it joined are untouched
+SELECT * FROM employee WHERE name = 'Ada';
+--- expect: rows 1
+
+--- case: an edge that was never there removes nothing rather than failing
+DELETE employee:1->works_at->employer:2;
+--- expect: ok
+
+--- case: a pair the kind does not join is refused rather than silently removing nothing
+DELETE employee:1->works_at->employee:2;
+--- expect: error EndpointsNotDeclared
+
+--- case: and the reverse pair is refused too, because direction is declared
+DELETE employer:1->works_at->employee:2;
+--- expect: error EndpointsNotDeclared
+
+--- case: an edge-table edge is removed the same way
+DELETE users:1->follows->users:2;
+SELECT * FROM users:1->follows->users;
+--- expect: rows 1
+
+--- case: a chain to walk with a bound
+DEFINE EDGE knows IN org FROM employee TO employee;
+CREATE employee:3 = { name: 'Katherine' };
+CREATE employee:4 = { name: 'Dorothy' };
+RELATE employee:1->knows->employee:2;
+RELATE employee:2->knows->employee:3;
+RELATE employee:3->knows->employee:4;
+--- expect: ok
+
+--- case: DEPTH answers with everything within n steps
+SELECT * FROM employee:1->knows->employee DEPTH 2;
+--- expect: rows 2
+
+--- case: one step is the walk written out
+SELECT * FROM employee:1->knows->employee DEPTH 1;
+--- expect: rows 1
+
+--- case: a cycle terminates and answers each record once
+RELATE employee:4->knows->employee:1;
+SELECT * FROM employee:1->knows->employee DEPTH 100;
+--- expect: rows 3
+
+--- case: DEPTH counts steps, so it starts at one
+SELECT * FROM employee:1->knows->employee DEPTH 0;
+--- expect: error DepthBelowOne
+
+--- case: the bound is a literal, so a parameter has no position here
+SELECT * FROM employee:1->knows->employee DEPTH $n;
+--- expect: error UnexpectedToken
+
+--- case: DEPTH repeats one step, so a chain of two is refused
+SELECT * FROM employee:1->knows->employee->knows->employee DEPTH 2;
+--- expect: error DepthNeedsOneHopToATable
+
+--- case: and a walk ending on the edges has nothing for a second round to start from
+SELECT * FROM employee:1->knows DEPTH 2;
+--- expect: error DepthNeedsOneHopToATable

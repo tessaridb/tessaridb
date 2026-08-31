@@ -553,6 +553,7 @@ impl Needs {
             | StatementKind::Insert { .. }
             | StatementKind::Delete { .. }
             | StatementKind::Relate { .. }
+            | StatementKind::DeleteEdge { .. }
             | StatementKind::Set { .. }
             | StatementKind::Del { .. }
             | StatementKind::Put { .. } => Self::WRITE,

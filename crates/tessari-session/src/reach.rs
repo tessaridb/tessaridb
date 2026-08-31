@@ -236,6 +236,11 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             }
             found
         }
+        // The same three tables `RELATE` names, because removing the edge
+        // touches the same three places writing it did.
+        StatementKind::DeleteEdge {
+            from, edges, to, ..
+        } => vec![&from.table, edges, &to.table],
 
         StatementKind::Select(select) => in_select(select),
         // **The read's tables, not none.** An `EXPLAIN` that named no table

@@ -327,3 +327,51 @@ fn a_bare_edge_table_still_accepts_the_link_a_declared_one_refuses() {
         "{error}"
     );
 }
+
+#[test]
+fn an_edge_table_edge_is_deleted_by_its_endpoints_too() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE follows EDGE FROM users TO users;\n\
+             CREATE users:1 = { handle: 'ada' };\n\
+             CREATE users:2 = { handle: 'grace' };\n\
+             CREATE users:3 = { handle: 'katherine' };\n\
+             RELATE users:1->follows->users:2;\n\
+             RELATE users:1->follows->users:3;",
+        )
+        .unwrap();
+
+    // The statement is the same one the declared-kind path takes, and it has to
+    // be: the identity is derived by one rule for both, so a delete that worked
+    // on only one of them would mean the rule had been written twice.
+    session.run("DELETE users:1->follows->users:2;").unwrap();
+
+    let outcomes = session
+        .run("SELECT * FROM users:1->follows->users;")
+        .unwrap();
+    let reached: Vec<RecordId> = outcomes[0]
+        .records()
+        .unwrap()
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect();
+    assert_eq!(reached, vec![RecordId::Int(3)]);
+
+    // The endpoint indexes go with the record, so the edge is gone from the
+    // walk rather than merely from the table it lived in.
+    let outcomes = session.run("SELECT * FROM users:1->follows;").unwrap();
+    assert_eq!(outcomes[0].records().unwrap().len(), 1);
+
+    // And a pair the table declared it does not join is refused here as it is
+    // on `RELATE`, rather than deleting nothing and reporting success.
+    session
+        .run("DEFINE TABLE wrote EDGE FROM users TO posts;")
+        .unwrap();
+    let error = session.run("DELETE users:1->wrote->users:2;").unwrap_err();
+    assert!(
+        matches!(error, Error::EndpointsNotDeclared { .. }),
+        "{error}"
+    );
+}

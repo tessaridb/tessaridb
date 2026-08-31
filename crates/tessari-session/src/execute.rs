@@ -258,6 +258,12 @@ impl Session<'_> {
                 to,
                 value,
             } => self.relate(transaction, from, edges, to, value.as_deref()),
+            StatementKind::DeleteEdge {
+                from,
+                edges,
+                to,
+                answer,
+            } => self.delete_edge(transaction, from, edges, to, *answer),
             StatementKind::DropTable { table } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 // A bucket's bytes live in a companion table `DEFINE BUCKET`
@@ -980,11 +986,12 @@ impl Session<'_> {
             Value::Record(RecordRef::new(into.table, into.id.clone())),
         );
 
-        let id = RecordId::from(format!(
-            "{}:{}->{}:{}",
-            out.table, out.id, into.table, into.id
-        ));
-        let address = RecordAddress::new(context.namespace, context.database, edge_table, id);
+        let address = RecordAddress::new(
+            context.namespace,
+            context.database,
+            edge_table,
+            edge_identity(&out, &into),
+        );
         // An edge is an ordinary record, so an edge table's declarations apply
         // to it — including their defaults.
         let payload = self.with_defaults(transaction, edge_table, Value::Object(fields))?;
@@ -1052,13 +1059,110 @@ impl Session<'_> {
         // Identified by its endpoints, as an edge-table edge is: relating the
         // same pair twice replaces one record rather than adding a second, which
         // is what makes `RELATE` idempotent and keeps the adjacency a set.
-        let id = RecordId::from(format!(
-            "{}:{}->{}:{}",
-            out.table, out.id, into.table, into.id
-        ));
-        let address = RecordAddress::new(declared.namespace, declared.database, declared.edges, id);
+        let address = RecordAddress::new(
+            declared.namespace,
+            declared.database,
+            declared.edges,
+            edge_identity(&out, &into),
+        );
         self.put_record(transaction, address, Value::Object(fields), edges.span)?;
         Ok(Outcome::Done)
+    }
+
+    /// `DELETE person:1->works_at->company:1` — one edge, by what it joins.
+    ///
+    /// The caller writes the two endpoints and the edge, exactly as they wrote
+    /// them to create it, and the identity is derived here by the same rule that
+    /// derived it there. That is the whole statement: without it, removing an
+    /// edge means reconstructing `"person:1->company:1"` by hand, which is a
+    /// caller depending on an internal encoding to undo what `RELATE` did — and
+    /// a caller who derives it slightly differently deletes nothing and is told
+    /// it worked.
+    ///
+    /// **The adjacency needs no code here.** The entries are derived from this
+    /// record's own mutation in `adjacency::maintain`, so the tombstone written
+    /// below removes both of them in the batch that carries it — the same reason
+    /// `DROP EDGE` needed no sweep.
+    fn delete_edge(
+        &self,
+        transaction: &mut Transaction<'_>,
+        from: &RecordTarget,
+        edges: &TableRef,
+        to: &RecordTarget,
+        answer: Answer,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, edges.span)?;
+        let (_, out) = self.address(transaction, from)?;
+        let (_, into) = self.address(transaction, to)?;
+
+        // An edge kind is looked for first, for the reason `relate` looks for it
+        // first: a kind and an edge table cannot share a name, so finding one
+        // settles which path this is.
+        let address = if let Some(kind) = Catalog::new(transaction).edge_kind_id(
+            context.namespace,
+            context.database,
+            &edges.name.text,
+        )? {
+            let declared =
+                Catalog::new(transaction)
+                    .edge_kind(kind)?
+                    .ok_or_else(|| Error::Unknown {
+                        entity: "edge kind",
+                        name: edges.name.text.clone(),
+                        span: edges.span,
+                    })?;
+            // Refused rather than answered with a no-op. The derived identity
+            // for a pair the kind does not join cannot exist, so deleting it
+            // would succeed and remove nothing — and a caller who wrote the
+            // endpoints the wrong way round would be told their edge is gone.
+            // `RELATE` refuses the same two shapes, and an asymmetry between the
+            // statement that writes an edge and the one that removes it is the
+            // surprising thing, not the refusal.
+            if out.table != declared.from || into.table != declared.to {
+                return Err(Error::EndpointsNotDeclared {
+                    table: edges.name.text.clone(),
+                    span: edges.span,
+                });
+            }
+            RecordAddress::new(
+                declared.namespace,
+                declared.database,
+                declared.edges,
+                edge_identity(&out, &into),
+            )
+        } else {
+            let (context, edge_table) = self.resolve_table(transaction, edges)?;
+            let declared = Catalog::new(transaction)
+                .table(edge_table)?
+                .filter(|found| found.is_edge())
+                .ok_or_else(|| Error::NotAnEdgeTable {
+                    table: edges.name.text.clone(),
+                    span: edges.span,
+                })?;
+            if let Some(pair) = declared.edge_endpoints()
+                && (out.table != pair.from || into.table != pair.to)
+            {
+                return Err(Error::EndpointsNotDeclared {
+                    table: edges.name.text.clone(),
+                    span: edges.span,
+                });
+            }
+            RecordAddress::new(
+                context.namespace,
+                context.database,
+                edge_table,
+                edge_identity(&out, &into),
+            )
+        };
+
+        // An edge that is not there deletes as a record that is not there does:
+        // `BEFORE` answers `NONE`, which is the true answer to what was removed.
+        let before = match transaction.get(&address)? {
+            Some(held) => decode_payload(&held)?,
+            None => Value::None,
+        };
+        transaction.delete(address);
+        Ok(answered(answer, before, Value::None))
     }
 
     fn define_namespace(
@@ -2019,6 +2123,23 @@ fn named_roles(named: &[Name]) -> Result<Roles> {
 /// about what `AFTER` means. `Nothing` is the default and stays `Done`: a write
 /// that answered with a record by default would make every caller pay to ship
 /// back a value most of them already have.
+/// The identity an edge record is written under.
+///
+/// One function rather than the formula repeated at each site, because `RELATE`
+/// writes it and `DELETE a->e->b` has to derive the *same* string to find what
+/// was written. Two copies that drift do not fail: the delete addresses a key
+/// nothing is under, removes nothing, and reports success.
+///
+/// It is derived rather than supplied so that relating the same pair twice
+/// replaces one record instead of adding a second — which is what makes `RELATE`
+/// idempotent and keeps a node's adjacency a set.
+fn edge_identity(out: &RecordAddress, into: &RecordAddress) -> RecordId {
+    RecordId::from(format!(
+        "{}:{}->{}:{}",
+        out.table, out.id, into.table, into.id
+    ))
+}
+
 fn answered(answer: Answer, before: Value, after: Value) -> Outcome {
     match answer {
         Answer::Nothing => Outcome::Done,

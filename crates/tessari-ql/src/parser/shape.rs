@@ -13,8 +13,8 @@ use tessari_types::Number;
 
 use super::Parser;
 use crate::ast::{
-    DeleteBound, Expr, ExprKind, FieldPath, Ordering, Projection, RecordTarget, Source, Timeout,
-    Using, Version,
+    DeleteBound, Expr, ExprKind, FieldPath, Hop, Ordering, Projection, RecordTarget, Source,
+    Timeout, Using, Version,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Span, Token};
@@ -330,6 +330,42 @@ impl Parser<'_> {
         let count = u64::try_from(*count).map_err(|_| self.error_here(expected))?;
         self.advance();
         Ok(DeleteBound::AtMost(count))
+    }
+
+    /// `DEPTH 3` at the end of a walk, when it is there.
+    ///
+    /// The number is an integer **literal** and the grammar has no position here
+    /// for anything else — not a parameter, not an expression, not a field. That
+    /// is the whole of what the clause guarantees: every walk this language can
+    /// write states its own length, and a reader of the statement knows how far
+    /// it goes without knowing what the caller bound.
+    ///
+    /// A parameter would look harmless and would not be. `DEPTH $n` is a walk
+    /// whose length arrives at run time from somewhere the statement cannot
+    /// show, which is the same shape as an unbounded walk with a promise
+    /// attached — and the promise is kept by whoever wrote the caller.
+    pub(super) fn depth_bound(&mut self, hops: &[Hop]) -> Result<Option<u64>> {
+        if !self.eat_word("depth") {
+            return Ok(None);
+        }
+        let span = self.span_here();
+        // Checked before the number is read, so `DEPTH x` on a chain refuses as
+        // the chain it is rather than as a missing integer — the first fault a
+        // reader can act on is the one worth reporting.
+        if hops.len() != 1 || hops.first().is_none_or(|hop| hop.target.is_none()) {
+            return Err(Error::DepthNeedsOneHopToATable { span });
+        }
+        let Some(Token::Number(Number::Integer(count))) = self.peek() else {
+            return Err(self.error_here("`DEPTH n` — a whole number of steps, written out"));
+        };
+        // A negative and a zero refuse as the same thing, which they are: the
+        // clause counts steps, and both say fewer than one.
+        let count = u64::try_from(*count).unwrap_or(0);
+        self.advance();
+        if count == 0 {
+            return Err(Error::DepthBelowOne { span });
+        }
+        Ok(Some(count))
     }
 }
 

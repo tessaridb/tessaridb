@@ -972,3 +972,106 @@ fn the_word_graph_names_a_container_rather_than_a_pair_of_tables() {
     };
     assert_eq!(name.text, "social");
 }
+
+#[test]
+fn depth_takes_a_literal_and_nothing_that_could_be_computed() {
+    // The clause exists so that a walk states its own length. A parameter is the
+    // case worth naming: `DEPTH $n` parses as nothing here, and that is the
+    // point — accepting it would mean a statement whose reach arrives at run
+    // time from somewhere a reader of the statement cannot see, which is an
+    // unbounded walk with a promise attached.
+    let StatementKind::Select(select) = one("SELECT * FROM users:1->follows->users DEPTH 3;")
+    else {
+        panic!("not a read");
+    };
+    let Source::Traverse { depth, hops, .. } = &select.from else {
+        panic!("not a walk");
+    };
+    assert_eq!(*depth, Some(3));
+    assert_eq!(hops.len(), 1);
+
+    for refused in [
+        "SELECT * FROM users:1->follows->users DEPTH $n;",
+        "SELECT * FROM users:1->follows->users DEPTH 1 + 2;",
+        "SELECT * FROM users:1->follows->users DEPTH 'three';",
+        "SELECT * FROM users:1->follows->users DEPTH depth;",
+    ] {
+        assert!(parse(refused).is_err(), "{refused}");
+    }
+}
+
+#[test]
+fn depth_counts_steps_so_it_starts_at_one() {
+    // Refused rather than answered with an empty set: a caller who computed the
+    // bound and got zero has a bug, and an empty answer is exactly what would
+    // hide it. A negative refuses as the same thing, which it is.
+    for refused in [
+        "SELECT * FROM users:1->follows->users DEPTH 0;",
+        "SELECT * FROM users:1->follows->users DEPTH -1;",
+    ] {
+        assert!(
+            matches!(parse(refused), Err(Error::DepthBelowOne { .. })),
+            "{refused}"
+        );
+    }
+}
+
+#[test]
+fn depth_needs_one_step_that_lands_somewhere() {
+    // Both shapes refuse for one reason: there is no single step to repeat.
+    // A chain could mean the whole chain again or its last step again, and a
+    // walk ending on the edges has nothing for a second round to start from.
+    for refused in [
+        "SELECT * FROM users:1->follows->users->follows->users DEPTH 2;",
+        "SELECT * FROM users:1->follows DEPTH 2;",
+    ] {
+        assert!(
+            matches!(parse(refused), Err(Error::DepthNeedsOneHopToATable { .. })),
+            "{refused}"
+        );
+    }
+}
+
+#[test]
+fn an_edge_is_deleted_by_the_pair_it_joins_rather_than_by_its_derived_name() {
+    // `RELATE` derives the edge's identity and never shows it, so without this
+    // form the only way to remove an edge is to rebuild that string by hand.
+    let StatementKind::DeleteEdge {
+        from, edges, to, ..
+    } = one("DELETE person:1->works_at->company:1;")
+    else {
+        panic!("not an edge delete");
+    };
+    assert_eq!(from.table.name.text, "person");
+    assert_eq!(edges.name.text, "works_at");
+    assert_eq!(to.table.name.text, "company");
+
+    // The record form is untouched: what tells the two apart is the arrow, and
+    // a target with no arrow after it is still one record.
+    assert!(matches!(
+        one("DELETE person:1;"),
+        StatementKind::Delete { .. }
+    ));
+}
+
+#[test]
+fn depth_belongs_to_the_source_so_it_is_written_before_the_clauses() {
+    // `DEPTH` says how far the walk goes, which is part of what is being read
+    // rather than something done to the rows — so it is consumed with the
+    // source, and the clauses that shape a read follow it in their usual order.
+    let StatementKind::Select(select) =
+        one("SELECT * FROM users:1->follows->users DEPTH 2 ORDER BY handle LIMIT 5;")
+    else {
+        panic!("not a read");
+    };
+    let Source::Traverse { depth, .. } = &select.from else {
+        panic!("not a walk");
+    };
+    assert_eq!(*depth, Some(2));
+    assert_eq!(select.order.len(), 1);
+
+    // And it does not float: written after a clause it is no longer in the
+    // position the grammar has for it, which is the same rule that keeps
+    // `START` before `LIMIT`.
+    assert!(parse("SELECT * FROM users:1->follows->users LIMIT 5 DEPTH 2;").is_err());
+}

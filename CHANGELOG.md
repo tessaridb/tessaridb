@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 944 conformance cases define the language and run in the build.
+Unreleased. 960 conformance cases define the language and run in the build.
 
 ### Breaking — a table is not a document
 
@@ -41,6 +41,21 @@ became a reserved word; a field or table named `schemaless` needs renaming.
 
 ### Added
 
+- **`DELETE a->edges->b`** — an edge is removed by naming the pair it joins.
+  Its identity is derived from its endpoints, which is what makes `RELATE`
+  idempotent, and it is never shown — so without this form the only way to
+  remove an edge was to rebuild that string by hand. Works on both an edge kind
+  and an edge table, takes the adjacency in both directions with it, and refuses
+  a pair the edge does not join exactly as `RELATE` does rather than removing
+  nothing and reporting success.
+- **`DEPTH n`** — one step repeated, answering with every distinct record within
+  `n`. `n` is an integer **literal** and the grammar has no position here for a
+  parameter or an expression, so every walk this language can write states its
+  own length. The walk is breadth-first over a set of records already seen,
+  which is what makes the bound bind: without it a single cycle would let the
+  work grow with `n` while the statement still looked bounded. `DEPTH` takes
+  exactly one step and that step must name the table it lands on; a chain and a
+  walk ending on edges are refused rather than answered one way in silence.
 - **`INSERT INTO t (cols) VALUES (…), (…)`** — several records in one statement
   and one transaction, at identities the store produces, answered back in the
   order the rows were written.

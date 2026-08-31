@@ -866,7 +866,7 @@ fn selecting(namespace: Option<&str>, database: Option<&str>, span: Span) -> Sta
 /// give the one statement whose answer must not depend on spelling a quoting
 /// rule to get wrong.
 fn reading(table: &TableRef) -> StatementKind {
-    StatementKind::Select(Select {
+    StatementKind::Select(Box::new(Select {
         projection: Projection::All,
         omit: Vec::new(),
         from: Source::Table(table.clone()),
@@ -883,7 +883,7 @@ fn reading(table: &TableRef) -> StatementKind {
         timeout: None,
         version: None,
         span: table.span,
-    })
+    }))
 }
 
 /// `DELETE <table>:0` — the ordinary write, as a statement to be judged.

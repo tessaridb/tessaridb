@@ -842,8 +842,9 @@ impl Session<'_> {
                 from,
                 direction,
                 hops,
+                depth,
             } => {
-                let found = self.traverse(transaction, from, *direction, hops)?;
+                let found = self.traverse(transaction, from, *direction, hops, *depth)?;
                 Ok((
                     Prepared::Held(found, Plan::new(AccessPath::Graph)),
                     Searched::default(),
@@ -1889,6 +1890,7 @@ impl Session<'_> {
         from: &RecordTarget,
         direction: Direction,
         hops: &[Hop],
+        depth: Option<u64>,
     ) -> Result<Vec<(RecordId, Value)>> {
         // Refused rather than served, and refused here rather than at the index
         // lookup below, which would report `NotAnEdgeTable` and send a reader
@@ -1916,102 +1918,204 @@ impl Session<'_> {
             });
         }
         let (origin, start) = self.address(transaction, from)?;
-        let mut anchors = vec![RecordRef::new(start.table, start.id.clone())];
+        let anchors = vec![RecordRef::new(start.table, start.id.clone())];
+        match depth {
+            None => self.walk_written_out(transaction, &origin, anchors, direction, hops),
+            // The parser has already established that there is exactly one hop
+            // and that it names the table it lands on, so this indexes rather
+            // than re-checking: a second copy of the rule is a second place for
+            // it to disagree with itself.
+            Some(limit) => {
+                self.walk_repeatedly(transaction, &origin, anchors, direction, &hops[0], limit)
+            }
+        }
+    }
+
+    /// A walk whose steps are written out, one hop each.
+    ///
+    /// Bounded because the statement says how many steps there are — which is
+    /// why this form needs no visited set and may legitimately answer with the
+    /// same record twice if two written steps reach it.
+    fn walk_written_out(
+        &self,
+        transaction: &mut Transaction<'_>,
+        origin: &crate::context::Context,
+        mut anchors: Vec<RecordRef>,
+        direction: Direction,
+        hops: &[Hop],
+    ) -> Result<Vec<(RecordId, Value)>> {
         let mut answer = Vec::new();
-
         for hop in hops {
-            // An edge kind is looked for first, because it is served by
-            // adjacency rather than by an index: the neighbours of one node under
-            // one kind in one direction are contiguous, so reaching them is one
-            // range read instead of an index probe and a random read of every
-            // edge record. The far records are still read individually — the
-            // caller asked for records — but the edges themselves are never
-            // touched, and that is the difference the layout buys.
-            if let Some(kind) = Catalog::new(transaction).edge_kind_id(
-                origin.namespace,
-                origin.database,
-                &hop.edges.name.text,
-            )? {
-                let (found, next) =
-                    self.hop_in_graph(transaction, kind, &anchors, direction, hop)?;
-                anchors = next;
-                answer = found;
-                continue;
-            }
-            let (_, edge_table) = self.resolve_table(transaction, &hop.edges)?;
-            if !Catalog::new(transaction)
-                .table(edge_table)?
-                .is_some_and(|found| found.is_edge())
-            {
-                return Err(Error::NotAnEdgeTable {
-                    table: hop.edges.name.text.clone(),
-                    span: hop.edges.span,
-                });
-            }
-            let Some(index) = self.index_on_path(
-                transaction,
-                edge_table,
-                &Path::field(direction.from_field()),
-            )?
-            else {
-                // An edge table always has both, so reaching here means the
-                // catalog and the flag disagree — which is corruption, not a
-                // slow path.
-                return Err(Error::NotAnEdgeTable {
-                    table: hop.edges.name.text.clone(),
-                    span: hop.edges.span,
-                });
-            };
-
-            let edge_visible = self.visible_in(transaction, edge_table)?;
-            let mut found = Vec::new();
-            for anchor in &anchors {
-                let value = Value::Record(anchor.clone());
-                let offered = transaction.records_by_index(&index, &[value])?;
-                found.extend(self.records_of(offered, &edge_visible)?);
-            }
-
-            let Some(target) = hop.target.as_ref() else {
-                // The last step named no node, so the edges themselves are the
-                // answer. The grammar allows this only at the end, so there is
-                // no case here where the walk would have had to continue.
-                answer = found;
+            let (found, next) = self.one_hop(transaction, origin, &anchors, direction, hop)?;
+            answer = found;
+            anchors = next;
+            // The last step named no node, so the edges themselves are the
+            // answer. The grammar allows this only at the end, so there is no
+            // case here where the walk would have had to continue.
+            if hop.target.is_none() {
                 break;
-            };
-
-            let (context, target_table) = self.resolve_table(transaction, target)?;
-            // The far side is read from its own table, so its own grant applies —
-            // reaching a record through an edge is not a way around one, and that
-            // holds at every hop rather than only at the first.
-            let far_visible = self.visible_in(transaction, target_table)?;
-            let mut reached: BTreeMap<RecordId, Value> = BTreeMap::new();
-            for (_, edge) in found {
-                let Value::Object(fields) = &edge else {
-                    continue;
-                };
-                let Some(Value::Record(far)) = fields.get(direction.to_field()) else {
-                    continue;
-                };
-                if far.table != target_table {
-                    continue;
-                }
-                let address = RecordAddress::new(
-                    context.namespace,
-                    context.database,
-                    target_table,
-                    far.id.clone(),
-                );
-                if let Some(payload) = transaction.get(&address)? {
-                    reached.insert(far.id.clone(), self.record_of(&payload, &far_visible)?);
-                }
             }
-            anchors = reached
-                .keys()
-                .map(|id| RecordRef::new(target_table, id.clone()))
-                .collect();
-            answer = reached.into_iter().collect();
         }
         Ok(answer)
+    }
+
+    /// `DEPTH n` — one hop repeated, answering with everything within `n` steps.
+    ///
+    /// Breadth-first over a visited set, and **the visited set is what makes the
+    /// bound mean anything.** `n` is a literal, so the number of rounds is
+    /// bounded by the statement; without the set, a cycle would make the *work*
+    /// grow with `n` regardless — the walk would keep re-expanding records it
+    /// had already reached, and a graph with one loop in it would run for as
+    /// long as the number said. With the set each record is expanded once, so
+    /// the walk costs the reachable subgraph however large `n` is written, and
+    /// terminates on a cycle rather than on the count running out.
+    ///
+    /// The start is marked seen before the first round. That is not a special
+    /// case for the start; it is the same rule, and it happens to give the
+    /// answer people mean — a neighbourhood that contained its own centre would
+    /// make a count of it wrong, and `SELECT * FROM person:1` already says the
+    /// centre.
+    ///
+    /// Breadth-first rather than depth-first for the same reason: a record first
+    /// reached in `d` steps has every neighbour of its own reached by `d + 1`,
+    /// so expanding it again from a longer path can add nothing.
+    fn walk_repeatedly(
+        &self,
+        transaction: &mut Transaction<'_>,
+        origin: &crate::context::Context,
+        start: Vec<RecordRef>,
+        direction: Direction,
+        hop: &Hop,
+        limit: u64,
+    ) -> Result<Vec<(RecordId, Value)>> {
+        let mut seen: BTreeSet<(TableId, RecordId)> = start
+            .iter()
+            .map(|anchor| (anchor.table, anchor.id.clone()))
+            .collect();
+        let mut frontier = start;
+        let mut answer = Vec::new();
+        for _ in 0..limit {
+            if frontier.is_empty() {
+                break;
+            }
+            let (found, next) = self.one_hop(transaction, origin, &frontier, direction, hop)?;
+            // One pass, and the answer is filtered against a SET rather than
+            // against a scan of the round's own results. A round's frontier is a
+            // node's whole neighbourhood, so a linear search per record reached
+            // would make the round quadratic in the fan-out — in the one code
+            // path whose entire purpose is that a hop does not cost the degree.
+            let mut fresh = BTreeSet::new();
+            let mut next_frontier = Vec::new();
+            for anchor in next {
+                if seen.insert((anchor.table, anchor.id.clone())) {
+                    fresh.insert(anchor.id.clone());
+                    next_frontier.push(anchor);
+                }
+            }
+            answer.extend(found.into_iter().filter(|(id, _)| fresh.contains(id)));
+            frontier = next_frontier;
+        }
+        Ok(answer)
+    }
+
+    /// One step of a walk, whichever path serves it.
+    ///
+    /// Factored out of the loop so that `DEPTH` can take the same step more than
+    /// once. Both branches answer with the same pair — the records this step
+    /// reached, and the anchors the next step would start from — so a repeat is
+    /// the same call again and not a second traversal implementation.
+    fn one_hop(
+        &self,
+        transaction: &mut Transaction<'_>,
+        origin: &crate::context::Context,
+        anchors: &[RecordRef],
+        direction: Direction,
+        hop: &Hop,
+    ) -> Result<Hopped> {
+        // An edge kind is looked for first, because it is served by
+        // adjacency rather than by an index: the neighbours of one node under
+        // one kind in one direction are contiguous, so reaching them is one
+        // range read instead of an index probe and a random read of every
+        // edge record. The far records are still read individually — the
+        // caller asked for records — but the edges themselves are never
+        // touched, and that is the difference the layout buys.
+        if let Some(kind) = Catalog::new(transaction).edge_kind_id(
+            origin.namespace,
+            origin.database,
+            &hop.edges.name.text,
+        )? {
+            return self.hop_in_graph(transaction, kind, anchors, direction, hop);
+        }
+        let (_, edge_table) = self.resolve_table(transaction, &hop.edges)?;
+        if !Catalog::new(transaction)
+            .table(edge_table)?
+            .is_some_and(|found| found.is_edge())
+        {
+            return Err(Error::NotAnEdgeTable {
+                table: hop.edges.name.text.clone(),
+                span: hop.edges.span,
+            });
+        }
+        let Some(index) = self.index_on_path(
+            transaction,
+            edge_table,
+            &Path::field(direction.from_field()),
+        )?
+        else {
+            // An edge table always has both, so reaching here means the
+            // catalog and the flag disagree — which is corruption, not a
+            // slow path.
+            return Err(Error::NotAnEdgeTable {
+                table: hop.edges.name.text.clone(),
+                span: hop.edges.span,
+            });
+        };
+
+        let edge_visible = self.visible_in(transaction, edge_table)?;
+        let mut found = Vec::new();
+        for anchor in anchors {
+            let value = Value::Record(anchor.clone());
+            let offered = transaction.records_by_index(&index, &[value])?;
+            found.extend(self.records_of(offered, &edge_visible)?);
+        }
+
+        let Some(target) = hop.target.as_ref() else {
+            // This step named no node, so the edges themselves are the answer
+            // and there is nothing for a next step to start from.
+            return Ok((found, Vec::new()));
+        };
+
+        let (context, target_table) = self.resolve_table(transaction, target)?;
+        // The far side is read from its own table, so its own grant applies —
+        // reaching a record through an edge is not a way around one, and that
+        // holds at every hop rather than only at the first.
+        let far_visible = self.visible_in(transaction, target_table)?;
+        let mut reached: BTreeMap<RecordId, Value> = BTreeMap::new();
+        for (_, edge) in found {
+            let Value::Object(fields) = &edge else {
+                continue;
+            };
+            let Some(Value::Record(far)) = fields.get(direction.to_field()) else {
+                continue;
+            };
+            if far.table != target_table {
+                continue;
+            }
+            let address = RecordAddress::new(
+                context.namespace,
+                context.database,
+                target_table,
+                far.id.clone(),
+            );
+            if let Some(payload) = transaction.get(&address)? {
+                reached.insert(far.id.clone(), self.record_of(&payload, &far_visible)?);
+            }
+        }
+        let next = reached
+            .keys()
+            .map(|id| RecordRef::new(target_table, id.clone()))
+            .collect();
+        Ok((reached.into_iter().collect(), next))
     }
 
     /// One hop over adjacency, and the anchors the next hop starts from.

@@ -300,6 +300,8 @@ fn script_kind(error: &tessari_ql::Error) -> &'static str {
         tessari_ql::Error::AnchorFromAnotherTable { .. } => "AnchorFromAnotherTable",
         tessari_ql::Error::InsertRowArity { .. } => "InsertRowArity",
         tessari_ql::Error::TableWithoutColumns { .. } => "TableWithoutColumns",
+        tessari_ql::Error::DepthNeedsOneHopToATable { .. } => "DepthNeedsOneHopToATable",
+        tessari_ql::Error::DepthBelowOne { .. } => "DepthBelowOne",
         _ => "Unnamed",
     }
 }

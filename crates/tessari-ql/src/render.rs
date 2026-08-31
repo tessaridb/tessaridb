@@ -107,6 +107,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::Upsert { .. } => Err(unrenderable("UPSERT", span)),
         StatementKind::Throw { .. } => Err(unrenderable("THROW", span)),
         StatementKind::Delete { .. } => Err(unrenderable("DELETE", span)),
+        StatementKind::DeleteEdge { .. } => Err(unrenderable("DELETE of an edge", span)),
         StatementKind::DeleteWhere { .. } => Err(unrenderable("DELETE FROM", span)),
         StatementKind::Get { .. } => Err(unrenderable("GET", span)),
         StatementKind::Set { .. } => Err(unrenderable("SET", span)),

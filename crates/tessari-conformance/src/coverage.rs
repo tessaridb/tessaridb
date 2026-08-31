@@ -56,6 +56,7 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::AlterTable { .. } => "ALTER TABLE",
         StatementKind::AlterField { .. } => "ALTER TABLE ALTER FIELD",
         StatementKind::Relate { .. } => "RELATE",
+        StatementKind::DeleteEdge { .. } => "DELETE EDGE",
         StatementKind::Create { .. } => "CREATE",
         StatementKind::Insert { .. } => "INSERT",
         StatementKind::Select(_) => "SELECT",

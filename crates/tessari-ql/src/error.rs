@@ -326,6 +326,36 @@ pub enum Error {
         span: Span,
     },
 
+    /// `DEPTH` written on a walk that has nothing repeatable to repeat.
+    ///
+    /// Two shapes reach here and they refuse for one reason: there is no single
+    /// step for the clause to apply. `a->e1->b->e2->c DEPTH 3` could mean the
+    /// whole chain again or the last step again, and answering either way
+    /// silently is worse than saying so. `a->knows DEPTH 3` ends on the edges
+    /// themselves, so the second round would have to hop from an edge.
+    ///
+    /// Refused when the statement is read, because it is a property of the
+    /// statement and not of what happens to be stored.
+    #[error(
+        "`DEPTH` repeats one step, so it needs a walk of exactly one hop that names the table it lands on (at {span})"
+    )]
+    DepthNeedsOneHopToATable {
+        /// Where the clause is.
+        span: Span,
+    },
+
+    /// `DEPTH 0`.
+    ///
+    /// A walk of no steps is the record the walk starts from, and `SELECT * FROM
+    /// person:1` already says that. Refused rather than answered with an empty
+    /// set, because a caller who computed the bound and got zero has a bug the
+    /// empty answer would hide.
+    #[error("`DEPTH` counts steps, so it starts at 1 (at {span})")]
+    DepthBelowOne {
+        /// Where the clause is.
+        span: Span,
+    },
+
     /// A `group::name(…)` naming no function this language has.
     #[error("there is no function called {name} (at {span})")]
     NoSuchFunction {
@@ -674,7 +704,9 @@ impl Error {
             | Self::CursorBesideAnOffset { span }
             | Self::CursorBesideAReshaping { span, .. }
             | Self::AnchorFromAnotherTable { span, .. }
-            | Self::EmptyTimeout { span, .. } => *span,
+            | Self::EmptyTimeout { span, .. }
+            | Self::DepthNeedsOneHopToATable { span }
+            | Self::DepthBelowOne { span } => *span,
         }
     }
 }

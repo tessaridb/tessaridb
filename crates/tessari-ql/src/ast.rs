@@ -676,7 +676,13 @@ pub enum StatementKind {
         rows: Vec<Vec<Expr>>,
     },
     /// `SELECT * FROM …`
-    Select(Select),
+    ///
+    /// Boxed, as [`StatementKind::Explain`] already boxes the same type. A read
+    /// is much the widest statement this language has — clauses, projections, a
+    /// source that may itself hold a join — and an enum is as wide as its widest
+    /// variant, so unboxed it made every `COMMIT` and every `USE` in a parsed
+    /// script cost what a `SELECT` costs.
+    Select(Box<Select>),
     /// `UPDATE users:1 = { … }` — the value is replaced, never merged.
     Update {
         /// The record to change.
@@ -722,6 +728,30 @@ pub enum StatementKind {
         target: RecordTarget,
         /// What the statement answers with. `AFTER` is refused: there is no
         /// record after a delete, so the clause could only ever answer `NONE`.
+        answer: Answer,
+    },
+    /// `DELETE person:1->works_at->company:1` — one edge, named by what it joins.
+    ///
+    /// The mirror of [`StatementKind::Relate`], and it exists because an edge's
+    /// identity is **derived**: `RELATE` builds it from the two endpoints so that
+    /// relating the same pair twice replaces rather than doubles, and never tells
+    /// the caller what it built. Without this form, removing an edge would mean
+    /// reconstructing a string the language has no statement that shows —
+    /// a caller depending on an internal encoding to undo what one statement did.
+    ///
+    /// Separate from [`StatementKind::Delete`] for the reason the conditional
+    /// form is separate: it names its subject differently, and one variant
+    /// wearing three targets in an `Option` would put the difference in a field
+    /// rather than in the grammar.
+    DeleteEdge {
+        /// The edge's source.
+        from: RecordTarget,
+        /// The edge kind, or the edge table, the relation was recorded in.
+        edges: TableRef,
+        /// The edge's target.
+        to: RecordTarget,
+        /// What the statement answers with. `AFTER` is refused, as it is for any
+        /// delete.
         answer: Answer,
     },
     /// `DELETE FROM readings WHERE at < datetime '…' LIMIT 100` — the records a
@@ -1429,6 +1459,20 @@ pub enum Source {
         direction: Direction,
         /// The steps, in order. Never empty.
         hops: Vec<Hop>,
+        /// `DEPTH n` — how many times the single hop repeats.
+        ///
+        /// `None` is a walk written out step by step, which is bounded because
+        /// the steps are written. `Some(n)` is the only construct in the
+        /// language that repeats, and `n` is an integer **literal** for that
+        /// reason: a walk whose length comes from a parameter is a walk whose
+        /// length is not in the statement, and nothing reading the statement
+        /// could tell how far it goes.
+        ///
+        /// Answers with every distinct record reachable in `1..=n` hops. The
+        /// start is marked seen before the first round, so a cycle terminates
+        /// and no record is answered twice — which is what makes `n` bound the
+        /// *work* and not merely the number written down.
+        depth: Option<u64>,
     },
     /// The records a condition holds for.
     ///

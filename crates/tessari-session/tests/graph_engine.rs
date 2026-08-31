@@ -357,3 +357,195 @@ fn two_edge_kinds_over_the_same_pair_do_not_see_each_others_edges() {
         vec!["Grace".to_owned()]
     );
 }
+
+/// A graph whose one edge kind joins a table to itself, so a hop can repeat.
+fn chain(store: &Store) -> Session<'_> {
+    let mut session = Session::new(store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE social; USE DATABASE social;\n\
+             DEFINE GRAPH web;\n\
+             DEFINE TABLE person (name string) IN web;\n\
+             DEFINE EDGE knows IN web FROM person TO person;\n\
+             CREATE person:1 = { name: 'Ada' };\n\
+             CREATE person:2 = { name: 'Grace' };\n\
+             CREATE person:3 = { name: 'Katherine' };\n\
+             CREATE person:4 = { name: 'Dorothy' };\n\
+             RELATE person:1->knows->person:2;\n\
+             RELATE person:2->knows->person:3;\n\
+             RELATE person:3->knows->person:4;",
+        )
+        .unwrap();
+    session
+}
+
+#[test]
+fn an_edge_is_removed_by_the_pair_it_joins_and_its_adjacency_goes_with_it() {
+    let store = store();
+    let mut session = social(&store);
+    session
+        .run(
+            "RELATE person:1->works_at->company:1;\n\
+             RELATE person:2->works_at->company:1;",
+        )
+        .unwrap();
+
+    // The caller never saw the identity `RELATE` derived, and does not need it:
+    // the two endpoints and the kind are what they wrote, and they are what
+    // removes it.
+    session
+        .run("DELETE person:1->works_at->company:1;")
+        .unwrap();
+
+    assert!(names(&mut session, "SELECT * FROM person:1->works_at->company;").is_empty());
+    // Both entries go, in the batch that carried the tombstone. One surviving
+    // mirror would leave the reverse walk answering with an edge the forward
+    // walk says is gone, and nothing would be in an error state.
+    assert_eq!(
+        names(&mut session, "SELECT * FROM company:1<-works_at<-person;"),
+        vec!["Grace".to_owned()]
+    );
+    // And the records it joined are untouched — an edge is not its endpoints.
+    assert_eq!(
+        names(&mut session, "SELECT * FROM person WHERE name = 'Ada';"),
+        vec!["Ada".to_owned()]
+    );
+}
+
+#[test]
+fn deleting_an_edge_that_was_never_there_removes_nothing_rather_than_failing() {
+    let store = store();
+    let mut session = social(&store);
+    session
+        .run("RELATE person:1->works_at->company:1;")
+        .unwrap();
+
+    // An absent edge deletes the way an absent record does. The pair is
+    // declared, so nothing about the statement is wrong; there is simply
+    // nothing under it.
+    session
+        .run("DELETE person:2->works_at->company:2;")
+        .unwrap();
+    assert_eq!(
+        rows(&mut session, "SELECT * FROM person:1->works_at;").len(),
+        1
+    );
+}
+
+#[test]
+fn deleting_an_edge_off_the_declared_pair_is_refused_in_both_of_the_ways_it_can_be_wrong() {
+    let store = store();
+    let mut session = social(&store);
+    session
+        .run("RELATE person:1->works_at->company:1;")
+        .unwrap();
+
+    // Refused rather than answered with a silent no-op, and refused the same
+    // two ways `RELATE` refuses. The identity derived for a pair the kind does
+    // not join cannot exist, so a delete would succeed and remove nothing —
+    // and a caller who wrote the endpoints backwards would be told their edge
+    // is gone while it is still there.
+    for wrong in [
+        "DELETE person:1->works_at->person:2;",
+        "DELETE company:1->works_at->person:1;",
+    ] {
+        let error = session.run(wrong).unwrap_err();
+        assert!(
+            matches!(error, Error::EndpointsNotDeclared { .. }),
+            "{wrong}: {error}"
+        );
+    }
+    assert_eq!(
+        rows(&mut session, "SELECT * FROM person:1->works_at;").len(),
+        1
+    );
+}
+
+#[test]
+fn depth_answers_with_everything_within_n_steps_and_not_only_the_far_end() {
+    let store = store();
+    let mut session = chain(&store);
+
+    // 1 -> 2 -> 3 -> 4. `DEPTH 2` is the neighbourhood within two steps, which
+    // is the question a graph is actually asked; "exactly at two" is a filter
+    // over this answer, while this answer would take two queries to build out
+    // of that one.
+    assert_eq!(
+        names(
+            &mut session,
+            "SELECT * FROM person:1->knows->person DEPTH 2;"
+        ),
+        vec!["Grace".to_owned(), "Katherine".to_owned()]
+    );
+    assert_eq!(
+        names(
+            &mut session,
+            "SELECT * FROM person:1->knows->person DEPTH 3;"
+        ),
+        vec![
+            "Dorothy".to_owned(),
+            "Grace".to_owned(),
+            "Katherine".to_owned()
+        ]
+    );
+
+    // A depth beyond the graph stops when there is nowhere left to go rather
+    // than running the rounds out.
+    assert_eq!(
+        names(
+            &mut session,
+            "SELECT * FROM person:1->knows->person DEPTH 9;"
+        )
+        .len(),
+        3
+    );
+}
+
+#[test]
+fn depth_one_answers_exactly_what_the_step_written_out_answers() {
+    let store = store();
+    let mut session = chain(&store);
+
+    // The repeated form and the written-out form are the same walk at one step,
+    // and a divergence here would mean `DEPTH` is a second traversal rather than
+    // the same one called again.
+    assert_eq!(
+        names(
+            &mut session,
+            "SELECT * FROM person:1->knows->person DEPTH 1;"
+        ),
+        names(&mut session, "SELECT * FROM person:1->knows->person;")
+    );
+}
+
+#[test]
+fn depth_over_a_cycle_terminates_and_answers_each_record_once() {
+    let store = store();
+    let mut session = chain(&store);
+    session.run("RELATE person:4->knows->person:1;").unwrap();
+
+    // This is what makes the bound a bound. `n` is a literal, so the number of
+    // rounds is in the statement — but without a visited set the *work* would
+    // still grow with `n`, because a loop keeps offering records already
+    // reached. A large depth over this cycle costs the reachable subgraph and
+    // no more, and answers each of the three others exactly once rather than
+    // once per lap.
+    let found = names(
+        &mut session,
+        "SELECT * FROM person:1->knows->person DEPTH 100;",
+    );
+    assert_eq!(
+        found,
+        vec![
+            "Dorothy".to_owned(),
+            "Grace".to_owned(),
+            "Katherine".to_owned()
+        ]
+    );
+
+    // And the start is not in its own neighbourhood, though the cycle reaches
+    // it: it is marked seen before the first round, so a count of the answer is
+    // a count of the others.
+    assert!(!found.contains(&"Ada".to_owned()));
+}

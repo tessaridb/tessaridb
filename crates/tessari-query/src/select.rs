@@ -266,7 +266,7 @@ impl Select<Sourced> {
         Ok(Query {
             script: Script {
                 statements: vec![Statement {
-                    kind: StatementKind::Select(select),
+                    kind: StatementKind::Select(Box::new(select)),
                     span: BUILT,
                 }],
                 span: BUILT,

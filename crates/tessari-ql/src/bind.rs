@@ -214,6 +214,10 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
                 None => Ok(()),
             }
         }
+        StatementKind::DeleteEdge { from, to, .. } => {
+            bind_target(from, binding)?;
+            bind_target(to, binding)
+        }
         StatementKind::DeleteWhere { condition, .. } => bind_expr(condition, binding),
         StatementKind::Keys { range, .. } => match range {
             Some(range) => bind_range(range, binding),

@@ -174,6 +174,7 @@ impl Effect {
             | StatementKind::Delete { .. }
             | StatementKind::DeleteWhere { .. }
             | StatementKind::Relate { .. }
+            | StatementKind::DeleteEdge { .. }
             | StatementKind::Set { .. }
             | StatementKind::Del { .. }
             | StatementKind::Put { .. } => Self::Write,

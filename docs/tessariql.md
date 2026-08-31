@@ -902,6 +902,61 @@ ordinary record reached through an index, which is the right shape when edges ar
 few, carry a lot, or are queried like rows. `DEFINE EDGE` is the shape for a graph
 that is walked.
 
+### Removing an edge
+
+An edge is removed by naming the pair it joins, exactly as it was written:
+
+```
+RELATE person:1->works_at->company:1;
+DELETE person:1->works_at->company:1;
+```
+
+The identity is **derived** — that is what makes `RELATE` idempotent — and it is
+never shown, so there is no other honest way to name an edge. The statement
+derives the same identity by the same rule and removes what is under it,
+together with the adjacency entries in both directions.
+
+The refusals are the ones `RELATE` makes, and for the same reason: a pair the
+edge does not join, and the right pair the wrong way round, are refused rather
+than accepted as a delete that removes nothing. Silently succeeding would tell a
+caller who wrote the endpoints backwards that their edge is gone.
+
+An edge that is not there deletes the way a record that is not there does —
+without an error, because nothing about the statement was wrong.
+
+### Bounding a repeated walk: `DEPTH`
+
+A walk written out is bounded because its steps are written. `DEPTH n` repeats
+one step instead, and answers with every distinct record reachable within `n`:
+
+```
+SELECT * FROM person:1->knows->person DEPTH 3;
+```
+
+`n` is an integer **literal** and the grammar has no position here for anything
+else — not a parameter, not an expression, not a field. Every walk this language
+can write therefore states its own length, and a reader of the statement knows
+how far it goes without knowing what the caller bound. `DEPTH $n` would be an
+unbounded walk with a promise attached, and the promise is kept somewhere the
+statement cannot show.
+
+The walk is breadth-first over a set of records already seen, and that set is
+what makes the bound mean anything. Without it a single cycle would let the work
+keep growing with `n` while the statement still looked bounded; with it, each
+record is reached once and the walk costs the reachable subgraph however large
+`n` is written. `DEPTH 100` over a four-record loop answers with three records
+and stops.
+
+The starting record is marked seen before the first round, so a neighbourhood
+does not contain its own centre — `SELECT * FROM person:1` already says that,
+and a count of the answer is a count of the others.
+
+`DEPTH` needs exactly one step, and that step must name the table it lands on.
+A chain could mean the whole chain again or only its last step, and a walk
+ending on the edges themselves has nothing for a second round to start from;
+both are refused rather than answered one way in silence. Repeating a *pattern*
+is a different feature and is not in this language yet. Neither is `PATH`.
+
 ### A table and its columns in one statement
 
 A table's fields can be declared with it, in parentheses after the name:

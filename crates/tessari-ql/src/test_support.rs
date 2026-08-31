@@ -232,6 +232,13 @@ fn erase_statement(statement: &mut Statement) {
                 erase_expr(value);
             }
         }
+        StatementKind::DeleteEdge {
+            from, edges, to, ..
+        } => {
+            erase_record(from);
+            erase_table(edges);
+            erase_record(to);
+        }
         StatementKind::Insert {
             table,
             columns,

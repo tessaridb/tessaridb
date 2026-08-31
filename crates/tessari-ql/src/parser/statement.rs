@@ -92,7 +92,7 @@ impl Parser<'_> {
                     value: self.value_or_read()?,
                 }
             }
-            Some(Keyword::Select) => StatementKind::Select(self.select_statement()?),
+            Some(Keyword::Select) => StatementKind::Select(Box::new(self.select_statement()?)),
             Some(Keyword::Explain) => {
                 self.advance();
                 // Only a read has a plan to describe. A write's cost is its
@@ -123,9 +123,25 @@ impl Parser<'_> {
                     }
                 } else {
                     let target = self.record_target()?;
-                    StatementKind::Delete {
-                        target,
-                        answer: self.answer(Keyword::Delete)?,
+                    // An arrow after the target says the subject is an edge and
+                    // not the record just named. Decided on the token rather
+                    // than on a lookahead over the whole clause: the two forms
+                    // diverge here and nowhere else.
+                    if self.eat_punct(Punct::ArrowRight) {
+                        let edges = self.table_ref()?;
+                        self.expect_punct(Punct::ArrowRight, "`->` and the record at the far end")?;
+                        let to = self.record_target()?;
+                        StatementKind::DeleteEdge {
+                            from: target,
+                            edges,
+                            to,
+                            answer: self.answer(Keyword::Delete)?,
+                        }
+                    } else {
+                        StatementKind::Delete {
+                            target,
+                            answer: self.answer(Keyword::Delete)?,
+                        }
                     }
                 }
             }
@@ -1972,10 +1988,12 @@ impl Parser<'_> {
                 None => break,
             }
         }
+        let depth = self.depth_bound(&hops)?;
         Ok(Source::Traverse {
             from,
             direction,
             hops,
+            depth,
         })
     }
 
