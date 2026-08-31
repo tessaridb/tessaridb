@@ -38,8 +38,8 @@ pub use authority::{Authority, Held, Kind, Reach};
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{
-    DatabaseDefinition, IndexDefinition, IndexShape, NamespaceDefinition, RECORD_LEVEL,
-    TableDefinition, TableKind, TableShape, VectorDistance,
+    DatabaseDefinition, GraphDeclaration, GraphOrder, IndexDefinition, IndexShape,
+    NamespaceDefinition, RECORD_LEVEL, TableDefinition, TableKind, TableShape, VectorDistance,
 };
 pub use field::{FieldDefinition, FieldShape};
 pub use grant::GrantDefinition;
@@ -163,7 +163,12 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
-        if shape.kind == TableKind::Edge {
+        if matches!(definition.kind, TableKind::Edge | TableKind::Graph(_)) {
+            // A graph is an edge table that also says which pair it joins, so it
+            // gets the same endpoint machinery: what a graph adds is a refusal
+            // at the write and an order on the key, not a different way of being
+            // reachable.
+            //
             // Each endpoint gets both an index and a declaration. The index is
             // what makes traversal a range read; the declaration is what lets an
             // edge table also be `SCHEMAFULL`, since nobody writes `out` and `in`
@@ -179,7 +184,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 self.create_field(id, endpoint, FieldKind::Record, FieldShape::default())?;
             }
         }
-        if shape.kind == TableKind::Bucket {
+        if definition.kind == TableKind::Bucket {
             // The companion table the bytes live in. Its name carries a byte an
             // identifier cannot hold, so no statement can name it — the same
             // mechanism the catalog itself uses to be unreachable rather than

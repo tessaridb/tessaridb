@@ -30,6 +30,11 @@ const FIELD_SCHEMAFULL: &str = "schemafull";
 const FIELD_EDGE: &str = "edge";
 const FIELD_BUCKET: &str = "bucket";
 const FIELD_COLLECTION: &str = "collection";
+const FIELD_GRAPH: &str = "graph";
+const FIELD_FROM: &str = "from";
+const FIELD_TO: &str = "to";
+const FIELD_ORDER: &str = "order";
+const FIELD_DESCENDING: &str = "descending";
 const FIELD_IDENTITY: &str = "identity";
 
 /// A namespace: the outermost tenancy level.
@@ -170,7 +175,7 @@ impl TableDefinition {
     /// The value written to the catalog.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        Value::Object(BTreeMap::from([
+        let mut fields = BTreeMap::from([
             (FIELD_ID.to_owned(), number(self.id.get())),
             (FIELD_NAMESPACE.to_owned(), number(self.namespace.get())),
             (FIELD_DATABASE.to_owned(), number(self.database.get())),
@@ -193,7 +198,14 @@ impl TableDefinition {
                 Value::Bool(self.kind == TableKind::Collection),
             ),
             (FIELD_IDENTITY.to_owned(), Value::from(self.identity.name())),
-        ]))
+        ]);
+        // A declaration is not a flag, so it is written only by the kind that
+        // has one. Absent is how every entry written before graphs existed
+        // reads, which is the same compatibility contract the flags keep.
+        if let TableKind::Graph(graph) = &self.kind {
+            fields.insert(FIELD_GRAPH.to_owned(), graph.to_value());
+        }
+        Value::Object(fields)
     }
 
     /// Read a definition back.
@@ -214,10 +226,14 @@ impl TableDefinition {
             database: DatabaseId::new(field_id(fields, FIELD_DATABASE, "table")?),
             name: field_name(fields, "table")?,
             schemafull: flag(fields, FIELD_SCHEMAFULL, "table")?,
-            kind: TableKind::from_flags(
+            kind: TableKind::from_parts(
                 flag(fields, FIELD_EDGE, "table")?,
                 flag(fields, FIELD_BUCKET, "table")?,
                 flag(fields, FIELD_COLLECTION, "table")?,
+                match fields.get(FIELD_GRAPH) {
+                    Some(value) => Some(GraphDeclaration::from_value(value)?),
+                    None => None,
+                },
             )?,
             identity: identity_kind(fields, "table")?,
         })
@@ -230,7 +246,7 @@ impl TableDefinition {
 /// [`tessari_types::TableId`] is a newtype rather than a `u32`: `create_table(ns,
 /// db, "follows", false, true)` compiles just as well with the pair transposed,
 /// and would create a schemafull table where an edge table was meant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TableShape {
     /// Refuse a field the table has no declaration for.
     ///
@@ -259,7 +275,7 @@ pub struct TableShape {
 /// hand, and a table that is both a bucket and an edge would take the bucket's
 /// refusal of `CREATE` and the edge's endpoint indexes into one record with
 /// nothing anywhere in an error state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TableKind {
     /// Records with named fields — `DEFINE TABLE`.
     #[default]
@@ -290,6 +306,47 @@ pub enum TableKind {
     /// the kind before writing, because an edge nothing can traverse to is
     /// worse than a refusal.
     Edge,
+    /// Edges between two declared tables, held in a declared order — `DEFINE
+    /// GRAPH`.
+    ///
+    /// An edge table accepts a link between any two records; a graph accepts
+    /// only the pair it was declared over, which is the difference in what a
+    /// caller may *do* that earns the word — the same test `BUCKET`, `SPACE` and
+    /// `COLLECTION` each passed. `DEFINE TABLE … EDGE` therefore stays and keeps
+    /// its permissiveness (Q-297).
+    ///
+    /// The declaration rides on the kind rather than sitting beside it in an
+    /// `Option`, because a pair would be two places holding one fact and would
+    /// make `kind == Graph` with no endpoints representable — the state this
+    /// type was introduced one change earlier to abolish (C1).
+    Graph(GraphDeclaration),
+}
+
+/// What a `DEFINE GRAPH` declared: its endpoints, and the order its edges are
+/// held in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphDeclaration {
+    /// The table an edge may leave.
+    pub from: TableId,
+    /// The table an edge may arrive at.
+    pub to: TableId,
+    /// The order neighbours are held in, if one was declared.
+    ///
+    /// A **key-grammar** property rather than a query-time one: it becomes the
+    /// suffix of the endpoint index's key, which is what makes "the ten most
+    /// recent" a bounded read of adjacent keys instead of reading every edge and
+    /// sorting. It is also why it cannot be changed later without rewriting
+    /// every edge index in every store.
+    pub order: Option<GraphOrder>,
+}
+
+/// The order a graph holds one node's edges in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphOrder {
+    /// The edge field the order reads.
+    pub field: String,
+    /// Whether the order runs downward.
+    pub descending: bool,
 }
 
 impl TableKind {
@@ -309,19 +366,82 @@ impl TableKind {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CatalogMalformed`] when more than one flag is set.
-    pub fn from_flags(edge: bool, bucket: bool, collection: bool) -> Result<Self> {
-        match (edge, bucket, collection) {
-            (false, false, false) => Ok(Self::Table),
-            (true, false, false) => Ok(Self::Edge),
-            (false, true, false) => Ok(Self::Bucket),
-            (false, false, true) => Ok(Self::Collection),
+    /// Returns [`Error::CatalogMalformed`] when more than one kind is claimed.
+    pub fn from_parts(
+        edge: bool,
+        bucket: bool,
+        collection: bool,
+        graph: Option<GraphDeclaration>,
+    ) -> Result<Self> {
+        match (edge, bucket, collection, graph) {
+            (false, false, false, None) => Ok(Self::Table),
+            (true, false, false, None) => Ok(Self::Edge),
+            (false, true, false, None) => Ok(Self::Bucket),
+            (false, false, true, None) => Ok(Self::Collection),
+            (false, false, false, Some(graph)) => Ok(Self::Graph(graph)),
             _ => Err(Error::CatalogMalformed {
                 entity: "table",
                 field: "kind",
                 found: "more than one kind",
             }),
         }
+    }
+}
+
+impl GraphDeclaration {
+    /// The value written inside the table's catalog entry.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        let mut fields = BTreeMap::from([
+            (FIELD_FROM.to_owned(), number(self.from.get())),
+            (FIELD_TO.to_owned(), number(self.to.get())),
+        ]);
+        if let Some(order) = &self.order {
+            fields.insert(FIELD_ORDER.to_owned(), Value::from(order.field.as_str()));
+            fields.insert(FIELD_DESCENDING.to_owned(), Value::Bool(order.descending));
+        }
+        Value::Object(fields)
+    }
+
+    /// Read a declaration back.
+    ///
+    /// A direction without a field is refused rather than read as an unordered
+    /// graph: the two are different key grammars, and reading one as the other
+    /// would answer a bounded neighbour read from an index that does not hold
+    /// the order it claims.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when an endpoint is missing or holds
+    /// the wrong type, or when the order is only half present.
+    pub fn from_value(value: &Value) -> Result<Self> {
+        let fields = object(value, "graph")?;
+        let order = match fields.get(FIELD_ORDER) {
+            None if fields.contains_key(FIELD_DESCENDING) => {
+                return Err(Error::CatalogMalformed {
+                    entity: "graph",
+                    field: FIELD_ORDER,
+                    found: "a direction with no field to order by",
+                });
+            }
+            None => None,
+            Some(Value::String(field)) => Some(GraphOrder {
+                field: field.clone(),
+                descending: flag(fields, FIELD_DESCENDING, "graph")?,
+            }),
+            Some(other) => {
+                return Err(Error::CatalogMalformed {
+                    entity: "graph",
+                    field: FIELD_ORDER,
+                    found: other.type_name(),
+                });
+            }
+        };
+        Ok(Self {
+            from: TableId::new(field_id(fields, FIELD_FROM, "graph")?),
+            to: TableId::new(field_id(fields, FIELD_TO, "graph")?),
+            order,
+        })
     }
 }
 
@@ -854,6 +974,95 @@ mod tests {
         assert_eq!(error.code(), "corruption");
         let text = error.to_string();
         assert!(text.contains("kind"), "{text}");
+    }
+
+    #[test]
+    fn a_graph_round_trips_its_endpoints_and_the_order_its_edges_are_held_in() {
+        let table = TableDefinition {
+            id: TableId::new(11),
+            namespace: NamespaceId::new(7),
+            database: DatabaseId::new(3),
+            name: "follows".to_owned(),
+            schemafull: false,
+            kind: TableKind::Graph(GraphDeclaration {
+                from: TableId::new(4),
+                to: TableId::new(5),
+                // Deliberately descending, and deliberately not the same table at
+                // both ends: an order that round trips as `false` and endpoints
+                // that round trip transposed both survive an assertion made with
+                // the defaults.
+                order: Some(GraphOrder {
+                    field: "at".to_owned(),
+                    descending: true,
+                }),
+            }),
+            identity: IdentityKind::Int,
+        };
+        assert_eq!(
+            TableDefinition::from_value(&table.to_value()).unwrap(),
+            table
+        );
+
+        // And a graph with no declared order is a different value, not a missing
+        // one — it reads back unordered rather than as the default order.
+        let unordered = TableDefinition {
+            kind: TableKind::Graph(GraphDeclaration {
+                from: TableId::new(4),
+                to: TableId::new(5),
+                order: None,
+            }),
+            ..table
+        };
+        assert_eq!(
+            TableDefinition::from_value(&unordered.to_value()).unwrap(),
+            unordered
+        );
+    }
+
+    #[test]
+    fn a_stored_graph_with_a_direction_but_no_field_is_refused_rather_than_read_as_unordered() {
+        // The order is the endpoint index's key suffix, so reading a half-written
+        // order as "no order" would answer a bounded neighbour read from an index
+        // that does not hold the order it is being asked for — in the right
+        // sequence often enough, by accident, to look correct.
+        let graph = BTreeMap::from([
+            (FIELD_FROM.to_owned(), number(4)),
+            (FIELD_TO.to_owned(), number(5)),
+            (FIELD_DESCENDING.to_owned(), Value::Bool(true)),
+        ]);
+        let fields = BTreeMap::from([
+            (FIELD_ID.to_owned(), number(11)),
+            (FIELD_NAMESPACE.to_owned(), number(7)),
+            (FIELD_DATABASE.to_owned(), number(3)),
+            (FIELD_NAME.to_owned(), Value::from("follows")),
+            (FIELD_GRAPH.to_owned(), Value::Object(graph)),
+        ]);
+        let error = TableDefinition::from_value(&Value::Object(fields)).unwrap_err();
+        assert_eq!(error.code(), "corruption");
+        let text = error.to_string();
+        assert!(text.contains("order"), "{text}");
+    }
+
+    #[test]
+    fn a_stored_table_that_is_a_graph_and_an_edge_at_once_is_refused() {
+        // The fourth kind takes the same contract as the other three: a pair on
+        // disk is still writable by an older build or by corruption, and picking
+        // a winner would give one replica a graph where another has a plain edge
+        // table, from bytes both agree on.
+        let graph = BTreeMap::from([
+            (FIELD_FROM.to_owned(), number(4)),
+            (FIELD_TO.to_owned(), number(5)),
+        ]);
+        let fields = BTreeMap::from([
+            (FIELD_ID.to_owned(), number(11)),
+            (FIELD_NAMESPACE.to_owned(), number(7)),
+            (FIELD_DATABASE.to_owned(), number(3)),
+            (FIELD_NAME.to_owned(), Value::from("follows")),
+            (FIELD_EDGE.to_owned(), Value::Bool(true)),
+            (FIELD_GRAPH.to_owned(), Value::Object(graph)),
+        ]);
+        let error = TableDefinition::from_value(&Value::Object(fields)).unwrap_err();
+        assert_eq!(error.code(), "corruption");
     }
 
     #[test]
