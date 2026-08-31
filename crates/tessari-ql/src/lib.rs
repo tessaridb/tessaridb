@@ -40,3 +40,16 @@ pub use parser::{parse, parse_expression};
 pub use render::render;
 pub use tessari_types::BinaryOp;
 pub use token::{Keyword, Punct, Span, Spanned, Token};
+
+/// The widest vector a declaration may name.
+///
+/// Two orders of magnitude above anything in use. It exists so that a catalog
+/// can hold a declared width as the ordinary small integer every other number in
+/// a definition is, and it is stated here rather than inside the parser because
+/// the store that writes the declaration back needs the same number: a ceiling
+/// each half of the code decided for itself is two ceilings waiting to differ.
+///
+/// A width above it is refused where the author wrote the number
+/// ([`Error::VectorWidthAboveTheCeiling`]), which is the only place the refusal
+/// can point at what is wrong.
+pub const WIDEST_VECTOR: usize = 65_536;

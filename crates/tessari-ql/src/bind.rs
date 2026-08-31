@@ -241,6 +241,8 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::DefineSpace { .. }
         | StatementKind::DefineBucket { .. }
         | StatementKind::DefineCollection { .. }
+        | StatementKind::DefineVector { .. }
+        | StatementKind::DropVector { .. }
         | StatementKind::DefineGraph { .. }
         | StatementKind::DropGraph { .. }
         | StatementKind::DefineEdge { .. }

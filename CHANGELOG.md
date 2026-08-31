@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 974 conformance cases define the language and run in the build.
+Unreleased. 988 conformance cases define the language and run in the build.
 
 ### Breaking — a table is not a document
 
@@ -40,6 +40,21 @@ what a *new* declaration means, and it is felt when an old script is run again.
 became a reserved word; a field or table named `schemaless` needs renaming.
 
 ### Added
+
+- **`DEFINE VECTOR`** — a store whose records are vectors, declared as one:
+  `DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine`, then `CREATE` into
+  it and `SELECT` out of it like any other table, with `INFO FOR VECTOR` and
+  `DROP VECTOR` naming it by the word that made it. It stands for exactly three
+  statements — a collection, a `TYPE vector<n> REQUIRED` field called `vector`,
+  and a vector index over that field — and runs them through the same functions
+  the long spellings run through, so there is no second code path to disagree
+  with the field one. What the word adds is that the three cannot come apart:
+  a width with no index declares a shape nothing searches, an index with no
+  width admits a row of the wrong shape and reports it as infinitely far from
+  everything, and neither without `REQUIRED` admits a record with no vector at
+  all. Both clauses are required and neither has a default. Reads are unchanged:
+  `APPROXIMATE` is still the only way to obtain an approximate answer, and
+  `INFO FOR VECTOR` reports measured recall or `NONE`, never a computed figure.
 
 - **`TYPE vector<n>`** — a field declares how many components its vectors hold,
   and a write of any other width is refused **at the write**. Without it `array`

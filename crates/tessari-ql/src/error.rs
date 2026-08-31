@@ -357,6 +357,21 @@ pub enum Error {
         span: Span,
     },
 
+    /// A width past what a declaration can be written back as.
+    ///
+    /// Not a limit anybody meets — the widest embeddings in use are three orders
+    /// of magnitude below it — and it is stated anyway, because a store that
+    /// accepted a width it could not store in its own catalog would report a
+    /// declaration nobody made. A ceiling refused where the author wrote the
+    /// number says more than one discovered later by a reader.
+    #[error("a vector holds at most {most} components (at {span})")]
+    VectorWidthAboveTheCeiling {
+        /// The widest a declaration may be.
+        most: usize,
+        /// Where the width is.
+        span: Span,
+    },
+
     /// `DEPTH 0`.
     ///
     /// A walk of no steps is the record the walk starts from, and `SELECT * FROM
@@ -720,7 +735,8 @@ impl Error {
             | Self::EmptyTimeout { span, .. }
             | Self::DepthNeedsOneHopToATable { span }
             | Self::DepthBelowOne { span }
-            | Self::VectorWidthBelowOne { span } => *span,
+            | Self::VectorWidthBelowOne { span }
+            | Self::VectorWidthAboveTheCeiling { span, .. } => *span,
         }
     }
 }

@@ -126,3 +126,67 @@ DEFINE FIELD loose ON embeddings TYPE vector;
 --- case: and `vector` is still a name a caller may use
 DEFINE FIELD vector ON embeddings TYPE vector<4>;
 --- expect: ok
+
+# --------------------------------------------------------------------------
+# A store of its own. Above this line a vector is a field on a table somebody
+# else declared; below it, the word declares the store, its width, its index
+# and the fact that the three belong together.
+
+--- case: a vector store declares its width and its distance
+DEFINE VECTOR notes DIMENSION 3 DISTANCE cosine;
+--- expect: ok
+
+--- case: records go into it and come back out
+CREATE notes:'a' = { vector: [1.0, 0.0, 0.0], label: 'a' };
+CREATE notes:'b' = { vector: [0.0, 1.0, 0.0], label: 'b' };
+SELECT * FROM notes;
+--- expect: rows 2
+
+--- case: it is searched with the ordinary distance function, like any other vector
+SELECT * FROM notes ORDER BY vector::cosine(vector, [1.0, 0.0, 0.0]) LIMIT 1;
+--- expect: rows 1
+
+--- case: a write of the wrong width is refused where it happens
+CREATE notes:'c' = { vector: [1.0, 0.0] };
+--- expect: error SchemaViolation
+
+--- case: and a record with no vector is not a record of a vector store
+CREATE notes:'d' = { label: 'no vector here' };
+--- expect: error MissingRequiredField
+
+--- case: the store reports its width, its distance and that nobody has measured it
+INFO FOR VECTOR notes;
+--- expect: ok
+
+--- case: both clauses are required, in the order they are written
+DEFINE VECTOR loose DIMENSION 3;
+--- expect: error UnexpectedToken
+
+--- case: a distance has no default, because one would decide which reads the store can serve
+DEFINE VECTOR loose DISTANCE cosine;
+--- expect: error UnexpectedToken
+
+--- case: a distance this store does not have is refused by name
+DEFINE VECTOR loose DIMENSION 3 DISTANCE manhattan;
+--- expect: error NoSuchDistance
+
+--- case: a store's width answers to the same rule a field's does
+DEFINE VECTOR loose DIMENSION 0 DISTANCE cosine;
+--- expect: error VectorWidthBelowOne
+
+--- case: and to the same ceiling
+DEFINE VECTOR loose DIMENSION 70000 DISTANCE cosine;
+--- expect: error VectorWidthAboveTheCeiling
+
+--- case: a field is held to that ceiling too, because one reader answers for both
+DEFINE FIELD wide ON embeddings TYPE vector<70000>;
+--- expect: error VectorWidthAboveTheCeiling
+
+--- case: dropping needs the word to name a vector store
+DROP VECTOR points;
+--- expect: error Unknown
+
+--- case: and the store goes with its field and its index, so the name is free again
+DROP VECTOR notes;
+DEFINE VECTOR notes DIMENSION 8 DISTANCE euclidean;
+--- expect: ok

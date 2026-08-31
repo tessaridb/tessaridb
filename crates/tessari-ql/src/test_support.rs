@@ -85,6 +85,7 @@ fn erase_statement(statement: &mut Statement) {
         | StatementKind::DefineGraph { name, .. }
         | StatementKind::DefineEdge { name, .. }
         | StatementKind::DropEdge { name }
+        | StatementKind::DropVector { name }
         | StatementKind::DropGraph { name }
         | StatementKind::DropUser { name }
         | StatementKind::DropAnalyzer { name }
@@ -144,10 +145,20 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Node
             | InfoSubject::Consumers => {}
             InfoSubject::Table(table) | InfoSubject::Access(table) => erase_table(table),
-            InfoSubject::User(name) | InfoSubject::Consumer(name) | InfoSubject::Graph(name) => {
+            InfoSubject::User(name)
+            | InfoSubject::Consumer(name)
+            | InfoSubject::Graph(name)
+            | InfoSubject::Vector(name) => {
                 erase_name(name);
             }
         },
+        // Its own arm rather than the name-only list above, because the
+        // distance is a `Name` too: left unerased it carries a span, and two
+        // identical declarations would compare as different.
+        StatementKind::DefineVector { name, distance, .. } => {
+            erase_name(name);
+            erase_name(distance);
+        }
         StatementKind::DefineAnalyzer { name, .. } => erase_name(name),
         StatementKind::DefineUser {
             name, scope, role, ..

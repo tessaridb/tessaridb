@@ -293,9 +293,10 @@ impl Parser<'_> {
             // order tells you which of the two a bare word reaches.
             _ if self.eat_word("consumers") => InfoSubject::Consumers,
             _ if self.eat_word("consumer") => InfoSubject::Consumer(self.name()?),
+            _ if self.eat_word("vector") => InfoSubject::Vector(self.name()?),
             _ => {
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER` or `CONSUMERS`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS` or `VECTOR`",
                 ));
             }
         };
@@ -529,10 +530,44 @@ impl Parser<'_> {
             _ if self.eat_word("node") => self.define_node(),
             _ if self.eat_word("replica") => self.define_replica(),
             _ if self.eat_word("consumer") => self.define_consumer(),
+            // Contextual for the reason `DEFINE INDEX … VECTOR` already gives:
+            // a field called `vector` in a database of embeddings is not a name
+            // to take away, and taking it away here would take it away
+            // everywhere, since a reserved word is reserved in every position.
+            _ if self.eat_word("vector") => self.define_vector(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA` or `CONSUMER`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `CONSUMER` or `VECTOR`",
             )),
         }
+    }
+
+    /// `DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine`
+    ///
+    /// Both clauses are required and neither has a default. The width, because
+    /// declaring it is the whole capability the word adds. The distance, for the
+    /// reason the index already records: a default would silently decide which
+    /// queries the store can serve, and a graph built for one distance
+    /// approximates that distance and no other.
+    ///
+    /// They are read in a fixed order rather than in any order. Two clauses is
+    /// too few to be worth an order-free reader, and a fixed order is what makes
+    /// the statement read the same way in every store that has one.
+    fn define_vector(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        if !self.eat_word("dimension") {
+            return Err(self.error_here("`DIMENSION` and how wide every vector here is"));
+        }
+        let dimension = self.vector_dimension()?;
+        if !self.eat_word("distance") {
+            return Err(self.error_here("`DISTANCE` and the distance its index is built with"));
+        }
+        Ok(StatementKind::DefineVector {
+            name,
+            dimension,
+            distance: self.name()?,
+            if_not_exists,
+        })
     }
 
     /// `DEFINE NODE ROLES serving, writable ENDPOINTS 'host:9000'`
@@ -1202,16 +1237,39 @@ impl Parser<'_> {
     fn vector_width(&mut self) -> Result<FieldKind> {
         self.expect_punct(Punct::Less, "`<` and the width every vector here holds")?;
         let span = self.span_here();
-        let Some(Token::Number(Number::Integer(width))) = self.peek() else {
+        let width = self.vector_dimension()?;
+        self.expect_punct(Punct::Greater, "`>` closing the width")?;
+        FieldKind::vector(width).ok_or(Error::VectorWidthBelowOne { span })
+    }
+
+    /// The whole number of components a declaration names.
+    ///
+    /// Shared by the two places a width is written — `TYPE vector<n>` on a field
+    /// and `DIMENSION n` on a store — so that the language has one answer to
+    /// *which numbers are widths* rather than one answer per doorway. That is
+    /// the same reason `field_kind` is called by both field spellings.
+    fn vector_dimension(&mut self) -> Result<usize> {
+        let span = self.span_here();
+        let Some(Token::Number(Number::Integer(written))) = self.peek() else {
             return Err(self.error_here("a whole number of components, written out"));
         };
         // A negative and a zero refuse as the same thing, which they are: both
-        // say fewer than one component, and a field that can hold only the empty
-        // array is a declaration no useful write satisfies.
-        let width = usize::try_from(*width).unwrap_or(0);
+        // say fewer than one component, and a declaration that can hold only the
+        // empty array is one no useful write satisfies.
+        let written = usize::try_from(*written).unwrap_or(0);
         self.advance();
-        self.expect_punct(Punct::Greater, "`>` closing the width")?;
-        FieldKind::vector(width).ok_or(Error::VectorWidthBelowOne { span })
+        if written > crate::WIDEST_VECTOR {
+            return Err(Error::VectorWidthAboveTheCeiling {
+                most: crate::WIDEST_VECTOR,
+                span,
+            });
+        }
+        // Asked of the type rather than tested here, so the rule lives where the
+        // kind that carries it lives and cannot drift from it.
+        match FieldKind::vector(written) {
+            Some(FieldKind::Vector(width)) => Ok(width),
+            _ => Err(Error::VectorWidthBelowOne { span }),
+        }
     }
 
     /// `'draft' | 'published'` — a field that holds one of a fixed set of strings.
@@ -1322,6 +1380,8 @@ impl Parser<'_> {
             // `node` so that reading these two in order tells you which of them
             // a bare word reaches.
             _ if self.eat_word("replica") => Ok(StatementKind::DropReplica { name: self.name()? }),
+            // Contextual, as the word is everywhere else it appears.
+            _ if self.eat_word("vector") => Ok(StatementKind::DropVector { name: self.name()? }),
             // Declined rather than missing, and it says so. `DEFINE NODE` writes
             // this process's own configuration outside the transaction, so its
             // inverse is an edit to a config file rather than a statement — and

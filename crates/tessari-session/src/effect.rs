@@ -102,6 +102,8 @@ impl Effect {
             | StatementKind::DefineSpace { .. }
             | StatementKind::DefineBucket { .. }
             | StatementKind::DefineCollection { .. }
+            | StatementKind::DefineVector { .. }
+            | StatementKind::DropVector { .. }
             | StatementKind::DefineGraph { .. }
             | StatementKind::DropGraph { .. }
             | StatementKind::DefineEdge { .. }

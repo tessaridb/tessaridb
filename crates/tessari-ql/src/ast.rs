@@ -184,6 +184,49 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine` — a store whose
+    /// records are vectors.
+    ///
+    /// The fifth word in the row `TABLE`, `SPACE`, `BUCKET`, `COLLECTION` forms,
+    /// and it earns one on the same test they did. Written out as the three
+    /// statements it stands for, a vector store is:
+    ///
+    /// ```text
+    /// DEFINE COLLECTION embeddings;
+    /// DEFINE FIELD vector ON embeddings TYPE vector<768> REQUIRED;
+    /// DEFINE INDEX vector ON embeddings FIELDS vector VECTOR cosine;
+    /// ```
+    ///
+    /// Three statements a reader must get right *together*: a width without an
+    /// index is a declaration nothing searches, an index without a width is the
+    /// hole `vector<n>` was added to close, and either without `REQUIRED` admits
+    /// a record with no vector at all — legal in a table, and not a record of a
+    /// vector store. The word makes the three inseparable, which is a difference
+    /// in what a caller may do rather than a shorter way to say the same thing.
+    ///
+    /// It **desugars** into exactly those three, through the same functions
+    /// `DEFINE TABLE t (…)` desugars through. That is deliberate and it is the
+    /// point: there is no store-only path to disagree with the field one,
+    /// because the store's path *is* the field one.
+    DefineVector {
+        /// The name to create.
+        name: Name,
+        /// How wide every vector in the store is.
+        ///
+        /// Required, with no default, because declaring it is the whole
+        /// capability: undeclared, a 512-wide row and a 768-wide row sit
+        /// together legally and only the distance function notices — per read,
+        /// long after the bad write.
+        dimension: usize,
+        /// The distance its index is built and searched with.
+        ///
+        /// Carried as the word the author wrote rather than as a parsed kind,
+        /// for the reason [`StatementKind::DefineIndex`] carries it that way:
+        /// which distances exist is the store's question, not the grammar's.
+        distance: Name,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
     /// `DEFINE INDEX by_email ON users FIELDS email UNIQUE`
     DefineIndex {
         /// The index's name, unique within its table.
@@ -574,6 +617,17 @@ pub enum StatementKind {
         /// The edge kind to undefine.
         name: Name,
     },
+    /// `DROP VECTOR embeddings` — the store, its records and its index.
+    ///
+    /// The same act `DROP TABLE` performs, reached by the word that created the
+    /// thing. Two spellings for one effect is what the round trip already
+    /// requires: `INFO` reports a vector store as `DEFINE VECTOR`, so a reader
+    /// who has only ever seen that word must have a way to undo it without
+    /// having to learn that it was a table underneath.
+    DropVector {
+        /// The store to undefine.
+        name: Name,
+    },
     /// `ALTER TABLE users ALTER FIELD email TYPE string REQUIRED`
     ///
     /// Redeclares a field that already exists, which a second `DEFINE FIELD`
@@ -908,6 +962,20 @@ pub enum InfoSubject {
     /// a graph you have just declared exists, and reporting it as absent would
     /// make the first thing anyone does after declaring one look like a failure.
     Graph(Name),
+    /// `INFO FOR VECTOR embeddings` — one vector store's width, distance and
+    /// measured recall.
+    ///
+    /// Distinct from `INFO FOR TABLE`, which reports fields and indexes, because
+    /// the question a vector store is asked is not *what is in it* but **how good
+    /// is it**: recall is the number that says whether an approximate answer is
+    /// worth having, and it is the one thing the table view can never carry,
+    /// since it is a property of a measurement rather than of a declaration.
+    ///
+    /// It reports the recall that was **measured**, and the parameters it was
+    /// measured at, or says it has never been measured. It never computes a
+    /// plausible figure: an approximate index whose recall came from a formula is
+    /// a number nobody checked.
+    Vector(Name),
     /// `INFO FOR USER ada` — one user's role, tenancy and grants.
     ///
     /// The one subject that refuses rather than filters, because its content

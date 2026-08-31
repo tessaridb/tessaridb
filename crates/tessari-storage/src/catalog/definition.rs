@@ -39,6 +39,8 @@ const FIELD_ORDER: &str = "order";
 const FIELD_DESCENDING: &str = "descending";
 const FIELD_IDENTITY: &str = "identity";
 const FIELD_GRAPH: &str = "graph";
+const FIELD_DIMENSION: &str = "dimension";
+const FIELD_DISTANCE: &str = "distance";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,6 +243,15 @@ impl TableDefinition {
         if let TableKind::Edge(Some(endpoints)) = &self.kind {
             fields.insert(FIELD_ENDPOINTS.to_owned(), endpoints.to_value());
         }
+        // The vector store is the one kind carried by its declaration rather
+        // than by a flag beside it, because it is the one kind with nothing to
+        // say when the declaration is absent: an edge table without endpoints is
+        // still an edge table, while a vector store without a width and a
+        // distance is not a vector store at all. Presence is therefore the whole
+        // statement, and a fourth flag would be a second place holding one fact.
+        if let TableKind::Vector(declared) = &self.kind {
+            fields.insert(FIELD_VECTOR.to_owned(), declared.to_value());
+        }
         Value::Object(fields)
     }
 
@@ -268,6 +279,10 @@ impl TableDefinition {
                 flag(fields, FIELD_COLLECTION, "table")?,
                 match fields.get(FIELD_ENDPOINTS) {
                     Some(value) => Some(EdgeDeclaration::from_value(value)?),
+                    None => None,
+                },
+                match fields.get(FIELD_VECTOR) {
+                    Some(value) => Some(VectorDeclaration::from_value(value)?),
                     None => None,
                 },
             )?,
@@ -360,6 +375,91 @@ pub enum TableKind {
     /// would make "declares a pair but is not an edge table" representable — the
     /// state this type was introduced one change earlier to abolish (C1).
     Edge(Option<EdgeDeclaration>),
+    /// Vectors: records holding one vector of a declared width, with the index
+    /// that searches them built by the declaration — `DEFINE VECTOR`.
+    ///
+    /// The fifth kind, and it is a kind rather than three separate statements
+    /// for the reason [`TableKind::Collection`] is one: `INFO` must answer with
+    /// the word that created the thing. A store reported as a collection with a
+    /// field and an index re-executes happily and loses the fact that the three
+    /// belong together — which is the whole of what the word promises, since a
+    /// width with no index searches nothing, an index with no width admits a row
+    /// of the wrong shape, and neither without `REQUIRED` admits a record with
+    /// no vector at all.
+    Vector(VectorDeclaration),
+}
+
+/// What a vector store calls the field its vectors are in.
+///
+/// Fixed rather than named in the declaration, because a store whose vector
+/// field could be called anything is a store every reader has to look up before
+/// writing to it — and the statement already says the whole of what the field
+/// is. It is the same name as the store's index, which does not collide: fields
+/// and indexes are separate namespaces.
+pub const VECTOR_FIELD: &str = "vector";
+
+/// How wide a vector store's vectors are, and what distance searches them.
+///
+/// Both are on the kind rather than beside it, for the reason
+/// [`EdgeDeclaration`] rides on `Edge`: a pair of fields would make "declares a
+/// width but is not a vector store" representable, and that is the state the
+/// type exists to abolish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VectorDeclaration {
+    /// How many components every vector in the store holds.
+    ///
+    /// A `u32` because that is how this file stores every small integer, and
+    /// because the parser refuses a width no `u32` could carry — a store that
+    /// could not write its own declaration back would report a width it was
+    /// never given.
+    pub dimension: u32,
+    /// The distance its index is built and searched with.
+    pub distance: VectorDistance,
+}
+
+impl VectorDeclaration {
+    /// The value written inside the table's catalog entry.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        Value::Object(BTreeMap::from([
+            (FIELD_DIMENSION.to_owned(), number(self.dimension)),
+            (FIELD_DISTANCE.to_owned(), Value::from(self.distance.name())),
+        ]))
+    }
+
+    /// Read a declaration back.
+    ///
+    /// A distance this build does not recognise is **refused**, on the same
+    /// reasoning `identity_kind` records: an unknown word is a store already
+    /// searched some other way, and reading it as `cosine` would answer a
+    /// nearest-neighbour question from a graph built for a different geometry —
+    /// plausible neighbours that are not the nearest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when the width or the distance is
+    /// missing, holds the wrong type, or names a distance this build has not.
+    pub fn from_value(value: &Value) -> Result<Self> {
+        const ENTITY: &str = "vector store";
+        let fields = object(value, ENTITY)?;
+        let Some(Value::String(distance)) = fields.get(FIELD_DISTANCE) else {
+            return Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_DISTANCE,
+                found: fields
+                    .get(FIELD_DISTANCE)
+                    .map_or("none", tessari_types::Value::type_name),
+            });
+        };
+        Ok(Self {
+            dimension: field_id(fields, FIELD_DIMENSION, ENTITY)?,
+            distance: VectorDistance::parse(distance).ok_or(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_DISTANCE,
+                found: "a distance this build does not have",
+            })?,
+        })
+    }
 }
 
 /// The pair an edge table joins, and the order its edges are held in.
@@ -411,12 +511,17 @@ impl TableKind {
         bucket: bool,
         collection: bool,
         endpoints: Option<EdgeDeclaration>,
+        vector: Option<VectorDeclaration>,
     ) -> Result<Self> {
-        match (edge, bucket, collection, endpoints) {
-            (false, false, false, None) => Ok(Self::Table),
-            (true, false, false, endpoints) => Ok(Self::Edge(endpoints)),
-            (false, true, false, None) => Ok(Self::Bucket),
-            (false, false, true, None) => Ok(Self::Collection),
+        match (edge, bucket, collection, endpoints, vector) {
+            (false, false, false, None, None) => Ok(Self::Table),
+            (true, false, false, endpoints, None) => Ok(Self::Edge(endpoints)),
+            (false, true, false, None, None) => Ok(Self::Bucket),
+            (false, false, true, None, None) => Ok(Self::Collection),
+            // A vector store sets no flag, so it arrives here as a plain table
+            // carrying a declaration. Any flag beside that declaration is two
+            // kinds claimed at once and is refused with the rest.
+            (false, false, false, None, Some(declared)) => Ok(Self::Vector(declared)),
             _ => Err(Error::CatalogMalformed {
                 entity: "table",
                 field: "kind",
@@ -1069,6 +1174,81 @@ mod tests {
             TableDefinition::from_value(&permissive.to_value()).unwrap(),
             permissive
         );
+    }
+
+    #[test]
+    fn a_vector_store_round_trips_its_width_and_its_distance() {
+        let table = TableDefinition {
+            id: TableId::new(11),
+            namespace: NamespaceId::new(7),
+            database: DatabaseId::new(3),
+            name: "embeddings".to_owned(),
+            schemafull: false,
+            graph: None,
+            // Deliberately the second distance rather than the first: a store
+            // that round tripped as `cosine` whatever it was declared with
+            // survives an assertion made with the default.
+            kind: TableKind::Vector(VectorDeclaration {
+                dimension: 768,
+                distance: VectorDistance::Euclidean,
+            }),
+            identity: IdentityKind::Int,
+        };
+        assert_eq!(
+            TableDefinition::from_value(&table.to_value()).unwrap(),
+            table
+        );
+    }
+
+    #[test]
+    fn a_stored_vector_store_naming_a_distance_this_build_has_not_is_refused() {
+        // Refused rather than read as `cosine`, on the reasoning `identity_kind`
+        // records for an unknown word: the entry describes a store already
+        // searched some other way, and answering its nearest-neighbour question
+        // from a graph built for a different geometry returns plausible
+        // neighbours that are not the nearest — with nothing in an error state.
+        let fields = BTreeMap::from([
+            (FIELD_ID.to_owned(), number(11)),
+            (FIELD_NAMESPACE.to_owned(), number(7)),
+            (FIELD_DATABASE.to_owned(), number(3)),
+            (FIELD_NAME.to_owned(), Value::from("embeddings")),
+            (
+                FIELD_VECTOR.to_owned(),
+                Value::Object(BTreeMap::from([
+                    (FIELD_DIMENSION.to_owned(), number(768)),
+                    (FIELD_DISTANCE.to_owned(), Value::from("manhattan")),
+                ])),
+            ),
+        ]);
+        let error = TableDefinition::from_value(&Value::Object(fields)).unwrap_err();
+        assert_eq!(error.code(), "corruption");
+    }
+
+    #[test]
+    fn a_stored_vector_store_that_also_claims_a_flag_is_refused() {
+        // The same refusal the three flags already get, extended to the kind
+        // that is carried by a declaration instead of by a flag: on disk both
+        // are writable side by side, and picking a winner would make one replica
+        // read a bucket where another reads a vector store, from bytes they
+        // agree on.
+        let fields = BTreeMap::from([
+            (FIELD_ID.to_owned(), number(11)),
+            (FIELD_NAMESPACE.to_owned(), number(7)),
+            (FIELD_DATABASE.to_owned(), number(3)),
+            (FIELD_NAME.to_owned(), Value::from("embeddings")),
+            (FIELD_BUCKET.to_owned(), Value::Bool(true)),
+            (
+                FIELD_VECTOR.to_owned(),
+                Value::Object(BTreeMap::from([
+                    (FIELD_DIMENSION.to_owned(), number(768)),
+                    (FIELD_DISTANCE.to_owned(), Value::from("cosine")),
+                ])),
+            ),
+        ]);
+        let error = TableDefinition::from_value(&Value::Object(fields)).unwrap_err();
+        assert_eq!(error.code(), "corruption");
+        let text = error.to_string();
+        assert!(text.contains("kind"), "{text}");
     }
 
     #[test]

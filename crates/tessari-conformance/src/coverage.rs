@@ -27,6 +27,8 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DefineSpace { .. } => "DEFINE SPACE",
         StatementKind::DefineBucket { .. } => "DEFINE BUCKET",
         StatementKind::DefineCollection { .. } => "DEFINE COLLECTION",
+        StatementKind::DefineVector { .. } => "DEFINE VECTOR",
+        StatementKind::DropVector { .. } => "DROP VECTOR",
         StatementKind::DefineGraph { .. } => "DEFINE GRAPH",
         StatementKind::DropGraph { .. } => "DROP GRAPH",
         StatementKind::DefineEdge { .. } => "DEFINE EDGE",

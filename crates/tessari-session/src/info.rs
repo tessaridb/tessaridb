@@ -50,9 +50,9 @@ use tessari_ql::{
 };
 use tessari_storage::{
     BUILD_VERSION, Catalog, ConsumerDefinition, FieldDefinition, GrantDefinition, IndexDefinition,
-    Progress, Reach, ReplicaDefinition, TableDefinition, Transaction, UserDefinition,
+    Progress, Reach, ReplicaDefinition, TableDefinition, TableKind, Transaction, UserDefinition,
 };
-use tessari_types::{DatabaseId, NamespaceId, TableId, Value};
+use tessari_types::{DatabaseId, NamespaceId, Number, TableId, Value};
 
 use crate::describe;
 use crate::error::{Error, Result};
@@ -75,6 +75,7 @@ impl Session<'_> {
             InfoSubject::Database => self.info_database(transaction, span)?,
             InfoSubject::Table(table) => self.info_table(transaction, table)?,
             InfoSubject::Graph(name) => self.info_graph(transaction, name, span)?,
+            InfoSubject::Vector(name) => self.info_vector(transaction, name, span)?,
             InfoSubject::User(name) => self.info_user(transaction, name, span)?,
             InfoSubject::Users => self.info_users(transaction)?,
             InfoSubject::Access(table) => self.info_access(transaction, table, span)?,
@@ -182,6 +183,50 @@ impl Session<'_> {
             ("name".to_owned(), Value::from(name.text.as_str())),
             ("tables".to_owned(), by_name(names)),
             ("edges".to_owned(), by_name(kinds)),
+        ]))
+    }
+
+    /// `INFO FOR VECTOR embeddings` — its width, its distance, and its recall.
+    ///
+    /// The third field is the reason this is not `INFO FOR TABLE`. A vector
+    /// index answers approximately, so the only number that says whether its
+    /// answers are worth having is the recall it was **measured** at — and that
+    /// is a property of a measurement rather than of a declaration, which is why
+    /// no table report could ever carry it.
+    ///
+    /// It reads `none` until something measures it. That is the honest answer
+    /// and it stays the answer: a figure derived from the build parameters would
+    /// be a number nobody checked, wearing the name of one somebody did.
+    fn info_vector(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let context = self.context(transaction, None, span)?;
+        let missing = || Error::Unknown {
+            entity: "vector store",
+            name: name.text.clone(),
+            span,
+        };
+        let id = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(missing)?;
+        let definition = Catalog::new(transaction).table(id)?.ok_or_else(missing)?;
+        let TableKind::Vector(declared) = definition.kind else {
+            return Err(missing());
+        };
+        Ok(BTreeMap::from([
+            ("name".to_owned(), Value::from(name.text.as_str())),
+            (
+                "dimension".to_owned(),
+                Value::Number(Number::Integer(i64::from(declared.dimension))),
+            ),
+            ("distance".to_owned(), Value::from(declared.distance.name())),
+            // `None` and not a zero. A recall of zero is a measurement saying
+            // the index finds nothing; absence says nobody has asked. Reporting
+            // the second as the first is the failure this field exists to avoid.
+            ("recall".to_owned(), Value::None),
         ]))
     }
 

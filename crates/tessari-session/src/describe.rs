@@ -35,7 +35,7 @@
 
 use std::fmt::Write as _;
 
-use tessari_storage::{FieldDefinition, IndexDefinition, TableDefinition};
+use tessari_storage::{FieldDefinition, IndexDefinition, TableDefinition, TableKind, VECTOR_FIELD};
 use tessari_types::{Assertion, IdentityKind, Number, Operand, Value};
 
 /// The part of a declaration that had no faithful spelling.
@@ -73,10 +73,22 @@ pub(crate) fn declaration(
 ) -> Result<String, Unwritable> {
     let mut script = String::new();
     write_table(&mut script, definition)?;
+    // A vector store's field and index are written by the word that declared
+    // them, so writing them again would refuse on re-execution with the name
+    // already taken. This is the one place a table's parts are not all written:
+    // for every other kind the declaration and its parts are separate
+    // statements, and here the word is all three.
+    let declared_by_the_word = matches!(definition.kind, TableKind::Vector(_));
     for field in fields {
+        if declared_by_the_word && field.name == VECTOR_FIELD {
+            continue;
+        }
         write_field(&mut script, &definition.name, field)?;
     }
     for index in indexes {
+        if declared_by_the_word && index.name == VECTOR_FIELD {
+            continue;
+        }
         write_index(&mut script, &definition.name, index)?;
     }
     Ok(script)
@@ -111,6 +123,29 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         return Err(Unwritable::at(format!(
             "table `{name}` belongs to a graph this writer cannot name"
         )));
+    }
+    // Written back as the word that created it, which is the whole reason the
+    // kind is stored rather than inferred from the field and the index it
+    // creates: `DEFINE TABLE embeddings SCHEMALESS` re-executes happily and
+    // restores a store that no longer knows the three belong together.
+    if let TableKind::Vector(declared) = &definition.kind {
+        if definition.schemafull || definition.is_edge() {
+            return Err(Unwritable::at(format!(
+                "table `{name}` carries flags its declaring word cannot say"
+            )));
+        }
+        if definition.identity != IdentityKind::default() {
+            return Err(Unwritable::at(format!(
+                "vector store `{name}` names records in a way its declaring word cannot say"
+            )));
+        }
+        let _ = writeln!(
+            script,
+            "DEFINE VECTOR {name} DIMENSION {} DISTANCE {};",
+            declared.dimension,
+            declared.distance.name()
+        );
+        return Ok(());
     }
     if definition.is_bucket() || definition.is_collection() {
         // Neither word takes a flag, so neither can express a table that has

@@ -8,8 +8,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use tessari_ql::{
-    BinaryOp, EdgeClause, Error, ExprKind, Identity, Projection, RecordTarget, Script, Source,
-    StatementKind, parse,
+    BinaryOp, EdgeClause, Error, ExprKind, Identity, InfoSubject, Projection, RecordTarget, Script,
+    Source, StatementKind, parse,
 };
 use tessari_types::{Datetime, FieldKind, Number, RecordId, Value};
 
@@ -1167,4 +1167,75 @@ fn vector_stays_a_name_a_caller_may_use() {
     };
     assert_eq!(columns[0].name.text, "vector");
     assert_eq!(columns[0].kind, FieldKind::vector(4).unwrap());
+}
+
+#[test]
+fn a_vector_store_declares_its_width_and_its_distance() {
+    let StatementKind::DefineVector {
+        name,
+        dimension,
+        distance,
+        if_not_exists,
+    } = one("DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine;")
+    else {
+        panic!("not a vector store declaration");
+    };
+    assert_eq!(name.text, "embeddings");
+    assert_eq!(dimension, 768);
+    assert_eq!(distance.text, "cosine");
+    assert!(!if_not_exists);
+
+    let StatementKind::DefineVector { if_not_exists, .. } =
+        one("DEFINE VECTOR IF NOT EXISTS embeddings DIMENSION 8 DISTANCE euclidean;")
+    else {
+        panic!("not a vector store declaration");
+    };
+    assert!(if_not_exists);
+}
+
+#[test]
+fn a_vector_store_needs_both_clauses_in_the_order_they_are_written() {
+    // Neither has a default: a width is the whole capability, and a distance
+    // default would decide which queries the store can serve without saying so.
+    assert!(parse("DEFINE VECTOR embeddings DISTANCE cosine;").is_err());
+    assert!(parse("DEFINE VECTOR embeddings DIMENSION 768;").is_err());
+    assert!(parse("DEFINE VECTOR embeddings DISTANCE cosine DIMENSION 768;").is_err());
+    assert!(parse("DEFINE VECTOR embeddings;").is_err());
+}
+
+#[test]
+fn a_stores_width_answers_to_the_same_rules_a_fields_does() {
+    // One reader for both, so a number the field refuses is a number the store
+    // refuses. The two are asserted together because "one function" is a
+    // property of the code that a later change can quietly end.
+    assert!(parse("DEFINE VECTOR embeddings DIMENSION 0 DISTANCE cosine;").is_err());
+    assert!(parse("DEFINE VECTOR embeddings DIMENSION 70000 DISTANCE cosine;").is_err());
+    assert!(parse("DEFINE FIELD e ON t TYPE vector<70000>;").is_err());
+    assert!(parse("DEFINE VECTOR embeddings DIMENSION 65536 DISTANCE cosine;").is_ok());
+    assert!(parse("DEFINE FIELD e ON t TYPE vector<65536>;").is_ok());
+}
+
+#[test]
+fn a_vector_store_is_dropped_and_reported_by_the_word_that_made_it() {
+    let StatementKind::DropVector { name } = one("DROP VECTOR embeddings;") else {
+        panic!("not a vector store drop");
+    };
+    assert_eq!(name.text, "embeddings");
+
+    let StatementKind::Info { subject, .. } = one("INFO FOR VECTOR embeddings;") else {
+        panic!("not an info statement");
+    };
+    let InfoSubject::Vector(named) = subject else {
+        panic!("not a vector subject");
+    };
+    assert_eq!(named.text, "embeddings");
+}
+
+#[test]
+fn vector_stays_a_name_a_caller_may_use_beside_the_new_word() {
+    // The word is contextual in all three positions it now appears in, so the
+    // table, the field and the store called `vector` all keep working.
+    assert!(parse("SELECT vector FROM documents;").is_ok());
+    assert!(parse("DEFINE TABLE vector (title string);").is_ok());
+    assert!(parse("SELECT * FROM vector;").is_ok());
 }

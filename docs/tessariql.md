@@ -822,6 +822,58 @@ it is a separate constraint — the same rule every other kind follows.
 `fetch`, and for a reason a database of embeddings makes obvious: that is exactly
 where a field called `vector` turns up.
 
+### A vector store, when the vectors are the point
+
+The width above is for a table that happens to hold a vector. When the vectors
+*are* the data, the store is declared as one:
+
+```
+DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine;
+
+CREATE embeddings:'intro' = { vector: [0.1, 0.2, 0.3], label: 'intro' };
+SELECT * FROM embeddings;
+SELECT * FROM embeddings ORDER BY vector::cosine(vector, $query) LIMIT 5;
+INFO FOR VECTOR embeddings;
+DROP VECTOR embeddings;
+```
+
+The records are ordinary records: written with `CREATE`, read with `SELECT`,
+carrying whatever other fields they need beside the vector. The store is a table
+in every way that matters to a reader, which is the point of declaring it as one.
+
+**What the word stands for.** Exactly three statements, run through the same code
+the long spellings run through:
+
+```
+DEFINE COLLECTION embeddings;
+DEFINE FIELD vector ON embeddings TYPE vector<768> REQUIRED;
+DEFINE INDEX vector ON embeddings FIELDS vector VECTOR cosine;
+```
+
+**What it adds is that the three cannot come apart.** A width with no index
+declares a shape nothing searches. An index with no width admits a row of the
+wrong shape and then reports it as infinitely far from everything. Neither
+without `REQUIRED` admits a record carrying no vector at all — legal in a table,
+and not a record of a vector store. Written by hand the three are three chances
+to be wrong; written as one word they are one declaration, and `INFO FOR TABLE`
+answers with that word rather than with the three.
+
+**Both clauses are required and neither has a default.** The width, because
+declaring it is the whole of what the word is for. The distance, because a
+default would decide which reads the store can serve without saying so: a graph
+whose edges were chosen by one distance approximates that distance and no other.
+
+**Reads are exact unless they say otherwise.** The declaration changes nothing
+about that. `APPROXIMATE` is still the only way to ask for the index's own
+answer, and it still carries the note saying a nearer record may exist. A store
+that became approximate by virtue of being declared would turn two
+identical-looking reads into two different contracts.
+
+`INFO FOR VECTOR` reports the width, the distance, and the recall the index was
+**measured** at — or `NONE`, meaning nobody has measured it. It never computes a
+plausible figure from the build parameters, because a number derived that way is
+one nobody checked wearing the name of one somebody did.
+
 ### A collection, for records that carry fields nobody declared
 
 ```
