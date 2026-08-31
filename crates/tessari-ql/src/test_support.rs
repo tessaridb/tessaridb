@@ -82,10 +82,15 @@ fn erase_statement(statement: &mut Statement) {
         | StatementKind::DefineSpace { name, .. }
         | StatementKind::DefineBucket { name, .. }
         | StatementKind::DefineCollection { name, .. }
+        // In the name-only list rather than in its own arm, unlike
+        // `DEFINE VECTOR`: a geo store declares no clause, so a name is all
+        // there is to erase.
+        | StatementKind::DefineGeo { name, .. }
         | StatementKind::DefineGraph { name, .. }
         | StatementKind::DefineEdge { name, .. }
         | StatementKind::DropEdge { name }
         | StatementKind::DropVector { name }
+        | StatementKind::DropGeo { name }
         | StatementKind::DropGraph { name }
         | StatementKind::DropUser { name }
         | StatementKind::DropAnalyzer { name }
@@ -148,7 +153,8 @@ fn erase_statement(statement: &mut Statement) {
             InfoSubject::User(name)
             | InfoSubject::Consumer(name)
             | InfoSubject::Graph(name)
-            | InfoSubject::Vector(name) => {
+            | InfoSubject::Vector(name)
+            | InfoSubject::Geo(name) => {
                 erase_name(name);
             }
         },

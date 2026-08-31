@@ -35,7 +35,9 @@
 
 use std::fmt::Write as _;
 
-use tessari_storage::{FieldDefinition, IndexDefinition, TableDefinition, TableKind, VECTOR_FIELD};
+use tessari_storage::{
+    FieldDefinition, GEO_FIELD, IndexDefinition, TableDefinition, TableKind, VECTOR_FIELD,
+};
 use tessari_types::{Assertion, IdentityKind, Number, Operand, Value};
 
 /// The part of a declaration that had no faithful spelling.
@@ -78,15 +80,19 @@ pub(crate) fn declaration(
     // already taken. This is the one place a table's parts are not all written:
     // for every other kind the declaration and its parts are separate
     // statements, and here the word is all three.
-    let declared_by_the_word = matches!(definition.kind, TableKind::Vector(_));
+    let declared_by_the_word = match definition.kind {
+        TableKind::Vector(_) => Some(VECTOR_FIELD),
+        TableKind::Geo => Some(GEO_FIELD),
+        _ => None,
+    };
     for field in fields {
-        if declared_by_the_word && field.name == VECTOR_FIELD {
+        if declared_by_the_word == Some(field.name.as_str()) {
             continue;
         }
         write_field(&mut script, &definition.name, field)?;
     }
     for index in indexes {
-        if declared_by_the_word && index.name == VECTOR_FIELD {
+        if declared_by_the_word == Some(index.name.as_str()) {
             continue;
         }
         write_index(&mut script, &definition.name, index)?;
@@ -145,6 +151,23 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
             declared.dimension,
             declared.distance.name()
         );
+        return Ok(());
+    }
+    // Same contract, one word further on. A geo store carries no clause, so
+    // there is nothing to write after the name — and the same three flags are
+    // refused, because the word cannot say them either.
+    if definition.kind == TableKind::Geo {
+        if definition.schemafull || definition.is_edge() {
+            return Err(Unwritable::at(format!(
+                "table `{name}` carries flags its declaring word cannot say"
+            )));
+        }
+        if definition.identity != IdentityKind::default() {
+            return Err(Unwritable::at(format!(
+                "geo store `{name}` names records in a way its declaring word cannot say"
+            )));
+        }
+        let _ = writeln!(script, "DEFINE GEO {name};");
         return Ok(());
     }
     if definition.is_bucket() || definition.is_collection() {

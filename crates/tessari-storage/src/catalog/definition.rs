@@ -32,6 +32,7 @@ const FIELD_SCHEMAFULL: &str = "schemafull";
 const FIELD_EDGE: &str = "edge";
 const FIELD_BUCKET: &str = "bucket";
 const FIELD_COLLECTION: &str = "collection";
+const FIELD_GEO: &str = "geo";
 const FIELD_ENDPOINTS: &str = "endpoints";
 const FIELD_FROM: &str = "from";
 const FIELD_TO: &str = "to";
@@ -210,10 +211,10 @@ impl TableDefinition {
             (FIELD_DATABASE.to_owned(), number(self.database.get())),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
             (FIELD_SCHEMAFULL.to_owned(), Value::Bool(self.schemafull)),
-            // Still three named flags on disk. The kind is how this build talks
-            // about a table, not a change to how one is stored, so no catalog
-            // entry is touched, no migration step is owed, and a build without
-            // the kind reads everything this one writes.
+            // Four named flags on disk. The kind is how this build talks about a
+            // table, not a change to how one is stored, so no catalog entry is
+            // touched, no migration step is owed, and a build without the kind
+            // reads everything this one writes.
             (
                 FIELD_EDGE.to_owned(),
                 Value::Bool(matches!(self.kind, TableKind::Edge(_))),
@@ -225,6 +226,10 @@ impl TableDefinition {
             (
                 FIELD_COLLECTION.to_owned(),
                 Value::Bool(self.kind == TableKind::Collection),
+            ),
+            (
+                FIELD_GEO.to_owned(),
+                Value::Bool(self.kind == TableKind::Geo),
             ),
             (FIELD_IDENTITY.to_owned(), Value::from(self.identity.name())),
         ]);
@@ -277,6 +282,7 @@ impl TableDefinition {
                 flag(fields, FIELD_EDGE, "table")?,
                 flag(fields, FIELD_BUCKET, "table")?,
                 flag(fields, FIELD_COLLECTION, "table")?,
+                flag(fields, FIELD_GEO, "table")?,
                 match fields.get(FIELD_ENDPOINTS) {
                     Some(value) => Some(EdgeDeclaration::from_value(value)?),
                     None => None,
@@ -387,6 +393,26 @@ pub enum TableKind {
     /// of the wrong shape, and neither without `REQUIRED` admits a record with
     /// no vector at all.
     Vector(VectorDeclaration),
+    /// Places: records holding one geometry, with the spatial index that finds
+    /// them built by the declaration — `DEFINE GEO`.
+    ///
+    /// The sixth kind, on the same test the fifth passed: `INFO` must answer
+    /// with the word that created the thing, and a store reported as a
+    /// collection carrying a geometry field and a spatial index re-executes
+    /// happily while losing the fact that the three belong together. A field
+    /// with no index makes every place query a scan, an index with no declared
+    /// field indexes nothing, and neither without `REQUIRED` admits a record
+    /// with no geometry at all — which is a record a place store has no way to
+    /// answer for.
+    ///
+    /// Unlike [`TableKind::Vector`] it carries no declaration, because it has
+    /// nothing to declare. A vector store without a width and a distance is not
+    /// a vector store; a geo store is complete as soon as it exists. Whether it
+    /// should narrow the shape it holds is decided against it (Q-324): the shape
+    /// a `Closest` read needs is already enforced where that read happens, and a
+    /// store narrowed to points could not express a table of regions — which
+    /// `records_in_region` serves correctly today.
+    Geo,
 }
 
 /// What a vector store calls the field its vectors are in.
@@ -397,6 +423,16 @@ pub enum TableKind {
 /// is. It is the same name as the store's index, which does not collide: fields
 /// and indexes are separate namespaces.
 pub const VECTOR_FIELD: &str = "vector";
+
+/// What a geo store calls the field its geometries are in.
+///
+/// Fixed for the reason [`VECTOR_FIELD`] is, and named after the **type** rather
+/// than after the statement's word. In the vector store those coincide — the
+/// word, the field and the type are all `vector` — and here they cannot, since
+/// the word is `GEO` and the type is `geometry`. The rule that settles it is the
+/// one the vector field states: the name is the whole of what the field is, and
+/// what it is is a geometry.
+pub const GEO_FIELD: &str = "geometry";
 
 /// How wide a vector store's vectors are, and what distance searches them.
 ///
@@ -510,18 +546,20 @@ impl TableKind {
         edge: bool,
         bucket: bool,
         collection: bool,
+        geo: bool,
         endpoints: Option<EdgeDeclaration>,
         vector: Option<VectorDeclaration>,
     ) -> Result<Self> {
-        match (edge, bucket, collection, endpoints, vector) {
-            (false, false, false, None, None) => Ok(Self::Table),
-            (true, false, false, endpoints, None) => Ok(Self::Edge(endpoints)),
-            (false, true, false, None, None) => Ok(Self::Bucket),
-            (false, false, true, None, None) => Ok(Self::Collection),
+        match (edge, bucket, collection, geo, endpoints, vector) {
+            (false, false, false, false, None, None) => Ok(Self::Table),
+            (true, false, false, false, endpoints, None) => Ok(Self::Edge(endpoints)),
+            (false, true, false, false, None, None) => Ok(Self::Bucket),
+            (false, false, true, false, None, None) => Ok(Self::Collection),
+            (false, false, false, true, None, None) => Ok(Self::Geo),
             // A vector store sets no flag, so it arrives here as a plain table
             // carrying a declaration. Any flag beside that declaration is two
             // kinds claimed at once and is refused with the rest.
-            (false, false, false, None, Some(declared)) => Ok(Self::Vector(declared)),
+            (false, false, false, false, None, Some(declared)) => Ok(Self::Vector(declared)),
             _ => Err(Error::CatalogMalformed {
                 entity: "table",
                 field: "kind",

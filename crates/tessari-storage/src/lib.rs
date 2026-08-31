@@ -39,7 +39,7 @@ mod transaction;
 pub use catalog::{
     AnalyzerDefinition, Authority, Catalog, ConsumerDefinition, DatabaseDefinition, EDGE_IN,
     EDGE_OUT, EdgeDeclaration, EdgeKindDefinition, EdgeOrder, FieldDefinition, FieldShape,
-    GrantDefinition, GraphDefinition, Held, IndexDefinition, IndexShape, Kind, Mapped,
+    GEO_FIELD, GrantDefinition, GraphDefinition, Held, IndexDefinition, IndexShape, Kind, Mapped,
     NamespaceDefinition, OnFailure, RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE,
     SYSTEM_NAMESPACE, TableDefinition, TableKind, TableShape, UserDefinition, VECTOR_FIELD,
     VectorDeclaration, VectorDistance, Verb,

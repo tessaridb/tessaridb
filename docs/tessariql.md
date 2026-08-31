@@ -918,6 +918,66 @@ truth — so a bare percentage would look current forever. Carrying the size it 
 taken at lets a reader see the number has been outgrown, and running
 `REBUILD INDEX` again is how a current one is obtained.
 
+### A geo store, when the places are the point
+
+```
+DEFINE GEO places;
+```
+
+One word, and no clause. It stands for three statements the way a vector store
+does, and they have to be got right together:
+
+```
+DEFINE COLLECTION places;
+DEFINE FIELD geometry ON places TYPE geometry REQUIRED;
+DEFINE INDEX geometry ON places FIELDS geometry SPATIAL;
+```
+
+A geometry field with no spatial index makes every place query a scan; a spatial
+index with no declared field indexes nothing; and neither without `REQUIRED`
+admits a record with no geometry at all — legal in a table, and not a record a
+store of places can answer for. `INFO` answers with the word rather than with the
+three, so a store read back out of the catalog is still a store.
+
+A place is an ordinary record, and the store is an ordinary table:
+
+```
+CREATE places:'paris' = { geometry: geometry { type: 'Point', coordinates: [2.35, 48.85] }, name: 'Paris' };
+SELECT name FROM places;
+```
+
+**The store does not narrow the shape it holds**, and that is a decision rather
+than an omission. `DEFINE VECTOR` must declare a width because nothing else
+refuses a row of the wrong shape — a wrong-width vector is not an error, it is
+infinitely far from everything, which is a plausible ordering rather than a
+complaint. Geometry has no such silence: a read that orders by distance from a
+point refuses a record that is not one, and says so. So a region is a place too,
+and a table of them is a geo store:
+
+```
+CREATE places:'ward' = { geometry: geometry { type: 'Polygon', coordinates: [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]] }, name: 'a ward' };
+```
+
+`INFO FOR GEO` reports the store's field and its index, and carries no
+measurement — a spatial index answers exactly, so there is no number a report
+could add that the declaration does not already say:
+
+```json
+{"name": "places", "field": "geometry", "index": "geometry"}
+```
+
+The word that made the store is the word that removes it, along with its records
+and its index:
+
+```
+DROP GEO places;
+```
+
+It refuses a table that is not a geo store rather than dropping it, because the
+two words name different things even where they would remove the same rows — and
+a `DROP GEO` that quietly removed an ordinary table would be a typo with the
+blast radius of a table.
+
 ### A collection, for records that carry fields nobody declared
 
 ```

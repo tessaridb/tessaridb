@@ -295,9 +295,10 @@ impl Parser<'_> {
             _ if self.eat_word("consumers") => InfoSubject::Consumers,
             _ if self.eat_word("consumer") => InfoSubject::Consumer(self.name()?),
             _ if self.eat_word("vector") => InfoSubject::Vector(self.name()?),
+            _ if self.eat_word("geo") => InfoSubject::Geo(self.name()?),
             _ => {
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS` or `VECTOR`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR` or `GEO`",
                 ));
             }
         };
@@ -536,8 +537,12 @@ impl Parser<'_> {
             // to take away, and taking it away here would take it away
             // everywhere, since a reserved word is reserved in every position.
             _ if self.eat_word("vector") => self.define_vector(),
+            // Contextual for the same reason, and with more at stake: `geo` is a
+            // perfectly ordinary column name, and reserving it here would
+            // reserve it everywhere.
+            _ if self.eat_word("geo") => self.define_geo(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `CONSUMER` or `VECTOR`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `CONSUMER`, `VECTOR` or `GEO`",
             )),
         }
     }
@@ -567,6 +572,20 @@ impl Parser<'_> {
             name,
             dimension,
             distance: self.name()?,
+            if_not_exists,
+        })
+    }
+
+    /// `DEFINE GEO places`
+    ///
+    /// A name and nothing else. Where `DEFINE VECTOR` requires two clauses
+    /// because a store without them is not one, a geo store is complete as soon
+    /// as it exists — so there is no clause to read, and adding an optional one
+    /// later leaves every store written today parsing (Q-324).
+    fn define_geo(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        Ok(StatementKind::DefineGeo {
+            name: self.name()?,
             if_not_exists,
         })
     }
@@ -1415,6 +1434,7 @@ impl Parser<'_> {
             _ if self.eat_word("replica") => Ok(StatementKind::DropReplica { name: self.name()? }),
             // Contextual, as the word is everywhere else it appears.
             _ if self.eat_word("vector") => Ok(StatementKind::DropVector { name: self.name()? }),
+            _ if self.eat_word("geo") => Ok(StatementKind::DropGeo { name: self.name()? }),
             // Declined rather than missing, and it says so. `DEFINE NODE` writes
             // this process's own configuration outside the transaction, so its
             // inverse is an edit to a config file rather than a statement — and

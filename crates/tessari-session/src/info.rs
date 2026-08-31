@@ -50,8 +50,9 @@ use tessari_ql::{
     Source, Span, StatementKind, TableRef,
 };
 use tessari_storage::{
-    BUILD_VERSION, Catalog, ConsumerDefinition, FieldDefinition, GrantDefinition, IndexDefinition,
-    Progress, Reach, ReplicaDefinition, TableDefinition, TableKind, Transaction, UserDefinition,
+    BUILD_VERSION, Catalog, ConsumerDefinition, FieldDefinition, GEO_FIELD, GrantDefinition,
+    IndexDefinition, Progress, Reach, ReplicaDefinition, TableDefinition, TableKind, Transaction,
+    UserDefinition,
 };
 use tessari_types::{DatabaseId, NamespaceId, Number, TableId, Value};
 
@@ -77,6 +78,7 @@ impl Session<'_> {
             InfoSubject::Table(table) => self.info_table(transaction, table)?,
             InfoSubject::Graph(name) => self.info_graph(transaction, name, span)?,
             InfoSubject::Vector(name) => self.info_vector(transaction, name, span)?,
+            InfoSubject::Geo(name) => self.info_geo(transaction, name, span)?,
             InfoSubject::User(name) => self.info_user(transaction, name, span)?,
             InfoSubject::Users => self.info_users(transaction)?,
             InfoSubject::Access(table) => self.info_access(transaction, table, span)?,
@@ -248,6 +250,50 @@ impl Session<'_> {
             // the index finds nothing; absence says nobody has asked. Reporting
             // the second as the first is the failure this field exists to avoid.
             ("recall".to_owned(), measured.map_or(Value::None, reported)),
+        ]))
+    }
+
+    /// `INFO FOR GEO places` — the store's field and its index.
+    ///
+    /// Shorter than [`Session::info_vector`] by exactly what the two engines
+    /// differ by. A vector index answers approximately, so `INFO` must report
+    /// the width and the distance it was built with and the recall it was
+    /// measured at. A spatial index answers exactly, so there is no parameter to
+    /// report and no measurement to take: what the store is, its field and its
+    /// index already say.
+    fn info_geo(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let context = self.context(transaction, None, span)?;
+        let missing = || Error::Unknown {
+            entity: "geo store",
+            name: name.text.clone(),
+            span,
+        };
+        let id = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(missing)?;
+        let definition = Catalog::new(transaction).table(id)?.ok_or_else(missing)?;
+        if definition.kind != TableKind::Geo {
+            return Err(missing());
+        }
+        // Found by the property that makes it the store's index rather than by
+        // the name the desugaring gave it, for the reason the vector store gives:
+        // a name is a spelling, and this is the thing itself.
+        let index = Catalog::new(transaction)
+            .indexes_on(id)?
+            .into_iter()
+            .find(|index| index.spatial);
+        Ok(BTreeMap::from([
+            ("name".to_owned(), Value::from(name.text.as_str())),
+            ("field".to_owned(), Value::from(GEO_FIELD)),
+            (
+                "index".to_owned(),
+                index.map_or(Value::None, |index| Value::from(index.name.as_str())),
+            ),
         ]))
     }
 

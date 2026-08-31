@@ -104,6 +104,8 @@ impl Effect {
             | StatementKind::DefineCollection { .. }
             | StatementKind::DefineVector { .. }
             | StatementKind::DropVector { .. }
+            | StatementKind::DefineGeo { .. }
+            | StatementKind::DropGeo { .. }
             | StatementKind::DefineGraph { .. }
             | StatementKind::DropGraph { .. }
             | StatementKind::DefineEdge { .. }

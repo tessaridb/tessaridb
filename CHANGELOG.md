@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 996 conformance cases define the language and run in the build.
+Unreleased. 1013 conformance cases define the language and run in the build.
 
 ### Breaking — a table is not a document
 
@@ -82,6 +82,17 @@ became a reserved word; a field or table named `schemaless` needs renaming.
   was measured at, how many queries it averaged, the engine constants in force,
   and **how many records the store held at the time** — recall decays as records
   arrive after a rebuild, so a lone number would go on looking current forever.
+
+- **`DEFINE GEO`** — a store of places declared by one word, standing for a
+  collection, a `geometry` field the store requires, and the spatial index that
+  finds them. `INFO FOR GEO` answers with the word rather than with the three, so
+  a store read back out of the catalog is still a store, and `DROP GEO` removes
+  it — refusing a table that is not one rather than dropping it. It takes **no
+  clause narrowing the shape it holds**, unlike `DEFINE VECTOR`'s required width,
+  and the asymmetry is the point: a wrong-width vector is not an error but a
+  plausible ordering, while a read that orders by distance from a point already
+  refuses a record that is not one and says so. Narrowing the store would also
+  have made a table of regions inexpressible, and a region is a place.
 
 - **`TYPE vector<n>`** — a field declares how many components its vectors hold,
   and a write of any other width is refused **at the write**. Without it `array`

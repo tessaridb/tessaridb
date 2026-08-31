@@ -31,11 +31,13 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DefineSpace { .. }
         | StatementKind::DefineBucket { .. }
         | StatementKind::DefineCollection { .. }
-        // A vector store is a table, and declaring one is declaring a table:
-        // handled by the caller for the same reason `DEFINE TABLE` is, not by
-        // naming a table that does not exist yet.
+        // A vector store and a geo store are tables, and declaring one is
+        // declaring a table: handled by the caller for the same reason
+        // `DEFINE TABLE` is, not by naming a table that does not exist yet.
         | StatementKind::DefineVector { .. }
         | StatementKind::DropVector { .. }
+        | StatementKind::DefineGeo { .. }
+        | StatementKind::DropGeo { .. }
         // A graph is a container, so declaring or dropping one touches no row
         // in any table: it is the caller's tenancy level that decides, exactly
         // as it is for the four words above.

@@ -29,6 +29,8 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DefineCollection { .. } => "DEFINE COLLECTION",
         StatementKind::DefineVector { .. } => "DEFINE VECTOR",
         StatementKind::DropVector { .. } => "DROP VECTOR",
+        StatementKind::DefineGeo { .. } => "DEFINE GEO",
+        StatementKind::DropGeo { .. } => "DROP GEO",
         StatementKind::DefineGraph { .. } => "DEFINE GRAPH",
         StatementKind::DropGraph { .. } => "DROP GRAPH",
         StatementKind::DefineEdge { .. } => "DEFINE EDGE",
@@ -97,6 +99,8 @@ pub const FORMS: &[&str] = &[
     "DEFINE SPACE",
     "DEFINE BUCKET",
     "DEFINE COLLECTION",
+    "DEFINE GEO",
+    "DROP GEO",
     "DEFINE INDEX",
     "DEFINE FIELD",
     "DEFINE ANALYZER",
@@ -185,6 +189,8 @@ mod tests {
              DEFINE SPACE s;\
              DEFINE BUCKET b;\
              DEFINE COLLECTION c;\
+             DEFINE GEO g;\
+             DROP GEO g;\
              DEFINE INDEX i ON t FIELDS f;\
              DEFINE FIELD f ON t TYPE string;\
              DROP TABLE t;\

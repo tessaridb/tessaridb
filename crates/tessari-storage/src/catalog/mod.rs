@@ -40,7 +40,7 @@ pub use authority::{Authority, Held, Kind, Reach};
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{
-    DatabaseDefinition, EdgeDeclaration, EdgeOrder, IndexDefinition, IndexShape,
+    DatabaseDefinition, EdgeDeclaration, EdgeOrder, GEO_FIELD, IndexDefinition, IndexShape,
     NamespaceDefinition, RECORD_LEVEL, TableDefinition, TableKind, TableShape, VECTOR_FIELD,
     VectorDeclaration, VectorDistance,
 };

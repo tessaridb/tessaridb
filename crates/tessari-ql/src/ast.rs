@@ -227,6 +227,37 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `DEFINE GEO places`
+    ///
+    /// The sixth word in the row, and it earns one on the same test the fifth
+    /// did. Written out as the three statements it stands for, a geo store is:
+    ///
+    /// ```text
+    /// DEFINE COLLECTION places;
+    /// DEFINE FIELD geometry ON places TYPE geometry REQUIRED;
+    /// DEFINE INDEX geometry ON places FIELDS geometry SPATIAL;
+    /// ```
+    ///
+    /// Three statements that must be got right together: a geometry field with
+    /// no spatial index makes every place query a scan, a spatial index with no
+    /// declared field indexes nothing, and either without `REQUIRED` admits a
+    /// record with no geometry — legal in a table, and not a record of a place
+    /// store. It desugars into exactly those three, through the same functions
+    /// [`StatementKind::DefineVector`] desugars through, so there is no
+    /// store-only path that could come to disagree with the field one.
+    ///
+    /// **It takes no clause**, which is where the analogy with `DEFINE VECTOR`
+    /// stops. A width has to be declared because nothing else refuses a row of
+    /// the wrong shape; a geometry does not, because the read that needs a point
+    /// already refuses everything else where it happens. Narrowing the store to
+    /// one shape would also make a table of regions inexpressible, and regions
+    /// are served correctly today (Q-324).
+    DefineGeo {
+        /// The name to create.
+        name: Name,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
     /// `DEFINE INDEX by_email ON users FIELDS email UNIQUE`
     DefineIndex {
         /// The index's name, unique within its table.
@@ -628,6 +659,16 @@ pub enum StatementKind {
         /// The store to undefine.
         name: Name,
     },
+    /// `DROP GEO places` — the store, its records and its index.
+    ///
+    /// Exists for the reason [`StatementKind::DropVector`] does: `INFO` reports
+    /// a geo store as `DEFINE GEO`, so a reader who has only ever seen that word
+    /// must have a way to undo it without first having to learn that it was a
+    /// table underneath.
+    DropGeo {
+        /// The store to undefine.
+        name: Name,
+    },
     /// `ALTER TABLE users ALTER FIELD email TYPE string REQUIRED`
     ///
     /// Redeclares a field that already exists, which a second `DEFINE FIELD`
@@ -976,6 +1017,17 @@ pub enum InfoSubject {
     /// plausible figure: an approximate index whose recall came from a formula is
     /// a number nobody checked.
     Vector(Name),
+    /// `INFO FOR GEO places` — one geo store's field and index.
+    ///
+    /// Distinct from `INFO FOR TABLE` for the reason [`InfoSubject::Vector`] is:
+    /// the answer must carry the word that created the thing, or a round trip
+    /// re-executes as a collection and the store stops being one.
+    ///
+    /// It carries no measurement, and that is not an omission. A vector index
+    /// answers approximately, so what it is worth is a question only a
+    /// measurement settles; a spatial index answers exactly, so there is nothing
+    /// about it a number could report that the declaration does not already say.
+    Geo(Name),
     /// `INFO FOR USER ada` — one user's role, tenancy and grants.
     ///
     /// The one subject that refuses rather than filters, because its content

@@ -8,8 +8,8 @@ use tessari_ql::{
 };
 use tessari_storage::{
     Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeOrder, FieldShape,
-    IndexDefinition, IndexShape, Mapped, OnFailure, RecordAddress, TableKind, TableShape,
-    Transaction, VECTOR_FIELD, VectorDeclaration, VectorDistance,
+    GEO_FIELD, IndexDefinition, IndexShape, Mapped, OnFailure, RecordAddress, TableKind,
+    TableShape, Transaction, VECTOR_FIELD, VectorDeclaration, VectorDistance,
 };
 
 use tessari_types::{
@@ -532,6 +532,11 @@ impl Session<'_> {
                 span,
             ),
             StatementKind::DropVector { name } => self.drop_vector(transaction, name, span),
+            StatementKind::DefineGeo {
+                name,
+                if_not_exists,
+            } => self.define_geo(transaction, name, *if_not_exists, span),
+            StatementKind::DropGeo { name } => self.drop_geo(transaction, name, span),
             StatementKind::Put {
                 target,
                 start,
@@ -1675,6 +1680,110 @@ impl Session<'_> {
         if !is_vector {
             return Err(Error::Unknown {
                 entity: "vector store",
+                name: name.text.clone(),
+                span,
+            });
+        }
+        Catalog::new(transaction).drop_table(id)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DEFINE GEO places` — the collection, its geometry field and its index.
+    ///
+    /// The same three calls [`Session::define_vector`] makes, in the same order,
+    /// through the same functions. There is no geo-only path: what the word
+    /// creates is what the three statements create, which is what makes the
+    /// round trip through `INFO` honest.
+    fn define_geo(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        if_not_exists: bool,
+        span: Span,
+    ) -> Result<Outcome> {
+        let outcome = self.define_table(
+            transaction,
+            name,
+            TableShape {
+                schemafull: false,
+                kind: TableKind::Geo,
+                identity: IdentityKind::default(),
+                graph: None,
+            },
+            if_not_exists,
+            span,
+        )?;
+        let table = TableRef {
+            database: None,
+            name: name.clone(),
+            span: name.span,
+        };
+        let field = Name {
+            text: GEO_FIELD.to_owned(),
+            span: name.span,
+        };
+        self.define_field(
+            transaction,
+            &field,
+            &table,
+            FieldKind::Geometry,
+            FieldShape {
+                // The property the three loose statements cannot express between
+                // them, exactly as in the vector store: `TYPE geometry` leaves
+                // the field optional, and a record with no geometry is legal in
+                // a table while being a record a place store cannot answer for.
+                required: true,
+                default: None,
+                analyzer: None,
+                assert: None,
+            },
+            if_not_exists,
+        )?;
+        self.define_index(
+            transaction,
+            &field,
+            &table,
+            &[FieldPath {
+                path: Path::field(GEO_FIELD),
+                span: name.span,
+            }],
+            IndexShape {
+                unique: false,
+                search: false,
+                spatial: true,
+                vector: None,
+            },
+            if_not_exists,
+        )?;
+        Ok(outcome)
+    }
+
+    /// `DROP GEO places` — the store, its records and its index.
+    ///
+    /// Refuses a table that is not one, for the reason [`Session::drop_vector`]
+    /// does: the words name different things even where they would remove the
+    /// same rows, and a `DROP GEO` that quietly removed an ordinary table would
+    /// be a typo with the blast radius of a table.
+    fn drop_geo(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        let id = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "geo store",
+                name: name.text.clone(),
+                span,
+            })?;
+        let is_geo = Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|definition| definition.kind == TableKind::Geo);
+        if !is_geo {
+            return Err(Error::Unknown {
+                entity: "geo store",
                 name: name.text.clone(),
                 span,
             });
