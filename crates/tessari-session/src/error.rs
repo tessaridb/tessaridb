@@ -1192,6 +1192,8 @@ pub enum Depended {
     DatabaseByTable,
     /// A namespace that still holds databases.
     NamespaceByDatabase,
+    /// A graph that tables still belong to.
+    GraphByTable,
 }
 
 impl Depended {
@@ -1201,6 +1203,7 @@ impl Depended {
             Self::AnalyzerByField => "analyzer",
             Self::DatabaseByTable => "database",
             Self::NamespaceByDatabase => "namespace",
+            Self::GraphByTable => "graph",
         }
     }
 
@@ -1209,6 +1212,10 @@ impl Depended {
         match self {
             Self::AnalyzerByField => "is named by",
             Self::DatabaseByTable | Self::NamespaceByDatabase => "holds",
+            // Not "holds": a graph does not contain its tables the way a
+            // database contains them — they belong to it while living in the
+            // database, and the sentence has to say which relation is in the way.
+            Self::GraphByTable => "is joined by",
         }
     }
 
@@ -1221,6 +1228,8 @@ impl Depended {
             (Self::DatabaseByTable, _) => "tables",
             (Self::NamespaceByDatabase, 1) => "database",
             (Self::NamespaceByDatabase, _) => "databases",
+            (Self::GraphByTable, 1) => "table",
+            (Self::GraphByTable, _) => "tables",
         }
     }
 }

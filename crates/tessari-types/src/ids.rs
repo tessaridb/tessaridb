@@ -64,6 +64,17 @@ define_id! {
 }
 
 define_id! {
+    /// Identifies a graph within a database.
+    ///
+    /// A graph carries an id for a reason the other levels do not: the id sits in
+    /// the leading bytes of every adjacency key, above the node it belongs to, so
+    /// the whole structure is one prefix and removing it is one range delete
+    /// rather than a scan. That is what makes a graph a thing the store can hold
+    /// rather than a convention spread across several tables.
+    GraphId(u32)
+}
+
+define_id! {
     /// Identifies an index on a table.
     ///
     /// An index carries an id for the same reason a table does: the id is what

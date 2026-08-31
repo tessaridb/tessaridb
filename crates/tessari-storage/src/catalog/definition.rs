@@ -12,7 +12,9 @@
 
 use std::collections::BTreeMap;
 
-use tessari_types::{DatabaseId, IdentityKind, IndexId, NamespaceId, Number, Path, TableId, Value};
+use tessari_types::{
+    DatabaseId, GraphId, IdentityKind, IndexId, NamespaceId, Number, Path, TableId, Value,
+};
 
 use crate::error::{Error, Result};
 
@@ -36,6 +38,7 @@ const FIELD_TO: &str = "to";
 const FIELD_ORDER: &str = "order";
 const FIELD_DESCENDING: &str = "descending";
 const FIELD_IDENTITY: &str = "identity";
+const FIELD_GRAPH: &str = "graph";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +100,15 @@ pub struct TableDefinition {
     /// read as though it used the one this build prefers, because the two would
     /// then name records into one table on two schemes.
     pub identity: IdentityKind,
+    /// The graph this table belongs to, when it belongs to one.
+    ///
+    /// `None` is every table that existed before graphs did, and is what an
+    /// entry written without the field decodes to — the same additive contract
+    /// the flags and `identity` keep. Membership is a **clause** rather than a
+    /// word (`DEFINE TABLE person IN social`) because a node kind is a table in
+    /// every respect that matters — selected from, inserted into, indexed,
+    /// granted on — and differs by exactly this one fact (Q-314).
+    pub graph: Option<GraphId>,
 }
 
 impl TableDefinition {
@@ -214,6 +226,13 @@ impl TableDefinition {
             ),
             (FIELD_IDENTITY.to_owned(), Value::from(self.identity.name())),
         ]);
+        // Written only when there is one, for the reason the endpoint pair is:
+        // a membership nobody declared is absent rather than zero, and zero is
+        // a graph id the allocator can legitimately never hand out but which a
+        // future reader would have to know that about.
+        if let Some(graph) = self.graph {
+            fields.insert(FIELD_GRAPH.to_owned(), number(graph.get()));
+        }
         // A declaration is not a flag, so it is written only by the edge table
         // that has one. Absent is how every edge table declared without a pair
         // reads, which is the same compatibility contract the flags keep: the
@@ -253,6 +272,10 @@ impl TableDefinition {
                 },
             )?,
             identity: identity_kind(fields, "table")?,
+            graph: match fields.get(FIELD_GRAPH) {
+                Some(_) => Some(GraphId::new(field_id(fields, FIELD_GRAPH, "table")?)),
+                None => None,
+            },
         })
     }
 }
@@ -280,6 +303,8 @@ pub struct TableShape {
     /// one transposition away from a table that mints UUIDs where a counter was
     /// meant, and nothing about the resulting store would look wrong.
     pub identity: IdentityKind,
+    /// The graph the table belongs to, when the declaration named one.
+    pub graph: Option<GraphId>,
 }
 
 /// Which engine's rules a table plays by.
@@ -882,6 +907,7 @@ mod tests {
             database: DatabaseId::new(3),
             name: "line_items".to_owned(),
             schemafull: true,
+            graph: Some(GraphId::new(9)),
             // Deliberately not the default here either, for the same reason the
             // identity below is not: a kind that round trips through three flags
             // is only proven by a kind that is not the one an absent flag gives.
@@ -997,6 +1023,7 @@ mod tests {
             database: DatabaseId::new(3),
             name: "follows".to_owned(),
             schemafull: false,
+            graph: None,
             kind: TableKind::Edge(Some(EdgeDeclaration {
                 from: TableId::new(4),
                 to: TableId::new(5),

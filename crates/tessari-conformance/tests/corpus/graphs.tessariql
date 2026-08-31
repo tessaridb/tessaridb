@@ -115,3 +115,41 @@ DEFINE TABLE mentions EDGE FROM users TO nowhere;
 --- case: and the refused declaration created no table
 RELATE users:1->mentions->posts:1;
 --- expect: error Unknown
+
+--- case: a graph is an object the store holds
+DEFINE GRAPH social;
+--- expect: ok
+
+--- case: a graph with no members reports rather than refusing
+INFO FOR GRAPH social;
+--- expect: ok
+
+--- case: a table declares which graph it belongs to
+DEFINE TABLE person (name string) IN social;
+CREATE person:'alice' = { name: 'Alice' };
+--- expect: ok
+
+--- case: and a node table is read the way any other table is
+SELECT * FROM person WHERE name = 'Alice';
+--- expect: rows 1
+
+--- case: a membership naming no graph is refused
+DEFINE TABLE ghost (name string) IN nowhere;
+--- expect: error Unknown
+
+--- case: and the refused declaration created no table
+SELECT * FROM ghost;
+--- expect: error Unknown
+
+--- case: a graph refuses to be dropped while a table still belongs to it
+DROP GRAPH social;
+--- expect: error StillDepended
+
+--- case: and succeeds once nothing does
+DROP TABLE person;
+DROP GRAPH social;
+--- expect: ok
+
+--- case: asking about a graph that was never declared refuses
+INFO FOR GRAPH social;
+--- expect: error Unknown

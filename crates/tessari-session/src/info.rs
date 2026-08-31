@@ -74,6 +74,7 @@ impl Session<'_> {
             InfoSubject::Namespace => self.info_namespace(transaction, span)?,
             InfoSubject::Database => self.info_database(transaction, span)?,
             InfoSubject::Table(table) => self.info_table(transaction, table)?,
+            InfoSubject::Graph(name) => self.info_graph(transaction, name, span)?,
             InfoSubject::User(name) => self.info_user(transaction, name, span)?,
             InfoSubject::Users => self.info_users(transaction)?,
             InfoSubject::Access(table) => self.info_access(transaction, table, span)?,
@@ -128,6 +129,52 @@ impl Session<'_> {
 
     /// The tables in the selected database, narrowed to those this session may
     /// read.
+    /// One graph, and the tables that belong to it.
+    ///
+    /// An empty list is a legitimate answer and is what a graph declared a
+    /// moment ago reports: the graph exists, and reporting it as absent would
+    /// make the first thing anyone does after declaring one look like a failure.
+    /// A graph that does not exist is the different case, and refuses.
+    ///
+    /// Membership is read by filtering the database's tables rather than from a
+    /// list held on the graph, because the membership already lives on the table
+    /// — a second copy on the graph would be a fact able to disagree with
+    /// itself, which is the same reason a bucket's chunk table is derived from
+    /// its name rather than stored beside it.
+    fn info_graph(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let context = self.context(transaction, None, span)?;
+        let id = Catalog::new(transaction)
+            .graph_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "graph",
+                name: name.text.clone(),
+                span,
+            })?;
+        let readable = self.readable_in(transaction)?;
+        let mut names = Vec::new();
+        for table in Catalog::new(transaction).tables_in(context.namespace, context.database)? {
+            if table.graph != Some(id) || !nameable(&table.name) {
+                continue;
+            }
+            if readable
+                .as_ref()
+                .is_some_and(|granted| !granted.contains(&table.id))
+            {
+                continue;
+            }
+            names.push(table.name);
+        }
+        Ok(BTreeMap::from([
+            ("name".to_owned(), Value::from(name.text.as_str())),
+            ("tables".to_owned(), by_name(names)),
+        ]))
+    }
+
     fn info_database(
         &self,
         transaction: &mut Transaction<'_>,
@@ -874,6 +921,13 @@ fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> {
             Value::from(definition.identity.name()),
         ),
     ]);
+    // Present only on a table that belongs to one, and reported as the **id**
+    // for the reason the endpoints below are: this report says what is stored,
+    // and a name resolved here would be a second read able to disagree with the
+    // first. `INFO FOR GRAPH` is the reverse direction and takes the name.
+    if let Some(graph) = definition.graph {
+        shape.insert("graph".to_owned(), Value::from(i64::from(graph.get())));
+    }
     // Present only on an edge table that declared its pair, and it has to be
     // present there: the endpoints and the order are the whole of what the
     // clause adds, and a declared pair reported as a bare edge table would be

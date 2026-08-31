@@ -94,6 +94,26 @@ pub enum StatementKind {
         /// one table named on two schemes sort into two regions of the keyspace
         /// and read back as one table only by accident.
         identity: IdentityKind,
+        /// The graph the table belongs to: `DEFINE TABLE person IN social`.
+        ///
+        /// A clause rather than a word, because a node kind is a table in every
+        /// respect that matters and differs by exactly this one fact (Q-314).
+        /// An edge kind is the asymmetric case and gets its own word, because it
+        /// is never selected from and its entries are not records.
+        graph: Option<Name>,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DEFINE GRAPH social` — the structure node tables belong to.
+    ///
+    /// The word names an **object**, which is the whole of what it adds: before
+    /// it, a graph was a fact in somebody's head about which tables were
+    /// related, so nothing could enumerate it, drop it, or be asked a question
+    /// about it. A bounded walk needs a boundary and a question about the whole
+    /// needs a whole to name, and this is where both come from.
+    DefineGraph {
+        /// The name to create.
+        name: Name,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -507,6 +527,16 @@ pub enum StatementKind {
         /// The namespace to undefine.
         name: Name,
     },
+    /// `DROP GRAPH social` — refused while a table still belongs to it.
+    ///
+    /// Refuses rather than orphaning, on the same reasoning as `DROP DATABASE`:
+    /// a membership left pointing at an id nothing resolves would surface later
+    /// as a walk that finds no graph, rather than now as the drop that caused
+    /// it.
+    DropGraph {
+        /// The graph to undefine.
+        name: Name,
+    },
     /// `ALTER TABLE users ALTER FIELD email TYPE string REQUIRED`
     ///
     /// Redeclares a field that already exists, which a second `DEFINE FIELD`
@@ -805,6 +835,12 @@ pub enum InfoSubject {
     Database,
     /// `INFO FOR TABLE users` — one table's shape, fields and indexes.
     Table(TableRef),
+    /// `INFO FOR GRAPH social` — the tables that belong to one graph.
+    ///
+    /// A graph with no members answers with an empty list rather than an error:
+    /// a graph you have just declared exists, and reporting it as absent would
+    /// make the first thing anyone does after declaring one look like a failure.
+    Graph(Name),
     /// `INFO FOR USER ada` — one user's role, tenancy and grants.
     ///
     /// The one subject that refuses rather than filters, because its content

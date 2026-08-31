@@ -237,6 +237,8 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::DefineSpace { .. }
         | StatementKind::DefineBucket { .. }
         | StatementKind::DefineCollection { .. }
+        | StatementKind::DefineGraph { .. }
+        | StatementKind::DropGraph { .. }
         | StatementKind::DefineIndex { .. }
         | StatementKind::DefineField { .. }
         | StatementKind::DefineAnalyzer { .. }

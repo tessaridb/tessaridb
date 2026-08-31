@@ -831,6 +831,42 @@ held in the order the endpoint index already used.
 `INFO FOR TABLE follows` reports the declaration under an `endpoints` key — the
 two tables and the order — beside the markers every table reports.
 
+### A graph, and the tables that belong to it
+
+```
+DEFINE GRAPH social;
+DEFINE TABLE person (name string) IN social;
+DEFINE TABLE company (name string) IN social;
+INFO FOR GRAPH social;
+```
+
+A graph is an **object**. Without one, "the social graph" is a fact somebody
+holds in their head about which tables are related: nothing enumerates it,
+nothing drops it, and nothing can be asked a question about it. `DEFINE GRAPH`
+makes it a thing the store holds, which is what a bounded walk needs a boundary
+of and what a question about the whole needs to name.
+
+A node kind is an ordinary table, and `IN` is the whole of the difference. It is
+selected from, inserted into, indexed and granted on exactly as any other table
+is — so membership is a clause rather than a second word for a table.
+
+`INFO FOR GRAPH social` answers with the graph's name and the tables that belong
+to it. A graph with no members answers with an empty list: it exists, and the
+first thing anyone does after declaring one should not read as a failure. A graph
+that was never declared refuses, which is the different question.
+
+`DROP GRAPH social` is refused while any table still belongs to it, and names
+one. Dropping anyway would leave every member pointing at a graph the store no
+longer has, and that surfaces later, as a walk that finds nothing, rather than
+now.
+
+A graph is scoped to its database, so two tenants may each keep a `social` and
+neither shadows the other.
+
+`INFO FOR TABLE person` reports the membership under a `graph` key, as the id the
+catalog holds rather than the name — the report says what is stored, and
+resolving the name here would be a second read able to disagree with the first.
+
 ### A table and its columns in one statement
 
 A table's fields can be declared with it, in parentheses after the name:

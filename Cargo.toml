@@ -71,6 +71,10 @@ opt-level = 0
 
 [profile.dev.package."*"]
 opt-level = 2
+# Dependency debug info is linked into every one of this workspace's test
+# binaries and nobody steps into a dependency frame — and at opt-level 2
+# those frames are inlined past in any case.
+debug = false
 
 [profile.dev.build-override]
 opt-level = 3

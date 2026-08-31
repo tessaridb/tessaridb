@@ -491,6 +491,8 @@ impl Needs {
             | StatementKind::DefineSpace { .. }
             | StatementKind::DefineBucket { .. }
             | StatementKind::DefineCollection { .. }
+            | StatementKind::DefineGraph { .. }
+            | StatementKind::DropGraph { .. }
             | StatementKind::DefineIndex { .. }
             | StatementKind::DropIndex { .. }
             | StatementKind::RebuildIndex { .. }

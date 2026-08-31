@@ -13,8 +13,8 @@ use tessari_storage::{
 };
 
 use tessari_types::{
-    Analyzer, FieldId, FieldKind, Filter, IdentityKind, Path, RecordId, RecordRef, Step, TableId,
-    Value,
+    Analyzer, FieldId, FieldKind, Filter, GraphId, IdentityKind, Path, RecordId, RecordRef, Step,
+    TableId, Value,
 };
 
 use crate::context::Context;
@@ -71,6 +71,7 @@ impl Session<'_> {
                 schemafull,
                 edge,
                 identity,
+                graph,
                 if_not_exists,
             } => {
                 // The endpoints are resolved **before** the table is created, so
@@ -79,6 +80,11 @@ impl Session<'_> {
                 // name could never refuse a `RELATE` against it, which is the
                 // whole capability the clause was added for.
                 let kind = self.edge_kind(transaction, edge.as_ref(), columns)?;
+                // Resolved before the table is created for the same reason, and
+                // it is the same failure: a table left standing with a
+                // membership nothing resolves belongs to no graph anyone can
+                // name, and `INFO FOR GRAPH` would never list it.
+                let graph = self.resolve_graph(transaction, graph.as_ref())?;
                 self.define_table_with_columns(
                     transaction,
                     name,
@@ -87,6 +93,7 @@ impl Session<'_> {
                         schemafull: *schemafull,
                         kind,
                         identity: *identity,
+                        graph,
                     },
                     *if_not_exists,
                     span,
@@ -285,6 +292,11 @@ impl Session<'_> {
             StatementKind::DropReplica { name } => self.drop_replica(transaction, name, span),
             StatementKind::DropDatabase { name } => self.drop_database(transaction, name, span),
             StatementKind::DropNamespace { name } => self.drop_namespace(transaction, name, span),
+            StatementKind::DefineGraph {
+                name,
+                if_not_exists,
+            } => self.define_graph(transaction, name, *if_not_exists, span),
+            StatementKind::DropGraph { name } => self.drop_graph(transaction, name, span),
             // Drop and declare in ONE transaction, which is what makes this
             // more than sugar: the catalog change and the rows ride the same log
             // record, so the store's schema pass holds every stored row to the
@@ -467,6 +479,7 @@ impl Session<'_> {
                     schemafull: false,
                     kind: TableKind::Bucket,
                     identity: IdentityKind::default(),
+                    graph: None,
                 },
                 *if_not_exists,
                 span,
@@ -486,6 +499,7 @@ impl Session<'_> {
                     schemafull: false,
                     kind: TableKind::Collection,
                     identity: *identity,
+                    graph: None,
                 },
                 *if_not_exists,
                 span,
@@ -801,6 +815,31 @@ impl Session<'_> {
     ///
     /// Returns [`Error::Unknown`] when an endpoint names no table, or when the
     /// order names a field the statement does not declare.
+    /// The graph a `DEFINE TABLE … IN social` clause names, resolved to its id.
+    ///
+    /// The graph is looked up in the tenancy the statement is running in, which
+    /// is where `DEFINE GRAPH` put it. A name that resolves to nothing refuses
+    /// here, before the table exists, so a refusal leaves the store exactly as
+    /// it found it.
+    fn resolve_graph(
+        &self,
+        transaction: &mut Transaction<'_>,
+        graph: Option<&Name>,
+    ) -> Result<Option<GraphId>> {
+        let Some(graph) = graph else {
+            return Ok(None);
+        };
+        let context = self.context(transaction, None, graph.span)?;
+        let id = Catalog::new(transaction)
+            .graph_id(context.namespace, context.database, &graph.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "graph",
+                name: graph.text.clone(),
+                span: graph.span,
+            })?;
+        Ok(Some(id))
+    }
+
     fn edge_kind(
         &self,
         transaction: &mut Transaction<'_>,
@@ -966,6 +1005,65 @@ impl Session<'_> {
             return Ok(Outcome::Done);
         }
         Catalog::new(transaction).create_database(namespace, &name.text)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DEFINE GRAPH social` — the structure node tables belong to.
+    fn define_graph(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        if_not_exists: bool,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        if if_not_exists
+            && Catalog::new(transaction)
+                .graph_id(context.namespace, context.database, &name.text)?
+                .is_some()
+        {
+            return Ok(Outcome::Done);
+        }
+        Catalog::new(transaction).create_graph(context.namespace, context.database, &name.text)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP GRAPH social` — refused while a table still belongs to it.
+    ///
+    /// The same stance [`Self::drop_database`] takes one level away: the
+    /// statement asks whether anything still depends, because it holds the span
+    /// to refuse with. Dropping anyway would leave every member table pointing
+    /// at an id nothing resolves, and the symptom would surface later as a walk
+    /// that finds no graph rather than now as the drop that caused it.
+    fn drop_graph(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        let id = Catalog::new(transaction)
+            .graph_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "graph",
+                name: name.text.clone(),
+                span,
+            })?;
+        let members: Vec<_> = Catalog::new(transaction)
+            .tables_in(context.namespace, context.database)?
+            .into_iter()
+            .filter(|table| table.graph == Some(id))
+            .collect();
+        if let Some(first) = members.first() {
+            return Err(Error::StillDepended {
+                depended: Depended::GraphByTable,
+                name: name.text.clone(),
+                count: members.len(),
+                first: first.name.clone(),
+                span,
+            });
+        }
+        Catalog::new(transaction).drop_graph(id)?;
         Ok(Outcome::Done)
     }
 

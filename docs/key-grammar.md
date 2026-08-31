@@ -91,6 +91,8 @@ because renumbering after data exists is a full rebuild.
 | `0x36` | `IdAllocator` | `meta` | reserved, unused — see §9 |
 | `0x37` | `BackfillWatermark` | `meta` | reserved — SG4 |
 | `0x38` | `NodeIdentity` | `meta` | implemented — see §3b |
+| `0x39` | `ReclaimFloor` | `meta` | implemented |
+| `0x3a` | `GraphCatalog` | `meta` | reserved, unused — see §9 |
 
 ### 3c. The spatial entry
 

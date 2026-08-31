@@ -1,5 +1,8 @@
 # Rust
 /target
+/target-lint
+/target-pkg
+/target-ra
 **/*.rs.bk
 *.pdb
 

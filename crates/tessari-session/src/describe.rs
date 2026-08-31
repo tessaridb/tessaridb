@@ -102,6 +102,16 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
             "edge table `{name}` declares endpoints this writer cannot name"
         )));
     }
+    // A membership is stored as a graph id and refuses for exactly the same
+    // reason, one clause further on: written without the `IN` clause the script
+    // would restore a table that belongs to no graph, so `INFO FOR GRAPH` would
+    // no longer list it and every walk bounded by that graph would quietly stop
+    // reaching it.
+    if definition.graph.is_some() {
+        return Err(Unwritable::at(format!(
+            "table `{name}` belongs to a graph this writer cannot name"
+        )));
+    }
     if definition.is_bucket() || definition.is_collection() {
         // Neither word takes a flag, so neither can express a table that has
         // one. `DEFINE BUCKET` and `DEFINE COLLECTION` both store

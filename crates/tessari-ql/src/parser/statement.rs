@@ -253,6 +253,10 @@ impl Parser<'_> {
                 self.advance();
                 InfoSubject::Table(self.table_ref()?)
             }
+            Some(Keyword::Graph) => {
+                self.advance();
+                InfoSubject::Graph(self.name()?)
+            }
             Some(Keyword::User) => {
                 self.advance();
                 InfoSubject::User(self.name()?)
@@ -386,6 +390,7 @@ impl Parser<'_> {
                 let mut strictness: Option<bool> = None;
                 let mut edge: Option<EdgeClause> = None;
                 let mut identity: Option<IdentityKind> = None;
+                let mut graph: Option<Name> = None;
                 loop {
                     if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
                         strictness = Some(true);
@@ -395,6 +400,8 @@ impl Parser<'_> {
                         edge = Some(self.edge_clause()?);
                     } else if identity.is_none() && self.eat_word("identity") {
                         identity = Some(self.identity_kind()?);
+                    } else if graph.is_none() && self.eat_keyword(Keyword::In) {
+                        graph = Some(self.name()?);
                     } else {
                         break;
                     }
@@ -412,7 +419,7 @@ impl Parser<'_> {
                 // store supplies. It keeps the lenient reading it had, because
                 // an edge carries properties and none of them were ever
                 // declared here.
-                if columns.is_empty() && strictness.is_none() && edge.is_none() {
+                if columns.is_empty() && strictness.is_none() && edge.is_none() && graph.is_none() {
                     return Err(Error::TableWithoutColumns {
                         name: name.text.clone(),
                         span: name.span,
@@ -425,6 +432,7 @@ impl Parser<'_> {
                     schemafull,
                     edge,
                     identity: identity.unwrap_or_default(),
+                    graph,
                     if_not_exists,
                 })
             }
@@ -432,6 +440,14 @@ impl Parser<'_> {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
                 Ok(StatementKind::DefineSpace {
+                    name: self.name()?,
+                    if_not_exists,
+                })
+            }
+            Some(Keyword::Graph) => {
+                self.advance();
+                let if_not_exists = self.eat_if_not_exists()?;
+                Ok(StatementKind::DefineGraph {
                     name: self.name()?,
                     if_not_exists,
                 })
@@ -1196,6 +1212,10 @@ impl Parser<'_> {
             Some(Keyword::Namespace) => {
                 self.advance();
                 Ok(StatementKind::DropNamespace { name: self.name()? })
+            }
+            Some(Keyword::Graph) => {
+                self.advance();
+                Ok(StatementKind::DropGraph { name: self.name()? })
             }
             Some(Keyword::Index) => {
                 self.advance();

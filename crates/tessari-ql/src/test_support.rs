@@ -82,6 +82,8 @@ fn erase_statement(statement: &mut Statement) {
         | StatementKind::DefineSpace { name, .. }
         | StatementKind::DefineBucket { name, .. }
         | StatementKind::DefineCollection { name, .. }
+        | StatementKind::DefineGraph { name, .. }
+        | StatementKind::DropGraph { name }
         | StatementKind::DropUser { name }
         | StatementKind::DropAnalyzer { name }
         | StatementKind::DropReplica { name }
@@ -140,7 +142,9 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Node
             | InfoSubject::Consumers => {}
             InfoSubject::Table(table) | InfoSubject::Access(table) => erase_table(table),
-            InfoSubject::User(name) | InfoSubject::Consumer(name) => erase_name(name),
+            InfoSubject::User(name) | InfoSubject::Consumer(name) | InfoSubject::Graph(name) => {
+                erase_name(name);
+            }
         },
         StatementKind::DefineAnalyzer { name, .. } => erase_name(name),
         StatementKind::DefineUser {

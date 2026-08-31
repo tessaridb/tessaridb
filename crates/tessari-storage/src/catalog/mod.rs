@@ -26,6 +26,7 @@ mod consumer;
 mod definition;
 mod field;
 mod grant;
+mod graph;
 mod replica;
 mod system;
 mod user;
@@ -43,6 +44,7 @@ pub use definition::{
 };
 pub use field::{FieldDefinition, FieldShape};
 pub use grant::GrantDefinition;
+pub use graph::GraphDefinition;
 pub use replica::ReplicaDefinition;
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 pub use user::{Role, UserDefinition, Verb};
@@ -160,14 +162,14 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             schemafull: shape.schemafull,
             kind: shape.kind,
             identity: shape.identity,
+            graph: shape.graph,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
         if matches!(definition.kind, TableKind::Edge(_)) {
-            // A graph is an edge table that also says which pair it joins, so it
-            // gets the same endpoint machinery: what a graph adds is a refusal
-            // at the write and an order on the key, not a different way of being
-            // reachable.
+            // Every edge table gets the endpoint machinery, declared pair or
+            // not: what the pair adds is a refusal at the write and an order on
+            // the key, not a different way of being reachable.
             //
             // Each endpoint gets both an index and a declaration. The index is
             // what makes traversal a range read; the declaration is what lets an

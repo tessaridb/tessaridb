@@ -82,6 +82,9 @@ pub const CONSUMERS: TableId = TableId::new(12);
 /// with nothing anywhere in an error state.
 pub const RECORD_SEQUENCES: TableId = TableId::new(13);
 
+/// Declared graphs.
+pub const GRAPHS: TableId = TableId::new(14);
+
 /// The first id handed out at any level. Zero belongs to the system.
 pub const FIRST_ID: u32 = 1;
 
@@ -119,6 +122,8 @@ pub enum Level {
     Replica,
     /// Declared stream consumers.
     Consumer,
+    /// Declared graphs.
+    Graph,
 }
 
 impl Level {
@@ -135,6 +140,7 @@ impl Level {
             Self::User => "user",
             Self::Replica => "replica",
             Self::Consumer => "consumer",
+            Self::Graph => "graph",
         }
     }
 
@@ -155,6 +161,7 @@ impl Level {
             Self::User => "us",
             Self::Replica => "rp",
             Self::Consumer => "cs",
+            Self::Graph => "gr",
         }
     }
 }

@@ -954,11 +954,21 @@ fn order_is_still_an_ordinary_name_because_the_clause_word_is_contextual() {
 }
 
 #[test]
-fn the_word_graph_no_longer_declares_a_pair_of_tables() {
+fn the_word_graph_names_a_container_rather_than_a_pair_of_tables() {
     // It was `DEFINE GRAPH follows FROM users TO users`, which made an edge
     // table wearing a longer word rather than a structure a caller can hold. The
     // clause moved to `DEFINE TABLE … EDGE`, where it always belonged, and the
-    // word is free for the container.
+    // word went to the container — so the endpoint form is refused and the bare
+    // one is not.
     assert!(parse("DEFINE GRAPH follows FROM users TO users;").is_err());
-    assert!(parse("DROP GRAPH follows;").is_err());
+
+    let StatementKind::DefineGraph { name, .. } = one("DEFINE GRAPH social;") else {
+        panic!("not a graph");
+    };
+    assert_eq!(name.text, "social");
+
+    let StatementKind::DropGraph { name } = one("DROP GRAPH social;") else {
+        panic!("not a drop");
+    };
+    assert_eq!(name.text, "social");
 }

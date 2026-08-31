@@ -14,3 +14,31 @@
 [alias]
 t = "test --workspace --tests"
 tdoc = "test --workspace --doc"
+lint = "clippy --workspace --all-targets --all-features -- -D warnings"
+
+# One target directory per tool.
+#
+# `cargo check`, `cargo clippy` and `cargo test` are three different compile
+# modes. Sharing one `target/` makes them evict each other's fingerprints, so
+# alternating clippy and tests pays a full rebuild every single time — which is
+# where this project's build minutes were actually going, not in linking.
+#
+# Cargo has no per-command target directory, and an alias cannot set an
+# environment variable, so the split is made at the call site:
+#
+#   wave    CARGO_TARGET_DIR=target-pkg cargo test -p <crate> --tests
+#   batch   cargo t                       (default `target/`)
+#   lint    CARGO_TARGET_DIR=target-lint cargo lint
+#   editor  rust-analyzer.cargo.targetDir = true   (its own `target/rust-analyzer`)
+#
+# Each directory stays warm on its own, so the second run of either tool is
+# incremental instead of cold. The cost is disk, which is the cheap side of the
+# trade.
+#
+# The `target-pkg` line is what makes a per-wave run cheap. Cargo unifies
+# features across whatever is selected, so `-p <crate>` and `--workspace`
+# produce different fingerprints and, in ONE directory, invalidate each other on
+# every switch — which is why this project had a standing rule never to
+# alternate them. Given each its own directory, the rule stops being needed:
+# the narrow run stays warm for the wave loop and the wide run stays warm for
+# the batch boundary.
