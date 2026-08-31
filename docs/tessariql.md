@@ -894,6 +894,30 @@ of whichever reads happened to run beside the writes.
 plausible figure from the build parameters, because a number derived that way is
 one nobody checked wearing the name of one somebody did.
 
+**A store reports `NONE` until it is rebuilt.** The measurement runs at
+`REBUILD INDEX`, which is the one statement that walks every row, so the whole
+graph and every stored vector are in hand at once and the figure costs no extra
+reads. A store declared, filled and never rebuilt has never been measured, and
+says so:
+
+```
+REBUILD INDEX vector ON embeddings;
+INFO FOR VECTOR embeddings;
+```
+
+When there is a figure it never appears alone:
+
+```json
+{"recall": 94, "at": 10, "sample": 32, "records": 120000, "neighbours": 16,
+ "exploration": 64}
+```
+
+`records` is the one that matters most. Recall decays as records arrive after the
+build that measured it — the graph goes on answering, and answers less of the
+truth — so a bare percentage would look current forever. Carrying the size it was
+taken at lets a reader see the number has been outgrown, and running
+`REBUILD INDEX` again is how a current one is obtained.
+
 ### A collection, for records that carry fields nobody declared
 
 ```

@@ -51,7 +51,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tessari_encoding::{IndexAddress, StoreKey, StoreValue, VectorNode, VectorNodeKey};
+use tessari_encoding::{
+    IndexAddress, StoreKey, StoreValue, VectorNode, VectorNodeKey, VectorRecall, VectorRecallKey,
+};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{Number, RecordId, Value};
 
@@ -77,6 +79,22 @@ pub(crate) const EXPLORATION: usize = 64;
 
 /// The single layer this graph has.
 pub(crate) const GROUND: u8 = 0;
+
+/// How many neighbours a measuring query asks for.
+///
+/// Ten, because that is the size of answer a caller actually asks a vector store
+/// for, and a recall figure describes the answers people take rather than an
+/// abstract one. It is reported beside the figure, since recall@1 and recall@10
+/// are different numbers and a percentage that did not say which is unreadable.
+const MEASURED_AT: usize = 10;
+
+/// How many queries a measurement averages over.
+///
+/// The cost is `sample × records` distances against a build that already costs
+/// roughly `records × EXPLORATION`, so thirty-two is a fraction of the statement
+/// it rides on rather than a new expense. Small enough to be free, large enough
+/// that one unlucky query cannot carry the figure.
+const MEASURED_SAMPLE: usize = 32;
 
 /// The vector a value holds, if it holds one.
 ///
@@ -265,6 +283,89 @@ impl Graph {
         best.into_iter().take(wanted).map(|(_, id)| id).collect()
     }
 
+    /// What fraction of the true nearest this graph actually returns.
+    ///
+    /// The walk is compared against the exact answer over the same records, and
+    /// the result is a **measurement** — the one thing [`VectorRecall`] is
+    /// allowed to hold, and the reason it is not computed from [`NEIGHBOURS`]
+    /// and [`EXPLORATION`] instead.
+    ///
+    /// # The queries are the store's own vectors, and that has a trap in it
+    ///
+    /// There are no others: nothing here records what anyone has searched for.
+    /// So the sample is taken from the stored vectors themselves, **by position
+    /// in key order** — every `⌈records / sample⌉`-th — which makes it a
+    /// function of the stored set rather than of a draw, an insertion order or a
+    /// clock. That matters for the same reason the graph has one layer: two
+    /// replicas replaying one log must reach the same number.
+    ///
+    /// A stored vector queried against itself finds itself at **distance zero**.
+    /// That is a free hit, and a measurement that kept it would report a floor of
+    /// `1/at` on an index that finds nothing else — a figure that looks like a
+    /// measurement and is not. So the query record is removed from both the
+    /// truth and the answer, and the comparison is over what is left.
+    ///
+    /// Perturbing the sampled vectors instead was considered and rejected: a
+    /// perturbation needs a random direction, and randomness is precisely what
+    /// this index gave up its hierarchical layer to avoid.
+    ///
+    /// `None` when there is nothing to measure — an index over fewer than two
+    /// records has no answer a walk could get wrong, and absence reads as *never
+    /// measured*, which is a different statement from a measured zero.
+    pub(crate) fn recall(&self) -> Option<VectorRecall> {
+        let records = self.nodes.len();
+        if records < 2 {
+            return None;
+        }
+        let stride = records.div_ceil(MEASURED_SAMPLE).max(1);
+        let mut hit = 0_usize;
+        let mut asked = 0_usize;
+        let mut sample = 0_usize;
+        for (id, node) in self.nodes.iter().step_by(stride) {
+            let truth = self.exact(&node.vector, id, MEASURED_AT);
+            if truth.is_empty() {
+                continue;
+            }
+            // One more than the answer, because the query record is expected
+            // back and is then dropped; `take` trims the case where it was not.
+            let found: Vec<RecordId> = self
+                .nearest(&node.vector, MEASURED_AT.saturating_add(1), None)
+                .into_iter()
+                .filter(|other| other != id)
+                .take(MEASURED_AT)
+                .collect();
+            hit = hit.saturating_add(found.iter().filter(|got| truth.contains(got)).count());
+            asked = asked.saturating_add(truth.len());
+            sample = sample.saturating_add(1);
+        }
+        let recall = hit.saturating_mul(100).checked_div(asked)?;
+        Some(VectorRecall {
+            recall: u32::try_from(recall).unwrap_or(100),
+            at: u32::try_from(MEASURED_AT).unwrap_or(u32::MAX),
+            sample: u32::try_from(sample).unwrap_or(u32::MAX),
+            records: u64::try_from(records).unwrap_or(u64::MAX),
+            neighbours: u32::try_from(NEIGHBOURS).unwrap_or(u32::MAX),
+            exploration: u32::try_from(EXPLORATION).unwrap_or(u32::MAX),
+        })
+    }
+
+    /// The records genuinely nearest this vector, by looking at every one.
+    ///
+    /// The truth half of [`Self::recall`], and `O(records)` per call by
+    /// definition — there is no cheaper way to know what a walk missed. `query`
+    /// is excluded because a vector is always nearest to itself.
+    fn exact(&self, query: &[f64], excluding: &RecordId, wanted: usize) -> Vec<RecordId> {
+        let mut held: Vec<(f64, RecordId)> = Vec::new();
+        for (id, node) in &self.nodes {
+            if id == excluding {
+                continue;
+            }
+            let distance = separation(self.distance, &node.vector, query);
+            insert_sorted(&mut held, distance, id.clone(), wanted);
+        }
+        held.into_iter().map(|(_, id)| id).collect()
+    }
+
     /// How far this record is from the query, or infinitely far if it is gone.
     fn at(&self, id: RecordId, query: &[f64]) -> f64 {
         self.nodes.get(&id).map_or(f64::INFINITY, |node| {
@@ -439,6 +540,24 @@ pub(crate) fn write(
         );
     }
     batch
+}
+
+/// Write this graph's measured recall into the batch, if it has one.
+///
+/// Called from a build, where the graph and every stored vector are already in
+/// hand, so the measurement costs distances and no reads. A build clears the
+/// index's keyspace first, so a graph with nothing to measure leaves **no** key
+/// rather than a stale one — and absence is what `INFO FOR VECTOR` reports as
+/// never measured.
+pub(crate) fn measure(batch: WriteBatch, address: &IndexAddress, graph: &Graph) -> WriteBatch {
+    let Some(measured) = graph.recall() else {
+        return batch;
+    };
+    batch.put(
+        VectorRecallKey::keyspace(),
+        VectorRecallKey::new(*address).encode(),
+        measured.encode(),
+    )
 }
 
 /// Remove one node from the batch.
@@ -807,6 +926,76 @@ mod tests {
         assert!(
             after > churned,
             "the rebuild did not improve recall: {churned}% then {after}%"
+        );
+    }
+
+    #[test]
+    fn an_index_with_nothing_to_measure_reports_no_figure() {
+        // Absence means *never measured*, and it has to be reachable: a graph
+        // with one record has no answer a walk could get wrong, so reporting a
+        // triumphant 100% there would be a number describing nothing.
+        assert!(Graph::empty(VectorDistance::Euclidean).recall().is_none());
+
+        let mut alone = Graph::empty(VectorDistance::Euclidean);
+        alone.insert(&RecordId::Int(1), vec![1.0, 2.0]);
+        assert!(alone.recall().is_none());
+    }
+
+    #[test]
+    fn a_measurement_does_not_count_the_query_finding_itself() {
+        // The trap in measuring an index against its own vectors. Every query is
+        // a stored record, so it comes back at distance zero — a free hit. Over
+        // twelve points on a line the walk is exact, so the only figure that can
+        // come out is 100%: if the query record were left in the answer it would
+        // occupy a slot the truth does not contain, and the score would be 90%.
+        // The number therefore tells the two implementations apart.
+        let mut graph = Graph::empty(VectorDistance::Euclidean);
+        for n in 0..12_u32 {
+            graph.insert(&RecordId::Int(i64::from(n)), vec![f64::from(n), 0.0]);
+        }
+        let measured = graph.recall().expect("twelve records were not measured");
+        assert_eq!(measured.recall, 100, "the free hit was counted");
+        assert_eq!(measured.at, 10);
+        assert_eq!(measured.records, 12);
+        assert_eq!(measured.sample, 12, "every record should have been a query");
+        assert_eq!(measured.neighbours, 16);
+        assert_eq!(measured.exploration, 64);
+    }
+
+    #[test]
+    fn a_measured_recall_is_a_function_of_the_rows_and_not_of_their_order() {
+        // The same property the rebuilt graph has, asserted of the figure rather
+        // than of the nodes — because a measurement is written to the catalog and
+        // replicated, so two replicas that received one log in different orders
+        // must publish one number. The sample is taken by position in key order
+        // for exactly this reason.
+        const DIMENSIONS: usize = 8;
+
+        let mut forwards = Graph::empty(VectorDistance::Euclidean);
+        for n in 0..200_i64 {
+            forwards.insert(&RecordId::Int(n), clustered(n, DIMENSIONS));
+        }
+        let mut backwards = Graph::empty(VectorDistance::Euclidean);
+        for n in (0..200_i64).rev() {
+            backwards.insert(&RecordId::Int(n), clustered(n, DIMENSIONS));
+        }
+        assert_ne!(
+            forwards.nodes, backwards.nodes,
+            "the fixture is not exercising order at all"
+        );
+
+        // Rebuilt the way `index::build` does it: rows in record-id order.
+        let rebuild = |source: &Graph| {
+            let mut held = Graph::empty(VectorDistance::Euclidean);
+            for (id, node) in &source.nodes {
+                held.insert(id, node.vector.clone());
+            }
+            held
+        };
+        assert_eq!(
+            rebuild(&forwards).recall(),
+            rebuild(&backwards).recall(),
+            "two replicas would publish different recalls"
         );
     }
 

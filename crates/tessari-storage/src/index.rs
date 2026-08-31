@@ -255,7 +255,11 @@ fn build(
             };
             written.extend(graph.insert(id, held));
         }
-        return Ok(graph::write(batch, &address, &written));
+        // Measured here and nowhere else: this is the one place the whole graph
+        // and every stored vector are in hand at once, and it is reached by
+        // applying a log record, so every replica computes the same figure.
+        let batch = graph::write(batch, &address, &written);
+        return Ok(graph::measure(batch, &address, &graph));
     }
 
     if definition.spatial {
@@ -313,9 +317,14 @@ fn build(
 /// records that have gone, a posting for text nobody stores any more, an entry
 /// under a value the record no longer holds.
 ///
-/// All six index key kinds, because a rebuild has to be safe on any index a
+/// All seven index key kinds, because a rebuild has to be safe on any index a
 /// caller may name, and an index whose shape changed is not a case this store
 /// wants to reason about one kind at a time.
+///
+/// The measurement is cleared with the entries for a reason worth stating: a
+/// recall left behind would describe a graph that no longer exists, which is
+/// exactly the stale figure the measurement was introduced to prevent, arriving
+/// from inside. It fails no test until somebody reads the number.
 fn clear(store: &Store, mut batch: WriteBatch, address: &IndexAddress) -> Result<WriteBatch> {
     for kind in [
         KeyKind::SecondaryIndex,
@@ -324,6 +333,7 @@ fn clear(store: &Store, mut batch: WriteBatch, address: &IndexAddress) -> Result
         KeyKind::VectorNode,
         KeyKind::SearchStatistics,
         KeyKind::SpatialIndex,
+        KeyKind::VectorRecall,
     ] {
         let keyspace = kind.keyspace();
         let prefix = address.prefix(kind);

@@ -68,6 +68,21 @@ became a reserved word; a field or table named `schemaless` needs renaming.
   `APPROXIMATE` is still the only way to obtain an approximate answer, and
   `INFO FOR VECTOR` reports measured recall or `NONE`, never a computed figure.
 
+- **Measured recall** — `REBUILD INDEX` on a vector index now measures what
+  fraction of the true nearest the index actually returns, and `INFO FOR VECTOR`
+  reports it. Until then a store reports `NONE`, which is the honest answer
+  rather than a gap: the figure comes from comparing the index's own walk against
+  an exhaustive search over the same records, and that comparison is only free
+  where the whole graph and every stored vector are already in hand — which is
+  the rebuild and nowhere else. The queries are the store's own vectors, sampled
+  by position in key order so two replicas replaying one log publish one number,
+  and each query record is removed from both the truth and the answer, because a
+  vector is always nearest to itself and counting that free hit would put a floor
+  under every figure. The percentage never appears alone: it carries the `k` it
+  was measured at, how many queries it averaged, the engine constants in force,
+  and **how many records the store held at the time** — recall decays as records
+  arrive after a rebuild, so a lone number would go on looking current forever.
+
 - **`TYPE vector<n>`** — a field declares how many components its vectors hold,
   and a write of any other width is refused **at the write**. Without it `array`
   was the only thing that could be said, which is true of a 768-wide embedding

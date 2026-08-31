@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, RecordValue, SecondaryIndexKey, StoreKey,
-    StoreValue,
+    StoreValue, VectorRecall, VectorRecallKey,
 };
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{RecordId, Value};
@@ -206,6 +206,31 @@ impl Transaction<'_> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let graph = crate::graph::Graph::read(self.store, &address, distance)?;
         Ok(graph.nearest(query, wanted, effort))
+    }
+
+    /// The recall this vector index was last measured at, if it ever was.
+    ///
+    /// `None` means nobody has measured — an index is measured when it is built,
+    /// so a store filled by writes since its last build reports the figure from
+    /// that build, and one never built reports nothing. That is the honest
+    /// answer and the reason the figure carries `records`: a reader can see the
+    /// store has outgrown the number.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or the stored value cannot be
+    /// decoded.
+    pub fn vector_recall(&self, index: &IndexDefinition) -> Result<Option<VectorRecall>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let key = VectorRecallKey::new(address).encode();
+        match self
+            .store
+            .backend()
+            .get(VectorRecallKey::keyspace(), &key)?
+        {
+            Some(bytes) => Ok(Some(VectorRecall::decode(bytes.as_slice())?)),
+            None => Ok(None),
+        }
     }
 
     /// The records an index says hold `values`, as of this transaction's

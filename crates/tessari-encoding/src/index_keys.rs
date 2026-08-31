@@ -344,6 +344,127 @@ impl StoreValue for SearchStatistics {
     }
 }
 
+/// The recall one vector index was last measured at.
+///
+/// A vector index answers **approximately**, so the only number that says
+/// whether its answers are worth having is the fraction of the true nearest it
+/// actually returns. That is a property of a measurement and not of a
+/// declaration — a figure derived from the build parameters would be a number
+/// nobody checked wearing the name of one somebody did.
+///
+/// Beside the index rather than on its definition, for the reason
+/// [`SearchStatisticsKey`] is: this is a measurement derived from the log, and
+/// the definition is what the language wrote. The key is **derived from the
+/// [`IndexAddress`]** rather than stored beside it, so it cannot come to name
+/// the wrong index, and it is cleared as part of the index's keyspace when the
+/// entries are — which is what stops a rebuild leaving a figure describing a
+/// graph that no longer exists.
+///
+/// The key is exactly an index prefix with no suffix, so one index has exactly
+/// one of these and finding it is a point read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VectorRecallKey {
+    /// Which index this measurement describes.
+    pub address: IndexAddress,
+}
+
+impl VectorRecallKey {
+    /// Name the measurement of one index.
+    #[must_use]
+    pub const fn new(address: IndexAddress) -> Self {
+        Self { address }
+    }
+}
+
+impl StoreKey for VectorRecallKey {
+    type Value = VectorRecall;
+
+    const KIND: KeyKind = KeyKind::VectorRecall;
+
+    fn encode(&self) -> Key {
+        Key::from(self.address.prefix(Self::KIND))
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let address = IndexAddress::read(&mut reader)?;
+        reader.finish()?;
+        Ok(Self { address })
+    }
+}
+
+/// A measured recall, and everything needed to read it.
+///
+/// # Why a bare percentage is not stored
+///
+/// Recall decays as records are added after the measurement — the graph keeps
+/// answering, and answers less of the truth — so a lone figure describes a store
+/// that may no longer exist, and it goes stale in silence. Every field here
+/// exists so a reader can tell whether the number still means anything:
+///
+/// - `at` — recall@10 and recall@1 are different numbers.
+/// - `sample` — a figure from four queries is not a figure from four hundred.
+/// - `records` — how large the store was when it was measured, so growth since
+///   is visible rather than hidden.
+/// - `neighbours` and `exploration` — the engine constants in force; a recall
+///   measured at one budget does not describe another.
+///
+/// Absence of this value means **never measured**, which is a different
+/// statement from a measured zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VectorRecall {
+    /// The fraction of the true nearest the walk returned, as a percentage.
+    pub recall: u32,
+    /// How many neighbours each query asked for.
+    pub at: u32,
+    /// How many queries the figure is an average over.
+    pub sample: u32,
+    /// How many records the index held when it was measured.
+    pub records: u64,
+    /// The neighbour count each node was built with.
+    pub neighbours: u32,
+    /// The exploration budget the measuring walks spent.
+    pub exploration: u32,
+}
+
+impl StoreValue for VectorRecall {
+    fn encode(&self) -> Value {
+        let mut writer = KeyWriter::new();
+        writer
+            .put_u32(self.recall)
+            .put_u32(self.at)
+            .put_u32(self.sample)
+            .put_u64(self.records)
+            .put_u32(self.neighbours)
+            .put_u32(self.exploration);
+        let body = writer.finish();
+        let mut buffer = with_header(0, body.len());
+        buffer.extend_from_slice(&body);
+        Value::from(buffer)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let (_, payload) = split_header(bytes, 0)?;
+        let mut reader = KeyReader::new(KeyKind::VectorRecall, payload);
+        let recall = reader.take_u32()?;
+        let at = reader.take_u32()?;
+        let sample = reader.take_u32()?;
+        let records = reader.take_u64()?;
+        let neighbours = reader.take_u32()?;
+        let exploration = reader.take_u32()?;
+        reader.finish()?;
+        Ok(Self {
+            recall,
+            at,
+            sample,
+            records,
+            neighbours,
+            exploration,
+        })
+    }
+}
+
 /// One record's place in a vector index's graph.
 ///
 /// ```text

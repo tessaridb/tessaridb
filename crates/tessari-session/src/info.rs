@@ -44,6 +44,7 @@
 
 use std::collections::BTreeMap;
 
+use tessari_encoding::VectorRecall;
 use tessari_ql::{
     Answer, Identity as RecordIdentity, InfoSubject, Name, Projection, RecordTarget, Select,
     Source, Span, StatementKind, TableRef,
@@ -194,9 +195,18 @@ impl Session<'_> {
     /// is a property of a measurement rather than of a declaration, which is why
     /// no table report could ever carry it.
     ///
-    /// It reads `none` until something measures it. That is the honest answer
-    /// and it stays the answer: a figure derived from the build parameters would
-    /// be a number nobody checked, wearing the name of one somebody did.
+    /// It reads `none` until the index is **built**, which is where the whole
+    /// graph and every stored vector are in hand at once and the measurement is
+    /// therefore free of extra reads. A store declared and filled but never
+    /// rebuilt reports `none`, and that is the honest answer rather than a gap:
+    /// a figure derived from the build parameters would be a number nobody
+    /// checked, wearing the name of one somebody did.
+    ///
+    /// When there is a figure it never appears alone. It carries the `k` it was
+    /// measured at, how many queries it averaged, **how many records the store
+    /// held at the time**, and the engine constants in force — because recall
+    /// decays as records are added after a build, so a bare percentage goes
+    /// stale in silence, which is the same failure by the other door.
     fn info_vector(
         &self,
         transaction: &mut Transaction<'_>,
@@ -216,6 +226,17 @@ impl Session<'_> {
         let TableKind::Vector(declared) = definition.kind else {
             return Err(missing());
         };
+        // The store's index, found by the property that makes it one rather than
+        // by the name the desugaring gave it — a name is a spelling and this is
+        // the thing itself.
+        let index = Catalog::new(transaction)
+            .indexes_on(id)?
+            .into_iter()
+            .find(|index| index.vector.is_some());
+        let measured = match index {
+            Some(index) => transaction.vector_recall(&index)?,
+            None => None,
+        };
         Ok(BTreeMap::from([
             ("name".to_owned(), Value::from(name.text.as_str())),
             (
@@ -226,7 +247,7 @@ impl Session<'_> {
             // `None` and not a zero. A recall of zero is a measurement saying
             // the index finds nothing; absence says nobody has asked. Reporting
             // the second as the first is the failure this field exists to avoid.
-            ("recall".to_owned(), Value::None),
+            ("recall".to_owned(), measured.map_or(Value::None, reported)),
         ]))
     }
 
@@ -836,6 +857,43 @@ fn described_replica(replica: &ReplicaDefinition) -> Value {
         (
             "roles".to_owned(),
             Value::Array(replica.roles.names().into_iter().map(Value::from).collect()),
+        ),
+    ]))
+}
+
+/// A measured recall, reported with everything needed to read it.
+///
+/// Never the percentage alone. Recall decays as records are added after the
+/// build that measured it, so a lone figure describes a store that may no longer
+/// exist — `records` is what lets a reader see the store has outgrown it, and
+/// `at`, `sample` and the two constants say what was actually measured.
+fn reported(measured: VectorRecall) -> Value {
+    Value::Object(BTreeMap::from([
+        (
+            "recall".to_owned(),
+            Value::Number(Number::Integer(i64::from(measured.recall))),
+        ),
+        (
+            "at".to_owned(),
+            Value::Number(Number::Integer(i64::from(measured.at))),
+        ),
+        (
+            "sample".to_owned(),
+            Value::Number(Number::Integer(i64::from(measured.sample))),
+        ),
+        (
+            "records".to_owned(),
+            Value::Number(Number::Integer(
+                i64::try_from(measured.records).unwrap_or(i64::MAX),
+            )),
+        ),
+        (
+            "neighbours".to_owned(),
+            Value::Number(Number::Integer(i64::from(measured.neighbours))),
+        ),
+        (
+            "exploration".to_owned(),
+            Value::Number(Number::Integer(i64::from(measured.exploration))),
         ),
     ]))
 }

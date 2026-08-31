@@ -81,6 +81,7 @@ because renumbering after data exists is a full rebuild.
 | `0x14` | `Edge` (adjacency) | `index` | implemented — see §3a |
 | `0x15` | `SearchStatistics` | `index` | implemented — see §3b |
 | `0x16` | `SpatialIndex` | `index` | implemented — see §3c |
+| `0x17` | `VectorRecall` | `index` | implemented — see §3d |
 | `0x20` | `LogEntry` | `log` | implemented |
 | `0x30` | `FormatVersion` | `meta` | implemented |
 | `0x31` | `AppliedPosition` | `meta` | implemented |
@@ -271,6 +272,25 @@ will ever reconcile.
 
 It sits in the `index` keyspace rather than `meta` because it is derived from the
 postings, is meaningless without them, and is swept with them.
+
+### 3d. The vector-recall tag
+
+`0x17` holds the recall one vector index was last **measured** at, together with
+everything a reader needs to know what that number describes.
+
+It is a key kind rather than a field on the index definition for the reason
+`0x15` is: a definition is what the language wrote, and this is a measurement
+derived from the log. The key is the bare index prefix with no suffix, so one
+index has exactly one and finding it is a point read; and it is **derived from
+the index address** rather than stored beside it, so it cannot come to name the
+wrong index.
+
+Being in the `index` keyspace is what makes the figure correct over time. The
+keyspace is cleared as a unit when an index is rebuilt, so a rebuild that
+produces no measurement leaves **no** key rather than the previous one — and
+absence reads as *never measured*, which is a different statement from a measured
+zero. A figure left behind would describe a graph that no longer exists, and
+nothing would raise it until somebody read the number.
 
 ## 4. Component encodings
 
@@ -501,6 +521,28 @@ counted. `terms` is the token count **with repeats**, because it exists to be
 divided by `documents` and yield an average document *length*. The postings
 deduplicate and this does not; both come from one analyzer pass over the same
 text, so they cannot drift apart.
+
+### 6.2b-2 `VectorRecall` — keyspace `index`
+
+```
+key    <0x17> <namespace:u32> <database:u32> <table:u32> <index:u32>
+value  <recall:u32> <at:u32> <sample:u32> <records:u64> <neighbours:u32> <exploration:u32>
+```
+
+The key is the 17-byte index prefix with **no suffix**, exactly as `0x15` is.
+
+`recall` is a percentage and never appears alone. Recall decays as records arrive
+after the build that measured it, so a lone figure describes a store that may no
+longer exist: `at` says which `k` it is recall *at*, `sample` how many queries it
+averages, `records` how large the store was at the time — which is what lets a
+reader see the number has been outgrown — and `neighbours` and `exploration` the
+engine constants in force, since a recall measured at one budget does not
+describe another.
+
+The queries are the store's own vectors, sampled by position in key order, with
+the query record removed from both the exact answer and the walk's answer before
+they are compared. A stored vector queried against itself is at distance zero, so
+keeping it would put a floor of `1/at` under every figure.
 
 ### 6.2c `VectorNode` — keyspace `index`
 

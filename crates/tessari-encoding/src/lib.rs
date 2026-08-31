@@ -44,7 +44,7 @@ pub use error::{Error, Result};
 pub use index_keys::{
     INDEX_PREFIX_LEN, IndexAddress, IndexTarget, IndexValues, NoPayload, Posting, PostingKey,
     SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, UniqueIndexKey, VectorNode,
-    VectorNodeKey,
+    VectorNodeKey, VectorRecall, VectorRecallKey,
 };
 pub use keys::{
     AppliedPositionKey, FormatVersionKey, LogKey, NodeIdentityKey, ReclaimFloorKey, RecordKey,
