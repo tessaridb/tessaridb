@@ -190,3 +190,19 @@ DROP VECTOR points;
 DROP VECTOR notes;
 DEFINE VECTOR notes DIMENSION 8 DISTANCE euclidean;
 --- expect: ok
+
+--- case: a declared store's default read is exact
+DEFINE VECTOR readings DIMENSION 2 DISTANCE euclidean;
+CREATE readings:1 = { vector: [0.0, 0.0] };
+CREATE readings:2 = { vector: [1.0, 0.0] };
+CREATE readings:3 = { vector: [5.0, 0.0] };
+SELECT * FROM readings ORDER BY vector::euclidean(vector, [0.0, 0.0]) LIMIT 2;
+--- expect: rows 2
+
+--- case: and the word is what reaches the graph
+SELECT * FROM readings ORDER BY vector::euclidean(vector, [0.0, 0.0]) LIMIT 2 APPROXIMATE;
+--- expect: rows 2
+
+--- case: a distance the store was not built for gets the exact answer even with the word
+SELECT * FROM readings ORDER BY vector::cosine(vector, [1.0, 0.0]) LIMIT 2 APPROXIMATE;
+--- expect: rows 2
