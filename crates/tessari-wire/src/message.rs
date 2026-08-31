@@ -230,7 +230,7 @@ fn encode_outcome_body(outcome: &Outcome, names: &Names) -> Vec<u8> {
             put_names(&mut body, names);
             put_u32(&mut body, u32::try_from(records.len()).unwrap_or(u32::MAX));
             for (id, value) in records {
-                put_text(&mut body, &id.to_string());
+                put_text(&mut body, &spell(id));
                 put_bytes(&mut body, encode_payload(value).as_slice());
             }
             // A kind and a rendered message rather than the typed note. `Answer`
@@ -257,7 +257,7 @@ fn encode_outcome_body(outcome: &Outcome, names: &Names) -> Vec<u8> {
             body.push(tag::KEYS);
             put_u32(&mut body, u32::try_from(keys.len()).unwrap_or(u32::MAX));
             for key in keys {
-                put_text(&mut body, &key.to_string());
+                put_text(&mut body, &spell(key));
             }
         }
         Outcome::Removed { count } => {
@@ -490,9 +490,20 @@ const fn path_name(tag: u8) -> &'static str {
 /// Kept as the store spells it rather than re-parsed, because a client that
 /// wants to name a record writes that text into its next script — and a second
 /// reading of a record id is a second place for the two to disagree.
+///
+/// The spelling is the language's, which is what makes the sentence above true:
+/// this returned `Display` until the wave that measured it, and `Display` writes
+/// a UUID as thirty-two undivided digits and a text identity unquoted, neither
+/// of which stands where the grammar puts an identity. A client following the
+/// protocol to the letter got back text that its next script could not read.
+///
+/// Every place that puts an identity on this wire calls this. It returned the
+/// wrong form partly because nothing called it at all — the encoder stringified
+/// the id itself, so the one function documenting the promise was not the one
+/// keeping it.
 #[must_use]
 pub fn spell(id: &RecordId) -> String {
-    id.to_string()
+    id.to_literal()
 }
 
 // The node's encoding half is what these exercise — `encode_outcome`, the

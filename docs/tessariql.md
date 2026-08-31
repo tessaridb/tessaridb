@@ -1563,8 +1563,19 @@ minted by many writers without a shared counter:
 
 ```
 DEFINE COLLECTION sessions IDENTITY uuid;
-CREATE sessions = { token: 'abc' };    -- 0195e0a1-… rather than 1
+CREATE sessions = { token: 'abc' };    -- uuid '0195e0a1-…' rather than 1
 ```
+
+**The identity is answered in the spelling that addresses the record**, so what
+you were given is what you write next: a counter identity comes back as `1` and
+goes into `SELECT * FROM users:1`, and a UUID comes back as `uuid '0195e0a1-…'`
+and goes into `SELECT * FROM sessions:uuid '0195e0a1-…'`.
+
+That is why the UUID keeps its marker and its hyphens rather than arriving as
+bare digits: `sessions:0195e0a1…` is not an identity to this language — it reads
+as a number with a suffix — so an answer in that form would be one you could not
+use. The rule is general and holds for every kind an identity has: a text
+identity is answered quoted, and bytes with their `0x`.
 
 The counter is per table, so two tables number independently, and it is allocated
 inside the writing transaction — so two concurrent writers cannot receive the same

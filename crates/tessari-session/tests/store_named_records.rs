@@ -76,16 +76,15 @@ fn field(record: &Value, name: &str) -> Value {
 
 /// An identity written the way the grammar spells it.
 ///
-/// `RecordId`'s `Display` is not that spelling for a UUID: it renders bare hex,
-/// which `users:0195e0…` reads as a **duration** rather than as an identity. The
-/// grammar wants `users:uuid '…'`. Worth knowing rather than papering over —
-/// it means an identity the store answers with cannot be pasted straight back
-/// into a read, which is Q-291.
+/// `to_literal` and not `Display`, and the difference is the point: the store
+/// answers with this form, so a test that addressed the record any other way
+/// would be checking a path no caller travels. It carried a hand-written
+/// `match` on the kind for one wave — written because `Display`'s bare hex
+/// reads as a **duration** rather than as an identity — and that `match` was a
+/// second spelling authority living in a test file, which is exactly what
+/// Q-291 turned out to be about.
 fn addressed(table: &str, id: &RecordId) -> String {
-    match id {
-        RecordId::Uuid(_) => format!("{table}:uuid '{id}'"),
-        other => format!("{table}:{other}"),
-    }
+    format!("{table}:{}", id.to_literal())
 }
 
 /// Read one record back by its identity, and refuse to guess if it is absent.

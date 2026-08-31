@@ -142,6 +142,32 @@ pub fn uuid_to_text(bytes: &[u8; 16]) -> String {
     text
 }
 
+/// Write text as the language's single-quoted string literal.
+///
+/// Beside [`uuid_to_text`] for the reason that one gives: two writers for one
+/// literal disagree eventually. This one had two candidates and one writer — the
+/// console renders values in TessariQL and had the only escaper, privately,
+/// while the record-id spelling needs the same one and cannot reach into a
+/// binary crate. The choice was to write a second or to move this; a second
+/// escaper differs on the first character somebody forgets.
+#[must_use]
+pub fn string_to_literal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len().saturating_add(2));
+    out.push('\'');
+    for character in text.chars() {
+        match character {
+            '\'' => out.push_str("\\'"),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            other => out.push(other),
+        }
+    }
+    out.push('\'');
+    out
+}
+
 /// The sub-second digits, and whatever follows them.
 fn fraction(tail: &str) -> Option<(u32, &str)> {
     let Some(rest) = tail.strip_prefix('.') else {

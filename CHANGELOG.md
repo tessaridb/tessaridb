@@ -43,9 +43,46 @@ became a reserved word; a field or table named `schemaless` needs renaming.
 
 - **`INSERT INTO t (cols) VALUES (…), (…)`** — several records in one statement
   and one transaction, at identities the store produces, answered back in the
-  order the rows were written. `CREATE` is unchanged and still asserts an
-  identity the caller names.
+  order the rows were written.
+- **`CREATE users = { … }` — a write that does not make you invent a name.** The
+  identity's absence is the whole difference: there is no second verb and no
+  flag, so `CREATE users = { … }` says the caller has a record and no name for
+  it, and `CREATE users:1 = { … }` says they have both. The addressed form is
+  unchanged, and `UPDATE`, `UPSERT`, `DELETE`, `SET` and reads still take an
+  address — each of them points at a record that already exists, where an
+  address is the honest shape.
+
+  The generated form answers with the identity it produced rather than `done`,
+  because the caller did not choose it and has no second statement that would
+  find the record again. What the identity *is* comes from the table, not the
+  statement: a counter from `1` upwards by default, a UUIDv7 where the table was
+  declared `IDENTITY uuid`. The counter is per table and is allocated inside the
+  writing transaction, so two writers cannot receive the same number — and when
+  it reaches an identity a record already holds, it **walks past** it rather than
+  refusing. It has to: a refusal would discard the counter's advance along with
+  the transaction, so the next attempt would collide in the same place, and a
+  table whose low identities were imported could never take a generated write
+  again.
+
+  `INSERT` now reads the same declaration through the same code, which is a fix
+  as much as a feature: it minted a UUID into every table before this, including
+  one declared to count, so two verbs could name records in one table under two
+  schemes and nothing afterwards could say which scheme a missing record was
+  written under.
 - **`DEFINE COLLECTION`** — see above.
+- **A record identity is answered in the spelling that addresses the record.**
+  The protocol has always said identities are text "exactly as the store spells
+  them", and that a client naming a record writes that text into its next script.
+  That was true only for integers. A UUID identity was answered as thirty-two
+  undivided hex digits, which this language does not read as an identity at all —
+  pasting it back produced *"not a duration this store can hold"*, a refusal
+  naming nothing a reader could act on. A text identity was answered unquoted,
+  which is worse: `users:1` for the string `'1'` parses, addresses the **integer**
+  record `1`, and returns a plausible answer about a different record. The wire,
+  the console and record references inside values now all answer `1`, `'ada'`,
+  `uuid '0195e0a1-…'` and `0x0a1b` — the four forms the grammar reads. The HTTP
+  JSON surface is unchanged; it renders into JSON's types rather than into this
+  language, and its identity field keeps the form it had.
 - **`VERIFY`** — the third way to close a transaction: run every check a `COMMIT`
   runs, then discard the work. `CANCEL` could never answer *"would this be
   refused?"*, because every check that refuses a write runs inside the commit, so

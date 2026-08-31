@@ -40,6 +40,6 @@ pub use number::Number;
 pub use path::{Path, Step};
 pub use record_id::RecordId;
 pub use stemmer::stem;
-pub use text::{parse_uuid, uuid_to_text};
+pub use text::{parse_uuid, string_to_literal, uuid_to_text};
 pub use time::{Datetime, Duration};
 pub use value::{RecordRef, Value, ValueRange};

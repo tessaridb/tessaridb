@@ -279,10 +279,25 @@ fn report(out: &mut impl Write, answer: &Answer, shape: Shape) -> std::io::Resul
             Ok(())
         }
         Answer::Value { value, names } => writeln!(out, "{}", render::value(value, names)),
-        // `Keys` and `Removed` have never had a rendering of their own and keep
-        // the one they had, so the parity test certifies today's output rather
-        // than an output changed in the same commit that gave it a second path.
-        // Q-2026-08-22-52.
+        // A write the store named the record for answers with the identity it
+        // produced, because that is the only way back to the record: the caller
+        // did not choose it, cannot derive it, and has no second statement that
+        // would find it. `ok` was the answer until a write existed that the
+        // caller could not address afterwards, and it discarded the one thing
+        // such a write owes.
+        //
+        // One line each rather than a list on one, so the common answer — a
+        // single `CREATE` — is a single identity a person can select, and a
+        // batch `INSERT` is one per row rather than something to split up.
+        Answer::Keys(keys) => {
+            for key in keys {
+                writeln!(out, "{key}")?;
+            }
+            Ok(())
+        }
+        // `Removed` keeps the rendering it had, so the parity test certifies
+        // today's output rather than an output changed in the same commit that
+        // gave it a second path. Q-2026-08-22-52.
         _ => writeln!(out, "ok"),
     }
 }
@@ -514,6 +529,79 @@ mod tests {
         let mut out = Vec::new();
         let ended = run(&mut store, &mut input, &mut out, mode).expect("a run");
         (String::from_utf8(out).expect("text"), ended)
+    }
+
+    /// The tenancy every write below needs, and nothing else.
+    const READY: &str = "\
+DEFINE NAMESPACE prod; USE NAMESPACE prod;
+DEFINE DATABASE shop; USE DATABASE shop;
+DEFINE COLLECTION users;
+DEFINE COLLECTION sessions IDENTITY uuid;
+";
+
+    /// The lines a script produced that are not `ok` — what was actually said.
+    fn said(script: &str) -> Vec<String> {
+        let (out, ended) = ran(&format!("{READY}{script}"), Mode::Script);
+        assert_eq!(ended, Ended::Fine, "{out}");
+        out.lines()
+            .filter(|line| *line != "ok")
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn a_write_the_store_named_answers_with_the_identity_it_produced() {
+        // `ok` was the answer here until this wave, and it threw away the only
+        // route back to the record: the caller did not choose the identity and
+        // has no statement that would find it again.
+        assert_eq!(said("CREATE users = { name: 'ada' };"), ["1"]);
+    }
+
+    #[test]
+    fn a_batch_insert_answers_with_one_identity_per_row() {
+        assert_eq!(
+            said("INSERT INTO users (name) VALUES ('ada'), ('grace'), ('alan');"),
+            ["1", "2", "3"]
+        );
+    }
+
+    #[test]
+    fn the_identity_a_uuid_table_answers_with_is_one_the_grammar_reads() {
+        // The case the integer default hides, and the one this wave is for.
+        // Before it, a uuid table answered with thirty-two undivided hex digits
+        // — which the grammar does not read as an identity at all, so pasting
+        // the answer back produced "not a duration this store can hold", a
+        // refusal naming nothing a reader could act on.
+        //
+        // That the spelling then *finds* the record is asserted where the store
+        // outlives the statement: `tessari-ql`'s `identity_spelling` parses it
+        // back for all four kinds, and `tessari-session`'s `store_named_records`
+        // reads the record at it. Split that way because this harness gives each
+        // script its own database, so a second script here could only address a
+        // record the first one did not write.
+        let produced = said("CREATE sessions = { token: 'abc' };");
+        let [identity] = produced.as_slice() else {
+            panic!("expected one identity, got {produced:?}");
+        };
+        assert!(
+            identity.starts_with("uuid '") && identity.ends_with('\''),
+            "a uuid table should answer in the spelling the grammar reads: {identity}"
+        );
+        assert_eq!(
+            identity.len(),
+            "uuid '".len() + 36 + 1,
+            "the canonical 8-4-4-4-12 form, not the undivided digits: {identity}"
+        );
+    }
+
+    #[test]
+    fn an_addressed_write_still_answers_the_way_it_did() {
+        // The relaxation is about the write that has no identity to report. A
+        // caller who supplied one is being told nothing new by hearing it back.
+        assert_eq!(
+            said("CREATE users:9 = { name: 'ada' };"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

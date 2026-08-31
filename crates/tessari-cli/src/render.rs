@@ -102,7 +102,11 @@ fn write(out: &mut String, held: &Value, names: &Names) {
             None => out.push_str(&format!("<table {id}>")),
         },
         Value::Record(reference) => match names.get(&reference.table) {
-            Some(named) => out.push_str(&format!("{named}:{}", reference.id)),
+            // The identity in the spelling the grammar reads, not the rendering
+            // — `users:1` was fine for an integer and this was never true for
+            // any other kind, which is what a fixture holding only integers
+            // could not tell anybody.
+            Some(named) => out.push_str(&format!("{named}:{}", reference.id.to_literal())),
             None => out.push_str(&format!("<record {reference}>")),
         },
         Value::Array(items) => {
@@ -201,19 +205,13 @@ fn bound_into(out: &mut String, held: &core::ops::Bound<Value>, upper: bool, nam
 }
 
 /// A string in single quotes, escaping what would end it.
+///
+/// The escaping itself moved to `tessari_types::text`, beside the UUID writer,
+/// when the record-id spelling needed the same rule and could not reach into a
+/// binary crate to get it. This stays as the writer-shaped call the renderer
+/// makes everywhere.
 fn string_into(out: &mut String, text: &str) {
-    out.push('\'');
-    for character in text.chars() {
-        match character {
-            '\'' => out.push_str("\\'"),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            other => out.push(other),
-        }
-    }
-    out.push('\'');
+    out.push_str(&tessari_types::string_to_literal(text));
 }
 
 /// Whether this can be written bare as a field name.

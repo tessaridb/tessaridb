@@ -156,7 +156,7 @@ fn into_answer(outcome: &Outcome, names: Names) -> Answer {
         } => Answer::Records {
             records: records
                 .iter()
-                .map(|(id, held)| (id.to_string(), held.clone()))
+                .map(|(id, held)| (tessari_wire::spell(id), held.clone()))
                 .collect(),
             path: plan.access.name().to_owned(),
             names,
@@ -173,7 +173,7 @@ fn into_answer(outcome: &Outcome, names: Names) -> Answer {
             value: held.clone(),
             names,
         },
-        Outcome::Keys(keys) => Answer::Keys(keys.iter().map(ToString::to_string).collect()),
+        Outcome::Keys(keys) => Answer::Keys(keys.iter().map(tessari_wire::spell).collect()),
         Outcome::Removed { count } => Answer::Removed(*count),
         Outcome::Done => Answer::Done,
         // `Outcome` is `#[non_exhaustive]`, so a shape added to the store and
