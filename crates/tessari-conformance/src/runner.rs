@@ -203,6 +203,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::NoSuchRecord { .. } => "NoSuchRecord",
         Error::InvalidKeyBound { .. } => "InvalidKeyBound",
         Error::NotAnEdgeTable { .. } => "NotAnEdgeTable",
+        Error::EndpointsNotDeclared { .. } => "EndpointsNotDeclared",
         Error::NoHistoricalTraversal { .. } => "NoHistoricalTraversal",
         Error::EdgePropertiesNotAnObject { .. } => "EdgePropertiesNotAnObject",
         Error::ConditionNotBoolean { .. } => "ConditionNotBoolean",

@@ -84,8 +84,9 @@ pub enum StatementKind {
         columns: Vec<ColumnDeclaration>,
         /// Whether the table refuses a field it does not declare.
         schemafull: bool,
-        /// Whether the table holds edges, with an index on each endpoint.
-        edge: bool,
+        /// Whether the table holds edges, and the pair it joins when it says
+        /// so: `DEFINE TABLE follows EDGE FROM users TO users`.
+        edge: Option<EdgeClause>,
         /// What the table names a record with when the caller does not:
         /// `DEFINE TABLE sessions IDENTITY uuid`.
         ///
@@ -133,33 +134,6 @@ pub enum StatementKind {
         /// What the collection names a record with when the caller does not:
         /// `DEFINE COLLECTION sessions IDENTITY uuid`.
         identity: IdentityKind,
-        /// Whether re-defining an existing name is accepted.
-        if_not_exists: bool,
-    },
-    /// `DEFINE GRAPH follows FROM users TO users (at datetime) ORDER BY at DESC`
-    ///
-    /// An edge table that says which pair of tables it joins, and it earns its
-    /// own word on the same test `BUCKET` and `COLLECTION` passed: a difference
-    /// in what a caller may **do**. `DEFINE TABLE follows EDGE` accepts a
-    /// `RELATE` between any two records at all; a graph refuses one whose
-    /// endpoints it does not declare. The permissive spelling stays, because a
-    /// store that discovers its shape as it goes still has a word for that.
-    DefineGraph {
-        /// The name to create.
-        name: Name,
-        /// The table an edge leads out of.
-        from: TableRef,
-        /// The table an edge leads into.
-        to: TableRef,
-        /// The properties an edge carries, in the order they were written.
-        ///
-        /// Empty is the ordinary case: an edge that is only a link declares
-        /// nothing, exactly as `DEFINE TABLE follows EDGE` declares nothing.
-        /// Unlike a table, empty parentheses are not refused here for lack of a
-        /// strictness word, because a graph has none to be missing.
-        columns: Vec<ColumnDeclaration>,
-        /// The order a node's edges are held in, when the statement gives one.
-        order: Option<GraphOrdering>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -2099,7 +2073,7 @@ pub struct ColumnDeclaration {
     pub assert: Option<Assertion>,
 }
 
-/// The order a graph holds a node's edges in: `ORDER BY at DESC`.
+/// The order an edge table holds a node's edges in: `ORDER BY at DESC`.
 ///
 /// A single field name and a direction, and deliberately not an [`Ordering`],
 /// which carries an expression because a `SELECT` sorts an answer it already
@@ -2114,11 +2088,48 @@ pub struct ColumnDeclaration {
 /// change to it would silently mean the stored keys no longer match the
 /// declaration they were written under.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphOrdering {
+pub struct EdgeOrdering {
     /// The edge property the order reads.
     pub field: Name,
     /// Whether the newest, or largest, comes first.
     pub descending: bool,
+}
+
+/// What `EDGE` said, on the statement that declared the table.
+///
+/// Three states rather than a `bool` beside an `Option<pair>`, for the reason
+/// the catalog's table kind replaced three flags: the pair only means anything
+/// on an edge table, and a field beside a flag would make "declares a pair but
+/// is not an edge table" a thing a parser could hand downstream. Absent —
+/// `None` on the statement — is a table that holds records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EdgeClause {
+    /// `EDGE`: a link between any two records is accepted.
+    ///
+    /// The permissive spelling stays, because a store that discovers its shape
+    /// as it goes still has a word for that, and because every edge table
+    /// declared before the clause existed is one of these (Q-297).
+    Any,
+    /// `EDGE FROM users TO users ORDER BY at DESC`: a link whose endpoints the
+    /// table does not declare is refused.
+    ///
+    /// That refusal is the whole of what the clause buys — the difference in
+    /// what a caller may **do** that earns it a place in the grammar.
+    ///
+    /// Boxed because the pair is several times the size of the other variant and
+    /// this enum is carried by every `DEFINE TABLE`, edge table or not.
+    Between(Box<EdgeEndpoints>),
+}
+
+/// The pair an `EDGE FROM … TO …` declared, and the order it holds them in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgeEndpoints {
+    /// The table an edge leads out of.
+    pub from: TableRef,
+    /// The table an edge leads into.
+    pub to: TableRef,
+    /// The order a node's edges are held in, when the statement gives one.
+    pub order: Option<EdgeOrdering>,
 }
 
 /// The one thing an [`AlterTable`](StatementKind::AlterTable) statement changes.

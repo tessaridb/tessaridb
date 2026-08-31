@@ -85,3 +85,33 @@ RELATE users:1->users->users:2;
 --- case: traversing a table that is not an edge table is refused
 SELECT * FROM users:1->users;
 --- expect: error NotAnEdgeTable
+
+--- case: an edge table may name the pair it joins
+DEFINE COLLECTION posts;
+DEFINE TABLE wrote EDGE FROM users TO posts;
+CREATE posts:1 = { title: 'first' };
+--- expect: ok
+
+--- case: a relation between the declared pair is accepted
+RELATE users:1->wrote->posts:1;
+--- expect: ok
+
+--- case: a relation between a pair the table does not declare is refused
+RELATE users:1->wrote->users:2;
+--- expect: error EndpointsNotDeclared
+
+--- case: the direction is part of the declaration, so the reverse pair is refused too
+RELATE posts:1->wrote->users:1;
+--- expect: error EndpointsNotDeclared
+
+--- case: the bare EDGE table still accepts the pair the declared one refuses
+RELATE users:1->follows->users:2;
+--- expect: ok
+
+--- case: an endpoint naming no table refuses and leaves nothing behind
+DEFINE TABLE mentions EDGE FROM users TO nowhere;
+--- expect: error Unknown
+
+--- case: and the refused declaration created no table
+RELATE users:1->mentions->posts:1;
+--- expect: error Unknown

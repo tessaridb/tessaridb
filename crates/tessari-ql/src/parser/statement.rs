@@ -4,10 +4,10 @@ use super::Parser;
 use tessari_types::{Assertion, FieldKind, Filter, IdentityKind, Path, Step};
 
 use crate::ast::{
-    Answer, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, Direction, Edit, Expr,
-    ExprKind, FieldMapping, FieldPath, GraphOrdering, Hop, InfoSubject, JoinSide, Name, OnFailure,
-    Password, Projection, RangeExpr, ReachRef, RecordTarget, Select, Source, Statement,
-    StatementKind, TableChange, TableRef, UserChange, UserGrant, Written,
+    Answer, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, Direction, EdgeClause,
+    EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, FieldMapping, FieldPath, Hop, InfoSubject,
+    JoinSide, Name, OnFailure, Password, Projection, RangeExpr, ReachRef, RecordTarget, Select,
+    Source, Statement, StatementKind, TableChange, TableRef, UserChange, UserGrant, Written,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -384,15 +384,15 @@ impl Parser<'_> {
                 // script that says which reading it wants keeps saying it after
                 // the default moves again.
                 let mut strictness: Option<bool> = None;
-                let mut edge = false;
+                let mut edge: Option<EdgeClause> = None;
                 let mut identity: Option<IdentityKind> = None;
                 loop {
                     if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
                         strictness = Some(true);
                     } else if strictness.is_none() && self.eat_keyword(Keyword::Schemaless) {
                         strictness = Some(false);
-                    } else if !edge && self.eat_keyword(Keyword::Edge) {
-                        edge = true;
+                    } else if edge.is_none() && self.eat_keyword(Keyword::Edge) {
+                        edge = Some(self.edge_clause()?);
                     } else if identity.is_none() && self.eat_word("identity") {
                         identity = Some(self.identity_kind()?);
                     } else {
@@ -412,7 +412,7 @@ impl Parser<'_> {
                 // store supplies. It keeps the lenient reading it had, because
                 // an edge carries properties and none of them were ever
                 // declared here.
-                if columns.is_empty() && strictness.is_none() && !edge {
+                if columns.is_empty() && strictness.is_none() && edge.is_none() {
                     return Err(Error::TableWithoutColumns {
                         name: name.text.clone(),
                         span: name.span,
@@ -462,7 +462,6 @@ impl Parser<'_> {
                     if_not_exists,
                 })
             }
-            Some(Keyword::Graph) => self.define_graph(),
             Some(Keyword::Index) => self.define_index(),
             Some(Keyword::Field) => self.define_field(),
             Some(Keyword::Analyzer) => self.define_analyzer(),
@@ -702,33 +701,28 @@ impl Parser<'_> {
         Ok(held)
     }
 
-    /// `DEFINE GRAPH follows FROM users TO users (at datetime) ORDER BY at DESC`
+    /// `FROM users TO users ORDER BY at DESC` after `EDGE`, when it is there.
     ///
-    /// The endpoints are required and lead the statement, because they are the
-    /// whole of what distinguishes this from `DEFINE TABLE follows EDGE`: a
-    /// graph with no declared pair would be that statement wearing a longer
-    /// word.
-    fn define_graph(&mut self) -> Result<StatementKind> {
-        self.advance();
-        let if_not_exists = self.eat_if_not_exists()?;
-        let name = self.name()?;
-        self.expect_keyword(Keyword::From, "`FROM` and the table an edge leads out of")?;
+    /// The pair is read as a unit: `FROM` without `TO` is refused rather than
+    /// read as half a declaration, because an edge table that knows only where
+    /// its edges leave from could refuse nothing a permissive one accepts, and
+    /// the statement would have bought its clause for nothing.
+    fn edge_clause(&mut self) -> Result<EdgeClause> {
+        if !self.eat_keyword(Keyword::From) {
+            return Ok(EdgeClause::Any);
+        }
         let from = self.table_ref()?;
         self.expect_keyword(Keyword::To, "`TO` and the table an edge leads into")?;
         let to = self.table_ref()?;
-        let columns = self.columns()?;
-        let order = self.graph_ordering()?;
-        Ok(StatementKind::DefineGraph {
-            name,
+        let order = self.edge_ordering()?;
+        Ok(EdgeClause::Between(Box::new(EdgeEndpoints {
             from,
             to,
-            columns,
             order,
-            if_not_exists,
-        })
+        })))
     }
 
-    /// `ORDER BY at DESC` after a graph's columns, when it is there.
+    /// `ORDER BY at DESC` after an edge table's declared pair, when it is there.
     ///
     /// Read with contextual words for the reason `shape.rs` reads the same
     /// clause that way: reserving `ORDER` would take a good column name out of
@@ -738,7 +732,7 @@ impl Parser<'_> {
     /// The key is a single field **name**, not the routed expression a `SELECT`
     /// orders by. It becomes the endpoint index's key suffix, so it has to be
     /// something the writer can read off the edge as it places it.
-    fn graph_ordering(&mut self) -> Result<Option<GraphOrdering>> {
+    fn edge_ordering(&mut self) -> Result<Option<EdgeOrdering>> {
         if !self.eat_word("order") {
             return Ok(None);
         }
@@ -754,7 +748,7 @@ impl Parser<'_> {
             self.eat_word("asc");
             false
         };
-        Ok(Some(GraphOrdering { field, descending }))
+        Ok(Some(EdgeOrdering { field, descending }))
     }
 
     /// `DEFINE INDEX by_email ON users FIELDS email, name UNIQUE`
@@ -1180,10 +1174,8 @@ impl Parser<'_> {
         match self.peek_keyword() {
             // A bucket is a table row carrying `bucket: true` — `DEFINE BUCKET`
             // reaches `define_table` — so the words undefine the same catalog
-            // entry and differ only in which one the reader wrote. A graph is
-            // one too: its declaration lives in the same row, so dropping it is
-            // dropping that row and there is nothing extra to take down.
-            Some(Keyword::Table | Keyword::Space | Keyword::Bucket | Keyword::Graph) => {
+            // entry and differ only in which one the reader wrote.
+            Some(Keyword::Table | Keyword::Space | Keyword::Bucket) => {
                 self.advance();
                 Ok(StatementKind::DropTable {
                     table: self.table_ref()?,

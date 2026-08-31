@@ -465,6 +465,23 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `RELATE` between a pair the edge table does not declare.
+    ///
+    /// Only an edge table declared `EDGE FROM a TO b` refuses this; the bare
+    /// `EDGE` accepts any pair, which is the difference the clause buys. The
+    /// refusal is the point of declaring the pair at all: a link into a table
+    /// the graph was never told about traverses out of the structure the caller
+    /// thought they had, and nothing downstream would be in an error state.
+    #[error(
+        "{table} does not join these two tables — it was declared with `EDGE FROM … TO …` (at {span})"
+    )]
+    EndpointsNotDeclared {
+        /// The edge table as written.
+        table: String,
+        /// Where the relation was written.
+        span: Span,
+    },
+
     /// A graph traversal was asked for inside a read of the past.
     ///
     /// Edges are followed through the edge table's direction indexes, and an

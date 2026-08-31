@@ -3,11 +3,11 @@
 use std::collections::BTreeMap;
 use tessari_encoding::{Roles, decode_payload, encode_payload};
 use tessari_ql::{
-    Answer, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, Edit, FieldMapping,
-    FieldPath, Name, RecordTarget, Span, StatementKind, TableChange, TableRef,
+    Answer, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, EdgeClause, Edit,
+    FieldMapping, FieldPath, Name, RecordTarget, Span, StatementKind, TableChange, TableRef,
 };
 use tessari_storage::{
-    Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, FieldShape, GraphDeclaration, GraphOrder,
+    Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeOrder, FieldShape,
     IndexDefinition, IndexShape, Mapped, OnFailure, RecordAddress, TableKind, TableShape,
     Transaction, VectorDistance,
 };
@@ -72,22 +72,26 @@ impl Session<'_> {
                 edge,
                 identity,
                 if_not_exists,
-            } => self.define_table_with_columns(
-                transaction,
-                name,
-                columns,
-                TableShape {
-                    schemafull: *schemafull,
-                    kind: if *edge {
-                        TableKind::Edge
-                    } else {
-                        TableKind::Table
+            } => {
+                // The endpoints are resolved **before** the table is created, so
+                // a declaration naming a table that is not there refuses having
+                // written nothing. An edge table whose endpoint is a dangling
+                // name could never refuse a `RELATE` against it, which is the
+                // whole capability the clause was added for.
+                let kind = self.edge_kind(transaction, edge.as_ref(), columns)?;
+                self.define_table_with_columns(
+                    transaction,
+                    name,
+                    columns,
+                    TableShape {
+                        schemafull: *schemafull,
+                        kind,
+                        identity: *identity,
                     },
-                    identity: *identity,
-                },
-                *if_not_exists,
-                span,
-            ),
+                    *if_not_exists,
+                    span,
+                )
+            }
             // A space holds single values rather than named fields (ADR-0010),
             // so there is nothing for a schema to declare about one.
             StatementKind::DefineSpace {
@@ -486,68 +490,6 @@ impl Session<'_> {
                 *if_not_exists,
                 span,
             ),
-            // The endpoints are resolved **before** the graph is created, so a
-            // declaration naming a table that is not there refuses having
-            // written nothing. A graph whose endpoint is a dangling name could
-            // never refuse a `RELATE` against it, which is the whole capability
-            // the word was added for.
-            StatementKind::DefineGraph {
-                name,
-                from,
-                to,
-                columns,
-                order,
-                if_not_exists,
-            } => {
-                let (_, from_id) = self.resolve_table(transaction, from)?;
-                let (_, to_id) = self.resolve_table(transaction, to)?;
-                let order = match order {
-                    // The ordering field has to be one the graph declares.
-                    // Nothing else can guarantee an edge carries it, and the
-                    // order is the endpoint index's key suffix rather than a
-                    // sort applied afterwards: an edge missing the field has no
-                    // place to be written, and the failure would surface much
-                    // later as neighbours arriving in roughly the right
-                    // sequence.
-                    Some(ordering) => {
-                        if !columns
-                            .iter()
-                            .any(|column| column.name.text == ordering.field.text)
-                        {
-                            return Err(Error::Unknown {
-                                entity: "field",
-                                name: ordering.field.text.clone(),
-                                span: ordering.field.span,
-                            });
-                        }
-                        Some(GraphOrder {
-                            field: ordering.field.text.clone(),
-                            descending: ordering.descending,
-                        })
-                    }
-                    None => None,
-                };
-                self.define_table_with_columns(
-                    transaction,
-                    name,
-                    columns,
-                    TableShape {
-                        // Lenient for the reason an edge table is: the properties
-                        // a graph declares are the ones it knows about, and an
-                        // edge carrying one it was not told about is not the
-                        // error a strict table's would be.
-                        schemafull: false,
-                        kind: TableKind::Graph(GraphDeclaration {
-                            from: from_id,
-                            to: to_id,
-                            order,
-                        }),
-                        identity: IdentityKind::default(),
-                    },
-                    *if_not_exists,
-                    span,
-                )
-            }
             StatementKind::Put {
                 target,
                 start,
@@ -848,6 +790,62 @@ impl Session<'_> {
         Ok(Outcome::Keys(produced))
     }
 
+    /// The kind a `DEFINE TABLE` produces, with any declared pair resolved.
+    ///
+    /// Resolution happens here rather than inside the table's own creation
+    /// because an endpoint that does not exist has to refuse before anything is
+    /// written: a table carrying a dangling endpoint id could refuse nothing,
+    /// and the clause exists only to refuse.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Unknown`] when an endpoint names no table, or when the
+    /// order names a field the statement does not declare.
+    fn edge_kind(
+        &self,
+        transaction: &mut Transaction<'_>,
+        edge: Option<&EdgeClause>,
+        columns: &[ColumnDeclaration],
+    ) -> Result<TableKind> {
+        let Some(edge) = edge else {
+            return Ok(TableKind::Table);
+        };
+        let EdgeClause::Between(declared) = edge else {
+            return Ok(TableKind::Edge(None));
+        };
+        let (_, from_id) = self.resolve_table(transaction, &declared.from)?;
+        let (_, to_id) = self.resolve_table(transaction, &declared.to)?;
+        // The ordering field has to be one the table declares. Nothing else can
+        // guarantee an edge carries it, and the order is the endpoint index's
+        // key suffix rather than a sort applied afterwards: an edge missing the
+        // field has no place to be written, and the failure would surface much
+        // later as neighbours arriving in roughly the right sequence.
+        let order = match &declared.order {
+            Some(ordering) => {
+                if !columns
+                    .iter()
+                    .any(|column| column.name.text == ordering.field.text)
+                {
+                    return Err(Error::Unknown {
+                        entity: "field",
+                        name: ordering.field.text.clone(),
+                        span: ordering.field.span,
+                    });
+                }
+                Some(EdgeOrder {
+                    field: ordering.field.text.clone(),
+                    descending: ordering.descending,
+                })
+            }
+            None => None,
+        };
+        Ok(TableKind::Edge(Some(EdgeDeclaration {
+            from: from_id,
+            to: to_id,
+            order,
+        })))
+    }
+
     /// Write an edge between two records.
     ///
     /// The edge is an ordinary record in the edge table, carrying `out` and `in`
@@ -870,17 +868,34 @@ impl Session<'_> {
         value: Option<&tessari_ql::Expr>,
     ) -> Result<Outcome> {
         let (context, edge_table) = self.resolve_table(transaction, edges)?;
-        if !Catalog::new(transaction)
-            .table(edge_table)?
-            .is_some_and(|found| found.holds_edges())
-        {
+        let Some(definition) = Catalog::new(transaction).table(edge_table)? else {
+            return Err(Error::NotAnEdgeTable {
+                table: edges.name.text.clone(),
+                span: edges.span,
+            });
+        };
+        if !definition.is_edge() {
             return Err(Error::NotAnEdgeTable {
                 table: edges.name.text.clone(),
                 span: edges.span,
             });
         }
+        let declared = definition.edge_endpoints().cloned();
         let (_, out) = self.address(transaction, from)?;
         let (_, into) = self.address(transaction, to)?;
+        // A table that declared its pair refuses a link between any other, and
+        // that refusal is the whole of what the clause buys. It is checked after
+        // both endpoints resolve so that a link naming a record that is not
+        // there fails as the missing record it is, rather than as a pair the
+        // table does not join.
+        if let Some(declared) = declared
+            && (out.table != declared.from || into.table != declared.to)
+        {
+            return Err(Error::EndpointsNotDeclared {
+                table: edges.name.text.clone(),
+                span: edges.span,
+            });
+        }
 
         let mut fields = match value {
             Some(expression) => match self.evaluate(transaction, expression)? {

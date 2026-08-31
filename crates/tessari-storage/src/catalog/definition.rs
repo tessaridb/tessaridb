@@ -30,7 +30,7 @@ const FIELD_SCHEMAFULL: &str = "schemafull";
 const FIELD_EDGE: &str = "edge";
 const FIELD_BUCKET: &str = "bucket";
 const FIELD_COLLECTION: &str = "collection";
-const FIELD_GRAPH: &str = "graph";
+const FIELD_ENDPOINTS: &str = "endpoints";
 const FIELD_FROM: &str = "from";
 const FIELD_TO: &str = "to";
 const FIELD_ORDER: &str = "order";
@@ -100,10 +100,10 @@ pub struct TableDefinition {
 }
 
 impl TableDefinition {
-    /// Whether the table holds edges.
+    /// Whether the table holds edges, declared pair or not.
     #[must_use]
     pub fn is_edge(&self) -> bool {
-        self.kind == TableKind::Edge
+        matches!(self.kind, TableKind::Edge(_))
     }
 
     /// Whether the table holds files.
@@ -118,27 +118,17 @@ impl TableDefinition {
         self.kind == TableKind::Collection
     }
 
-    /// Whether the table's records are edges, however it was declared.
+    /// The pair of tables the edge table joins, when it declared one.
     ///
-    /// Distinct from [`is_edge`](Self::is_edge), which asks which **word**
-    /// created the table. Both an `EDGE` table and a graph hold edges and carry
-    /// the endpoint indexes, so a caller deciding whether `RELATE` and a
-    /// traversal apply asks this one; a caller writing the declaration back out
-    /// asks the other, because the two words are not interchangeable there.
-    ///
-    /// The split is what stops a graph from reading as an ordinary table at the
-    /// three places that gate on edge-ness, which would have made `DEFINE GRAPH`
-    /// produce something nothing could write to.
+    /// `None` covers both a table that is not an edge table at all and one
+    /// declared `EDGE` with no pair, because the two answer the same question
+    /// the same way: there is no endpoint to check a `RELATE` against. A caller
+    /// that needs to tell them apart asks [`is_edge`](Self::is_edge) first, and
+    /// exactly one place does.
     #[must_use]
-    pub fn holds_edges(&self) -> bool {
-        matches!(self.kind, TableKind::Edge | TableKind::Graph(_))
-    }
-
-    /// The pair of tables the graph joins, when the table is one.
-    #[must_use]
-    pub fn graph(&self) -> Option<&GraphDeclaration> {
+    pub fn edge_endpoints(&self) -> Option<&EdgeDeclaration> {
         match &self.kind {
-            TableKind::Graph(graph) => Some(graph),
+            TableKind::Edge(declared) => declared.as_ref(),
             _ => None,
         }
     }
@@ -212,7 +202,7 @@ impl TableDefinition {
             // the kind reads everything this one writes.
             (
                 FIELD_EDGE.to_owned(),
-                Value::Bool(self.kind == TableKind::Edge),
+                Value::Bool(matches!(self.kind, TableKind::Edge(_))),
             ),
             (
                 FIELD_BUCKET.to_owned(),
@@ -224,11 +214,13 @@ impl TableDefinition {
             ),
             (FIELD_IDENTITY.to_owned(), Value::from(self.identity.name())),
         ]);
-        // A declaration is not a flag, so it is written only by the kind that
-        // has one. Absent is how every entry written before graphs existed
-        // reads, which is the same compatibility contract the flags keep.
-        if let TableKind::Graph(graph) = &self.kind {
-            fields.insert(FIELD_GRAPH.to_owned(), graph.to_value());
+        // A declaration is not a flag, so it is written only by the edge table
+        // that has one. Absent is how every edge table declared without a pair
+        // reads, which is the same compatibility contract the flags keep: the
+        // clause is optional, so an entry written before it existed decodes as
+        // the permissive edge table it is.
+        if let TableKind::Edge(Some(endpoints)) = &self.kind {
+            fields.insert(FIELD_ENDPOINTS.to_owned(), endpoints.to_value());
         }
         Value::Object(fields)
     }
@@ -255,8 +247,8 @@ impl TableDefinition {
                 flag(fields, FIELD_EDGE, "table")?,
                 flag(fields, FIELD_BUCKET, "table")?,
                 flag(fields, FIELD_COLLECTION, "table")?,
-                match fields.get(FIELD_GRAPH) {
-                    Some(value) => Some(GraphDeclaration::from_value(value)?),
+                match fields.get(FIELD_ENDPOINTS) {
+                    Some(value) => Some(EdgeDeclaration::from_value(value)?),
                     None => None,
                 },
             )?,
@@ -330,27 +322,24 @@ pub enum TableKind {
     /// without the caller having had to know to declare them. `RELATE` checks
     /// the kind before writing, because an edge nothing can traverse to is
     /// worse than a refusal.
-    Edge,
-    /// Edges between two declared tables, held in a declared order — `DEFINE
-    /// GRAPH`.
     ///
-    /// An edge table accepts a link between any two records; a graph accepts
-    /// only the pair it was declared over, which is the difference in what a
-    /// caller may *do* that earns the word — the same test `BUCKET`, `SPACE` and
-    /// `COLLECTION` each passed. `DEFINE TABLE … EDGE` therefore stays and keeps
-    /// its permissiveness (Q-297).
+    /// `Some` is `DEFINE TABLE … EDGE FROM a TO b`, which refuses a link whose
+    /// endpoints it does not declare; `None` is the bare `EDGE`, which accepts a
+    /// link between any two records. The clause is optional so that a store
+    /// discovering its shape as it goes still has a spelling for that, and so
+    /// that every edge table declared before the clause existed keeps its
+    /// meaning (Q-297).
     ///
-    /// The declaration rides on the kind rather than sitting beside it in an
-    /// `Option`, because a pair would be two places holding one fact and would
-    /// make `kind == Graph` with no endpoints representable — the state this
-    /// type was introduced one change earlier to abolish (C1).
-    Graph(GraphDeclaration),
+    /// The declaration rides **on** the kind rather than sitting beside it in a
+    /// second field, because a pair would be two places holding one fact and
+    /// would make "declares a pair but is not an edge table" representable — the
+    /// state this type was introduced one change earlier to abolish (C1).
+    Edge(Option<EdgeDeclaration>),
 }
 
-/// What a `DEFINE GRAPH` declared: its endpoints, and the order its edges are
-/// held in.
+/// The pair an edge table joins, and the order its edges are held in.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphDeclaration {
+pub struct EdgeDeclaration {
     /// The table an edge may leave.
     pub from: TableId,
     /// The table an edge may arrive at.
@@ -362,12 +351,12 @@ pub struct GraphDeclaration {
     /// recent" a bounded read of adjacent keys instead of reading every edge and
     /// sorting. It is also why it cannot be changed later without rewriting
     /// every edge index in every store.
-    pub order: Option<GraphOrder>,
+    pub order: Option<EdgeOrder>,
 }
 
-/// The order a graph holds one node's edges in.
+/// The order an edge table holds one node's edges in.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphOrder {
+pub struct EdgeOrder {
     /// The edge field the order reads.
     pub field: String,
     /// Whether the order runs downward.
@@ -396,14 +385,13 @@ impl TableKind {
         edge: bool,
         bucket: bool,
         collection: bool,
-        graph: Option<GraphDeclaration>,
+        endpoints: Option<EdgeDeclaration>,
     ) -> Result<Self> {
-        match (edge, bucket, collection, graph) {
+        match (edge, bucket, collection, endpoints) {
             (false, false, false, None) => Ok(Self::Table),
-            (true, false, false, None) => Ok(Self::Edge),
+            (true, false, false, endpoints) => Ok(Self::Edge(endpoints)),
             (false, true, false, None) => Ok(Self::Bucket),
             (false, false, true, None) => Ok(Self::Collection),
-            (false, false, false, Some(graph)) => Ok(Self::Graph(graph)),
             _ => Err(Error::CatalogMalformed {
                 entity: "table",
                 field: "kind",
@@ -413,7 +401,7 @@ impl TableKind {
     }
 }
 
-impl GraphDeclaration {
+impl EdgeDeclaration {
     /// The value written inside the table's catalog entry.
     #[must_use]
     pub fn to_value(&self) -> Value {
@@ -431,7 +419,7 @@ impl GraphDeclaration {
     /// Read a declaration back.
     ///
     /// A direction without a field is refused rather than read as an unordered
-    /// graph: the two are different key grammars, and reading one as the other
+    /// edge table: the two are different key grammars, and reading one as the other
     /// would answer a bounded neighbour read from an index that does not hold
     /// the order it claims.
     ///
@@ -440,31 +428,31 @@ impl GraphDeclaration {
     /// Returns [`Error::CatalogMalformed`] when an endpoint is missing or holds
     /// the wrong type, or when the order is only half present.
     pub fn from_value(value: &Value) -> Result<Self> {
-        let fields = object(value, "graph")?;
+        let fields = object(value, "edge endpoints")?;
         let order = match fields.get(FIELD_ORDER) {
             None if fields.contains_key(FIELD_DESCENDING) => {
                 return Err(Error::CatalogMalformed {
-                    entity: "graph",
+                    entity: "edge endpoints",
                     field: FIELD_ORDER,
                     found: "a direction with no field to order by",
                 });
             }
             None => None,
-            Some(Value::String(field)) => Some(GraphOrder {
+            Some(Value::String(field)) => Some(EdgeOrder {
                 field: field.clone(),
-                descending: flag(fields, FIELD_DESCENDING, "graph")?,
+                descending: flag(fields, FIELD_DESCENDING, "edge endpoints")?,
             }),
             Some(other) => {
                 return Err(Error::CatalogMalformed {
-                    entity: "graph",
+                    entity: "edge endpoints",
                     field: FIELD_ORDER,
                     found: other.type_name(),
                 });
             }
         };
         Ok(Self {
-            from: TableId::new(field_id(fields, FIELD_FROM, "graph")?),
-            to: TableId::new(field_id(fields, FIELD_TO, "graph")?),
+            from: TableId::new(field_id(fields, FIELD_FROM, "edge endpoints")?),
+            to: TableId::new(field_id(fields, FIELD_TO, "edge endpoints")?),
             order,
         })
     }
@@ -1002,25 +990,25 @@ mod tests {
     }
 
     #[test]
-    fn a_graph_round_trips_its_endpoints_and_the_order_its_edges_are_held_in() {
+    fn an_edge_table_round_trips_its_endpoints_and_the_order_its_edges_are_held_in() {
         let table = TableDefinition {
             id: TableId::new(11),
             namespace: NamespaceId::new(7),
             database: DatabaseId::new(3),
             name: "follows".to_owned(),
             schemafull: false,
-            kind: TableKind::Graph(GraphDeclaration {
+            kind: TableKind::Edge(Some(EdgeDeclaration {
                 from: TableId::new(4),
                 to: TableId::new(5),
                 // Deliberately descending, and deliberately not the same table at
                 // both ends: an order that round trips as `false` and endpoints
                 // that round trip transposed both survive an assertion made with
                 // the defaults.
-                order: Some(GraphOrder {
+                order: Some(EdgeOrder {
                     field: "at".to_owned(),
                     descending: true,
                 }),
-            }),
+            })),
             identity: IdentityKind::Int,
         };
         assert_eq!(
@@ -1028,29 +1016,41 @@ mod tests {
             table
         );
 
-        // And a graph with no declared order is a different value, not a missing
-        // one — it reads back unordered rather than as the default order.
+        // And a declared pair with no declared order is a different value, not a
+        // missing one — it reads back unordered rather than as the default order.
         let unordered = TableDefinition {
-            kind: TableKind::Graph(GraphDeclaration {
+            kind: TableKind::Edge(Some(EdgeDeclaration {
                 from: TableId::new(4),
                 to: TableId::new(5),
                 order: None,
-            }),
-            ..table
+            })),
+            ..table.clone()
         };
         assert_eq!(
             TableDefinition::from_value(&unordered.to_value()).unwrap(),
             unordered
         );
+
+        // And the bare `EDGE`, which is what every edge table declared before the
+        // clause existed is: no endpoints field is written, and the entry reads
+        // back permissive rather than as a pair nobody declared.
+        let permissive = TableDefinition {
+            kind: TableKind::Edge(None),
+            ..table
+        };
+        assert_eq!(
+            TableDefinition::from_value(&permissive.to_value()).unwrap(),
+            permissive
+        );
     }
 
     #[test]
-    fn a_stored_graph_with_a_direction_but_no_field_is_refused_rather_than_read_as_unordered() {
+    fn stored_endpoints_with_a_direction_but_no_field_are_refused_rather_than_read_as_unordered() {
         // The order is the endpoint index's key suffix, so reading a half-written
         // order as "no order" would answer a bounded neighbour read from an index
         // that does not hold the order it is being asked for — in the right
         // sequence often enough, by accident, to look correct.
-        let graph = BTreeMap::from([
+        let endpoints = BTreeMap::from([
             (FIELD_FROM.to_owned(), number(4)),
             (FIELD_TO.to_owned(), number(5)),
             (FIELD_DESCENDING.to_owned(), Value::Bool(true)),
@@ -1060,7 +1060,8 @@ mod tests {
             (FIELD_NAMESPACE.to_owned(), number(7)),
             (FIELD_DATABASE.to_owned(), number(3)),
             (FIELD_NAME.to_owned(), Value::from("follows")),
-            (FIELD_GRAPH.to_owned(), Value::Object(graph)),
+            (FIELD_EDGE.to_owned(), Value::Bool(true)),
+            (FIELD_ENDPOINTS.to_owned(), Value::Object(endpoints)),
         ]);
         let error = TableDefinition::from_value(&Value::Object(fields)).unwrap_err();
         assert_eq!(error.code(), "corruption");
@@ -1069,12 +1070,14 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_table_that_is_a_graph_and_an_edge_at_once_is_refused() {
-        // The fourth kind takes the same contract as the other three: a pair on
-        // disk is still writable by an older build or by corruption, and picking
-        // a winner would give one replica a graph where another has a plain edge
-        // table, from bytes both agree on.
-        let graph = BTreeMap::from([
+    fn a_stored_pair_on_a_table_that_is_not_an_edge_table_is_refused() {
+        // The pair only means anything on an edge table, and this is the state
+        // the kind exists to keep unrepresentable in memory — but disk is still
+        // writable by an older build or by corruption. Reading it as a plain
+        // table would silently discard a declared refusal, and reading it as an
+        // edge table would give one replica a declared pair where another has
+        // a table, from bytes both agree on.
+        let endpoints = BTreeMap::from([
             (FIELD_FROM.to_owned(), number(4)),
             (FIELD_TO.to_owned(), number(5)),
         ]);
@@ -1083,8 +1086,8 @@ mod tests {
             (FIELD_NAMESPACE.to_owned(), number(7)),
             (FIELD_DATABASE.to_owned(), number(3)),
             (FIELD_NAME.to_owned(), Value::from("follows")),
-            (FIELD_EDGE.to_owned(), Value::Bool(true)),
-            (FIELD_GRAPH.to_owned(), Value::Object(graph)),
+            (FIELD_EDGE.to_owned(), Value::Bool(false)),
+            (FIELD_ENDPOINTS.to_owned(), Value::Object(endpoints)),
         ]);
         let error = TableDefinition::from_value(&Value::Object(fields)).unwrap_err();
         assert_eq!(error.code(), "corruption");

@@ -464,7 +464,7 @@ fn an_edge_table_carries_an_index_on_each_endpoint_from_the_moment_it_exists() {
             database.id,
             "follows",
             TableShape {
-                kind: TableKind::Edge,
+                kind: TableKind::Edge(None),
                 ..TableShape::default()
             },
         )
@@ -552,7 +552,7 @@ fn a_replica_rebuilds_an_edge_table_with_its_indexes_and_its_declarations() {
             database.id,
             "follows",
             TableShape {
-                kind: TableKind::Edge,
+                kind: TableKind::Edge(None),
                 ..TableShape::default()
             },
         )

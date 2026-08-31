@@ -1,29 +1,32 @@
-//! `DEFINE GRAPH` — an edge table that says which pair of tables it joins.
+//! `DEFINE TABLE … EDGE FROM … TO …` — an edge table that names the pair it joins.
 //!
-//! # What the word buys
+//! # What the clause buys
 //!
-//! `DEFINE TABLE follows EDGE` accepts a `RELATE` between any two records at
-//! all. A graph names its endpoints, and that difference in what a caller may
-//! **do** is what earns `GRAPH` its own word, on the same test `BUCKET` and
-//! `COLLECTION` passed. The refusal itself is a later slice; what is proven here
-//! is that the declaration is taken, stored, reported, and survives the round
-//! trip in the direction it was written.
+//! The bare `DEFINE TABLE follows EDGE` accepts a `RELATE` between any two
+//! records at all. Adding `FROM … TO …` narrows that to one pair and refuses
+//! every other, and that difference in what a caller may **do** is the whole of
+//! what the clause is for. The clause is optional, so every edge table declared
+//! before it existed keeps parsing and keeps accepting anything.
 //!
 //! # The failure this file exists for
 //!
-//! `is_edge()` was `kind == TableKind::Edge`, so a graph answered **false** at
-//! every gate that asked it — `RELATE`, traversal, the report, the writer. A
-//! declared graph would have been a table nothing could write to and nothing
-//! could walk, and none of that is a compile error: the variant is new, so every
-//! `matches!` was already exhaustive and every equality against `Edge` quietly
-//! kept its old answer. The predicate was split into `holds_edges()` (*are the
-//! records edges*) and `is_edge()` (*which word declared it*), and the test that
-//! catches the regression is the plain one near the bottom of this file: relate
-//! two records through a graph and walk back to them.
+//! The predicate that gates `RELATE`, traversal, the report and the writer was
+//! `kind == TableKind::Edge`, and a declared pair used to be a *different* kind —
+//! so a table with endpoints answered **false** everywhere and would have been a
+//! table nothing could write to and nothing could walk. None of that was a
+//! compile error: the variant was new, so every `matches!` was already exhaustive
+//! and every equality against `Edge` quietly kept its old answer. With the pair
+//! riding **on** the edge kind rather than beside it, the state is no longer
+//! representable — and the test that would have caught the regression is still
+//! here, near the bottom: relate two records and walk back to them.
 //!
-//! The endpoint refusal (C2) and the ordered endpoint index (C3) are later
-//! waves. Nothing here asserts them, because a test that passes for a reason
-//! nobody built yet is worse than a missing one.
+//! # What is asserted, and what is not
+//!
+//! The endpoint refusal (C2) is asserted here, in both directions: the declared
+//! pair is accepted and every other pair is refused, against the same store.
+//! The ordered endpoint index (C3) and adjacency are later waves. Nothing here
+//! asserts them, because a test that passes for a reason nobody built yet is
+//! worse than a missing one.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
@@ -40,7 +43,7 @@ fn store() -> Store {
     Store::open(backend).unwrap()
 }
 
-/// A tenancy with two ordinary tables for a graph to join.
+/// A tenancy with two ordinary tables for an edge table to join.
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
@@ -63,15 +66,15 @@ fn report(session: &mut Session<'_>, script: &str) -> Value {
     }
 }
 
-/// The `graph` part of an `INFO FOR TABLE` report.
+/// The `endpoints` part of an `INFO FOR TABLE` report.
 fn declared(session: &mut Session<'_>, table: &str) -> BTreeMap<String, Value> {
     let described = report(session, &format!("INFO FOR TABLE {table};"));
     let Value::Object(fields) = &described else {
         panic!("expected an object, got {described:?}");
     };
-    match fields.get("graph") {
-        Some(Value::Object(graph)) => graph.clone(),
-        other => panic!("no graph declaration in the report: {other:?}"),
+    match fields.get("endpoints") {
+        Some(Value::Object(endpoints)) => endpoints.clone(),
+        other => panic!("no endpoint declaration in the report: {other:?}"),
     }
 }
 
@@ -98,14 +101,14 @@ fn tables(session: &mut Session<'_>) -> Vec<String> {
 }
 
 #[test]
-fn a_graph_reports_the_pair_it_joins_in_the_direction_it_was_declared() {
+fn an_edge_table_reports_the_pair_it_joins_in_the_direction_it_was_declared() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE GRAPH wrote FROM users TO posts;")
+        .run("DEFINE TABLE wrote EDGE FROM users TO posts;")
         .unwrap();
     session
-        .run("DEFINE GRAPH about FROM posts TO users;")
+        .run("DEFINE TABLE about EDGE FROM posts TO users;")
         .unwrap();
 
     let wrote = declared(&mut session, "wrote");
@@ -123,14 +126,14 @@ fn a_graph_reports_the_pair_it_joins_in_the_direction_it_was_declared() {
 }
 
 #[test]
-fn a_graph_reports_the_order_its_edges_are_held_in_and_which_way_it_runs() {
+fn an_edge_table_reports_the_order_its_edges_are_held_in_and_which_way_it_runs() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE GRAPH recent FROM users TO posts (at datetime) ORDER BY at DESC;")
+        .run("DEFINE TABLE recent (at datetime) EDGE FROM users TO posts ORDER BY at DESC;")
         .unwrap();
     session
-        .run("DEFINE GRAPH earliest FROM users TO posts (at datetime) ORDER BY at;")
+        .run("DEFINE TABLE earliest (at datetime) EDGE FROM users TO posts ORDER BY at;")
         .unwrap();
 
     let recent = declared(&mut session, "recent");
@@ -147,11 +150,11 @@ fn a_graph_reports_the_order_its_edges_are_held_in_and_which_way_it_runs() {
 }
 
 #[test]
-fn a_graph_declared_without_an_order_reports_none() {
+fn an_edge_table_declared_without_an_order_reports_none() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE GRAPH follows FROM users TO users;")
+        .run("DEFINE TABLE follows EDGE FROM users TO users;")
         .unwrap();
 
     let follows = declared(&mut session, "follows");
@@ -167,7 +170,7 @@ fn an_endpoint_the_catalog_does_not_hold_is_refused_and_leaves_no_table_behind()
     let mut session = ready(&store);
 
     let error = session
-        .run("DEFINE GRAPH wrote FROM users TO nowhere;")
+        .run("DEFINE TABLE wrote EDGE FROM users TO nowhere;")
         .unwrap_err();
     let Error::Unknown { entity, name, .. } = &error else {
         panic!("{error}");
@@ -176,21 +179,21 @@ fn an_endpoint_the_catalog_does_not_hold_is_refused_and_leaves_no_table_behind()
     assert_eq!(name, "nowhere");
 
     // The endpoints resolve *before* the table is created, and this is the half
-    // that matters: a graph left standing with a dangling endpoint could never
-    // refuse a `RELATE` against it, which is the entire capability the word was
+    // that matters: a table left standing with a dangling endpoint could never
+    // refuse a `RELATE` against it, which is the entire capability the clause was
     // added for. A refusal that still created the table would be worse than no
-    // refusal, because the store would then hold a graph that cannot keep its
-    // own promise.
+    // refusal, because the store would then hold a declaration that cannot keep
+    // its own promise.
     assert!(!tables(&mut session).contains(&"wrote".to_owned()));
 }
 
 #[test]
-fn an_order_naming_a_field_the_graph_does_not_declare_is_refused() {
+fn an_order_naming_a_field_the_table_does_not_declare_is_refused() {
     let store = store();
     let mut session = ready(&store);
 
     let error = session
-        .run("DEFINE GRAPH recent FROM users TO posts (at datetime) ORDER BY seen DESC;")
+        .run("DEFINE TABLE recent (at datetime) EDGE FROM users TO posts ORDER BY seen DESC;")
         .unwrap_err();
     let Error::Unknown { entity, name, .. } = &error else {
         panic!("{error}");
@@ -206,12 +209,12 @@ fn an_order_naming_a_field_the_graph_does_not_declare_is_refused() {
 }
 
 #[test]
-fn a_graph_accepts_relate_and_is_walked_the_way_an_edge_table_is() {
+fn a_declared_pair_accepts_relate_and_is_walked_the_way_a_bare_edge_table_is() {
     let store = store();
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE GRAPH follows FROM users TO users;\n\
+            "DEFINE TABLE follows EDGE FROM users TO users;\n\
              CREATE users:1 = { handle: 'ada' };\n\
              CREATE users:2 = { handle: 'grace' };\n\
              CREATE users:3 = { handle: 'katherine' };\n\
@@ -221,9 +224,9 @@ fn a_graph_accepts_relate_and_is_walked_the_way_an_edge_table_is() {
         .unwrap();
 
     // This is the regression test named in the module header. Both gates below
-    // asked `is_edge()`, which a graph answered false, so the first `RELATE`
-    // would have been refused and the walk would have returned nothing — with
-    // the catalog, the parser and every match arm compiling perfectly.
+    // ask `is_edge()`, which a declared pair once answered false, so the first
+    // `RELATE` would have been refused and the walk would have returned nothing —
+    // with the catalog, the parser and every match arm compiling perfectly.
     let outcomes = session
         .run("SELECT * FROM users:1->follows->users;")
         .unwrap();
@@ -248,17 +251,79 @@ fn a_graph_accepts_relate_and_is_walked_the_way_an_edge_table_is() {
 }
 
 #[test]
-fn dropping_a_graph_undefines_the_table_it_is() {
+fn dropping_the_table_undefines_the_declaration_it_carries() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE GRAPH follows FROM users TO users;")
+        .run("DEFINE TABLE follows EDGE FROM users TO users;")
         .unwrap();
     assert!(tables(&mut session).contains(&"follows".to_owned()));
 
-    // `DROP GRAPH` is `DROP TABLE` under another word, because the words
-    // undefine the same catalog entry — the same arm `TABLE`, `SPACE` and
-    // `BUCKET` already share.
-    session.run("DROP GRAPH follows;").unwrap();
+    // Dropping the table takes the declaration with it, because the declaration
+    // is not a second entity beside the table — it rides on the table's own kind.
+    session.run("DROP TABLE follows;").unwrap();
     assert!(!tables(&mut session).contains(&"follows".to_owned()));
+}
+
+#[test]
+fn a_relate_off_the_declared_pair_is_refused_in_both_of_the_ways_it_can_be_wrong() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE wrote EDGE FROM users TO posts;\n\
+             CREATE users:1 = { handle: 'ada' };\n\
+             CREATE users:2 = { handle: 'grace' };\n\
+             CREATE posts:1 = { title: 'notes' };",
+        )
+        .unwrap();
+
+    // The pair as declared is accepted. This assertion is what stops the refusal
+    // from passing by refusing everything, which is the cheap way to make the two
+    // below go green.
+    session.run("RELATE users:1->wrote->posts:1;").unwrap();
+
+    // Wrong on the right-hand side: `posts` is what the table declared it leads
+    // into, and `users` is not.
+    let error = session.run("RELATE users:1->wrote->users:2;").unwrap_err();
+    let Error::EndpointsNotDeclared { table, .. } = &error else {
+        panic!("{error}");
+    };
+    assert_eq!(table, "wrote");
+
+    // Right pair, wrong way round. Direction is half of what the declaration
+    // says, so a check that compared the two tables as an unordered set would
+    // accept this — and every walk written against `wrote` would then meet edges
+    // pointing the way it does not read.
+    let error = session.run("RELATE posts:1->wrote->users:1;").unwrap_err();
+    assert!(
+        matches!(error, Error::EndpointsNotDeclared { .. }),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_bare_edge_table_still_accepts_the_link_a_declared_one_refuses() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE TABLE wrote EDGE FROM users TO posts;\n\
+             DEFINE TABLE linked EDGE;\n\
+             CREATE users:1 = { handle: 'ada' };\n\
+             CREATE users:2 = { handle: 'grace' };",
+        )
+        .unwrap();
+
+    // Same store, same link, two tables: the only difference is the clause. That
+    // is the whole claim the clause makes, and asserting it here is what proves
+    // the refusal comes from the declaration rather than from some new rule that
+    // narrowed `RELATE` for everybody — which would silently break every edge
+    // table written before the clause existed.
+    session.run("RELATE users:1->linked->users:2;").unwrap();
+    let error = session.run("RELATE users:1->wrote->users:2;").unwrap_err();
+    assert!(
+        matches!(error, Error::EndpointsNotDeclared { .. }),
+        "{error}"
+    );
 }

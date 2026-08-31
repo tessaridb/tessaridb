@@ -8,8 +8,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use tessari_ql::{
-    BinaryOp, Error, ExprKind, Identity, Projection, RecordTarget, Script, Source, StatementKind,
-    parse,
+    BinaryOp, EdgeClause, Error, ExprKind, Identity, Projection, RecordTarget, Script, Source,
+    StatementKind, parse,
 };
 use tessari_types::{Datetime, Number, RecordId, Value};
 
@@ -848,95 +848,117 @@ fn fetch_is_contextual_so_it_is_still_a_name() {
 }
 
 #[test]
-fn a_graph_parses_its_endpoints_its_properties_and_the_order_its_edges_are_held_in() {
-    let StatementKind::DefineGraph {
+fn an_edge_table_parses_its_endpoints_its_properties_and_the_order_its_edges_are_held_in() {
+    let StatementKind::DefineTable {
         name,
-        from,
-        to,
         columns,
-        order,
+        edge,
         if_not_exists,
-    } = one("DEFINE GRAPH follows FROM users TO users (at datetime) ORDER BY at DESC;")
+        ..
+    } = one("DEFINE TABLE follows (at datetime) EDGE FROM users TO users ORDER BY at DESC;")
     else {
-        panic!("not a graph");
+        panic!("not a table");
     };
     assert_eq!(name.text, "follows");
-    assert_eq!(from.name.text, "users");
-    assert_eq!(to.name.text, "users");
+    let Some(EdgeClause::Between(declared)) = edge else {
+        panic!("not a declared pair");
+    };
+    assert_eq!(declared.from.name.text, "users");
+    assert_eq!(declared.to.name.text, "users");
     assert_eq!(columns.len(), 1);
     assert_eq!(columns[0].name.text, "at");
-    let order = order.expect("the order was written");
+    let order = declared.order.as_ref().expect("the order was written");
     assert_eq!(order.field.text, "at");
     assert!(order.descending);
     assert!(!if_not_exists);
 }
 
 #[test]
-fn a_graph_that_is_only_a_link_declares_no_properties_and_no_order() {
-    let StatementKind::DefineGraph { columns, order, .. } =
-        one("DEFINE GRAPH wrote FROM users TO posts;")
-    else {
-        panic!("not a graph");
+fn a_bare_edge_table_keeps_the_meaning_it_had_before_the_clause_existed() {
+    // The clause is optional, so every edge table already written keeps parsing
+    // and keeps accepting a link between any two records. That is the whole
+    // compatibility contract of this wave, and it is asserted rather than
+    // assumed.
+    let StatementKind::DefineTable { edge, columns, .. } = one("DEFINE TABLE follows EDGE;") else {
+        panic!("not a table");
     };
+    assert!(matches!(edge, Some(EdgeClause::Any)));
     assert!(columns.is_empty());
-    assert!(order.is_none());
 }
 
 #[test]
-fn a_graph_ordering_defaults_to_ascending_and_says_so_the_same_way_a_read_does() {
+fn a_table_that_is_only_a_link_declares_no_properties_and_no_order() {
+    let StatementKind::DefineTable { columns, edge, .. } =
+        one("DEFINE TABLE wrote EDGE FROM users TO posts;")
+    else {
+        panic!("not a table");
+    };
+    assert!(columns.is_empty());
+    let Some(EdgeClause::Between(declared)) = edge else {
+        panic!("not a declared pair");
+    };
+    assert!(declared.order.is_none());
+}
+
+#[test]
+fn an_edge_ordering_defaults_to_ascending_and_says_so_the_same_way_a_read_does() {
     // Written and unwritten reach the same value, which is what makes `ASC`
     // safe to accept: a reader spelling the default out gets the default.
     for source in [
-        "DEFINE GRAPH follows FROM users TO users (at datetime) ORDER BY at ASC;",
-        "DEFINE GRAPH follows FROM users TO users (at datetime) ORDER BY at;",
+        "DEFINE TABLE follows (at datetime) EDGE FROM users TO users ORDER BY at ASC;",
+        "DEFINE TABLE follows (at datetime) EDGE FROM users TO users ORDER BY at;",
     ] {
-        let StatementKind::DefineGraph { order, .. } = one(source) else {
-            panic!("not a graph");
+        let StatementKind::DefineTable { edge, .. } = one(source) else {
+            panic!("not a table");
+        };
+        let Some(EdgeClause::Between(declared)) = edge else {
+            panic!("not a declared pair");
         };
         assert!(
-            !order.expect("the order was written").descending,
+            !declared.order.expect("the order was written").descending,
             "{source}"
         );
     }
 }
 
 #[test]
-fn a_graph_without_a_pair_is_refused_naming_the_word_that_is_missing() {
-    // Both endpoints are required, and the refusal says which one it wanted:
+fn half_a_declared_pair_is_refused_naming_the_word_that_is_missing() {
+    // `FROM` without `TO` is refused, and the refusal says which word it wanted:
     // "not allowed" without "write this instead" turns a one-word fix into a
     // search through the specification.
-    let error = parse("DEFINE GRAPH follows;").unwrap_err();
-    assert!(error.to_string().contains("FROM"), "{error}");
-    let error = parse("DEFINE GRAPH follows FROM users;").unwrap_err();
+    let error = parse("DEFINE TABLE follows EDGE FROM users;").unwrap_err();
     assert!(error.to_string().contains("TO"), "{error}");
 }
 
 #[test]
-fn a_graph_ordering_missing_its_by_is_refused_rather_than_read_as_a_column_called_order() {
+fn an_edge_ordering_missing_its_by_is_refused_rather_than_read_as_a_column_called_order() {
     let error =
-        parse("DEFINE GRAPH follows FROM users TO users (at datetime) ORDER at;").unwrap_err();
+        parse("DEFINE TABLE follows (at datetime) EDGE FROM users TO users ORDER at;").unwrap_err();
     assert!(error.to_string().contains("BY"), "{error}");
 }
 
 #[test]
 fn order_is_still_an_ordinary_name_because_the_clause_word_is_contextual() {
-    // The clause is read with contextual words, so a graph may carry a property
-    // called `order` and a table may still be called one.
-    let StatementKind::DefineGraph { columns, order, .. } =
-        one("DEFINE GRAPH ranked FROM users TO users (order int);")
+    // The clause is read with contextual words, so an edge table may carry a
+    // property called `order` and a table may still be called one.
+    let StatementKind::DefineTable { columns, edge, .. } =
+        one("DEFINE TABLE ranked (order int) EDGE FROM users TO users;")
     else {
-        panic!("not a graph");
+        panic!("not a table");
     };
     assert_eq!(columns[0].name.text, "order");
-    assert!(order.is_none());
+    let Some(EdgeClause::Between(declared)) = edge else {
+        panic!("not a declared pair");
+    };
+    assert!(declared.order.is_none());
 }
 
 #[test]
-fn dropping_a_graph_undefines_the_table_it_is() {
-    // The same statement `DROP TABLE`, `DROP SPACE` and `DROP BUCKET` produce: a
-    // graph is one catalog entry, so there is nothing else to take down.
-    let StatementKind::DropTable { table } = one("DROP GRAPH follows;") else {
-        panic!("not a drop");
-    };
-    assert_eq!(table.name.text, "follows");
+fn the_word_graph_no_longer_declares_a_pair_of_tables() {
+    // It was `DEFINE GRAPH follows FROM users TO users`, which made an edge
+    // table wearing a longer word rather than a structure a caller can hold. The
+    // clause moved to `DEFINE TABLE … EDGE`, where it always belonged, and the
+    // word is free for the container.
+    assert!(parse("DEFINE GRAPH follows FROM users TO users;").is_err());
+    assert!(parse("DROP GRAPH follows;").is_err());
 }

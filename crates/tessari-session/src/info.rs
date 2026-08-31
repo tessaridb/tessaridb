@@ -874,25 +874,29 @@ fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> {
             Value::from(definition.identity.name()),
         ),
     ]);
-    // Present only on a graph, and it has to be present there: the endpoints and
-    // the order are the whole of what the word adds, and a graph reported as an
-    // edge table with nothing else said would be described identically to a
-    // table it refuses writes the table accepts — the same failure the
-    // `collection` marker above exists to prevent, one declaration further on.
+    // Present only on an edge table that declared its pair, and it has to be
+    // present there: the endpoints and the order are the whole of what the
+    // clause adds, and a declared pair reported as a bare edge table would be
+    // described identically to one that accepts writes it refuses — the same
+    // failure the `collection` marker above exists to prevent, one clause
+    // further on.
     //
     // The endpoints are reported as **table ids**, because that is what the
     // catalog holds and this report says what is stored. Resolving them to names
     // would be a second read that can disagree with the first.
-    if let Some(graph) = definition.graph() {
+    if let Some(endpoints) = definition.edge_endpoints() {
         let mut declared = BTreeMap::from([
-            ("from".to_owned(), Value::from(i64::from(graph.from.get()))),
-            ("to".to_owned(), Value::from(i64::from(graph.to.get()))),
+            (
+                "from".to_owned(),
+                Value::from(i64::from(endpoints.from.get())),
+            ),
+            ("to".to_owned(), Value::from(i64::from(endpoints.to.get()))),
         ]);
-        if let Some(order) = &graph.order {
+        if let Some(order) = &endpoints.order {
             declared.insert("order".to_owned(), Value::from(order.field.as_str()));
             declared.insert("descending".to_owned(), Value::Bool(order.descending));
         }
-        shape.insert("graph".to_owned(), Value::Object(declared));
+        shape.insert("endpoints".to_owned(), Value::Object(declared));
     }
     shape
 }

@@ -38,7 +38,7 @@ pub use authority::{Authority, Held, Kind, Reach};
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{
-    DatabaseDefinition, GraphDeclaration, GraphOrder, IndexDefinition, IndexShape,
+    DatabaseDefinition, EdgeDeclaration, EdgeOrder, IndexDefinition, IndexShape,
     NamespaceDefinition, RECORD_LEVEL, TableDefinition, TableKind, TableShape, VectorDistance,
 };
 pub use field::{FieldDefinition, FieldShape};
@@ -163,7 +163,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
-        if matches!(definition.kind, TableKind::Edge | TableKind::Graph(_)) {
+        if matches!(definition.kind, TableKind::Edge(_)) {
             // A graph is an edge table that also says which pair it joins, so it
             // gets the same endpoint machinery: what a graph adds is a refusal
             // at the write and an order on the key, not a different way of being

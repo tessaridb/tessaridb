@@ -27,7 +27,6 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DefineSpace { .. } => "DEFINE SPACE",
         StatementKind::DefineBucket { .. } => "DEFINE BUCKET",
         StatementKind::DefineCollection { .. } => "DEFINE COLLECTION",
-        StatementKind::DefineGraph { .. } => "DEFINE GRAPH",
         StatementKind::DefineIndex { .. } => "DEFINE INDEX",
         StatementKind::DefineField { .. } => "DEFINE FIELD",
         StatementKind::DefineAnalyzer { .. } => "DEFINE ANALYZER",
