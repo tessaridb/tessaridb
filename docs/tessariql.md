@@ -867,6 +867,41 @@ neither shadows the other.
 catalog holds rather than the name — the report says what is stored, and
 resolving the name here would be a second read able to disagree with the first.
 
+
+### An edge kind, and the adjacency it writes
+
+A node kind is a table that says which graph it belongs to. An **edge kind is not
+a table**, and so it gets a word of its own:
+
+```tessariql
+DEFINE EDGE works_at IN org FROM employee TO employer;
+RELATE employee:1->works_at->employer:1 = { since: 1943 };
+SELECT * FROM employee:1->works_at->employer;
+SELECT * FROM employer:1<-works_at<-employee;
+```
+
+Nothing selects from `works_at`. Its entries are held **beside the node** rather
+than as records behind an index, in both directions, so reaching a node's
+neighbours is one range read over that node's own prefix. The edges themselves
+are never fetched while walking — the endpoints are in the key and the edge's
+properties are in the value, which is why a reverse walk costs the same as a
+forward one.
+
+Both endpoint tables must belong to the same graph. That refusal is what
+**bounds** a walk: a kind whose far side sat outside the graph would let a
+traversal leave the structure it was told to stay inside and still answer, with
+records the graph does not contain.
+
+An edge is identified by its endpoints, so relating the same pair twice replaces
+rather than doubles, and `DROP EDGE` removes the kind together with every entry
+it wrote. A graph refuses to be dropped while an edge kind still belongs to it,
+for the reason it refuses while a table does.
+
+`DEFINE TABLE … EDGE` is unchanged and still available. It stores an edge as an
+ordinary record reached through an index, which is the right shape when edges are
+few, carry a lot, or are queried like rows. `DEFINE EDGE` is the shape for a graph
+that is walked.
+
 ### A table and its columns in one statement
 
 A table's fields can be declared with it, in parentheses after the name:

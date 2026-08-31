@@ -493,6 +493,8 @@ impl Needs {
             | StatementKind::DefineCollection { .. }
             | StatementKind::DefineGraph { .. }
             | StatementKind::DropGraph { .. }
+            | StatementKind::DefineEdge { .. }
+            | StatementKind::DropEdge { .. }
             | StatementKind::DefineIndex { .. }
             | StatementKind::DropIndex { .. }
             | StatementKind::RebuildIndex { .. }

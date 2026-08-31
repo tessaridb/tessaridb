@@ -204,6 +204,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::InvalidKeyBound { .. } => "InvalidKeyBound",
         Error::NotAnEdgeTable { .. } => "NotAnEdgeTable",
         Error::EndpointsNotDeclared { .. } => "EndpointsNotDeclared",
+        Error::EndpointOutsideGraph { .. } => "EndpointOutsideGraph",
         Error::NoHistoricalTraversal { .. } => "NoHistoricalTraversal",
         Error::EdgePropertiesNotAnObject { .. } => "EdgePropertiesNotAnObject",
         Error::ConditionNotBoolean { .. } => "ConditionNotBoolean",

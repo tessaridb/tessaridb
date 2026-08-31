@@ -452,6 +452,28 @@ impl Parser<'_> {
                     if_not_exists,
                 })
             }
+            Some(Keyword::Edge) => {
+                self.advance();
+                let if_not_exists = self.eat_if_not_exists()?;
+                let name = self.name()?;
+                // The graph is required and comes first, because an edge kind
+                // that did not name one would be an edge table under a different
+                // word — and the adjacency it writes has nowhere to live without
+                // a graph id above the node.
+                self.expect_keyword(Keyword::In, "`IN` and the graph the edge belongs to")?;
+                let graph = self.name()?;
+                self.expect_keyword(Keyword::From, "`FROM` and the table the edge leaves")?;
+                let from = self.name()?;
+                self.expect_keyword(Keyword::To, "`TO` and the table the edge reaches")?;
+                let to = self.name()?;
+                Ok(StatementKind::DefineEdge {
+                    name,
+                    graph,
+                    from,
+                    to,
+                    if_not_exists,
+                })
+            }
             Some(Keyword::Bucket) => {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
@@ -1216,6 +1238,10 @@ impl Parser<'_> {
             Some(Keyword::Graph) => {
                 self.advance();
                 Ok(StatementKind::DropGraph { name: self.name()? })
+            }
+            Some(Keyword::Edge) => {
+                self.advance();
+                Ok(StatementKind::DropEdge { name: self.name()? })
             }
             Some(Keyword::Index) => {
                 self.advance();

@@ -117,6 +117,33 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `DEFINE EDGE works_at IN social FROM person TO company` — a join a graph
+    /// writes adjacency under.
+    ///
+    /// A **word** rather than a clause, and the asymmetry with node membership is
+    /// deliberate. A node kind *is* a table — selected from, inserted into,
+    /// indexed, granted on — differing by exactly one fact, so it takes the
+    /// clause `IN <graph>` on `DEFINE TABLE`. An edge kind is never selected
+    /// from: its entries are adjacency keys held beside the node, so a hop is one
+    /// range read rather than an index probe and a random read per neighbour.
+    /// That is a difference large enough to earn a word of its own, and it is why
+    /// the word could not ship before the adjacency it names.
+    ///
+    /// Both endpoint tables must belong to the same graph. That is what bounds a
+    /// walk: a traversal cannot leave the graph through a join whose far side was
+    /// never part of it.
+    DefineEdge {
+        /// The name to create.
+        name: Name,
+        /// The graph it belongs to.
+        graph: Name,
+        /// The table an edge of this kind leaves.
+        from: Name,
+        /// The table an edge of this kind reaches.
+        to: Name,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
     /// `DEFINE SPACE sessions` — a table whose records hold a single value.
     DefineSpace {
         /// The name to create.
@@ -535,6 +562,16 @@ pub enum StatementKind {
     /// it.
     DropGraph {
         /// The graph to undefine.
+        name: Name,
+    },
+    /// `DROP EDGE works_at` — the kind and every adjacency entry it wrote.
+    ///
+    /// The entries go with it, in the same transaction. A kind whose definition
+    /// was removed while its adjacency stayed would leave every one of those
+    /// entries pointing at an id nothing resolves, and a walk would reach through
+    /// a join that no longer exists.
+    DropEdge {
+        /// The edge kind to undefine.
         name: Name,
     },
     /// `ALTER TABLE users ALTER FIELD email TYPE string REQUIRED`

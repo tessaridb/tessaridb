@@ -85,6 +85,13 @@ pub const RECORD_SEQUENCES: TableId = TableId::new(13);
 /// Declared graphs.
 pub const GRAPHS: TableId = TableId::new(14);
 
+/// Declared edge kinds, keyed by edge-kind id.
+///
+/// A level of its own rather than a flag on a table, because an edge kind is not
+/// a table: its entries are adjacency keys beside the node, not records behind an
+/// index, so nothing about it fits the shape [`TABLES`] describes.
+pub const EDGE_KINDS: TableId = TableId::new(15);
+
 /// The first id handed out at any level. Zero belongs to the system.
 pub const FIRST_ID: u32 = 1;
 
@@ -124,6 +131,8 @@ pub enum Level {
     Consumer,
     /// Declared graphs.
     Graph,
+    /// Declared edge kinds.
+    EdgeKind,
 }
 
 impl Level {
@@ -141,6 +150,7 @@ impl Level {
             Self::Replica => "replica",
             Self::Consumer => "consumer",
             Self::Graph => "graph",
+            Self::EdgeKind => "edge-kind",
         }
     }
 
@@ -162,6 +172,7 @@ impl Level {
             Self::Replica => "rp",
             Self::Consumer => "cs",
             Self::Graph => "gr",
+            Self::EdgeKind => "ek",
         }
     }
 }
@@ -197,6 +208,8 @@ mod tests {
             REPLICAS,
             CONSUMERS,
             RECORD_SEQUENCES,
+            GRAPHS,
+            EDGE_KINDS,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(
@@ -221,6 +234,8 @@ mod tests {
             Level::User,
             Level::Replica,
             Level::Consumer,
+            Level::Graph,
+            Level::EdgeKind,
         ];
         for (index, level) in levels.iter().enumerate() {
             for other in &levels[index.saturating_add(1)..] {

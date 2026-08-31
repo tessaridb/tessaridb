@@ -24,6 +24,7 @@ mod authority;
 mod change;
 mod consumer;
 mod definition;
+mod edge_kind;
 mod field;
 mod grant;
 mod graph;
@@ -42,6 +43,7 @@ pub use definition::{
     DatabaseDefinition, EdgeDeclaration, EdgeOrder, IndexDefinition, IndexShape,
     NamespaceDefinition, RECORD_LEVEL, TableDefinition, TableKind, TableShape, VectorDistance,
 };
+pub use edge_kind::EdgeKindDefinition;
 pub use field::{FieldDefinition, FieldShape};
 pub use grant::GrantDefinition;
 pub use graph::GraphDefinition;
@@ -211,6 +213,19 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     #[must_use]
     pub fn chunks_named(bucket: &str) -> String {
         format!("{bucket}\u{1}chunks")
+    }
+
+    /// The name of the table an edge kind's edges live in.
+    ///
+    /// Derived rather than stored, and unnameable for the same reason a bucket's
+    /// chunk table is: an identifier is letters, digits and underscores, so the
+    /// `\u{1}` puts it out of reach of anything a caller can write. An edge kind
+    /// is not a table in the language, and this is what keeps that true while
+    /// still letting an edge be an ordinary record mutation — which is what
+    /// carries it, and the adjacency derived from it, to every replica.
+    #[must_use]
+    pub fn edges_named(kind: &str) -> String {
+        format!("{kind}\u{1}edges")
     }
 
     /// Create an index on an existing table.

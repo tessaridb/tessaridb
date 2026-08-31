@@ -169,9 +169,19 @@ impl Session<'_> {
             }
             names.push(table.name);
         }
+        // The edge kinds are listed beside the node tables rather than folded in
+        // with them, because they are not tables: nothing can select from one,
+        // and a report that mixed the two would invite a caller to try.
+        let kinds: Vec<_> = Catalog::new(transaction)
+            .edge_kinds_in(context.namespace, context.database)?
+            .into_iter()
+            .filter(|kind| kind.graph == id)
+            .map(|kind| kind.name)
+            .collect();
         Ok(BTreeMap::from([
             ("name".to_owned(), Value::from(name.text.as_str())),
             ("tables".to_owned(), by_name(names)),
+            ("edges".to_owned(), by_name(kinds)),
         ]))
     }
 

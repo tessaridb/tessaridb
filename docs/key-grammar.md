@@ -78,7 +78,7 @@ because renumbering after data exists is a full rebuild.
 | `0x11` | `UniqueIndex` | `index` | implemented |
 | `0x12` | `Posting` (full-text) | `index` | implemented |
 | `0x13` | `VectorNode` | `index` | implemented — see §6.2c |
-| `0x14` | `Edge` (graph) | `index` | reserved, **not needed** — see §9a |
+| `0x14` | `Edge` (adjacency) | `index` | implemented — see §3a |
 | `0x15` | `SearchStatistics` | `index` | implemented — see §3b |
 | `0x16` | `SpatialIndex` | `index` | implemented — see §3c |
 | `0x20` | `LogEntry` | `log` | implemented |
@@ -93,6 +93,7 @@ because renumbering after data exists is a full rebuild.
 | `0x38` | `NodeIdentity` | `meta` | implemented — see §3b |
 | `0x39` | `ReclaimFloor` | `meta` | implemented |
 | `0x3a` | `GraphCatalog` | `meta` | reserved, unused — see §9 |
+| `0x3b` | `EdgeKindCatalog` | `meta` | reserved, unused — see §9 |
 
 ### 3c. The spatial entry
 
@@ -208,27 +209,45 @@ it. The value's own payload begins with a revision byte because it is expected t
 grow: the version field in it is rewritten whenever the binary changes, which is
 what gives an upgrade a place to notice itself.
 
-### 3a. The edge tag, and why it is unused
+### 3a. The adjacency entry
 
-`0x14` was reserved for a graph adjacency key. The graph engine was then built
-without one, and the reservation stands rather than being withdrawn.
+```text
+<0x14> <ns:u32> <db:u32> <graph:u32> <node-table:u32> <node-id>
+       <edge-kind:u32> <dir:u8> <neighbour-table:u32> <neighbour-id>
+```
 
-An edge turned out to be an ordinary **record**: a row in an edge table carrying
-`out` and `in`, which hold record references. A record reference is one of the
-fifteen value types and is order-encoded like any other, so "the edges out of
-`users:1`" is "the records whose `out` equals `users:1`" — a read of an ordinary
-secondary index (`0x10`), which an edge table is given on each endpoint when it
-is declared.
+`0x14` was reserved for a graph adjacency key, went unused while an edge was an
+ordinary record, and is now what the graph engine writes.
 
-What that bought is everything an adjacency keyspace would have had to reimplement
-one at a time: MVCC versions, transactional atomicity with the records at both
-ends, replication through the same apply path, the schema check, and the
-bidirectional index sweep that already exists. What it costs is one index-id
-indirection in the key, which is a fixed-width prefix either way.
+**The earlier reading was right about edge tables and wrong about graphs.** An
+edge in an edge table is a record carrying `out` and `in`, so "the edges out of
+`users:1`" is a read of an ordinary secondary index (`0x10`), and that model
+still stands — edge tables are unchanged. What it cannot do is hold a node's
+neighbours *together*: a hop is an index probe followed by one random read per
+neighbour, and at depth three over a fanned-out node that is thousands of random
+reads. Holding adjacency beside the node makes a hop a single range read, and
+that difference is the reason the graph engine exists at all.
 
-The tag is **not withdrawn**. Withdrawing it would let a future kind reuse the
-byte, and a byte that once meant one thing and later means another is not
-something a stored key can be asked about. It costs one row in the table above.
+Every component's position is load-bearing. `<ns><db>` first, as everywhere else,
+so a tenancy is one range. `<graph>` above the node, so the whole structure is one
+prefix and `DROP GRAPH` is a range delete rather than a scan. `<node-table>` and
+`<node-id>` together, so everything touching one node is contiguous.
+`<edge-kind>` before `<dir>`, because "this node's `works_at` edges" is the common
+question and the reverse order would make it two ranges. The neighbour last, which
+makes the entry unique and makes "is A joined to B" a point read.
+
+Both directions are written — `0x00` out, `0x01` in — in the **same `WriteBatch`**
+as the edge that creates them. An entry written outside that batch is an orphan
+nothing reconciles: either the edge is gone and a walk still reaches through it,
+or the edge is there and no walk finds it, and neither is an error state. A
+direction byte that is neither `0x00` nor `0x01` is refused rather than defaulted,
+because a mis-decoded direction turns a follower into a followee silently.
+
+The value carries the edge's properties, encoded, on **both** entries. Storing a
+pointer to an edge record instead would reintroduce exactly the random read per
+neighbour this layout removes. The two copies cannot drift apart, because an edge
+is identified by its endpoints and endpoints are immutable; a property update
+rewrites both entries in the one batch that wrote them.
 
 Tags are grouped by family (`0x0_` data, `0x1_` index, `0x2_` log, `0x3_` meta)
 so a hex dump is readable and each family has room to grow.

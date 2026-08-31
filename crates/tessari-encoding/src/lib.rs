@@ -26,6 +26,7 @@
 
 #![forbid(unsafe_code)]
 
+mod adjacency;
 mod error;
 mod index_keys;
 mod index_value;
@@ -38,6 +39,7 @@ mod record_id;
 mod spatial_keys;
 mod value;
 
+pub use adjacency::{AdjacencyKey, Direction, EdgeProperties};
 pub use error::{Error, Result};
 pub use index_keys::{
     INDEX_PREFIX_LEN, IndexAddress, IndexTarget, IndexValues, NoPayload, Posting, PostingKey,

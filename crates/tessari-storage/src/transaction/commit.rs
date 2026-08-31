@@ -199,6 +199,12 @@ impl Transaction<'_> {
                 &record,
                 crate::log::apply_batch(commit_at, &record),
             )?;
+            // Adjacency is derived in the same place and for the same reason: a
+            // replica reaches its state by replaying this record, so entries the
+            // leader merely added to its own batch would never exist on a
+            // follower — a walk that finds nothing there while the leader is
+            // correct, with nothing in an error state.
+            let batch = crate::adjacency::maintain(self.store, &record, batch)?;
             // Everything above this ran. This is the whole difference between a
             // rehearsal and a write, and it is one line so that it can only ever
             // be the whole difference.

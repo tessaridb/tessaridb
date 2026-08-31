@@ -482,6 +482,22 @@ pub enum Error {
         span: Span,
     },
 
+    /// An edge kind named an endpoint table that does not belong to its graph.
+    ///
+    /// Refused rather than allowed, because this refusal is what **bounds** a
+    /// walk. A kind whose far side sat outside the graph would let a traversal
+    /// leave the structure it was told to stay inside, and the walk would still
+    /// answer — with records the graph does not contain.
+    #[error("table `{table}` does not belong to graph `{graph}`")]
+    EndpointOutsideGraph {
+        /// The endpoint table as written.
+        table: String,
+        /// The graph the edge kind was declared in.
+        graph: String,
+        /// Where the declaration was written.
+        span: Span,
+    },
+
     /// A graph traversal was asked for inside a read of the past.
     ///
     /// Edges are followed through the edge table's direction indexes, and an
@@ -1194,6 +1210,8 @@ pub enum Depended {
     NamespaceByDatabase,
     /// A graph that tables still belong to.
     GraphByTable,
+    /// A graph that edge kinds still belong to.
+    GraphByEdgeKind,
 }
 
 impl Depended {
@@ -1203,7 +1221,7 @@ impl Depended {
             Self::AnalyzerByField => "analyzer",
             Self::DatabaseByTable => "database",
             Self::NamespaceByDatabase => "namespace",
-            Self::GraphByTable => "graph",
+            Self::GraphByTable | Self::GraphByEdgeKind => "graph",
         }
     }
 
@@ -1215,7 +1233,7 @@ impl Depended {
             // Not "holds": a graph does not contain its tables the way a
             // database contains them — they belong to it while living in the
             // database, and the sentence has to say which relation is in the way.
-            Self::GraphByTable => "is joined by",
+            Self::GraphByTable | Self::GraphByEdgeKind => "is joined by",
         }
     }
 
@@ -1230,6 +1248,8 @@ impl Depended {
             (Self::NamespaceByDatabase, _) => "databases",
             (Self::GraphByTable, 1) => "table",
             (Self::GraphByTable, _) => "tables",
+            (Self::GraphByEdgeKind, 1) => "edge kind",
+            (Self::GraphByEdgeKind, _) => "edge kinds",
         }
     }
 }

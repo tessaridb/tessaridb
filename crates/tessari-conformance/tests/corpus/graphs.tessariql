@@ -153,3 +153,81 @@ DROP GRAPH social;
 --- case: asking about a graph that was never declared refuses
 INFO FOR GRAPH social;
 --- expect: error Unknown
+
+# The graph engine. An edge kind is not a table: its entries are adjacency keys
+# beside the node, so a hop is a range read rather than an index probe followed
+# by a random read of every edge record.
+
+--- case: a graph with two node kinds to join
+DEFINE GRAPH org;
+DEFINE TABLE employee (name string) IN org;
+DEFINE TABLE employer (name string) IN org;
+CREATE employee:1 = { name: 'Ada' };
+CREATE employee:2 = { name: 'Grace' };
+CREATE employer:1 = { name: 'Analytical' };
+--- expect: ok
+
+--- case: an edge kind is declared between a pair that belongs to the graph
+DEFINE EDGE works_at IN org FROM employee TO employer;
+--- expect: ok
+
+--- case: an endpoint outside the graph is refused, because that is what bounds a walk
+DEFINE EDGE audited IN org FROM employee TO users;
+--- expect: error EndpointOutsideGraph
+
+--- case: a relation between the declared pair is accepted
+RELATE employee:1->works_at->employer:1;
+RELATE employee:2->works_at->employer:1;
+--- expect: ok
+
+--- case: one arrow reads the edges themselves
+SELECT * FROM employee:1->works_at;
+--- expect: rows 1
+
+--- case: two arrows resolve the far endpoint
+SELECT * FROM employee:1->works_at->employer;
+--- expect: rows 1
+
+--- case: the reverse direction is a range read too, not a scan of everything
+SELECT * FROM employer:1<-works_at<-employee;
+--- expect: rows 2
+
+--- case: a node nothing reaches has an empty neighbourhood rather than an error
+CREATE employer:2 = { name: 'Naval' };
+SELECT * FROM employer:2<-works_at<-employee;
+--- expect: rows 0
+
+--- case: a relation off the declared pair is refused
+RELATE employee:1->works_at->employee:2;
+--- expect: error EndpointsNotDeclared
+
+--- case: and the reverse pair is refused too, because direction is declared
+RELATE employer:1->works_at->employee:1;
+--- expect: error EndpointsNotDeclared
+
+--- case: relating the same pair twice replaces rather than doubles
+RELATE employee:1->works_at->employer:1;
+SELECT * FROM employee:1->works_at;
+--- expect: rows 1
+
+--- case: an edge of a declared kind carries properties of its own
+RELATE employee:2->works_at->employer:1 = { since: 1943 };
+SELECT * FROM employer:1<-works_at;
+--- expect: rows 2
+
+--- case: a graph lists its edge kinds
+INFO FOR GRAPH org;
+--- expect: ok
+
+--- case: a graph refuses to be dropped while an edge kind belongs to it
+DROP GRAPH org;
+--- expect: error StillDepended
+
+--- case: dropping the kind takes its adjacency with it
+DROP EDGE works_at;
+SELECT * FROM employee:1->works_at;
+--- expect: error Unknown
+
+--- case: and dropping an edge kind that was never declared refuses
+DROP EDGE works_at;
+--- expect: error Unknown

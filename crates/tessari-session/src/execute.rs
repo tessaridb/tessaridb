@@ -297,6 +297,14 @@ impl Session<'_> {
                 if_not_exists,
             } => self.define_graph(transaction, name, *if_not_exists, span),
             StatementKind::DropGraph { name } => self.drop_graph(transaction, name, span),
+            StatementKind::DefineEdge {
+                name,
+                graph,
+                from,
+                to,
+                if_not_exists,
+            } => self.define_edge(transaction, name, graph, from, to, *if_not_exists, span),
+            StatementKind::DropEdge { name } => self.drop_edge(transaction, name, span),
             // Drop and declare in ONE transaction, which is what makes this
             // more than sugar: the catalog change and the rows ride the same log
             // record, so the store's schema pass holds every stored row to the
@@ -906,6 +914,18 @@ impl Session<'_> {
         to: &RecordTarget,
         value: Option<&tessari_ql::Expr>,
     ) -> Result<Outcome> {
+        let context = self.context(transaction, None, edges.span)?;
+        // An edge *kind* is looked for first, because it is the narrower word: a
+        // kind and an edge table cannot share a name (both claim it in the same
+        // catalog), so finding one settles which path this is.
+        if let Some(kind) = Catalog::new(transaction).edge_kind_id(
+            context.namespace,
+            context.database,
+            &edges.name.text,
+        )? {
+            return self.relate_in_graph(transaction, kind, from, edges, to, value);
+        }
+
         let (context, edge_table) = self.resolve_table(transaction, edges)?;
         let Some(definition) = Catalog::new(transaction).table(edge_table)? else {
             return Err(Error::NotAnEdgeTable {
@@ -969,6 +989,75 @@ impl Session<'_> {
         // to it — including their defaults.
         let payload = self.with_defaults(transaction, edge_table, Value::Object(fields))?;
         self.put_record(transaction, address, payload, edges.span)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `RELATE person:1->works_at->company:1` — an edge of a declared kind.
+    ///
+    /// The record written here is never read by a walk. It exists so that the
+    /// edge is an ordinary mutation, which is what carries it and the adjacency
+    /// derived from it through the log to every replica; the neighbours and their
+    /// properties are read from the adjacency entries instead.
+    fn relate_in_graph(
+        &self,
+        transaction: &mut Transaction<'_>,
+        kind: tessari_types::EdgeKindId,
+        from: &RecordTarget,
+        edges: &TableRef,
+        to: &RecordTarget,
+        value: Option<&tessari_ql::Expr>,
+    ) -> Result<Outcome> {
+        let declared =
+            Catalog::new(transaction)
+                .edge_kind(kind)?
+                .ok_or_else(|| Error::Unknown {
+                    entity: "edge kind",
+                    name: edges.name.text.clone(),
+                    span: edges.span,
+                })?;
+        let (_, out) = self.address(transaction, from)?;
+        let (_, into) = self.address(transaction, to)?;
+        // Checked after both endpoints resolve, so a relation naming a record
+        // that is not there fails as the missing record rather than as a pair the
+        // kind does not join. The order matters too: an unordered check would
+        // accept `company:1->works_at->person:1`.
+        if out.table != declared.from || into.table != declared.to {
+            return Err(Error::EndpointsNotDeclared {
+                table: edges.name.text.clone(),
+                span: edges.span,
+            });
+        }
+
+        let mut fields = match value {
+            Some(expression) => match self.evaluate(transaction, expression)? {
+                Value::Object(given) => given,
+                other => {
+                    return Err(Error::EdgePropertiesNotAnObject {
+                        found: other.type_name(),
+                        span: edges.span,
+                    });
+                }
+            },
+            None => BTreeMap::new(),
+        };
+        fields.insert(
+            EDGE_OUT.to_owned(),
+            Value::Record(RecordRef::new(out.table, out.id.clone())),
+        );
+        fields.insert(
+            EDGE_IN.to_owned(),
+            Value::Record(RecordRef::new(into.table, into.id.clone())),
+        );
+
+        // Identified by its endpoints, as an edge-table edge is: relating the
+        // same pair twice replaces one record rather than adding a second, which
+        // is what makes `RELATE` idempotent and keeps the adjacency a set.
+        let id = RecordId::from(format!(
+            "{}:{}->{}:{}",
+            out.table, out.id, into.table, into.id
+        ));
+        let address = RecordAddress::new(declared.namespace, declared.database, declared.edges, id);
+        self.put_record(transaction, address, Value::Object(fields), edges.span)?;
         Ok(Outcome::Done)
     }
 
@@ -1063,7 +1152,156 @@ impl Session<'_> {
                 span,
             });
         }
+        let kinds: Vec<_> = Catalog::new(transaction)
+            .edge_kinds_in(context.namespace, context.database)?
+            .into_iter()
+            .filter(|kind| kind.graph == id)
+            .collect();
+        if let Some(first) = kinds.first() {
+            return Err(Error::StillDepended {
+                depended: Depended::GraphByEdgeKind,
+                name: name.text.clone(),
+                count: kinds.len(),
+                first: first.name.clone(),
+                span,
+            });
+        }
         Catalog::new(transaction).drop_graph(id)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DEFINE EDGE works_at IN social FROM person TO company`.
+    ///
+    /// Everything is resolved before anything is written, so a declaration that
+    /// names a graph or a table that is not there leaves the store exactly as it
+    /// found it — the same ordering the membership clause keeps.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the statement's own shape; a struct here would name a grouping \
+                  the grammar does not have"
+    )]
+    fn define_edge(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        graph: &Name,
+        from: &Name,
+        to: &Name,
+        if_not_exists: bool,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        if if_not_exists
+            && Catalog::new(transaction)
+                .edge_kind_id(context.namespace, context.database, &name.text)?
+                .is_some()
+        {
+            return Ok(Outcome::Done);
+        }
+        let graph_id = Catalog::new(transaction)
+            .graph_id(context.namespace, context.database, &graph.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "graph",
+                name: graph.text.clone(),
+                span,
+            })?;
+        let declared =
+            Catalog::new(transaction)
+                .graph(graph_id)?
+                .ok_or_else(|| Error::Unknown {
+                    entity: "graph",
+                    name: graph.text.clone(),
+                    span,
+                })?;
+
+        let mut endpoints = Vec::with_capacity(2);
+        for endpoint in [from, to] {
+            let id = Catalog::new(transaction)
+                .table_id(context.namespace, context.database, &endpoint.text)?
+                .ok_or_else(|| Error::Unknown {
+                    entity: "table",
+                    name: endpoint.text.clone(),
+                    span,
+                })?;
+            // Both endpoints must be in the graph, and this is the refusal that
+            // bounds a walk: a far side outside the structure would let a
+            // traversal leave it and still answer.
+            let member = Catalog::new(transaction)
+                .table(id)?
+                .is_some_and(|table| table.graph == Some(graph_id));
+            if !member {
+                return Err(Error::EndpointOutsideGraph {
+                    table: endpoint.text.clone(),
+                    graph: graph.text.clone(),
+                    span,
+                });
+            }
+            endpoints.push(id);
+        }
+
+        // The companion table holds the edges as ordinary records, which is what
+        // carries them — and the adjacency derived from them — through the log to
+        // every replica. Nothing can name it.
+        let edges = Catalog::new(transaction).create_table(
+            context.namespace,
+            context.database,
+            &Catalog::edges_named(&name.text),
+            TableShape::default(),
+        )?;
+        Catalog::new(transaction).create_edge_kind(
+            &declared,
+            &name.text,
+            endpoints[0],
+            endpoints[1],
+            edges.id,
+        )?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP EDGE works_at` — the kind, its edges, and the adjacency they wrote.
+    ///
+    /// The edges are deleted rather than the entries being range-swept, and that
+    /// is deliberate: deleting a record produces a tombstone in the same log
+    /// record, and the adjacency derived from it is removed in the batch that
+    /// carries the deletion. A second, parallel way to remove an entry is how one
+    /// of the two ends up forgotten.
+    fn drop_edge(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        let id = Catalog::new(transaction)
+            .edge_kind_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "edge kind",
+                name: name.text.clone(),
+                span,
+            })?;
+        let kind = Catalog::new(transaction)
+            .edge_kind(id)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "edge kind",
+                name: name.text.clone(),
+                span,
+            })?;
+
+        let edges: Vec<_> = transaction
+            .scan_table(context.namespace, context.database, kind.edges)?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        for id in edges {
+            transaction.delete(RecordAddress::new(
+                context.namespace,
+                context.database,
+                kind.edges,
+                id,
+            ));
+        }
+        Catalog::new(transaction).drop_table(kind.edges)?;
+        Catalog::new(transaction).drop_edge_kind(id)?;
         Ok(Outcome::Done)
     }
 

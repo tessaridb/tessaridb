@@ -25,6 +25,7 @@
 //! Both are demonstrated by the test suite rather than described only here.
 
 mod address;
+mod adjacency;
 mod commit;
 mod index;
 mod lifecycle;
@@ -34,6 +35,7 @@ mod search;
 mod spatial;
 
 pub use address::{RecordAddress, StoredRecord};
+pub use adjacency::Neighbour;
 pub use spatial::{Nearby, Region};
 
 use std::collections::BTreeMap;

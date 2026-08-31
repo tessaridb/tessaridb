@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+mod adjacency;
 mod catalog;
 mod error;
 mod feed;
@@ -37,10 +38,10 @@ mod transaction;
 
 pub use catalog::{
     AnalyzerDefinition, Authority, Catalog, ConsumerDefinition, DatabaseDefinition, EDGE_IN,
-    EDGE_OUT, EdgeDeclaration, EdgeOrder, FieldDefinition, FieldShape, GrantDefinition,
-    GraphDefinition, Held, IndexDefinition, IndexShape, Kind, Mapped, NamespaceDefinition,
-    OnFailure, RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE,
-    TableDefinition, TableKind, TableShape, UserDefinition, VectorDistance, Verb,
+    EDGE_OUT, EdgeDeclaration, EdgeKindDefinition, EdgeOrder, FieldDefinition, FieldShape,
+    GrantDefinition, GraphDefinition, Held, IndexDefinition, IndexShape, Kind, Mapped,
+    NamespaceDefinition, OnFailure, RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE,
+    SYSTEM_NAMESPACE, TableDefinition, TableKind, TableShape, UserDefinition, VectorDistance, Verb,
 };
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
@@ -51,4 +52,4 @@ pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
 pub use store::{Health, Store};
 pub use tessari_encoding::{BUILD_VERSION, Roles};
-pub use transaction::{Nearby, RecordAddress, Region, StoredRecord, Transaction};
+pub use transaction::{Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction};

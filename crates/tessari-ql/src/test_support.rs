@@ -83,6 +83,8 @@ fn erase_statement(statement: &mut Statement) {
         | StatementKind::DefineBucket { name, .. }
         | StatementKind::DefineCollection { name, .. }
         | StatementKind::DefineGraph { name, .. }
+        | StatementKind::DefineEdge { name, .. }
+        | StatementKind::DropEdge { name }
         | StatementKind::DropGraph { name }
         | StatementKind::DropUser { name }
         | StatementKind::DropAnalyzer { name }

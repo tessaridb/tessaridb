@@ -9,11 +9,14 @@ use core::ops::Bound;
 use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_constants::ORDERED_FILTER_REACH;
+use tessari_encoding::Direction as AdjacencyDirection;
 use tessari_ql::{
     BinaryOp, DeleteBound, Direction, Expr, ExprKind, FieldPath, Function, Hop, JoinSide,
     Projected, Projection, RecordTarget, Select, Source, Span, TableRef, Using,
 };
-use tessari_storage::{BUILD_VERSION, Catalog, RecordAddress, Store, Transaction};
+use tessari_storage::{
+    BUILD_VERSION, Catalog, EDGE_IN, EDGE_OUT, RecordAddress, Store, Transaction,
+};
 use tessari_types::{
     Analyzer, Number, Path, RecordId, RecordRef, Step, TableId, Value, ValueRange, apply,
 };
@@ -1912,11 +1915,29 @@ impl Session<'_> {
                 span: from.span,
             });
         }
-        let (_, start) = self.address(transaction, from)?;
+        let (origin, start) = self.address(transaction, from)?;
         let mut anchors = vec![RecordRef::new(start.table, start.id.clone())];
         let mut answer = Vec::new();
 
         for hop in hops {
+            // An edge kind is looked for first, because it is served by
+            // adjacency rather than by an index: the neighbours of one node under
+            // one kind in one direction are contiguous, so reaching them is one
+            // range read instead of an index probe and a random read of every
+            // edge record. The far records are still read individually — the
+            // caller asked for records — but the edges themselves are never
+            // touched, and that is the difference the layout buys.
+            if let Some(kind) = Catalog::new(transaction).edge_kind_id(
+                origin.namespace,
+                origin.database,
+                &hop.edges.name.text,
+            )? {
+                let (found, next) =
+                    self.hop_in_graph(transaction, kind, &anchors, direction, hop)?;
+                anchors = next;
+                answer = found;
+                continue;
+            }
             let (_, edge_table) = self.resolve_table(transaction, &hop.edges)?;
             if !Catalog::new(transaction)
                 .table(edge_table)?
@@ -1991,6 +2012,102 @@ impl Session<'_> {
             answer = reached.into_iter().collect();
         }
         Ok(answer)
+    }
+
+    /// One hop over adjacency, and the anchors the next hop starts from.
+    ///
+    /// The neighbours come from a single range read per anchor. When the step
+    /// names no node the edges themselves are the answer, and they are assembled
+    /// from the adjacency entry rather than fetched: the endpoints are in the key
+    /// and the properties are in the value, so an edge of a declared kind is
+    /// never read as a record on this path at all.
+    fn hop_in_graph(
+        &self,
+        transaction: &mut Transaction<'_>,
+        kind: tessari_types::EdgeKindId,
+        anchors: &[RecordRef],
+        direction: Direction,
+        hop: &Hop,
+    ) -> Result<Hopped> {
+        let declared =
+            Catalog::new(transaction)
+                .edge_kind(kind)?
+                .ok_or_else(|| Error::NotAnEdgeTable {
+                    table: hop.edges.name.text.clone(),
+                    span: hop.edges.span,
+                })?;
+        let along = match direction {
+            Direction::Outgoing => AdjacencyDirection::Out,
+            Direction::Incoming => AdjacencyDirection::In,
+        };
+
+        let mut edges = Vec::new();
+        for anchor in anchors {
+            for neighbour in transaction.neighbours(&declared, anchor.table, &anchor.id, along)? {
+                edges.push((anchor.clone(), neighbour));
+            }
+        }
+
+        let Some(target) = hop.target.as_ref() else {
+            let answer = edges
+                .into_iter()
+                .map(|(anchor, neighbour)| {
+                    let mut fields = match neighbour.properties {
+                        Value::Object(given) => given,
+                        _ => BTreeMap::new(),
+                    };
+                    let (out, into) = match direction {
+                        Direction::Outgoing => (
+                            RecordRef::new(anchor.table, anchor.id.clone()),
+                            RecordRef::new(neighbour.table, neighbour.id.clone()),
+                        ),
+                        Direction::Incoming => (
+                            RecordRef::new(neighbour.table, neighbour.id.clone()),
+                            RecordRef::new(anchor.table, anchor.id.clone()),
+                        ),
+                    };
+                    let id = RecordId::from(format!(
+                        "{}:{}->{}:{}",
+                        out.table, out.id, into.table, into.id
+                    ));
+                    fields.insert(EDGE_OUT.to_owned(), Value::Record(out));
+                    fields.insert(EDGE_IN.to_owned(), Value::Record(into));
+                    (id, Value::Object(fields))
+                })
+                .collect();
+            return Ok((answer, Vec::new()));
+        };
+
+        let (context, target_table) = self.resolve_table(transaction, target)?;
+        // The far side is read from its own table, so its own grant applies —
+        // reaching a record through an edge is not a way around one.
+        let far_visible = self.visible_in(transaction, target_table)?;
+        let mut reached: BTreeMap<RecordId, Value> = BTreeMap::new();
+        for (_, neighbour) in edges {
+            if neighbour.table != target_table {
+                continue;
+            }
+            let address = RecordAddress::new(
+                context.namespace,
+                context.database,
+                target_table,
+                neighbour.id.clone(),
+            );
+            // A deleted neighbour drops out of the walk rather than failing it,
+            // as it does on the edge-table path: a record can go while an entry
+            // still names it, and that is a state of the graph.
+            if let Some(payload) = transaction.get(&address)? {
+                reached.insert(
+                    neighbour.id.clone(),
+                    self.record_of(&payload, &far_visible)?,
+                );
+            }
+        }
+        let next = reached
+            .keys()
+            .map(|id| RecordRef::new(target_table, id.clone()))
+            .collect();
+        Ok((reached.into_iter().collect(), next))
     }
 
     /// A read standing where a value stands.
@@ -2123,6 +2240,13 @@ pub(crate) fn ordered_index_on(
 /// remove it. Named separately so the difference is visible in the signature
 /// rather than resting on a comment.
 type Joined = (Vec<(RecordId, Value)>, Plan, Searched);
+
+/// What one hop over adjacency reached, and where the next hop starts.
+///
+/// Both halves are lists of the same length only by coincidence, and the second
+/// is empty whenever the step named no node — so they are named rather than left
+/// as a tuple two `Vec`s wide that a caller could read in either order.
+type Hopped = (Vec<(RecordId, Value)>, Vec<RecordRef>);
 
 /// What a vector walk came back with, and the index that answered it.
 ///

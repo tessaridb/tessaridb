@@ -87,6 +87,13 @@ pub enum Error {
         offset: usize,
     },
 
+    /// An adjacency key carried a direction byte this build does not know.
+    #[error("adjacency key holds an unknown direction byte 0x{found:02x}")]
+    UnknownDirection {
+        /// The byte found where a direction was expected.
+        found: u8,
+    },
+
     /// A text record id did not decode as UTF-8.
     #[error("{kind} key holds a text record id that is not valid UTF-8")]
     InvalidUtf8 {
@@ -241,6 +248,7 @@ impl Error {
             | Self::InvalidEscape { .. }
             | Self::UnexpectedKind { .. }
             | Self::UnknownRecordIdKind { .. }
+            | Self::UnknownDirection { .. }
             | Self::InvalidUtf8 { .. }
             | Self::ValueTruncated { .. }
             | Self::TombstoneWithPayload { .. }

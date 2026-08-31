@@ -29,6 +29,8 @@ pub const fn form_name(kind: &StatementKind) -> &'static str {
         StatementKind::DefineCollection { .. } => "DEFINE COLLECTION",
         StatementKind::DefineGraph { .. } => "DEFINE GRAPH",
         StatementKind::DropGraph { .. } => "DROP GRAPH",
+        StatementKind::DefineEdge { .. } => "DEFINE EDGE",
+        StatementKind::DropEdge { .. } => "DROP EDGE",
         StatementKind::DefineIndex { .. } => "DEFINE INDEX",
         StatementKind::DefineField { .. } => "DEFINE FIELD",
         StatementKind::DefineAnalyzer { .. } => "DEFINE ANALYZER",

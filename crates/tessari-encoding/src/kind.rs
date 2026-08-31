@@ -53,6 +53,8 @@ pub enum KeyKind {
     IndexCatalog,
     /// A graph catalog entry.
     GraphCatalog,
+    /// A declared edge kind.
+    EdgeKindCatalog,
     /// The next-identifier allocator for a catalog level.
     IdAllocator,
     /// A resumable index-backfill watermark.
@@ -92,6 +94,7 @@ impl KeyKind {
         Self::TableCatalog,
         Self::IndexCatalog,
         Self::GraphCatalog,
+        Self::EdgeKindCatalog,
         Self::IdAllocator,
         Self::BackfillWatermark,
         Self::NodeIdentity,
@@ -127,6 +130,7 @@ impl KeyKind {
             Self::NodeIdentity => 0x38,
             Self::ReclaimFloor => 0x39,
             Self::GraphCatalog => 0x3a,
+            Self::EdgeKindCatalog => 0x3b,
         }
     }
 
@@ -150,6 +154,7 @@ impl KeyKind {
             | Self::TableCatalog
             | Self::IndexCatalog
             | Self::GraphCatalog
+            | Self::EdgeKindCatalog
             | Self::IdAllocator
             | Self::BackfillWatermark
             | Self::NodeIdentity
@@ -180,6 +185,7 @@ impl KeyKind {
             Self::TableCatalog => "table-catalog",
             Self::IndexCatalog => "index-catalog",
             Self::GraphCatalog => "graph-catalog",
+            Self::EdgeKindCatalog => "edge-kind-catalog",
             Self::IdAllocator => "id-allocator",
             Self::BackfillWatermark => "backfill-watermark",
             Self::NodeIdentity => "node-identity",
@@ -263,6 +269,7 @@ mod tests {
             (KeyKind::NodeIdentity, 0x38),
             (KeyKind::ReclaimFloor, 0x39),
             (KeyKind::GraphCatalog, 0x3a),
+            (KeyKind::EdgeKindCatalog, 0x3b),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

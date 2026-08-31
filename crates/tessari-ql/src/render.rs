@@ -91,6 +91,8 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DropNamespace { .. } => Err(unrenderable("DROP NAMESPACE", span)),
         StatementKind::DefineGraph { .. } => Err(unrenderable("DEFINE GRAPH", span)),
         StatementKind::DropGraph { .. } => Err(unrenderable("DROP GRAPH", span)),
+        StatementKind::DefineEdge { .. } => Err(unrenderable("DEFINE EDGE", span)),
+        StatementKind::DropEdge { .. } => Err(unrenderable("DROP EDGE", span)),
         StatementKind::AlterTable { .. } => Err(unrenderable("ALTER TABLE", span)),
         StatementKind::AlterField { .. } => Err(unrenderable("ALTER TABLE ALTER FIELD", span)),
         StatementKind::RebuildIndex { .. } => Err(unrenderable("REBUILD INDEX", span)),

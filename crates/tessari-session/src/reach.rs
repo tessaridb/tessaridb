@@ -36,6 +36,8 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // as it is for the four words above.
         | StatementKind::DefineGraph { .. }
         | StatementKind::DropGraph { .. }
+        | StatementKind::DefineEdge { .. }
+        | StatementKind::DropEdge { .. }
         // A graph names its two endpoints, but it does not *reach* them: it
         // reads their identity to record a declaration, and touches no row in
         // either. A grant over `users` is not what decides whether a graph may
