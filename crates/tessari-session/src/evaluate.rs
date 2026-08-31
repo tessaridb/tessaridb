@@ -1920,7 +1920,7 @@ impl Session<'_> {
             let (_, edge_table) = self.resolve_table(transaction, &hop.edges)?;
             if !Catalog::new(transaction)
                 .table(edge_table)?
-                .is_some_and(|found| found.edge)
+                .is_some_and(|found| found.is_edge())
             {
                 return Err(Error::NotAnEdgeTable {
                     table: hop.edges.name.text.clone(),

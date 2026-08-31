@@ -39,7 +39,7 @@ pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{
     DatabaseDefinition, IndexDefinition, IndexShape, NamespaceDefinition, RECORD_LEVEL,
-    TableDefinition, TableShape, VectorDistance,
+    TableDefinition, TableKind, TableShape, VectorDistance,
 };
 pub use field::{FieldDefinition, FieldShape};
 pub use grant::GrantDefinition;
@@ -123,8 +123,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// The shape is fixed at creation except for `schemafull`, which
     /// [`Self::set_schemafull`] rewrites in place. That one moves because a
     /// schema is a rule about what may be *written*, so changing it binds the
-    /// writes that follow and leaves the stored rows alone; `edge` and `bucket`
-    /// do not move, because both describe what the records already **are**.
+    /// writes that follow and leaves the stored rows alone; the `kind` does not
+    /// move, because it describes what the records already **are**.
     ///
     /// An edge table additionally gets an index on `out` and one on `in`, in
     /// this same commit, so that traversal is an index read without the caller
@@ -158,14 +158,12 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             database,
             name: name.to_owned(),
             schemafull: shape.schemafull,
-            edge: shape.edge,
-            bucket: shape.bucket,
-            collection: shape.collection,
+            kind: shape.kind,
             identity: shape.identity,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
-        if shape.edge {
+        if shape.kind == TableKind::Edge {
             // Each endpoint gets both an index and a declaration. The index is
             // what makes traversal a range read; the declaration is what lets an
             // edge table also be `SCHEMAFULL`, since nobody writes `out` and `in`
@@ -181,7 +179,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 self.create_field(id, endpoint, FieldKind::Record, FieldShape::default())?;
             }
         }
-        if shape.bucket {
+        if shape.kind == TableKind::Bucket {
             // The companion table the bytes live in. Its name carries a byte an
             // identifier cannot hold, so no statement can name it — the same
             // mechanism the catalog itself uses to be unreachable rather than

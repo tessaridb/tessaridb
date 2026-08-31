@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use tessari_encoding::{decode_payload, encode_payload};
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_storage::{Catalog, Error, IndexShape, RecordAddress, Store, TableShape};
+use tessari_storage::{Catalog, Error, IndexShape, RecordAddress, Store, TableKind, TableShape};
 use tessari_types::{Path, RecordId, Sequence, Value};
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
@@ -464,7 +464,7 @@ fn an_edge_table_carries_an_index_on_each_endpoint_from_the_moment_it_exists() {
             database.id,
             "follows",
             TableShape {
-                edge: true,
+                kind: TableKind::Edge,
                 ..TableShape::default()
             },
         )
@@ -485,7 +485,7 @@ fn an_edge_table_carries_an_index_on_each_endpoint_from_the_moment_it_exists() {
         vec![vec![Path::field("in")], vec![Path::field("out")]],
         "an edge table needs both directions"
     );
-    assert!(catalog.table(follows.id).unwrap().unwrap().edge);
+    assert!(catalog.table(follows.id).unwrap().unwrap().is_edge());
 
     // And each endpoint is declared, so an edge table can also be schemafull
     // without the caller declaring fields the store itself fills in.
@@ -528,7 +528,7 @@ fn a_plain_table_gets_no_indexes_it_did_not_ask_for() {
             .table(tessari_types::TableId::new(table))
             .unwrap()
             .unwrap()
-            .edge
+            .is_edge()
     );
 }
 
@@ -552,7 +552,7 @@ fn a_replica_rebuilds_an_edge_table_with_its_indexes_and_its_declarations() {
             database.id,
             "follows",
             TableShape {
-                edge: true,
+                kind: TableKind::Edge,
                 ..TableShape::default()
             },
         )
@@ -589,7 +589,7 @@ fn a_replica_rebuilds_an_edge_table_with_its_indexes_and_its_declarations() {
 
     let mut transaction = replica.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    assert!(catalog.table(follows.id).unwrap().unwrap().edge);
+    assert!(catalog.table(follows.id).unwrap().unwrap().is_edge());
     assert_eq!(catalog.indexes_on(follows.id).unwrap().len(), 2);
     assert_eq!(catalog.fields_on(follows.id).unwrap().len(), 2);
 

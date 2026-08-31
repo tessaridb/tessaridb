@@ -382,7 +382,7 @@ impl Session<'_> {
         let (context, address) = self.address(transaction, target)?;
         if Catalog::new(transaction)
             .table(address.table)?
-            .is_some_and(|found| found.bucket)
+            .is_some_and(|found| found.is_bucket())
         {
             return Err(Error::NotWrittenByHand {
                 table: target.table.name.text.clone(),
@@ -405,7 +405,7 @@ impl Session<'_> {
         let (context, table) = self.resolve_table(transaction, &target.table)?;
         let named = Catalog::new(transaction)
             .table(table)?
-            .filter(|found| found.bucket)
+            .filter(|found| found.is_bucket())
             .map(|found| Catalog::chunks_named(&found.name));
         let Some(named) = named else {
             return Ok(());
@@ -437,7 +437,7 @@ impl Session<'_> {
     ) -> Result<(Context, TableId)> {
         let (context, table) = self.resolve_table(transaction, &target.table)?;
         let definition = Catalog::new(transaction).table(table)?;
-        if !definition.is_some_and(|found| found.bucket) {
+        if !definition.is_some_and(|found| found.is_bucket()) {
             return Err(Error::NotABucket {
                 table: target.table.name.text.clone(),
                 span: target.span,

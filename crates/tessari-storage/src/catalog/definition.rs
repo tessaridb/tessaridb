@@ -70,39 +70,15 @@ pub struct TableDefinition {
     /// a schema, because the mistake worth catching — a misspelled field name —
     /// writes a field nobody declared.
     pub schemafull: bool,
-    /// Whether the table holds edges rather than plain records.
+    /// Which engine's rules the table plays by.
     ///
-    /// An edge table is an ordinary table whose records carry `out` and `in`
-    /// record references, and which carries an index on each of them — so that
-    /// traversal is an index read rather than a scan, without the caller having
-    /// had to know to declare those indexes. The flag is what `RELATE` checks
-    /// before writing, because an edge nothing can traverse to is worse than a
-    /// refusal.
-    pub edge: bool,
-    /// Whether the table holds files rather than records a caller writes.
-    ///
-    /// A bucket's records are a file's **metadata** — its size, its chunk count,
-    /// when it was written — and the store is what fills them in, from bytes it
-    /// actually holds. So `CREATE`, `UPDATE` and `SET` against one are refused:
-    /// metadata a caller can write by hand is metadata that can lie, and a size
-    /// that disagrees with the bytes is a lie nothing would ever catch.
-    ///
-    /// Reading is not restricted. Listing a bucket is `SELECT * FROM media`,
-    /// which is a query rather than an API call, and that is the point of a
-    /// bucket being a table at all (ADR-0011).
-    pub bucket: bool,
-    /// Whether the declaration that created this was `DEFINE COLLECTION`.
-    ///
-    /// Stored rather than derived from `schemafull: false`, because a collection
-    /// and a `SCHEMALESS` table behave alike and are not the same declaration:
-    /// `INFO FOR TABLE` must answer with the word that created the thing, and a
-    /// round trip emitting `DEFINE TABLE … SCHEMALESS` for a collection would
-    /// re-execute happily while losing the word.
-    ///
-    /// A record written before this field existed reads `false` — `flag` treats
-    /// an absent flag as unset — which is the right answer for every one of
-    /// them, so no stored table is touched and no migration step is owed.
-    pub collection: bool,
+    /// One kind rather than the three independent booleans this replaces. The
+    /// booleans admitted eight states of which four meant anything, and nothing
+    /// in the catalog refused the other four — only the grammar did, because
+    /// each was reached by a different statement. That put the invariant in the
+    /// parser and left the type able to describe a table that is both a bucket
+    /// and an edge (G021 node D, criterion C1).
+    pub kind: TableKind,
     /// What the table names a record with when the caller does not.
     ///
     /// A record written before this field existed reads [`IdentityKind::Int`],
@@ -116,6 +92,26 @@ pub struct TableDefinition {
     /// read as though it used the one this build prefers, because the two would
     /// then name records into one table on two schemes.
     pub identity: IdentityKind,
+}
+
+impl TableDefinition {
+    /// Whether the table holds edges.
+    #[must_use]
+    pub fn is_edge(&self) -> bool {
+        self.kind == TableKind::Edge
+    }
+
+    /// Whether the table holds files.
+    #[must_use]
+    pub fn is_bucket(&self) -> bool {
+        self.kind == TableKind::Bucket
+    }
+
+    /// Whether the declaration that created this was `DEFINE COLLECTION`.
+    #[must_use]
+    pub fn is_collection(&self) -> bool {
+        self.kind == TableKind::Collection
+    }
 }
 
 impl NamespaceDefinition {
@@ -180,9 +176,22 @@ impl TableDefinition {
             (FIELD_DATABASE.to_owned(), number(self.database.get())),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
             (FIELD_SCHEMAFULL.to_owned(), Value::Bool(self.schemafull)),
-            (FIELD_EDGE.to_owned(), Value::Bool(self.edge)),
-            (FIELD_BUCKET.to_owned(), Value::Bool(self.bucket)),
-            (FIELD_COLLECTION.to_owned(), Value::Bool(self.collection)),
+            // Still three named flags on disk. The kind is how this build talks
+            // about a table, not a change to how one is stored, so no catalog
+            // entry is touched, no migration step is owed, and a build without
+            // the kind reads everything this one writes.
+            (
+                FIELD_EDGE.to_owned(),
+                Value::Bool(self.kind == TableKind::Edge),
+            ),
+            (
+                FIELD_BUCKET.to_owned(),
+                Value::Bool(self.kind == TableKind::Bucket),
+            ),
+            (
+                FIELD_COLLECTION.to_owned(),
+                Value::Bool(self.kind == TableKind::Collection),
+            ),
             (FIELD_IDENTITY.to_owned(), Value::from(self.identity.name())),
         ]))
     }
@@ -205,9 +214,11 @@ impl TableDefinition {
             database: DatabaseId::new(field_id(fields, FIELD_DATABASE, "table")?),
             name: field_name(fields, "table")?,
             schemafull: flag(fields, FIELD_SCHEMAFULL, "table")?,
-            edge: flag(fields, FIELD_EDGE, "table")?,
-            bucket: flag(fields, FIELD_BUCKET, "table")?,
-            collection: flag(fields, FIELD_COLLECTION, "table")?,
+            kind: TableKind::from_flags(
+                flag(fields, FIELD_EDGE, "table")?,
+                flag(fields, FIELD_BUCKET, "table")?,
+                flag(fields, FIELD_COLLECTION, "table")?,
+            )?,
             identity: identity_kind(fields, "table")?,
         })
     }
@@ -222,14 +233,13 @@ impl TableDefinition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TableShape {
     /// Refuse a field the table has no declaration for.
+    ///
+    /// Orthogonal to the kind, and the only one of the four that was: a table
+    /// and a collection can each be schemafull, while nothing can be both a
+    /// bucket and an edge.
     pub schemafull: bool,
-    /// Hold edges: records carrying `out` and `in`, each with an index.
-    pub edge: bool,
-    /// Hold files: records carrying metadata the store fills in, with the bytes
-    /// in a companion table nothing can name.
-    pub bucket: bool,
-    /// Was declared with `DEFINE COLLECTION` rather than `DEFINE TABLE`.
-    pub collection: bool,
+    /// Which engine's rules the table plays by.
+    pub kind: TableKind,
     /// What the table names a record with when the caller does not.
     ///
     /// Carried on the shape rather than passed beside it for the reason the
@@ -237,6 +247,82 @@ pub struct TableShape {
     /// one transposition away from a table that mints UUIDs where a counter was
     /// meant, and nothing about the resulting store would look wrong.
     pub identity: IdentityKind,
+}
+
+/// Which engine's rules a table plays by.
+///
+/// The four are exclusive by construction, which is the whole point of the type:
+/// the booleans it replaces described eight states, four of them meaningless,
+/// and only the grammar kept them apart because each kind is reached by a
+/// different statement. A parser is the wrong place for an invariant about what
+/// a stored table *is* — nothing stops a later caller building the definition by
+/// hand, and a table that is both a bucket and an edge would take the bucket's
+/// refusal of `CREATE` and the edge's endpoint indexes into one record with
+/// nothing anywhere in an error state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TableKind {
+    /// Records with named fields — `DEFINE TABLE`.
+    #[default]
+    Table,
+    /// Records that are one value rather than named fields — `DEFINE
+    /// COLLECTION`.
+    ///
+    /// Kept distinct from a schemaless table, which behaves alike, because
+    /// `INFO FOR TABLE` must answer with the word that created the thing: a
+    /// round trip emitting `DEFINE TABLE … SCHEMALESS` for a collection would
+    /// re-execute happily while losing the word.
+    Collection,
+    /// Files: records holding metadata the store fills in from bytes it holds,
+    /// with the bytes in a companion table nothing can name — `DEFINE BUCKET`.
+    ///
+    /// `CREATE`, `UPDATE` and `SET` against one are refused, because metadata a
+    /// caller writes by hand is metadata that can lie, and a size disagreeing
+    /// with the bytes is a lie nothing would ever catch. Reading is not
+    /// restricted: listing a bucket is `SELECT * FROM media`, a query rather
+    /// than an API call, which is the point of a bucket being a table at all
+    /// (ADR-0011).
+    Bucket,
+    /// Edges: records carrying `out` and `in` record references, each with an
+    /// index — `DEFINE TABLE … EDGE`.
+    ///
+    /// The indexes are what make traversal a range read rather than a scan,
+    /// without the caller having had to know to declare them. `RELATE` checks
+    /// the kind before writing, because an edge nothing can traverse to is
+    /// worse than a refusal.
+    Edge,
+}
+
+impl TableKind {
+    /// The kind a stored definition's three flags describe.
+    ///
+    /// A catalog entry written before the kind existed carries the flags, and a
+    /// build without the kind still writes them, so this is the only direction
+    /// that needs a decision — and the decision is to **refuse** a combination
+    /// rather than to prefer one of them. A stored table claiming to be both a
+    /// bucket and an edge is not a table this build can serve correctly under
+    /// either reading, and picking one would put a store into the state the
+    /// kind exists to make unrepresentable. It is the same contract
+    /// `identity_kind` already keeps for a word it does not recognise.
+    ///
+    /// An entry with no flags set is a plain table, which is what every entry
+    /// written before any of these flags existed is.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when more than one flag is set.
+    pub fn from_flags(edge: bool, bucket: bool, collection: bool) -> Result<Self> {
+        match (edge, bucket, collection) {
+            (false, false, false) => Ok(Self::Table),
+            (true, false, false) => Ok(Self::Edge),
+            (false, true, false) => Ok(Self::Bucket),
+            (false, false, true) => Ok(Self::Collection),
+            _ => Err(Error::CatalogMalformed {
+                entity: "table",
+                field: "kind",
+                found: "more than one kind",
+            }),
+        }
+    }
 }
 
 /// What a `DEFINE INDEX` says beyond which values it projects.
@@ -663,9 +749,10 @@ mod tests {
             database: DatabaseId::new(3),
             name: "line_items".to_owned(),
             schemafull: true,
-            edge: false,
-            bucket: false,
-            collection: false,
+            // Deliberately not the default here either, for the same reason the
+            // identity below is not: a kind that round trips through three flags
+            // is only proven by a kind that is not the one an absent flag gives.
+            kind: TableKind::Bucket,
             // Deliberately not the default: a field that never travels round
             // trips perfectly as long as both ends agree on what it is when
             // absent, which is exactly the bug this assertion is for.
@@ -745,6 +832,28 @@ mod tests {
         ]);
         let error = TableDefinition::from_value(&Value::Object(fields)).unwrap_err();
         assert_eq!(error.code(), "corruption");
+    }
+
+    #[test]
+    fn a_stored_table_claiming_two_kinds_is_refused_rather_than_read_as_one_of_them() {
+        // In memory a table has one kind and a second one cannot be spelled. On
+        // disk it is still three separate booleans, so the pair *is* writable —
+        // by a build that predates the kind, or by corruption — and the decoder
+        // is the only place left that can refuse it. Picking a winner here would
+        // be the worse failure: the table would read as an edge on one replica
+        // and a bucket on another, from bytes both agree on.
+        let fields = BTreeMap::from([
+            (FIELD_ID.to_owned(), number(11)),
+            (FIELD_NAMESPACE.to_owned(), number(7)),
+            (FIELD_DATABASE.to_owned(), number(3)),
+            (FIELD_NAME.to_owned(), Value::from("line_items")),
+            (FIELD_EDGE.to_owned(), Value::Bool(true)),
+            (FIELD_BUCKET.to_owned(), Value::Bool(true)),
+        ]);
+        let error = TableDefinition::from_value(&Value::Object(fields)).unwrap_err();
+        assert_eq!(error.code(), "corruption");
+        let text = error.to_string();
+        assert!(text.contains("kind"), "{text}");
     }
 
     #[test]

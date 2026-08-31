@@ -90,12 +90,12 @@ pub(crate) fn declaration(
 /// silently, in a script somebody kept.
 fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), Unwritable> {
     let name = &definition.name;
-    if definition.bucket || definition.collection {
+    if definition.is_bucket() || definition.is_collection() {
         // Neither word takes a flag, so neither can express a table that has
         // one. `DEFINE BUCKET` and `DEFINE COLLECTION` both store
         // `schemafull: false, edge: false`, and a stored table that says
         // otherwise was reached by a route this module does not know about.
-        if definition.schemafull || definition.edge {
+        if definition.schemafull || definition.is_edge() {
             return Err(Unwritable::at(format!(
                 "table `{name}` carries flags its declaring word cannot say"
             )));
@@ -105,25 +105,25 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         // this module does not know about — the same judgement as the flags
         // above, and refused the same way rather than written out as a statement
         // that would not parse.
-        if definition.bucket && definition.identity != IdentityKind::default() {
+        if definition.is_bucket() && definition.identity != IdentityKind::default() {
             return Err(Unwritable::at(format!(
                 "bucket `{name}` names records in a way its declaring word cannot say"
             )));
         }
-        let word = if definition.bucket {
+        let word = if definition.is_bucket() {
             "BUCKET"
         } else {
             "COLLECTION"
         };
         let _ = write!(script, "DEFINE {word} {name}");
-        if !definition.bucket {
+        if !definition.is_bucket() {
             write_identity(script, definition);
         }
         script.push_str(";\n");
         return Ok(());
     }
     let _ = write!(script, "DEFINE TABLE {name}");
-    if definition.edge {
+    if definition.is_edge() {
         script.push_str(" EDGE");
     }
     script.push_str(if definition.schemafull {

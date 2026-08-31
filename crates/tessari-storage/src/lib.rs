@@ -39,8 +39,8 @@ pub use catalog::{
     AnalyzerDefinition, Authority, Catalog, ConsumerDefinition, DatabaseDefinition, EDGE_IN,
     EDGE_OUT, FieldDefinition, FieldShape, GrantDefinition, Held, IndexDefinition, IndexShape,
     Kind, Mapped, NamespaceDefinition, OnFailure, RECORD_LEVEL, Reach, ReplicaDefinition, Role,
-    SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition, TableShape, UserDefinition, VectorDistance,
-    Verb,
+    SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition, TableKind, TableShape, UserDefinition,
+    VectorDistance, Verb,
 };
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.

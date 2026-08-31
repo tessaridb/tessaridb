@@ -8,7 +8,7 @@ use tessari_ql::{
 };
 use tessari_storage::{
     Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, FieldShape, IndexDefinition, IndexShape,
-    Mapped, OnFailure, RecordAddress, TableShape, Transaction, VectorDistance,
+    Mapped, OnFailure, RecordAddress, TableKind, TableShape, Transaction, VectorDistance,
 };
 
 use tessari_types::{
@@ -77,9 +77,11 @@ impl Session<'_> {
                 columns,
                 TableShape {
                     schemafull: *schemafull,
-                    edge: *edge,
-                    bucket: false,
-                    collection: false,
+                    kind: if *edge {
+                        TableKind::Edge
+                    } else {
+                        TableKind::Table
+                    },
                     identity: *identity,
                 },
                 *if_not_exists,
@@ -254,7 +256,7 @@ impl Session<'_> {
                 // the chunk table's name was taken.
                 let chunks = Catalog::new(transaction)
                     .table(id)?
-                    .filter(|definition| definition.bucket)
+                    .filter(|definition| definition.is_bucket())
                     .map(|definition| Catalog::chunks_named(&definition.name));
                 if let Some(name) = chunks
                     && let Some(chunk_id) = Catalog::new(transaction).table_id(
@@ -458,9 +460,7 @@ impl Session<'_> {
                 name,
                 TableShape {
                     schemafull: false,
-                    edge: false,
-                    bucket: true,
-                    collection: false,
+                    kind: TableKind::Bucket,
                     identity: IdentityKind::default(),
                 },
                 *if_not_exists,
@@ -479,9 +479,7 @@ impl Session<'_> {
                 name,
                 TableShape {
                     schemafull: false,
-                    edge: false,
-                    bucket: false,
-                    collection: true,
+                    kind: TableKind::Collection,
                     identity: *identity,
                 },
                 *if_not_exists,
@@ -620,7 +618,7 @@ impl Session<'_> {
         // target and this statement names no record.
         if Catalog::new(transaction)
             .table(id)?
-            .is_some_and(|found| found.bucket)
+            .is_some_and(|found| found.is_bucket())
         {
             return Err(Error::NotWrittenByHand {
                 table: table.name.text.clone(),
@@ -762,7 +760,7 @@ impl Session<'_> {
         // record target and an insert names no record.
         if Catalog::new(transaction)
             .table(id)?
-            .is_some_and(|found| found.bucket)
+            .is_some_and(|found| found.is_bucket())
         {
             return Err(Error::NotWrittenByHand {
                 table: table.name.text.clone(),
@@ -811,7 +809,7 @@ impl Session<'_> {
         let (context, edge_table) = self.resolve_table(transaction, edges)?;
         if !Catalog::new(transaction)
             .table(edge_table)?
-            .is_some_and(|found| found.edge)
+            .is_some_and(|found| found.is_edge())
         {
             return Err(Error::NotAnEdgeTable {
                 table: edges.name.text.clone(),
