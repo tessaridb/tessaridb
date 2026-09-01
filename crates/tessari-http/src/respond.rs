@@ -628,9 +628,25 @@ fn encode(body: &mut String, outcome: &Outcome, names: &json::Names) {
             }
             body.push_str("]}");
         }
+        // How many records a conditional delete removed, which is the whole
+        // point of a retention statement — `done` would make the operator run a
+        // count before and after to learn it.
+        Outcome::Removed { count } => {
+            body.push_str(r#"{"kind":"removed","count":"#);
+            body.push_str(&count.to_string());
+            body.push('}');
+        }
         // `Outcome` is `#[non_exhaustive]`, so a shape this binary does not know
         // is possible in principle. Answering with its absence is honest;
         // guessing at its content would not be.
+        //
+        // This arm is correct and it is also where `Removed` hid: it answered
+        // `unknown` for a known outcome, and §3.5 defines `unknown` as *a kind
+        // this client has never seen*, so a conforming client reported version
+        // skew that did not exist. Nothing distinguishes a correct wildcard from
+        // one absorbing a known case except enumerating the variants against the
+        // arms — which is what `every_outcome_this_build_knows_has_its_own_kind`
+        // below does, and why it must gain a case whenever `Outcome` does.
         _ => body.push_str(r#"{"kind":"unknown"}"#),
     }
 }
@@ -697,4 +713,58 @@ pub(crate) fn failure(error: &Error) -> Answer {
     json::string(&mut body, &error.to_string());
     body.push('}');
     Answer::new(status, body)
+}
+
+#[cfg(test)]
+mod tests {
+    use tessaridb::{Outcome, Value};
+
+    use super::{encode, json};
+
+    fn rendered(outcome: &Outcome) -> String {
+        let mut body = String::new();
+        encode(&mut body, outcome, &json::Names::new());
+        body
+    }
+
+    #[test]
+    fn a_conditional_deletes_count_reaches_the_caller() {
+        // `done` would make an operator run a count before and after to learn
+        // what their retention policy did. `unknown` — which is what this
+        // answered — tells them their client is out of date instead.
+        assert_eq!(
+            rendered(&Outcome::Removed { count: 12_043 }),
+            r#"{"kind":"removed","count":12043}"#
+        );
+    }
+
+    #[test]
+    fn every_outcome_this_build_knows_has_its_own_kind() {
+        // The guard, and the reason this test exists rather than a review note:
+        // the wildcard arm below `Removed` is *correct* and cannot be removed,
+        // because `Outcome` is `#[non_exhaustive]`. Nothing tells a correct
+        // wildcard apart from one swallowing a known outcome except listing the
+        // variants and checking each renders as itself.
+        //
+        // `Outcome::Records` is not here because building a `Plan` by hand adds
+        // a dozen lines of fixture; it is covered against a real node by
+        // `tests/routes.rs`, which asserts `"kind":"records"`. A new variant
+        // added to `Outcome` belongs in this list.
+        for (outcome, expected) in [
+            (Outcome::Done, "done"),
+            (Outcome::Value(Value::Null), "value"),
+            (Outcome::Keys(Vec::new()), "keys"),
+            (Outcome::Removed { count: 0 }, "removed"),
+        ] {
+            let body = rendered(&outcome);
+            assert!(
+                body.contains(&format!(r#""kind":"{expected}""#)),
+                "{outcome:?} rendered as {body}"
+            );
+            assert!(
+                !body.contains(r#""kind":"unknown""#),
+                "{outcome:?} rendered as unknown: {body}"
+            );
+        }
+    }
 }
