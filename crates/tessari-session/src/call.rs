@@ -122,6 +122,12 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
             let count = whole(function, arguments, 2, span)?;
             crate::text::slice(text, start, count, span)
         }
+        Function::StringLines => {
+            let text = text_at(function, arguments, 0, span)?;
+            let start = whole(function, arguments, 1, span)?;
+            let count = whole(function, arguments, 2, span)?;
+            crate::text::lines(text, start, count, span)
+        }
         Function::StringReplace => {
             let text = text_at(function, arguments, 0, span)?;
             let from = text_at(function, arguments, 1, span)?;

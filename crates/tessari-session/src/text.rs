@@ -71,6 +71,59 @@ pub(crate) fn slice(text: &str, start: i64, count: i64, span: Span) -> Result<Va
     Ok(Value::from(held.as_str()))
 }
 
+/// A run of `count` lines starting at line `start`, joined back into one string.
+///
+/// # Why this is not `string::slice` with different arithmetic
+///
+/// `slice` counts characters, which is the right unit for a name or a code and
+/// the wrong one for a long body. A caller paging through a document by
+/// character has to know the offset where line 200 begins, and the only way to
+/// learn it is to read the whole text — which is the cost this function exists
+/// to avoid. Lines are self-describing: `(body, 0, 40)` then `(body, 40, 40)`
+/// walks a document the caller never holds.
+///
+/// # One string, not an array
+///
+/// The array of lines is `string::split(text, '\n')` and already exists. What
+/// was missing is the *window*, and a window of a document is a document.
+///
+/// # `str::lines` rather than splitting on a newline
+///
+/// A `\r\n` document would otherwise leak a `\r` onto the end of every line, and
+/// a text ending in a newline would grow a phantom empty last line that the
+/// count then spends. Neither is visible to the caller until they compare two
+/// windows and find a character they never stored.
+///
+/// The bounds rule is [`slice`]'s, deliberately: a start past the end is empty,
+/// a count reaching past the end takes what is there, and a negative bound is
+/// refused. `sed` numbers lines from one; this language numbers positions from
+/// zero, and agreeing with the neighbouring function matters more than agreeing
+/// with the analogy that suggested this one.
+pub(crate) fn lines(text: &str, start: i64, count: i64, span: Span) -> Result<Value> {
+    let refused = |reason: &'static str| Error::CallFailed {
+        function: Function::StringLines,
+        reason,
+        span,
+    };
+    if start < 0 {
+        return Err(refused("a window starts at or after the first line"));
+    }
+    if count < 0 {
+        return Err(refused("a window holds no fewer than no lines"));
+    }
+    let held = usize::try_from(start).map_or_else(
+        |_| String::new(),
+        |from| {
+            text.lines()
+                .skip(from)
+                .take(usize::try_from(count).unwrap_or(usize::MAX))
+                .collect::<Vec<_>>()
+                .join("\n")
+        },
+    );
+    Ok(Value::from(held.as_str()))
+}
+
 /// Every occurrence of `from` replaced by `to`.
 ///
 /// **Every** occurrence, not the first. A function replacing one would need to
@@ -92,7 +145,7 @@ mod tests {
     use tessari_ql::Span;
     use tessari_types::Value;
 
-    use super::{replace, slice, split};
+    use super::{lines, replace, slice, split};
 
     fn at() -> Span {
         Span::new(0, 1)
@@ -142,6 +195,49 @@ mod tests {
         assert_eq!(slice("abc", 9, 1, at()).expect("a slice"), Value::from(""));
         assert!(slice("abc", -1, 1, at()).is_err());
         assert!(slice("abc", 0, -1, at()).is_err());
+    }
+
+    #[test]
+    fn a_line_window_returns_the_run_it_names_and_walks_a_document() {
+        // The purpose: two adjacent windows reconstruct the document, so a
+        // caller pages through it without ever holding the whole text.
+        let body = "one\ntwo\nthree\nfour";
+        assert_eq!(
+            lines(body, 0, 2, at()).expect("a window"),
+            Value::from("one\ntwo")
+        );
+        assert_eq!(
+            lines(body, 2, 2, at()).expect("a window"),
+            Value::from("three\nfour")
+        );
+    }
+
+    #[test]
+    fn a_line_window_follows_the_same_bounds_rule_a_slice_does() {
+        let body = "one\ntwo\nthree";
+        assert_eq!(
+            lines(body, 2, 10, at()).expect("a window"),
+            Value::from("three")
+        );
+        assert_eq!(lines(body, 9, 1, at()).expect("a window"), Value::from(""));
+        assert!(lines(body, -1, 1, at()).is_err());
+        assert!(lines(body, 0, -1, at()).is_err());
+    }
+
+    #[test]
+    fn a_line_window_leaks_neither_a_carriage_return_nor_a_phantom_last_line() {
+        // Splitting on '\n' would put a '\r' on the end of every line of a
+        // CRLF document, and a text ending in a newline would grow an empty
+        // last line that the count then spends. Neither is visible to the
+        // caller until they compare two windows.
+        assert_eq!(
+            lines("one\r\ntwo\r\n", 0, 2, at()).expect("a window"),
+            Value::from("one\ntwo")
+        );
+        assert_eq!(
+            lines("one\ntwo\n", 0, 3, at()).expect("a window"),
+            Value::from("one\ntwo")
+        );
     }
 
     #[test]

@@ -131,6 +131,7 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::StringConcat
         | Function::StringSplit
         | Function::StringSlice
+        | Function::StringLines
         | Function::StringReplace
         | Function::MathSqrt
         | Function::MathPow

@@ -3238,7 +3238,7 @@ and that deserves its own answer.
 
 A path takes a literal name or a literal position and no range. So there is no
 way to reach an object's field names, to reorder an array, or to take a run out
-of the middle of one — which is what these fourteen are for:
+of the middle of one — which is what these fifteen are for:
 
 ```
 SELECT object::keys(address) AS names FROM people;
@@ -3258,6 +3258,7 @@ SELECT array::first(string::split(email, '@')) AS handle FROM people;
 | `array::slice(items, start, count)` | a run of elements |
 | `string::split(text, sep)` | the parts between occurrences |
 | `string::slice(text, start, count)` | a run of characters |
+| `string::lines(text, start, count)` | a run of lines |
 | `string::replace(text, from, to)` | every occurrence replaced |
 | `math::sqrt(n)` · `math::pow(base, exp)` | a root and a power |
 
@@ -3294,10 +3295,42 @@ the same test `type::float` had to pass.
 
 **Positions count characters, not bytes**, in `string::slice` as in
 `string::len`. A byte position can land inside a character, and the answer is
-then a broken string. Both `slice` functions share one bounds rule: a start past
-the end is empty, a count reaching past it takes what is there, and a **negative**
-bound is refused — an empty answer would hide a caller who meant "from the end",
-which neither function does.
+then a broken string. Both `slice` functions and `string::lines` share one
+bounds rule: a start past the end is empty, a count reaching past it takes what
+is there, and a **negative** bound is refused — an empty answer would hide a
+caller who meant "from the end", which none of them does.
+
+**`string::lines` is how a long body is read a piece at a time.** It counts
+lines where `string::slice` counts characters, and that is the whole point: a
+caller paging through a document by character has to know the offset where line
+200 begins, and the only way to learn it is to read the whole text — which is
+the cost the function exists to avoid. Two adjacent windows reconstruct the
+document, so `string::lines(body, 0, 40)` then `string::lines(body, 40, 40)`
+walks a body the caller never holds whole. Across several records it is an
+ordinary projection:
+
+```
+SELECT id, string::lines(body, 0, 40) AS head FROM documents;
+```
+
+It answers **one text**, not an array — the array of lines is
+`string::split(text, '\n')` and already exists; what was missing is the window.
+Lines are counted from **zero**, like every other position in the language,
+and not from one as in `sed`: agreeing with the neighbouring function matters
+more than agreeing with the tool the idea came from. A `\r\n` document does not
+leak a carriage return, and a text ending in a newline does not grow a phantom
+empty last line for the count to spend.
+
+**A window is a projection, not a record, and writing one back truncates the
+field.** `string::lines(body, 40, 40)` produces a text that is indistinguishable
+from a short `body` — nothing in it records that it is lines 40-79 of something
+longer. A caller that reads a window, edits it and writes the result to `body`
+replaces the whole field with the window. The same is true of `string::slice`
+and of every other projection, and it is stated here because a window is the one
+whose *purpose* is to be read back by a human and returned.
+
+It also shrinks what comes back rather than what the node reads: the record is
+decoded whole and the window is taken from it.
 
 **An empty separator is refused** by `string::split` and `string::replace`.
 Each has two defensible readings and no obvious one, so it is named as a

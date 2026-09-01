@@ -150,3 +150,31 @@ RETURN crypto::sha256('x') = crypto::sha256('y');
 --- case: the wrong number of arguments is refused before anything runs
 RETURN crypto::sha256('a', 'b');
 --- expect: error WrongArity
+
+--- case: a line window returns the run it names
+RETURN string::lines('one\ntwo\nthree\nfour', 0, 2) = 'one\ntwo';
+--- expect: value true
+
+--- case: and the next window continues it, so two windows rebuild the document
+RETURN string::lines('one\ntwo\nthree\nfour', 2, 2) = 'three\nfour';
+--- expect: value true
+
+--- case: a count reaching past the end takes what is there
+RETURN string::lines('one\ntwo', 1, 10) = 'two';
+--- expect: value true
+
+--- case: a start past the end is empty rather than an error
+RETURN string::lines('one\ntwo', 9, 1) = '';
+--- expect: value true
+
+--- case: a negative start is refused, as it is for both slices
+RETURN string::lines('one\ntwo', -1, 1);
+--- expect: error CallFailed
+
+--- case: a carriage return does not survive into the window
+RETURN string::lines('one\r\ntwo\r\n', 0, 2) = 'one\ntwo';
+--- expect: value true
+
+--- case: a trailing newline does not grow a line for the count to spend
+RETURN string::lines('one\ntwo\n', 0, 3) = 'one\ntwo';
+--- expect: value true

@@ -102,6 +102,8 @@ pub enum Function {
     StringSplit,
     /// `string::slice(text, start, count)` — a run of characters.
     StringSlice,
+    /// `string::lines(text, start, count)` — a run of lines.
+    StringLines,
     /// `string::replace(text, from, to)` — every occurrence replaced.
     StringReplace,
     /// `math::sqrt(number)` — the square root, as a float.
@@ -243,6 +245,7 @@ impl Function {
         Self::StringConcat,
         Self::StringSplit,
         Self::StringSlice,
+        Self::StringLines,
         Self::StringReplace,
         Self::MathSqrt,
         Self::MathPow,
@@ -309,6 +312,7 @@ impl Function {
             Self::StringConcat => "string::concat",
             Self::StringSplit => "string::split",
             Self::StringSlice => "string::slice",
+            Self::StringLines => "string::lines",
             Self::StringReplace => "string::replace",
             Self::MathSqrt => "math::sqrt",
             Self::MathPow => "math::pow",
@@ -437,7 +441,7 @@ impl Function {
             | Self::GeoEquals
             | Self::GeoTouches
             | Self::GeoDistance => 2,
-            Self::ArraySlice | Self::StringSlice | Self::StringReplace => 3,
+            Self::ArraySlice | Self::StringSlice | Self::StringLines | Self::StringReplace => 3,
         }
     }
 
@@ -473,6 +477,7 @@ impl Function {
             | Self::StringConcat
             | Self::StringSplit
             | Self::StringSlice
+            | Self::StringLines
             | Self::StringReplace
             | Self::MathSqrt
             | Self::MathPow
