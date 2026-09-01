@@ -51,8 +51,8 @@ use tessari_ql::{
 };
 use tessari_storage::{
     BUILD_VERSION, Catalog, ConsumerDefinition, FieldDefinition, GEO_FIELD, GrantDefinition,
-    IndexDefinition, Progress, Reach, ReplicaDefinition, TableDefinition, TableKind, Transaction,
-    UserDefinition,
+    IndexDefinition, MEASURED_RELATION, Progress, Reach, ReplicaDefinition, TableDefinition,
+    TableKind, Transaction, UserDefinition,
 };
 use tessari_types::{DatabaseId, NamespaceId, Number, TableId, Value};
 
@@ -938,6 +938,13 @@ fn described_replica(replica: &ReplicaDefinition) -> Value {
 ///
 /// Both are `none` rather than zero when there was nothing to divide by, for the
 /// reason a recall is: a zero here would read as a perfect filter.
+///
+/// `relation` says which query the figures answer for, and it is not decoration.
+/// The measurement asks the widest relation there is, so it is the one that
+/// exposes a loose covering — and a store only ever read with a narrower one
+/// refines a smaller set at a cost this figure does not describe. Without the
+/// label that scope is invisible: the reader sees `refinement` and has no way to
+/// learn it means *refinement under `meets`*.
 fn refining(measured: SpatialRefinement) -> Value {
     let percentage = |held: Option<u64>| {
         held.map_or(Value::None, |value| {
@@ -946,6 +953,7 @@ fn refining(measured: SpatialRefinement) -> Value {
     };
     let count = |held: u64| Value::Number(Number::Integer(i64::try_from(held).unwrap_or(i64::MAX)));
     Value::Object(BTreeMap::from([
+        ("relation".to_owned(), Value::from(MEASURED_RELATION.name())),
         ("refinement".to_owned(), percentage(measured.refinement())),
         (
             "fragmentation".to_owned(),

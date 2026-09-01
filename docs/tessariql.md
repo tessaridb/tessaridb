@@ -963,8 +963,9 @@ index's candidates last cost:
 
 ```json
 {"name": "places", "field": "geometry", "index": "geometry",
- "refinement": {"refinement": 100, "fragmentation": 100, "entries": 2,
-                "reached": 2, "admitted": 2, "sample": 2, "records": 2}}
+ "refinement": {"relation": "meets", "refinement": 100, "fragmentation": 100,
+                "entries": 2, "reached": 2, "admitted": 2, "sample": 2,
+                "records": 2}}
 ```
 
 A spatial index answers **exactly** — but it does not filter exactly. It filters
@@ -975,6 +976,14 @@ is doing work the predicate throws away. `fragmentation` is entries read per
 record reached, which is the separate complaint that one record with an awkward
 shape — a river, a road, a border — sits in many cells at once. The counts the
 two are computed from are reported beside them.
+
+`relation` says which query the figures answer for, and it is not decoration.
+The measurement asks `meets` — "what is in this box" — because that is the
+relation whose candidate set is largest and therefore the one that exposes a
+loose covering. A store you only ever read with `geo::within` refines a smaller
+set, at a cost this figure describes only as an upper bound. Read without the
+label, `refinement` looks like a property of the index; it is a property of the
+index **under one relation**.
 
 Both are `none` when there is nothing to divide by, and the whole `refinement`
 object is `none` when nothing was measured at all. Absence is never a zero: a

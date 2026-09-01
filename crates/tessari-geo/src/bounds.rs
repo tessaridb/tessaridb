@@ -235,6 +235,23 @@ pub enum Relation {
 }
 
 impl Relation {
+    /// What this relation is called, for a report that has to say which one it
+    /// measured.
+    ///
+    /// Lives here rather than at the reporting site so the spelling cannot
+    /// drift from the variant: a figure labelled with the wrong relation
+    /// describes a candidate set of a different size, which is worse than a
+    /// figure carrying no label at all.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Meets => "meets",
+            Self::Inside => "inside",
+            Self::Around => "around",
+            Self::Same => "same",
+        }
+    }
+
     /// Whether a record with this box may still satisfy the predicate.
     ///
     /// Never the other way round: a `true` here says only that the exact

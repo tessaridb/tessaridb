@@ -29,7 +29,11 @@ const MEASURED_SAMPLE: usize = 32;
 /// and it is the relation whose candidate set is largest, so it is the one that
 /// exposes a loose covering. A narrower relation would measure a filter that is
 /// mostly the predicate's work rather than the index's.
-const MEASURED_RELATION: Relation = Relation::Meets;
+/// A read asking a narrower relation refines a smaller set, so a figure taken
+/// under this one does not describe that read's cost. That makes the relation
+/// part of the measurement rather than an implementation detail, which is why
+/// it is public: `INFO FOR GEO` reports it beside the ratio.
+pub const MEASURED_RELATION: Relation = Relation::Meets;
 
 /// One record as the index holds it: where it is, and which cells say so.
 #[derive(Debug, Clone)]

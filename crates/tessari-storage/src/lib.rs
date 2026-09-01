@@ -45,6 +45,9 @@ pub use catalog::{
     SYSTEM_NAMESPACE, TableDefinition, TableKind, TableShape, UserDefinition, VECTOR_FIELD,
     VectorDeclaration, VectorDistance, Verb,
 };
+// Exported because a refinement figure is only readable beside the relation it
+// was measured under, and that relation is a decision this crate takes.
+pub use covering::MEASURED_RELATION;
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
 pub use error::{Error, Result};

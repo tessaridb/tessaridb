@@ -177,12 +177,7 @@ pub(crate) fn validate(store: &Store, record: &LogRecord) -> Result<()> {
         if schema.constrains_nothing() {
             continue;
         }
-        refusals.extend(check(
-            schema,
-            &decode_payload(payload)?,
-            mutation.table,
-            &mutation.id,
-        ));
+        refusals.extend(check(schema, &decode_payload(payload)?, &mutation.id));
         if tightened.iter().any(|address| address.2 == mutation.table) {
             checked.insert((mutation.table, mutation.id.clone()));
         }
@@ -199,7 +194,7 @@ pub(crate) fn validate(store: &Store, record: &LogRecord) -> Result<()> {
             if checked.contains(&(address.2, id.clone())) {
                 continue;
             }
-            refusals.extend(check(schema, &decode_payload(&payload)?, address.2, &id));
+            refusals.extend(check(schema, &decode_payload(&payload)?, &id));
         }
     }
 
@@ -270,7 +265,7 @@ fn found_as(declared: &FieldKind, held: &Value) -> Box<str> {
 /// that a caller who sent several bad records hears about all of them. One per
 /// record and not one per field: the caller's unit of work is the row, and a row
 /// with two mistakes in it is still one row to go back and fix.
-fn check(schema: &TableSchema, value: &Value, table: TableId, id: &RecordId) -> Option<Error> {
+fn check(schema: &TableSchema, value: &Value, id: &RecordId) -> Option<Error> {
     // A record that is not an object has no named fields to constrain. The
     // key-value model stores single values that way (ADR-0010), and a field
     // declaration on such a table describes something that is not there.
@@ -281,10 +276,10 @@ fn check(schema: &TableSchema, value: &Value, table: TableId, id: &RecordId) -> 
         match schema.fields.get(name.as_str()) {
             Some(declared) if !declared.kind.accepts(held) => {
                 return Some(Error::SchemaViolation {
-                    table: table.get(),
-                    record: id.to_string(),
-                    field: name.clone(),
-                    declared: declared.kind.name().into_owned(),
+                    table: Box::from(schema.name.as_str()),
+                    record: Box::from(id.to_string()),
+                    field: Box::from(name.as_str()),
+                    declared: Box::from(declared.kind.name().as_ref()),
                     found: found_as(&declared.kind, held),
                 });
             }
@@ -301,7 +296,7 @@ fn check(schema: &TableSchema, value: &Value, table: TableId, id: &RecordId) -> 
                         .is_some_and(|assertion| !assertion.holds(held, value)) =>
             {
                 return Some(Error::AssertionViolation {
-                    table: table.get(),
+                    table: Box::from(schema.name.as_str()),
                     record: id.to_string(),
                     field: name.clone(),
                     compared_with: declared.assert.as_ref().and_then(compared_with),
@@ -336,7 +331,7 @@ fn check(schema: &TableSchema, value: &Value, table: TableId, id: &RecordId) -> 
         let held = fields.get(name.as_str()).unwrap_or(&Value::None);
         if !held.is_present() || *held == Value::Null {
             return Some(Error::MissingRequiredField {
-                table: table.get(),
+                table: Box::from(schema.name.as_str()),
                 record: id.to_string(),
                 field: name.clone(),
                 found: held.type_name(),

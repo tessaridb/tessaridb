@@ -260,6 +260,11 @@ fn a_rebuild_measures_what_the_covering_offers_against_what_the_boxes_keep() {
     // Reached over admitted, as a percentage. Nothing was offered and thrown
     // away, so the covering wasted none of the two reads it served.
     assert_eq!(measured.get("refinement"), Some(&Value::from(100_i64)));
+    // Which query the figure answers for. The measurement asks the widest
+    // relation there is, so a store only ever read with a narrower one refines
+    // a smaller set at a cost this number does not describe — and without the
+    // label there is nothing in the report to say so.
+    assert_eq!(measured.get("relation"), Some(&Value::from("meets")));
 }
 
 #[test]

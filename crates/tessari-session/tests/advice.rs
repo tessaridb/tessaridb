@@ -65,6 +65,70 @@ fn the_refusal_names_its_table_the_way_a_declaration_would() {
 }
 
 #[test]
+fn every_declaration_refusal_names_its_table_the_way_a_declaration_would() {
+    // The three siblings of the refusal above, which carried the id for as long
+    // as a doc comment beside them explained that the layer had nothing else —
+    // while the arm two lines away read the name off the same `TableSchema`.
+    //
+    // Both halves of the assertion were checked by reading the messages rather
+    // than by inferring them — mutate the count below to 4 and the panic prints
+    // all three:
+    //
+    //   table ledgers declares balance as int, but record 1 holds string there
+    //   record 2 of table ledgers holds a balance its declaration refuses
+    //   record 3 in table ledgers leaves required field holder holding none
+    //
+    // The record half renders as a bare id, so `contains("ledgers")` can only be
+    // satisfied by the table half — the one that was wrong. The second assertion
+    // is the direction that matters more: the id could have been added *beside*
+    // the name rather than replaced by it, and only its absence rules that out.
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE TABLE ledgers (balance int ASSERT $value >= 0, \
+             holder string REQUIRED);",
+        )
+        .unwrap();
+
+    let refusals = [
+        // SchemaViolation — a declared field holding the wrong type.
+        "CREATE ledgers:1 = { holder: 'ada', balance: 'plenty' };",
+        // AssertionViolation — the right type, refused by the declaration.
+        "CREATE ledgers:2 = { holder: 'ada', balance: -1 };",
+        // MissingRequiredField — a required field holding nothing.
+        "CREATE ledgers:3 = { balance: 1 };",
+    ]
+    .map(|statement| {
+        session
+            .run(statement)
+            .expect_err("a write the declaration refuses was accepted")
+            .to_string()
+    });
+
+    for refusal in &refusals {
+        assert!(
+            refusal.contains("ledgers"),
+            "the refusal does not name its table: {refusal}"
+        );
+        assert!(
+            !refusal.contains("table 1")
+                && !refusal.contains("table 2")
+                && !refusal.contains("table 3"),
+            "the refusal still names its table by id: {refusal}"
+        );
+    }
+
+    // And the three are three different refusals rather than the same one
+    // reached three times — without this the loop above passes on a store that
+    // refuses every write for one reason none of these tests is about.
+    let distinct: std::collections::BTreeSet<&String> = refusals.iter().collect();
+    assert_eq!(distinct.len(), 3, "{refusals:?}");
+}
+
+#[test]
 fn the_suggested_declaration_makes_the_refused_write_succeed() {
     let store = store();
     let mut session = ready(&store);

@@ -107,17 +107,25 @@ pub enum Error {
         "table {table} declares {field} as {declared}, but record {record} holds {found} there"
     )]
     SchemaViolation {
-        /// The table whose declaration was violated.
-        table: u32,
+        /// The table whose declaration was violated, by the name a declaration
+        /// uses.
+        ///
+        /// Boxed for the reason [`found`](Self::SchemaViolation::found) is, and
+        /// adding it is what made the rest of this variant boxed too: this is
+        /// the widest refusal there is, four owned names carrying a `String`'s
+        /// spare capacity each put it past `clippy::result_large_err`, and the
+        /// lint is measured against the whole `Result` every call in three
+        /// crates returns.
+        table: Box<str>,
         /// The record that was being written.
-        record: String,
+        record: Box<str>,
         /// The field that disagreed.
-        field: String,
+        field: Box<str>,
         /// The type the table declares for it.
         /// Owned rather than `&'static str`: a literal union spells itself as
         /// its members, so not every declared type is a word this binary knows
         /// at compile time.
-        declared: String,
+        declared: Box<str>,
         /// The type the record held instead.
         ///
         /// Owned for the same reason `declared` is, and it became necessary for
@@ -152,8 +160,9 @@ pub enum Error {
     #[error("record {record} of table {table} holds a {field} its declaration refuses{}",
         .compared_with.as_ref().map_or_else(String::new, |other| format!(" (it is compared with {other})")))]
     AssertionViolation {
-        /// The table whose declaration was violated.
-        table: u32,
+        /// The table whose declaration was violated, by the name a declaration
+        /// uses.
+        table: Box<str>,
         /// The record that was being written.
         record: String,
         /// The field that disagreed.
@@ -171,8 +180,8 @@ pub enum Error {
     /// every field that is not required.
     #[error("record {record} in table {table} leaves required field {field} holding {found}")]
     MissingRequiredField {
-        /// The table the record is in.
-        table: u32,
+        /// The table the record is in, by the name a declaration uses.
+        table: Box<str>,
         /// The record's identity.
         record: String,
         /// The field that must hold a value.
@@ -187,13 +196,24 @@ pub enum Error {
     /// record lands, nothing is raised, and every query filtering on the name
     /// that was meant is quietly missing it.
     ///
-    /// # Why this one names its table and its siblings do not
+    /// # Why every refusal here names its table the way a declaration would
     ///
-    /// The refusals around it identify a table by id, which is what this layer
-    /// has. This one is the refusal a caller is expected to *act* on — the fix
-    /// is a declaration, and a declaration names its table — so the name is
-    /// carried here and the id would be useless. The name costs nothing to
-    /// obtain: the schema is built from the table's definition, which holds it.
+    /// The fix for one of these is a declaration, and a declaration names its
+    /// table — so an internal id is a number the reader cannot write anywhere.
+    /// The name costs nothing to obtain: the schema is built from the table's
+    /// definition, which holds it.
+    ///
+    /// This variant carried the name first and its siblings carried an id, and
+    /// the reason recorded here for that was *"the refusals around it identify
+    /// a table by id, which is what this layer has"*. That was wrong on both
+    /// halves. The layer has the name — `check` holds the `TableSchema` that
+    /// carries it, and read it two match arms above the arm that wrote the id.
+    /// And "the refusal a caller acts on" does not separate one of these from
+    /// the others: every refusal in this group is the caller's data against a
+    /// constraint the caller declared, none of them can succeed on retry, and
+    /// each is fixed by changing the declaration or the record. Kept as a note
+    /// rather than deleted, because the id survived in three variants for as
+    /// long as this paragraph explained it.
     #[error("table {table} declares no field {field}, and record {record} carries one")]
     UndeclaredField {
         /// The table that refused the write, by the name a declaration uses.
