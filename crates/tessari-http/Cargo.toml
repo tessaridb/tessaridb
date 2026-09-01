@@ -28,6 +28,11 @@ tiny_http = "0.12"
 [dev-dependencies]
 tessari-backup.workspace = true
 tessari-kv.workspace = true
+# The status table is asserted per error variant, and building one needs the
+# span every diagnostic carries and the dependency kind `StillDepended` names.
+# Neither is re-exported through `tessaridb`, which carries the error type only.
+tessari-ql.workspace = true
+tessari-session.workspace = true
 tessari-storage.workspace = true
 
 [lints]

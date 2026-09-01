@@ -690,11 +690,22 @@ pub(crate) fn failure(error: &Error) -> Answer {
         // `CannotHandOut` is here for the same reason and not with the 400s: a
         // caller trying to grant past their own holdings wrote the statement
         // exactly right, and the refusal is about who they are.
+        // These four were reaching the catch-all for the same reason
+        // `NotGranted` did. A grant-governed user asking for a backup or trying
+        // to declare structure wrote a statement this store understands
+        // perfectly; an owner reaching a user outside their own tenancy, or
+        // declaring somebody who would reach further than they do, likewise.
+        // Every one of them is `CannotHandOut`'s case — the statement is right
+        // and the refusal is about who is asking.
         Error::RoleForbids { .. }
         | Error::OutsideTenancy { .. }
         | Error::NotGranted { .. }
         | Error::NotTheWholeStore { .. }
-        | Error::CannotHandOut { .. } => 403,
+        | Error::CannotHandOut { .. }
+        | Error::GrantedUserCannotBackUp { .. }
+        | Error::GrantedUserCannotDeclare { .. }
+        | Error::NotYours { .. }
+        | Error::WiderThanYou { .. } => 403,
         // The caller wrote it wrong, and no amount of changing the data helps.
         // A new password that is not one is a bad request rather than a
         // refusal: nothing about the caller's authority is in question.
@@ -702,9 +713,24 @@ pub(crate) fn failure(error: &Error) -> Answer {
         Error::Script(_) => 400,
         // The caller wrote it right and the data says no. Retriable after a
         // change, which is the whole reason this is not a 400.
-        Error::Store(_) => 409,
+        //
+        // The session raises its own two of these rather than wrapping a store
+        // error, so they were answering 400 while meaning exactly what this arm
+        // means: a `CREATE` over a record that exists succeeds once the record
+        // goes, and a drop blocked by a dependency succeeds once the dependant
+        // does. A client told `400` stops retrying, which is the one response
+        // that never becomes right.
+        Error::Store(_) | Error::RecordExists { .. } | Error::StillDepended { .. } => 409,
         // A substrate or decoding failure. Anything reaching here is a bug.
-        Error::Encoding(_) => 500,
+        //
+        // A backup the writer could not write is a device speaking, not a
+        // caller; an identity the store could not produce and a fold that
+        // reached the evaluator are invariants of this build. Reported as 400
+        // they read as user error and no alert ever sees them.
+        Error::Encoding(_)
+        | Error::BackupFailed { .. }
+        | Error::IdentityUnavailable { .. }
+        | Error::FoldOutsideAGroup { .. } => 500,
         // Everything else the session raises is about the script: an unselected
         // namespace, a wrong argument, a condition that is not a boolean.
         _ => 400,
@@ -764,6 +790,95 @@ mod tests {
             assert!(
                 !body.contains(r#""kind":"unknown""#),
                 "{outcome:?} rendered as unknown: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refusal_that_is_not_the_callers_fault_does_not_answer_400() {
+        use tessari_ql::Span;
+        use tessari_session::{Depended, Error};
+
+        // The catch-all below the named arms answers `400` — "you wrote it
+        // wrong" — and for most of what the session raises that is true. These
+        // nine were reaching it while belonging to a row the protocol
+        // specification already publishes (§5.2): a client branches on the
+        // status, and `400` tells it to stop retrying and fix its request, which
+        // is the one thing that never helps for any of these.
+        let at = Span::new(0, 1);
+        let user = || "someone".to_owned();
+        let cases: Vec<(u16, Error)> = vec![
+            // Authenticated, and the answer is still no. Signing in again never
+            // helps, which is the whole reason 401 and 403 are kept apart.
+            (
+                403,
+                Error::GrantedUserCannotBackUp {
+                    user: user(),
+                    span: at,
+                },
+            ),
+            (
+                403,
+                Error::GrantedUserCannotDeclare {
+                    user: user(),
+                    span: at,
+                },
+            ),
+            (
+                403,
+                Error::NotYours {
+                    user: user(),
+                    span: at,
+                },
+            ),
+            (
+                403,
+                Error::WiderThanYou {
+                    user: user(),
+                    span: at,
+                },
+            ),
+            // Written right, and the data says no. Retriable after a change —
+            // the file's own definition of the 409 it already gives `Store`.
+            (
+                409,
+                Error::RecordExists {
+                    id: "users:1".to_owned(),
+                    span: at,
+                },
+            ),
+            (
+                409,
+                Error::StillDepended {
+                    depended: Depended::DatabaseByTable,
+                    name: "d".to_owned(),
+                    count: 1,
+                    first: "t".to_owned(),
+                    span: at,
+                },
+            ),
+            // A device or an invariant, not a caller. `BackupFailed` at 400 puts
+            // a failed write behind "you asked wrongly", where no alert reads it.
+            (
+                500,
+                Error::BackupFailed {
+                    reason: "the device is full".to_owned(),
+                },
+            ),
+            (
+                500,
+                Error::IdentityUnavailable {
+                    reason: "exhausted",
+                    span: at,
+                },
+            ),
+            (500, Error::FoldOutsideAGroup { span: at }),
+        ];
+        for (expected, error) in cases {
+            assert_eq!(
+                super::failure(&error).status,
+                expected,
+                "{error} answered the wrong status"
             );
         }
     }
