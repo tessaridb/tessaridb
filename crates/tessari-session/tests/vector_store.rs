@@ -98,7 +98,10 @@ fn the_store_and_the_field_refuse_the_same_write_with_the_same_words() {
     // way. Same record, same value, same width — so the two messages are
     // comparable character for character and any difference at all is the two
     // doorways having become two implementations.
-    let bad = "CREATE embeddings:one = { vector: [1.0, 2.0] };";
+    // The id is quoted because a bare word is not a record id: with `one` both
+    // sides died in the parser with the same message, and the assertion below
+    // compared that message with itself.
+    let bad = "CREATE embeddings:'one' = { vector: [1.0, 2.0] };";
 
     let one = store();
     let from_the_store = refusal(&mut declared(&one), bad).expect("the store accepted it");
@@ -114,6 +117,10 @@ fn the_store_and_the_field_refuse_the_same_write_with_the_same_words() {
     let from_the_field = refusal(&mut session, bad).expect("the field accepted it");
 
     assert_eq!(from_the_store, from_the_field);
+    // Without this the assertion above passes when both sides fail for some
+    // third reason — which is exactly what it did for as long as the id was
+    // unquoted and the parser refused it before either declaration was read.
+    assert!(from_the_store.contains("vector"), "{from_the_store}");
 }
 
 #[test]
