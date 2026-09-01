@@ -44,7 +44,7 @@
 
 use std::collections::BTreeMap;
 
-use tessari_encoding::VectorRecall;
+use tessari_encoding::{SpatialRefinement, VectorRecall};
 use tessari_ql::{
     Answer, Identity as RecordIdentity, InfoSubject, Name, Projection, RecordTarget, Select,
     Source, Span, StatementKind, TableRef,
@@ -256,11 +256,18 @@ impl Session<'_> {
     /// `INFO FOR GEO places` — the store's field and its index.
     ///
     /// Shorter than [`Session::info_vector`] by exactly what the two engines
-    /// differ by. A vector index answers approximately, so `INFO` must report
-    /// the width and the distance it was built with and the recall it was
-    /// measured at. A spatial index answers exactly, so there is no parameter to
-    /// report and no measurement to take: what the store is, its field and its
-    /// index already say.
+    /// differ by, and it stops being shorter than that. A vector store declares
+    /// a width and a distance, so `INFO` reports both; a geo store declares
+    /// nothing, so there is no parameter here to report.
+    ///
+    /// **But there is a measurement, and this once said there was not.** The
+    /// earlier reasoning — a spatial index answers exactly, so nothing needs
+    /// measuring — confused two different things. The *answer* is exact, because
+    /// the predicate re-tests the real geometry above the index. The *filter* is
+    /// not: it works on bounding boxes, and a box is not a geometry. How much it
+    /// offers against how much survives is the health of the whole arrangement,
+    /// and it is the one number that makes a structurally awkward row — a river,
+    /// a road, a border, whose box is many times its own area — visible at all.
     fn info_geo(
         &self,
         transaction: &mut Transaction<'_>,
@@ -287,12 +294,25 @@ impl Session<'_> {
             .indexes_on(id)?
             .into_iter()
             .find(|index| index.spatial);
+        let measured = match &index {
+            Some(index) => transaction.spatial_refinement(index)?,
+            None => None,
+        };
         Ok(BTreeMap::from([
             ("name".to_owned(), Value::from(name.text.as_str())),
             ("field".to_owned(), Value::from(GEO_FIELD)),
             (
                 "index".to_owned(),
                 index.map_or(Value::None, |index| Value::from(index.name.as_str())),
+            ),
+            // `None` and not a zero, for the reason the vector store's recall is:
+            // a ratio of zero would read as a filter that admits nothing, where
+            // absence says nobody measured. Absence also covers a store whose
+            // records never reach one another, which has no refinement cost to
+            // report rather than a perfect one.
+            (
+                "refinement".to_owned(),
+                measured.map_or(Value::None, refining),
             ),
         ]))
     }
@@ -904,6 +924,41 @@ fn described_replica(replica: &ReplicaDefinition) -> Value {
             "roles".to_owned(),
             Value::Array(replica.roles.names().into_iter().map(Value::from).collect()),
         ),
+    ]))
+}
+
+/// A measured refinement, reported with everything needed to read it.
+///
+/// The two ratios are given as percentages **and** the counts they came from are
+/// given beside them, because the ratios answer different questions and a reader
+/// who only trusts one of them should be able to recompute it. `refinement` is
+/// how loose the boxes are — records offered per record kept. `fragmentation` is
+/// how many entries the traversal reads per record it arrives at, which is the
+/// separate failure of one record occupying many cells.
+///
+/// Both are `none` rather than zero when there was nothing to divide by, for the
+/// reason a recall is: a zero here would read as a perfect filter.
+fn refining(measured: SpatialRefinement) -> Value {
+    let percentage = |held: Option<u64>| {
+        held.map_or(Value::None, |value| {
+            Value::Number(Number::Integer(i64::try_from(value).unwrap_or(i64::MAX)))
+        })
+    };
+    let count = |held: u64| Value::Number(Number::Integer(i64::try_from(held).unwrap_or(i64::MAX)));
+    Value::Object(BTreeMap::from([
+        ("refinement".to_owned(), percentage(measured.refinement())),
+        (
+            "fragmentation".to_owned(),
+            percentage(measured.fragmentation()),
+        ),
+        ("entries".to_owned(), count(measured.entries)),
+        ("reached".to_owned(), count(measured.reached)),
+        ("admitted".to_owned(), count(measured.admitted)),
+        (
+            "sample".to_owned(),
+            Value::Number(Number::Integer(i64::from(measured.sample))),
+        ),
+        ("records".to_owned(), count(measured.records)),
     ]))
 }
 

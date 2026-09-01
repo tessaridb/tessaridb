@@ -23,6 +23,7 @@
 
 mod adjacency;
 mod catalog;
+mod covering;
 mod error;
 mod feed;
 mod graph;

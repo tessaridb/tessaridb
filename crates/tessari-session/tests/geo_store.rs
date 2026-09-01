@@ -190,10 +190,11 @@ fn the_declaration_reads_back_as_the_word_that_made_it() {
 }
 
 #[test]
-fn the_store_reports_its_field_and_its_index_and_no_measurement() {
-    // The shorter report, and the reason it is shorter: a spatial index answers
-    // exactly, so there is no parameter to name and nothing a measurement could
-    // add that the declaration does not already say.
+fn the_store_reports_its_field_and_its_index_and_an_empty_store_has_no_measurement() {
+    // Shorter than the vector store's report by the parameters a geo store does
+    // not declare — but not by the measurement. `refinement` is `none` here
+    // because nothing has been measured, and `none` is a different statement
+    // from a ratio of zero.
     let held = store();
     let mut session = declared(&held);
 
@@ -204,7 +205,99 @@ fn the_store_reports_its_field_and_its_index_and_no_measurement() {
     assert_eq!(fields.get("name"), Some(&Value::from("places")));
     assert_eq!(fields.get("field"), Some(&Value::from("geometry")));
     assert_eq!(fields.get("index"), Some(&Value::from("geometry")));
+    assert_eq!(fields.get("refinement"), Some(&Value::None));
+    // The vector store's parameters are not here, and their absence is part of
+    // what makes this report the geo one.
     assert_eq!(fields.get("recall"), None);
+    assert_eq!(fields.get("dimension"), None);
+}
+
+/// The refinement report of `places`, or `None` when nothing was measured.
+fn refinement(session: &mut Session<'_>) -> Option<std::collections::BTreeMap<String, Value>> {
+    let report = reported(session, "INFO FOR GEO places;");
+    let Value::Object(fields) = report else {
+        panic!("{report:?}");
+    };
+    match fields.get("refinement") {
+        Some(Value::Object(measured)) => Some(measured.clone()),
+        Some(Value::None) => None,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_rebuild_measures_what_the_covering_offers_against_what_the_boxes_keep() {
+    // C9's criterion, on a corpus small enough to work out by hand. A square
+    // and a point inside it: each one's own box is a query the other's box
+    // meets, so the covering offers one record per query and the box test keeps
+    // it — two reached, two admitted, a ratio of exactly one hundred per cent.
+    //
+    // The asking record is excluded, which is why these are ones and not twos:
+    // a record queried by its own box always finds itself.
+    let held = store();
+    let mut session = declared(&held);
+    session
+        .run(
+            "CREATE places:'ward' = { geometry: geometry { type: 'Polygon', \
+             coordinates: [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]] }, name: 'a ward' }; \
+             CREATE places:'corner' = { geometry: geometry { type: 'Point', \
+             coordinates: [1, 1] }, name: 'a corner' };",
+        )
+        .unwrap();
+
+    // Records written after the build are placed one at a time, and a single
+    // placement cannot see the whole index — so the figure comes from a rebuild,
+    // which is the one statement that walks every row.
+    assert_eq!(refinement(&mut session), None, "a write does not measure");
+
+    session.run("REBUILD INDEX geometry ON places;").unwrap();
+    let measured = refinement(&mut session).expect("a rebuild measures");
+
+    assert_eq!(measured.get("sample"), Some(&Value::from(2_i64)));
+    assert_eq!(measured.get("records"), Some(&Value::from(2_i64)));
+    assert_eq!(measured.get("reached"), Some(&Value::from(2_i64)));
+    assert_eq!(measured.get("admitted"), Some(&Value::from(2_i64)));
+    // Reached over admitted, as a percentage. Nothing was offered and thrown
+    // away, so the covering wasted none of the two reads it served.
+    assert_eq!(measured.get("refinement"), Some(&Value::from(100_i64)));
+}
+
+#[test]
+fn a_rebuild_with_nothing_to_measure_takes_the_previous_figure_with_it() {
+    // The decisive test, and the only input on which the clear is observable.
+    //
+    // A rebuild overwrites the measurement key, so a test that measures, grows
+    // the store and measures again passes with the clear removed — the second
+    // write hides the missing delete. The clear is only visible on the path
+    // where the rebuild writes NOTHING: measure first, then take the store below
+    // what can be measured and rebuild. Without the clear the old figure stays,
+    // describing a covering that no longer exists, and nothing fails until
+    // somebody reads the number.
+    let held = store();
+    let mut session = declared(&held);
+    session
+        .run(
+            "CREATE places:'ward' = { geometry: geometry { type: 'Polygon', \
+             coordinates: [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]] }, name: 'a ward' }; \
+             CREATE places:'corner' = { geometry: geometry { type: 'Point', \
+             coordinates: [1, 1] }, name: 'a corner' }; \
+             REBUILD INDEX geometry ON places;",
+        )
+        .unwrap();
+    assert!(
+        refinement(&mut session).is_some(),
+        "the figure this test is about was never taken"
+    );
+
+    session
+        .run("DELETE places:'corner'; REBUILD INDEX geometry ON places;")
+        .unwrap();
+
+    assert_eq!(
+        refinement(&mut session),
+        None,
+        "a figure survived a rebuild that measured nothing"
+    );
 }
 
 #[test]

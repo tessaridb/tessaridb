@@ -80,6 +80,7 @@ use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{Analyzer, RecordId, TableId, Value};
 
 use crate::catalog::{Catalog, IndexDefinition, defined_index};
+use crate::covering;
 use crate::error::{Error, Result};
 use crate::graph;
 use crate::store::Store;
@@ -263,10 +264,24 @@ fn build(
     }
 
     if definition.spatial {
+        // Measured here and nowhere else, for the reason the vector branch above
+        // states: this is the one place every geometry and its covering are in
+        // hand at once, and it is reached by applying a log record, so every
+        // replica computes the same figure. A figure accumulated from real reads
+        // would differ per replica by construction.
+        let mut placed = Vec::with_capacity(rows.len());
         for (id, payload) in &rows {
-            batch = place(batch, &address, id, &decode_payload(payload)?, definition);
+            let held = decode_payload(payload)?;
+            if let Some((bounds, cells)) = covering_of(definition, &held) {
+                batch = place_cells(batch, &address, id, bounds, &cells);
+                placed.push(covering::Placed {
+                    id: id.clone(),
+                    bounds,
+                    cells,
+                });
+            }
         }
-        return Ok(batch);
+        return Ok(covering::measure(batch, &address, &placed));
     }
 
     if definition.search {
@@ -317,14 +332,15 @@ fn build(
 /// records that have gone, a posting for text nobody stores any more, an entry
 /// under a value the record no longer holds.
 ///
-/// All seven index key kinds, because a rebuild has to be safe on any index a
+/// All eight index key kinds, because a rebuild has to be safe on any index a
 /// caller may name, and an index whose shape changed is not a case this store
 /// wants to reason about one kind at a time.
 ///
-/// The measurement is cleared with the entries for a reason worth stating: a
-/// recall left behind would describe a graph that no longer exists, which is
-/// exactly the stale figure the measurement was introduced to prevent, arriving
-/// from inside. It fails no test until somebody reads the number.
+/// The measurements are cleared with the entries for a reason worth stating: a
+/// recall or a refinement figure left behind would describe a graph or a
+/// covering that no longer exists, which is exactly the stale number the
+/// measurements were introduced to prevent, arriving from inside. Neither fails
+/// a test until somebody reads it.
 fn clear(store: &Store, mut batch: WriteBatch, address: &IndexAddress) -> Result<WriteBatch> {
     for kind in [
         KeyKind::SecondaryIndex,
@@ -334,6 +350,7 @@ fn clear(store: &Store, mut batch: WriteBatch, address: &IndexAddress) -> Result
         KeyKind::SearchStatistics,
         KeyKind::SpatialIndex,
         KeyKind::VectorRecall,
+        KeyKind::SpatialRefinement,
     ] {
         let keyspace = kind.keyspace();
         let prefix = address.prefix(kind);
@@ -616,7 +633,7 @@ impl Analysed {
 /// is the one failure direction a spatial filter must not have, and keeping the
 /// computation on this path is the whole of the defence.
 fn place(
-    mut batch: WriteBatch,
+    batch: WriteBatch,
     address: &IndexAddress,
     id: &RecordId,
     value: &Value,
@@ -625,11 +642,27 @@ fn place(
     let Some((bounds, cells)) = covering_of(definition, value) else {
         return batch;
     };
+    place_cells(batch, address, id, bounds, &cells)
+}
+
+/// The write half of [`place`], for a caller that already holds the covering.
+///
+/// Split out so a build can write the entries and measure them from **one**
+/// computed covering rather than two. Computing it twice would cost a second
+/// pass and, worse, would let the entries and the figure describing them be
+/// derived from separately-computed cells.
+fn place_cells(
+    mut batch: WriteBatch,
+    address: &IndexAddress,
+    id: &RecordId,
+    bounds: Bounds,
+    cells: &[Cell],
+) -> WriteBatch {
     let extent = SpatialExtent::new(bounds).encode();
     for cell in cells {
         batch = batch.put(
             SpatialIndexKey::keyspace(),
-            SpatialIndexKey::new(*address, cell, id.clone()).encode(),
+            SpatialIndexKey::new(*address, *cell, id.clone()).encode(),
             extent.clone(),
         );
     }

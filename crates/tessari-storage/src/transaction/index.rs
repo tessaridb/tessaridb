@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{
-    IndexAddress, IndexTarget, IndexValues, KeyKind, RecordValue, SecondaryIndexKey, StoreKey,
-    StoreValue, VectorRecall, VectorRecallKey,
+    IndexAddress, IndexTarget, IndexValues, KeyKind, RecordValue, SecondaryIndexKey,
+    SpatialRefinement, SpatialRefinementKey, StoreKey, StoreValue, VectorRecall, VectorRecallKey,
 };
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{RecordId, Value};
@@ -229,6 +229,32 @@ impl Transaction<'_> {
             .get(VectorRecallKey::keyspace(), &key)?
         {
             Some(bytes) => Ok(Some(VectorRecall::decode(bytes.as_slice())?)),
+            None => Ok(None),
+        }
+    }
+
+    /// What refining this spatial index's candidates last cost, if it was ever
+    /// measured.
+    ///
+    /// `None` means nobody has measured, and it covers two cases a reader should
+    /// not have to tell apart: an index never built, and one whose records never
+    /// reach one another so there was no refinement to observe. Both are the
+    /// absence of a measurement rather than a measurement of nothing, which is
+    /// why neither is reported as a ratio.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or the stored value cannot be
+    /// decoded.
+    pub fn spatial_refinement(&self, index: &IndexDefinition) -> Result<Option<SpatialRefinement>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let key = SpatialRefinementKey::new(address).encode();
+        match self
+            .store
+            .backend()
+            .get(SpatialRefinementKey::keyspace(), &key)?
+        {
+            Some(bytes) => Ok(Some(SpatialRefinement::decode(bytes.as_slice())?)),
             None => Ok(None),
         }
     }

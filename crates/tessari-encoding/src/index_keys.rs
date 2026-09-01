@@ -465,6 +465,167 @@ impl StoreValue for VectorRecall {
     }
 }
 
+/// What refining one spatial index's candidates last cost.
+///
+/// A spatial index answers by **bounding box**, and a box is not a geometry — so
+/// every read is filter-and-refine, and the number that says whether the filter
+/// is earning its keep is how many records it offers against how many survive.
+/// A ratio near one means the stored boxes approximate their geometries well; a
+/// large one means the index is doing work the exact predicate throws away.
+/// Without it a query budget is tuned by intuition, and a structurally bad row —
+/// a river, a road, a border, whose box is many times its own area — is
+/// invisible.
+///
+/// Beside the index rather than on its definition, for the reason
+/// [`VectorRecallKey`] is: this is a measurement derived from the log, and the
+/// definition is what the language wrote. The key is **derived from the
+/// [`IndexAddress`]**, so it cannot come to name the wrong index, and it is
+/// cleared as part of the index's keyspace when the entries are — which is what
+/// stops a rebuild leaving a figure describing a covering that no longer exists.
+///
+/// The key is exactly an index prefix with no suffix, so one index has exactly
+/// one of these and finding it is a point read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpatialRefinementKey {
+    /// Which index this measurement describes.
+    pub address: IndexAddress,
+}
+
+impl SpatialRefinementKey {
+    /// Name the measurement of one index.
+    #[must_use]
+    pub const fn new(address: IndexAddress) -> Self {
+        Self { address }
+    }
+}
+
+impl StoreKey for SpatialRefinementKey {
+    type Value = SpatialRefinement;
+
+    const KIND: KeyKind = KeyKind::SpatialRefinement;
+
+    fn encode(&self) -> Key {
+        Key::from(self.address.prefix(Self::KIND))
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let address = IndexAddress::read(&mut reader)?;
+        reader.finish()?;
+        Ok(Self { address })
+    }
+}
+
+/// The counts a covering is judged by, and everything needed to read them.
+///
+/// # Why counts rather than a ratio
+///
+/// There are **two** ratios here and they name two different repairs, so a
+/// single stored number would answer neither question:
+///
+/// - `reached` over `admitted` is how loose the stored boxes are. The cells
+///   offer records the box test then throws away.
+/// - `entries` over `reached` is how fragmented the covering is. One record with
+///   an awkward shape occupies many cells, and every one of them is an entry the
+///   traversal reads to arrive at the same record — which is exactly the river,
+///   the road and the border the measurement exists to make visible.
+///
+/// Storing the counts leaves both derivable and neither asserted.
+///
+/// # Why it cannot go stale in silence
+///
+/// The counts describe the store as it was when the index was built. `sample`
+/// says how many queries stand behind them — a figure from four is not a figure
+/// from four hundred — and `records` says how large the index was, so growth
+/// since is visible rather than hidden.
+///
+/// # The query record is not counted
+///
+/// Each measuring query is a record's own box, and a record always reaches
+/// itself and always survives its own box test. Counting it would add one to
+/// both sides of every ratio and pull each one toward one, which is to say
+/// toward "healthy" — so the record being asked about is excluded from both.
+/// A store whose records never reach one another therefore measures nothing at
+/// all rather than measuring a perfect score.
+///
+/// Absence of this value means **never measured**, which is a different
+/// statement from a measured zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpatialRefinement {
+    /// Index entries the measuring reads walked.
+    pub entries: u64,
+    /// Distinct records those entries named.
+    pub reached: u64,
+    /// How many of those the box test admitted.
+    pub admitted: u64,
+    /// How many queries the counts are a total over.
+    pub sample: u32,
+    /// How many records the index held when it was measured.
+    pub records: u64,
+}
+
+impl SpatialRefinement {
+    /// Records offered per record kept, as a percentage.
+    ///
+    /// `None` when nothing was admitted — not because there was no measurement,
+    /// but because the ratio is unbounded there. A covering that offered records
+    /// and kept none is the worst refinement there is, and the counts beside this
+    /// say so plainly; collapsing it to a number would either invent a ceiling or
+    /// print `0`, which reads as a perfect filter.
+    ///
+    /// `checked_div` rather than a guard and a `saturating_div`: the absence and
+    /// the division are the same fact, so writing them as two would let a later
+    /// edit separate them. `saturating_div` also does not saturate a zero
+    /// divisor — it panics — which is a poor thing to reach for in a database.
+    #[must_use]
+    pub const fn refinement(self) -> Option<u64> {
+        self.reached.saturating_mul(100).checked_div(self.admitted)
+    }
+
+    /// Entries read per record reached, as a percentage.
+    ///
+    /// `None` for the same reason [`Self::refinement`] returns one.
+    #[must_use]
+    pub const fn fragmentation(self) -> Option<u64> {
+        self.entries.saturating_mul(100).checked_div(self.reached)
+    }
+}
+
+impl StoreValue for SpatialRefinement {
+    fn encode(&self) -> Value {
+        let mut writer = KeyWriter::new();
+        writer
+            .put_u64(self.entries)
+            .put_u64(self.reached)
+            .put_u64(self.admitted)
+            .put_u32(self.sample)
+            .put_u64(self.records);
+        let body = writer.finish();
+        let mut buffer = with_header(0, body.len());
+        buffer.extend_from_slice(&body);
+        Value::from(buffer)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let (_, payload) = split_header(bytes, 0)?;
+        let mut reader = KeyReader::new(KeyKind::SpatialRefinement, payload);
+        let entries = reader.take_u64()?;
+        let reached = reader.take_u64()?;
+        let admitted = reader.take_u64()?;
+        let sample = reader.take_u32()?;
+        let records = reader.take_u64()?;
+        reader.finish()?;
+        Ok(Self {
+            entries,
+            reached,
+            admitted,
+            sample,
+            records,
+        })
+    }
+}
+
 /// One record's place in a vector index's graph.
 ///
 /// ```text

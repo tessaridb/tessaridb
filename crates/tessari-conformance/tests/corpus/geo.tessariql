@@ -58,6 +58,14 @@ DEFINE GEO IF NOT EXISTS places;
 INFO FOR GEO places;
 --- expect: ok
 
+--- case: a rebuild walks every place and measures what refining them costs
+REBUILD INDEX geometry ON places;
+--- expect: ok
+
+--- case: and the report carries the figure the rebuild took
+INFO FOR GEO places;
+--- expect: ok
+
 --- case: a table that is not a geo store is not one
 DEFINE COLLECTION notes;
 INFO FOR GEO notes;

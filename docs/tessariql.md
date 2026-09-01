@@ -958,13 +958,34 @@ and a table of them is a geo store:
 CREATE places:'ward' = { geometry: geometry { type: 'Polygon', coordinates: [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]] }, name: 'a ward' };
 ```
 
-`INFO FOR GEO` reports the store's field and its index, and carries no
-measurement — a spatial index answers exactly, so there is no number a report
-could add that the declaration does not already say:
+`INFO FOR GEO` reports the store's field, its index, and what refining that
+index's candidates last cost:
 
 ```json
-{"name": "places", "field": "geometry", "index": "geometry"}
+{"name": "places", "field": "geometry", "index": "geometry",
+ "refinement": {"refinement": 100, "fragmentation": 100, "entries": 2,
+                "reached": 2, "admitted": 2, "sample": 2, "records": 2}}
 ```
+
+A spatial index answers **exactly** — but it does not filter exactly. It filters
+by bounding box, and a box is not a geometry, so a read offers candidates and the
+predicate above it decides. `refinement` is the percentage of records offered per
+record kept: at 100 the boxes wasted nothing, and a large number means the index
+is doing work the predicate throws away. `fragmentation` is entries read per
+record reached, which is the separate complaint that one record with an awkward
+shape — a river, a road, a border — sits in many cells at once. The counts the
+two are computed from are reported beside them.
+
+Both are `none` when there is nothing to divide by, and the whole `refinement`
+object is `none` when nothing was measured at all. Absence is never a zero: a
+zero would read as a filter that wastes nothing, which is the opposite of what an
+unmeasured store means.
+
+The figure is taken by a build, from the store's own places used as queries. So a
+store filled by writes since its last build reports the figure from that build,
+and `REBUILD INDEX geometry ON places` is how a current one is obtained — the
+same contract a vector store's recall has, and `records` is what lets a reader see
+the store has outgrown the number.
 
 The word that made the store is the word that removes it, along with its records
 and its index:

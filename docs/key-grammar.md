@@ -82,6 +82,7 @@ because renumbering after data exists is a full rebuild.
 | `0x15` | `SearchStatistics` | `index` | implemented — see §3b |
 | `0x16` | `SpatialIndex` | `index` | implemented — see §3c |
 | `0x17` | `VectorRecall` | `index` | implemented — see §3d |
+| `0x18` | `SpatialRefinement` | `index` | implemented — see §3e |
 | `0x20` | `LogEntry` | `log` | implemented |
 | `0x30` | `FormatVersion` | `meta` | implemented |
 | `0x31` | `AppliedPosition` | `meta` | implemented |
@@ -291,6 +292,31 @@ produces no measurement leaves **no** key rather than the previous one — and
 absence reads as *never measured*, which is a different statement from a measured
 zero. A figure left behind would describe a graph that no longer exists, and
 nothing would raise it until somebody read the number.
+
+### 3e. The spatial-refinement tag
+
+`0x18` holds what refining one spatial index's candidates last **cost**: how many
+records its cells offered against how many the box test kept.
+
+The reason it exists is that a spatial index does not answer the question it is
+asked. It answers by **bounding box**, and a box is not a geometry, so every
+spatial read is filter-and-refine and the exact predicate above it decides. The
+answer is exact; the filter is not. The ratio between what the filter offers and
+what survives is the health of the whole arrangement, and without it a query
+budget is tuned by intuition and a structurally awkward row — a river, a road, a
+border, whose box is many times its own area — is invisible.
+
+It is a key kind rather than a field on the index definition for the reason
+`0x15` and `0x17` are, and it sits in the `index` keyspace for the reason `0x17`
+does: the keyspace is cleared as a unit on rebuild, so a rebuild that produces no
+measurement leaves **no** key rather than the previous one.
+
+The measurement is taken at the build, from the store's **own** geometries used
+as queries. That is a deliberate choice over accumulating counts from real reads,
+and the reason is replica determinism: index entries here are derived from the
+log rather than logged (§1), so two replicas replaying one log must compute the
+same figure — and a figure accumulated from query traffic differs per replica by
+construction.
 
 ## 4. Component encodings
 
@@ -543,6 +569,40 @@ The queries are the store's own vectors, sampled by position in key order, with
 the query record removed from both the exact answer and the walk's answer before
 they are compared. A stored vector queried against itself is at distance zero, so
 keeping it would put a floor of `1/at` under every figure.
+
+### 6.2b-3 `SpatialRefinement` — keyspace `index`
+
+```
+key    <0x18> <namespace:u32> <database:u32> <table:u32> <index:u32>
+value  <entries:u64> <reached:u64> <admitted:u64> <sample:u32> <records:u64>
+```
+
+The key is the 17-byte index prefix with **no suffix**, exactly as `0x15` and
+`0x17` are.
+
+Counts rather than a ratio, because there are **two** ratios here and they name
+two different repairs. `reached ÷ admitted` is how loose the stored boxes are —
+records the cells offered that the box test then threw away. `entries ÷ reached`
+is how fragmented the covering is — one record with an awkward shape occupies
+many cells, and every one of them is an entry the traversal reads to arrive at
+the same record. Storing the counts leaves both derivable and neither asserted.
+
+`sample` is how many queries stand behind the totals and `records` how large the
+index was when they were taken, so growth since is visible rather than hidden —
+the same discipline `0x17` follows and for the same reason.
+
+The queries are the store's own record boxes, sampled by position in key order,
+with the **asking record excluded** from both counts. A record queried by its own
+box always reaches itself and always survives its own box test, so counting it
+would add one to both sides of every ratio and pull each one toward one — that is,
+toward healthy.
+
+A sample in which no query reached any other record produces **no key at all**: a
+store whose geometries never reach one another has no refinement cost, and
+reporting a figure for it would report a number nobody computed. A sample that
+reached records and admitted **none** is the opposite case and is written — it is
+the worst thing a covering can do, and the ratio then reports as absent because it
+is unbounded, never as zero.
 
 ### 6.2c `VectorNode` — keyspace `index`
 

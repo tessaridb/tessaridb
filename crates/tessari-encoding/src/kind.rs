@@ -39,6 +39,8 @@ pub enum KeyKind {
     SpatialIndex,
     /// The recall one vector index was last measured at.
     VectorRecall,
+    /// What refining one spatial index's candidates last cost.
+    SpatialRefinement,
     /// One entry in the ordered log.
     LogEntry,
     /// The store's own on-disk format version.
@@ -89,6 +91,7 @@ impl KeyKind {
         Self::SearchStatistics,
         Self::SpatialIndex,
         Self::VectorRecall,
+        Self::SpatialRefinement,
         Self::LogEntry,
         Self::FormatVersion,
         Self::AppliedPosition,
@@ -122,6 +125,7 @@ impl KeyKind {
             Self::SearchStatistics => 0x15,
             Self::SpatialIndex => 0x16,
             Self::VectorRecall => 0x17,
+            Self::SpatialRefinement => 0x18,
             Self::LogEntry => 0x20,
             Self::FormatVersion => 0x30,
             Self::AppliedPosition => 0x31,
@@ -150,7 +154,8 @@ impl KeyKind {
             | Self::Edge
             | Self::SearchStatistics
             | Self::SpatialIndex
-            | Self::VectorRecall => Keyspace::INDEX,
+            | Self::VectorRecall
+            | Self::SpatialRefinement => Keyspace::INDEX,
             Self::LogEntry => Keyspace::LOG,
             Self::FormatVersion
             | Self::AppliedPosition
@@ -183,6 +188,7 @@ impl KeyKind {
             Self::SearchStatistics => "search-statistics",
             Self::SpatialIndex => "spatial-index",
             Self::VectorRecall => "vector-recall",
+            Self::SpatialRefinement => "spatial-refinement",
             Self::LogEntry => "log-entry",
             Self::FormatVersion => "format-version",
             Self::AppliedPosition => "applied-position",
@@ -264,6 +270,7 @@ mod tests {
             (KeyKind::SearchStatistics, 0x15),
             (KeyKind::SpatialIndex, 0x16),
             (KeyKind::VectorRecall, 0x17),
+            (KeyKind::SpatialRefinement, 0x18),
             (KeyKind::LogEntry, 0x20),
             (KeyKind::FormatVersion, 0x30),
             (KeyKind::AppliedPosition, 0x31),

@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 1013 conformance cases define the language and run in the build.
+Unreleased. 1015 conformance cases define the language and run in the build.
 
 ### Breaking — a table is not a document
 
@@ -93,6 +93,18 @@ became a reserved word; a field or table named `schemaless` needs renaming.
   plausible ordering, while a read that orders by distance from a point already
   refuses a record that is not one and says so. Narrowing the store would also
   have made a table of regions inexpressible, and a region is a place.
+
+- **`INFO FOR GEO` reports what refining the index costs** — how many records its
+  cells offered against how many the bounding-box test kept, plus the entries
+  read per record reached. A spatial index answers exactly but does not *filter*
+  exactly: it filters by box, and a box is not a geometry, so a read produces
+  candidates the predicate above it throws away. The ratio is the health of the
+  whole arrangement, and it is the only thing that makes a structurally awkward
+  row — a river, a road, a border, whose box is many times its own area —
+  visible. Measured by a build from the store's own places used as queries, so
+  every replica computes the same figure from one log; `REBUILD INDEX` is how a
+  current one is obtained, and absence means never measured rather than a ratio
+  of zero.
 
 - **`TYPE vector<n>`** — a field declares how many components its vectors hold,
   and a write of any other width is refused **at the write**. Without it `array`
