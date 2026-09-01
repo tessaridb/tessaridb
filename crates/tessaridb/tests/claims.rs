@@ -492,6 +492,71 @@ fn the_backup_timings_are_the_baseline_they_cite() {
     }
 }
 
+/// The `p50 µs` cell of one row of the paging benchmark.
+fn paging_micros(phase: &str) -> f64 {
+    let recorded = read("benchmarks/2026-08-28-macos-aarch64-memory-paging.md");
+    let section = recorded
+        .split("\n## ")
+        .find(|part| part.starts_with("paging\n"))
+        .expect("the paging section");
+    for line in section.lines() {
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        // | phase | ops | ops/s | p50 µs | p90 µs | p99 µs | max µs |
+        if cells.len() == 9 && cells[1] == phase {
+            return cells[4].parse().expect("a p50 in microseconds");
+        }
+    }
+    panic!("no `{phase}` row in the paging benchmark");
+}
+
+/// A duration as the two paging tables write it: microseconds while they are
+/// small, then milliseconds, and rounded half-up because that is what a person
+/// transcribing a table does. `{:.0}` would round 12.5 to 12.
+fn as_written(micros: f64) -> String {
+    let half_up = |value: f64| (value + 0.5).floor();
+    if micros < 1000.0 {
+        format!("{} µs", half_up(micros))
+    } else if micros < 10_000.0 {
+        format!("{} ms", half_up(micros / 100.0) / 10.0)
+    } else {
+        format!("{} ms", half_up(micros / 1000.0))
+    }
+}
+
+#[test]
+fn the_paging_table_is_the_baseline_it_cites() {
+    // Both documents print this table and both name the file it came from, and
+    // in the commit that added all three they disagreed with it in eleven of
+    // sixteen cells — not by rounding, since one cell was low and the rest high,
+    // but because a different run was transcribed than the one committed. That
+    // is the class the backup guard above was written for; it was never extended
+    // to the table added six days later, so this is the same guard for the same
+    // reason.
+    for document in ["docs/tessariql.md", "benchmarks/README.md"] {
+        let text = read(document);
+        for (depth, bold) in [(0, false), (1000, false), (10_000, false), (99_000, true)] {
+            let cell = |prefix: &str| as_written(paging_micros(&format!("{prefix} at {depth}")));
+            let sought = cell("cursor");
+            let row = format!(
+                "| {} | {} | {} | {} |",
+                cell("offset"),
+                if bold {
+                    format!("**{sought}**")
+                } else {
+                    sought
+                },
+                cell("ordered offset"),
+                cell("ordered cursor (walked)"),
+            );
+            assert!(
+                text.contains(&row),
+                "{document} has no row `{row}` at depth {depth}, \
+                 which is what the paging baseline records"
+            );
+        }
+    }
+}
+
 /// Every absence claim in a document, by the id it carries.
 ///
 /// The ids are HTML comments — invisible rendered, and the only way two

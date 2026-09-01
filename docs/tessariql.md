@@ -2938,10 +2938,10 @@ Measured over a hundred thousand records in memory
 
 | depth | `START n LIMIT 20` | `AFTER … LIMIT 20` | `ORDER BY name START n` | `ORDER BY name AFTER …` |
 |---|---|---|---|---|
-| 0 | 10 µs | 13 µs | 45 ms | 45 ms |
-| 1 000 | 362 µs | 14 µs | 46 ms | 42 ms |
-| 10 000 | 3.9 ms | 14 µs | 48 ms | 44 ms |
-| 99 000 | 41 ms | **13 µs** | 51 ms | 44 ms |
+| 0 | 10 µs | 13 µs | 44 ms | 44 ms |
+| 1 000 | 341 µs | 13 µs | 45 ms | 42 ms |
+| 10 000 | 3.5 ms | 13 µs | 46 ms | 42 ms |
+| 99 000 | 40 ms | **13 µs** | 50 ms | 42 ms |
 
 The sought column is **flat**: a page at the end of the table costs what a page
 at the start costs, and at ninety-nine thousand it is some three thousand times
