@@ -1,6 +1,6 @@
 //! Writing a value as JSON, and what that costs.
 //!
-//! JSON has six types and this store has fifteen, so the mapping is a decision
+//! JSON has six types and this store has seventeen, so the mapping is a decision
 //! rather than a translation. It is written by hand rather than derived, for
 //! exactly that reason: a derived encoder would make the choices below silently.
 //!
@@ -31,9 +31,32 @@
 //! A datetime is RFC 3339, a duration and a record reference are the text this
 //! language writes them as, bytes are hex. Each is a string, and each parses
 //! back through the same reader that read it from a script.
+//!
+//! # A range keeps its endpoints
+//!
+//! A range is the exception to the rule above: this language has no text form
+//! that writes one back, so there is no spelling to keep. It leaves structurally
+//! instead, the way a shape leaves as GeoJSON —
+//! `{"start":{"bound":"included","value":1},"end":{"bound":"excluded","value":5}}`.
+//!
+//! The bound kind is named rather than implied, because `1..5`, `1..=5` and
+//! `1..` are three different spans and a shape carrying only two endpoints
+//! collapses them onto one. An unbounded end carries no `value` key at all,
+//! which is the same rule `none` uses above for a thing that is not there, and
+//! is what keeps an open end distinct from an end holding `null`. Each endpoint
+//! goes through this same encoder, so it keeps whatever spelling its own type
+//! has.
+//!
+//! The cost is stated rather than hidden: the object is indistinguishable from a
+//! field that happens to hold an object with those keys, the same ambiguity a
+//! decimal already has with a string. This surface is lossy by design; what it
+//! must not do is transmit nothing.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::Bound};
 
+// `ValueRange` is not re-exported from the front door, and the two crates name
+// the same type, so a range is reached through `tessari_types` directly.
+use tessari_types::ValueRange;
 use tessaridb::{Geometry, Polygon, Position, TableId, Value, geojson_name};
 
 /// What a table id is called, for the references an answer carries.
@@ -171,9 +194,13 @@ pub(crate) fn write(out: &mut String, value: &Value, names: &Names) {
         Value::Regex(pattern) => string(out, pattern),
         Value::Duration(held) => string(out, &held.to_literal()),
         Value::Datetime(held) => string(out, &held.to_rfc3339()),
-        Value::Uuid(_) | Value::Table(_) | Value::Record(_) | Value::Range(_) => {
+        Value::Uuid(_) | Value::Table(_) | Value::Record(_) => {
             string(out, &spelled(value, names));
         }
+        // Structurally, because there is no text form to keep: `Value`'s own
+        // `Display` writes `<range>`, and routing this through `spelled` is what
+        // sent the caller the word `range` and nothing else.
+        Value::Range(held) => range(out, held, names),
         Value::Array(items) => {
             out.push('[');
             for (position, item) in items.iter().enumerate() {
@@ -215,6 +242,36 @@ pub(crate) fn write(out: &mut String, value: &Value, names: &Names) {
             out.push('}');
         }
     }
+}
+
+/// A range as its two endpoints and their bound kinds.
+fn range(out: &mut String, held: &ValueRange, names: &Names) {
+    out.push_str(r#"{"start":"#);
+    bound(out, &held.start, names);
+    out.push_str(r#","end":"#);
+    bound(out, &held.end, names);
+    out.push('}');
+}
+
+/// One end of a range: which kind of bound it is, and the value where there is
+/// one.
+///
+/// An unbounded end carries no `value` key, so it cannot be confused with an end
+/// holding `null`. Writing it as `null` would make `1..` and `1..=null` the same
+/// document.
+fn bound(out: &mut String, held: &Bound<Value>, names: &Names) {
+    let (kind, value) = match held {
+        Bound::Included(value) => ("included", Some(value)),
+        Bound::Excluded(value) => ("excluded", Some(value)),
+        Bound::Unbounded => ("unbounded", None),
+    };
+    out.push_str(r#"{"bound":"#);
+    string(out, kind);
+    if let Some(value) = value {
+        out.push_str(r#","value":"#);
+        write(out, value, names);
+    }
+    out.push('}');
 }
 
 /// A number, exact where JSON allows and quoted where it does not.
@@ -295,11 +352,20 @@ pub(crate) fn string(out: &mut String, text: &str) {
 mod tests {
     #![allow(clippy::panic)]
 
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, ops::Bound};
 
+    use tessari_types::ValueRange;
     use tessaridb::{Number, Value};
 
     use super::{Names, write};
+
+    fn span(start: Bound<Value>, end: Bound<Value>) -> Value {
+        Value::Range(Box::new(ValueRange { start, end }))
+    }
+
+    fn at(number: i64) -> Value {
+        Value::Number(Number::Integer(number))
+    }
 
     fn json(value: &Value) -> String {
         let mut out = String::new();
@@ -346,6 +412,54 @@ mod tests {
         // A control character is escaped numerically, which is the form
         // that always produces a valid document.
         assert_eq!(json(&Value::from("\u{1}")), r#""\u0001""#);
+    }
+
+    #[test]
+    fn a_range_arrives_as_its_endpoints_rather_than_as_its_type() {
+        // The defect this replaces: `RETURN 1..5;` answered `"range"`, so
+        // nothing about the span reached the caller at all and there was
+        // nothing on the other side to recover it from.
+        assert_eq!(
+            json(&span(Bound::Included(at(1)), Bound::Excluded(at(5)))),
+            r#"{"start":{"bound":"included","value":1},"end":{"bound":"excluded","value":5}}"#
+        );
+    }
+
+    #[test]
+    fn the_three_bound_kinds_stay_apart() {
+        // An open end is not an end holding `null`: rendering `Unbounded` as a
+        // `null` value would collide with `Bound::Included(Value::Null)`, and a
+        // shape carrying only two endpoints would collapse `1..5`, `1..=5` and
+        // `1..` onto one document — the same loss in a smaller form.
+        let open = json(&span(Bound::Included(at(1)), Bound::Unbounded));
+        let holding_null = json(&span(Bound::Included(at(1)), Bound::Included(Value::Null)));
+        assert_eq!(
+            open,
+            r#"{"start":{"bound":"included","value":1},"end":{"bound":"unbounded"}}"#
+        );
+        assert_eq!(
+            holding_null,
+            r#"{"start":{"bound":"included","value":1},"end":{"bound":"included","value":null}}"#
+        );
+        assert_ne!(open, holding_null);
+        assert_ne!(
+            json(&span(Bound::Included(at(1)), Bound::Included(at(5)))),
+            json(&span(Bound::Included(at(1)), Bound::Excluded(at(5))))
+        );
+    }
+
+    #[test]
+    fn an_endpoint_keeps_the_spelling_of_its_own_type() {
+        // The endpoint goes through this same encoder, so a decimal endpoint is
+        // quoted for the reason every decimal on this surface is quoted.
+        let exact = "12.34".parse().expect("a decimal");
+        assert_eq!(
+            json(&span(
+                Bound::Included(Value::Number(Number::Decimal(exact))),
+                Bound::Excluded(at(99))
+            )),
+            r#"{"start":{"bound":"included","value":"12.34"},"end":{"bound":"excluded","value":99}}"#
+        );
     }
 
     #[test]
