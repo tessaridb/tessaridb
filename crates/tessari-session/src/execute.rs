@@ -1221,7 +1221,36 @@ impl Session<'_> {
         Ok(Outcome::Done)
     }
 
-    /// `DEFINE GRAPH social` — the structure node tables belong to.
+    /// `DEFINE GRAPH social` — the graph, **and the collection its own nodes
+    /// live in**.
+    ///
+    /// Two statements behind one word, exactly as [`Self::define_vector`] and
+    /// [`Self::define_geo`] are three behind theirs, and for the same reason: a
+    /// graph that owns no records is a label rather than a structure. Without
+    /// the collection a caller cannot write a single node until they have
+    /// declared a table of their own and marked it `IN <graph>` — so the word
+    /// named a structure and delivered a membership flag, which is the objection
+    /// that was raised against it twice.
+    ///
+    /// The collection takes the **graph's own name**, which is what makes
+    /// `CREATE social:1 = { … }` the obvious spelling and keeps the declared
+    /// engines symmetrical: `DEFINE VECTOR embeddings` is written into as
+    /// `embeddings`, and now `DEFINE GRAPH social` is written into as `social`.
+    ///
+    /// The two names do not collide because [`qualify`] reserves a name under
+    /// its **level**, so `graph:<ns>/<db>/social` and `table:<ns>/<db>/social`
+    /// are separate reservations. That same reservation is load-bearing a second
+    /// time: it is what guarantees the graph's node collection is the *one*
+    /// member that can carry the graph's name, which is how [`Self::drop_graph`]
+    /// tells it apart from a table the caller attached. A pre-existing table
+    /// called `social` therefore refuses this statement with `NameTaken` rather
+    /// than being silently adopted, and the graph row rolls back with it.
+    ///
+    /// A collection rather than a declared table, because the node shape is the
+    /// caller's to decide — `DEFINE FIELD … ON social` narrows it afterwards for
+    /// anyone who wants that, the same way it would on any other collection.
+    ///
+    /// [`qualify`]: tessari_storage::Catalog
     fn define_graph(
         &self,
         transaction: &mut Transaction<'_>,
@@ -1237,7 +1266,23 @@ impl Session<'_> {
         {
             return Ok(Outcome::Done);
         }
-        Catalog::new(transaction).create_graph(context.namespace, context.database, &name.text)?;
+        let graph = Catalog::new(transaction).create_graph(
+            context.namespace,
+            context.database,
+            &name.text,
+        )?;
+        self.define_table(
+            transaction,
+            name,
+            TableShape {
+                schemafull: false,
+                kind: TableKind::Collection,
+                identity: IdentityKind::default(),
+                graph: Some(graph.id),
+            },
+            if_not_exists,
+            span,
+        )?;
         Ok(Outcome::Done)
     }
 
@@ -1262,16 +1307,22 @@ impl Session<'_> {
                 name: name.text.clone(),
                 span,
             })?;
-        let members: Vec<_> = Catalog::new(transaction)
+        // The graph's own node collection is not a dependant — it is part of the
+        // structure being dropped, and it carries the graph's name because
+        // nothing else is allowed to. Counting it here would make every graph
+        // this store creates permanently undroppable, refused by a table the
+        // caller never declared and cannot name. That is the companion-table
+        // shape the bucket already found once; see `StatementKind::DropTable`.
+        let (own, attached): (Vec<_>, Vec<_>) = Catalog::new(transaction)
             .tables_in(context.namespace, context.database)?
             .into_iter()
             .filter(|table| table.graph == Some(id))
-            .collect();
-        if let Some(first) = members.first() {
+            .partition(|table| table.name == name.text);
+        if let Some(first) = attached.first() {
             return Err(Error::StillDepended {
                 depended: Depended::GraphByTable,
                 name: name.text.clone(),
-                count: members.len(),
+                count: attached.len(),
                 first: first.name.clone(),
                 span,
             });
@@ -1289,6 +1340,9 @@ impl Session<'_> {
                 first: first.name.clone(),
                 span,
             });
+        }
+        for table in own {
+            Catalog::new(transaction).drop_table(table.id)?;
         }
         Catalog::new(transaction).drop_graph(id)?;
         Ok(Outcome::Done)
@@ -1655,7 +1709,15 @@ impl Session<'_> {
         Ok(outcome)
     }
 
-    /// `DROP VECTOR embeddings` — the store, its records and its index.
+    /// `DROP VECTOR embeddings` — the store's definition, its field and its
+    /// index declaration.
+    ///
+    /// **Not its records.** This calls [`Catalog::drop_table`], which removes the
+    /// catalog rows and does not reach what is stored under them — the rule every
+    /// drop in this language follows, and the reason there is no `CASCADE`. The
+    /// summary line said "its records" until it was read against the code; a
+    /// wrong sentence here is worse than a wrong one in the manual, because the
+    /// next person to reason about the statement reads it and stops checking.
     ///
     /// Refuses a table that is not one, rather than dropping it. The two words
     /// name different things even where they would remove the same rows, and a
@@ -1759,7 +1821,9 @@ impl Session<'_> {
         Ok(outcome)
     }
 
-    /// `DROP GEO places` — the store, its records and its index.
+    /// `DROP GEO places` — the store's definition, its geometry field and its
+    /// spatial index declaration, and not its records; see
+    /// [`Session::drop_vector`] for why the distinction is written down.
     ///
     /// Refuses a table that is not one, for the reason [`Session::drop_vector`]
     /// does: the words name different things even where they would remove the

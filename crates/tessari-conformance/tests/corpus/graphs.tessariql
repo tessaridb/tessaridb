@@ -116,13 +116,32 @@ DEFINE TABLE mentions EDGE FROM users TO nowhere;
 RELATE users:1->mentions->posts:1;
 --- expect: error Unknown
 
---- case: a graph is an object the store holds
+--- case: a graph is an object the store holds, and a place to put records
 DEFINE GRAPH social;
 --- expect: ok
 
---- case: a graph with no members reports rather than refusing
+--- case: a graph just declared already lists its own node collection
 INFO FOR GRAPH social;
 --- expect: ok
+
+--- case: records go into the graph itself, with no table declared by the caller
+CREATE social:1 = { name: 'ada', team: 'core' };
+CREATE social:2 = { name: 'grace', team: 'core' };
+--- expect: ok
+
+--- case: and are read back the way any other table's records are
+SELECT * FROM social WHERE team = 'core';
+--- expect: rows 2
+
+--- case: a graph's own record is updated in place
+UPDATE social:1 SET team = 'edge';
+SELECT * FROM social WHERE team = 'core';
+--- expect: rows 1
+
+--- case: and deleted
+DELETE social:2;
+SELECT * FROM social;
+--- expect: rows 1
 
 --- case: a table declares which graph it belongs to
 DEFINE TABLE person (name string) IN social;
@@ -145,10 +164,14 @@ SELECT * FROM ghost;
 DROP GRAPH social;
 --- expect: error StillDepended
 
---- case: and succeeds once nothing does
+--- case: and succeeds once nothing the caller attached does
 DROP TABLE person;
 DROP GRAPH social;
 --- expect: ok
+
+--- case: the graph's own collection went with it, rather than outliving it
+SELECT * FROM social;
+--- expect: error Unknown
 
 --- case: asking about a graph that was never declared refuses
 INFO FOR GRAPH social;

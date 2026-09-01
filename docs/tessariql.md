@@ -1071,29 +1071,52 @@ held in the order the endpoint index already used.
 `INFO FOR TABLE follows` reports the declaration under an `endpoints` key — the
 two tables and the order — beside the markers every table reports.
 
-### A graph, and the tables that belong to it
+### A graph, and the records it holds
 
 ```
 DEFINE GRAPH social;
+CREATE social:1 = { name: 'ada', team: 'core' };
+SELECT * FROM social WHERE team = 'core';
+DELETE social:1;
+```
+
+A graph is an **object**, and it is also **a place to put records**. Without the
+word, "the social graph" is a fact somebody holds in their head about which
+tables are related: nothing enumerates it, nothing drops it, and nothing can be
+asked a question about it. `DEFINE GRAPH` makes it a thing the store holds —
+which is what a bounded walk needs a boundary of, and what a question about the
+whole needs to name.
+
+**No table is declared above, because the word declares one.** `DEFINE GRAPH
+social` creates the graph *and* the collection its nodes live in, under the
+graph's own name — the shape `DEFINE VECTOR` and `DEFINE GEO` already take, run
+through the same code the long spellings run through. The nodes are ordinary
+records: `CREATE`, `SELECT`, `UPDATE`, `DELETE`, indexes and grants all reach
+them as they reach any other table's. A declared engine you cannot write a record
+into would be a label rather than a store.
+
+A table that already exists joins the graph rather than being replaced by it, and
+that is an option rather than the route in:
+
+```
 DEFINE TABLE person (name string) IN social;
 DEFINE TABLE company (name string) IN social;
 INFO FOR GRAPH social;
 ```
 
-A graph is an **object**. Without one, "the social graph" is a fact somebody
-holds in their head about which tables are related: nothing enumerates it,
-nothing drops it, and nothing can be asked a question about it. `DEFINE GRAPH`
-makes it a thing the store holds, which is what a bounded walk needs a boundary
-of and what a question about the whole needs to name.
-
-A node kind is an ordinary table, and `IN` is the whole of the difference. It is
-selected from, inserted into, indexed and granted on exactly as any other table
-is — so membership is a clause rather than a second word for a table.
+A node kind added that way is an ordinary table, and `IN` is the whole of the
+difference. It is selected from, inserted into, indexed and granted on exactly as
+any other table is — so membership is a clause rather than a second word for a
+table.
 
 `INFO FOR GRAPH social` answers with the graph's name and the tables that belong
-to it. A graph with no members answers with an empty list: it exists, and the
-first thing anyone does after declaring one should not read as a failure. A graph
-that was never declared refuses, which is the different question.
+to it. A graph that has just been declared already lists **one** — its own node
+collection — so an empty `tables` list is not a state this statement produces. A
+graph that was never declared refuses, which is the different question.
+
+The graph and its collection may share a name because a name is reserved under
+its kind. That same reservation is why a table already called `social` refuses
+`DEFINE GRAPH social` rather than being quietly adopted.
 
 The word that made the graph is the word that removes it:
 
@@ -1101,9 +1124,15 @@ The word that made the graph is the word that removes it:
 DROP GRAPH social;
 ```
 
-It is refused while any table still belongs to the graph, and names one.
-Dropping anyway would leave every member pointing at a graph the store no longer
-has, and that surfaces later, as a walk that finds nothing, rather than now.
+It takes the graph's **own collection** with it: that collection is part of the
+structure rather than something depending on it, and a graph that could not be
+dropped without first dropping a table nobody declared would never be droppable
+at all.
+
+It is still refused while a table **you** attached still belongs to the graph,
+and names one. Dropping anyway would leave every member pointing at a graph the
+store no longer has, and that surfaces later, as a walk that finds nothing,
+rather than now.
 
 A graph is scoped to its database, so two tenants may each keep a `social` and
 neither shadows the other.

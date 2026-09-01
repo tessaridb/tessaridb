@@ -319,10 +319,17 @@ fn a_graph_lists_its_edge_kinds_beside_its_node_tables_and_not_among_them() {
     // Separate keys, because they are separate things: nothing can select from an
     // edge kind, and a report that folded it in with the tables would invite a
     // reader to try.
+    //
+    // `org` is in the list beside the two tables the fixture attached, and it is
+    // the graph's own node collection — declared by `DEFINE GRAPH org` itself,
+    // under the graph's own name. It belongs here for the reason the other two
+    // do: it is a table records can be selected from, and a report that hid it
+    // would describe a graph the caller cannot write into.
     assert_eq!(
         fields.get("tables"),
         Some(&Value::Array(vec![
             Value::from("company"),
+            Value::from("org"),
             Value::from("person"),
         ]))
     );
