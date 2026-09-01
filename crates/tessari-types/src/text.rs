@@ -442,9 +442,26 @@ impl crate::time::Duration {
     pub fn to_literal(self) -> String {
         // The magnitude is written and the sign prefixed, so the units below do
         // not each have to know about it.
+        //
+        // Below zero the two fields are a FLOOR pair — negative seconds with a
+        // POSITIVE remainder added to them — so -500ms is (-1, 500_000_000) and
+        // its magnitude is one second less than the seconds', with the
+        // remainder taken the other way round. Reading the fields
+        // independently spells `-1s500ms` for that span, which is a different
+        // duration and loses another second every time it is read back.
         let negative = self.seconds() < 0;
-        let mut whole = self.seconds().unsigned_abs();
-        let nanos = self.nanos();
+        let (mut whole, nanos) = if negative && self.nanos() > 0 {
+            // Neither of these can saturate, and both are written that way
+            // rather than bare: the branch requires seconds below zero, so the
+            // magnitude is at least one, and the remainder is below a second by
+            // the type's own construction rule.
+            (
+                self.seconds().unsigned_abs().saturating_sub(1),
+                1_000_000_000_u32.saturating_sub(self.nanos()),
+            )
+        } else {
+            (self.seconds().unsigned_abs(), self.nanos())
+        };
         let mut text = String::new();
         if negative {
             text.push('-');
@@ -544,6 +561,32 @@ mod writing {
             (0, 1, "1ns"),
             (0, 1_500, "1us500ns"),
             (61, 250_000_000, "1m1s250ms"),
+        ];
+        for (seconds, nanos, expected) in cases {
+            let held = Duration::new(*seconds, *nanos).expect("a duration");
+            assert_eq!(held.to_literal(), *expected, "{seconds}s {nanos}ns");
+        }
+    }
+
+    #[test]
+    fn a_negative_span_is_written_as_its_own_magnitude() {
+        // A negative span is a FLOOR pair: the seconds are below zero and the
+        // remainder is a positive addend, so -500ms is (-1, 500_000_000) and
+        // its magnitude is one second LESS than the seconds' magnitude, with
+        // the remainder counted the other way round.
+        //
+        // Writing the two fields independently — `-`, then |seconds|, then the
+        // remainder — spells a different span, and the table above never caught
+        // it because its only negative rows carry no remainder, where the floor
+        // pair and the magnitude pair happen to agree.
+        let cases: &[(i64, u32, &str)] = &[
+            (-1, 500_000_000, "-500ms"),   // -0.5s
+            (-1, 999_999_999, "-1ns"),     // the smallest span below zero
+            (-1, 1, "-999ms999us999ns"),   // the carry reaches every unit
+            (-3, 500_000_000, "-2s500ms"), // -2.5s
+            (-5_401, 500_000_000, "-1h30m500ms"),
+            (-1, 0, "-1s"), // no remainder: unchanged, and still correct
+            (-3_600, 0, "-1h"),
         ];
         for (seconds, nanos, expected) in cases {
             let held = Duration::new(*seconds, *nanos).expect("a duration");
