@@ -189,7 +189,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 self.create_field(id, endpoint, FieldKind::Record, FieldShape::default())?;
             }
         }
-        if definition.kind == TableKind::Bucket {
+        if matches!(definition.kind, TableKind::Bucket(_)) {
             // The companion table the bytes live in. Its name carries a byte an
             // identifier cannot hold, so no statement can name it — the same
             // mechanism the catalog itself uses to be unreachable rather than

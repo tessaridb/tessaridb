@@ -151,7 +151,7 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
-    /// `DEFINE BUCKET media` — a table whose records are files.
+    /// `DEFINE BUCKET media MAX 5242880` — a table whose records are files.
     ///
     /// The bytes live in a companion table nothing can name, and the records
     /// here are metadata the store fills in (ADR-0011). Declared with its own
@@ -160,6 +160,20 @@ pub enum StatementKind {
     DefineBucket {
         /// The name to create.
         name: Name,
+        /// The largest file the bucket accepts, in bytes, if one was declared.
+        ///
+        /// Written as a plain count of bytes rather than as `5MB`, because
+        /// digits touching a letter are a **duration** in this grammar —
+        /// whatever the letter — so `5MB` lexes as a duration with a unit
+        /// nothing recognises and is refused. That rule is deliberate and
+        /// belongs to the whole language; changing it to give one clause a
+        /// shorter spelling would be a lexical change everywhere to buy a
+        /// convenience here.
+        ///
+        /// Optional, and absent means unbounded — so every bucket declared
+        /// before the clause existed keeps parsing and keeps its meaning, the
+        /// same contract the edge table's endpoint pair keeps.
+        max: Option<u64>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

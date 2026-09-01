@@ -496,8 +496,10 @@ impl Parser<'_> {
             Some(Keyword::Bucket) => {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
+                let name = self.name()?;
                 Ok(StatementKind::DefineBucket {
-                    name: self.name()?,
+                    name,
+                    max: self.byte_ceiling()?,
                     if_not_exists,
                 })
             }
@@ -808,6 +810,37 @@ impl Parser<'_> {
         }
         self.advance();
         Ok(held)
+    }
+
+    /// `MAX 5242880` after a bucket's name, when it is there.
+    ///
+    /// A count of **bytes**, written out. `5MB` is not a spelling this grammar
+    /// has: digits touching a letter are a duration whatever the letter is
+    /// (see the lexer), so `5MB` would be a duration with an unrecognised unit
+    /// and refused. Giving the clause a shorter spelling means changing that
+    /// rule for every literal in the language, which is a large change bought
+    /// for a small convenience.
+    ///
+    /// A zero refuses rather than clamping, for the reason `DEPTH 0` does: a
+    /// bucket that accepts no file is not a bucket with a ceiling, it is a
+    /// table nothing can be written to, and a caller who wrote `MAX 0` meant
+    /// something else.
+    fn byte_ceiling(&mut self) -> Result<Option<u64>> {
+        if !self.eat_word("max") {
+            return Ok(None);
+        }
+        let expected = "`MAX n` — the largest file the bucket takes, in bytes";
+        let Some(Token::Number(Number::Integer(held))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        // A negative and a zero refuse as the same thing, which they are: both
+        // say the bucket admits no file at all.
+        let held = u64::try_from(*held).unwrap_or(0);
+        if held == 0 {
+            return Err(self.error_here(expected));
+        }
+        self.advance();
+        Ok(Some(held))
     }
 
     /// `FROM users TO users ORDER BY at DESC` after `EDGE`, when it is there.

@@ -191,6 +191,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::UndeclaredField { refusal, .. } => store_kind(refusal),
         Error::Encoding(_) => "Encoding",
         Error::WriteWouldLeaveAHole { .. } => "WriteWouldLeaveAHole",
+        Error::FileAboveBucketCeiling { .. } => "FileAboveBucketCeiling",
         Error::NoSuchRouteToAssign { .. } => "NoSuchRouteToAssign",
         Error::NoNamespaceSelected { .. } => "NoNamespaceSelected",
         Error::NoDatabaseSelected { .. } => "NoDatabaseSelected",

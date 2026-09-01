@@ -77,7 +77,7 @@ impl Session<'_> {
         start: Option<u64>,
         bytes: &[u8],
     ) -> Result<Outcome> {
-        let (context, table) = self.bucket(transaction, target)?;
+        let (context, table, ceiling) = self.bucket(transaction, target)?;
         let path = text_identity(target.id.fixed(target.span)?, target.span)?;
         let chunks = self.chunk_table(transaction, &context, table, target.span)?;
         let id = target.id.fixed(target.span)?.clone();
@@ -125,6 +125,26 @@ impl Session<'_> {
                 spliced
             }
         };
+
+        // Checked here rather than against `bytes`, and that placement is the
+        // whole of the clause. Both branches above end holding the file as it
+        // will be, so one comparison covers a whole-file write and a ranged one
+        // — and the ranged one is the case that matters: a splice into an
+        // existing file grows it past the ceiling while no single write is
+        // anywhere near the ceiling, so a check on the bytes handed in would
+        // pass every time and the limit would hold only against callers who
+        // were not going to exceed it anyway.
+        if let Some(ceiling) = ceiling {
+            let size = u64::try_from(held.len()).unwrap_or(u64::MAX);
+            if size > ceiling {
+                return Err(Error::FileAboveBucketCeiling {
+                    path: path.to_owned(),
+                    size,
+                    ceiling,
+                    span: target.span,
+                });
+            }
+        }
 
         let mut ordinal: u32 = 0;
         for part in held.chunks(CHUNK) {
@@ -217,7 +237,8 @@ impl Session<'_> {
         start: Option<u64>,
         limit: Option<u64>,
     ) -> Result<Outcome> {
-        let (context, table) = self.bucket(transaction, target)?;
+        // A read has no ceiling to answer to: the bytes are already inside one.
+        let (context, table, _) = self.bucket(transaction, target)?;
         let path = text_identity(target.id.fixed(target.span)?, target.span)?;
         let address = RecordAddress::new(
             context.namespace,
@@ -434,16 +455,20 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
-    ) -> Result<(Context, TableId)> {
+    ) -> Result<(Context, TableId, Option<u64>)> {
         let (context, table) = self.resolve_table(transaction, &target.table)?;
         let definition = Catalog::new(transaction).table(table)?;
-        if !definition.is_some_and(|found| found.is_bucket()) {
+        let Some(definition) = definition.filter(|found| found.is_bucket()) else {
             return Err(Error::NotABucket {
                 table: target.table.name.text.clone(),
                 span: target.span,
             });
-        }
-        Ok((context, table))
+        };
+        // The ceiling comes back with the table because this is the one place
+        // that already holds the definition; reading it again at the write
+        // would be a second catalog lookup to recover a field this call threw
+        // away.
+        Ok((context, table, definition.byte_ceiling()))
     }
 
     /// The table a bucket's chunks live in.

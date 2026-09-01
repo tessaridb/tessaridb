@@ -280,6 +280,26 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// A write that would leave a file larger than its bucket accepts.
+    ///
+    /// Reported against the size the file **would end up** being rather than
+    /// the bytes the statement carried, because a ranged write reaches the
+    /// ceiling by splicing — and a message naming the splice would be naming
+    /// the smaller of the two numbers the caller needs.
+    #[error(
+        "writing {path} would leave {size} bytes: the bucket takes at most {ceiling} (at {span})"
+    )]
+    FileAboveBucketCeiling {
+        /// The file's path.
+        path: String,
+        /// How long the file would have been.
+        size: u64,
+        /// The largest file the bucket accepts.
+        ceiling: u64,
+        /// Where the statement is.
+        span: tessari_ql::Span,
+    },
+
     /// A backup could not be written.
     ///
     /// Its own variant rather than a wrapped store error, because the failures

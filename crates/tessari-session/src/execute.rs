@@ -485,13 +485,14 @@ impl Session<'_> {
             } => self.delete_where(transaction, table, condition, *limit),
             StatementKind::DefineBucket {
                 name,
+                max,
                 if_not_exists,
             } => self.define_table(
                 transaction,
                 name,
                 TableShape {
                     schemafull: false,
-                    kind: TableKind::Bucket,
+                    kind: TableKind::Bucket(*max),
                     identity: IdentityKind::default(),
                     graph: None,
                 },

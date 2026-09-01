@@ -3859,6 +3859,31 @@ spelling per thing. A write that would begin past the end of the file is
 **refused**: zero-filling the gap would be the store inventing bytes nobody
 wrote, and a real hole is a sparse-file feature nobody has asked for.
 
+**The largest file a bucket takes**, when it should have one:
+
+```
+DEFINE BUCKET avatars MAX 5242880;
+```
+
+A count of **bytes**, written out. `5MB` is not a spelling this language has —
+digits touching a letter are a duration whatever the letter is, so `5MB` is a
+duration with a unit nothing recognises and is refused by the lexer. The clause
+is optional and its absence means unbounded, which is what every bucket declared
+before it existed is.
+
+The ceiling is checked against the file **as it will be** rather than against the
+bytes a statement carries, which is the only placement that means anything: a
+ranged write splices into bytes already stored, so a file grows past the ceiling
+while no single write is anywhere near it. A limit checked against the statement
+would hold only against callers who were not going to exceed it anyway.
+
+There is no clause narrowing a bucket by content **type**. The store has no
+content type for a file — a file's record holds its size, its chunk count and
+when it was written — so such a clause could only enforce a claim the caller made
+about the caller's own bytes, which is the assertion this kind refuses `CREATE`,
+`UPDATE` and `SET` in order to avoid. Deciding a type by reading the bytes is a
+real feature and is named in §8 rather than approximated here.
+
 **A file is a record, and its bytes are records too.** That sentence is the whole
 design, and everything below it follows rather than being built:
 
@@ -4651,6 +4676,7 @@ be, because it is confined to the run its fixed values name.
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
+| a bucket narrowed by **content type** — `HOLDS image/png` | the store has no content type for a file. A file's record holds its size, its chunk count and when it was written, and nothing anywhere reads the bytes to decide what they are — so the clause could only enforce the caller's own claim about the caller's own bytes, which is the assertion §6a refuses `CREATE`, `UPDATE` and `SET` in order to avoid, wearing a constraint's clothes. The honest version detects the type by reading the leading bytes against a table of signatures, which is real work with a real failure mode of its own: plain text, CSV and SVG have no signature, and a `HOLDS text/plain` that cannot be checked is worse than no clause at all. The ceiling shipped without it because `MAX` compares against a number the store computes itself. §6a |
 | a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the wall a **whole-file** `READ` still meets even now that a ranged one exists, and worth crossing once for both. §7a |
 | a backup of **one namespace** | the file is the log, and the log is the store; selecting part of it means replaying with a filter, which is a different reader and a different restore story. §7a |
 | an index on a **later** field of a composite index, with nothing fixing the fields before it | the entries for one value of a later field are scattered across every value of the fields ahead of it, so reaching them means visiting each leading run's slice in turn. A different traversal of the same key order, and worth building when a read wants it rather than in anticipation. Its sibling — a range on a later field **under equalities fixing every field before it** — is no longer here: it walks one contiguous run and is served. §4 |

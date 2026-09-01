@@ -14,7 +14,7 @@ compares carries no pre-release suffix.
 
 ## 0.0.2-alpha — 2026-08-27
 
-Unreleased. 1015 conformance cases define the language and run in the build.
+Unreleased. 1022 conformance cases define the language and run in the build.
 
 ### Breaking — a table is not a document
 
@@ -41,6 +41,19 @@ became a reserved word; a field or table named `schemaless` needs renaming.
 
 ### Added
 
+- **`DEFINE BUCKET media MAX n`** — the largest file a bucket accepts, in bytes.
+  Optional, and absent means unbounded, so every bucket declared before the
+  clause existed keeps its meaning. Written as a count rather than as `5MB`
+  because digits touching a letter are a duration in this language whatever the
+  letter is, and giving one clause a shorter spelling would be a lexical change
+  everywhere. The ceiling is compared against the file **as it will be** rather
+  than against the bytes a statement carries, which is the only placement that
+  holds: a ranged write splices into stored bytes, so a file passes the ceiling
+  while no single write is near it. There is no `HOLDS` clause narrowing a
+  bucket by content type — the store has no content type for a file, so such a
+  clause would enforce the caller's claim about the caller's own bytes, which is
+  the assertion a bucket refuses `CREATE`, `UPDATE` and `SET` to avoid; the
+  absence is recorded in the language reference §8.
 - **`APPROXIMATE EFFORT n`** — a read says how many candidates the walk may keep
   in hand. Larger explores more, costs more, and finds more of the true nearest;
   the engine's own budget applies when the clause is left out. It belongs to the

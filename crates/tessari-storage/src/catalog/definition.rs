@@ -40,6 +40,7 @@ const FIELD_ORDER: &str = "order";
 const FIELD_DESCENDING: &str = "descending";
 const FIELD_IDENTITY: &str = "identity";
 const FIELD_GRAPH: &str = "graph";
+const FIELD_CEILING: &str = "ceiling";
 const FIELD_DIMENSION: &str = "dimension";
 const FIELD_DISTANCE: &str = "distance";
 
@@ -124,7 +125,20 @@ impl TableDefinition {
     /// Whether the table holds files.
     #[must_use]
     pub fn is_bucket(&self) -> bool {
-        self.kind == TableKind::Bucket
+        matches!(self.kind, TableKind::Bucket(_))
+    }
+
+    /// The largest file this bucket accepts, in bytes, when it declared one.
+    ///
+    /// `None` on a bucket with no `MAX`, and on everything that is not a
+    /// bucket. The two answer alike because the caller asking is a write path
+    /// deciding whether to refuse, and neither has a ceiling to refuse against.
+    #[must_use]
+    pub fn byte_ceiling(&self) -> Option<u64> {
+        match self.kind {
+            TableKind::Bucket(max) => max,
+            _ => None,
+        }
     }
 
     /// Whether the declaration that created this was `DEFINE COLLECTION`.
@@ -221,7 +235,7 @@ impl TableDefinition {
             ),
             (
                 FIELD_BUCKET.to_owned(),
-                Value::Bool(self.kind == TableKind::Bucket),
+                Value::Bool(matches!(self.kind, TableKind::Bucket(_))),
             ),
             (
                 FIELD_COLLECTION.to_owned(),
@@ -257,6 +271,13 @@ impl TableDefinition {
         if let TableKind::Vector(declared) = &self.kind {
             fields.insert(FIELD_VECTOR.to_owned(), declared.to_value());
         }
+        // Written only by the bucket that declared one, on the endpoint pair's
+        // contract rather than the flags': a ceiling nobody declared is absent
+        // rather than zero, and zero is the one value that would have to mean
+        // "unbounded" while reading as "accepts nothing".
+        if let TableKind::Bucket(Some(max)) = self.kind {
+            fields.insert(FIELD_CEILING.to_owned(), byte_count(max));
+        }
         Value::Object(fields)
     }
 
@@ -291,6 +312,7 @@ impl TableDefinition {
                     Some(value) => Some(VectorDeclaration::from_value(value)?),
                     None => None,
                 },
+                ceiling(fields)?,
             )?,
             identity: identity_kind(fields, "table")?,
             graph: match fields.get(FIELD_GRAPH) {
@@ -360,7 +382,20 @@ pub enum TableKind {
     /// restricted: listing a bucket is `SELECT * FROM media`, a query rather
     /// than an API call, which is the point of a bucket being a table at all
     /// (ADR-0011).
-    Bucket,
+    ///
+    /// The `u64` is the largest file the bucket accepts, in bytes, when one was
+    /// declared. It rides **on** the kind rather than beside it for the reason
+    /// [`TableKind::Edge`]'s pair does: a pair of fields would make "carries a
+    /// ceiling but is not a bucket" representable, and the kind exists to
+    /// abolish exactly that state. Optional inside the variant because a bucket
+    /// with no ceiling is still a bucket — unlike a vector store, which without
+    /// a width is not a vector store.
+    ///
+    /// It is a count of bytes and not a size literal because the language has
+    /// no size literal: digits touching a letter are a duration whatever the
+    /// letter is, so `5MB` is a duration with an unrecognised unit. The grammar
+    /// therefore reads `MAX 5242880`.
+    Bucket(Option<u64>),
     /// Edges: records carrying `out` and `in` record references, each with an
     /// index — `DEFINE TABLE … EDGE`.
     ///
@@ -549,17 +584,23 @@ impl TableKind {
         geo: bool,
         endpoints: Option<EdgeDeclaration>,
         vector: Option<VectorDeclaration>,
+        ceiling: Option<u64>,
     ) -> Result<Self> {
-        match (edge, bucket, collection, geo, endpoints, vector) {
-            (false, false, false, false, None, None) => Ok(Self::Table),
-            (true, false, false, false, endpoints, None) => Ok(Self::Edge(endpoints)),
-            (false, true, false, false, None, None) => Ok(Self::Bucket),
-            (false, false, true, false, None, None) => Ok(Self::Collection),
-            (false, false, false, true, None, None) => Ok(Self::Geo),
+        match (edge, bucket, collection, geo, endpoints, vector, ceiling) {
+            (false, false, false, false, None, None, None) => Ok(Self::Table),
+            (true, false, false, false, endpoints, None, None) => Ok(Self::Edge(endpoints)),
+            // The ceiling rides through with the flag, so a bucket declared
+            // before the clause existed arrives with `None` and is the
+            // unbounded bucket it has always been. A ceiling on any other kind
+            // falls to the refusal below, because nothing else has a file to
+            // measure it against.
+            (false, true, false, false, None, None, ceiling) => Ok(Self::Bucket(ceiling)),
+            (false, false, true, false, None, None, None) => Ok(Self::Collection),
+            (false, false, false, true, None, None, None) => Ok(Self::Geo),
             // A vector store sets no flag, so it arrives here as a plain table
             // carrying a declaration. Any flag beside that declaration is two
             // kinds claimed at once and is refused with the rest.
-            (false, false, false, false, None, Some(declared)) => Ok(Self::Vector(declared)),
+            (false, false, false, false, None, Some(declared), None) => Ok(Self::Vector(declared)),
             _ => Err(Error::CatalogMalformed {
                 entity: "table",
                 field: "kind",
@@ -868,6 +909,39 @@ pub(crate) fn number(id: u32) -> Value {
     Value::Number(Number::Integer(i64::from(id)))
 }
 
+/// A byte count as it is stored.
+///
+/// Saturating rather than fallible, and the saturation is unreachable: the only
+/// way a ceiling enters the catalog is a `MAX n` literal, and this language's
+/// whole numbers are `i64`, so a value past `i64::MAX` has no spelling. A
+/// `Result` here would be a branch no input can take.
+fn byte_count(value: u64) -> Value {
+    Value::Number(Number::Integer(i64::try_from(value).unwrap_or(i64::MAX)))
+}
+
+/// The byte ceiling a table's entry carries, when it carries one.
+///
+/// Absent reads as no ceiling rather than as a fault, which is what every entry
+/// written before the clause existed is. Present-but-not-a-positive-count is a
+/// fault, because a stored zero would have to mean either "unbounded" or
+/// "accepts nothing" and the entry does not say which.
+fn ceiling(fields: &BTreeMap<String, Value>) -> Result<Option<u64>> {
+    let malformed = || Error::CatalogMalformed {
+        entity: "table",
+        field: FIELD_CEILING,
+        found: "not a whole number of bytes above zero",
+    };
+    match fields.get(FIELD_CEILING) {
+        None => Ok(None),
+        Some(Value::Number(Number::Integer(held))) => u64::try_from(*held)
+            .ok()
+            .filter(|held| *held > 0)
+            .map(Some)
+            .ok_or_else(malformed),
+        Some(_) => Err(malformed()),
+    }
+}
+
 /// A record counter as it is stored.
 ///
 /// The ceiling belongs to the key grammar rather than to this function: a record
@@ -1054,7 +1128,10 @@ mod tests {
             // Deliberately not the default here either, for the same reason the
             // identity below is not: a kind that round trips through three flags
             // is only proven by a kind that is not the one an absent flag gives.
-            kind: TableKind::Bucket,
+            // The ceiling is present for that same reason once more — an absent
+            // one round trips through a field that was never written, which
+            // proves the default rather than the encoding.
+            kind: TableKind::Bucket(Some(5 * 1024 * 1024)),
             // Deliberately not the default: a field that never travels round
             // trips perfectly as long as both ends agree on what it is when
             // absent, which is exactly the bug this assertion is for.

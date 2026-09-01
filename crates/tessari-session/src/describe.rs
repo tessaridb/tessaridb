@@ -196,6 +196,13 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
             "COLLECTION"
         };
         let _ = write!(script, "DEFINE {word} {name}");
+        // Without this the script re-executes happily and the bucket comes back
+        // unbounded — the failure a round trip exists to catch, and a silent one
+        // because nothing about the restored store is in an error state until a
+        // file the original would have refused is accepted.
+        if let Some(ceiling) = definition.byte_ceiling() {
+            let _ = write!(script, " MAX {ceiling}");
+        }
         if !definition.is_bucket() {
             write_identity(script, definition);
         }

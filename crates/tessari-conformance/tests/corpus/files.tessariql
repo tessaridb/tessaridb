@@ -129,3 +129,31 @@ READ media:'/range.bin';
 --- case: and one that would leave a hole is refused
 PUT media:'/range.bin' START 500 = 0xff;
 --- expect: error WriteWouldLeaveAHole
+
+--- case: a bucket may declare the largest file it takes
+DEFINE BUCKET small MAX 8;
+--- expect: ok
+
+--- case: written in bytes, because digits touching a letter are a duration here
+DEFINE BUCKET wrong MAX 8MB;
+--- expect: error InvalidDuration
+
+--- case: a ceiling of nothing is a table nobody can write to, so it is refused
+DEFINE BUCKET zero MAX 0;
+--- expect: error UnexpectedToken
+
+--- case: a file inside the ceiling is written
+PUT small:'/tiny.bin' = 0x0001020304050607;
+--- expect: ok
+
+--- case: and one above it is refused
+PUT small:'/big.bin' = 0x000102030405060708;
+--- expect: error FileAboveBucketCeiling
+
+--- case: a splice that would grow a file past the ceiling is refused too
+PUT small:'/tiny.bin' START 8 = 0xff;
+--- expect: error FileAboveBucketCeiling
+
+--- case: and the refused splice left the file as it was
+READ small:'/tiny.bin';
+--- expect: value 0x0001020304050607
