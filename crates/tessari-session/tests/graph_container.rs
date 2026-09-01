@@ -451,3 +451,77 @@ fn a_table_already_holding_the_graphs_name_refuses_the_declaration_whole() {
     };
     assert_eq!(*entity, "graph");
 }
+
+#[test]
+fn a_graphs_own_collection_is_not_a_table_the_caller_can_drop() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE GRAPH social;\nCREATE social:1 = { name: 'ada' };")
+        .unwrap();
+
+    // One statement was enough to undo the node space: `DROP TABLE social`
+    // removed the collection and left the graph declared, still answering
+    // `INFO FOR GRAPH`, and able to hold no record. Nothing was in an error
+    // state, which is why the refusal has to exist rather than be documented.
+    let error = session.run("DROP TABLE social;").unwrap_err();
+    let Error::TableBelongsToGraph { table, graph, .. } = &error else {
+        panic!("{error}");
+    };
+    assert_eq!(table, "social");
+    assert_eq!(graph, "social");
+
+    // The message names the statement to write instead, which is what makes the
+    // refusal a signpost rather than a wall.
+    assert!(error.to_string().contains("DROP GRAPH social"), "{error}");
+
+    // And the collection is still there afterwards — a refusal that had already
+    // dropped the table would be the same defect with a message on top.
+    assert_eq!(rows(&mut session, "SELECT * FROM social;"), 1);
+}
+
+#[test]
+fn a_table_the_caller_attached_still_drops_on_its_own() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE GRAPH social;\n\
+             DEFINE TABLE person (name string) IN social;",
+        )
+        .unwrap();
+
+    // `IN` is a clause the caller wrote and may withdraw. Refusing this would
+    // make the graph's boundary a trap rather than a structure, and the
+    // partition in `drop_graph` already draws the same line the other way.
+    session.run("DROP TABLE person;").unwrap();
+
+    // The graph outlives it, and now holds only its own collection.
+    session.run("INFO FOR GRAPH social;").unwrap();
+    session.run("DROP GRAPH social;").unwrap();
+}
+
+#[test]
+fn the_refusal_reads_the_graphs_name_rather_than_assuming_the_tables() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "DEFINE GRAPH social;\n\
+             DEFINE TABLE person (name string) IN social;",
+        )
+        .unwrap();
+
+    // The check is `table.graph names a graph whose name is this table's name`,
+    // and both halves are load-bearing. A table attached with `IN` carries the
+    // same `graph` id and differs only by name, so a check that stopped at the
+    // id would refuse this drop too — which the test above proves it does not.
+    // Asserted here as its own claim so a future change to name reservation,
+    // which is what makes the name test sound, fails loudly rather than
+    // quietly widening the refusal.
+    let error = session.run("DROP TABLE social;").unwrap_err();
+    let Error::TableBelongsToGraph { table, graph, .. } = &error else {
+        panic!("{error}");
+    };
+    assert_eq!(table, graph);
+}

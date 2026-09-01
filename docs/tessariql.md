@@ -1134,6 +1134,15 @@ and names one. Dropping anyway would leave every member pointing at a graph the
 store no longer has, and that surfaces later, as a walk that finds nothing,
 rather than now.
 
+The rule runs the other way too: `DROP TABLE social` is **refused** on a graph's
+own collection, and the refusal names `DROP GRAPH social` as the statement to
+write instead. Allowing it would leave a graph that is still declared, still
+answers `INFO FOR GRAPH`, and can hold no record — with nothing anywhere in an
+error state, and no statement that puts the collection back, since `DEFINE GRAPH
+social` would refuse a graph that already exists. A table you attached with `IN`
+is a different thing and still drops on its own: that clause is one you wrote and
+may withdraw.
+
 A graph is scoped to its database, so two tenants may each keep a `social` and
 neither shadows the other.
 

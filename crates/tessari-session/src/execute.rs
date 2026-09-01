@@ -272,6 +272,23 @@ impl Session<'_> {
                 // dropping the bucket alone orphans it forever. The corpus found
                 // this by redefining a bucket it had just dropped and being told
                 // the chunk table's name was taken.
+                // A graph's own node collection is the same shape as the chunk
+                // table below — a table the caller never declared, carrying a
+                // name the caller did not choose — except that this one IS
+                // nameable, so it is refused by name rather than protected by
+                // an unspellable one. `DROP GRAPH` is the statement that removes
+                // it; see `Error::TableBelongsToGraph`.
+                if let Some(definition) = Catalog::new(transaction).table(id)?
+                    && let Some(graph) = definition.graph
+                    && let Some(graph) = Catalog::new(transaction).graph(graph)?
+                    && graph.name == definition.name
+                {
+                    return Err(Error::TableBelongsToGraph {
+                        table: definition.name,
+                        graph: graph.name,
+                        span,
+                    });
+                }
                 let chunks = Catalog::new(transaction)
                     .table(id)?
                     .filter(|definition| definition.is_bucket())

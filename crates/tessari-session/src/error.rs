@@ -502,6 +502,35 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `DROP TABLE` naming a graph's own node collection.
+    ///
+    /// Refused rather than allowed, and the refusal is what makes the node
+    /// collection part of the graph rather than something the graph depends on.
+    /// `DEFINE GRAPH g` creates it, under the graph's own name, so the caller
+    /// never declared it; dropping it alone would leave a graph that is still
+    /// declared, still answers `INFO FOR GRAPH`, and can hold no record — the
+    /// state the collection exists to remove, reachable in one statement with
+    /// nothing anywhere in an error state. There is no statement that puts it
+    /// back, because `DEFINE GRAPH g` would refuse: the graph is already there.
+    ///
+    /// The refusal names `DROP GRAPH` rather than only saying no, which is what
+    /// makes it a signpost. A table the caller attached with `IN` is a different
+    /// thing and still drops freely: that clause is one the caller wrote and may
+    /// withdraw.
+    #[error(
+        "`{table}` is graph `{graph}`'s own node collection, not a table of its \
+         own (at {span}) — write `DROP GRAPH {graph}` to remove the graph and \
+         everything it holds"
+    )]
+    TableBelongsToGraph {
+        /// The table as written.
+        table: String,
+        /// The graph whose collection it is.
+        graph: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// An edge kind named an endpoint table that does not belong to its graph.
     ///
     /// Refused rather than allowed, because this refusal is what **bounds** a

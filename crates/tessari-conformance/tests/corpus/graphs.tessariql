@@ -164,6 +164,10 @@ SELECT * FROM ghost;
 DROP GRAPH social;
 --- expect: error StillDepended
 
+--- case: and the graph's own collection is refused a DROP TABLE of its own
+DROP TABLE social;
+--- expect: error TableBelongsToGraph
+
 --- case: and succeeds once nothing the caller attached does
 DROP TABLE person;
 DROP GRAPH social;

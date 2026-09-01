@@ -252,6 +252,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::NotAlone { .. } => "NotAlone",
         Error::AnchorGone { .. } => "AnchorGone",
         Error::StillDepended { .. } => "StillDepended",
+        Error::TableBelongsToGraph { .. } => "TableBelongsToGraph",
         _ => "Unnamed",
     }
 }
