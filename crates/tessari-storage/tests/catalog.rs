@@ -265,6 +265,58 @@ fn a_reader_at_an_older_snapshot_does_not_see_a_table_defined_after_it_began() {
 }
 
 #[test]
+fn a_reader_at_an_older_snapshot_sees_a_table_altered_after_it_began_as_it_was() {
+    // The other half of the property above, and the half that a schema cache
+    // would be free to break: a table that EXISTED when the reader began and
+    // was altered afterwards. Absence is conspicuous — a `None` where a table
+    // was expected fails loudly. A definition that is merely the WRONG VERSION
+    // decodes records against a shape nobody asked for and reports nothing.
+    let (_backend, store) = store();
+    let (_, _, table) = create_tree(&store, ("prod", "orders", "invoices"));
+    let table = tessari_types::TableId::new(table);
+
+    let mut older = store.begin().unwrap();
+    // Read once before the alteration, so this reader has already answered for
+    // the definition it is entitled to.
+    let as_it_began = Catalog::new(&mut older)
+        .table(table)
+        .unwrap()
+        .expect("the table was committed before this snapshot")
+        .schemafull;
+
+    let mut altering = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut altering);
+    assert!(
+        catalog.set_schemafull(table, !as_it_began).unwrap(),
+        "the alteration must have taken effect, or this test proves nothing"
+    );
+    altering.commit().unwrap();
+
+    // A second transaction sees the new definition, which is what makes the
+    // assertion below a statement about snapshots rather than about caching.
+    let mut newer = store.begin().unwrap();
+    assert_eq!(
+        Catalog::new(&mut newer)
+            .table(table)
+            .unwrap()
+            .expect("the table still exists")
+            .schemafull,
+        !as_it_began,
+        "a reader that began after the alteration sees it"
+    );
+
+    assert_eq!(
+        Catalog::new(&mut older)
+            .table(table)
+            .unwrap()
+            .expect("the table still exists at the older snapshot")
+            .schemafull,
+        as_it_began,
+        "the older reader must still see the definition as of its own snapshot"
+    );
+}
+
+#[test]
 fn an_index_is_created_on_a_table_and_found_by_it() {
     let (_backend, store) = store();
     let (_, _, table) = create_tree(&store, ("prod", "orders", "users"));
