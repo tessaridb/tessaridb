@@ -1086,10 +1086,15 @@ to it. A graph with no members answers with an empty list: it exists, and the
 first thing anyone does after declaring one should not read as a failure. A graph
 that was never declared refuses, which is the different question.
 
-`DROP GRAPH social` is refused while any table still belongs to it, and names
-one. Dropping anyway would leave every member pointing at a graph the store no
-longer has, and that surfaces later, as a walk that finds nothing, rather than
-now.
+The word that made the graph is the word that removes it:
+
+```
+DROP GRAPH social;
+```
+
+It is refused while any table still belongs to the graph, and names one.
+Dropping anyway would leave every member pointing at a graph the store no longer
+has, and that surfaces later, as a walk that finds nothing, rather than now.
 
 A graph is scoped to its database, so two tenants may each keep a `social` and
 neither shadows the other.
@@ -1124,9 +1129,14 @@ traversal leave the structure it was told to stay inside and still answer, with
 records the graph does not contain.
 
 An edge is identified by its endpoints, so relating the same pair twice replaces
-rather than doubles, and `DROP EDGE` removes the kind together with every entry
-it wrote. A graph refuses to be dropped while an edge kind still belongs to it,
-for the reason it refuses while a table does.
+rather than doubles. Removing the kind removes every entry it wrote with it:
+
+```
+DROP EDGE works_at;
+```
+
+A graph refuses to be dropped while an edge kind still belongs to it, for the
+reason it refuses while a table does.
 
 `DEFINE TABLE … EDGE` is unchanged and still available. It stores an edge as an
 ordinary record reached through an index, which is the right shape when edges are
