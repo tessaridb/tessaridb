@@ -354,7 +354,7 @@ mod tests {
 
     use std::{collections::BTreeMap, ops::Bound};
 
-    use tessari_types::ValueRange;
+    use tessari_types::{RecordId, RecordRef, TableId, ValueRange};
     use tessaridb::{Number, Value};
 
     use super::{Names, write};
@@ -469,5 +469,64 @@ mod tests {
             Value::Object(BTreeMap::from([("n".to_owned(), Value::from("x"))])),
         ]);
         assert_eq!(json(&nested), r#"[true,{"n":"x"}]"#);
+    }
+
+    #[test]
+    fn a_record_id_is_written_plainly_and_is_not_a_query_literal() {
+        // Specification §5.7.1, "A record id is written plainly, and is NOT a
+        // TessariQL literal": the id half is the id's own text, with no quoting
+        // and no escaping, and the section states the consequences it buys —
+        // `users:7` is the integer and the text `'7'` written identically, and a
+        // client **MUST NOT** parse this string back into a typed record id.
+        //
+        // Pinned here because the spelling looks like a defect from inside this
+        // crate and is not one. `RecordId::to_literal` exists for the CLI and for
+        // the places that do round-trip; reaching for it here would silently
+        // break a published surface, and this test is what says no. The four
+        // spellings below were exercised against a running node on `a3c22dd`.
+        let table = TableId::new(7);
+        let mut names = Names::new();
+        names.insert(table, "people".to_owned());
+        let spell = |id: RecordId| {
+            let mut out = String::new();
+            write(&mut out, &Value::Record(RecordRef { table, id }), &names);
+            out
+        };
+
+        assert_eq!(spell(RecordId::Int(1)), r#""people:1""#);
+        // Unquoted and unescaped, space and all — §5.7.1's `users:has space` row.
+        assert_eq!(spell(RecordId::from("ada smith")), r#""people:ada smith""#);
+        // Undivided: the id half drops the hyphens the value form carries, which
+        // §5.7.1 calls out as the row a client's uuid parser gets wrong.
+        assert_eq!(
+            spell(RecordId::Uuid([
+                0x01, 0x91, 0xf4, 0xe2, 0x1c, 0x3a, 0x7b, 0x4d, 0x8e, 0x5f, 0x6a, 0x7b, 0x8c, 0x9d,
+                0x0e, 0x1f
+            ])),
+            r#""people:0191f4e21c3a7b4d8e5f6a7b8c9d0e1f""#
+        );
+        // The mirrored row: bytes GAIN a `0x` the value form does not carry.
+        assert_eq!(
+            spell(RecordId::Bytes(vec![0x0a, 0x0b])),
+            r#""people:0x0a0b""#
+        );
+    }
+
+    #[test]
+    fn a_record_whose_table_cannot_be_named_is_visibly_not_a_name() {
+        // §5.7.1: `<record T:id>` with the brackets, where `T` is the table's
+        // numeric id. `<` cannot begin a table name, which is what lets a client
+        // detect the form. The specification's own example is `<record 7:1>`, and
+        // an empty `names` is exactly the dropped-table case that produces it.
+        let mut out = String::new();
+        write(
+            &mut out,
+            &Value::Record(RecordRef {
+                table: TableId::new(7),
+                id: RecordId::Int(1),
+            }),
+            &Names::new(),
+        );
+        assert_eq!(out, r#""<record 7:1>""#);
     }
 }
