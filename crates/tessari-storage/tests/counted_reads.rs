@@ -42,16 +42,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tessari_constants::{ORDERED_SCAN_BATCH_ENTRIES, RANGE_SCAN_BATCH_ENTRIES};
+use tessari_encoding::Direction;
 use tessari_encoding::encode_payload;
 use tessari_kv::{
     Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
     WriteBatch,
 };
 use tessari_storage::{
-    Catalog, FieldShape, IndexDefinition, IndexShape, RecordAddress, Store, TableShape,
+    Catalog, EDGE_IN, EDGE_OUT, EdgeKindDefinition, FieldShape, IndexDefinition, IndexShape,
+    RecordAddress, Store, TableShape,
 };
 use tessari_types::{
-    Analyzer, DatabaseId, FieldKind, Filter, NamespaceId, Path, RecordId, TableId, Value,
+    Analyzer, DatabaseId, FieldKind, Filter, NamespaceId, Path, RecordId, RecordRef, TableId, Value,
 };
 
 /// A backend that answers exactly as the one beneath it and says what it was
@@ -570,4 +572,152 @@ impl SearchFixture {
         }
         transaction.commit().unwrap();
     }
+}
+
+// ------------------------------------------------------------------------ C3
+
+/// A graph with one edge kind, and a hub whose degree the caller chooses.
+///
+/// Its own fixture rather than a method on the one above, because that one is
+/// built around an ordered index on a table of users and a graph needs a second
+/// table, a graph, an edge kind and its companion table. Sharing it would mean
+/// every case here paying for a graph it does not read.
+struct Hub {
+    counting: Arc<Counting>,
+    store: Store,
+    kind: EdgeKindDefinition,
+    people: TableId,
+    hub: RecordId,
+}
+
+impl Hub {
+    /// A hub joined to `degree` other records by edges of one kind.
+    fn of_degree(degree: usize) -> Self {
+        let counting = Counting::new();
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+        let mut transaction = store.begin().unwrap();
+        let mut catalog = Catalog::new(&mut transaction);
+        let namespace = catalog.create_namespace("prod").unwrap();
+        let database = catalog.create_database(namespace.id, "social").unwrap();
+        let people = catalog
+            .create_table(namespace.id, database.id, "person", TableShape::default())
+            .unwrap();
+        let edges = catalog
+            .create_table(namespace.id, database.id, "knows", TableShape::default())
+            .unwrap();
+        let graph = catalog
+            .create_graph(namespace.id, database.id, "social")
+            .unwrap();
+        let kind = catalog
+            .create_edge_kind(&graph, "knows", people.id, people.id, edges.id)
+            .unwrap();
+        transaction.commit().unwrap();
+
+        let hub = RecordId::from("hub");
+        let mut transaction = store.begin().unwrap();
+        for n in 0..degree {
+            let far = RecordId::from(format!("p{n:06}").as_str());
+            let mut fields = BTreeMap::new();
+            fields.insert(
+                EDGE_OUT.to_owned(),
+                Value::Record(RecordRef::new(people.id, hub.clone())),
+            );
+            fields.insert(
+                EDGE_IN.to_owned(),
+                Value::Record(RecordRef::new(people.id, far)),
+            );
+            transaction.put(
+                RecordAddress::new(
+                    namespace.id,
+                    database.id,
+                    edges.id,
+                    RecordId::from(format!("e{n:06}").as_str()),
+                ),
+                encode_payload(&Value::Object(fields)).into_bytes(),
+            );
+        }
+        transaction.commit().unwrap();
+
+        Self {
+            counting,
+            store,
+            kind,
+            people: people.id,
+            hub,
+        }
+    }
+
+    /// One hop out of the hub, counted from a standing start.
+    ///
+    /// The reset comes **after** `begin`, deliberately. Opening a transaction
+    /// reads the state it is a snapshot of, and that ask belongs to the
+    /// transaction rather than to the hop — counted here it would be a constant
+    /// term added to a figure whose whole claim is what the constant is. The
+    /// first draft reset before `begin` and measured two asks for one read.
+    fn hop(&self) -> (usize, usize, usize) {
+        let transaction = self.store.begin().unwrap();
+        self.counting.reset();
+        let found = transaction
+            .neighbours(&self.kind, self.people, &self.hub, Direction::Out)
+            .unwrap();
+        (
+            found.len(),
+            self.counting.round_trips(),
+            self.counting.entries(),
+        )
+    }
+}
+
+/// A hop is one range read, and stays one however wide the node is.
+///
+/// **This is C3, and it is a claim about the number of asks — never about the
+/// number of rows.** The answer holds one member per neighbour under every
+/// possible layout, so rows are proportional to degree and always will be. What
+/// separates the adjacency layout from the index probe it replaced is that the
+/// probe is followed by a read *per neighbour*: `1 + degree` asks against one.
+/// At depth three over a fanned-out node that is thousands of random reads.
+///
+/// Six records make the two indistinguishable, which is why no other test in
+/// this suite can make this assertion and why it is made by counting rather
+/// than by timing. Timing would turn an exact structural property into a noisy
+/// one and would vary with the machine.
+///
+/// The number that fails this is `1 + degree`.
+#[test]
+fn a_hop_costs_one_ask_however_many_neighbours_the_node_has() {
+    let narrow = Hub::of_degree(4);
+    let wide = Hub::of_degree(400);
+
+    let (narrow_found, narrow_asks, narrow_entries) = narrow.hop();
+    let (wide_found, wide_asks, wide_entries) = wide.hop();
+
+    assert_eq!(
+        narrow_found, 4,
+        "the narrow hub answered with the wrong count"
+    );
+    assert_eq!(
+        wide_found, 400,
+        "the wide hub answered with the wrong count"
+    );
+
+    // The claim. Equal, not merely sub-linear: the layout promises one range
+    // read over a contiguous prefix, and one is a number rather than a trend.
+    assert_eq!(
+        narrow_asks, wide_asks,
+        "a hundredfold wider node cost {wide_asks} asks against {narrow_asks}"
+    );
+    assert_eq!(narrow_asks, 1, "a hop should be exactly one range read");
+
+    // The inversion check, and it is not decoration. Without it the equality
+    // above passes when both hubs answer with nothing — two empty reads cost
+    // the same and prove no property at all. Rows are what must differ, because
+    // rows are the thing that legitimately grows with degree.
+    assert!(
+        wide_entries > narrow_entries,
+        "both hubs read {narrow_entries} entries, so the fixtures do not differ"
+    );
+    assert_eq!(
+        wide_entries, 400,
+        "the wide hop read something other than its answer"
+    );
 }
