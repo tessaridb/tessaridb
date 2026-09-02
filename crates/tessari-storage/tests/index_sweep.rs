@@ -31,14 +31,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use tessari_encoding::{
-    IndexAddress, IndexValues, KeyKind, SecondaryIndexKey, StoreKey, UniqueIndexKey,
-    decode_payload, encode_payload,
+    IndexAddress, IndexValues, KeyKind, SecondaryIndexKey, SpatialIndexKey, StoreKey,
+    UniqueIndexKey, decode_payload, encode_payload,
 };
+use tessari_geo::{Bounds, Snapped};
 use tessari_kv::{KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
 use tessari_storage::{
     Catalog, Error, IndexDefinition, IndexShape, RecordAddress, Store, TableShape,
 };
-use tessari_types::{DatabaseId, NamespaceId, Path, RecordId, Step, TableId, Value};
+use tessari_types::{
+    DatabaseId, Geometry, NamespaceId, Path, Position, RecordId, Step, TableId, Value,
+};
 
 /// The seed the workload runs from. Printed by every failing assertion.
 const SEED: u64 = 0x0de5_eed1_5bad_c0de;
@@ -104,6 +107,7 @@ impl Fixture {
                     IndexShape {
                         unique: true,
                         search: false,
+                        spatial: false,
                         vector: None,
                     },
                 )
@@ -146,6 +150,27 @@ impl Fixture {
                     IndexShape::default(),
                 )
                 .unwrap(),
+            // A **spatial** index: one entry per cell of the record's covering,
+            // so a record contributes a *set* of keys whose size depends on how
+            // large its geometry is. It belongs here for the same reason the
+            // multikey index does — reclamation is what it gets wrong, and a
+            // cell left under a geometry the record no longer holds makes that
+            // record a candidate for a box it is nowhere near, which is a wrong
+            // answer nobody would question because it is geographically
+            // plausible.
+            catalog
+                .create_index(
+                    table.id,
+                    "by_location",
+                    vec![Path::field("location")],
+                    IndexShape {
+                        unique: false,
+                        search: false,
+                        spatial: true,
+                        vector: None,
+                    },
+                )
+                .unwrap(),
         ];
         transaction.commit().unwrap();
 
@@ -168,28 +193,32 @@ impl Fixture {
         )
     }
 
-    /// Every entry key currently in the substrate, across all four indexes.
+    /// Every entry key currently in the substrate, across every index.
     fn entries(&self) -> BTreeSet<Vec<u8>> {
         let mut found = BTreeSet::new();
         for index in &self.indexes {
-            let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
-            let kind = if index.unique {
-                KeyKind::UniqueIndex
-            } else {
-                KeyKind::SecondaryIndex
-            };
-            let prefix = address.prefix(kind);
-            let request = ScanRequest {
-                keyspace: kind.keyspace(),
-                range: KeyRange::prefix(&prefix),
-                direction: ScanDirection::Forward,
-                limit: None,
-            };
-            for (key, _) in self.backend.scan(&request).unwrap() {
-                found.insert(key.as_slice().to_vec());
-            }
+            found.extend(self.entries_of(index));
         }
         found
+    }
+
+    /// Every entry key one index currently holds.
+    fn entries_of(&self, index: &IndexDefinition) -> BTreeSet<Vec<u8>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let kind = kind_of(index);
+        let prefix = address.prefix(kind);
+        let request = ScanRequest {
+            keyspace: kind.keyspace(),
+            range: KeyRange::prefix(&prefix),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+        self.backend
+            .scan(&request)
+            .unwrap()
+            .into_iter()
+            .map(|(key, _)| key.as_slice().to_vec())
+            .collect()
     }
 
     /// Every entry key the live records say should exist.
@@ -210,6 +239,14 @@ impl Fixture {
                 "the workload only writes objects"
             );
             for index in &self.indexes {
+                if index.spatial {
+                    let address =
+                        IndexAddress::new(index.namespace, index.database, index.table, index.id);
+                    for key in spatial_keys(&address, &record, index, id) {
+                        expected.insert(key);
+                    }
+                    continue;
+                }
                 // One list of values per field, so a multi-valued route
                 // contributes its whole reach and every other route contributes
                 // the one value it has. Absent and `none` are the same answer:
@@ -245,6 +282,111 @@ impl Fixture {
         }
         expected
     }
+}
+
+/// Which key kind an index's entries carry.
+fn kind_of(index: &IndexDefinition) -> KeyKind {
+    if index.spatial {
+        KeyKind::SpatialIndex
+    } else if index.unique {
+        KeyKind::UniqueIndex
+    } else {
+        KeyKind::SecondaryIndex
+    }
+}
+
+/// Every key one record contributes to a spatial index.
+///
+/// The box is folded here from the geometry's own positions rather than through
+/// `Shape::bounds`, for the reason the whole file exists: the store computes the
+/// box that way, so a sweep that also did would compare a function against
+/// itself. What is shared is the grid and the covering — the same way the
+/// ordered side shares `IndexValues::of` — and what is re-derived is the
+/// projection, which is where maintenance goes wrong.
+fn spatial_keys(
+    address: &IndexAddress,
+    record: &Value,
+    index: &IndexDefinition,
+    id: &RecordId,
+) -> Vec<Vec<u8>> {
+    let Some(path) = index.fields.first() else {
+        return Vec::new();
+    };
+    let Some(Value::Geometry(geometry)) = walk(record, path) else {
+        return Vec::new();
+    };
+    let Some(bounds) = corners(geometry) else {
+        return Vec::new();
+    };
+    tessari_geo::covering(bounds, tessari_constants::SPATIAL_INDEX_CELLS_PER_RECORD)
+        .into_iter()
+        .map(|(cell, _)| {
+            SpatialIndexKey::new(*address, cell, id.clone())
+                .encode()
+                .as_slice()
+                .to_vec()
+        })
+        .collect()
+}
+
+/// The box around a geometry, folded from its positions.
+///
+/// The workload writes points and lines only, so anything else is a fault in the
+/// workload rather than a case to handle quietly.
+fn corners(geometry: &Geometry) -> Option<Bounds> {
+    let positions: Vec<Position> = match geometry {
+        Geometry::Point(position) => vec![*position],
+        Geometry::Line(positions) => positions.clone(),
+        other => panic!("the workload only writes points and lines, found {other:?}"),
+    };
+    let snapped: Vec<Snapped> = positions
+        .into_iter()
+        .map(|position| Snapped::of(position).unwrap())
+        .collect();
+    Bounds::of_positions(&snapped)
+}
+
+/// What a record holds under `location`, drawn from every scale that behaves
+/// differently.
+///
+/// The scale set is the point and it is not decoration. A generator producing
+/// only large geometries covers them with a handful of coarse cells that never
+/// land on an arbitrary coordinate, so a covering that rounded the wrong way
+/// would be indistinguishable from a correct one — the defect established at
+/// wave 108 and the reason a *reach* is drawn here rather than two independent
+/// positions.
+fn location(rolls: &mut Rolls) -> Value {
+    let reach = match rolls.below(4) {
+        0 => return Value::None,
+        1 => 1,
+        2 => 200_000,
+        _ => 4_000_000,
+    };
+    let longitude = degrees(rolls, 180_000);
+    let latitude = degrees(rolls, 90_000);
+    let point = Position::new(longitude, latitude);
+    if rolls.below(2) == 0 {
+        return Value::Geometry(Geometry::Point(point));
+    }
+    let far = Position::new(
+        (longitude + micro(rolls, reach)).clamp(-180.0, 180.0),
+        (latitude + micro(rolls, reach)).clamp(-90.0, 90.0),
+    );
+    Value::Geometry(Geometry::Line(vec![point, far]))
+}
+
+/// A coordinate in degrees, on a thousandth-of-a-degree lattice so it snaps to
+/// the grid without a float conversion this test would have to defend.
+fn degrees(rolls: &mut Rolls, limit: u64) -> f64 {
+    let span = limit.saturating_mul(2);
+    let held = i32::try_from(rolls.below(span)).unwrap_or(0);
+    let offset = i32::try_from(limit).unwrap_or(0);
+    f64::from(held.saturating_sub(offset)) / 1_000.0
+}
+
+/// A small displacement in degrees, `reach` measured in millionths.
+fn micro(rolls: &mut Rolls, reach: u64) -> f64 {
+    f64::from(i32::try_from(rolls.below(reach)).unwrap_or(0)) / 1_000_000.0
 }
 
 /// The value a path reaches, written out here rather than borrowed.
@@ -416,6 +558,7 @@ fn step(fixture: &Fixture, rolls: &mut Rolls) {
                 }
             }
             fields.insert("tags".to_owned(), tags(rolls));
+            fields.insert("location".to_owned(), location(rolls));
             transaction.put(address, encode_payload(&Value::Object(fields)).into_bytes());
         }
     }
@@ -462,6 +605,31 @@ fn the_index_and_the_records_agree_in_both_directions() {
         u64::try_from(found.len()).unwrap_or(u64::MAX) > RECORDS,
         "seed {SEED}: only {} entries — the workload did not exercise anything",
         found.len()
+    );
+
+    // And a total is not enough once the indexes have different shapes: five
+    // healthy ordered indexes would carry the total past the bar on their own
+    // while the spatial one held nothing at all, and both assertions above would
+    // still pass. Each kind is counted for itself.
+    for index in &fixture.indexes {
+        let held = fixture.entries_of(index).len();
+        assert!(
+            held > 0,
+            "seed {SEED}: index {} holds no entries — it was never exercised",
+            index.name
+        );
+    }
+    let spatial = fixture
+        .indexes
+        .iter()
+        .filter(|index| index.spatial)
+        .map(|index| fixture.entries_of(index).len())
+        .sum::<usize>();
+    assert!(
+        u64::try_from(spatial).unwrap_or(0) > RECORDS,
+        "seed {SEED}: {spatial} spatial entries over {RECORDS} records — a covering \
+         contributes several cells per geometry, so this few means most geometries \
+         never reached the index"
     );
 }
 

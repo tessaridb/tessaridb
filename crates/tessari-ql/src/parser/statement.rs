@@ -1,14 +1,30 @@
 //! One statement at a time.
 
 use super::Parser;
-use tessari_types::{FieldKind, Filter, Path, Step};
+use tessari_types::{Assertion, FieldKind, Filter, IdentityKind, Number, Path, Step};
 
 use crate::ast::{
-    Assignment, Direction, Edit, ExprKind, FieldPath, Hop, InfoSubject, Projection, RangeExpr,
-    RecordTarget, Select, Source, Statement, StatementKind, TableRef,
+    Answer, Approximation, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, Direction,
+    EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, FieldMapping, FieldPath, Hop,
+    InfoSubject, JoinSide, Name, OnFailure, Password, Projection, RangeExpr, ReachRef,
+    RecordTarget, Select, Source, Statement, StatementKind, TableChange, TableRef, UserChange,
+    UserGrant, Written,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
+
+/// What a field declaration says after its type.
+///
+/// A struct rather than a four-value tuple so that the two call sites cannot
+/// bind them in the wrong order — `analyzer` and a `default` that happens to be
+/// a name would both compile.
+#[derive(Default)]
+struct FieldOptions {
+    required: bool,
+    default: Option<Written>,
+    analyzer: Option<Name>,
+    assert: Option<Assertion>,
+}
 
 /// The parameter name that reads as this node in a `FROM`.
 ///
@@ -53,13 +69,31 @@ impl Parser<'_> {
             Some(Keyword::Use) => self.use_statement()?,
             Some(Keyword::Define) => self.define_statement()?,
             Some(Keyword::Drop) => self.drop_statement()?,
+            Some(Keyword::Alter) => self.alter_statement()?,
             Some(Keyword::Rebuild) => self.rebuild_statement()?,
             Some(Keyword::Grant) => self.grant_statement(true)?,
             Some(Keyword::Revoke) => self.grant_statement(false)?,
             Some(Keyword::Create) => self.write_statement(Keyword::Create)?,
+            Some(Keyword::Insert) => self.insert_statement()?,
             Some(Keyword::Update) => self.write_statement(Keyword::Update)?,
+            Some(Keyword::Upsert) => self.write_statement(Keyword::Upsert)?,
+            Some(Keyword::Throw) => {
+                self.advance();
+                // The value position: the message is a value, and a bare name
+                // here would be a table exactly as it is in every other one.
+                StatementKind::Throw {
+                    value: self.expression()?,
+                }
+            }
             Some(Keyword::Set) => self.write_statement(Keyword::Set)?,
-            Some(Keyword::Select) => StatementKind::Select(self.select_statement()?),
+            Some(Keyword::Let) => self.let_statement()?,
+            Some(Keyword::Return) => {
+                self.advance();
+                StatementKind::Return {
+                    value: self.value_or_read()?,
+                }
+            }
+            Some(Keyword::Select) => StatementKind::Select(Box::new(self.select_statement()?)),
             Some(Keyword::Explain) => {
                 self.advance();
                 // Only a read has a plan to describe. A write's cost is its
@@ -86,10 +120,29 @@ impl Parser<'_> {
                     StatementKind::DeleteWhere {
                         table,
                         condition: Box::new(condition),
+                        limit: self.delete_bound()?,
                     }
                 } else {
-                    StatementKind::Delete {
-                        target: self.record_target()?,
+                    let target = self.record_target()?;
+                    // An arrow after the target says the subject is an edge and
+                    // not the record just named. Decided on the token rather
+                    // than on a lookahead over the whole clause: the two forms
+                    // diverge here and nowhere else.
+                    if self.eat_punct(Punct::ArrowRight) {
+                        let edges = self.table_ref()?;
+                        self.expect_punct(Punct::ArrowRight, "`->` and the record at the far end")?;
+                        let to = self.record_target()?;
+                        StatementKind::DeleteEdge {
+                            from: target,
+                            edges,
+                            to,
+                            answer: self.answer(Keyword::Delete)?,
+                        }
+                    } else {
+                        StatementKind::Delete {
+                            target,
+                            answer: self.answer(Keyword::Delete)?,
+                        }
                     }
                 }
             }
@@ -165,6 +218,10 @@ impl Parser<'_> {
                 self.advance();
                 StatementKind::Cancel
             }
+            Some(Keyword::Verify) => {
+                self.advance();
+                StatementKind::Verify
+            }
             _ => return Err(self.error_here("a statement")),
         };
         Ok(Statement {
@@ -199,6 +256,12 @@ impl Parser<'_> {
                 self.advance();
                 InfoSubject::Namespace
             }
+            // A keyword since a reach could be granted; a bare word before
+            // that, which is why this arm reads like the two beside it now.
+            Some(Keyword::Store) => {
+                self.advance();
+                InfoSubject::Store
+            }
             Some(Keyword::Database) => {
                 self.advance();
                 InfoSubject::Database
@@ -207,16 +270,36 @@ impl Parser<'_> {
                 self.advance();
                 InfoSubject::Table(self.table_ref()?)
             }
+            Some(Keyword::Graph) => {
+                self.advance();
+                InfoSubject::Graph(self.name()?)
+            }
             Some(Keyword::User) => {
                 self.advance();
                 InfoSubject::User(self.name()?)
             }
-            _ if self.eat_word("store") => InfoSubject::Store,
+            // Before the `Keyword::User` arm cannot reach it: `USERS` is a word
+            // and `USER` is a keyword, so the two never collide at the lexer.
+            _ if self.eat_word("users") => InfoSubject::Users,
+            // `ACCESS TO TABLE orders` — the object named the way every other
+            // statement names one, so that a table whose name is a keyword is
+            // reachable here for the same reason it is reachable anywhere else.
+            _ if self.eat_word("access") => {
+                self.expect_keyword(Keyword::To, "`TO` and the object to report on")?;
+                self.expect_keyword(Keyword::Table, "`TABLE` and its name")?;
+                InfoSubject::Access(self.table_ref()?)
+            }
             _ if self.eat_word("node") => InfoSubject::Node,
+            // Plural first, as with `USERS` above, so that reading this arm in
+            // order tells you which of the two a bare word reaches.
+            _ if self.eat_word("consumers") => InfoSubject::Consumers,
+            _ if self.eat_word("consumer") => InfoSubject::Consumer(self.name()?),
+            _ if self.eat_word("vector") => InfoSubject::Vector(self.name()?),
+            _ if self.eat_word("geo") => InfoSubject::Geo(self.name()?),
             _ => {
-                return Err(
-                    self.error_here("`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER` or `NODE`")
-                );
+                return Err(self.error_here(
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR` or `GEO`",
+                ));
             }
         };
         Ok(StatementKind::Info { subject })
@@ -239,6 +322,48 @@ impl Parser<'_> {
         Ok(StatementKind::Use {
             namespace,
             database,
+        })
+    }
+
+    /// `LET $recent = SELECT id FROM notes ORDER BY at DESC LIMIT 5`
+    ///
+    /// The name is a parameter token rather than an identifier, which is what
+    /// makes a binding and a caller's value the same kind of thing everywhere
+    /// below: `$recent` reads identically whether the script bound it or the
+    /// caller supplied it, so nothing downstream has to know which happened.
+    fn let_statement(&mut self) -> Result<StatementKind> {
+        self.advance();
+        let span = self.span_here();
+        let Some(Token::Parameter(name)) = self.peek() else {
+            return Err(self.error_here("a `$name` to bind after `LET`"));
+        };
+        let name = name.clone();
+        self.advance();
+        self.expect_punct(Punct::Equals, "`=` after the name to bind")?;
+        Ok(StatementKind::Let {
+            name,
+            value: self.value_or_read()?,
+            span,
+        })
+    }
+
+    /// An expression, or a read written without parentheses.
+    ///
+    /// One rule rather than two spellings: a read needs parentheses where it
+    /// sits **inside** a larger expression, because `IN (SELECT …)` has to say
+    /// where the read stops. After `LET $x =` and after `RETURN` it runs to the
+    /// end of the statement, so there is nothing for a parenthesis to
+    /// disambiguate and requiring one would be ceremony.
+    fn value_or_read(&mut self) -> Result<Expr> {
+        if self.peek_keyword() != Some(Keyword::Select) {
+            return self.expression();
+        }
+        let start = self.span_here();
+        let select = self.select_statement()?;
+        let span = start.to(self.span_behind());
+        Ok(Expr {
+            kind: ExprKind::Select(Box::new(select)),
+            span,
         })
     }
 
@@ -265,25 +390,68 @@ impl Parser<'_> {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
                 let name = self.name()?;
+                // The columns come before the flags rather than in the same
+                // order-free loop: they are the subject of the statement and
+                // the flags are adjectives on it, and `DEFINE TABLE t
+                // SCHEMAFULL (…)` reads as though the parentheses qualified
+                // `SCHEMAFULL`.
+                let columns = self.columns()?;
                 // Either marker, in either order, and neither twice. Order-free
                 // because there is no reading under which one has to precede the
                 // other, and a grammar that insisted would only be remembered
                 // wrong.
-                let mut schemafull = false;
-                let mut edge = false;
+                //
+                // A declared table is **strict by default**, so `schemafull`
+                // starts true and `SCHEMALESS` is what turns it off. The pair is
+                // read as two words rather than one optional word, because a
+                // script that says which reading it wants keeps saying it after
+                // the default moves again.
+                let mut strictness: Option<bool> = None;
+                let mut edge: Option<EdgeClause> = None;
+                let mut identity: Option<IdentityKind> = None;
+                let mut graph: Option<Name> = None;
                 loop {
-                    if !schemafull && self.eat_keyword(Keyword::Schemafull) {
-                        schemafull = true;
-                    } else if !edge && self.eat_keyword(Keyword::Edge) {
-                        edge = true;
+                    if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
+                        strictness = Some(true);
+                    } else if strictness.is_none() && self.eat_keyword(Keyword::Schemaless) {
+                        strictness = Some(false);
+                    } else if edge.is_none() && self.eat_keyword(Keyword::Edge) {
+                        edge = Some(self.edge_clause()?);
+                    } else if identity.is_none() && self.eat_word("identity") {
+                        identity = Some(self.identity_kind()?);
+                    } else if graph.is_none() && self.eat_keyword(Keyword::In) {
+                        graph = Some(self.name()?);
                     } else {
                         break;
                     }
                 }
+                // A table with no columns has nothing to be strict about, and
+                // the reader who wrote it wanted the other word. Refused rather
+                // than quietly read as lenient, and the refusal names the word,
+                // because "not allowed" without "write this instead" turns a
+                // one-word fix into a search through the specification.
+                //
+                // An edge table is the exception, and it is not a special case
+                // so much as the rule read properly: it declares no columns
+                // because nobody writes `out` and `in` by hand, so it is not a
+                // declaration with nothing in it — it is one whose fields the
+                // store supplies. It keeps the lenient reading it had, because
+                // an edge carries properties and none of them were ever
+                // declared here.
+                if columns.is_empty() && strictness.is_none() && edge.is_none() && graph.is_none() {
+                    return Err(Error::TableWithoutColumns {
+                        name: name.text.clone(),
+                        span: name.span,
+                    });
+                }
+                let schemafull = strictness.unwrap_or(!columns.is_empty());
                 Ok(StatementKind::DefineTable {
                     name,
+                    columns,
                     schemafull,
                     edge,
+                    identity: identity.unwrap_or_default(),
+                    graph,
                     if_not_exists,
                 })
             }
@@ -295,11 +463,61 @@ impl Parser<'_> {
                     if_not_exists,
                 })
             }
+            Some(Keyword::Graph) => {
+                self.advance();
+                let if_not_exists = self.eat_if_not_exists()?;
+                Ok(StatementKind::DefineGraph {
+                    name: self.name()?,
+                    if_not_exists,
+                })
+            }
+            Some(Keyword::Edge) => {
+                self.advance();
+                let if_not_exists = self.eat_if_not_exists()?;
+                let name = self.name()?;
+                // The graph is required and comes first, because an edge kind
+                // that did not name one would be an edge table under a different
+                // word — and the adjacency it writes has nowhere to live without
+                // a graph id above the node.
+                self.expect_keyword(Keyword::In, "`IN` and the graph the edge belongs to")?;
+                let graph = self.name()?;
+                self.expect_keyword(Keyword::From, "`FROM` and the table the edge leaves")?;
+                let from = self.name()?;
+                self.expect_keyword(Keyword::To, "`TO` and the table the edge reaches")?;
+                let to = self.name()?;
+                Ok(StatementKind::DefineEdge {
+                    name,
+                    graph,
+                    from,
+                    to,
+                    if_not_exists,
+                })
+            }
             Some(Keyword::Bucket) => {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
+                let name = self.name()?;
                 Ok(StatementKind::DefineBucket {
-                    name: self.name()?,
+                    name,
+                    max: self.byte_ceiling()?,
+                    if_not_exists,
+                })
+            }
+            Some(Keyword::Collection) => {
+                self.advance();
+                let if_not_exists = self.eat_if_not_exists()?;
+                let name = self.name()?;
+                // After the name, where the table spelling also takes it. A
+                // collection has no strictness word and no columns, so this is
+                // the whole of what follows one.
+                let identity = if self.eat_word("identity") {
+                    self.identity_kind()?
+                } else {
+                    IdentityKind::default()
+                };
+                Ok(StatementKind::DefineCollection {
+                    name,
+                    identity,
                     if_not_exists,
                 })
             }
@@ -315,10 +533,63 @@ impl Parser<'_> {
             // arms consume their word, so neither may `advance` again.
             _ if self.eat_word("node") => self.define_node(),
             _ if self.eat_word("replica") => self.define_replica(),
+            _ if self.eat_word("consumer") => self.define_consumer(),
+            // Contextual for the reason `DEFINE INDEX … VECTOR` already gives:
+            // a field called `vector` in a database of embeddings is not a name
+            // to take away, and taking it away here would take it away
+            // everywhere, since a reserved word is reserved in every position.
+            _ if self.eat_word("vector") => self.define_vector(),
+            // Contextual for the same reason, and with more at stake: `geo` is a
+            // perfectly ordinary column name, and reserving it here would
+            // reserve it everywhere.
+            _ if self.eat_word("geo") => self.define_geo(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE` or `REPLICA`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `CONSUMER`, `VECTOR` or `GEO`",
             )),
         }
+    }
+
+    /// `DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine`
+    ///
+    /// Both clauses are required and neither has a default. The width, because
+    /// declaring it is the whole capability the word adds. The distance, for the
+    /// reason the index already records: a default would silently decide which
+    /// queries the store can serve, and a graph built for one distance
+    /// approximates that distance and no other.
+    ///
+    /// They are read in a fixed order rather than in any order. Two clauses is
+    /// too few to be worth an order-free reader, and a fixed order is what makes
+    /// the statement read the same way in every store that has one.
+    fn define_vector(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        if !self.eat_word("dimension") {
+            return Err(self.error_here("`DIMENSION` and how wide every vector here is"));
+        }
+        let dimension = self.vector_dimension()?;
+        if !self.eat_word("distance") {
+            return Err(self.error_here("`DISTANCE` and the distance its index is built with"));
+        }
+        Ok(StatementKind::DefineVector {
+            name,
+            dimension,
+            distance: self.name()?,
+            if_not_exists,
+        })
+    }
+
+    /// `DEFINE GEO places`
+    ///
+    /// A name and nothing else. Where `DEFINE VECTOR` requires two clauses
+    /// because a store without them is not one, a geo store is complete as soon
+    /// as it exists — so there is no clause to read, and adding an optional one
+    /// later leaves every store written today parsing (Q-324).
+    fn define_geo(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        Ok(StatementKind::DefineGeo {
+            name: self.name()?,
+            if_not_exists,
+        })
     }
 
     /// `DEFINE NODE ROLES serving, writable ENDPOINTS 'host:9000'`
@@ -401,6 +672,227 @@ impl Parser<'_> {
         })
     }
 
+    /// ```text
+    /// DEFINE CONSUMER orders_in
+    ///     FROM 'broker-1:9092', 'broker-2:9092'
+    ///     TOPIC 'orders'
+    ///     GROUP 'shop-orders'
+    ///     FORMAT json
+    ///     INTO shop.orders
+    ///     IDENTITY order_id
+    ///     MAP amount AS total, placed.at AS placed_at
+    ///     ON FAILURE quarantine
+    ///     PARALLELISM 2
+    /// ```
+    ///
+    /// Every clause is required except `PARALLELISM`, and they are read in that
+    /// order. A fixed order rather than a free one for `DEFINE NODE`'s reason in
+    /// a stronger key: with nine clauses, accepting any order means the refusal
+    /// for a missing one can no longer name it — the parser would only be able
+    /// to say that *something* is missing, at the end, where the author has no
+    /// idea which.
+    ///
+    /// **`on_failure` has no default.** A default here is a decision about data
+    /// loss taken by whoever did not type the clause (ADR-0023 §4).
+    fn define_consumer(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+
+        self.expect_keyword(Keyword::From, "`FROM` and the brokers to read from")?;
+        let (first, _) = self.text("a broker, as text")?;
+        let mut brokers = vec![first];
+        while self.eat_punct(Punct::Comma) {
+            let (broker, _) = self.text("a broker, as text")?;
+            brokers.push(broker);
+        }
+        if !self.eat_word("topic") {
+            return Err(self.error_here("`TOPIC` and the topic to read"));
+        }
+        let (topic, _) = self.text("the topic, as text")?;
+
+        // Declared, never derived. Deriving it from the node id would be a bug
+        // that only shows up in a cluster, where every node would form its own
+        // group and every node would then consume every message.
+        if !self.eat_word("group") {
+            return Err(self.error_here("`GROUP` and the consumer group, as text"));
+        }
+        let (group, _) = self.text("the consumer group, as text")?;
+
+        if !self.eat_word("format") {
+            return Err(self.error_here("`FORMAT` and how a message becomes fields"));
+        }
+        let format = self.name()?;
+
+        if !self.eat_word("into") {
+            return Err(self.error_here("`INTO` and the table the records land in"));
+        }
+        let destination = self.table_ref()?;
+
+        // Required, and it is what makes a replayed message converge to one
+        // record instead of two — so it is the clause the at-least-once claim
+        // rests on rather than an optional nicety.
+        if !self.eat_word("identity") {
+            return Err(
+                self.error_here("`IDENTITY` and the message field carrying the record's id")
+            );
+        }
+        let identity = self.field_path()?;
+
+        if !self.eat_word("map") {
+            return Err(
+                self.error_here("`MAP` and which message fields become which record fields")
+            );
+        }
+        let mut mapping = vec![self.field_mapping()?];
+        while self.eat_punct(Punct::Comma) {
+            mapping.push(self.field_mapping()?);
+        }
+
+        self.expect_keyword(
+            Keyword::On,
+            "`ON FAILURE` and what to do with a message that cannot be applied",
+        )?;
+        if !self.eat_word("failure") {
+            return Err(self.error_here("`FAILURE`, which follows `ON` here"));
+        }
+        let on_failure = if self.eat_word("stop") {
+            OnFailure::Stop
+        } else if self.eat_word("quarantine") {
+            OnFailure::Quarantine
+        } else {
+            // Both named, and no third offered. A skip mode is the one this
+            // grammar deliberately does not have.
+            return Err(self.error_here("`STOP` or `QUARANTINE`"));
+        };
+
+        let parallelism = if self.eat_word("parallelism") {
+            Some(self.whole_number("how many consumers to run")?)
+        } else {
+            None
+        };
+
+        Ok(StatementKind::DefineConsumer {
+            name,
+            source: ConsumerSource { brokers, topic },
+            group,
+            format,
+            identity,
+            mapping,
+            destination,
+            on_failure,
+            parallelism,
+            if_not_exists,
+        })
+    }
+
+    /// `amount AS total` — one message field and what the record calls it.
+    fn field_mapping(&mut self) -> Result<FieldMapping> {
+        let from = self.field_path()?;
+        self.expect_keyword(Keyword::As, "`AS` and what the record calls the field")?;
+        Ok(FieldMapping {
+            from,
+            to: self.name()?,
+        })
+    }
+
+    /// A count standing where one is required.
+    ///
+    /// Refused rather than clamped when it does not fit or is not positive: a
+    /// clamped count is a statement that ran as something other than what it
+    /// says, which is the class of bug this grammar spends refusals to avoid.
+    fn whole_number(&mut self, expected: &'static str) -> Result<u32> {
+        let Some(Token::Number(tessari_types::Number::Integer(held))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let held = u32::try_from(*held).map_err(|_| self.error_here(expected))?;
+        if held == 0 {
+            return Err(self.error_here(expected));
+        }
+        self.advance();
+        Ok(held)
+    }
+
+    /// `MAX 5242880` after a bucket's name, when it is there.
+    ///
+    /// A count of **bytes**, written out. `5MB` is not a spelling this grammar
+    /// has: digits touching a letter are a duration whatever the letter is
+    /// (see the lexer), so `5MB` would be a duration with an unrecognised unit
+    /// and refused. Giving the clause a shorter spelling means changing that
+    /// rule for every literal in the language, which is a large change bought
+    /// for a small convenience.
+    ///
+    /// A zero refuses rather than clamping, for the reason `DEPTH 0` does: a
+    /// bucket that accepts no file is not a bucket with a ceiling, it is a
+    /// table nothing can be written to, and a caller who wrote `MAX 0` meant
+    /// something else.
+    fn byte_ceiling(&mut self) -> Result<Option<u64>> {
+        if !self.eat_word("max") {
+            return Ok(None);
+        }
+        let expected = "`MAX n` — the largest file the bucket takes, in bytes";
+        let Some(Token::Number(Number::Integer(held))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        // A negative and a zero refuse as the same thing, which they are: both
+        // say the bucket admits no file at all.
+        let held = u64::try_from(*held).unwrap_or(0);
+        if held == 0 {
+            return Err(self.error_here(expected));
+        }
+        self.advance();
+        Ok(Some(held))
+    }
+
+    /// `FROM users TO users ORDER BY at DESC` after `EDGE`, when it is there.
+    ///
+    /// The pair is read as a unit: `FROM` without `TO` is refused rather than
+    /// read as half a declaration, because an edge table that knows only where
+    /// its edges leave from could refuse nothing a permissive one accepts, and
+    /// the statement would have bought its clause for nothing.
+    fn edge_clause(&mut self) -> Result<EdgeClause> {
+        if !self.eat_keyword(Keyword::From) {
+            return Ok(EdgeClause::Any);
+        }
+        let from = self.table_ref()?;
+        self.expect_keyword(Keyword::To, "`TO` and the table an edge leads into")?;
+        let to = self.table_ref()?;
+        let order = self.edge_ordering()?;
+        Ok(EdgeClause::Between(Box::new(EdgeEndpoints {
+            from,
+            to,
+            order,
+        })))
+    }
+
+    /// `ORDER BY at DESC` after an edge table's declared pair, when it is there.
+    ///
+    /// Read with contextual words for the reason `shape.rs` reads the same
+    /// clause that way: reserving `ORDER` would take a good column name out of
+    /// every table in the store to buy nothing, since only a clause word can
+    /// stand in this position.
+    ///
+    /// The key is a single field **name**, not the routed expression a `SELECT`
+    /// orders by. It becomes the endpoint index's key suffix, so it has to be
+    /// something the writer can read off the edge as it places it.
+    fn edge_ordering(&mut self) -> Result<Option<EdgeOrdering>> {
+        if !self.eat_word("order") {
+            return Ok(None);
+        }
+        if !self.eat_word("by") {
+            return Err(self.error_here("`BY` after `ORDER`"));
+        }
+        let field = self.name()?;
+        // `ASC` is accepted and means nothing, exactly as it does in a `SELECT`:
+        // a reader who writes the default is saying what they mean.
+        let descending = if self.eat_word("desc") {
+            true
+        } else {
+            self.eat_word("asc");
+            false
+        };
+        Ok(Some(EdgeOrdering { field, descending }))
+    }
+
     /// `DEFINE INDEX by_email ON users FIELDS email, name UNIQUE`
     fn define_index(&mut self) -> Result<StatementKind> {
         self.advance();
@@ -414,17 +906,18 @@ impl Parser<'_> {
         while self.eat_punct(Punct::Comma) {
             fields.push(self.field_path()?);
         }
-        // **One** marker, and the third is why this changed. `UNIQUE` says how
-        // entries collide, `SEARCH` says the entries are terms, `VECTOR` says
-        // they are a graph — three different index kinds wearing three flags, of
+        // **One** marker. `UNIQUE` says how entries collide, `SEARCH` says the
+        // entries are terms, `VECTOR` says they are a graph, `SPATIAL` says they
+        // are cells — four different index kinds wearing four flags, of
         // which at most one can be true. Accepting two used to be possible and
         // the first one checked simply won, so `UNIQUE SEARCH` was an index
         // whose uniqueness was silently ignored. Adding a third made that
         // inconsistency a thing to answer rather than inherit.
-        /// Which of the three an index is.
+        /// Which of the four an index is.
         enum Marker {
             Unique,
             Search,
+            Spatial,
             /// With the distance its graph is built for, which is required —
             /// a default would silently decide which queries the index serves.
             Vector(crate::Name),
@@ -435,6 +928,10 @@ impl Parser<'_> {
                 Marker::Unique
             } else if self.eat_keyword(Keyword::Search) {
                 Marker::Search
+            } else if self.eat_word("spatial") {
+                // Contextual for the same reason `vector` is: a field called
+                // `spatial` is not a name to take away from a caller.
+                Marker::Spatial
             } else if self.eat_word("vector") {
                 // Contextual, like `order` and `fetch`: a field called `vector`
                 // in a database of embeddings is not a name to take away.
@@ -457,7 +954,7 @@ impl Parser<'_> {
                 Some(Marker::Unique) => {
                     return Err(Error::SeveralInAUniqueIndex { span: field.span });
                 }
-                Some(Marker::Search | Marker::Vector(_)) => {
+                Some(Marker::Search | Marker::Vector(_) | Marker::Spatial) => {
                     return Err(Error::SeveralInAnAnalysedIndex { span: field.span });
                 }
                 None => {}
@@ -472,6 +969,7 @@ impl Parser<'_> {
             fields,
             unique: matches!(kind, Some(Marker::Unique)),
             search: matches!(kind, Some(Marker::Search)),
+            spatial: matches!(kind, Some(Marker::Spatial)),
             vector: match kind {
                 Some(Marker::Vector(distance)) => Some(distance),
                 _ => None,
@@ -489,21 +987,92 @@ impl Parser<'_> {
         let if_not_exists = self.eat_if_not_exists()?;
         let name = self.name()?;
         let scope = if self.eat_keyword(Keyword::On) {
-            Some(self.table_ref()?)
+            Some(self.reach_ref()?)
         } else {
             None
         };
-        self.expect_keyword(Keyword::Role, "`ROLE` and what the user may do")?;
-        let role = self.name()?;
+        // `ROLE` first because it is what every existing statement says, and
+        // `AUTHORITIES` reached only when the statement does not say `ROLE` —
+        // so no spelling that parses today parses differently now.
+        let role = if self.eat_keyword(Keyword::Role) {
+            UserGrant::Role(self.name()?)
+        } else if self.eat_word("authorities") {
+            UserGrant::Authorities(self.kind_list()?)
+        } else {
+            return Err(self.error_here("`ROLE` or `AUTHORITIES` and what the user may do"));
+        };
         self.expect_keyword(Keyword::Password, "`PASSWORD` and the credential")?;
         let (password, _) = self.text("the password, as text")?;
         Ok(StatementKind::DefineUser {
             name,
             scope,
             role,
-            password,
+            password: Password::new(password),
             if_not_exists,
         })
+    }
+
+    /// `ALTER USER ada SET PASSWORD '…'` · `ALTER TABLE users SET SCHEMAFULL`
+    ///
+    /// The target is spelled out, and the comment this replaces predicted why:
+    /// `ALTER ada SET …` reads as though there were one namespace of alterable
+    /// things, and a table becoming alterable is exactly the case that would
+    /// have made that reading wrong everywhere it was already written.
+    fn alter_statement(&mut self) -> Result<StatementKind> {
+        self.advance();
+        if self.eat_keyword(Keyword::Table) {
+            let table = self.table_ref()?;
+            // The columnar spellings first, because `SET` is the one that reads
+            // as a whole-table change and the three field verbs read as changes
+            // to something inside it.
+            if self.eat_word("add") {
+                self.expect_keyword(Keyword::Field, "`FIELD` and the field to add")?;
+                let name = self.name()?;
+                return self.field_declaration(name, table, false);
+            }
+            if self.eat_keyword(Keyword::Alter) {
+                self.expect_keyword(Keyword::Field, "`FIELD` and the field to change")?;
+                let name = self.name()?;
+                return self.field_declaration(name, table, true);
+            }
+            if self.eat_keyword(Keyword::Drop) {
+                self.expect_keyword(Keyword::Field, "`FIELD` and the field to remove")?;
+                return Ok(StatementKind::DropField {
+                    name: self.name()?,
+                    table,
+                });
+            }
+            self.expect_keyword(
+                Keyword::Set,
+                "`SET`, `ADD FIELD`, `ALTER FIELD` or `DROP FIELD`",
+            )?;
+            let change = if self.eat_keyword(Keyword::Schemafull) {
+                TableChange::Schemafull
+            } else if self.eat_keyword(Keyword::Schemaless) {
+                TableChange::Schemaless
+            } else {
+                return Err(self.error_here("`SCHEMAFULL` or `SCHEMALESS`"));
+            };
+            return Ok(StatementKind::AlterTable { table, change });
+        }
+        if !self.eat_keyword(Keyword::User) {
+            return Err(self.error_here("`USER` or `TABLE` and the thing to change"));
+        }
+        let name = self.name()?;
+        self.expect_keyword(Keyword::Set, "`SET` and the one thing to change")?;
+        let change = match self.peek_keyword() {
+            Some(Keyword::Password) => {
+                self.advance();
+                let (password, _) = self.text("the new password, as text")?;
+                UserChange::Password(Password::new(password))
+            }
+            Some(Keyword::Role) => {
+                self.advance();
+                UserChange::Role(self.name()?)
+            }
+            _ => return Err(self.error_here("`PASSWORD` or `ROLE`")),
+        };
+        Ok(StatementKind::AlterUser { name, change })
     }
 
     /// `DEFINE ANALYZER simple FILTERS lowercase, ascii`
@@ -549,31 +1118,50 @@ impl Parser<'_> {
         let name = self.name()?;
         self.expect_keyword(Keyword::On, "`ON` and the table the field is on")?;
         let table = self.table_ref()?;
+        self.declaration_tail(name, table, if_not_exists, false)
+    }
+
+    /// The half of a field declaration that follows its name and its table.
+    ///
+    /// Shared with `ALTER TABLE … ADD FIELD` and `… ALTER FIELD`, which name the
+    /// same two things in the other order and then say exactly the same thing
+    /// about the field. Written once so the two spellings cannot drift — a
+    /// second copy is how `DEFAULT` ends up accepted by one of them and not the
+    /// other.
+    fn field_declaration(
+        &mut self,
+        name: Name,
+        table: TableRef,
+        replacing: bool,
+    ) -> Result<StatementKind> {
+        self.declaration_tail(name, table, false, replacing)
+    }
+
+    fn declaration_tail(
+        &mut self,
+        name: Name,
+        table: TableRef,
+        if_not_exists: bool,
+        replacing: bool,
+    ) -> Result<StatementKind> {
         self.expect_keyword(Keyword::Type, "`TYPE` and what the field may hold")?;
         let kind = self.field_kind()?;
-        // Either marker, in either order, and neither twice — the rule
-        // `DEFINE TABLE`'s two flags already follow, for the same reason: there
-        // is no reading under which one has to precede the other, and a grammar
-        // that insisted would only be remembered wrong.
-        let mut required = false;
-        let mut default = None;
-        let mut analyzer = None;
-        let mut assert = None;
-        loop {
-            if !required && self.eat_keyword(Keyword::Required) {
-                required = true;
-            } else if default.is_none() && self.eat_keyword(Keyword::Default) {
-                default = Some(self.written_expression()?);
-            } else if analyzer.is_none() && self.eat_keyword(Keyword::Analyzer) {
-                analyzer = Some(self.name()?);
-            } else if assert.is_none() && self.eat_word("assert") {
-                // Contextual, like `vector` and `fetch`: nothing but this marker
-                // can stand here, and a field called `assert` is not a name to
-                // take away from a table that has one.
-                assert = Some(super::assertion::lower(&self.condition()?)?);
-            } else {
-                break;
-            }
+        let FieldOptions {
+            required,
+            default,
+            analyzer,
+            assert,
+        } = self.field_options()?;
+        if replacing {
+            return Ok(StatementKind::AlterField {
+                name,
+                table,
+                kind,
+                required,
+                default,
+                analyzer,
+                assert,
+            });
         }
         Ok(StatementKind::DefineField {
             name,
@@ -587,6 +1175,72 @@ impl Parser<'_> {
         })
     }
 
+    /// Everything a field declaration says after its type.
+    ///
+    /// Shared by all three spellings — `DEFINE FIELD`, `ALTER TABLE … FIELD`,
+    /// and a column inside `DEFINE TABLE`'s parentheses — because a reader who
+    /// learns `DEFAULT` in one of them has learned it in the others, and three
+    /// copies of this loop is how one of them quietly stops accepting `ASSERT`.
+    fn field_options(&mut self) -> Result<FieldOptions> {
+        // Any marker, in any order, and none twice — the rule `DEFINE TABLE`'s
+        // two flags already follow, for the same reason: there is no reading
+        // under which one has to precede the other, and a grammar that insisted
+        // would only be remembered wrong.
+        let mut options = FieldOptions::default();
+        loop {
+            if !options.required && self.eat_keyword(Keyword::Required) {
+                options.required = true;
+            } else if options.default.is_none() && self.eat_keyword(Keyword::Default) {
+                options.default = Some(self.written_expression()?);
+            } else if options.analyzer.is_none() && self.eat_keyword(Keyword::Analyzer) {
+                options.analyzer = Some(self.name()?);
+            } else if options.assert.is_none() && self.eat_word("assert") {
+                // Contextual, like `vector` and `fetch`: nothing but this marker
+                // can stand here, and a field called `assert` is not a name to
+                // take away from a table that has one.
+                options.assert = Some(super::assertion::lower(&self.condition()?)?);
+            } else {
+                break;
+            }
+        }
+        Ok(options)
+    }
+
+    /// The parenthesised column list of a columnar `DEFINE TABLE`, if it has one.
+    ///
+    /// Empty parentheses are refused rather than read as no columns: the
+    /// flag-only spelling already says *no columns* by writing nothing, so `()`
+    /// can only be a list somebody meant to fill in.
+    fn columns(&mut self) -> Result<Vec<ColumnDeclaration>> {
+        if !self.eat_punct(Punct::ParenOpen) {
+            return Ok(Vec::new());
+        }
+        let mut columns = Vec::new();
+        loop {
+            let name = self.name()?;
+            let kind = self.field_kind()?;
+            let FieldOptions {
+                required,
+                default,
+                analyzer,
+                assert,
+            } = self.field_options()?;
+            columns.push(ColumnDeclaration {
+                name,
+                kind,
+                required,
+                default,
+                analyzer,
+                assert,
+            });
+            if !self.eat_punct(Punct::Comma) {
+                break;
+            }
+        }
+        self.expect_punct(Punct::ParenClose, "`)` closing the column list")?;
+        Ok(columns)
+    }
+
     /// A type name, which may be spelled with a reserved word.
     ///
     /// `table`, `set`, `range`, `datetime` and `uuid` are all reserved
@@ -595,6 +1249,21 @@ impl Parser<'_> {
     /// already is. The alternative is a language where five of the seventeen
     /// types cannot be written down.
     fn field_kind(&mut self) -> Result<FieldKind> {
+        // A union is spelled by its members, so it is recognised by one of them
+        // standing where a type name would. Nothing else in a declaration puts
+        // a string here, so the two readings cannot collide.
+        if matches!(self.peek(), Some(Token::Str(_))) {
+            return self.literal_union();
+        }
+        // Read from the tokens rather than through `FieldKind::parse`, which
+        // takes a single spelling: a width is four tokens. Contextual like
+        // `order` and `fetch`, and for the reason `DEFINE INDEX … VECTOR`
+        // already gives — a field called `vector` in a database of embeddings is
+        // not a name to take away. It costs nothing here, because the name is
+        // read before the type in both declarations that reach this.
+        if self.eat_word("vector") {
+            return self.vector_width();
+        }
         let spelling = match self.peek() {
             Some(Token::Keyword(keyword)) => keyword.spelling().to_owned(),
             Some(Token::Ident(name)) => name.clone(),
@@ -605,6 +1274,116 @@ impl Parser<'_> {
         };
         self.advance();
         Ok(kind)
+    }
+
+    /// `<768>` — how many numbers every vector in this field holds.
+    ///
+    /// The width is required, and there is no width-less `vector`. A vector
+    /// whose length is not declared is an `array`, which the language already
+    /// has: the word would say something about the author's intention and
+    /// nothing that could be checked, and a field that looks checked and is not
+    /// is worse than one that never claimed to be.
+    ///
+    /// A **literal**, like `DEPTH n` and for a related reason. A width read from
+    /// a parameter would be a schema whose shape depends on what was bound at
+    /// the moment the declaration ran, and the catalog has to store one answer.
+    /// `APPROXIMATE`, and the budget it may carry.
+    ///
+    /// `EFFORT` stands only after `APPROXIMATE` — never on its own and never
+    /// before it — because a budget without the permission is a number with
+    /// nothing to spend it on: an exact scan visits every record by definition.
+    /// So the pair is read here as one thing and stored as one value, and the
+    /// illegal half is not expressible.
+    ///
+    /// Both words are contextual, like the rest of this tail: a field called
+    /// `approximate` or `effort` stays a field.
+    fn approximation(&mut self) -> Result<Option<Approximation>> {
+        if !self.eat_word("approximate") {
+            return Ok(None);
+        }
+        if !self.eat_word("effort") {
+            return Ok(Some(Approximation::Default));
+        }
+        let span = self.span_here();
+        let Some(Token::Number(Number::Integer(written))) = self.peek() else {
+            return Err(self.error_here("a whole number of candidates, written out"));
+        };
+        // A negative and a zero refuse as the same thing, as they do for a width
+        // and for a depth: both say fewer than one candidate, and a walk that may
+        // keep none is a search with no way to answer.
+        let candidates = usize::try_from(*written).unwrap_or(0);
+        self.advance();
+        if candidates == 0 {
+            return Err(Error::EffortBelowOne { span });
+        }
+        Ok(Some(Approximation::Effort(candidates)))
+    }
+
+    fn vector_width(&mut self) -> Result<FieldKind> {
+        self.expect_punct(Punct::Less, "`<` and the width every vector here holds")?;
+        let span = self.span_here();
+        let width = self.vector_dimension()?;
+        self.expect_punct(Punct::Greater, "`>` closing the width")?;
+        FieldKind::vector(width).ok_or(Error::VectorWidthBelowOne { span })
+    }
+
+    /// The whole number of components a declaration names.
+    ///
+    /// Shared by the two places a width is written — `TYPE vector<n>` on a field
+    /// and `DIMENSION n` on a store — so that the language has one answer to
+    /// *which numbers are widths* rather than one answer per doorway. That is
+    /// the same reason `field_kind` is called by both field spellings.
+    fn vector_dimension(&mut self) -> Result<usize> {
+        let span = self.span_here();
+        let Some(Token::Number(Number::Integer(written))) = self.peek() else {
+            return Err(self.error_here("a whole number of components, written out"));
+        };
+        // A negative and a zero refuse as the same thing, which they are: both
+        // say fewer than one component, and a declaration that can hold only the
+        // empty array is one no useful write satisfies.
+        let written = usize::try_from(*written).unwrap_or(0);
+        self.advance();
+        if written > crate::WIDEST_VECTOR {
+            return Err(Error::VectorWidthAboveTheCeiling {
+                most: crate::WIDEST_VECTOR,
+                span,
+            });
+        }
+        // Asked of the type rather than tested here, so the rule lives where the
+        // kind that carries it lives and cannot drift from it.
+        match FieldKind::vector(written) {
+            Some(FieldKind::Vector(width)) => Ok(width),
+            _ => Err(Error::VectorWidthBelowOne { span }),
+        }
+    }
+
+    /// `'draft' | 'published'` — a field that holds one of a fixed set of strings.
+    ///
+    /// The declaration a status column has always wanted. `TYPE string` is true
+    /// and says nothing; an `ASSERT` says the same thing but says it where a
+    /// reader of the schema does not look, and where a reader of an error
+    /// message gets a condition rather than a list.
+    ///
+    /// Members are sorted and deduplicated by the constructor, so two
+    /// declarations naming the same set are the same type however they were
+    /// typed. A set that remembers the order somebody wrote it in is two values
+    /// for one fact — the rule a grant's verbs already follow.
+    fn literal_union(&mut self) -> Result<FieldKind> {
+        let mut members = Vec::new();
+        loop {
+            let Some(Token::Str(member)) = self.peek() else {
+                return Err(self.error_here("a quoted member of the union"));
+            };
+            members.push(member.clone());
+            self.advance();
+            if !self.eat_punct(Punct::Pipe) {
+                break;
+            }
+        }
+        // Unreachable while the loop pushes before it can break, and named
+        // rather than unwrapped because `union` refusing an empty set is a rule
+        // about the type and not about this parser.
+        FieldKind::union(members).ok_or_else(|| self.error_here("a member of the union"))
     }
 
     /// `REBUILD INDEX <name> ON <table>`
@@ -625,7 +1404,10 @@ impl Parser<'_> {
     fn drop_statement(&mut self) -> Result<StatementKind> {
         self.advance();
         match self.peek_keyword() {
-            Some(Keyword::Table | Keyword::Space) => {
+            // A bucket is a table row carrying `bucket: true` — `DEFINE BUCKET`
+            // reaches `define_table` — so the words undefine the same catalog
+            // entry and differ only in which one the reader wrote.
+            Some(Keyword::Table | Keyword::Space | Keyword::Bucket) => {
                 self.advance();
                 Ok(StatementKind::DropTable {
                     table: self.table_ref()?,
@@ -634,6 +1416,26 @@ impl Parser<'_> {
             Some(Keyword::User) => {
                 self.advance();
                 Ok(StatementKind::DropUser { name: self.name()? })
+            }
+            Some(Keyword::Analyzer) => {
+                self.advance();
+                Ok(StatementKind::DropAnalyzer { name: self.name()? })
+            }
+            Some(Keyword::Database) => {
+                self.advance();
+                Ok(StatementKind::DropDatabase { name: self.name()? })
+            }
+            Some(Keyword::Namespace) => {
+                self.advance();
+                Ok(StatementKind::DropNamespace { name: self.name()? })
+            }
+            Some(Keyword::Graph) => {
+                self.advance();
+                Ok(StatementKind::DropGraph { name: self.name()? })
+            }
+            Some(Keyword::Edge) => {
+                self.advance();
+                Ok(StatementKind::DropEdge { name: self.name()? })
             }
             Some(Keyword::Index) => {
                 self.advance();
@@ -653,38 +1455,231 @@ impl Parser<'_> {
                     table: self.table_ref()?,
                 })
             }
-            _ => Err(self.error_here("`TABLE`, `SPACE`, `INDEX` or `FIELD`")),
+            // Contextual, for the reason `DEFINE CONSUMER` is: `consumer` is a
+            // plausible table in an application that has customers, and nothing
+            // but a subject can stand here.
+            _ if self.eat_word("consumer") => {
+                Ok(StatementKind::DropConsumer { name: self.name()? })
+            }
+            // Contextual for the same reason `consumer` is, and listed before
+            // `node` so that reading these two in order tells you which of them
+            // a bare word reaches.
+            _ if self.eat_word("replica") => Ok(StatementKind::DropReplica { name: self.name()? }),
+            // Contextual, as the word is everywhere else it appears.
+            _ if self.eat_word("vector") => Ok(StatementKind::DropVector { name: self.name()? }),
+            _ if self.eat_word("geo") => Ok(StatementKind::DropGeo { name: self.name()? }),
+            // Declined rather than missing, and it says so. `DEFINE NODE` writes
+            // this process's own configuration outside the transaction, so its
+            // inverse is an edit to a config file rather than a statement — and
+            // a store that let one node undeclare another's identity over the
+            // wire would be answering a question no reader asked it.
+            _ if self.eat_word("node") => Err(self.error_here(
+                "a node to undeclare — but a node is not undeclared by a \
+                 statement: `DEFINE NODE` writes this process's own \
+                 configuration, so change the configuration and restart it. \
+                 `DROP REPLICA <name>` is the statement that stops counting \
+                 another endpoint as a peer",
+            )),
+            _ => Err(self.error_here(
+                "`TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, \
+                 `DATABASE`, `NAMESPACE`, `USER`, `CONSUMER` or `REPLICA`",
+            )),
         }
     }
 
     /// The three statements shaped `<verb> <target> = <value>`.
+    ///
+    /// `CREATE` is the one whose target may stop at the table. The record it
+    /// writes does not exist yet, so there is nothing for an address to point
+    /// at, and the identity's absence is what asks the store to name it. The
+    /// other verbs here change a record that is already there, where an address
+    /// is the honest shape and stays required.
     fn write_statement(&mut self, verb: Keyword) -> Result<StatementKind> {
         self.advance();
-        let target = self.record_target()?;
+        let table = self.table_ref()?;
+        if matches!(verb, Keyword::Create) && !self.at_punct(Punct::Colon) {
+            self.expect_punct(Punct::Equals, "`=` and the value to write")?;
+            let value = self.expression()?;
+            return Ok(StatementKind::Create {
+                target: CreateTarget::Generated(table),
+                value,
+                answer: self.answer(verb)?,
+            });
+        }
+        let target = self.record_target_after(table)?;
         // `SET` is a key-value verb elsewhere and a clause here, which is the
         // trick this grammar already plays with `ORDER`, `FETCH` and `VECTOR`:
         // nothing but a clause can stand in this position, so nothing is
         // ambiguous, and a field called `set` keeps working.
-        if verb == Keyword::Update && self.eat_keyword(Keyword::Set) {
+        // `UPDATE` and `UPSERT` change a record, so both take the three edit
+        // shapes. `CREATE` and `SET` write a whole value and take none of them.
+        let edits = matches!(verb, Keyword::Update | Keyword::Upsert);
+        if edits && self.eat_keyword(Keyword::Set) {
             let mut assignments = vec![self.assignment()?];
             while self.eat_punct(Punct::Comma) {
                 assignments.push(self.assignment()?);
             }
-            return Ok(StatementKind::Update {
-                target,
-                edit: Edit::Fields(assignments),
-            });
+            let edit = Edit::Fields(assignments);
+            return Ok(Self::changed(verb, target, edit, self.answer(verb)?));
+        }
+        if edits && self.eat_keyword(Keyword::Merge) {
+            // The **value** position, unlike `SET`'s right-hand sides: this is
+            // one whole object standing for the change, not a route computed
+            // from the record it is changing.
+            let edit = Edit::Merge(self.expression()?);
+            return Ok(Self::changed(verb, target, edit, self.answer(verb)?));
         }
         self.expect_punct(Punct::Equals, "`=` and the value to write")?;
         let value = self.expression()?;
         Ok(match verb {
-            Keyword::Update => StatementKind::Update {
-                target,
-                edit: Edit::Whole(value),
-            },
+            Keyword::Update | Keyword::Upsert => {
+                Self::changed(verb, target, Edit::Whole(value), self.answer(verb)?)
+            }
             Keyword::Set => StatementKind::Set { target, value },
-            _ => StatementKind::Create { target, value },
+            _ => StatementKind::Create {
+                target: CreateTarget::Named(target),
+                value,
+                answer: self.answer(verb)?,
+            },
         })
+    }
+
+    /// The word after `IDENTITY`.
+    ///
+    /// `uuid` is a keyword — it already stands in `users:uuid '…'` — so it is
+    /// eaten as one rather than read as a name, which is why this is not a bare
+    /// [`IdentityKind::parse`] over the next identifier.
+    ///
+    /// An unrecognised word is refused and never defaulted: a table declared
+    /// under a scheme this build does not know would otherwise start naming
+    /// records with a counter while its author believed otherwise.
+    fn identity_kind(&mut self) -> Result<IdentityKind> {
+        if self.eat_keyword(Keyword::Uuid) {
+            return Ok(IdentityKind::Uuid);
+        }
+        let word = self.name()?;
+        IdentityKind::parse(&word.text.to_ascii_lowercase()).ok_or(Error::UnknownIdentityKind {
+            word: word.text,
+            span: word.span,
+        })
+    }
+
+    /// `INSERT INTO users (name, email) VALUES ('ada', 'a@x'), ('grace', 'g@x')`
+    ///
+    /// # Why `INTO` and `VALUES` are not reserved words
+    ///
+    /// They are matched as plain words, the way `BEFORE` and `AFTER` are.
+    /// Reserving them would be a cost paid by every script that has a field
+    /// called `values`, for a benefit nobody collects: both appear in exactly
+    /// one position in exactly one statement, and neither is ambiguous there.
+    ///
+    /// # Why the arity is checked here
+    ///
+    /// A row of the wrong length is a mistyped statement, and the alternative is
+    /// finding out at the write with part of the batch already decided — which
+    /// makes a typing mistake arrive wearing the shape of a write failure.
+    fn insert_statement(&mut self) -> Result<StatementKind> {
+        self.advance();
+        if !self.eat_word("into") {
+            return Err(self.error_here("`INTO` and the table to write to"));
+        }
+        let table = self.table_ref()?;
+
+        // Named fields, not values: a caller's text cannot arrive in this
+        // position and be read as a field name, which is the same property the
+        // query builder is built around.
+        self.expect_punct(Punct::ParenOpen, "`(` and the fields each row supplies")?;
+        let mut columns = Vec::new();
+        loop {
+            columns.push(self.name()?);
+            if !self.eat_punct(Punct::Comma) {
+                break;
+            }
+        }
+        self.expect_punct(Punct::ParenClose, "`)` after the field list")?;
+
+        if !self.eat_word("values") {
+            return Err(self.error_here("`VALUES` and at least one row"));
+        }
+
+        let mut rows: Vec<Vec<Expr>> = Vec::new();
+        loop {
+            let opened = self.span_here();
+            self.expect_punct(Punct::ParenOpen, "`(` and a row of values")?;
+            let mut row = Vec::new();
+            loop {
+                row.push(self.expression()?);
+                if !self.eat_punct(Punct::Comma) {
+                    break;
+                }
+            }
+            self.expect_punct(Punct::ParenClose, "`)` after the row's values")?;
+
+            if row.len() != columns.len() {
+                return Err(Error::InsertRowArity {
+                    // Counted from one, because the author is counting rows on
+                    // the screen and not indexing an array.
+                    row: rows.len().saturating_add(1),
+                    found: row.len(),
+                    expected: columns.len(),
+                    span: opened,
+                });
+            }
+            rows.push(row);
+
+            if !self.eat_punct(Punct::Comma) {
+                break;
+            }
+        }
+
+        Ok(StatementKind::Insert {
+            table,
+            columns,
+            rows,
+        })
+    }
+
+    /// `RETURN BEFORE` or `RETURN AFTER`, when the write carries one.
+    ///
+    /// Refused where it could only ever answer `NONE`: there is no record before
+    /// a `CREATE` and none after a `DELETE`. Answering `NONE` to a question the
+    /// author plainly meant is the silent-wrong-answer shape this language
+    /// spends its rules removing, so the refusal names the two words that work.
+    fn answer(&mut self, verb: Keyword) -> Result<Answer> {
+        if !self.eat_keyword(Keyword::Return) {
+            return Ok(Answer::Nothing);
+        }
+        let before = self.eat_word("before");
+        if !before && !self.eat_word("after") {
+            return Err(self.error_here("`BEFORE` or `AFTER` after `RETURN`"));
+        }
+        match (verb, before) {
+            (Keyword::Create, true) => Err(self.error_here(
+                "`AFTER` — a create has no record before it, so `BEFORE` could only answer NONE",
+            )),
+            (Keyword::Delete, false) => Err(self.error_here(
+                "`BEFORE` — a delete has no record after it, so `AFTER` could only answer NONE",
+            )),
+            (_, true) => Ok(Answer::Before),
+            (_, false) => Ok(Answer::After),
+        }
+    }
+
+    /// The statement a change verb makes of a target, an edit and an answer.
+    fn changed(verb: Keyword, target: RecordTarget, edit: Edit, answer: Answer) -> StatementKind {
+        if verb == Keyword::Upsert {
+            StatementKind::Upsert {
+                target,
+                edit,
+                answer,
+            }
+        } else {
+            StatementKind::Update {
+                target,
+                edit,
+                answer,
+            }
+        }
     }
 
     /// `name = 'grace'` — one route and what it becomes.
@@ -717,7 +1712,29 @@ impl Parser<'_> {
         while self.eat_punct(Punct::Comma) {
             verbs.push(self.word_or_name()?);
         }
-        self.expect_keyword(Keyword::On, "`ON` and the table")?;
+        self.expect_keyword(Keyword::On, "`ON` and the table or reach")?;
+        // A reach is keyword-led in all three spellings and a table name can
+        // never be a keyword, so this decision is made by the grammar rather
+        // than by looking anything up. That is the whole reason `STORE` was
+        // reserved: deciding it any other way would silently widen a table
+        // grant somebody already wrote.
+        if let Some(reach) = self.reach_keyword()? {
+            let kinds = verbs;
+            if giving {
+                self.expect_keyword(Keyword::To, "`TO` and the user")?;
+                return Ok(StatementKind::GrantAuthority {
+                    kinds,
+                    reach,
+                    user: self.name()?,
+                });
+            }
+            self.expect_keyword(Keyword::From, "`FROM` and the user")?;
+            return Ok(StatementKind::RevokeAuthority {
+                kinds,
+                reach,
+                user: self.name()?,
+            });
+        }
         let table = self.table_ref()?;
         if giving {
             // `FIELDS` narrows what may be *read*. It sits where the same word
@@ -745,6 +1762,54 @@ impl Parser<'_> {
         })
     }
 
+    /// A reach, when the next token opens one, and nothing consumed when not.
+    ///
+    /// Returning `None` rather than erroring is what lets one `ON` serve both
+    /// the table grant and the authority grant: the caller falls through to a
+    /// table reference having consumed nothing.
+    fn reach_keyword(&mut self) -> Result<Option<ReachRef>> {
+        match self.peek_keyword() {
+            Some(Keyword::Store) => {
+                self.advance();
+                Ok(Some(ReachRef::Store))
+            }
+            Some(Keyword::Namespace) => {
+                self.advance();
+                Ok(Some(ReachRef::Namespace(self.name()?)))
+            }
+            Some(Keyword::Database) => {
+                self.advance();
+                Ok(Some(ReachRef::Database(self.table_ref()?)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// A reach in any of its spellings, including the bare `prod.orders`.
+    ///
+    /// The bare form is a **database** and has been since `DEFINE USER … ON
+    /// prod.orders` existed. It is kept rather than deprecated because every
+    /// statement already written says it.
+    fn reach_ref(&mut self) -> Result<ReachRef> {
+        match self.reach_keyword()? {
+            Some(reach) => Ok(reach),
+            None => Ok(ReachRef::Database(self.table_ref()?)),
+        }
+    }
+
+    /// `manage, read` — one or more authority kinds, as written.
+    ///
+    /// Words rather than names because every kind is a bare word, and the
+    /// kind is checked where the store knows the set rather than here, so a
+    /// misspelling is one error at one place.
+    fn kind_list(&mut self) -> Result<Vec<Name>> {
+        let mut kinds = vec![self.word_or_name()?];
+        while self.eat_punct(Punct::Comma) {
+            kinds.push(self.word_or_name()?);
+        }
+        Ok(kinds)
+    }
+
     /// What the `FROM` names, resolved to exactly one access path.
     fn select_source(&mut self) -> Result<Source> {
         // `$node` before the table, because it is the one source that is not a
@@ -759,6 +1824,9 @@ impl Parser<'_> {
             self.advance();
             return Ok(Source::Node);
         }
+        if self.peek() == Some(&Token::Punct(Punct::ParenOpen)) {
+            return self.subquery_source();
+        }
         let table = self.table_ref()?;
         if self.peek() == Some(&Token::Punct(Punct::Colon)) {
             let record = self.record_target_after(table)?;
@@ -767,8 +1835,12 @@ impl Parser<'_> {
                 None => Source::Record(record),
             });
         }
+        let alias = self.alias()?;
         if self.eat_keyword(Keyword::Join) {
-            return self.join(table);
+            return self.join(JoinSide::Table { table, alias });
+        }
+        if alias.is_some() {
+            return Err(self.aliased_without_a_join());
         }
         if self.eat_keyword(Keyword::Where) {
             return Ok(Source::Where {
@@ -779,12 +1851,98 @@ impl Parser<'_> {
         Ok(Source::Table(table))
     }
 
+    /// `AS <name>`, consumed if it is there.
+    ///
+    /// A failure here is returned rather than swallowed as "no alias": `AS 3`
+    /// would otherwise fall through and be reported many tokens later, pointing
+    /// at whatever the parser tripped over next instead of at the name.
+    fn alias(&mut self) -> Result<Option<Name>> {
+        if !self.eat_keyword(Keyword::As) {
+            return Ok(None);
+        }
+        Ok(Some(self.name()?))
+    }
+
+    /// A name was given to a source that is not a side of anything.
+    ///
+    /// Accepting it and ignoring it would be the quieter choice and the wrong
+    /// one: a reader who wrote a name expects to be able to use it, and a read
+    /// with one source answers its records under no name at all.
+    fn aliased_without_a_join(&mut self) -> Error {
+        self.error_here("`JOIN` — a name given with `AS` names one side of a join")
+    }
+
+    /// `FROM ( <read> )`, on its own or as the left side of a join.
+    ///
+    /// The inner read must state a `LIMIT`. It is materialised — there is no
+    /// index to walk and no bound to push into it — so a source that could grow
+    /// without limit is refused rather than cut at a number nobody wrote. A
+    /// silently truncated source answers a different question from the one that
+    /// was asked and looks exactly like a complete one.
+    fn subquery_source(&mut self) -> Result<Source> {
+        let read = self.parenthesised_read()?;
+        let Some(alias) = self.alias()? else {
+            if self.peek_keyword() == Some(Keyword::Join) {
+                return Err(self.error_here(
+                    "`AS <name>` before `JOIN` — a read has no name of its own, and a \
+                     row files each side under a name",
+                ));
+            }
+            return Ok(Source::Subquery {
+                read: Box::new(read),
+                condition: self.materialised_condition()?,
+            });
+        };
+        if !self.eat_keyword(Keyword::Join) {
+            return Err(self.aliased_without_a_join());
+        }
+        self.join(JoinSide::Read {
+            read: Box::new(read),
+            alias,
+        })
+    }
+
+    /// `WHERE …` after a materialised source, consumed if it is there.
+    ///
+    /// The same clause `FROM t WHERE c` carries, in the one other position a
+    /// source can stand. Its records are already in hand, so the condition
+    /// narrows them rather than choosing an access path.
+    fn materialised_condition(&mut self) -> Result<Option<Box<Expr>>> {
+        if !self.eat_keyword(Keyword::Where) {
+            return Ok(None);
+        }
+        Ok(Some(Box::new(self.condition()?)))
+    }
+
+    /// `( SELECT … LIMIT n )` — the read a source materialises.
+    fn parenthesised_read(&mut self) -> Result<Select> {
+        self.expect_punct(Punct::ParenOpen, "`(` and the read to materialise")?;
+        if self.peek_keyword() != Some(Keyword::Select) {
+            return Err(self.error_here("`SELECT` — a source in parentheses is a read"));
+        }
+        let read = self.select_statement()?;
+        if read.limit.is_none() {
+            return Err(self.error_here(
+                "`LIMIT n` on the inner read — a materialised source states how much \
+                 it may hold, so that a truncated answer is never mistaken for a whole one",
+            ));
+        }
+        self.expect_punct(Punct::ParenClose, "`)` after the materialised read")?;
+        Ok(read)
+    }
+
     /// `SELECT <projection> FROM …`, resolving to exactly one access path.
     pub(super) fn select_statement(&mut self) -> Result<Select> {
         let start = self.span_here();
         self.advance();
         let projection = self.projection()?;
+        // Beside the projection rather than among the clauses after `FROM`,
+        // because it says what the star contributes and not what the read does.
+        let omit = self.omit_paths(&projection)?;
         self.expect_keyword(Keyword::From, "`FROM` and what to read")?;
+        // Between `FROM` and the source because that is what it qualifies: how
+        // many of them there are to answer with, said before the thing itself.
+        let only = self.eat_keyword(Keyword::Only).then(|| self.span_behind());
 
         let from = self.select_source()?;
         // Written in the order it is applied: references are followed before
@@ -792,8 +1950,16 @@ impl Parser<'_> {
         // The grammar keeps clause order and application order the same on
         // purpose — see `START` before `LIMIT` below.
         let fetch = self.fetch_paths()?;
+        // After the fetch and before everything that counts records, which is
+        // where it is applied: the split is what decides how many there are.
+        let split = self.split_path()?;
         let group = self.group_by()?;
         let order = self.order_by()?;
+        // After the order, because the order is what it resumes: the anchor is
+        // the last record of the page before, and "after" is a position in the
+        // sequence the clause above just named. Before `START`, which it is also
+        // refused beside — both say where the page begins.
+        let after = self.after_anchor()?;
         // `START` before `LIMIT`, because that is the order they are applied in
         // and a grammar that let them be written either way would suggest they
         // commute.
@@ -802,14 +1968,37 @@ impl Parser<'_> {
         // Last, because it qualifies the whole read rather than any one clause,
         // and contextual like the rest: a field called `approximate` stays a
         // field.
-        let approximate = self.eat_word("approximate");
+        let approximate = self.approximation()?;
+        // After everything, because it is an assertion *about* the read rather
+        // than part of it — nothing below the parser reads it to decide
+        // anything. Contextual like the rest, so a field called `using` stays a
+        // field.
+        let using = self.using()?;
+        // After `USING`, so the tail reads in the order a statement is thought
+        // about: what to read, how much of it, what it should have done, and how
+        // long it may take doing it.
+        let timeout = self.timeout()?;
+        // Last of all. It qualifies the whole read the way `USING` and `TIMEOUT`
+        // do, and a reader who has taken in the question is then told which
+        // state answered it.
+        let version = self.version()?;
         super::shape::check_grouping(&projection, &group)?;
         super::shape::check_fold_positions(&from, &group, &order)?;
+        super::shape::check_cursor(
+            &from,
+            after.as_deref(),
+            skip,
+            [
+                ("GROUP BY", !group.is_empty()),
+                ("FETCH", !fetch.is_empty()),
+                ("SPLIT ON", split.is_some()),
+            ],
+        )?;
         // Where `[*]` may stand. A condition admits one on the left of a
         // comparison and a projection admits one as a whole projected value; a
         // key and an ordering do not yet, and each is refused by name rather
         // than by a stray-token message.
-        if let Projection::Values(values) = &projection {
+        if let Projection::Values { values, .. } = &projection {
             for value in values {
                 super::shape::check_projected(&value.value)?;
             }
@@ -830,17 +2019,32 @@ impl Parser<'_> {
                     super::shape::check_several(condition)?;
                 }
             }
-            Source::Node | Source::Record(_) | Source::Table(_) | Source::Traverse { .. } => {}
+            Source::Subquery {
+                condition: Some(condition),
+                ..
+            } => super::shape::check_several(condition)?,
+            Source::Node
+            | Source::Record(_)
+            | Source::Table(_)
+            | Source::Traverse { .. }
+            | Source::Subquery { .. } => {}
         }
         Ok(Select {
             projection,
+            omit,
             from,
+            only,
             fetch,
+            split,
             group,
             order,
+            after,
             approximate,
             start: skip,
             limit,
+            using,
+            timeout,
+            version,
             span: start.to(self.span_behind()),
         })
     }
@@ -858,21 +2062,24 @@ impl Parser<'_> {
     /// The root is then stripped, so what the executor holds is a route into a
     /// *record* on each side. That is what lets the right side be probed through
     /// an index, which reads records and knows nothing about a composite.
-    fn join(&mut self, left: TableRef) -> Result<Source> {
-        let right = self.table_ref()?;
+    fn join(&mut self, left: JoinSide) -> Result<Source> {
+        let right = self.join_side()?;
         let on = self.span_here();
         self.expect_keyword(Keyword::On, "`ON` and the two fields to match")?;
         let first = self.field_path()?;
         self.expect_punct(Punct::Equals, "`=` between the two sides of the join")?;
         let second = self.field_path()?;
 
-        if left.name.text == right.name.text {
+        // The two **names**, not the two tables: `users AS a JOIN users AS b` is
+        // one table under two names and reads perfectly, while `users JOIN users`
+        // is two names that are one and has no row a reader could address.
+        if left.name() == right.name() {
             return Err(Error::OneSidedJoin {
-                name: left.name.text.clone(),
+                name: left.name().to_owned(),
                 span: on.to(self.span_behind()),
             });
         }
-        let sides = [&left, &right].map(|table| table.name.text.clone());
+        let sides = [&left, &right].map(|side| side.name().to_owned());
         let first_side = side_of(&first, &sides)?;
         let second_side = side_of(&second, &sides)?;
         if first_side.0 == second_side.0 {
@@ -892,11 +2099,33 @@ impl Parser<'_> {
             .then(|| self.condition().map(Box::new))
             .transpose()?;
         Ok(Source::Join {
-            left,
-            right,
+            left: Box::new(left),
+            right: Box::new(right),
             left_key,
             right_key,
             condition,
+        })
+    }
+
+    /// The side after `JOIN` — a table, or a read that must name itself.
+    fn join_side(&mut self) -> Result<JoinSide> {
+        if self.peek() == Some(&Token::Punct(Punct::ParenOpen)) {
+            let read = self.parenthesised_read()?;
+            let Some(alias) = self.alias()? else {
+                return Err(self.error_here(
+                    "`AS <name>` after the read — a read has no name of its own, and a \
+                     row files each side under a name",
+                ));
+            };
+            return Ok(JoinSide::Read {
+                read: Box::new(read),
+                alias,
+            });
+        }
+        let table = self.table_ref()?;
+        Ok(JoinSide::Table {
+            table,
+            alias: self.alias()?,
         })
     }
 
@@ -940,10 +2169,12 @@ impl Parser<'_> {
                 None => break,
             }
         }
+        let depth = self.depth_bound(&hops)?;
         Ok(Source::Traverse {
             from,
             direction,
             hops,
+            depth,
         })
     }
 
@@ -970,7 +2201,7 @@ impl Parser<'_> {
         self.expect_punct(Punct::ArrowRight, "`->` and the record to relate to")?;
         let to = self.record_target()?;
         let value = if self.eat_punct(Punct::Equals) {
-            Some(self.expression()?)
+            Some(Box::new(self.expression()?))
         } else {
             None
         };

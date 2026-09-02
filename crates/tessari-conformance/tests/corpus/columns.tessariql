@@ -1,0 +1,138 @@
+# A table and its fields in one statement.
+# A corpus file is one session against one store, so these run in order.
+#
+# The long spelling declares a table and then declares fields on it, which is
+# two ideas and, for anyone arriving from SQL, one more statement than the
+# thought they had. The columnar spelling is the same declaration written the
+# way it is thought: the table, then what is in it.
+#
+# It is a **desugaring** and not a second feature. The executor runs each column
+# through the same code the long spelling reaches, so a column is a field in
+# every way a field is one — the same options, the same refusals, and the same
+# check against the rows already in the table. The alternative is two spellings
+# that agree on the happy path and part company on the day the data does not
+# fit, which is the only day anybody would notice.
+#
+# Two decisions are worth writing down because neither is forced:
+#
+# **Columns do not imply `SCHEMAFULL`.** Of the two readings, this is the one
+# the other can be written from — strictness is one word away, while a lenient
+# table with declared columns would have no spelling at all if parentheses meant
+# strict.
+#
+# **`IF NOT EXISTS` covers the whole declaration**, the table and every column.
+# Applied to the table alone it makes the statement un-re-runnable: the table is
+# tolerated and then the first column refuses, which is the opposite of what the
+# words ask for.
+
+--- case: a namespace and a database are defined and selected
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+--- expect: ok
+
+--- case: a table and its columns are one statement
+DEFINE TABLE people (name string, age int);
+--- expect: ok
+
+--- case: the columns became fields, so the table reports them
+INFO FOR TABLE people;
+--- expect: ok
+
+--- case: a column takes REQUIRED
+DEFINE TABLE staff (name string REQUIRED, rank string);
+--- expect: ok
+
+--- case: and REQUIRED means what it means in the long spelling
+#
+# `rank` is declared so that the record fails for the reason this case is
+# about. Undeclared, it would now be refused as an undeclared field before
+# REQUIRED was ever consulted — a green case testing the wrong refusal.
+CREATE staff:1 = { rank: 'editor' };
+--- expect: error MissingRequiredField
+
+--- case: a column takes DEFAULT
+DEFINE TABLE posts (title string, status string DEFAULT 'draft');
+--- expect: ok
+
+--- case: and the default is taken by a write that omits it
+CREATE posts:1 = { title: 'first' };
+--- expect: ok
+
+--- case: a column takes ASSERT
+DEFINE TABLE readings (level int assert $value > 0);
+--- expect: ok
+
+--- case: and the assertion refuses a value that fails it
+CREATE readings:1 = { level: 0 };
+--- expect: error AssertionViolation
+
+--- case: a column takes ANALYZER
+DEFINE ANALYZER simple FILTERS lowercase;
+DEFINE TABLE notes (body string ANALYZER simple);
+--- expect: ok
+
+--- case: naming an analyzer that does not exist is accepted, as it is in the long spelling
+# Recorded rather than endorsed. A field attaches an analyzer by name and
+# nothing checks the name at declaration time, so this succeeds and the symptom
+# arrives later as a search that quietly matches nothing. The two spellings
+# agree, which is the property this file is here to hold — the columnar form
+# reproduces the gap rather than inventing a second behaviour — and closing it
+# is a change to what declaring a field means, not to how it is written.
+DEFINE TABLE drafts (body string ANALYZER missing);
+--- expect: ok
+
+--- case: columns imply strictness, and the word is not needed to get it
+DEFINE TABLE tight (name string);
+CREATE tight:1 = { name: 'ada', extra: 1 };
+--- expect: error UndeclaredField
+
+--- case: SCHEMAFULL is still accepted, and says what is already true
+DEFINE TABLE stated (name string) SCHEMAFULL;
+CREATE stated:1 = { name: 'ada', extra: 1 };
+--- expect: error UndeclaredField
+
+--- case: SCHEMALESS is the way back, and it is the only way back
+DEFINE TABLE loose (name string) SCHEMALESS;
+CREATE loose:1 = { name: 'ada', extra: 1 };
+--- expect: ok
+
+--- case: EDGE stands beside SCHEMAFULL after the columns
+DEFINE TABLE follows (since datetime) EDGE;
+--- expect: ok
+
+--- case: the columns come before the flags, not after them
+DEFINE TABLE backwards SCHEMAFULL (name string);
+--- expect: error UnexpectedToken
+
+--- case: empty parentheses are a list somebody meant to fill in
+DEFINE TABLE nothing ();
+--- expect: error UnexpectedToken
+
+--- case: two columns of one name refuse the second
+DEFINE TABLE twice (a string, a int);
+--- expect: error NameTaken
+
+--- case: and the refused declaration left no table behind
+SELECT * FROM twice;
+--- expect: error Unknown
+
+--- case: IF NOT EXISTS covers the columns too, so the statement re-runs
+DEFINE TABLE IF NOT EXISTS people (name string, age int);
+--- expect: ok
+
+--- case: a column declared over rows that contradict it is refused
+#
+# The table is explicitly lenient, because that is the only way a row can
+# now carry a field nobody declared — which is the state this case needs
+# before the declaration can contradict it. Its own table rather than
+# `people`, so the assertion is not about whatever the cases above left there.
+DEFINE TABLE annotated (body string) SCHEMALESS;
+CREATE annotated:1 = { body: 'first', note: 'still text' };
+DEFINE TABLE IF NOT EXISTS annotated (note int);
+--- expect: error SchemaViolation
+
+--- case: and nothing was written, so the field is still undeclared
+CREATE annotated:2 = { body: 'second', note: 'also text' };
+--- expect: ok

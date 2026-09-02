@@ -128,7 +128,7 @@ fn ready<'a>(store: &'a Store, index: &str) -> Session<'a> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE events;\n\
+             DEFINE TABLE events SCHEMALESS;\n\
              DEFINE FIELD at ON events TYPE int REQUIRED;",
         )
         .unwrap();
@@ -168,10 +168,13 @@ fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
 /// path it took.
 fn answered(session: &mut Session<'_>, read: &str) -> (Vec<RecordId>, AccessPath) {
     let outcomes = session.run(read).unwrap();
-    let Some(Outcome::Records { records, path }) = outcomes.last() else {
+    let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
-    (records.iter().map(|(id, _)| id.clone()).collect(), *path)
+    (
+        records.iter().map(|(id, _)| id.clone()).collect(),
+        plan.access,
+    )
 }
 
 const ASCENDING: &str = "SELECT * FROM events ORDER BY at LIMIT 10;";
@@ -309,7 +312,7 @@ fn an_ascending_composite_order_is_still_refused_over_an_optional_leading_field(
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE events;\n\
+             DEFINE TABLE events SCHEMALESS;\n\
              DEFINE FIELD at ON events TYPE int;\n\
              CREATE events:1 = { at: 5, tag: 1 };\n\
              CREATE events:2 = { tag: 2 };\n\

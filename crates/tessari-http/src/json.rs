@@ -1,6 +1,6 @@
 //! Writing a value as JSON, and what that costs.
 //!
-//! JSON has six types and this store has fifteen, so the mapping is a decision
+//! JSON has six types and this store has seventeen, so the mapping is a decision
 //! rather than a translation. It is written by hand rather than derived, for
 //! exactly that reason: a derived encoder would make the choices below silently.
 //!
@@ -31,10 +31,33 @@
 //! A datetime is RFC 3339, a duration and a record reference are the text this
 //! language writes them as, bytes are hex. Each is a string, and each parses
 //! back through the same reader that read it from a script.
+//!
+//! # A range keeps its endpoints
+//!
+//! A range is the exception to the rule above: this language has no text form
+//! that writes one back, so there is no spelling to keep. It leaves structurally
+//! instead, the way a shape leaves as GeoJSON —
+//! `{"start":{"bound":"included","value":1},"end":{"bound":"excluded","value":5}}`.
+//!
+//! The bound kind is named rather than implied, because `1..5`, `1..=5` and
+//! `1..` are three different spans and a shape carrying only two endpoints
+//! collapses them onto one. An unbounded end carries no `value` key at all,
+//! which is the same rule `none` uses above for a thing that is not there, and
+//! is what keeps an open end distinct from an end holding `null`. Each endpoint
+//! goes through this same encoder, so it keeps whatever spelling its own type
+//! has.
+//!
+//! The cost is stated rather than hidden: the object is indistinguishable from a
+//! field that happens to hold an object with those keys, the same ambiguity a
+//! decimal already has with a string. This surface is lossy by design; what it
+//! must not do is transmit nothing.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::Bound};
 
-use tessaridb::{Geometry, Polygon, Position, TableId, Value};
+// `ValueRange` is not re-exported from the front door, and the two crates name
+// the same type, so a range is reached through `tessari_types` directly.
+use tessari_types::ValueRange;
+use tessaridb::{Geometry, Polygon, Position, TableId, Value, geojson_name};
 
 /// What a table id is called, for the references an answer carries.
 ///
@@ -94,21 +117,6 @@ fn geometry(out: &mut String, shape: &Geometry) {
         }
     }
     out.push('}');
-}
-
-/// The name RFC 7946 gives each shape, which is not the name this store uses
-/// internally — `LineString` against `line`, and the multi- forms are one word
-/// there and two here.
-const fn geojson_name(shape: &Geometry) -> &'static str {
-    match shape {
-        Geometry::Point(_) => "Point",
-        Geometry::Line(_) => "LineString",
-        Geometry::Polygon(_) => "Polygon",
-        Geometry::MultiPoint(_) => "MultiPoint",
-        Geometry::MultiLine(_) => "MultiLineString",
-        Geometry::MultiPolygon(_) => "MultiPolygon",
-        Geometry::Collection(_) => "GeometryCollection",
-    }
 }
 
 fn position(out: &mut String, held: &Position) {
@@ -186,9 +194,13 @@ pub(crate) fn write(out: &mut String, value: &Value, names: &Names) {
         Value::Regex(pattern) => string(out, pattern),
         Value::Duration(held) => string(out, &held.to_literal()),
         Value::Datetime(held) => string(out, &held.to_rfc3339()),
-        Value::Uuid(_) | Value::Table(_) | Value::Record(_) | Value::Range(_) => {
+        Value::Uuid(_) | Value::Table(_) | Value::Record(_) => {
             string(out, &spelled(value, names));
         }
+        // Structurally, because there is no text form to keep: `Value`'s own
+        // `Display` writes `<range>`, and routing this through `spelled` is what
+        // sent the caller the word `range` and nothing else.
+        Value::Range(held) => range(out, held, names),
         Value::Array(items) => {
             out.push('[');
             for (position, item) in items.iter().enumerate() {
@@ -230,6 +242,36 @@ pub(crate) fn write(out: &mut String, value: &Value, names: &Names) {
             out.push('}');
         }
     }
+}
+
+/// A range as its two endpoints and their bound kinds.
+fn range(out: &mut String, held: &ValueRange, names: &Names) {
+    out.push_str(r#"{"start":"#);
+    bound(out, &held.start, names);
+    out.push_str(r#","end":"#);
+    bound(out, &held.end, names);
+    out.push('}');
+}
+
+/// One end of a range: which kind of bound it is, and the value where there is
+/// one.
+///
+/// An unbounded end carries no `value` key, so it cannot be confused with an end
+/// holding `null`. Writing it as `null` would make `1..` and `1..=null` the same
+/// document.
+fn bound(out: &mut String, held: &Bound<Value>, names: &Names) {
+    let (kind, value) = match held {
+        Bound::Included(value) => ("included", Some(value)),
+        Bound::Excluded(value) => ("excluded", Some(value)),
+        Bound::Unbounded => ("unbounded", None),
+    };
+    out.push_str(r#"{"bound":"#);
+    string(out, kind);
+    if let Some(value) = value {
+        out.push_str(r#","value":"#);
+        write(out, value, names);
+    }
+    out.push('}');
 }
 
 /// A number, exact where JSON allows and quoted where it does not.
@@ -310,11 +352,20 @@ pub(crate) fn string(out: &mut String, text: &str) {
 mod tests {
     #![allow(clippy::panic)]
 
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, ops::Bound};
 
+    use tessari_types::{RecordId, RecordRef, TableId, ValueRange};
     use tessaridb::{Number, Value};
 
     use super::{Names, write};
+
+    fn span(start: Bound<Value>, end: Bound<Value>) -> Value {
+        Value::Range(Box::new(ValueRange { start, end }))
+    }
+
+    fn at(number: i64) -> Value {
+        Value::Number(Number::Integer(number))
+    }
 
     fn json(value: &Value) -> String {
         let mut out = String::new();
@@ -364,11 +415,118 @@ mod tests {
     }
 
     #[test]
+    fn a_range_arrives_as_its_endpoints_rather_than_as_its_type() {
+        // The defect this replaces: `RETURN 1..5;` answered `"range"`, so
+        // nothing about the span reached the caller at all and there was
+        // nothing on the other side to recover it from.
+        assert_eq!(
+            json(&span(Bound::Included(at(1)), Bound::Excluded(at(5)))),
+            r#"{"start":{"bound":"included","value":1},"end":{"bound":"excluded","value":5}}"#
+        );
+    }
+
+    #[test]
+    fn the_three_bound_kinds_stay_apart() {
+        // An open end is not an end holding `null`: rendering `Unbounded` as a
+        // `null` value would collide with `Bound::Included(Value::Null)`, and a
+        // shape carrying only two endpoints would collapse `1..5`, `1..=5` and
+        // `1..` onto one document — the same loss in a smaller form.
+        let open = json(&span(Bound::Included(at(1)), Bound::Unbounded));
+        let holding_null = json(&span(Bound::Included(at(1)), Bound::Included(Value::Null)));
+        assert_eq!(
+            open,
+            r#"{"start":{"bound":"included","value":1},"end":{"bound":"unbounded"}}"#
+        );
+        assert_eq!(
+            holding_null,
+            r#"{"start":{"bound":"included","value":1},"end":{"bound":"included","value":null}}"#
+        );
+        assert_ne!(open, holding_null);
+        assert_ne!(
+            json(&span(Bound::Included(at(1)), Bound::Included(at(5)))),
+            json(&span(Bound::Included(at(1)), Bound::Excluded(at(5))))
+        );
+    }
+
+    #[test]
+    fn an_endpoint_keeps_the_spelling_of_its_own_type() {
+        // The endpoint goes through this same encoder, so a decimal endpoint is
+        // quoted for the reason every decimal on this surface is quoted.
+        let exact = "12.34".parse().expect("a decimal");
+        assert_eq!(
+            json(&span(
+                Bound::Included(Value::Number(Number::Decimal(exact))),
+                Bound::Excluded(at(99))
+            )),
+            r#"{"start":{"bound":"included","value":"12.34"},"end":{"bound":"excluded","value":99}}"#
+        );
+    }
+
+    #[test]
     fn a_container_keeps_its_shape() {
         let nested = Value::Array(vec![
             Value::Bool(true),
             Value::Object(BTreeMap::from([("n".to_owned(), Value::from("x"))])),
         ]);
         assert_eq!(json(&nested), r#"[true,{"n":"x"}]"#);
+    }
+
+    #[test]
+    fn a_record_id_is_written_plainly_and_is_not_a_query_literal() {
+        // Specification §5.7.1, "A record id is written plainly, and is NOT a
+        // TessariQL literal": the id half is the id's own text, with no quoting
+        // and no escaping, and the section states the consequences it buys —
+        // `users:7` is the integer and the text `'7'` written identically, and a
+        // client **MUST NOT** parse this string back into a typed record id.
+        //
+        // Pinned here because the spelling looks like a defect from inside this
+        // crate and is not one. `RecordId::to_literal` exists for the CLI and for
+        // the places that do round-trip; reaching for it here would silently
+        // break a published surface, and this test is what says no. The four
+        // spellings below were exercised against a running node on `a3c22dd`.
+        let table = TableId::new(7);
+        let mut names = Names::new();
+        names.insert(table, "people".to_owned());
+        let spell = |id: RecordId| {
+            let mut out = String::new();
+            write(&mut out, &Value::Record(RecordRef { table, id }), &names);
+            out
+        };
+
+        assert_eq!(spell(RecordId::Int(1)), r#""people:1""#);
+        // Unquoted and unescaped, space and all — §5.7.1's `users:has space` row.
+        assert_eq!(spell(RecordId::from("ada smith")), r#""people:ada smith""#);
+        // Undivided: the id half drops the hyphens the value form carries, which
+        // §5.7.1 calls out as the row a client's uuid parser gets wrong.
+        assert_eq!(
+            spell(RecordId::Uuid([
+                0x01, 0x91, 0xf4, 0xe2, 0x1c, 0x3a, 0x7b, 0x4d, 0x8e, 0x5f, 0x6a, 0x7b, 0x8c, 0x9d,
+                0x0e, 0x1f
+            ])),
+            r#""people:0191f4e21c3a7b4d8e5f6a7b8c9d0e1f""#
+        );
+        // The mirrored row: bytes GAIN a `0x` the value form does not carry.
+        assert_eq!(
+            spell(RecordId::Bytes(vec![0x0a, 0x0b])),
+            r#""people:0x0a0b""#
+        );
+    }
+
+    #[test]
+    fn a_record_whose_table_cannot_be_named_is_visibly_not_a_name() {
+        // §5.7.1: `<record T:id>` with the brackets, where `T` is the table's
+        // numeric id. `<` cannot begin a table name, which is what lets a client
+        // detect the form. The specification's own example is `<record 7:1>`, and
+        // an empty `names` is exactly the dropped-table case that produces it.
+        let mut out = String::new();
+        write(
+            &mut out,
+            &Value::Record(RecordRef {
+                table: TableId::new(7),
+                id: RecordId::Int(1),
+            }),
+            &Names::new(),
+        );
+        assert_eq!(out, r#""<record 7:1>""#);
     }
 }

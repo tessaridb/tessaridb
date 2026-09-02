@@ -297,9 +297,177 @@ impl Drop for Busy {
     }
 }
 
+/// How many of something a process will hold at once.
+///
+/// Two callers so far, and they are the same shape: how many connections a
+/// surface will serve, and how many password verifications the process will run
+/// — each holding a resource for as long as it lives, each better refused than
+/// queued.
+///
+/// # Why this is here rather than in each caller
+///
+/// The same argument the rest of this crate is built on: the callers need a
+/// ceiling, and they need it to mean the same thing. A process told to serve at
+/// most four hundred connections, whose wire and HTTP halves each counted to
+/// four hundred separately, has been told nothing — and a process told to hold
+/// a hundred and fifty mebibytes of password hashing, counted separately per
+/// surface, has been told less than nothing.
+///
+/// # Why a refusal and not a queue
+///
+/// Because the ceiling exists to bound a resource, and a queue does not bound
+/// one — it moves the unbounded growth from threads to whatever holds the
+/// waiting connections, and adds latency to the connections that were admitted.
+/// A client refused at the door can retry, reconnect elsewhere, or back off; a
+/// client parked in a queue can only wait, and cannot tell that it is waiting.
+#[derive(Debug)]
+pub struct Admitting {
+    held: AtomicUsize,
+    limit: usize,
+    refused: AtomicU64,
+}
+
+impl Admitting {
+    /// A door that will hold `limit` places at once.
+    #[must_use]
+    pub fn to(limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            held: AtomicUsize::new(0),
+            limit,
+            refused: AtomicU64::new(0),
+        })
+    }
+
+    /// Take a place, or `None` when the ceiling is reached.
+    ///
+    /// Never blocks. See the type's documentation for why waiting here would
+    /// give back the exhaustion the ceiling exists to prevent.
+    pub fn admit(self: &Arc<Self>) -> Option<Admitted> {
+        let mut held = self.held.load(Ordering::Acquire);
+        loop {
+            if held >= self.limit {
+                self.refused.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+            match self.held.compare_exchange_weak(
+                held,
+                held.saturating_add(1),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Some(Admitted {
+                        door: Arc::clone(self),
+                    });
+                }
+                // Another thread moved the count between the read and the
+                // exchange. Re-decide against what it actually is rather than
+                // against what it was, which is the whole point of the loop.
+                Err(actual) => held = actual,
+            }
+        }
+    }
+
+    /// How many places are taken.
+    #[must_use]
+    pub fn open(&self) -> usize {
+        self.held.load(Ordering::Acquire)
+    }
+
+    /// The ceiling this door was built with.
+    #[must_use]
+    pub const fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// How many connections have been turned away since the process started.
+    ///
+    /// The number that says whether the ceiling is set right: a node refusing
+    /// steadily is a node whose ceiling is too low or whose clients are too
+    /// many, and one refusing never has a ceiling it has never reached.
+    #[must_use]
+    pub fn refused(&self) -> u64 {
+        self.refused.load(Ordering::Relaxed)
+    }
+}
+
+/// One admitted connection, holding its place until dropped.
+///
+/// Released on **drop** for the same reason [`Busy`] is: a connection thread
+/// that panics must not take a place with it, or the door closes permanently
+/// one connection at a time and the failure appears long after its cause.
+#[derive(Debug)]
+pub struct Admitted {
+    door: Arc<Admitting>,
+}
+
+impl Drop for Admitted {
+    fn drop(&mut self) {
+        self.door.held.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    // The panic below is the subject of a test, not a hazard in one: a place
+    // must come back when the thread holding it dies.
+    #![allow(clippy::panic, clippy::expect_used)]
+
     use super::*;
+
+    #[test]
+    fn the_door_admits_up_to_its_limit_and_then_refuses() {
+        let door = Admitting::to(2);
+        let first = door.admit().expect("the first is under the limit");
+        let second = door.admit().expect("the second reaches it");
+        assert_eq!(door.open(), 2);
+        assert!(door.admit().is_none(), "the third is over it");
+        assert_eq!(door.refused(), 1);
+
+        // Refusing must not be mistaken for a leak: the two that were admitted
+        // are still held, and the count still says two.
+        assert_eq!(door.open(), 2);
+        drop(first);
+        assert_eq!(door.open(), 1);
+        assert!(door.admit().is_some(), "a place freed is a place given");
+        drop(second);
+    }
+
+    #[test]
+    fn a_place_is_returned_even_when_the_thread_holding_it_panics() {
+        // The property the `Drop` impl exists for. Without it a panicking
+        // connection thread closes the door by one, permanently, and the node
+        // degrades in a way nothing points at the panic that caused it.
+        let door = Admitting::to(1);
+        let held = Arc::clone(&door);
+        let panicked = std::thread::spawn(move || {
+            let _place = held.admit().expect("the only place");
+            panic!("a connection that went wrong");
+        })
+        .join();
+        assert!(panicked.is_err(), "the thread should have panicked");
+        assert_eq!(door.open(), 0, "the place should have come back");
+        assert!(door.admit().is_some());
+    }
+
+    #[test]
+    fn every_thread_racing_for_the_last_places_sees_one_ceiling() {
+        // The compare-exchange loop's reason to exist. A read-then-add would let
+        // two threads both see `limit - 1` and both admit, which is the bug an
+        // atomic counter without a loop actually has.
+        let door = Admitting::to(50);
+        let taken: Vec<_> = (0..8)
+            .map(|_| {
+                let held = Arc::clone(&door);
+                std::thread::spawn(move || (0..20).filter_map(|_| held.admit()).collect::<Vec<_>>())
+            })
+            .map(|racing| racing.join().expect("a racing thread"))
+            .collect();
+        let admitted: usize = taken.iter().map(Vec::len).sum();
+        assert_eq!(admitted, 50, "never more than the ceiling, and never fewer");
+        assert_eq!(door.open(), 50);
+        assert_eq!(door.refused(), 110);
+    }
 
     #[test]
     fn a_guard_that_is_dropped_is_no_longer_in_flight() {

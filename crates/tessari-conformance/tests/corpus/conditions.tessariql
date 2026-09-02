@@ -9,7 +9,7 @@ USE DATABASE orders;
 --- expect: ok
 
 --- case: a table holding several types in one field, and two absences
-DEFINE TABLE people;
+DEFINE COLLECTION people;
 CREATE people:1 = { name: 'ada', age: 17, city: 'Paris', tags: ['urgent'] };
 CREATE people:2 = { name: 'grace', age: 45, city: 'Lyon', tags: ['old'] };
 CREATE people:3 = { name: 'alan', age: 'nineteen', city: 'Paris' };
@@ -78,13 +78,24 @@ SELECT * FROM people WHERE city = 'Paris' AND age = 17;
 --- expect: rows 1
 
 --- case: a bare name in a value position is still a table
-DEFINE TABLE audit;
+DEFINE COLLECTION audit;
 CREATE audit:1 = { subject: people };
 --- expect: ok
 
 --- case: a condition that is not a boolean is refused
 SELECT * FROM people WHERE name;
 --- expect: error ConditionNotBoolean
+
+--- case: an absence is not a type error in a condition, it is a no
+SELECT * FROM people WHERE NONE;
+--- expect: rows 0
+
+--- case: a function over a field a record does not have narrows the answer
+# Three of the five have no `tags`, so the call answers with an absence for
+# them. Refusing that would make one record missing one field fail the whole
+# read, which is the outcome the absence rule exists to prevent.
+SELECT * FROM people WHERE array::len(tags) > 0;
+--- expect: rows 2
 
 --- case: two comparisons in a row are refused
 SELECT * FROM people WHERE 1 < age < 100;
@@ -125,7 +136,7 @@ SELECT * FROM people ORDER BY age DESC LIMIT 5;
 --- expect: rows 5
 
 --- case: the words that shape a read are not reserved names
-DEFINE TABLE order;
+DEFINE COLLECTION order;
 CREATE order:1 = { limit: 10, by: 'ada', start: 1 };
 SELECT * FROM order ORDER BY by LIMIT 1;
 --- expect: rows 1
@@ -142,8 +153,20 @@ SELECT count(*) AS records, count(age) AS ages FROM people;
 SELECT city, count(*) AS n FROM people GROUP BY city;
 --- expect: rows 2
 
+--- case: a grouping with no fold is the distinct set, which is why there is no DISTINCT
+SELECT city FROM people GROUP BY city;
+--- expect: rows 2
+
+--- case: and over two keys it is the distinct pairs — five names, so five
+SELECT city, name FROM people GROUP BY city, name;
+--- expect: rows 5
+
+--- case: and how many distinct there are is that grouping counted
+SELECT count(*) AS cities FROM (SELECT city FROM people GROUP BY city LIMIT 100);
+--- expect: rows 1
+
 --- case: the folds pass over what holds nothing
-DEFINE TABLE scores;
+DEFINE COLLECTION scores;
 CREATE scores:1 = { n: 10 };
 CREATE scores:2 = { n: 20 };
 CREATE scores:3 = { n: NULL };
@@ -197,7 +220,7 @@ SELECT city, count(*) AS n FROM people GROUP BY city ORDER BY n DESC LIMIT 1;
 --- expect: rows 1
 
 --- case: a field called count is still a field
-DEFINE TABLE tallies;
+DEFINE COLLECTION tallies;
 CREATE tallies:1 = { count: 7 };
 SELECT * FROM tallies WHERE count = 7;
 --- expect: rows 1

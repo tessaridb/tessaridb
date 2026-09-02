@@ -24,10 +24,10 @@
 use std::collections::BTreeMap;
 
 use tessari_encoding::{Roles, decode_payload};
-use tessari_types::{Number, Value};
+use tessari_types::{Number, RecordId, Value};
 
 use super::definition::{field_id, field_name, number, object};
-use super::{Catalog, Level, qualify, system};
+use super::{Catalog, Level, id_key, qualify, system};
 use crate::error::{Error, Result};
 
 const FIELD_ID: &str = "id";
@@ -165,6 +165,31 @@ impl Catalog<'_, '_> {
         self.write(system::REPLICAS, id, &definition.to_value());
         self.claim_name(&qualified, id);
         Ok(definition)
+    }
+
+    /// Remove a peer's declaration and release its name.
+    ///
+    /// Answers `false` when there was nothing under that id.
+    ///
+    /// Removing the declaration is all this does. The peer is not told, and
+    /// nothing chases the data it already holds — which is the honest shape for
+    /// a store whose replication is declarative: this statement says *we no
+    /// longer count that endpoint as a peer*, and a peer that disagrees is a
+    /// question for the operator rather than one a catalog write can settle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub fn drop_replica(&mut self, id: u32) -> Result<bool> {
+        let Some(definition) = self.replicas()?.into_iter().find(|found| found.id == id) else {
+            return Ok(false);
+        };
+        let qualified = qualify(Level::Replica, &[], &definition.name);
+        self.transaction
+            .delete(system::address(system::REPLICAS, RecordId::Int(id_key(id))));
+        self.transaction
+            .delete(system::address(system::NAMES, RecordId::from(qualified)));
+        Ok(true)
     }
 
     /// Every declared peer, in name order.

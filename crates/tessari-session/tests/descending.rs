@@ -42,7 +42,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              CREATE users:1 = { name: 'ada', joined: 1843 };\n\
              CREATE users:2 = { name: 'grace', joined: 1952 };\n\
              CREATE users:3 = { name: 'alan', joined: 1936 };\n\
@@ -75,10 +75,10 @@ fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
 
 fn path(session: &mut Session<'_>, read: &str) -> AccessPath {
     let outcomes = session.run(read).unwrap();
-    let Some(Outcome::Records { path, .. }) = outcomes.last() else {
+    let Some(Outcome::Records { plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
-    *path
+    plan.access
 }
 
 fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
@@ -149,7 +149,7 @@ fn a_tie_group_straddling_the_bound_resolves_by_identity_ascending() {
     // the three largest identities where the answer wants the three smallest.
     let script = "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
                   DEFINE DATABASE shop; USE DATABASE shop;\n\
-                  DEFINE TABLE users;\n\
+                  DEFINE COLLECTION users;\n\
                   CREATE users:1 = { joined: 1900 };\n\
                   CREATE users:2 = { joined: 1900 };\n\
                   CREATE users:3 = { joined: 1900 };\n\
@@ -197,7 +197,7 @@ fn a_record_with_no_value_sorts_last_and_the_index_gives_the_read_up() {
     // and hands back a read whose bound it cannot.
     let script = "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
                   DEFINE DATABASE shop; USE DATABASE shop;\n\
-                  DEFINE TABLE users;\n\
+                  DEFINE COLLECTION users;\n\
                   CREATE users:1 = { joined: 1990 };\n\
                   CREATE users:2 = { name: 'nobody' };\n\
                   CREATE users:3 = { joined: 1980 };\n\
@@ -317,7 +317,7 @@ fn the_order_does_not_disclose_a_field_the_caller_cannot_read() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE staff;\n\
+             DEFINE COLLECTION staff;\n\
              CREATE staff:1 = { name: 'ada', salary: 10 };\n\
              CREATE staff:2 = { name: 'grace', salary: 30 };\n\
              CREATE staff:3 = { name: 'alan', salary: 20 };\n\
@@ -369,14 +369,10 @@ fn a_write_in_the_same_transaction_gives_the_read_up() {
              COMMIT;",
         )
         .unwrap();
-    let Some(Outcome::Records {
-        records,
-        path: took,
-    }) = outcomes.get(2)
-    else {
+    let Some(Outcome::Records { records, plan, .. }) = outcomes.get(2) else {
         panic!("the read answered with {:?}", outcomes.get(2));
     };
-    assert_eq!(*took, AccessPath::Scan);
+    assert_eq!(plan.access, AccessPath::Scan);
     assert_eq!(
         records.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
         vec![RecordId::Int(9), RecordId::Int(8)]

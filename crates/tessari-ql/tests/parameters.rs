@@ -44,6 +44,13 @@ fn written(source: &str, parameters: &Parameters) -> ExprKind {
             edit: tessari_ql::Edit::Whole(value),
             ..
         } => value.kind,
+        StatementKind::Insert { rows, .. } => {
+            rows.into_iter()
+                .next()
+                .and_then(|row| row.into_iter().next())
+                .unwrap_or_else(|| panic!("{source} parsed with no value"))
+                .kind
+        }
         other => panic!("{source} parsed as {other:?}"),
     }
 }
@@ -149,4 +156,23 @@ fn a_parameter_is_not_an_index_name() {
 #[test]
 fn a_parameter_needs_a_name_after_the_marker() {
     refused("CREATE users:1 = $;");
+}
+
+#[test]
+fn a_parameter_is_not_a_field_an_insert_names() {
+    // `INSERT` is the one statement that writes a list of field names beside a
+    // list of values, so it is the one place the rule could be got backwards.
+    // The names are grammar and refuse a parameter; the values take one, which
+    // the test below asserts — stated as a pair because either half alone would
+    // pass an implementation that treated both positions the same way.
+    refused("INSERT INTO users ($field) VALUES ('ada');");
+}
+
+#[test]
+fn an_insert_binds_its_values() {
+    let written = written(
+        "INSERT INTO users (name) VALUES ($who);",
+        &one("who", Value::String("ada".to_owned())),
+    );
+    assert_eq!(written, ExprKind::Literal(Value::String("ada".to_owned())));
 }

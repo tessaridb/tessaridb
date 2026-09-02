@@ -135,7 +135,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE spans;",
+             DEFINE COLLECTION spans;",
         )
         .unwrap();
     for n in 1..=RECORDS {
@@ -401,7 +401,7 @@ fn a_fetch_preserves_the_count_and_the_bound_still_applies() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE notes;\n\
+            "DEFINE COLLECTION notes;\n\
              CREATE notes:1 = { about: spans:1, body: 'a note' };\n\
              CREATE notes:2 = { about: spans:2, body: 'another' };\n\
              CREATE notes:3 = { about: spans:3, body: 'a third' };",

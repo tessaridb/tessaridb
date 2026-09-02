@@ -25,6 +25,41 @@ pub enum RecordId {
     Bytes(Vec<u8>),
 }
 
+impl RecordId {
+    /// The identity as the language spells one, so it can be written back.
+    ///
+    /// # Why this is not `Display`
+    ///
+    /// `Display` is a *rendering* — the form an error message and a log line
+    /// want, where a UUID's thirty-two undivided digits are shorter and nothing
+    /// reads them back. That convention is stated for the same type family in
+    /// this crate's `text` module, and it is left alone: every message that
+    /// names a record keeps the wording it has.
+    ///
+    /// This is the other form, and the two are genuinely different text. An
+    /// identity stands in the grammar as one of `1`, `'ada'`, `uuid '…'` or
+    /// `0x…`, and nothing else — so `Display`'s bare hex does not lex as an
+    /// identity at all, and `Display`'s unquoted text lexes as a different one.
+    ///
+    /// # What depends on it
+    ///
+    /// This is the single spelling the store answers with: the protocol says
+    /// record identities are text "exactly as the store spells them", and that a
+    /// client naming a record "writes that text into its next script". A caller
+    /// that pastes what it was given must land on the record it was given.
+    #[must_use]
+    pub fn to_literal(&self) -> String {
+        match self {
+            Self::Int(value) => value.to_string(),
+            Self::Text(value) => crate::string_to_literal(value),
+            Self::Uuid(bytes) => format!("uuid '{}'", crate::uuid_to_text(bytes)),
+            // The one variant whose `Display` was already a literal, because
+            // `0x` is how the language writes bytes and always was.
+            Self::Bytes(_) => self.to_string(),
+        }
+    }
+}
+
 impl From<i64> for RecordId {
     fn from(value: i64) -> Self {
         Self::Int(value)

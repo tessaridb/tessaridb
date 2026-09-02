@@ -9,7 +9,7 @@ USE DATABASE orders;
 
 --- case: a definition and a write land together
 BEGIN;
-DEFINE TABLE users;
+DEFINE COLLECTION users;
 CREATE users:1 = { name: 'ada' };
 COMMIT;
 --- expect: ok
@@ -20,7 +20,7 @@ SELECT * FROM users;
 
 --- case: a cancelled transaction leaves nothing behind
 BEGIN;
-DEFINE TABLE accounts;
+DEFINE COLLECTION accounts;
 CREATE accounts:1 = { balance: 10 };
 CANCEL;
 --- expect: ok
@@ -45,6 +45,33 @@ BEGIN;
 
 --- case: a COMMIT with nothing open is refused
 COMMIT;
+--- expect: error NoOpenTransaction
+
+# `VERIFY` — every check a COMMIT runs, and then the work is discarded. The
+# third thing to do with an open transaction: COMMIT checks and keeps, CANCEL
+# discards without checking, because every check that refuses a write runs
+# inside the commit.
+
+--- case: a write that would be accepted is rehearsed
+BEGIN;
+DEFINE COLLECTION drafts;
+CREATE drafts:1 = { title: 'a draft' };
+VERIFY;
+--- expect: ok
+
+--- case: and the rehearsal wrote nothing, not even the collection
+SELECT * FROM drafts;
+--- expect: error Unknown
+
+--- case: a write that would be refused is refused by the rehearsal
+BEGIN;
+DEFINE TABLE notes (body string);
+CREATE notes:1 = { body: 'here', author: 'ada' };
+VERIFY;
+--- expect: error UndeclaredField
+
+--- case: a VERIFY with nothing open is refused, exactly as its siblings are
+VERIFY;
 --- expect: error NoOpenTransaction
 
 --- case: a space and a table commit together, because a database is the unit

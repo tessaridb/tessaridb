@@ -11,7 +11,7 @@ USE DATABASE orders;
 --- expect: ok
 
 --- case: records whose shapes differ, which is the point of holding documents
-DEFINE TABLE people;
+DEFINE COLLECTION people;
 CREATE people:1 = { name: 'ada', address: { city: 'Paris', zip: '75001' }, tags: ['urgent', 'old'] };
 CREATE people:2 = { name: 'grace', address: { city: 'Lyon' }, tags: ['old'] };
 CREATE people:3 = { name: 'alan', address: 'Paris' };

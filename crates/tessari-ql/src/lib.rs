@@ -25,15 +25,31 @@ pub mod test_support;
 mod token;
 
 pub use ast::{
-    Aggregate, ArithmeticOp, Assignment, Direction, Edit, Expr, ExprKind, Field, FieldPath, Hop,
-    Identity, InfoSubject, Name, Ordering, Projected, Projection, RangeExpr, RecordTarget, Script,
-    Select, Source, Statement, StatementKind, TableRef, Written,
+    Aggregate, Answer, Approximation, ArithmeticOp, Assignment, ColumnDeclaration, ConsumerSource,
+    CreateTarget, DeleteBound, Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr,
+    ExprKind, Field, FieldMapping, FieldPath, Hop, Identity, InfoSubject, JoinSide, Name,
+    OnFailure, Ordering, Password, Projected, Projection, RangeExpr, ReachRef, RecordTarget,
+    Retention, Script, Select, Source, Statement, StatementKind, TableChange, TableRef, Timeout,
+    UserChange, UserGrant, Using, Version, Written,
 };
 pub use bind::Parameters;
 pub use error::{Error, Result};
-pub use function::Function;
+pub use function::{Function, Purity};
 pub use lexer::tokenize;
 pub use parser::{parse, parse_expression};
 pub use render::render;
 pub use tessari_types::BinaryOp;
 pub use token::{Keyword, Punct, Span, Spanned, Token};
+
+/// The widest vector a declaration may name.
+///
+/// Two orders of magnitude above anything in use. It exists so that a catalog
+/// can hold a declared width as the ordinary small integer every other number in
+/// a definition is, and it is stated here rather than inside the parser because
+/// the store that writes the declaration back needs the same number: a ceiling
+/// each half of the code decided for itself is two ceilings waiting to differ.
+///
+/// A width above it is refused where the author wrote the number
+/// ([`Error::VectorWidthAboveTheCeiling`]), which is the only place the refusal
+/// can point at what is wrong.
+pub const WIDEST_VECTOR: usize = 65_536;

@@ -139,6 +139,8 @@ pub enum Punct {
     Slash,
     /// `%` — remainder.
     Percent,
+    /// `??` — the left value unless it holds nothing.
+    Coalesce,
     /// `::` — separates a function's group from its name.
     ColonColon,
     /// `{`
@@ -153,6 +155,12 @@ pub enum Punct {
     ArrowRight,
     /// `<-` — a traversal step following an edge from its target.
     ArrowLeft,
+    /// `|` — separates the members of a declared union of literals.
+    ///
+    /// Not a boolean or, which is the word `OR`, and not a bitwise one, which
+    /// this language does not have. It appears in exactly one position — after
+    /// `TYPE` — so the single character costs the language nothing elsewhere.
+    Pipe,
     /// `(`
     ParenOpen,
     /// `)`
@@ -181,6 +189,7 @@ impl Punct {
             Self::Minus => "-",
             Self::Slash => "/",
             Self::Percent => "%",
+            Self::Coalesce => "??",
             Self::ColonColon => "::",
             Self::BraceOpen => "{",
             Self::BraceClose => "}",
@@ -188,6 +197,7 @@ impl Punct {
             Self::BracketClose => "]",
             Self::ArrowRight => "->",
             Self::ArrowLeft => "<-",
+            Self::Pipe => "|",
             Self::ParenOpen => "(",
             Self::ParenClose => ")",
         }
@@ -214,10 +224,28 @@ pub enum Keyword {
     Namespace,
     /// `DATABASE`
     Database,
+    /// `STORE` — the whole store, the widest of the three reaches.
+    ///
+    /// Reserved rather than matched as a bare word, which `INFO FOR STORE` did
+    /// until an authority could be granted at a reach. `GRANT read ON store TO
+    /// ada` is a statement that already parses today and already means the
+    /// *table* `store`; a reach spelled as a word would have silently widened
+    /// it to the whole store. Reserving the word costs a table the name and
+    /// makes the ambiguity unrepresentable instead of resolved.
+    Store,
     /// `DEFINE`
     Define,
     /// `DROP`
     Drop,
+    /// `ALTER` — changes one thing about something that already exists.
+    ///
+    /// A separate verb from `DEFINE` because it means a different act:
+    /// `DEFINE` brings a user into being and refuses a name already taken,
+    /// while `ALTER` reaches an existing one and touches exactly the field it
+    /// names. Spelling both as `DEFINE` would make a re-declaration either an
+    /// error or a silent whole-record overwrite, and the second is how a
+    /// password rotation quietly resets somebody's role.
+    Alter,
     /// `REBUILD` — make an index's entries what its table's rows imply.
     Rebuild,
     /// `TABLE`
@@ -226,6 +254,10 @@ pub enum Keyword {
     Space,
     /// `BUCKET` — a table whose records are files.
     Bucket,
+    /// `COLLECTION` — records that carry fields nobody declared.
+    Collection,
+    /// `GRAPH` — an edge table that says which pair of tables it joins.
+    Graph,
     /// `PUT` — write a file's bytes.
     Put,
     /// `READ` — answer a file's bytes.
@@ -256,6 +288,8 @@ pub enum Keyword {
     Type,
     /// `SCHEMAFULL` — the table refuses a field it does not declare.
     Schemafull,
+    /// `SCHEMALESS` — the table accepts a field it does not declare.
+    Schemaless,
     /// `EDGE` — the table holds edges, and carries an index on each endpoint.
     Edge,
     /// `RELATE` — record an edge between two records.
@@ -270,10 +304,30 @@ pub enum Keyword {
     Exists,
     /// `CREATE`
     Create,
+    /// `INSERT` — write records the store names itself.
+    ///
+    /// Its own verb rather than a spelling of `CREATE`, because the question it
+    /// answers is different: `CREATE` is handed an identity and asserts no
+    /// record holds it, while this one asks the store for identities it has
+    /// never used. `INTO` and `VALUES` are deliberately **not** reserved — they
+    /// are matched as plain words the way `BEFORE` and `AFTER` are, so a field
+    /// may still be called `values`.
+    Insert,
     /// `SELECT`
     Select,
     /// `FROM`
     From,
+    /// `ONLY` — the read answers with the record rather than a list holding it.
+    ///
+    /// Reserved rather than contextual, unlike every other clause word this
+    /// language added, and the reason is where it stands: exactly where a table
+    /// name goes. `FROM only limit 1` cannot be told apart with any finite
+    /// lookahead — the table `only` bounded to one row, or this marker in front
+    /// of a table called `limit`, which lexes as a bare identifier because
+    /// `LIMIT` *is* contextual. A word whose meaning is settled by guessing is
+    /// worse than a name that cannot be used, and `TABLE`, `FIELD`, `INDEX`,
+    /// `TYPE`, `SPACE` and `READ` are already reserved here.
+    Only,
     /// `WHERE`
     Where,
     /// `AS` — names a projected value.
@@ -310,6 +364,16 @@ pub enum Keyword {
     Ilike,
     /// `UPDATE`
     Update,
+    /// `THROW` — refuse the script, with a message the caller sees.
+    Throw,
+    /// `UPSERT` — write the record whether or not it is already there.
+    ///
+    /// Its own verb rather than a flag on `UPDATE`, because the question it
+    /// answers is different: `UPDATE` asserts the record exists and `CREATE`
+    /// asserts it does not, while this one asserts neither.
+    Upsert,
+    /// `MERGE` — fold an object into the record, leaving what it does not name.
+    Merge,
     /// `DELETE`
     Delete,
     /// `GET`
@@ -323,12 +387,32 @@ pub enum Keyword {
     Keys,
     /// `RANGE`
     Range,
+    /// `THEN` — what a conditional answers with when its test holds.
+    Then,
+    /// `ELSE` — what it answers with otherwise.
+    Else,
+    /// `END` — where a conditional stops.
+    ///
+    /// Required rather than optional. Without it `IF a THEN b ELSE c + 1` has
+    /// two readings and a reader has to know which one the grammar picked.
+    End,
+    /// `LET` — bind a value under a name for the rest of the script.
+    ///
+    /// A separate verb from `SET`, which writes a key. The two acts differ in
+    /// what they touch: `SET` reaches the store and outlives the script, `LET`
+    /// touches nothing and dies with it. One word for both would make a typo in
+    /// a sigil the difference between a variable and a durable write.
+    Let,
+    /// `RETURN` — the value this script answers with.
+    Return,
     /// `BEGIN`
     Begin,
     /// `COMMIT`
     Commit,
     /// `CANCEL`
     Cancel,
+    /// `VERIFY`
+    Verify,
     /// `NONE` — the field is not there.
     None,
     /// `NULL` — the field is there and holds nothing.
@@ -353,12 +437,16 @@ impl Keyword {
             Self::Use => "USE",
             Self::Namespace => "NAMESPACE",
             Self::Database => "DATABASE",
+            Self::Store => "STORE",
             Self::Define => "DEFINE",
             Self::Drop => "DROP",
+            Self::Alter => "ALTER",
             Self::Rebuild => "REBUILD",
             Self::Table => "TABLE",
             Self::Space => "SPACE",
             Self::Bucket => "BUCKET",
+            Self::Collection => "COLLECTION",
+            Self::Graph => "GRAPH",
             Self::Put => "PUT",
             Self::Read => "READ",
             Self::Backup => "BACKUP",
@@ -374,6 +462,7 @@ impl Keyword {
             Self::Field => "FIELD",
             Self::Type => "TYPE",
             Self::Schemafull => "SCHEMAFULL",
+            Self::Schemaless => "SCHEMALESS",
             Self::Edge => "EDGE",
             Self::Relate => "RELATE",
             Self::Unique => "UNIQUE",
@@ -381,8 +470,10 @@ impl Keyword {
             Self::Not => "NOT",
             Self::Exists => "EXISTS",
             Self::Create => "CREATE",
+            Self::Insert => "INSERT",
             Self::Select => "SELECT",
             Self::From => "FROM",
+            Self::Only => "ONLY",
             Self::Where => "WHERE",
             Self::As => "AS",
             Self::Required => "REQUIRED",
@@ -401,15 +492,24 @@ impl Keyword {
             Self::Like => "LIKE",
             Self::Ilike => "ILIKE",
             Self::Update => "UPDATE",
+            Self::Upsert => "UPSERT",
+            Self::Throw => "THROW",
+            Self::Merge => "MERGE",
             Self::Delete => "DELETE",
             Self::Get => "GET",
             Self::Set => "SET",
             Self::Del => "DEL",
             Self::Keys => "KEYS",
             Self::Range => "RANGE",
+            Self::Then => "THEN",
+            Self::Else => "ELSE",
+            Self::End => "END",
+            Self::Let => "LET",
+            Self::Return => "RETURN",
             Self::Begin => "BEGIN",
             Self::Commit => "COMMIT",
             Self::Cancel => "CANCEL",
+            Self::Verify => "VERIFY",
             Self::None => "NONE",
             Self::Null => "NULL",
             Self::True => "TRUE",
@@ -425,12 +525,16 @@ impl Keyword {
         Self::Use,
         Self::Namespace,
         Self::Database,
+        Self::Store,
         Self::Define,
         Self::Drop,
+        Self::Alter,
         Self::Rebuild,
         Self::Table,
         Self::Space,
         Self::Bucket,
+        Self::Collection,
+        Self::Graph,
         Self::Put,
         Self::Read,
         Self::Backup,
@@ -446,6 +550,7 @@ impl Keyword {
         Self::Field,
         Self::Type,
         Self::Schemafull,
+        Self::Schemaless,
         Self::Edge,
         Self::Relate,
         Self::Unique,
@@ -453,8 +558,10 @@ impl Keyword {
         Self::Not,
         Self::Exists,
         Self::Create,
+        Self::Insert,
         Self::Select,
         Self::From,
+        Self::Only,
         Self::Where,
         Self::As,
         Self::Required,
@@ -473,15 +580,24 @@ impl Keyword {
         Self::Like,
         Self::Ilike,
         Self::Update,
+        Self::Upsert,
+        Self::Merge,
+        Self::Throw,
         Self::Delete,
         Self::Get,
         Self::Set,
         Self::Del,
         Self::Keys,
         Self::Range,
+        Self::Then,
+        Self::Else,
+        Self::End,
+        Self::Let,
+        Self::Return,
         Self::Begin,
         Self::Commit,
         Self::Cancel,
+        Self::Verify,
         Self::None,
         Self::Null,
         Self::True,

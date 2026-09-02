@@ -14,8 +14,8 @@ use tessari_encoding::encode_payload;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_storage::{Catalog, Error, FieldShape, RecordAddress, Store, TableShape};
 use tessari_types::{
-    Assertion, BinaryOp, DatabaseId, FieldKind, NamespaceId, Number, RecordId, Sequence, TableId,
-    Value,
+    Assertion, BinaryOp, DatabaseId, FieldKind, NamespaceId, Number, Operand, Path, RecordId,
+    Sequence, TableId, Value,
 };
 
 struct Fixture {
@@ -541,7 +541,15 @@ fn a_replica_reaches_the_same_verdict_about_a_required_field() {
 fn not_negative() -> Assertion {
     Assertion::Compare {
         op: BinaryOp::GreaterOrEqual,
-        against: Value::Number(Number::Integer(0)),
+        against: Operand::Literal(Value::Number(Number::Integer(0))),
+    }
+}
+
+/// `$value > starts_at`, the constraint that reads a second field of the record.
+fn after(other: &str) -> Assertion {
+    Assertion::Compare {
+        op: BinaryOp::Greater,
+        against: Operand::Field(Path::parse(other).unwrap()),
     }
 }
 
@@ -559,6 +567,72 @@ fn a_value_the_declaration_refuses_never_lands() {
         matches!(refused, Err(Error::AssertionViolation { .. })),
         "{refused:?}"
     );
+}
+
+#[test]
+fn a_declaration_may_compare_one_field_of_a_record_with_another() {
+    // The verdict is still a pure function of the record and the catalog: the
+    // second value comes out of the record being written, so no read of any
+    // other record happens and a replica reaches the same answer.
+    let fixture = Fixture::new(false);
+    fixture
+        .constrain("ends_at", FieldKind::Int, after("starts_at"))
+        .unwrap();
+    fixture
+        .write(
+            "ok",
+            &[
+                ("starts_at", Value::Number(Number::Integer(10))),
+                ("ends_at", Value::Number(Number::Integer(20))),
+            ],
+        )
+        .unwrap();
+
+    let refused = fixture.write(
+        "backwards",
+        &[
+            ("starts_at", Value::Number(Number::Integer(30))),
+            ("ends_at", Value::Number(Number::Integer(20))),
+        ],
+    );
+    let Err(error @ Error::AssertionViolation { .. }) = refused else {
+        panic!("{refused:?}");
+    };
+    // The message names both fields, because "ends_at is refused" alone leaves
+    // the writer guessing which constraint they broke — and both values came
+    // from the statement they just sent, so neither is a disclosure.
+    let said = error.to_string();
+    assert!(said.contains("ends_at"), "{said}");
+    assert!(said.contains("starts_at"), "{said}");
+    assert!(!fixture.holds("backwards"), "the refused record landed");
+}
+
+#[test]
+fn the_compared_field_is_read_from_the_record_and_need_not_be_declared() {
+    // A lenient table keeps accepting what it accepted: `starts_at` is never
+    // declared here, and the constraint still reads it, because the route
+    // resolves through the record rather than through the catalog.
+    let fixture = Fixture::new(false);
+    fixture
+        .constrain("ends_at", FieldKind::Int, after("starts_at"))
+        .unwrap();
+    assert!(!fixture.declares("starts_at"));
+
+    fixture
+        .write(
+            "ok",
+            &[
+                ("starts_at", Value::Number(Number::Integer(1))),
+                ("ends_at", Value::Number(Number::Integer(2))),
+                ("note", Value::from("undeclared, and still accepted")),
+            ],
+        )
+        .unwrap();
+    // No subject, no assertion — the rule an assertion has always followed.
+    fixture
+        .write("empty", &[("note", Value::from("x"))])
+        .unwrap();
+    assert!(fixture.holds("ok") && fixture.holds("empty"));
 }
 
 #[test]
@@ -589,6 +663,50 @@ fn declaring_one_over_rows_that_break_it_is_refused_and_writes_nothing() {
         fixture.declared("balance").is_none(),
         "a refused declaration left itself behind"
     );
+}
+
+#[test]
+fn a_cross_field_declaration_binds_the_rows_that_predate_it_too() {
+    // Nothing new: the declare-time walk calls the same `check` per row, so a
+    // constraint that reads a second field is checked against the rows already
+    // there for the same reason a constraint over one value is. The walk stays
+    // inside this table — it is N point reads bounded by the table itself, not
+    // a read of any other table.
+    let fixture = Fixture::new(false);
+    fixture
+        .write(
+            "ok",
+            &[
+                ("starts_at", Value::Number(Number::Integer(1))),
+                ("ends_at", Value::Number(Number::Integer(2))),
+            ],
+        )
+        .unwrap();
+    fixture
+        .write(
+            "backwards",
+            &[
+                ("starts_at", Value::Number(Number::Integer(9))),
+                ("ends_at", Value::Number(Number::Integer(2))),
+            ],
+        )
+        .unwrap();
+
+    let refused = fixture.constrain("ends_at", FieldKind::Int, after("starts_at"));
+    let Err(error @ Error::AssertionViolation { .. }) = refused else {
+        panic!("{refused:?}");
+    };
+    // The offending record is named, and no other record is — the refusal says
+    // which row to look at without reporting anything about the rest of them.
+    let said = error.to_string();
+    assert!(said.contains("backwards"), "{said}");
+    assert!(!said.contains("\"ok\""), "{said}");
+    assert!(
+        fixture.declared("ends_at").is_none(),
+        "a refused declaration left itself behind"
+    );
+    // And the rows are untouched: a refused declaration writes nothing at all.
+    assert!(fixture.holds("ok") && fixture.holds("backwards"));
 }
 
 #[test]

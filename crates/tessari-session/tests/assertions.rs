@@ -31,7 +31,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE bank; USE DATABASE bank;\n\
-             DEFINE TABLE accounts;\n\
+             DEFINE TABLE accounts SCHEMALESS;\n\
              DEFINE FIELD balance ON accounts TYPE int ASSERT $value >= 0;",
         )
         .unwrap();
@@ -113,7 +113,7 @@ fn declaring_one_over_rows_that_violate_it_is_refused_and_writes_nothing() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE bank; USE DATABASE bank;\n\
-             DEFINE TABLE accounts;\n\
+             DEFINE TABLE accounts SCHEMALESS;\n\
              CREATE accounts:1 = { balance: 10 };\n\
              CREATE accounts:2 = { balance: -5 };",
         )
@@ -134,7 +134,7 @@ fn a_range_is_two_comparisons_and_a_set_is_one_membership() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE orders;\n\
+             DEFINE TABLE orders SCHEMALESS;\n\
              DEFINE FIELD age ON orders TYPE int ASSERT $value > 0 AND $value < 150;\n\
              DEFINE FIELD status ON orders TYPE string ASSERT $value IN ['new', 'paid'];",
         )
@@ -171,7 +171,7 @@ fn assert_and_where_cannot_disagree() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE t; USE DATABASE t;\n\
-             DEFINE TABLE loose;\n\
+             DEFINE COLLECTION loose;\n\
              CREATE loose:1 = { v: 5 };\n\
              CREATE loose:2 = { v: -5 };\n\
              CREATE loose:3 = { v: 0 };\n\
@@ -188,7 +188,9 @@ fn assert_and_where_cannot_disagree() {
     // assertion admits both by the presence rule, so those two are held out and
     // asserted separately below.
     session
-        .run("DEFINE TABLE strict;\nDEFINE FIELD v ON strict TYPE any ASSERT $value > 0;")
+        .run(
+            "DEFINE TABLE strict SCHEMALESS;\nDEFINE FIELD v ON strict TYPE any ASSERT $value > 0;",
+        )
         .unwrap();
     let mut admitted = Vec::new();
     for (id, written) in [
@@ -239,9 +241,6 @@ fn an_assertion_outside_the_vocabulary_is_refused_where_it_is_written() {
         "DEFINE FIELD opened ON accounts TYPE datetime ASSERT $value < time::now();",
         // A computed right-hand side.
         "DEFINE FIELD n ON accounts TYPE int ASSERT $value > 1 + 1;",
-        // A field of the record — an assertion is over one value, and a
-        // cross-field one is its own question.
-        "DEFINE FIELD low ON accounts TYPE int ASSERT $value < high;",
         // Any parameter but `$value`: nothing can bind it, which is the rule
         // `DEFAULT` already follows.
         "DEFINE FIELD m ON accounts TYPE int ASSERT $limit > 3;",
@@ -254,6 +253,34 @@ fn an_assertion_outside_the_vocabulary_is_refused_where_it_is_written() {
         let refused = session.run(script);
         assert!(refused.is_err(), "{script} was accepted: {refused:?}");
     }
+}
+
+#[test]
+fn a_field_of_the_same_record_is_inside_the_vocabulary() {
+    // The one form that moved: `high` is not computed and not read from
+    // anywhere else — it is a route into the record already being written, so
+    // the verdict stays a pure function of that record and the catalog. A
+    // replica applying the same log entry reaches the same answer without
+    // consulting anything.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE FIELD low ON accounts TYPE int ASSERT $value < high;")
+        .unwrap();
+    session
+        .run("CREATE accounts:1 = { balance: 0, low: 1, high: 5 };")
+        .unwrap();
+
+    let refused = session.run("CREATE accounts:2 = { balance: 0, low: 9, high: 5 };");
+    let Err(error) = refused else {
+        panic!("the violating record landed: {refused:?}");
+    };
+    // Both names came from the statement the writer just sent, so naming the
+    // second discloses nothing they did not supply — and without it "low is
+    // refused" leaves them guessing which constraint they broke.
+    let said = error.to_string();
+    assert!(said.contains("low"), "{said}");
+    assert!(said.contains("high"), "{said}");
 }
 
 #[test]

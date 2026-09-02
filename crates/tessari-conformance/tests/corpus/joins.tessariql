@@ -8,8 +8,8 @@ DEFINE NAMESPACE prod;
 USE NAMESPACE prod;
 DEFINE DATABASE shop;
 USE DATABASE shop;
-DEFINE TABLE users;
-DEFINE TABLE orders;
+DEFINE COLLECTION users;
+DEFINE COLLECTION orders;
 --- expect: ok
 
 --- case: two users and three orders, one of them for nobody
@@ -84,3 +84,85 @@ SELECT * FROM users JOIN orders ON users.qty = orders.qty;
 --- case: a left record with nothing at the key matches nothing
 SELECT * FROM users JOIN orders ON users.missing = orders.who;
 --- expect: rows 0
+
+--- case: two sides holding different kinds at the key are refused, not answered
+# The whole reason this refusal exists: `no rows` is the honest answer to a join
+# over data that happens not to match, and it is also what a join answers when
+# one side stores an identity as text and the other stores it as a reference.
+# The two answers are identical and only one of them is a mistake, so the store
+# says which. `orders.by` is a reference; `users.tag` is the same identity typed
+# out.
+CREATE users:5 = { name: 'ref', tag: 'users:5' };
+CREATE orders:5 = { who: 'ref', by: users:5 };
+SELECT * FROM users JOIN orders ON users.tag = orders.by;
+--- expect: error JoinKeysDiffer
+
+--- case: and the refusal survives an index on the probed side
+# The arm the rule exists for. Without it the index path is told nothing by its
+# probe, which reads exactly like a key that is simply absent.
+DEFINE INDEX by_owner ON orders FIELDS by;
+SELECT * FROM users JOIN orders ON users.tag = orders.by;
+--- expect: error JoinKeysDiffer
+
+--- case: a join that matched anything at all is never refused
+# One good pair among mismatched ones is enough. Records carry no declared type
+# here, so refusing on a single stray value would trade a silent wrong answer
+# for a loud wrong refusal.
+CREATE users:6 = { name: 'mixed', tag: users:6 };
+CREATE orders:6 = { who: 'mixed', by: users:6 };
+SELECT * FROM users JOIN orders ON users.tag = orders.by;
+--- expect: rows 1
+
+--- case: AS names the side the row files a table under
+SELECT * FROM users AS u JOIN orders AS o ON u.name = o.who;
+--- expect: rows 5
+
+--- case: a table joined to itself, which only aliases make sayable
+# Without them the two sides share one name and the row has no side a reader
+# could address — which is why the refusal below moved from the table to the
+# name rather than going away.
+CREATE users:7 = { name: 'lead', code: 7 };
+CREATE users:8 = { name: 'report', code: 8, boss: 7 };
+SELECT * FROM users AS person JOIN users AS boss ON person.boss = boss.code;
+--- expect: rows 1
+
+--- case: two sides under one name are still refused
+SELECT * FROM users AS x JOIN orders AS x ON x.name = x.who;
+--- expect: error OneSidedJoin
+
+--- case: a name given where there is no join is refused
+# Accepting it and ignoring it would be quieter and wrong: a reader who wrote a
+# name expects to be able to use it.
+SELECT * FROM users AS u;
+--- expect: error UnexpectedToken
+
+--- case: a read stands as a source, and answers its own records
+SELECT * FROM (SELECT * FROM orders WHERE total > 5 LIMIT 10);
+--- expect: rows 1
+
+--- case: a materialised source states its ceiling
+# It holds every record it answers with — there is no index to walk and no bound
+# to push into it — so one that could grow without limit is refused rather than
+# cut at a number nobody wrote.
+SELECT * FROM (SELECT * FROM orders);
+--- expect: error UnexpectedToken
+
+--- case: a WHERE over a materialised read asks about what the read produced
+# The shape no condition inside the read could take: `n` is the fold's answer
+# and does not exist until the group is folded.
+SELECT * FROM (SELECT who, count(*) AS n FROM orders GROUP BY who LIMIT 10)
+WHERE n > 1;
+--- expect: rows 1
+
+--- case: a read stands on either side of a join, under its own name
+SELECT * FROM (SELECT * FROM users LIMIT 10) AS u
+JOIN orders AS o ON u.name = o.who;
+--- expect: rows 5
+
+--- case: and a joined read must name itself
+SELECT * FROM users AS u JOIN (SELECT * FROM orders LIMIT 10) ON u.name = o.who;
+--- expect: error UnexpectedToken
+
+--- case: the outer statement orders and bounds what the inner one answered
+SELECT * FROM (SELECT * FROM orders LIMIT 100) ORDER BY total DESC LIMIT 1;
+--- expect: rows 1

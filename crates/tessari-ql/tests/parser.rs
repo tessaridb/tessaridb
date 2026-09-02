@@ -8,10 +8,10 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use tessari_ql::{
-    BinaryOp, Error, ExprKind, Identity, Projection, RecordTarget, Script, Source, StatementKind,
-    parse,
+    Approximation, BinaryOp, EdgeClause, Error, ExprKind, Identity, InfoSubject, Projection,
+    RecordTarget, Script, Source, StatementKind, parse,
 };
-use tessari_types::{Datetime, Number, RecordId, Value};
+use tessari_types::{Datetime, FieldKind, Number, RecordId, Value};
 
 fn script(source: &str) -> Script {
     match parse(source) {
@@ -214,7 +214,7 @@ fn a_record_id_is_one_of_its_four_kinds_and_a_float_is_not_one() {
         ("users:'ada'", RecordId::Text("ada".to_owned())),
         ("users:0x0a1b", RecordId::Bytes(vec![0x0a, 0x1b])),
     ] {
-        let StatementKind::Delete { target } = one(&format!("DELETE {source};")) else {
+        let StatementKind::Delete { target, .. } = one(&format!("DELETE {source};")) else {
             panic!("{source} did not parse as a delete");
         };
         assert_eq!(target.id, Identity::Fixed(expected), "{source}");
@@ -242,15 +242,19 @@ fn every_definition_form_parses() {
         StatementKind::DefineDatabase { .. }
     ));
     assert!(matches!(
-        one("DEFINE TABLE users;"),
+        one("DEFINE TABLE users (name string);"),
         StatementKind::DefineTable { .. }
+    ));
+    assert!(matches!(
+        one("DEFINE COLLECTION notes;"),
+        StatementKind::DefineCollection { .. }
     ));
     assert!(matches!(
         one("DEFINE SPACE sessions;"),
         StatementKind::DefineSpace { .. }
     ));
     assert!(matches!(
-        one("DEFINE TABLE IF NOT EXISTS users;"),
+        one("DEFINE TABLE IF NOT EXISTS users SCHEMALESS;"),
         StatementKind::DefineTable {
             if_not_exists: true,
             ..
@@ -575,7 +579,7 @@ fn the_whole_specification_script_parses() {
     let parsed = script(
         "\
         USE NAMESPACE prod DATABASE orders;\n\
-        DEFINE TABLE users;\n\
+        DEFINE COLLECTION users;\n\
         DEFINE SPACE sessions;\n\
         DEFINE INDEX by_email ON users FIELDS email UNIQUE;\n\
         BEGIN;\n\
@@ -672,7 +676,7 @@ fn projected_names(source: &str) -> Vec<String> {
         panic!("not a select");
     };
     match select.projection {
-        Projection::Values(values) => values.into_iter().map(|v| v.name.text).collect(),
+        Projection::Values { values, .. } => values.into_iter().map(|v| v.name.text).collect(),
         Projection::All => panic!("{source} projected everything"),
     }
 }
@@ -837,8 +841,453 @@ fn fetch_is_contextual_so_it_is_still_a_name() {
         panic!("not a select");
     };
     assert_eq!(select.fetch.len(), 1);
-    let Projection::Values(wanted) = &select.projection else {
+    let Projection::Values { values: wanted, .. } = &select.projection else {
         panic!("not a named projection");
     };
     assert_eq!(wanted[0].name.text, "fetch");
+}
+
+#[test]
+fn an_edge_table_parses_its_endpoints_its_properties_and_the_order_its_edges_are_held_in() {
+    let StatementKind::DefineTable {
+        name,
+        columns,
+        edge,
+        if_not_exists,
+        ..
+    } = one("DEFINE TABLE follows (at datetime) EDGE FROM users TO users ORDER BY at DESC;")
+    else {
+        panic!("not a table");
+    };
+    assert_eq!(name.text, "follows");
+    let Some(EdgeClause::Between(declared)) = edge else {
+        panic!("not a declared pair");
+    };
+    assert_eq!(declared.from.name.text, "users");
+    assert_eq!(declared.to.name.text, "users");
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].name.text, "at");
+    let order = declared.order.as_ref().expect("the order was written");
+    assert_eq!(order.field.text, "at");
+    assert!(order.descending);
+    assert!(!if_not_exists);
+}
+
+#[test]
+fn a_bare_edge_table_keeps_the_meaning_it_had_before_the_clause_existed() {
+    // The clause is optional, so every edge table already written keeps parsing
+    // and keeps accepting a link between any two records. That is the whole
+    // compatibility contract of this wave, and it is asserted rather than
+    // assumed.
+    let StatementKind::DefineTable { edge, columns, .. } = one("DEFINE TABLE follows EDGE;") else {
+        panic!("not a table");
+    };
+    assert!(matches!(edge, Some(EdgeClause::Any)));
+    assert!(columns.is_empty());
+}
+
+#[test]
+fn a_table_that_is_only_a_link_declares_no_properties_and_no_order() {
+    let StatementKind::DefineTable { columns, edge, .. } =
+        one("DEFINE TABLE wrote EDGE FROM users TO posts;")
+    else {
+        panic!("not a table");
+    };
+    assert!(columns.is_empty());
+    let Some(EdgeClause::Between(declared)) = edge else {
+        panic!("not a declared pair");
+    };
+    assert!(declared.order.is_none());
+}
+
+#[test]
+fn an_edge_ordering_defaults_to_ascending_and_says_so_the_same_way_a_read_does() {
+    // Written and unwritten reach the same value, which is what makes `ASC`
+    // safe to accept: a reader spelling the default out gets the default.
+    for source in [
+        "DEFINE TABLE follows (at datetime) EDGE FROM users TO users ORDER BY at ASC;",
+        "DEFINE TABLE follows (at datetime) EDGE FROM users TO users ORDER BY at;",
+    ] {
+        let StatementKind::DefineTable { edge, .. } = one(source) else {
+            panic!("not a table");
+        };
+        let Some(EdgeClause::Between(declared)) = edge else {
+            panic!("not a declared pair");
+        };
+        assert!(
+            !declared.order.expect("the order was written").descending,
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn half_a_declared_pair_is_refused_naming_the_word_that_is_missing() {
+    // `FROM` without `TO` is refused, and the refusal says which word it wanted:
+    // "not allowed" without "write this instead" turns a one-word fix into a
+    // search through the specification.
+    let error = parse("DEFINE TABLE follows EDGE FROM users;").unwrap_err();
+    assert!(error.to_string().contains("TO"), "{error}");
+}
+
+#[test]
+fn an_edge_ordering_missing_its_by_is_refused_rather_than_read_as_a_column_called_order() {
+    let error =
+        parse("DEFINE TABLE follows (at datetime) EDGE FROM users TO users ORDER at;").unwrap_err();
+    assert!(error.to_string().contains("BY"), "{error}");
+}
+
+#[test]
+fn order_is_still_an_ordinary_name_because_the_clause_word_is_contextual() {
+    // The clause is read with contextual words, so an edge table may carry a
+    // property called `order` and a table may still be called one.
+    let StatementKind::DefineTable { columns, edge, .. } =
+        one("DEFINE TABLE ranked (order int) EDGE FROM users TO users;")
+    else {
+        panic!("not a table");
+    };
+    assert_eq!(columns[0].name.text, "order");
+    let Some(EdgeClause::Between(declared)) = edge else {
+        panic!("not a declared pair");
+    };
+    assert!(declared.order.is_none());
+}
+
+#[test]
+fn the_word_graph_names_a_container_rather_than_a_pair_of_tables() {
+    // It was `DEFINE GRAPH follows FROM users TO users`, which made an edge
+    // table wearing a longer word rather than a structure a caller can hold. The
+    // clause moved to `DEFINE TABLE … EDGE`, where it always belonged, and the
+    // word went to the container — so the endpoint form is refused and the bare
+    // one is not.
+    assert!(parse("DEFINE GRAPH follows FROM users TO users;").is_err());
+
+    let StatementKind::DefineGraph { name, .. } = one("DEFINE GRAPH social;") else {
+        panic!("not a graph");
+    };
+    assert_eq!(name.text, "social");
+
+    let StatementKind::DropGraph { name } = one("DROP GRAPH social;") else {
+        panic!("not a drop");
+    };
+    assert_eq!(name.text, "social");
+}
+
+#[test]
+fn depth_takes_a_literal_and_nothing_that_could_be_computed() {
+    // The clause exists so that a walk states its own length. A parameter is the
+    // case worth naming: `DEPTH $n` parses as nothing here, and that is the
+    // point — accepting it would mean a statement whose reach arrives at run
+    // time from somewhere a reader of the statement cannot see, which is an
+    // unbounded walk with a promise attached.
+    let StatementKind::Select(select) = one("SELECT * FROM users:1->follows->users DEPTH 3;")
+    else {
+        panic!("not a read");
+    };
+    let Source::Traverse { depth, hops, .. } = &select.from else {
+        panic!("not a walk");
+    };
+    assert_eq!(*depth, Some(3));
+    assert_eq!(hops.len(), 1);
+
+    for refused in [
+        "SELECT * FROM users:1->follows->users DEPTH $n;",
+        "SELECT * FROM users:1->follows->users DEPTH 1 + 2;",
+        "SELECT * FROM users:1->follows->users DEPTH 'three';",
+        "SELECT * FROM users:1->follows->users DEPTH depth;",
+    ] {
+        assert!(parse(refused).is_err(), "{refused}");
+    }
+}
+
+#[test]
+fn depth_counts_steps_so_it_starts_at_one() {
+    // Refused rather than answered with an empty set: a caller who computed the
+    // bound and got zero has a bug, and an empty answer is exactly what would
+    // hide it. A negative refuses as the same thing, which it is.
+    for refused in [
+        "SELECT * FROM users:1->follows->users DEPTH 0;",
+        "SELECT * FROM users:1->follows->users DEPTH -1;",
+    ] {
+        assert!(
+            matches!(parse(refused), Err(Error::DepthBelowOne { .. })),
+            "{refused}"
+        );
+    }
+}
+
+#[test]
+fn depth_needs_one_step_that_lands_somewhere() {
+    // Both shapes refuse for one reason: there is no single step to repeat.
+    // A chain could mean the whole chain again or its last step again, and a
+    // walk ending on the edges has nothing for a second round to start from.
+    for refused in [
+        "SELECT * FROM users:1->follows->users->follows->users DEPTH 2;",
+        "SELECT * FROM users:1->follows DEPTH 2;",
+    ] {
+        assert!(
+            matches!(parse(refused), Err(Error::DepthNeedsOneHopToATable { .. })),
+            "{refused}"
+        );
+    }
+}
+
+#[test]
+fn an_edge_is_deleted_by_the_pair_it_joins_rather_than_by_its_derived_name() {
+    // `RELATE` derives the edge's identity and never shows it, so without this
+    // form the only way to remove an edge is to rebuild that string by hand.
+    let StatementKind::DeleteEdge {
+        from, edges, to, ..
+    } = one("DELETE person:1->works_at->company:1;")
+    else {
+        panic!("not an edge delete");
+    };
+    assert_eq!(from.table.name.text, "person");
+    assert_eq!(edges.name.text, "works_at");
+    assert_eq!(to.table.name.text, "company");
+
+    // The record form is untouched: what tells the two apart is the arrow, and
+    // a target with no arrow after it is still one record.
+    assert!(matches!(
+        one("DELETE person:1;"),
+        StatementKind::Delete { .. }
+    ));
+}
+
+#[test]
+fn depth_belongs_to_the_source_so_it_is_written_before_the_clauses() {
+    // `DEPTH` says how far the walk goes, which is part of what is being read
+    // rather than something done to the rows — so it is consumed with the
+    // source, and the clauses that shape a read follow it in their usual order.
+    let StatementKind::Select(select) =
+        one("SELECT * FROM users:1->follows->users DEPTH 2 ORDER BY handle LIMIT 5;")
+    else {
+        panic!("not a read");
+    };
+    let Source::Traverse { depth, .. } = &select.from else {
+        panic!("not a walk");
+    };
+    assert_eq!(*depth, Some(2));
+    assert_eq!(select.order.len(), 1);
+
+    // And it does not float: written after a clause it is no longer in the
+    // position the grammar has for it, which is the same rule that keeps
+    // `START` before `LIMIT`.
+    assert!(parse("SELECT * FROM users:1->follows->users LIMIT 5 DEPTH 2;").is_err());
+}
+
+#[test]
+fn a_vector_field_declares_the_width_every_value_must_have() {
+    // Both doorways, in one test on purpose: they are the two ways to say the
+    // same thing, and a width accepted by one and refused by the other is the
+    // failure C5 names. They go through one function, so this asserts that the
+    // arrangement is still one function rather than two that agree today.
+    let StatementKind::DefineField { kind, .. } =
+        one("DEFINE FIELD embedding ON documents TYPE vector<768>;")
+    else {
+        panic!("not a field declaration");
+    };
+    assert_eq!(kind, FieldKind::vector(768).unwrap());
+
+    let StatementKind::DefineTable { columns, .. } =
+        one("DEFINE TABLE documents (title string, embedding vector<768>);")
+    else {
+        panic!("not a table declaration");
+    };
+    assert_eq!(columns.len(), 2);
+    assert_eq!(columns[1].kind, FieldKind::vector(768).unwrap());
+}
+
+#[test]
+fn a_vector_holds_at_least_one_component() {
+    // The only value a `vector<0>` field could hold is the empty array, which
+    // no distance can measure and no index will keep — a declaration that
+    // refuses every write anybody meant to make.
+    //
+    // A negative width refuses too, but **not here and not as this error**:
+    // `<-` is one token in this language, the one an edge walks backwards
+    // along, so the width position never sees a minus sign. `vector<-4>` is
+    // refused where the `<` was expected, and it says `found <-` — which points
+    // at the two characters that are the mistake. Asserted below with the other
+    // shapes rather than pretended into this list.
+    for refused in [
+        "DEFINE FIELD embedding ON documents TYPE vector<0>;",
+        "DEFINE TABLE documents (embedding vector<0>);",
+        // With a space the `<-` collision does not arise, so a negative width
+        // does reach the check — and refuses as what it is, a width below one.
+        "DEFINE FIELD embedding ON documents TYPE vector< -4 >;",
+    ] {
+        assert!(
+            matches!(parse(refused), Err(Error::VectorWidthBelowOne { .. })),
+            "{refused}"
+        );
+    }
+}
+
+#[test]
+fn a_width_is_required_and_is_written_out() {
+    // No width-less `vector`: an array whose length nobody declared is the
+    // `array` this language already has, and a word that looked checked and was
+    // not would be worse than no word.
+    //
+    // And the width is a **literal**. A width bound at the moment the
+    // declaration ran would be a schema whose shape depends on what was passed,
+    // while the catalog has to store one answer — the same reason `DEPTH` takes
+    // a literal.
+    for refused in [
+        "DEFINE FIELD embedding ON documents TYPE vector;",
+        "DEFINE FIELD embedding ON documents TYPE vector<>;",
+        "DEFINE FIELD embedding ON documents TYPE vector<$width>;",
+        "DEFINE FIELD embedding ON documents TYPE vector<7.5>;",
+        "DEFINE FIELD embedding ON documents TYPE vector<8;",
+        "DEFINE FIELD embedding ON documents TYPE vector<-4>;",
+        "DEFINE TABLE documents (embedding vector);",
+    ] {
+        assert!(parse(refused).is_err(), "{refused} was accepted");
+    }
+}
+
+#[test]
+fn vector_stays_a_name_a_caller_may_use() {
+    // Contextual, like `order` and `fetch`. A database of embeddings is exactly
+    // where a field called `vector` turns up, so reserving the word would take
+    // the name away from the callers most likely to want it.
+    let StatementKind::DefineField { name, kind, .. } =
+        one("DEFINE FIELD vector ON documents TYPE vector<4>;")
+    else {
+        panic!("not a field declaration");
+    };
+    assert_eq!(name.text, "vector");
+    assert_eq!(kind, FieldKind::vector(4).unwrap());
+
+    let StatementKind::DefineTable { columns, .. } =
+        one("DEFINE TABLE documents (vector vector<4>, name string);")
+    else {
+        panic!("not a table declaration");
+    };
+    assert_eq!(columns[0].name.text, "vector");
+    assert_eq!(columns[0].kind, FieldKind::vector(4).unwrap());
+}
+
+#[test]
+fn a_vector_store_declares_its_width_and_its_distance() {
+    let StatementKind::DefineVector {
+        name,
+        dimension,
+        distance,
+        if_not_exists,
+    } = one("DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine;")
+    else {
+        panic!("not a vector store declaration");
+    };
+    assert_eq!(name.text, "embeddings");
+    assert_eq!(dimension, 768);
+    assert_eq!(distance.text, "cosine");
+    assert!(!if_not_exists);
+
+    let StatementKind::DefineVector { if_not_exists, .. } =
+        one("DEFINE VECTOR IF NOT EXISTS embeddings DIMENSION 8 DISTANCE euclidean;")
+    else {
+        panic!("not a vector store declaration");
+    };
+    assert!(if_not_exists);
+}
+
+#[test]
+fn a_vector_store_needs_both_clauses_in_the_order_they_are_written() {
+    // Neither has a default: a width is the whole capability, and a distance
+    // default would decide which queries the store can serve without saying so.
+    assert!(parse("DEFINE VECTOR embeddings DISTANCE cosine;").is_err());
+    assert!(parse("DEFINE VECTOR embeddings DIMENSION 768;").is_err());
+    assert!(parse("DEFINE VECTOR embeddings DISTANCE cosine DIMENSION 768;").is_err());
+    assert!(parse("DEFINE VECTOR embeddings;").is_err());
+}
+
+#[test]
+fn a_stores_width_answers_to_the_same_rules_a_fields_does() {
+    // One reader for both, so a number the field refuses is a number the store
+    // refuses. The two are asserted together because "one function" is a
+    // property of the code that a later change can quietly end.
+    assert!(parse("DEFINE VECTOR embeddings DIMENSION 0 DISTANCE cosine;").is_err());
+    assert!(parse("DEFINE VECTOR embeddings DIMENSION 70000 DISTANCE cosine;").is_err());
+    assert!(parse("DEFINE FIELD e ON t TYPE vector<70000>;").is_err());
+    assert!(parse("DEFINE VECTOR embeddings DIMENSION 65536 DISTANCE cosine;").is_ok());
+    assert!(parse("DEFINE FIELD e ON t TYPE vector<65536>;").is_ok());
+}
+
+#[test]
+fn a_vector_store_is_dropped_and_reported_by_the_word_that_made_it() {
+    let StatementKind::DropVector { name } = one("DROP VECTOR embeddings;") else {
+        panic!("not a vector store drop");
+    };
+    assert_eq!(name.text, "embeddings");
+
+    let StatementKind::Info { subject, .. } = one("INFO FOR VECTOR embeddings;") else {
+        panic!("not an info statement");
+    };
+    let InfoSubject::Vector(named) = subject else {
+        panic!("not a vector subject");
+    };
+    assert_eq!(named.text, "embeddings");
+}
+
+#[test]
+fn vector_stays_a_name_a_caller_may_use_beside_the_new_word() {
+    // The word is contextual in all three positions it now appears in, so the
+    // table, the field and the store called `vector` all keep working.
+    assert!(parse("SELECT vector FROM documents;").is_ok());
+    assert!(parse("DEFINE TABLE vector (title string);").is_ok());
+    assert!(parse("SELECT * FROM vector;").is_ok());
+}
+
+#[test]
+fn a_read_may_say_what_it_will_spend_on_an_approximation() {
+    let StatementKind::Select(select) = one("SELECT * FROM embeddings \
+         ORDER BY vector::cosine(vector, [1.0]) LIMIT 5 APPROXIMATE EFFORT 200;")
+    else {
+        panic!("not a select");
+    };
+    assert_eq!(select.approximate, Some(Approximation::Effort(200)));
+
+    // And the bare word still means the engine's own budget rather than none.
+    let StatementKind::Select(select) = one("SELECT * FROM embeddings \
+         ORDER BY vector::cosine(vector, [1.0]) LIMIT 5 APPROXIMATE;")
+    else {
+        panic!("not a select");
+    };
+    assert_eq!(select.approximate, Some(Approximation::Default));
+
+    let StatementKind::Select(select) = one("SELECT * FROM embeddings;") else {
+        panic!("not a select");
+    };
+    assert_eq!(select.approximate, None);
+}
+
+#[test]
+fn a_budget_without_the_permission_it_qualifies_is_not_expressible() {
+    // `EFFORT` stands only after `APPROXIMATE`: an exact scan visits every record
+    // by definition and has nothing to spend. Written alone the word is not a
+    // clause at all, so the read ends before it and the leftover is refused.
+    assert!(parse("SELECT * FROM embeddings LIMIT 5 EFFORT 200;").is_err());
+    assert!(parse("SELECT * FROM embeddings LIMIT 5 EFFORT 200 APPROXIMATE;").is_err());
+}
+
+#[test]
+fn a_walk_keeps_at_least_one_candidate() {
+    let error = parse(
+        "SELECT * FROM embeddings \
+         ORDER BY vector::cosine(vector, [1.0]) LIMIT 5 APPROXIMATE EFFORT 0;",
+    )
+    .unwrap_err();
+    assert!(matches!(error, Error::EffortBelowOne { .. }), "{error}");
+
+    // A budget is written out, not bound: a schema-free number the planner reads
+    // before anything is evaluated.
+    assert!(parse("SELECT * FROM t LIMIT 5 APPROXIMATE EFFORT $n;").is_err());
+}
+
+#[test]
+fn effort_stays_a_name_a_caller_may_use() {
+    assert!(parse("SELECT effort FROM tasks;").is_ok());
+    assert!(parse("DEFINE FIELD effort ON tasks TYPE int;").is_ok());
 }

@@ -1,0 +1,102 @@
+# The geo store: a table of places, declared by one word.
+#
+# `DEFINE GEO places` is the third of the words that declare a whole engine, and
+# it stands for three statements — a collection, a `geometry` field the store
+# fills nothing in for, and the spatial index that finds them:
+#
+#   DEFINE COLLECTION places;
+#   DEFINE FIELD geometry ON places TYPE geometry REQUIRED;
+#   DEFINE INDEX geometry ON places FIELDS geometry SPATIAL;
+#
+# The cases below exist to hold one property above all: the word and the three
+# statements produce the *same store*, so a record either spelling refuses is
+# refused by the other, in the same words. Two spellings that drifted apart would
+# be two engines wearing one name.
+#
+# It takes no clause narrowing the shape it holds, and that is deliberate. The
+# read that needs a point already refuses everything else where the read happens,
+# and a store narrowed to points could not express a table of regions — which is
+# a geo store this engine serves correctly.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE atlas;
+USE DATABASE atlas;
+--- expect: ok
+
+--- case: one word declares the store
+DEFINE GEO places;
+--- expect: ok
+
+--- case: it is a table, so a place is an ordinary record
+CREATE places:1 = { geometry: geometry { type: 'Point', coordinates: [2.35, 48.85] }, name: 'Paris' };
+CREATE places:2 = { geometry: geometry { type: 'Point', coordinates: [-0.12, 51.5] }, name: 'London' };
+--- expect: ok
+
+--- case: and reads back as one
+SELECT name FROM places;
+--- expect: rows 2
+
+--- case: the geometry is required, so a record without one is refused
+CREATE places:3 = { name: 'nowhere' };
+--- expect: error MissingRequiredField
+
+--- case: a region is a place too — the store narrows no shape
+CREATE places:4 = { geometry: geometry { type: 'Polygon', coordinates: [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]] }, name: 'a square' };
+--- expect: ok
+
+--- case: declaring the same store twice is refused, as any name is
+DEFINE GEO places;
+--- expect: error NameTaken
+
+--- case: unless the statement says it may already be there
+DEFINE GEO IF NOT EXISTS places;
+--- expect: ok
+
+--- case: the report answers with the word that created it
+INFO FOR GEO places;
+--- expect: ok
+
+--- case: a rebuild walks every place and measures what refining them costs
+REBUILD INDEX geometry ON places;
+--- expect: ok
+
+--- case: and the report carries the figure the rebuild took
+INFO FOR GEO places;
+--- expect: ok
+
+--- case: a table that is not a geo store is not one
+DEFINE COLLECTION notes;
+INFO FOR GEO notes;
+--- expect: error Unknown
+
+--- case: and DROP GEO refuses it rather than dropping it
+DROP GEO notes;
+--- expect: error Unknown
+
+--- case: the long spelling builds the same store
+DEFINE COLLECTION spots;
+DEFINE FIELD geometry ON spots TYPE geometry REQUIRED;
+DEFINE INDEX geometry ON spots FIELDS geometry SPATIAL;
+--- expect: ok
+
+--- case: so it refuses the record the word's store refuses
+CREATE spots:1 = { name: 'nowhere' };
+--- expect: error MissingRequiredField
+
+--- case: and accepts the one the word's store accepts
+CREATE spots:1 = { geometry: geometry { type: 'Point', coordinates: [2.35, 48.85] }, name: 'Paris' };
+--- expect: ok
+
+--- case: the word removes the store, its records and its index
+DROP GEO places;
+--- expect: ok
+
+--- case: after which the store is gone
+INFO FOR GEO places;
+--- expect: error Unknown
+
+--- case: a store nobody declared cannot be dropped
+DROP GEO nowhere;
+--- expect: error Unknown

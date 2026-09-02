@@ -42,7 +42,7 @@ const CLASSIFIED: &[(&str, Effect)] = &[
     // --- writes: structure -------------------------------------------------
     ("DEFINE NAMESPACE prod;", Effect::Write),
     ("DEFINE DATABASE shop;", Effect::Write),
-    ("DEFINE TABLE users;", Effect::Write),
+    ("DEFINE TABLE users SCHEMALESS;", Effect::Write),
     ("DEFINE SPACE sessions;", Effect::Write),
     ("DEFINE BUCKET media;", Effect::Write),
     ("DEFINE FIELD name ON users TYPE string;", Effect::Write),
@@ -83,7 +83,10 @@ const CLASSIFIED: &[(&str, Effect)] = &[
     // names as where a keyword test fails.
     ("UPDATE users:1 SET name = 'ada';", Effect::Write),
     ("DELETE users:1;", Effect::Write),
-    ("DELETE FROM users WHERE name = 'ada';", Effect::Write),
+    (
+        "DELETE FROM users WHERE name = 'ada' LIMIT ALL;",
+        Effect::Write,
+    ),
     (
         "RELATE users:1->attached->media:'/logo.png';",
         Effect::Write,

@@ -5,6 +5,16 @@ use crate::error::Result;
 use crate::key::{Key, KeyRange, Value};
 use crate::keyspace::Keyspace;
 
+/// How many pairs [`KvBackend::count`]'s default reads at a time.
+///
+/// Private, and deliberately not in `tessari-constants`: this crate's whole
+/// dependency list is `thiserror`, it sits in the client's tree, and the
+/// published lean-client crate count is a claim the repository's own tests
+/// check. A chunk size internal to one default implementation is not worth a
+/// dependency edge — it is not a knob anybody sets, only the width of a stride
+/// nobody observes.
+const COUNT_BATCH_ENTRIES: usize = 1024;
+
 /// Which way a scan walks the key space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScanDirection {
@@ -170,6 +180,52 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
             found.push(self.scan(&request)?.into_iter().next());
         }
         Ok(found)
+    }
+
+    /// How many pairs a range holds.
+    ///
+    /// # Why this is a method and not `scan(…).len()`
+    ///
+    /// Because the caller wants a number and `scan` charges it for the data. A
+    /// ranking asks how many documents a term is posted against; answering that
+    /// through `scan` decodes every posting key **and every value** into a
+    /// `Vec` so that its length can be read off — memory proportional to the
+    /// corpus to learn one integer, once per query term, per query. A backend
+    /// can advance an iterator instead.
+    ///
+    /// Neither a direction nor a limit is taken: a count is the same in either
+    /// direction, and a count of at most *n* is a different question that no
+    /// caller here has.
+    ///
+    /// **Defaulted** in terms of [`Self::scan`], so a backend with nothing
+    /// better stays correct — but read in bounded batches rather than in one.
+    /// The naive default would be the exact allocation this method exists to
+    /// remove, sitting in the method that exists to remove it, waiting for the
+    /// first backend that does not override it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's own failure. An empty range is `0`, not a failure.
+    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
+        let mut total: u64 = 0;
+        let mut remaining = range.clone();
+        loop {
+            let batch = self.scan(&ScanRequest {
+                keyspace,
+                range: remaining.clone(),
+                direction: ScanDirection::Forward,
+                limit: Some(COUNT_BATCH_ENTRIES),
+            })?;
+            total = total.saturating_add(u64::try_from(batch.len()).unwrap_or(u64::MAX));
+            // A short batch is the end of the range.
+            if batch.len() < COUNT_BATCH_ENTRIES {
+                return Ok(total);
+            }
+            let Some((last, _)) = batch.last() else {
+                return Ok(total);
+            };
+            remaining = remaining.resuming_after(last);
+        }
     }
 
     /// Apply a batch atomically, subject to its preconditions.

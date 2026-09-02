@@ -35,6 +35,12 @@ pub enum KeyKind {
     Edge,
     /// The collection statistics one search index is ranked against.
     SearchStatistics,
+    /// One cell of one record's covering, in a spatial index.
+    SpatialIndex,
+    /// The recall one vector index was last measured at.
+    VectorRecall,
+    /// What refining one spatial index's candidates last cost.
+    SpatialRefinement,
     /// One entry in the ordered log.
     LogEntry,
     /// The store's own on-disk format version.
@@ -49,6 +55,10 @@ pub enum KeyKind {
     TableCatalog,
     /// An index catalog entry.
     IndexCatalog,
+    /// A graph catalog entry.
+    GraphCatalog,
+    /// A declared edge kind.
+    EdgeKindCatalog,
     /// The next-identifier allocator for a catalog level.
     IdAllocator,
     /// A resumable index-backfill watermark.
@@ -59,6 +69,11 @@ pub enum KeyKind {
     /// replaying the log, so an identity that travelled in it would be inherited
     /// by whoever restored a backup (ADR-0018 §1).
     NodeIdentity,
+    /// The oldest sequence a read can still be answered at exactly.
+    ///
+    /// Raised by reclamation, which is the only thing that can make an older
+    /// answer unavailable.
+    ReclaimFloor,
 }
 
 impl KeyKind {
@@ -74,6 +89,9 @@ impl KeyKind {
         Self::VectorNode,
         Self::Edge,
         Self::SearchStatistics,
+        Self::SpatialIndex,
+        Self::VectorRecall,
+        Self::SpatialRefinement,
         Self::LogEntry,
         Self::FormatVersion,
         Self::AppliedPosition,
@@ -81,9 +99,12 @@ impl KeyKind {
         Self::DatabaseCatalog,
         Self::TableCatalog,
         Self::IndexCatalog,
+        Self::GraphCatalog,
+        Self::EdgeKindCatalog,
         Self::IdAllocator,
         Self::BackfillWatermark,
         Self::NodeIdentity,
+        Self::ReclaimFloor,
     ];
 
     /// The leading byte that identifies this kind on disk.
@@ -102,6 +123,9 @@ impl KeyKind {
             Self::VectorNode => 0x13,
             Self::Edge => 0x14,
             Self::SearchStatistics => 0x15,
+            Self::SpatialIndex => 0x16,
+            Self::VectorRecall => 0x17,
+            Self::SpatialRefinement => 0x18,
             Self::LogEntry => 0x20,
             Self::FormatVersion => 0x30,
             Self::AppliedPosition => 0x31,
@@ -112,6 +136,9 @@ impl KeyKind {
             Self::IdAllocator => 0x36,
             Self::BackfillWatermark => 0x37,
             Self::NodeIdentity => 0x38,
+            Self::ReclaimFloor => 0x39,
+            Self::GraphCatalog => 0x3a,
+            Self::EdgeKindCatalog => 0x3b,
         }
     }
 
@@ -125,7 +152,10 @@ impl KeyKind {
             | Self::Posting
             | Self::VectorNode
             | Self::Edge
-            | Self::SearchStatistics => Keyspace::INDEX,
+            | Self::SearchStatistics
+            | Self::SpatialIndex
+            | Self::VectorRecall
+            | Self::SpatialRefinement => Keyspace::INDEX,
             Self::LogEntry => Keyspace::LOG,
             Self::FormatVersion
             | Self::AppliedPosition
@@ -133,9 +163,12 @@ impl KeyKind {
             | Self::DatabaseCatalog
             | Self::TableCatalog
             | Self::IndexCatalog
+            | Self::GraphCatalog
+            | Self::EdgeKindCatalog
             | Self::IdAllocator
             | Self::BackfillWatermark
-            | Self::NodeIdentity => Keyspace::META,
+            | Self::NodeIdentity
+            | Self::ReclaimFloor => Keyspace::META,
         }
     }
 
@@ -153,6 +186,9 @@ impl KeyKind {
             Self::VectorNode => "vector-node",
             Self::Edge => "edge",
             Self::SearchStatistics => "search-statistics",
+            Self::SpatialIndex => "spatial-index",
+            Self::VectorRecall => "vector-recall",
+            Self::SpatialRefinement => "spatial-refinement",
             Self::LogEntry => "log-entry",
             Self::FormatVersion => "format-version",
             Self::AppliedPosition => "applied-position",
@@ -160,9 +196,12 @@ impl KeyKind {
             Self::DatabaseCatalog => "database-catalog",
             Self::TableCatalog => "table-catalog",
             Self::IndexCatalog => "index-catalog",
+            Self::GraphCatalog => "graph-catalog",
+            Self::EdgeKindCatalog => "edge-kind-catalog",
             Self::IdAllocator => "id-allocator",
             Self::BackfillWatermark => "backfill-watermark",
             Self::NodeIdentity => "node-identity",
+            Self::ReclaimFloor => "reclaim-floor",
         }
     }
 
@@ -229,6 +268,9 @@ mod tests {
             (KeyKind::VectorNode, 0x13),
             (KeyKind::Edge, 0x14),
             (KeyKind::SearchStatistics, 0x15),
+            (KeyKind::SpatialIndex, 0x16),
+            (KeyKind::VectorRecall, 0x17),
+            (KeyKind::SpatialRefinement, 0x18),
             (KeyKind::LogEntry, 0x20),
             (KeyKind::FormatVersion, 0x30),
             (KeyKind::AppliedPosition, 0x31),
@@ -239,6 +281,9 @@ mod tests {
             (KeyKind::IdAllocator, 0x36),
             (KeyKind::BackfillWatermark, 0x37),
             (KeyKind::NodeIdentity, 0x38),
+            (KeyKind::ReclaimFloor, 0x39),
+            (KeyKind::GraphCatalog, 0x3a),
+            (KeyKind::EdgeKindCatalog, 0x3b),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

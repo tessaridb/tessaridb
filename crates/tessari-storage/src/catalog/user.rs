@@ -25,8 +25,9 @@ use std::collections::BTreeMap;
 use tessari_encoding::decode_payload;
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Value};
 
+use super::authority::{FIELD_AUTHORITIES, held_of};
 use super::definition::{field_id, field_name, number, object};
-use super::{Catalog, Level, id_key, qualify, system};
+use super::{Catalog, Held, Level, Reach, id_key, qualify, system};
 use crate::error::{Error, Result};
 
 const FIELD_ID: &str = "id";
@@ -126,8 +127,24 @@ pub struct UserDefinition {
     pub namespace: Option<NamespaceId>,
     /// The database within it, or `None`.
     pub database: Option<DatabaseId>,
-    /// What the user may do.
-    pub role: Role,
+    /// The role [`Self::authorities`] can be summarised as, when one can.
+    ///
+    /// Still written, and still read, for two reasons that outlive it: a binary
+    /// predating [`Self::authorities`] can read a record this one writes, and a
+    /// record predating the field derives its set from this. It is no longer
+    /// what *decides* — `authorities` is.
+    ///
+    /// `None` for the sets no role describes — `manage` at a namespace without
+    /// `read` is the case this model exists for. It is written as an absent
+    /// field rather than as a nearest-fitting role, because the nearest role
+    /// wider than the set would hand an older binary an authority the user does
+    /// not hold, and an absent field makes that binary refuse instead.
+    pub role: Option<Role>,
+    /// What the user may actually do, and how far it reaches.
+    ///
+    /// The set the store asks. Derived from [`Self::role`] for a record written
+    /// before this field existed, which is the whole of the migration.
+    pub authorities: Held,
     /// The password hash, opaque to this layer.
     pub secret: String,
 }
@@ -139,15 +156,18 @@ impl UserDefinition {
         let mut fields = BTreeMap::from([
             (FIELD_ID.to_owned(), number(self.id)),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
-            (FIELD_ROLE.to_owned(), Value::from(self.role.name())),
             (FIELD_SECRET.to_owned(), Value::from(self.secret.as_str())),
         ]);
+        if let Some(role) = self.role {
+            fields.insert(FIELD_ROLE.to_owned(), Value::from(role.name()));
+        }
         if let Some(namespace) = self.namespace {
             fields.insert(FIELD_NAMESPACE.to_owned(), number(namespace.get()));
         }
         if let Some(database) = self.database {
             fields.insert(FIELD_DATABASE.to_owned(), number(database.get()));
         }
+        fields.insert(FIELD_AUTHORITIES.to_owned(), self.authorities.to_value());
         Value::Object(fields)
     }
 
@@ -164,17 +184,18 @@ impl UserDefinition {
             field,
             found,
         };
-        let Some(Value::String(role)) = fields.get(FIELD_ROLE) else {
-            return Err(malformed(
-                FIELD_ROLE,
-                fields.get(FIELD_ROLE).map_or("none", Value::type_name),
-            ));
-        };
-        // An unknown role is corruption rather than a bad request: it was
-        // written by something that knew a role this binary does not, and
-        // guessing would grant or refuse the wrong thing.
-        let Some(role) = Role::parse(role) else {
-            return Err(malformed(FIELD_ROLE, "an unknown role"));
+        // Absent and unknown are different claims. Absent means no role
+        // summarises the set this record carries, and the set is what decides.
+        // Present-but-unknown is corruption: it was written by something that
+        // knew a role this binary does not, and guessing would grant or refuse
+        // the wrong thing.
+        let role = match fields.get(FIELD_ROLE) {
+            None => None,
+            Some(Value::String(role)) => match Role::parse(role) {
+                Some(role) => Some(role),
+                None => return Err(malformed(FIELD_ROLE, "an unknown role")),
+            },
+            Some(other) => return Err(malformed(FIELD_ROLE, other.type_name())),
         };
         let Some(Value::String(secret)) = fields.get(FIELD_SECRET) else {
             return Err(malformed(
@@ -182,18 +203,26 @@ impl UserDefinition {
                 fields.get(FIELD_SECRET).map_or("none", Value::type_name),
             ));
         };
+        let namespace = fields
+            .contains_key(FIELD_NAMESPACE)
+            .then(|| field_id(fields, FIELD_NAMESPACE, ENTITY).map(NamespaceId::new))
+            .transpose()?;
+        let database = fields
+            .contains_key(FIELD_DATABASE)
+            .then(|| field_id(fields, FIELD_DATABASE, ENTITY).map(DatabaseId::new))
+            .transpose()?;
+        // A database named without a namespace is not a place. Corruption here
+        // rather than a bad request: nothing can write one through this layer.
+        let Some(reach) = Reach::of(namespace, database) else {
+            return Err(malformed(FIELD_NAMESPACE, "a database with no namespace"));
+        };
         Ok(Self {
             id: field_id(fields, FIELD_ID, ENTITY)?,
             name: field_name(fields, ENTITY)?,
-            namespace: fields
-                .contains_key(FIELD_NAMESPACE)
-                .then(|| field_id(fields, FIELD_NAMESPACE, ENTITY).map(NamespaceId::new))
-                .transpose()?,
-            database: fields
-                .contains_key(FIELD_DATABASE)
-                .then(|| field_id(fields, FIELD_DATABASE, ENTITY).map(DatabaseId::new))
-                .transpose()?,
+            namespace,
+            database,
             role,
+            authorities: held_of(fields, role, reach)?,
             secret: secret.clone(),
         })
     }
@@ -213,18 +242,32 @@ impl Catalog<'_, '_> {
         name: &str,
         namespace: Option<NamespaceId>,
         database: Option<DatabaseId>,
-        role: Role,
+        authorities: &Held,
         secret: &str,
     ) -> Result<UserDefinition> {
         let qualified = qualify(Level::User, &[], name);
         self.reserve_name(&qualified)?;
         let id = self.allocate(Level::User)?;
+        // A database without its namespace never reaches here through the
+        // language; refusing it keeps that true for a caller of this layer too.
+        let Some(reach) = Reach::of(namespace, database) else {
+            return Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_NAMESPACE,
+                found: "a database with no namespace",
+            });
+        };
+        // The role is derived from the set and never given alongside it. Two
+        // parameters would be two sources for one fact, and the pair that
+        // disagreed would be a user whose stored role said more than their
+        // authorities did — readable by an older binary as the wider of the two.
         let definition = UserDefinition {
             id,
             name: name.to_owned(),
             namespace,
             database,
-            role,
+            role: authorities.role_within(reach),
+            authorities: authorities.clone(),
             secret: secret.to_owned(),
         };
         self.write(system::USERS, id, &definition.to_value());
@@ -249,6 +292,23 @@ impl Catalog<'_, '_> {
         Ok(found)
     }
 
+    /// One declared user, by id.
+    ///
+    /// A point read rather than a scan, because the caller is the authorization
+    /// path: it runs on every statement, and it already knows which id it wants.
+    /// `None` is how a dropped user looks, which is what makes dropping one
+    /// reach a session that is already open.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub fn user(&self, id: u32) -> Result<Option<UserDefinition>> {
+        let Some(value) = self.read(system::USERS, id)? else {
+            return Ok(None);
+        };
+        UserDefinition::from_value(&value).map(Some)
+    }
+
     /// Whether this store has any user at all.
     ///
     /// A store with none is **open**: requiring a signin against one would lock
@@ -267,6 +327,17 @@ impl Catalog<'_, '_> {
                 system::USERS,
             )?
             .is_empty())
+    }
+
+    /// Write a user's declaration back over itself.
+    ///
+    /// The id and the name are what the definition already carries, so the name
+    /// claim and every grant keyed by the id stay exactly where they were. That
+    /// is the whole reason this exists rather than a drop-and-recreate: a new id
+    /// would silently strand the grants, and the catalog refuses to reuse ids
+    /// precisely so that nothing inherits them later.
+    pub fn update_user(&mut self, user: &UserDefinition) {
+        self.write(system::USERS, user.id, &user.to_value());
     }
 
     /// Remove a user's declaration and release its name.

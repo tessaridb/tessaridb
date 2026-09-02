@@ -129,6 +129,25 @@ impl KvBackend for MemoryBackend {
         Ok(collected)
     }
 
+    /// Count the range without cloning a key or a value out of it.
+    ///
+    /// The default would answer correctly by scanning in chunks, and every pair
+    /// it walked would be cloned — a `Key` and a `Value` allocated and dropped
+    /// per entry to arrive at a number. Here the range is walked and counted.
+    ///
+    /// Overridden for the same reason [`Self::first_of_each`] is: this is the
+    /// backend every test runs against, so a saving that this backend does not
+    /// take is a saving the tests cannot see.
+    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
+        if range.is_provably_empty() {
+            return Ok(0);
+        }
+        let guard = self.read_guard()?;
+        let tree = tree_of(&guard, keyspace)?;
+        let bounds = (clone_bound(range.start()), clone_bound(range.end()));
+        Ok(u64::try_from(tree.range(bounds).count()).unwrap_or(u64::MAX))
+    }
+
     /// One lock acquisition for every range, rather than one each.
     ///
     /// The saving here is modest — this backend's per-scan setup is a lock and

@@ -1,0 +1,195 @@
+# Opening an object and reshaping an array.
+#
+# Each of the nine earns its place the same way: a path takes a literal name or
+# position and no range, so there is no way to reach an object's field names, to
+# reorder an array, or to take a run out of the middle of one. `array::contains`
+# is not here because `CONTAINS` says it, and `string::starts_with` is not here
+# because `LIKE 'x%'` says it.
+#
+# Every ordering question here has one answer and the other is sayable: there is
+# no `array::sort_desc` because `array::reverse(array::sort(x))` is it.
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE intake;
+USE DATABASE intake;
+--- expect: ok
+
+--- case: the field names of an object, in the object's own order
+RETURN object::keys({ zone: 'north', age: 41, name: 'ada' });
+--- expect: value ['age', 'name', 'zone']
+
+--- case: and the values, in the order the names came in
+# Nothing in the language zips two arrays, so a caller reading the names and the
+# values separately has no way to pair them if these two ever disagree.
+RETURN object::values({ zone: 'north', age: 41, name: 'ada' });
+--- expect: value [41, 'ada', 'north']
+
+--- case: how many fields an object holds
+RETURN object::len({ zone: 'north', age: 41, name: 'ada' });
+--- expect: value 3
+
+--- case: an empty object has no names and no fields
+RETURN object::len({});
+--- expect: value 0
+
+--- case: ascending order, and it is the order the value system declares
+RETURN array::sort([3, 1, 2]);
+--- expect: value [1, 2, 3]
+
+--- case: which spans types, so a mixed array sorts rather than failing
+# The same order an index stores, so a comparison here cannot disagree with one.
+RETURN array::len(array::sort([3, 'b', 1, 'a']));
+--- expect: value 4
+
+--- case: descending is reverse of sort, which is why there is no second function
+RETURN array::reverse(array::sort([3, 1, 2]));
+--- expect: value [3, 2, 1]
+
+--- case: each value once, keeping the first occurrence
+# The given order survives, because `array::sort(array::distinct(x))` recovers
+# the sorted form while nothing recovers an order already thrown away.
+RETURN array::distinct([3, 1, 3, 2, 1]);
+--- expect: value [3, 1, 2]
+
+--- case: and sameness here is the sameness the rest of the language uses
+# `1` and `1.0` are one value, exactly as they are one member of a set.
+RETURN array::len(array::distinct([1, 1.0, '1']));
+--- expect: value 2
+
+--- case: one level of nesting removed, and only one
+# A caller who wanted two levels writes `array::flatten` twice; a caller given a
+# deep flatten has no way back to one level.
+RETURN array::flatten([[1, 2], 3, [[4]]]);
+--- expect: value [1, 2, 3, [4]]
+
+--- case: the elements as one text
+RETURN array::join(['a', 'b', 'c'], '-');
+--- expect: value 'a-b-c'
+
+--- case: each element read the way a cast to text would read it
+# The language cannot convert an array's elements one by one, so a stricter
+# join taking only text would leave a caller holding [1, 2] with nothing to
+# write — the test `type::float` had to pass as well.
+RETURN array::join([1, true, 'x'], ',');
+--- expect: value '1,true,x'
+
+--- case: an element with no text it reads back from is refused
+RETURN array::join([1, [2, 3]], ',');
+--- expect: error NotCastable
+
+--- case: joining nothing is an empty text, not a failure
+RETURN array::join([], ',');
+--- expect: value ''
+
+--- case: a run of elements out of the middle
+RETURN array::slice([1, 2, 3, 4, 5], 1, 3);
+--- expect: value [2, 3, 4]
+
+--- case: a count reaching past the end takes what is there
+# How paging through a shrinking list reads; "there are none left" is the true
+# answer rather than a mistake.
+RETURN array::slice([1, 2, 3], 2, 10);
+--- expect: value [3]
+
+--- case: and a start past the end is an empty array
+RETURN array::slice([1, 2, 3], 9, 1);
+--- expect: value []
+
+--- case: a negative bound is refused rather than answered with an empty slice
+# An empty answer would hide a caller who meant "from the end", which this
+# function does not do.
+RETURN array::slice([1, 2, 3], -1, 2);
+--- expect: error CallFailed
+
+--- case: and a fractional position is refused, as math::round says which is meant
+RETURN array::slice([1, 2, 3], 1.5, 1);
+--- expect: error CallFailed
+
+--- case: records to read the collections out of
+DEFINE COLLECTION people;
+CREATE people:1 = { name: 'ada', tags: ['b', 'a', 'b'], address: { city: 'london', zone: 'n1' } };
+CREATE people:2 = { name: 'bo', tags: [], address: { city: 'oslo', zone: 'w2' } };
+--- expect: ok
+
+--- case: a reshaped array is a value like any other, so it projects
+SELECT array::sort(array::distinct(tags)) AS tags FROM people:1;
+--- expect: rows 1
+
+--- case: and it filters
+SELECT name FROM people WHERE array::len(array::distinct(tags)) = 2;
+--- expect: rows 1
+
+--- case: and an object opens without the field names being written down
+SELECT object::keys(address) AS names FROM people:1;
+--- expect: rows 1
+
+--- case: a collection function over a field that is not there answers an absence
+SELECT array::sort(missing) AS sorted FROM people;
+--- expect: rows 2
+
+--- case: and over a value of the wrong kind it is refused by type
+SELECT object::keys(name) AS names FROM people:1;
+--- expect: error WrongArgument
+
+# --- Taking a string apart, and two numbers the language could not otherwise say.
+
+--- case: the parts of a text between occurrences of a separator
+RETURN string::split('a@b@c', '@');
+--- expect: value ['a', 'b', 'c']
+
+--- case: a separator that does not occur gives the whole text, which is what composes
+# `array::first(string::split(x, '@'))` is the part before the separator whether
+# or not there is one.
+RETURN array::first(string::split('ada', '@'));
+--- expect: value 'ada'
+
+--- case: an empty separator is refused rather than read as "into characters"
+RETURN string::split('abc', '');
+--- expect: error CallFailed
+
+--- case: a run of characters, counted as characters and not as bytes
+# A byte position can land inside a character; the answer would be a broken
+# string or a panic, and neither is a thing a query language should produce.
+RETURN string::slice('héllo', 1, 2);
+--- expect: value 'él'
+
+--- case: and it follows the same bounds rule an array slice does
+RETURN string::slice('abc', 9, 1);
+--- expect: value ''
+
+--- case: including refusing a negative one
+RETURN string::slice('abc', -1, 2);
+--- expect: error CallFailed
+
+--- case: every occurrence replaced, not the first
+RETURN string::replace('a-b-c', '-', '+');
+--- expect: value 'a+b+c'
+
+--- case: a square root, which is a float whatever it was given
+# Keeping the argument's kind would round `math::sqrt(2)` to `1` and call it an
+# integer.
+RETURN math::sqrt(9);
+--- expect: value 3.0
+
+--- case: and a negative root is refused rather than answered with a NaN
+# A NaN compares false against everything including itself, so it would travel
+# through a filter and an ordering silently. `math::abs` says the magnitude.
+RETURN math::sqrt(-1);
+--- expect: error CallFailed
+
+--- case: two whole numbers raised give a whole number
+RETURN math::pow(2, 10);
+--- expect: value 1024
+
+--- case: and anything else gives a float, the only kind holding the answer
+RETURN math::pow(2, -1);
+--- expect: value 0.5
+
+--- case: a power outside the integer range is refused rather than saturated
+# A saturated power is a wrong number that looks right, and it is the largest
+# number in the store — the value most likely to pass a check unnoticed.
+RETURN math::pow(10, 30);
+--- expect: error CallFailed

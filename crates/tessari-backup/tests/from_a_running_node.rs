@@ -33,7 +33,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE orders;\n\
+             DEFINE COLLECTION orders;\n\
              CREATE orders:1 = { total: 3 };\n\
              CREATE orders:2 = { total: 7 };",
         )
@@ -218,7 +218,7 @@ fn a_backup_is_the_whole_store_and_not_the_selected_namespace() {
         .run(
             "DEFINE NAMESPACE other; USE NAMESPACE other;\n\
              DEFINE DATABASE archive; USE DATABASE archive;\n\
-             DEFINE TABLE notes;\n\
+             DEFINE COLLECTION notes;\n\
              CREATE notes:1 = { body: 'elsewhere' };\n\
              USE NAMESPACE prod; USE DATABASE shop;",
         )

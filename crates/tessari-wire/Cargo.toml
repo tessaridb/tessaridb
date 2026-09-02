@@ -19,19 +19,33 @@ publish.workspace = true
 # in one crate on purpose, so that a change to a frame breaks the other end at
 # compile time rather than in somebody's deployment.
 default = ["server"]
-server = ["dep:tessaridb", "dep:tessari-serve", "dep:tessari-session", "dep:tessari-storage"]
+server = [
+    "dep:tessari-constants",
+    "dep:tessaridb",
+    "dep:tessari-serve",
+    "dep:tessari-session",
+    "dep:tessari-storage",
+    "dep:log",
+]
 
 [dependencies]
 tessaridb = { workspace = true, optional = true }
 tessari-serve = { workspace = true, optional = true }
+# Server-side only: the ceiling and the greeting deadline are the node's,
+# and a client has no door to hold.
+tessari-constants = { workspace = true, optional = true }
 tessari-encoding.workspace = true
 tessari-ql.workspace = true
 tessari-session = { workspace = true, optional = true }
 tessari-storage = { workspace = true, optional = true }
 tessari-types.workspace = true
+# Server-side only: a client that logs nothing keeps the crate count the lean
+# build is measured by.
+log = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
+tessari-constants.workspace = true
 # Replication is driven explicitly in the forwarding test: nothing pulls on its
 # own yet (Q-83), so "visible on both" is shown by moving the log across rather
 # than by waiting for a driver that does not exist.
@@ -57,6 +71,10 @@ required-features = ["server"]
 
 [[test]]
 name = "talking"
+required-features = ["server"]
+
+[[test]]
+name = "reporting"
 required-features = ["server"]
 
 [lints]

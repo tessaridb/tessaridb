@@ -218,23 +218,55 @@ impl Select<Sourced> {
         let projection = if self.projection.is_empty() {
             Projection::All
         } else {
-            Projection::Values(self.projection)
+            // `None`: the builder has no star to write. A caller that wants the
+            // record whole leaves the projection empty, which is `All` above.
+            Projection::Values {
+                everything: None,
+                values: self.projection,
+            }
         };
         let select = Syntax {
             projection,
+            // The builder offers no `OMIT`: it subtracts from a star this API
+            // has no way to write.
+            omit: Vec::new(),
             from,
+            // Nor `ONLY`: it is an assertion about how many records answer, and
+            // a builder cannot make one on the caller's behalf.
+            only: None,
             fetch: Vec::new(),
+            // Nor `SPLIT ON`: it changes how many records answer, which is a
+            // question the caller asks in the language rather than a shape a
+            // builder assembles.
+            split: None,
             group: Vec::new(),
             order: self.order,
-            approximate: false,
+            // Nor a cursor: `AFTER` anchors a page on a record the caller read
+            // out of a previous answer, and a builder that has not seen an
+            // answer has no anchor to offer.
+            after: None,
+            approximate: None,
             start: self.start,
             limit: self.limit,
+            // The builder states no expectation about the path. An assertion is
+            // something an author writes on purpose, and a builder that carried
+            // one by default would refuse reads nobody asked it to police.
+            using: None,
+            // And no ceiling, for the same reason: a budget the caller did not
+            // ask for is a refusal the caller did not ask for.
+            timeout: None,
+            // And no version: the builder reads the present. Naming a point in
+            // the store's history means holding a sequence read out of a
+            // previous answer, which is the same thing that keeps `AFTER` off
+            // this API — a builder that has not seen an answer has nothing to
+            // name.
+            version: None,
             span: BUILT,
         };
         Ok(Query {
             script: Script {
                 statements: vec![Statement {
-                    kind: StatementKind::Select(select),
+                    kind: StatementKind::Select(Box::new(select)),
                     span: BUILT,
                 }],
                 span: BUILT,

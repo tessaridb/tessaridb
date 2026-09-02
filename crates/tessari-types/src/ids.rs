@@ -64,6 +64,28 @@ define_id! {
 }
 
 define_id! {
+    /// Identifies a graph within a database.
+    ///
+    /// A graph carries an id for a reason the other levels do not: the id sits in
+    /// the leading bytes of every adjacency key, above the node it belongs to, so
+    /// the whole structure is one prefix and removing it is one range delete
+    /// rather than a scan. That is what makes a graph a thing the store can hold
+    /// rather than a convention spread across several tables.
+    GraphId(u32)
+}
+
+define_id! {
+    /// Identifies an edge kind within a graph.
+    ///
+    /// An edge kind is not a table, so it cannot borrow a table's id: its entries
+    /// are adjacency keys beside the node rather than records behind an index.
+    /// The id sits between the node and the neighbour in every one of those keys,
+    /// which is what makes *"this node's `works_at` edges"* a single bounded range
+    /// rather than a scan of everything touching the node.
+    EdgeKindId(u32)
+}
+
+define_id! {
     /// Identifies an index on a table.
     ///
     /// An index carries an id for the same reason a table does: the id is what

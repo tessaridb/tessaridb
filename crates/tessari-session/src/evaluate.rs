@@ -6,27 +6,33 @@
 //! cannot share a snapshot are two databases sharing a process.
 
 use core::ops::Bound;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_constants::ORDERED_FILTER_REACH;
+use tessari_encoding::Direction as AdjacencyDirection;
 use tessari_ql::{
-    BinaryOp, Direction, Expr, ExprKind, Function, Hop, Projected, Projection, RecordTarget,
-    Select, Source, Span, TableRef,
+    BinaryOp, DeleteBound, Direction, Expr, ExprKind, FieldPath, Function, Hop, JoinSide,
+    Projected, Projection, RecordTarget, Select, Source, Span, TableRef, Using,
 };
-use tessari_storage::{Catalog, RecordAddress, Store, Transaction};
+use tessari_storage::{
+    BUILD_VERSION, Catalog, EDGE_IN, EDGE_OUT, RecordAddress, Store, Transaction,
+};
 use tessari_types::{
-    Analyzer, Number, Path, RecordId, RecordRef, TableId, Value, ValueRange, apply,
+    Analyzer, Number, Path, RecordId, RecordRef, Step, TableId, Value, ValueRange, apply,
 };
 
 use crate::aggregate::folds;
 use crate::arithmetic::{arithmetic, negate};
+use crate::budget::{Budget, Ceiling, Deadline};
 use crate::call::call;
 use crate::condition::boolean;
 use crate::consume::Consumer;
 use crate::context::Context;
 use crate::error::{Error, Result};
-use crate::outcome::AccessPath;
+use crate::noticed::Noticed;
+use crate::outcome::{AccessPath, Note};
 use crate::plan;
+use crate::plan::Plan;
 use crate::rank::{Corpus, score};
 use crate::search::{Searched, matches_terms};
 use crate::session::Session;
@@ -105,6 +111,37 @@ impl Session<'_> {
                 let held = self.evaluate_in(transaction, right, scope)?;
                 Ok(Value::Bool(boolean(&held, right.span)?))
             }
+            // Only the arm that is taken is evaluated. That is not only a
+            // saving — it is what lets the untaken arm be a read, or an
+            // arithmetic that would fail on this record, without the statement
+            // having to be meaningful for every record it passes over.
+            ExprKind::If {
+                condition,
+                then,
+                otherwise,
+            } => {
+                let held = self.evaluate_in(transaction, condition, scope)?;
+                if boolean(&held, condition.span)? {
+                    return self.evaluate_in(transaction, then, scope);
+                }
+                match otherwise {
+                    Some(otherwise) => self.evaluate_in(transaction, otherwise, scope),
+                    // No `ELSE` answers `none`, which is what a route into a
+                    // field the record does not have already answers.
+                    None => Ok(Value::None),
+                }
+            }
+            // `NONE` and `NULL` both count as holding nothing here, and this is
+            // the one place the language treats them alike — the question `??`
+            // asks is whether there is a value to use, and the answer is no in
+            // both cases. The right side is evaluated only when it is needed.
+            ExprKind::Coalesce(left, right) => {
+                let held = self.evaluate_in(transaction, left, scope)?;
+                if matches!(held, Value::None | Value::Null) {
+                    return self.evaluate_in(transaction, right, scope);
+                }
+                Ok(held)
+            }
             ExprKind::Negate(operand) => {
                 let held = self.evaluate_in(transaction, operand, scope)?;
                 negate(&held, operand.span)
@@ -153,6 +190,7 @@ impl Session<'_> {
                         if *op == BinaryOp::Matches {
                             matches_terms(analyzer, value, &other)
                         } else {
+                            scope.compared(value, &other);
                             apply(*op, value, &other)
                         }
                     })));
@@ -169,6 +207,11 @@ impl Session<'_> {
                     };
                     return Ok(Value::Bool(matches_terms(analyzer, &held, &other)));
                 }
+                // Beside the comparison rather than inside it: what an operator
+                // means once both sides are values belongs to `tessari_types`,
+                // which the store's `ASSERT` path shares and which has no notes
+                // and should not grow any.
+                scope.compared(&held, &other);
                 Ok(Value::Bool(apply(*op, &held, &other)))
             }
             ExprKind::Literal(value) => Ok(value.clone()),
@@ -286,20 +329,40 @@ impl Session<'_> {
     ///
     /// **What that costs is worth stating**: the whole matched set is held and
     /// committed at once, so a retention statement that matches a very large
-    /// table is a very large commit. Bounding it is `LIMIT` on a delete, which
-    /// is a different statement and is not built.
+    /// table is a very large commit. `LIMIT n` is how a caller keeps that commit
+    /// to a size they chose; `LIMIT ALL` is how they say the whole table is what
+    /// they meant.
+    ///
+    /// # The bound counts survivors, not candidates
+    ///
+    /// It is applied *after* the condition decides, which is the only placement
+    /// that makes the statement mean one thing. A bound on candidates would stop
+    /// the walk after `n` records had been *examined*, so the same statement
+    /// against the same data would remove a different set depending on which
+    /// index answered it and in what order that index happened to be walked.
     pub(crate) fn delete_where(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
         condition: &Expr,
+        limit: DeleteBound,
     ) -> Result<crate::outcome::Outcome> {
+        let ceiling = match limit {
+            DeleteBound::AtMost(count) => count,
+            DeleteBound::All => u64::MAX,
+        };
         let (context, id) = self.resolve_table(transaction, table)?;
         let searched = self.searched_for(transaction, id, &[condition])?;
-        let (candidates, _) = self.candidates(transaction, id, context, condition, &searched)?;
+        // No plan is reported: a delete answers with a count and has no plan to
+        // carry one on, so the table it would name is not asked for.
+        let (candidates, _) =
+            self.candidates(transaction, id, context, condition, &searched, None)?;
 
         let mut removed = 0_u64;
         for (record_id, record) in candidates {
+            if removed >= ceiling {
+                break;
+            }
             // Tested against the whole condition, exactly as a read is: the
             // index narrowed, and the condition decides. A delete that trusted
             // the narrowing would remove records the statement did not name.
@@ -334,29 +397,66 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
-    ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
+        within: Option<Deadline>,
+        holding: Option<Ceiling>,
+    ) -> Result<Answered> {
         // The searched context is resolved before the source produces anything,
         // because a sort key is an expression too and one holding a `MATCHES` or
         // a score must mean the same thing there as it does in the `WHERE` that
         // produced them. That is the whole reason the source is split in two: it
         // knew `searched` before it walked, and only reported it on return, so
         // the consumer could not be built until every record already existed.
-        let (prepared, searched) = self.prepare_source(transaction, select)?;
+        // The one note channel for the whole read, threaded rather than kept on
+        // the session: a buffer on `self` would outlive the statement that filled
+        // it, and a note reported against the *next* answer is worse than no note
+        // at all.
+        let mut notes = Vec::new();
+        // Narrowed by this statement's own clause, and never widened by it: a
+        // subquery may set a tighter ceiling than the read holding it and may
+        // not set a looser one.
+        let within = Deadline::under(within, select.timeout);
+        // One budget for the whole read, so a two-stage path counts each record
+        // once and the refusal says how far the *read* got. `holding` comes from
+        // the caller and never from this statement: how long a read may take is
+        // the statement's own business, but whether it is being built into
+        // memory for somebody else is a fact only its caller knows.
+        let mut budget = Budget::of(within, holding);
+        // Owned by the read and borrowed by everything it evaluates, so the
+        // lifetime rather than the discipline is what stops a note outliving the
+        // statement that earned it.
+        let noticed = Noticed::default();
+        let (prepared, searched) = self.prepare_source(
+            transaction,
+            select,
+            Reporting {
+                collected: &mut notes,
+                noticed: &noticed,
+            },
+            within,
+        )?;
         // The bound the sort may keep to. `bounded` is applied to the ordering
         // stage's output below, so keeping only what it will keep is an identity
         // between two adjacent stages rather than a decision about the
         // statement — which is why, unlike the bound handed to the source, this
         // one needs no whitelist of shapes (ADR-0013).
         let bound = order_bound(select);
+        // Resolved before the source runs, because the ordering stage has to
+        // hold it before the first record arrives — a cursor applied to the
+        // finished answer would let the bound keep the records the page has
+        // already handed back and then throw them away.
+        let resuming = self.resuming(transaction, select)?;
+        // The seek reaches the source itself, so only the walk has anything to
+        // report. Pushed here rather than beside the seek because it is a
+        // property of the statement's shape, which is decided once.
+        if select.after.is_some() && !sought(select) {
+            notes.push(Note::CursorWalked);
+        }
 
         if streams(select) {
             // The projection folded once, above the records rather than per
             // record: a projection's constant parts are constant across every
             // record it is applied to.
-            let wanted = match &select.projection {
-                Projection::All => None,
-                Projection::Values(wanted) => Some(self.folded_projection(transaction, wanted)?),
-            };
+            let wanted = self.shaped(transaction, select)?;
             let keys = self.folded_order(transaction, &select.order)?;
             let mut shaping = crate::consume::Shaping::new(
                 self,
@@ -364,18 +464,46 @@ impl Session<'_> {
                 keys,
                 &searched,
                 crate::shape::Topmost::keeping(&select.order, bound),
+                &mut budget,
+                &noticed,
             );
-            let path =
-                self.produce_source(transaction, select, prepared, &searched, &mut shaping)?;
-            return Ok((
-                crate::shape::bounded(shaping.finish(), select.start, select.limit),
-                path,
-            ));
+            if let Some((id, record)) = resuming {
+                shaping.resume_after(transaction, id, record)?;
+            }
+            let plan = self.produce_source(
+                transaction,
+                select,
+                prepared,
+                &searched,
+                &mut shaping,
+                Reporting {
+                    collected: &mut notes,
+                    noticed: &noticed,
+                },
+            )?;
+            asserted(select, &plan)?;
+            notes.extend(noticed.drained());
+            let records = crate::shape::bounded(shaping.finish(), select.start, select.limit);
+            alone(select, &records)?;
+            return Ok(Answered {
+                records,
+                plan,
+                notes,
+            });
         }
 
-        let mut collecting = crate::consume::Collecting::new();
-        let path =
-            self.produce_source(transaction, select, prepared, &searched, &mut collecting)?;
+        let mut collecting = crate::consume::Collecting::new(&mut budget);
+        let plan = self.produce_source(
+            transaction,
+            select,
+            prepared,
+            &searched,
+            &mut collecting,
+            Reporting {
+                collected: &mut notes,
+                noticed: &noticed,
+            },
+        )?;
         let mut records = collecting.finish();
         // Before anything groups, projects or sorts, so a projection and a sort
         // key both see the record rather than the reference that named it.
@@ -386,23 +514,35 @@ impl Session<'_> {
             let context = self.context(transaction, None, select.span)?;
             self.follow(transaction, &mut records, &select.fetch, context)?;
         }
-        let records = match &select.projection {
-            Projection::All => records,
-            Projection::Values(wanted) if groups(select) => {
-                self.grouped(transaction, records, wanted, &select.group)?
+        // After the fetch — a reference resolved once and then opened is the
+        // same answer as one opened and then resolved n times, and cheaper — and
+        // before everything that counts records, because this is the stage that
+        // decides how many there are.
+        if let Some(route) = &select.split {
+            records = opened(records, &route.path, &mut budget)?;
+        }
+        let records = if groups(select) {
+            // A grouping folds many records into one, and a fold answers about
+            // the group rather than about a record — so the star has nothing to
+            // contribute here and the grammar has already refused one written
+            // beside a fold.
+            self.grouped(
+                transaction,
+                records,
+                select.projection.written(),
+                &select.group,
+            )?
+        } else if let Some(wanted) = self.shaped(transaction, select)? {
+            let mut projected = Vec::with_capacity(records.len());
+            for (id, record) in records {
+                projected.push((
+                    id,
+                    self.project(transaction, &record, &wanted, &searched, &noticed)?,
+                ));
             }
-            Projection::Values(wanted) => {
-                // Folded once, above the loop: a projection's constant parts are
-                // constant across every record it is applied to, and rebuilding
-                // them per record is what the benchmark harness found dominating
-                // a nearest-neighbour read.
-                let wanted = self.folded_projection(transaction, wanted)?;
-                let mut projected = Vec::with_capacity(records.len());
-                for (id, record) in records {
-                    projected.push((id, self.project(transaction, &record, &wanted, &searched)?));
-                }
-                projected
-            }
+            projected
+        } else {
+            records
         };
         // Ordering comes after projection so that a key may name what the caller
         // can see: `SELECT address.city AS home … ORDER BY home` reads the name
@@ -410,7 +550,13 @@ impl Session<'_> {
         // works, because a projected record keeps the shape it was given only
         // where the projection preserved it — which is why the sort falls back
         // to the route when the name is not there.
-        let records = if select.order.is_empty() {
+        // A cursor read goes through the ordering stage even when it named no
+        // order, because the clause supplies one: with no keys to compare,
+        // `ranked` falls through to the identity, so the stage both applies the
+        // cursor and answers in the store's own order. Skipping it would leave
+        // the page to whatever order the source happened to produce, which is
+        // the one thing a resumed read cannot be built on.
+        let records = if select.order.is_empty() && select.after.is_none() {
             records
         } else {
             // The same ordering stage the streaming path uses, fed from a vector
@@ -427,7 +573,12 @@ impl Session<'_> {
                 keys,
                 &searched,
                 crate::shape::Topmost::keeping(&select.order, bound),
+                &mut budget,
+                &noticed,
             );
+            if let Some((id, record)) = resuming {
+                shaping.resume_after(transaction, id, record)?;
+            }
             for (id, record) in records {
                 if shaping.take(transaction, id, record)?.is_break() {
                     break;
@@ -435,10 +586,75 @@ impl Session<'_> {
             }
             shaping.finish()
         };
-        Ok((
-            crate::shape::bounded(records, select.start, select.limit),
-            path,
-        ))
+        asserted(select, &plan)?;
+        notes.extend(noticed.drained());
+        let records = crate::shape::bounded(records, select.start, select.limit);
+        alone(select, &records)?;
+        Ok(Answered {
+            records,
+            plan,
+            notes,
+        })
+    }
+
+    /// The record a cursor resumes after: its identity, and itself when the
+    /// order needs a key evaluated over it.
+    ///
+    /// The asymmetry in the middle is the whole of this function. A read that
+    /// named **no order** resumes in the store's own, where the identity *is*
+    /// the key — so nothing is read, and a page walk survives the deletion of
+    /// the record it resumed from, which is the ordinary way a long walk ends
+    /// otherwise. A read that named **an order** needs the anchor's value for
+    /// that key, and there is nowhere to get it but the record: a missing anchor
+    /// is refused rather than guessed at, because every guess picks a page.
+    fn resuming(
+        &self,
+        transaction: &mut Transaction<'_>,
+        select: &Select,
+    ) -> Result<Option<(RecordId, Option<Value>)>> {
+        let Some(anchor) = &select.after else {
+            return Ok(None);
+        };
+        let (_, address) = self.address(transaction, anchor)?;
+        if select.order.is_empty() {
+            return Ok(Some((address.id, None)));
+        }
+        let visible = self.visible_in(transaction, address.table)?;
+        let Some(payload) = transaction.get(&address)? else {
+            return Err(Error::AnchorGone {
+                table: anchor.table.name.text.clone(),
+                span: anchor.span,
+            });
+        };
+        let record = self.record_of(&payload, &visible)?;
+        Ok(Some((address.id, Some(record))))
+    }
+
+    /// What this read's projection produces, or nothing when it produces the
+    /// record unchanged.
+    ///
+    /// `None` is the read that copies nothing — a bare `*` with no `OMIT` — and
+    /// it is the commonest read in the language, so it keeps the path it had:
+    /// the records reach the answer as they were decoded.
+    ///
+    /// The projection is folded here, once above the records, because its
+    /// constant parts are constant across every record it is applied to.
+    /// Rebuilding them per record is what the benchmark harness once found
+    /// dominating a nearest-neighbour read.
+    fn shaped(&self, transaction: &mut Transaction<'_>, select: &Select) -> Result<Option<Shaped>> {
+        match &select.projection {
+            Projection::All if select.omit.is_empty() => Ok(None),
+            Projection::All => Ok(Some(Shaped {
+                everything: true,
+                omit: select.omit.clone(),
+                values: Vec::new(),
+            })),
+            Projection::Values { everything, values } => Ok(Some(Shaped {
+                everything: everything.is_some(),
+                omit: select.omit.clone(),
+                values: self.folded_projection(transaction, values)?,
+            })),
+        }
     }
 
     /// One record, reduced to the values a read asked for.
@@ -457,11 +673,34 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         record: &Value,
-        wanted: &[Projected],
+        wanted: &Shaped,
         searched: &Searched,
+        noticed: &Noticed,
     ) -> Result<Value> {
-        let mut projected = BTreeMap::new();
-        for value in wanted {
+        // The star first, so a value written out by name is written **over** the
+        // field it shares a name with. `SELECT *, upper(name) AS name` answers
+        // with the computed one, which is the same rule the ordering stage's
+        // overlay already follows — an alias shadows the field it is named for.
+        let mut projected = match (wanted.everything, record) {
+            (true, Value::Object(fields)) => fields
+                .iter()
+                .filter(|(name, _)| !omits(&wanted.omit, name))
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+            // A star over something that is not an object contributes nothing
+            // rather than failing: a projection reaching nothing omits its field
+            // everywhere else here, and this is the same rule one level up.
+            _ => BTreeMap::new(),
+        };
+        // A route that reaches inside is removed after the copy rather than
+        // filtered during it, because the field it names still belongs in the
+        // answer — `OMIT address.postcode` keeps the address.
+        for route in &wanted.omit {
+            if !route.path.steps().is_empty() {
+                omit_within(&mut projected, &route.path);
+            }
+        }
+        for value in &wanted.values {
             // A route reaching several values is **collected** here rather than
             // resolved, and the rule lives in the projection the way the
             // existential rule lives in the comparison. Reading it in the
@@ -493,7 +732,7 @@ impl Session<'_> {
             let held = self.evaluate_in(
                 transaction,
                 &value.value,
-                Scope::searching(record, searched),
+                Scope::searching(record, searched).noticing(noticed),
             )?;
             if held.is_present() {
                 projected.insert(value.name.text.clone(), held);
@@ -559,6 +798,8 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         select: &'a Select,
+        reporting: Reporting<'_>,
+        within: Option<Deadline>,
     ) -> Result<(Prepared<'a>, Searched)> {
         match &select.from {
             // Resolved from `meta` rather than read from a table, because that
@@ -566,7 +807,13 @@ impl Session<'_> {
             // (ADR-0018 §1). It needs no tenancy, so `$node` answers without a
             // `USE` — a node is not in a database.
             Source::Node => Ok((
-                Prepared::Held(vec![node_row(self.store)?], AccessPath::Record),
+                Prepared::Held(
+                    vec![node_row(self.store)?],
+                    Plan {
+                        source: Some("node"),
+                        ..Plan::new(AccessPath::Record)
+                    },
+                ),
                 Searched::default(),
             )),
             Source::Record(target) => {
@@ -579,7 +826,10 @@ impl Session<'_> {
                     None => Vec::new(),
                 };
                 Ok((
-                    Prepared::Held(found, AccessPath::Record),
+                    Prepared::Held(
+                        found,
+                        Plan::new(AccessPath::Record).on(target.table.name.text.as_str()),
+                    ),
                     Searched::default(),
                 ))
             }
@@ -592,9 +842,13 @@ impl Session<'_> {
                 from,
                 direction,
                 hops,
+                depth,
             } => {
-                let (found, path) = self.traverse(transaction, from, *direction, hops)?;
-                Ok((Prepared::Held(found, path), Searched::default()))
+                let found = self.traverse(transaction, from, *direction, hops, *depth)?;
+                Ok((
+                    Prepared::Held(found, Plan::new(AccessPath::Graph)),
+                    Searched::default(),
+                ))
             }
             Source::Where { table, condition } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
@@ -616,7 +870,7 @@ impl Session<'_> {
                 right_key,
                 condition,
             } => {
-                let (found, path, searched) = self.join(
+                let (found, plan, searched) = self.join(
                     transaction,
                     select,
                     left,
@@ -624,8 +878,49 @@ impl Session<'_> {
                     left_key,
                     right_key,
                     condition.as_deref(),
+                    reporting,
+                    within,
                 )?;
-                Ok((Prepared::Held(found, path), searched))
+                Ok((Prepared::Held(found, plan), searched))
+            }
+            // The inner read answers first and the outer statement reads what it
+            // answered. The path reported is `materialised` and not the inner
+            // read's own: the outer statement performed no access, and reporting
+            // the inner one said this statement used an index when it read from
+            // a held vector. The inner plan is a plan of its own, and one field
+            // for it would describe only the shallowest case.
+            Source::Subquery { read, condition } => {
+                // `None` for the held ceiling: the grammar already refuses a
+                // materialised source that names no `LIMIT`, so the bound here
+                // is the author's own and a second one below it would be a rule
+                // in two places that could only ever disagree.
+                let inner = self.read(transaction, read, within, None)?;
+                reporting.collected.extend(inner.notes);
+                reporting
+                    .collected
+                    .extend(ceiling_reached(read, inner.records.len()));
+                let (found, plan) = (inner.records, Plan::new(AccessPath::Materialised));
+                let Some(condition) = condition else {
+                    return Ok((Prepared::Held(found, plan), Searched::default()));
+                };
+                // Narrowed here rather than by an access path: the records are
+                // already in hand, so there is nothing left for an index to
+                // choose. That is what lets this condition ask about a value the
+                // inner read *produced* — a projected name, a fold's result —
+                // which no condition inside it could have named.
+                let searched = Searched::default();
+                let mut kept = Vec::new();
+                for (id, record) in found {
+                    let held = self.evaluate_in(
+                        transaction,
+                        condition,
+                        Scope::searching(&record, &searched).noticing(reporting.noticed),
+                    )?;
+                    if boolean(&held, condition.span)? {
+                        kept.push((id, record));
+                    }
+                }
+                Ok((Prepared::Held(kept, plan), searched))
             }
         }
     }
@@ -643,11 +938,20 @@ impl Session<'_> {
         prepared: Prepared<'_>,
         searched: &Searched,
         consumer: &mut dyn Consumer,
-    ) -> Result<AccessPath> {
+        reporting: Reporting<'_>,
+    ) -> Result<Plan> {
+        let named = table_named(&select.from);
+        // The table every plan below reports, resolved once: which table a read
+        // is over is a property of the statement and not of the walk that turned
+        // out to serve it.
+        let over = |access: AccessPath| Plan {
+            table: named.map(ToOwned::to_owned),
+            ..Plan::new(access)
+        };
         match prepared {
-            Prepared::Held(found, path) => {
+            Prepared::Held(found, plan) => {
                 hand_over(found, transaction, consumer)?;
-                Ok(path)
+                Ok(plan)
             }
             Prepared::Table(context, id) => {
                 // A statement that asked for an approximate ordering, over a
@@ -656,33 +960,92 @@ impl Session<'_> {
                 // scan. Every other shape falls through to the scan below, which
                 // is exact.
                 if let Some(walk) = plan::nearest(select)
-                    && let Some(found) = self.walk(transaction, context, id, &walk)?
+                    && let Some((found, index)) = self.walk(transaction, context, id, &walk)?
                 {
+                    // The one place the note is not about a cost but about the
+                    // answer: these records are the best the graph found, and
+                    // nothing in their shape says so.
+                    reporting.collected.push(Note::Approximate);
                     hand_over(found, transaction, consumer)?;
-                    return Ok(AccessPath::Index);
+                    return Ok(Plan {
+                        index: Some(index),
+                        ..over(AccessPath::Approximate)
+                    });
+                }
+                // A bounded order by distance from a place, over a field
+                // carrying a spatial index. Exact rather than approximate, and
+                // therefore asking nothing of the statement: a best-first walk
+                // ordered by a floor visits every record that could rank above
+                // the ones it holds.
+                if let Some(closest) = plan::closest(select) {
+                    match self.walk_to_place(transaction, context, id, &closest)? {
+                        Walked::Served { found, index } => {
+                            hand_over(found, transaction, consumer)?;
+                            return Ok(Plan {
+                                shape: Some("nearest"),
+                                index: Some(index),
+                                ..over(AccessPath::Ordered)
+                            });
+                        }
+                        Walked::Declined => reporting.collected.push(Note::FellBack {
+                            from: AccessPath::Ordered,
+                            to: AccessPath::Scan,
+                        }),
+                        Walked::NotServed => {}
+                    }
                 }
                 // The other shape an index serves without a condition: an order
                 // it is already stored in, and a bound to stop at. Exact — the
                 // records come back for the ordering stage and `bounded` to
                 // shape, the same two the other answers go through.
-                if let Some(bound) = plan::ordered(select)
-                    && let Some(found) = self.walk_in_order(transaction, context, id, &bound)?
-                {
-                    hand_over(found, transaction, consumer)?;
-                    return Ok(AccessPath::Ordered);
+                if let Some(bound) = plan::ordered(select) {
+                    match self.walk_in_order(transaction, context, id, &bound)? {
+                        Walked::Served { found, index } => {
+                            hand_over(found, transaction, consumer)?;
+                            return Ok(Plan {
+                                index: Some(index),
+                                ..over(AccessPath::Ordered)
+                            });
+                        }
+                        // The index holds the order and ran out of entries, so
+                        // the records that would fill the rest of the answer are
+                        // ones it does not hold. The scan below finds them, and
+                        // this is the note saying the index did not earn its
+                        // keep on this read.
+                        Walked::Declined => reporting.collected.push(Note::FellBack {
+                            from: AccessPath::Ordered,
+                            to: AccessPath::Scan,
+                        }),
+                        Walked::NotServed => {}
+                    }
                 }
                 // The bound reaches the source here, and only here, because this
                 // is the one arm where the records the source produces are the
                 // records the answer holds. `plan::bound` returns nothing for
                 // every shape where they differ (ADR-0013).
-                let found = match plan::bound(select) {
-                    Some(wanted) => transaction.first_records_of(
+                let resuming = select.after.as_ref().filter(|_| sought(select));
+                let found = match (resuming, plan::bound(select)) {
+                    // The seek. A record's key is its table prefix followed by
+                    // its identity, so a read whose order is the store's own
+                    // begins at a *position* rather than at the table — and the
+                    // records before the anchor are never read, which is the
+                    // entire difference between a cursor and an offset.
+                    (Some(anchor), bound) => transaction.records_after(
+                        context.namespace,
+                        context.database,
+                        id,
+                        anchor.id.fixed(anchor.span)?,
+                        bound,
+                    )?,
+                    (None, Some(wanted)) => transaction.first_records_of(
                         context.namespace,
                         context.database,
                         id,
                         wanted,
                     )?,
-                    None => transaction.scan_table(context.namespace, context.database, id)?,
+                    (None, None) => {
+                        transaction.scan_table(context.namespace, context.database, id)?
+                    }
                 };
                 let visible = self.visible_in(transaction, id)?;
                 // The one place in the store that knows how many records are
@@ -701,7 +1064,7 @@ impl Session<'_> {
                         break;
                     }
                 }
-                Ok(AccessPath::Scan)
+                Ok(over(AccessPath::Scan))
             }
             Prepared::Filtered(context, id, condition) => {
                 // The order first, when an index holds it. A filtered read that
@@ -712,22 +1075,39 @@ impl Session<'_> {
                 // bound, and an ascending retry would read further into values
                 // the answer has already passed rather than further into the
                 // ones it still needs — a different read, not a longer one.
-                if let Some(bound) = plan::ordered(select)
-                    && bound.descending
-                    && let Some(found) = self.descend_matching(
+                // The decline is remembered rather than acted on here, because
+                // what the read falls back *to* is not known until `candidates`
+                // has chosen — an index on the condition serves this read even
+                // when no index could serve its order.
+                let mut declined = false;
+                if let Some(bound) = plan::ordered(select).filter(|bound| bound.descending) {
+                    match self.descend_matching(
                         transaction,
                         context,
                         id,
                         &bound,
                         condition,
-                        searched,
-                    )?
-                {
-                    hand_over(found, transaction, consumer)?;
-                    return Ok(AccessPath::Ordered);
+                        Scope::over(searched, reporting.noticed),
+                    )? {
+                        Walked::Served { found, index } => {
+                            hand_over(found, transaction, consumer)?;
+                            return Ok(Plan {
+                                index: Some(index),
+                                ..over(AccessPath::Ordered)
+                            });
+                        }
+                        Walked::Declined => declined = true,
+                        Walked::NotServed => {}
+                    }
                 }
-                let (candidates, path) =
-                    self.candidates(transaction, id, context, condition, searched)?;
+                let (candidates, plan) =
+                    self.candidates(transaction, id, context, condition, searched, named)?;
+                if declined {
+                    reporting.collected.push(Note::FellBack {
+                        from: AccessPath::Ordered,
+                        to: plan.access,
+                    });
+                }
 
                 // No `expecting` here, deliberately: how many candidates survive
                 // the condition is not known until it has been run, and an
@@ -742,7 +1122,7 @@ impl Session<'_> {
                     let held = self.evaluate_in(
                         transaction,
                         condition,
-                        Scope::searching(&record, searched),
+                        Scope::searching(&record, searched).noticing(reporting.noticed),
                     )?;
                     if boolean(&held, condition.span)?
                         && consumer.take(transaction, id, record)?.is_break()
@@ -750,7 +1130,7 @@ impl Session<'_> {
                         break;
                     }
                 }
-                Ok(path)
+                Ok(plan)
             }
         }
     }
@@ -785,6 +1165,22 @@ impl Session<'_> {
     /// probes that index; otherwise the right side is read once into the map and
     /// the left side probes memory. Either way the work is `n + m` rather than
     /// `n × m`, and what happened is reported through [`AccessPath`].
+    ///
+    /// # An empty answer that a type mistake explains is refused
+    ///
+    /// `no rows` is the honest answer to a join over data that happens not to
+    /// match, and it is also what a join answers when one side stores an
+    /// identity as text and the other stores it as a reference. Those two are
+    /// indistinguishable to whoever reads the answer and only one of them is a
+    /// mistake, so the store separates them: when the answer is empty and the
+    /// two sides' key kinds are both non-empty and share nothing, the read
+    /// fails with [`Error::JoinKeysDiffer`] instead of answering.
+    ///
+    /// The rule is deliberately not "refuse as soon as one compared pair
+    /// differs". Records here carry no declared type, so one stray value among a
+    /// thousand would refuse a join that works — trading a silent wrong answer
+    /// for a loud wrong refusal. Making a single mismatched pair *visible*
+    /// without failing the read is the note channel's job and belongs with it.
     #[expect(
         clippy::too_many_arguments,
         reason = "every one is a distinct part of the clause, and a struct here                   would be the clause spelled twice"
@@ -793,54 +1189,87 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
-        left: &tessari_ql::TableRef,
-        right: &tessari_ql::TableRef,
+        left: &JoinSide,
+        right: &JoinSide,
         left_key: &tessari_ql::FieldPath,
         right_key: &tessari_ql::FieldPath,
         condition: Option<&Expr>,
+        reporting: Reporting<'_>,
+        within: Option<Deadline>,
     ) -> Result<Joined> {
-        let (left_context, left_id) = self.resolve_table(transaction, left)?;
-        let (right_context, right_id) = self.resolve_table(transaction, right)?;
-        let left_name = left.name.text.clone();
-        let right_name = right.name.text.clone();
+        let left_name = left.name().to_owned();
+        let right_name = right.name().to_owned();
 
-        // Each side is redacted by its own table's grant: a join is two reads
-        // and neither borrows the other's permission.
-        let left_visible = self.visible_in(transaction, left_id)?;
-        let right_visible = self.visible_in(transaction, right_id)?;
-
-        let served = ordered_index_on(transaction, right_id, right_key)?;
-        let mut built = BTreeMap::new();
-        if served.is_none() {
-            let found = transaction.scan_table(
-                right_context.namespace,
-                right_context.database,
-                right_id,
-            )?;
-            for (id, record) in self.records_of(found, &right_visible)? {
-                let Some(key) = right_key.path.resolve(&record).cloned() else {
-                    continue;
-                };
-                built.entry(key).or_insert_with(Vec::new).push((id, record));
+        // The right side takes one of two shapes. A table carrying an ordered
+        // index on the key is **probed**, one left record at a time; anything
+        // else is read once into an ordered map. A materialised read is always
+        // the second: it has no index of its own, and building one for a single
+        // statement would cost more than the map it replaces.
+        //
+        // Each side is redacted by its own grant — a join is two reads and
+        // neither borrows the other's permission. A side that is a read applied
+        // its own on the way through.
+        let mut probed = None;
+        let mut built: BTreeMap<Value, Vec<(RecordId, Value)>> = BTreeMap::new();
+        match right {
+            JoinSide::Table { table, .. } => {
+                let (context, id) = self.resolve_table(transaction, table)?;
+                let visible = self.visible_in(transaction, id)?;
+                match ordered_index_on(transaction, id, right_key)? {
+                    Some(index) => probed = Some((index, visible, context, id)),
+                    None => {
+                        let found =
+                            transaction.scan_table(context.namespace, context.database, id)?;
+                        collect_by_key(&mut built, self.records_of(found, &visible)?, right_key);
+                    }
+                }
+            }
+            JoinSide::Read { read, .. } => {
+                let answered = self.read(transaction, read, within, None)?;
+                reporting.collected.extend(answered.notes);
+                reporting
+                    .collected
+                    .extend(ceiling_reached(read, answered.records.len()));
+                collect_by_key(&mut built, answered.records, right_key);
             }
         }
 
-        let searched = self.searched_for(transaction, left_id, &shown(select))?;
+        // A read has no table to resolve an analyzer against, so a scored
+        // expression over a joined subquery falls back to the default context
+        // rather than borrowing the other side's.
+        let (driving, searched) = match left {
+            JoinSide::Table { table, .. } => {
+                let (context, id) = self.resolve_table(transaction, table)?;
+                let visible = self.visible_in(transaction, id)?;
+                let searched = self.searched_for(transaction, id, &shown(select))?;
+                let found = transaction.scan_table(context.namespace, context.database, id)?;
+                (self.records_of(found, &visible)?, searched)
+            }
+            JoinSide::Read { read, .. } => {
+                let answered = self.read(transaction, read, within, None)?;
+                reporting.collected.extend(answered.notes);
+                reporting
+                    .collected
+                    .extend(ceiling_reached(read, answered.records.len()));
+                (answered.records, Searched::default())
+            }
+        };
+
         let mut rows = Vec::new();
-        let driving =
-            transaction.scan_table(left_context.namespace, left_context.database, left_id)?;
-        for (id, record) in self.records_of(driving, &left_visible)? {
+        let mut left_kinds = BTreeSet::new();
+        for (id, record) in driving {
             // A left record with nothing at the key matches nothing: `NONE` is a
             // value and the right side would have to carry it to match, which is
             // what an inner join means.
             let Some(key) = left_key.path.resolve(&record).cloned() else {
                 continue;
             };
-            let matches = match &served {
-                Some(index) => {
+            left_kinds.insert(key.type_name());
+            let matches = match &probed {
+                Some((index, visible, _, _)) => {
                     let offered =
                         transaction.records_by_index(index, core::slice::from_ref(&key))?;
-                    self.records_of(offered, &right_visible)?
+                    self.records_of(offered, visible)?
                         .into_iter()
                         .filter(|(_, held)| right_key.path.resolve(held) == Some(&key))
                         .collect()
@@ -856,7 +1285,7 @@ impl Session<'_> {
                     let held = self.evaluate_in(
                         transaction,
                         condition,
-                        Scope::searching(&row, &searched),
+                        Scope::searching(&row, &searched).noticing(reporting.noticed),
                     )?;
                     if !boolean(&held, condition.span)? {
                         continue;
@@ -868,12 +1297,52 @@ impl Session<'_> {
                 rows.push((id.clone(), row));
             }
         }
-        let path = if served.is_some() {
-            AccessPath::Index
-        } else {
-            AccessPath::Scan
+        // Only here, and only on the answer that was about to lie. A join that
+        // produced a row matched a value, and two values that are equal are of
+        // one kind, so the sets overlap and this cannot fire; a join that
+        // produced nothing is the one whose emptiness needs explaining.
+        if rows.is_empty() {
+            let right_kinds = match &probed {
+                // The index path never read the right side, so learning what it
+                // holds costs a scan. It is paid once, after an empty answer,
+                // and never by a join that worked.
+                Some((_, visible, context, id)) => {
+                    let found = transaction.scan_table(context.namespace, context.database, *id)?;
+                    self.records_of(found, visible)?
+                        .iter()
+                        .filter_map(|(_, record)| right_key.path.resolve(record))
+                        .map(Value::type_name)
+                        .collect()
+                }
+                None => built.keys().map(Value::type_name).collect::<BTreeSet<_>>(),
+            };
+            // Both sides must have held something: a join over an empty table
+            // has no kinds to reconcile and answers nothing for the ordinary
+            // reason.
+            if !left_kinds.is_empty()
+                && !right_kinds.is_empty()
+                && left_kinds.is_disjoint(&right_kinds)
+            {
+                return Err(Error::JoinKeysDiffer {
+                    left_key: left_key.path.to_string(),
+                    left_kinds: listed(&left_kinds),
+                    right_key: right_key.path.to_string(),
+                    right_kinds: listed(&right_kinds),
+                    span: select.span,
+                });
+            }
+        }
+        // `join`, whichever way the sides were read: neither side's own path is
+        // how the joined answer was reached, and reporting one of them named half
+        // a read. What is worth naming is the index the right side was **probed**
+        // through, because that is the difference between a probe per left record
+        // and a map of the whole right table — and `EXPLAIN` names it from the
+        // same `ordered_index_on`.
+        let plan = Plan {
+            index: probed.map(|(index, ..)| index.name),
+            ..Plan::new(AccessPath::Join)
         };
-        Ok((rows, path, searched))
+        Ok((rows, plan, searched))
     }
 
     /// The records worth testing, and how they were reached.
@@ -895,11 +1364,22 @@ impl Session<'_> {
         context: crate::context::Context,
         condition: &Expr,
         searched: &Searched,
-    ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
+        named: Option<&str>,
+    ) -> Result<(Vec<(RecordId, Value)>, Plan)> {
         // Once for the statement rather than once per conjunct: which indexes a
         // table carries is one question, and it used to be asked as many times
         // as the condition had clauses.
-        let declared = Catalog::new(transaction).indexes_on(table)?;
+        //
+        // An empty list rather than a check at the choice below, because this is
+        // the whole vocabulary the enumeration works from: an index the read
+        // cannot use is one this statement does not have, and saying so here
+        // keeps the reason in the one place that asks the catalog rather than
+        // spread across every candidate that could have been built from it.
+        let declared = if transaction.indexes_are_current()? {
+            Catalog::new(transaction).indexes_on(table)?
+        } else {
+            Vec::new()
+        };
         let offered = self.enumerate(transaction, condition, &declared, searched)?;
 
         // Resolved before either path, so an index-served read and a scan see
@@ -907,11 +1387,21 @@ impl Session<'_> {
         // whole condition unable to answer what a scan refuses.
         let visible = self.visible_in(transaction, table)?;
         if let Some(chosen) = plan::choose(offered) {
+            // Built by the candidate itself, which is the same function
+            // `EXPLAIN` calls on the candidate its own `choose` returned. The
+            // two report one structure because one function writes it.
+            let plan = chosen.plan(named);
             let found = self.serve(transaction, context, table, &chosen)?;
-            return Ok((self.records_of(found, &visible)?, AccessPath::Index));
+            return Ok((self.records_of(found, &visible)?, plan));
         }
         let scanned = transaction.scan_table(context.namespace, context.database, table)?;
-        Ok((self.records_of(scanned, &visible)?, AccessPath::Scan))
+        Ok((
+            self.records_of(scanned, &visible)?,
+            Plan {
+                table: named.map(ToOwned::to_owned),
+                ..Plan::new(AccessPath::Scan)
+            },
+        ))
     }
 
     /// Walk a vector index, when there is one that answers this read.
@@ -927,7 +1417,7 @@ impl Session<'_> {
         context: crate::context::Context,
         table: TableId,
         wanted: &plan::Nearest<'_>,
-    ) -> Result<Option<Vec<(RecordId, Value)>>> {
+    ) -> Result<Option<Approximated>> {
         let Some(index) = self.index_on_path(transaction, table, wanted.path)? else {
             return Ok(None);
         };
@@ -943,7 +1433,7 @@ impl Session<'_> {
         };
         let visible = self.visible_in(transaction, table)?;
         let mut rows = Vec::new();
-        for id in transaction.records_by_vector(&index, &query, wanted.wanted)? {
+        for id in transaction.records_by_vector(&index, &query, wanted.wanted, wanted.effort)? {
             // Resolved at this reader's own snapshot, like every index read, so
             // a node left behind by a deleted record produces nothing.
             let at = RecordAddress::new(context.namespace, context.database, table, id);
@@ -951,7 +1441,114 @@ impl Session<'_> {
                 rows.push((at.id, self.record_of(&payload, &visible)?));
             }
         }
-        Ok(Some(rows))
+        Ok(Some((rows, index.name)))
+    }
+
+    /// Walk a spatial index nearest-first, when there is one that answers this
+    /// read.
+    ///
+    /// `None` is the scan, and every `None` here is a way the order a walk
+    /// produces can differ from the order the read must answer in. The first
+    /// four are the same four an ordered walk refuses, and for the same reason:
+    /// an ordering has nothing to re-test, because the entry's **position** is
+    /// the answer rather than a candidate for one.
+    ///
+    /// - **no spatial index on that field.** An ordered index holds values and a
+    ///   vector index holds a graph; neither is stored by place.
+    /// - **the field is not visible to this caller.** A field permission removes
+    ///   the field before anything reads the record, so a caller without it
+    ///   sorts by `none`. An order taken from the index would sort by the
+    ///   geometries themselves — the ordering disclosing what the projection
+    ///   hides, one comparison at a time.
+    /// - **this transaction has written to the table.** Entries are derived at
+    ///   commit, so an uncommitted record has none and the walk cannot place it.
+    /// - **the snapshot is not the committed tail.** Entries hold the current
+    ///   state and carry no version, so a record moved since the snapshot sits
+    ///   in the index at a place this reader cannot see, and the answer comes
+    ///   back in the **wrong order** rather than short.
+    ///
+    /// The query position is the last: `geo::distance` takes positions, so an
+    /// argument that is not one is an error in the statement, and the scan is
+    /// what reports it. [`Transaction::records_by_place`] owns the three
+    /// remaining refusals, which are facts about the records rather than about
+    /// the session.
+    fn walk_to_place(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: crate::context::Context,
+        table: TableId,
+        wanted: &plan::Closest<'_>,
+    ) -> Result<Walked> {
+        let Some((index, visible)) =
+            self.index_serving_place(transaction, context, table, wanted.path)?
+        else {
+            return Ok(Walked::NotServed);
+        };
+        // Not a decline: a query that is not a point, or a point no cell can
+        // hold, is a statement this walk does not serve rather than an index
+        // that ran out.
+        let Value::Geometry(tessari_types::Geometry::Point(position)) =
+            self.evaluate(transaction, wanted.query)?
+        else {
+            return Ok(Walked::NotServed);
+        };
+        let Ok(target) = tessari_geo::Snapped::of(position) else {
+            return Ok(Walked::NotServed);
+        };
+        let Some(nearby) = transaction.records_by_place(&index, target, wanted.wanted)? else {
+            return Ok(Walked::Declined);
+        };
+        Ok(Walked::Served {
+            found: self.records_of(nearby.rows, &visible)?,
+            index: index.name,
+        })
+    }
+
+    /// The spatial index that may serve an order by distance from this field,
+    /// with the caller's field visibility.
+    ///
+    /// The kind check is not a formality: an index keyed by **values** on the
+    /// same field would let a walk over places loose in a keyspace it has no
+    /// business in, where it would find nothing, answer with no rows, and report
+    /// no error. So the test names what it admits rather than what it rejects,
+    /// and a kind added later is refused by default rather than admitted by
+    /// omission.
+    ///
+    /// Asked here rather than at each call site, so the executor and `EXPLAIN`
+    /// cannot come to disagree about which reads are servable — the same reason
+    /// [`Evaluator::index_serving_order`] gathers its own four.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read.
+    pub(crate) fn index_serving_place(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: crate::context::Context,
+        table: TableId,
+        path: &tessari_types::Path,
+    ) -> Result<Option<(tessari_storage::IndexDefinition, crate::redact::Visible)>> {
+        let Some(index) = Catalog::new(transaction)
+            .indexes_on(table)?
+            .into_iter()
+            .find(|index| index.spatial && index.fields.first() == Some(path))
+        else {
+            return Ok(None);
+        };
+        let visible = self.visible_in(transaction, table)?;
+        if visible
+            .as_ref()
+            .is_some_and(|fields| !fields.contains(path.root()))
+        {
+            return Ok(None);
+        }
+        if transaction.writes_in(context.namespace, context.database, table) {
+            return Ok(None);
+        }
+        if !transaction.indexes_are_current()? {
+            return Ok(None);
+        }
+        Ok(Some((index, visible)))
     }
 
     /// A bounded descending read, taken from an index that is already in that
@@ -997,11 +1594,11 @@ impl Session<'_> {
         context: crate::context::Context,
         table: TableId,
         wanted: &plan::Bounded<'_>,
-    ) -> Result<Option<Vec<(RecordId, Value)>>> {
+    ) -> Result<Walked> {
         let Some((index, visible)) =
             self.index_serving_order(transaction, context, table, wanted.path, wanted.descending)?
         else {
-            return Ok(None);
+            return Ok(Walked::NotServed);
         };
         // The two directions differ in what a short walk *means*, which is why
         // one returns an option and the other does not. Descending, an index
@@ -1017,12 +1614,15 @@ impl Session<'_> {
                 wanted.wanted,
             )? {
                 Some(found) => found,
-                None => return Ok(None),
+                None => return Ok(Walked::Declined),
             }
         } else {
             transaction.records_in_ascending_order(&index, ORDERED_LEADING_FIELDS, wanted.wanted)?
         };
-        self.records_of(found, &visible).map(Some)
+        Ok(Walked::Served {
+            found: self.records_of(found, &visible)?,
+            index: index.name,
+        })
     }
 
     /// A bounded descending read **under a condition**, taken from the index
@@ -1076,8 +1676,8 @@ impl Session<'_> {
         table: TableId,
         wanted: &plan::Bounded<'_>,
         condition: &Expr,
-        searched: &Searched,
-    ) -> Result<Option<Vec<(RecordId, Value)>>> {
+        scope: Scope<'_>,
+    ) -> Result<Walked> {
         // Descending, stated rather than taken from the bound: this walk's whole
         // argument rests on absences sorting *last*, and passing the caller's
         // direction through would make that argument depend on a value from
@@ -1086,7 +1686,7 @@ impl Session<'_> {
         let Some((index, visible)) =
             self.index_serving_order(transaction, context, table, wanted.path, true)?
         else {
-            return Ok(None);
+            return Ok(Walked::NotServed);
         };
         let ceiling = wanted.wanted.saturating_mul(ORDERED_FILTER_REACH);
         let mut asking = wanted.wanted;
@@ -1098,21 +1698,23 @@ impl Session<'_> {
             let Some(found) =
                 transaction.records_in_descending_order(&index, ORDERED_LEADING_FIELDS, asking)?
             else {
-                return Ok(None);
+                return Ok(Walked::Declined);
             };
             let mut matched = Vec::new();
             for (id, record) in self.records_of(found, &visible)? {
-                let held =
-                    self.evaluate_in(transaction, condition, Scope::searching(&record, searched))?;
+                let held = self.evaluate_in(transaction, condition, scope.with(&record))?;
                 if boolean(&held, condition.span)? {
                     matched.push((id, record));
                 }
             }
             if matched.len() >= wanted.wanted {
-                return Ok(Some(matched));
+                return Ok(Walked::Served {
+                    found: matched,
+                    index: index.name,
+                });
             }
             if asking >= ceiling {
-                return Ok(None);
+                return Ok(Walked::Declined);
             }
             // Doubling, so reaching the ceiling costs about twice the ceiling in
             // entries rather than a walk per step.
@@ -1141,7 +1743,7 @@ impl Session<'_> {
         let Some(index) = self.index_ordering_on_path(transaction, table, path)? else {
             return Ok(None);
         };
-        if index.search || index.vector.is_some() {
+        if !index.is_ordered() {
             return Ok(None);
         }
         // Ascending, the records the index does **not** hold are the ones that
@@ -1166,7 +1768,7 @@ impl Session<'_> {
         if transaction.writes_in(context.namespace, context.database, table) {
             return Ok(None);
         }
-        if transaction.snapshot() != self.store.committed_tail()? {
+        if !transaction.indexes_are_current()? {
             return Ok(None);
         }
         Ok(Some((index, visible)))
@@ -1222,6 +1824,26 @@ impl Session<'_> {
                 lower,
                 upper,
             } => transaction.records_in_range(&chosen.index, fixed, lower.as_ref(), upper.as_ref()),
+            plan::Served::Region {
+                cells,
+                bounds,
+                relation,
+            } => {
+                // The filter half. What comes back is a **candidate set** — the
+                // cells are coarser than the boxes and the boxes are coarser
+                // than the shapes — and the condition above refines it against
+                // the real geometry, as it does for every other index read here.
+                //
+                // The counts the read measured are dropped on this path and that
+                // is deliberate rather than an oversight: this store has no
+                // statement that runs a read and reports its cost, so there is
+                // nowhere truthful to put them yet. They are returned, asserted
+                // by the tests that gate the query budget, and will surface here
+                // when an analysing `EXPLAIN` exists to carry them.
+                transaction
+                    .records_in_region(&chosen.index, cells, *bounds, *relation)
+                    .map(|region| region.rows)
+            }
             plan::Served::Terms(terms) => {
                 let mut rows = Vec::new();
                 for id in transaction.records_by_terms(&chosen.index, terms)? {
@@ -1268,86 +1890,328 @@ impl Session<'_> {
         from: &RecordTarget,
         direction: Direction,
         hops: &[Hop],
-    ) -> Result<(Vec<(RecordId, Value)>, AccessPath)> {
-        let (_, start) = self.address(transaction, from)?;
-        let mut anchors = vec![RecordRef::new(start.table, start.id.clone())];
-        let mut answer = Vec::new();
-
-        for hop in hops {
-            let (_, edge_table) = self.resolve_table(transaction, &hop.edges)?;
-            if !Catalog::new(transaction)
-                .table(edge_table)?
-                .is_some_and(|found| found.edge)
-            {
-                return Err(Error::NotAnEdgeTable {
-                    table: hop.edges.name.text.clone(),
-                    span: hop.edges.span,
-                });
-            }
-            let Some(index) = self.index_on_path(
-                transaction,
-                edge_table,
-                &Path::field(direction.from_field()),
-            )?
-            else {
-                // An edge table always has both, so reaching here means the
-                // catalog and the flag disagree — which is corruption, not a
-                // slow path.
-                return Err(Error::NotAnEdgeTable {
-                    table: hop.edges.name.text.clone(),
-                    span: hop.edges.span,
-                });
-            };
-
-            let edge_visible = self.visible_in(transaction, edge_table)?;
-            let mut found = Vec::new();
-            for anchor in &anchors {
-                let value = Value::Record(anchor.clone());
-                let offered = transaction.records_by_index(&index, &[value])?;
-                found.extend(self.records_of(offered, &edge_visible)?);
-            }
-
-            let Some(target) = hop.target.as_ref() else {
-                // The last step named no node, so the edges themselves are the
-                // answer. The grammar allows this only at the end, so there is
-                // no case here where the walk would have had to continue.
-                answer = found;
-                break;
-            };
-
-            let (context, target_table) = self.resolve_table(transaction, target)?;
-            // The far side is read from its own table, so its own grant applies —
-            // reaching a record through an edge is not a way around one, and that
-            // holds at every hop rather than only at the first.
-            let far_visible = self.visible_in(transaction, target_table)?;
-            let mut reached: BTreeMap<RecordId, Value> = BTreeMap::new();
-            for (_, edge) in found {
-                let Value::Object(fields) = &edge else {
-                    continue;
-                };
-                let Some(Value::Record(far)) = fields.get(direction.to_field()) else {
-                    continue;
-                };
-                if far.table != target_table {
-                    continue;
-                }
-                let address = RecordAddress::new(
-                    context.namespace,
-                    context.database,
-                    target_table,
-                    far.id.clone(),
-                );
-                if let Some(payload) = transaction.get(&address)? {
-                    reached.insert(far.id.clone(), self.record_of(&payload, &far_visible)?);
-                }
-            }
-            anchors = reached
-                .keys()
-                .map(|id| RecordRef::new(target_table, id.clone()))
-                .collect();
-            answer = reached.into_iter().collect();
+        depth: Option<u64>,
+    ) -> Result<Vec<(RecordId, Value)>> {
+        // Refused rather than served, and refused here rather than at the index
+        // lookup below, which would report `NotAnEdgeTable` and send a reader
+        // looking at their schema for a fault that is not there.
+        //
+        // A traversal is the one read of the six that has no scan to fall back
+        // to: an edge table's direction indexes are how edges are followed, not
+        // an optimisation over following them, so `index_on_path` returning
+        // `None` is treated as catalog corruption everywhere else. Inventing a
+        // scan for the historical case would be a second traversal
+        // implementation with its own direction handling, built inside a wave
+        // whose subject is guarding the paths that already exist.
+        //
+        // Serving it from the present-day index is the alternative that must not
+        // happen: a traversal's answer is the least inspectable shape this
+        // language produces — a set of records reached through edges nobody
+        // sees — so an answer assembled from today's edges over yesterday's
+        // records would be believed.
+        if !transaction.indexes_are_current()? {
+            return Err(Error::NoHistoricalTraversal {
+                table: hops
+                    .first()
+                    .map_or_else(String::new, |hop| hop.edges.name.text.clone()),
+                span: from.span,
+            });
         }
-        Ok((answer, AccessPath::Index))
+        let (origin, start) = self.address(transaction, from)?;
+        let anchors = vec![RecordRef::new(start.table, start.id.clone())];
+        match depth {
+            None => self.walk_written_out(transaction, &origin, anchors, direction, hops),
+            // The parser has already established that there is exactly one hop
+            // and that it names the table it lands on, so this indexes rather
+            // than re-checking: a second copy of the rule is a second place for
+            // it to disagree with itself.
+            Some(limit) => {
+                self.walk_repeatedly(transaction, &origin, anchors, direction, &hops[0], limit)
+            }
+        }
+    }
+
+    /// A walk whose steps are written out, one hop each.
+    ///
+    /// Bounded because the statement says how many steps there are — which is
+    /// why this form needs no visited set and may legitimately answer with the
+    /// same record twice if two written steps reach it.
+    fn walk_written_out(
+        &self,
+        transaction: &mut Transaction<'_>,
+        origin: &crate::context::Context,
+        mut anchors: Vec<RecordRef>,
+        direction: Direction,
+        hops: &[Hop],
+    ) -> Result<Vec<(RecordId, Value)>> {
+        let mut answer = Vec::new();
+        for hop in hops {
+            let (found, next) = self.one_hop(transaction, origin, &anchors, direction, hop)?;
+            answer = found;
+            anchors = next;
+            // The last step named no node, so the edges themselves are the
+            // answer. The grammar allows this only at the end, so there is no
+            // case here where the walk would have had to continue.
+            if hop.target.is_none() {
+                break;
+            }
+        }
+        Ok(answer)
+    }
+
+    /// `DEPTH n` — one hop repeated, answering with everything within `n` steps.
+    ///
+    /// Breadth-first over a visited set, and **the visited set is what makes the
+    /// bound mean anything.** `n` is a literal, so the number of rounds is
+    /// bounded by the statement; without the set, a cycle would make the *work*
+    /// grow with `n` regardless — the walk would keep re-expanding records it
+    /// had already reached, and a graph with one loop in it would run for as
+    /// long as the number said. With the set each record is expanded once, so
+    /// the walk costs the reachable subgraph however large `n` is written, and
+    /// terminates on a cycle rather than on the count running out.
+    ///
+    /// The start is marked seen before the first round. That is not a special
+    /// case for the start; it is the same rule, and it happens to give the
+    /// answer people mean — a neighbourhood that contained its own centre would
+    /// make a count of it wrong, and `SELECT * FROM person:1` already says the
+    /// centre.
+    ///
+    /// Breadth-first rather than depth-first for the same reason: a record first
+    /// reached in `d` steps has every neighbour of its own reached by `d + 1`,
+    /// so expanding it again from a longer path can add nothing.
+    fn walk_repeatedly(
+        &self,
+        transaction: &mut Transaction<'_>,
+        origin: &crate::context::Context,
+        start: Vec<RecordRef>,
+        direction: Direction,
+        hop: &Hop,
+        limit: u64,
+    ) -> Result<Vec<(RecordId, Value)>> {
+        let mut seen: BTreeSet<(TableId, RecordId)> = start
+            .iter()
+            .map(|anchor| (anchor.table, anchor.id.clone()))
+            .collect();
+        let mut frontier = start;
+        let mut answer = Vec::new();
+        for _ in 0..limit {
+            if frontier.is_empty() {
+                break;
+            }
+            let (found, next) = self.one_hop(transaction, origin, &frontier, direction, hop)?;
+            // One pass, and the answer is filtered against a SET rather than
+            // against a scan of the round's own results. A round's frontier is a
+            // node's whole neighbourhood, so a linear search per record reached
+            // would make the round quadratic in the fan-out — in the one code
+            // path whose entire purpose is that a hop does not cost the degree.
+            let mut fresh = BTreeSet::new();
+            let mut next_frontier = Vec::new();
+            for anchor in next {
+                if seen.insert((anchor.table, anchor.id.clone())) {
+                    fresh.insert(anchor.id.clone());
+                    next_frontier.push(anchor);
+                }
+            }
+            answer.extend(found.into_iter().filter(|(id, _)| fresh.contains(id)));
+            frontier = next_frontier;
+        }
+        Ok(answer)
+    }
+
+    /// One step of a walk, whichever path serves it.
+    ///
+    /// Factored out of the loop so that `DEPTH` can take the same step more than
+    /// once. Both branches answer with the same pair — the records this step
+    /// reached, and the anchors the next step would start from — so a repeat is
+    /// the same call again and not a second traversal implementation.
+    fn one_hop(
+        &self,
+        transaction: &mut Transaction<'_>,
+        origin: &crate::context::Context,
+        anchors: &[RecordRef],
+        direction: Direction,
+        hop: &Hop,
+    ) -> Result<Hopped> {
+        // An edge kind is looked for first, because it is served by
+        // adjacency rather than by an index: the neighbours of one node under
+        // one kind in one direction are contiguous, so reaching them is one
+        // range read instead of an index probe and a random read of every
+        // edge record. The far records are still read individually — the
+        // caller asked for records — but the edges themselves are never
+        // touched, and that is the difference the layout buys.
+        if let Some(kind) = Catalog::new(transaction).edge_kind_id(
+            origin.namespace,
+            origin.database,
+            &hop.edges.name.text,
+        )? {
+            return self.hop_in_graph(transaction, kind, anchors, direction, hop);
+        }
+        let (_, edge_table) = self.resolve_table(transaction, &hop.edges)?;
+        if !Catalog::new(transaction)
+            .table(edge_table)?
+            .is_some_and(|found| found.is_edge())
+        {
+            return Err(Error::NotAnEdgeTable {
+                table: hop.edges.name.text.clone(),
+                span: hop.edges.span,
+            });
+        }
+        let Some(index) = self.index_on_path(
+            transaction,
+            edge_table,
+            &Path::field(direction.from_field()),
+        )?
+        else {
+            // An edge table always has both, so reaching here means the
+            // catalog and the flag disagree — which is corruption, not a
+            // slow path.
+            return Err(Error::NotAnEdgeTable {
+                table: hop.edges.name.text.clone(),
+                span: hop.edges.span,
+            });
+        };
+
+        let edge_visible = self.visible_in(transaction, edge_table)?;
+        let mut found = Vec::new();
+        for anchor in anchors {
+            let value = Value::Record(anchor.clone());
+            let offered = transaction.records_by_index(&index, &[value])?;
+            found.extend(self.records_of(offered, &edge_visible)?);
+        }
+
+        let Some(target) = hop.target.as_ref() else {
+            // This step named no node, so the edges themselves are the answer
+            // and there is nothing for a next step to start from.
+            return Ok((found, Vec::new()));
+        };
+
+        let (context, target_table) = self.resolve_table(transaction, target)?;
+        // The far side is read from its own table, so its own grant applies —
+        // reaching a record through an edge is not a way around one, and that
+        // holds at every hop rather than only at the first.
+        let far_visible = self.visible_in(transaction, target_table)?;
+        let mut reached: BTreeMap<RecordId, Value> = BTreeMap::new();
+        for (_, edge) in found {
+            let Value::Object(fields) = &edge else {
+                continue;
+            };
+            let Some(Value::Record(far)) = fields.get(direction.to_field()) else {
+                continue;
+            };
+            if far.table != target_table {
+                continue;
+            }
+            let address = RecordAddress::new(
+                context.namespace,
+                context.database,
+                target_table,
+                far.id.clone(),
+            );
+            if let Some(payload) = transaction.get(&address)? {
+                reached.insert(far.id.clone(), self.record_of(&payload, &far_visible)?);
+            }
+        }
+        let next = reached
+            .keys()
+            .map(|id| RecordRef::new(target_table, id.clone()))
+            .collect();
+        Ok((reached.into_iter().collect(), next))
+    }
+
+    /// One hop over adjacency, and the anchors the next hop starts from.
+    ///
+    /// The neighbours come from a single range read per anchor. When the step
+    /// names no node the edges themselves are the answer, and they are assembled
+    /// from the adjacency entry rather than fetched: the endpoints are in the key
+    /// and the properties are in the value, so an edge of a declared kind is
+    /// never read as a record on this path at all.
+    fn hop_in_graph(
+        &self,
+        transaction: &mut Transaction<'_>,
+        kind: tessari_types::EdgeKindId,
+        anchors: &[RecordRef],
+        direction: Direction,
+        hop: &Hop,
+    ) -> Result<Hopped> {
+        let declared =
+            Catalog::new(transaction)
+                .edge_kind(kind)?
+                .ok_or_else(|| Error::NotAnEdgeTable {
+                    table: hop.edges.name.text.clone(),
+                    span: hop.edges.span,
+                })?;
+        let along = match direction {
+            Direction::Outgoing => AdjacencyDirection::Out,
+            Direction::Incoming => AdjacencyDirection::In,
+        };
+
+        let mut edges = Vec::new();
+        for anchor in anchors {
+            for neighbour in transaction.neighbours(&declared, anchor.table, &anchor.id, along)? {
+                edges.push((anchor.clone(), neighbour));
+            }
+        }
+
+        let Some(target) = hop.target.as_ref() else {
+            let answer = edges
+                .into_iter()
+                .map(|(anchor, neighbour)| {
+                    let mut fields = match neighbour.properties {
+                        Value::Object(given) => given,
+                        _ => BTreeMap::new(),
+                    };
+                    let (out, into) = match direction {
+                        Direction::Outgoing => (
+                            RecordRef::new(anchor.table, anchor.id.clone()),
+                            RecordRef::new(neighbour.table, neighbour.id.clone()),
+                        ),
+                        Direction::Incoming => (
+                            RecordRef::new(neighbour.table, neighbour.id.clone()),
+                            RecordRef::new(anchor.table, anchor.id.clone()),
+                        ),
+                    };
+                    let id = RecordId::from(format!(
+                        "{}:{}->{}:{}",
+                        out.table, out.id, into.table, into.id
+                    ));
+                    fields.insert(EDGE_OUT.to_owned(), Value::Record(out));
+                    fields.insert(EDGE_IN.to_owned(), Value::Record(into));
+                    (id, Value::Object(fields))
+                })
+                .collect();
+            return Ok((answer, Vec::new()));
+        };
+
+        let (context, target_table) = self.resolve_table(transaction, target)?;
+        // The far side is read from its own table, so its own grant applies —
+        // reaching a record through an edge is not a way around one.
+        let far_visible = self.visible_in(transaction, target_table)?;
+        let mut reached: BTreeMap<RecordId, Value> = BTreeMap::new();
+        for (_, neighbour) in edges {
+            if neighbour.table != target_table {
+                continue;
+            }
+            let address = RecordAddress::new(
+                context.namespace,
+                context.database,
+                target_table,
+                neighbour.id.clone(),
+            );
+            // A deleted neighbour drops out of the walk rather than failing it,
+            // as it does on the edge-table path: a record can go while an entry
+            // still names it, and that is a state of the graph.
+            if let Some(payload) = transaction.get(&address)? {
+                reached.insert(
+                    neighbour.id.clone(),
+                    self.record_of(&payload, &far_visible)?,
+                );
+            }
+        }
+        let next = reached
+            .keys()
+            .map(|id| RecordRef::new(target_table, id.clone()))
+            .collect();
+        Ok((reached.into_iter().collect(), next))
     }
 
     /// A read standing where a value stands.
@@ -1356,12 +2220,31 @@ impl Session<'_> {
     /// array, so that the shape of the answer follows the shape of the question
     /// rather than the number of rows that happened to match.
     fn read_as_value(&self, transaction: &mut Transaction<'_>, select: &Select) -> Result<Value> {
-        let (records, _) = self.read(transaction, select)?;
+        // The notes are dropped here, and this is the one place they are. An
+        // expression position has no channel to carry them: the answer *is* a
+        // value, and a value has no room beside it. Reported at the statement
+        // that holds this one would be worse than silence — a note about an
+        // inner read, attached to an outer answer it does not describe.
+        // `None` for the deadline, for the same reason the notes are dropped: an
+        // expression position has no channel to carry one *in* either, so a read
+        // standing here enforces its own ceiling and not its caller's.
+        //
+        // The held ceiling is the one thing that does reach here, and this is the
+        // position that most needs it: the answer is a `Value` built whole, so an
+        // unbounded read is an unbounded array, and there is no note channel a
+        // truncating default could have reported through.
+        let Answered { records, .. } =
+            self.read(transaction, select, None, Ceiling::over(select))?;
         // `$node` alongside `Source::Record` because it is one record too: a
         // read of one answers with its own value, and wrapping it in an array of
         // one would make the shape of the answer follow the source rather than
         // the question.
-        if matches!(select.from, Source::Record(_) | Source::Node) {
+        //
+        // `ONLY` says the same thing about a source that could have answered
+        // with many — `FROM ONLY users WHERE email = $e` — which is the half of
+        // this rule the source alone cannot tell. The read has already refused
+        // if more than one answered, so there is at most one here either way.
+        if select.only.is_some() || matches!(select.from, Source::Record(_) | Source::Node) {
             return Ok(records
                 .into_iter()
                 .next()
@@ -1407,19 +2290,50 @@ pub(crate) fn within(id: &RecordId, start: &RecordId, end: &RecordId, inclusive:
 /// values and a vector index answers a distance, so neither can answer "which
 /// records hold exactly this"; a composite index answers a question about its
 /// first field and this is not that question unless it is the only field.
-fn ordered_index_on(
+/// File records into an ordered map under the value at one route.
+///
+/// A record with nothing at the route contributes nothing: `NONE` is a value
+/// and the other side would have to carry it to match, which is what an inner
+/// join means.
+fn collect_by_key(
+    into: &mut BTreeMap<Value, Vec<(RecordId, Value)>>,
+    records: Vec<(RecordId, Value)>,
+    key: &tessari_ql::FieldPath,
+) {
+    for (id, record) in records {
+        let Some(found) = key.path.resolve(&record).cloned() else {
+            continue;
+        };
+        into.entry(found).or_default().push((id, record));
+    }
+}
+
+/// Kind names as a reader would say them: `record`, or `record and string`.
+///
+/// A join key usually holds one kind, so the common message reads as a bare
+/// noun rather than as a set with one element in it.
+fn listed(kinds: &BTreeSet<&'static str>) -> String {
+    let held: Vec<&str> = kinds.iter().copied().collect();
+    match held.split_last() {
+        None => String::new(),
+        Some((last, [])) => (*last).to_owned(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+pub(crate) fn ordered_index_on(
     transaction: &mut Transaction<'_>,
     table: TableId,
     key: &tessari_ql::FieldPath,
 ) -> Result<Option<tessari_storage::IndexDefinition>> {
+    if !transaction.indexes_are_current()? {
+        return Ok(None);
+    }
     Ok(Catalog::new(transaction)
         .indexes_on(table)?
         .into_iter()
         .find(|held| {
-            !held.search
-                && held.vector.is_none()
-                && held.fields.len() == 1
-                && held.fields.first() == Some(&key.path)
+            held.is_ordered() && held.fields.len() == 1 && held.fields.first() == Some(&key.path)
         }))
 }
 
@@ -1429,7 +2343,228 @@ fn ordered_index_on(
 /// not per-record and streaming it would move the materialisation rather than
 /// remove it. Named separately so the difference is visible in the signature
 /// rather than resting on a comment.
-type Joined = (Vec<(RecordId, Value)>, AccessPath, Searched);
+type Joined = (Vec<(RecordId, Value)>, Plan, Searched);
+
+/// What one hop over adjacency reached, and where the next hop starts.
+///
+/// Both halves are lists of the same length only by coincidence, and the second
+/// is empty whenever the step named no node — so they are named rather than left
+/// as a tuple two `Vec`s wide that a caller could read in either order.
+type Hopped = (Vec<(RecordId, Value)>, Vec<RecordRef>);
+
+/// What a vector walk came back with, and the index that answered it.
+///
+/// No `Walked` here: every empty return is a shape this walk does not serve — no
+/// index on the path, one built for another distance, a query that is not a
+/// vector — and none of them is an index that ran out.
+type Approximated = (Vec<(RecordId, Value)>, String);
+
+/// What a read produced, and what it has to say about how.
+///
+/// A struct rather than the tuple this was, because the third element is the one
+/// a caller is most likely to drop on the floor — and a `_` in a tuple pattern
+/// says nothing about what was dropped, while a named field does.
+pub(crate) struct Answered {
+    /// The records, in the order the statement asked for.
+    pub records: Vec<(RecordId, Value)>,
+    /// How they were reached — the plan the read took, in the structure
+    /// `EXPLAIN` answers with.
+    pub plan: Plan,
+    /// What the read did that the records do not show.
+    pub notes: Vec<Note>,
+}
+
+/// The note a materialised read owes, when it reached the ceiling it stated.
+///
+/// A materialised source and a materialised join side are the same case seen
+/// twice — the outer statement asks its question of whatever the inner read
+/// handed over, and a prefix of an answer and a whole one are the same shape. A
+/// top-level read filling its own `LIMIT` is *not* this: there is no outer
+/// question for it to have misled, and the caller wrote the bound and can see
+/// how many records came back.
+fn ceiling_reached(read: &Select, held: usize) -> Option<Note> {
+    let ceiling = read.limit?;
+    u64::try_from(held)
+        .is_ok_and(|held| held >= ceiling)
+        .then_some(Note::SubqueryCeiling { rows: ceiling })
+}
+
+/// Whether the read did what the statement said it expected.
+///
+/// A refusal and never a router: nothing here reaches the planner, and a read
+/// with no `USING` is not touched. It is compared against the plan the read
+/// **took**, not the one the planner chose, which is the whole difference — an
+/// ordered index that could not fill the bound hands the read to the scan, and
+/// an assertion checked against the intention would pass in exactly the case it
+/// was written to catch.
+///
+/// The cost of a refused statement is the read it already did. That is the
+/// honest semantics and not an oversight: the assertion is about what happened,
+/// so it cannot be settled before anything has. Refusing early where the
+/// planner's own choice already contradicts the assertion is a real improvement
+/// and a separate one (Q-203), because the planner may name a path the read then
+/// falls back from.
+/// `SPLIT ON <route>` — one record per element of the array the route reaches.
+///
+/// # What each shape at the route means
+///
+/// **An array** is the case the clause is for: one record per element, each
+/// carrying the element where the array stood, so `GROUP BY tags` after a
+/// `SPLIT ON tags` groups by a tag. The identity is carried unchanged onto every
+/// row, so an answer may hold one id more than once — which is what "one row per
+/// element" means and is why the clause is written rather than implied.
+///
+/// **An empty array** answers with no rows at all. Zero elements, zero rows: any
+/// other rule would make the count depend on a special case, and a read that
+/// asked for a row per tag over a record with no tags asked for nothing.
+///
+/// **Anything else — an absence, a scalar, an object — passes through once,
+/// unchanged.** An array says "these are the elements"; an absence says nothing
+/// about elements at all, so it is not an empty one. In a store where a field's
+/// kind is per record rather than per table, the alternative is a read that
+/// refuses because one record out of ten thousand holds a string.
+///
+/// # The budget
+///
+/// This is a stage of the read in the sense [`Budget::stage`] means, and it is
+/// the one stage that can produce *more* records than it consumed — so it is
+/// counted, or a held read could pass its ceiling here after honouring it above.
+fn opened(
+    records: Vec<(RecordId, Value)>,
+    route: &Path,
+    budget: &mut Budget,
+) -> Result<Vec<(RecordId, Value)>> {
+    budget.stage();
+    let mut opened = Vec::with_capacity(records.len());
+    for (id, record) in records {
+        let Some(Value::Array(items)) = route.resolve(&record).cloned() else {
+            budget.spend()?;
+            opened.push((id, record));
+            continue;
+        };
+        for item in items {
+            budget.spend()?;
+            let mut row = record.clone();
+            if let Some(slot) = route.resolve_mut(&mut row) {
+                *slot = item;
+            }
+            opened.push((id.clone(), row));
+        }
+    }
+    Ok(opened)
+}
+
+/// `ONLY` is an assertion about how many records answer, and this is where it is
+/// tested.
+///
+/// After the bound, so `FROM ONLY users LIMIT 1` is the author saying which one
+/// they want rather than a contradiction.
+///
+/// **None passes, more than one refuses**, and the two are not the same mistake.
+/// `ONLY` asserts *at most* one, so an absence is a legitimate answer to a
+/// question about one thing — refusing it would make
+/// `SELECT * FROM ONLY users:99 ?? {}` unsayable, and that is the shape `??`
+/// exists for. More than one falsifies what the author wrote, and it refuses
+/// rather than answering with the first: the records found are already correct,
+/// so a prefix of them costs nothing and looks exactly like success.
+/// Whether this read's cursor is served by seeking rather than by walking.
+///
+/// True for exactly one shape, and the reason is the keyspace rather than a
+/// preference: a record's key is its table prefix followed by its identity, so a
+/// read that answers in the store's own order can begin at a position in that
+/// keyspace. Both halves are load-bearing.
+///
+/// An `ORDER BY` breaks it because the answer's order is then the key the author
+/// named, and a record sorting before the anchor by that key may sort after it
+/// by identity — so seeking would drop records the page is owed.
+///
+/// A source other than a plain table breaks it because its records do not come
+/// from that keyspace in that order: a condition may be served by an index, a
+/// walk arrives along edges, a join and a materialised read build their rows.
+/// Each of those is walked and says so.
+fn sought(select: &Select) -> bool {
+    select.after.is_some() && select.order.is_empty() && matches!(select.from, Source::Table(_))
+}
+
+fn alone(select: &Select, records: &[(RecordId, Value)]) -> Result<()> {
+    let Some(span) = select.only else {
+        return Ok(());
+    };
+    if records.len() <= 1 {
+        return Ok(());
+    }
+    Err(Error::NotAlone {
+        found: records.len(),
+        span,
+    })
+}
+
+fn asserted(select: &Select, plan: &Plan) -> Result<()> {
+    match &select.using {
+        None => Ok(()),
+        Some(Using::Path(named)) => {
+            let Some(wanted) = AccessPath::named(&named.text) else {
+                return Err(Error::NoSuchAccessPath {
+                    named: named.text.clone(),
+                    known: AccessPath::known(),
+                    span: named.span,
+                });
+            };
+            if wanted == plan.access {
+                return Ok(());
+            }
+            Err(Error::PathNotTaken {
+                expected: wanted.name().to_owned(),
+                took: plan.access.name().to_owned(),
+                span: named.span,
+            })
+        }
+        Some(Using::Index(named)) => {
+            if plan.index.as_deref() == Some(named.text.as_str()) {
+                return Ok(());
+            }
+            Err(Error::IndexNotUsed {
+                expected: named.text.clone(),
+                // Named rather than described, because "used `by_city`" is what
+                // an author has to see to know what went wrong; "no index" is
+                // the other thing that can be true and reads as a sentence in
+                // the same slot.
+                took: plan
+                    .index
+                    .clone()
+                    .map_or_else(|| "no index".to_owned(), |index| format!("`{index}`")),
+                span: named.span,
+            })
+        }
+    }
+}
+
+/// What an index-served walk came back with.
+///
+/// Three cases rather than an [`Option`], because coming back empty happens for
+/// two unrelated reasons and only one of them is worth telling anybody about.
+/// **No index holds this order** is the ordinary state of a table nobody has
+/// indexed; **an index holds it and could not fill the bound** is the case the
+/// index was built to prevent. Collapsed into `None` they are the same value,
+/// and a note raised on it would fire on every unindexed read — which is how a
+/// diagnostic becomes noise and then becomes ignored.
+///
+/// The planner cannot tell them apart either: `plan::ordered` reads the
+/// statement and never the schema, so it says `Some` for an `ORDER BY … LIMIT`
+/// over a table with no index at all.
+enum Walked {
+    /// The index answered, and named itself so the plan can report which one.
+    Served {
+        /// What it came back with.
+        found: Vec<(RecordId, Value)>,
+        /// The index that served it.
+        index: String,
+    },
+    /// An index holds this order and could not fill the bound.
+    Declined,
+    /// No index holds this order, so nothing was given up.
+    NotServed,
+}
 
 /// What resolving a source reached, and what producing it still needs.
 ///
@@ -1446,7 +2581,21 @@ enum Prepared<'a> {
     /// reading them: one record by identity, a traversal, a join. Each is a
     /// barrier in its own right — a join builds a map of one side — so producing
     /// lazily would move the materialisation rather than remove it.
-    Held(Vec<(RecordId, Value)>, AccessPath),
+    Held(Vec<(RecordId, Value)>, Plan),
+}
+
+/// The table a source names, for the plan that reports it.
+///
+/// A traversal, a join and a materialised source name none: each reaches records
+/// from more than one place, or from a read rather than a table.
+fn table_named(source: &Source) -> Option<&str> {
+    match source {
+        Source::Table(table) | Source::Where { table, .. } => Some(table.name.text.as_str()),
+        Source::Record(target) => Some(target.table.name.text.as_str()),
+        Source::Node | Source::Traverse { .. } | Source::Join { .. } | Source::Subquery { .. } => {
+            None
+        }
+    }
 }
 
 /// This node, as the one record `$node` answers.
@@ -1478,6 +2627,12 @@ fn node_row(store: &Store) -> Result<(RecordId, Value)> {
         "version".to_owned(),
         Value::from(identity.version.to_string().as_str()),
     );
+    // Beside it rather than instead of it, because the two answer different
+    // questions. `version` is the stored, ordered form an upgrade compares;
+    // `build` is what this binary actually is, pre-release suffix included. On
+    // a final release they read the same, which is the point — the difference
+    // only appears when there is one.
+    fields.insert("build".to_owned(), Value::from(BUILD_VERSION));
     fields.insert(
         "endpoints".to_owned(),
         Value::Array(
@@ -1524,7 +2679,12 @@ fn hand_over(
 /// order by record id instead, which is a different answer from the one a scan
 /// gives.
 fn streams(select: &Select) -> bool {
-    select.fetch.is_empty() && !select.order.is_empty() && !groups(select)
+    // `SPLIT` joins `FETCH` on the barrier side rather than becoming a stage of
+    // the streaming path: it changes how many records there are, and the
+    // ordering stage below it keeps only as many as the bound can still reach.
+    // Streamed, the two would decide that together — the sort discarding rows
+    // the split had not produced yet.
+    select.fetch.is_empty() && select.split.is_none() && !select.order.is_empty() && !groups(select)
 }
 
 /// Whether the read folds many records into one.
@@ -1533,10 +2693,10 @@ fn streams(select: &Select) -> bool {
 /// because the two must not drift apart. A grouping routed to the streaming path
 /// would be a fold evaluated against one record at a time, which is the one
 /// thing a fold is not.
-fn groups(select: &Select) -> bool {
+pub(crate) fn groups(select: &Select) -> bool {
     match &select.projection {
         Projection::All => false,
-        Projection::Values(wanted) => folds(wanted) || !select.group.is_empty(),
+        Projection::Values { values, .. } => folds(values) || !select.group.is_empty(),
     }
 }
 
@@ -1551,6 +2711,69 @@ fn order_bound(select: &Select) -> Option<usize> {
     })
 }
 
+/// Whether a route names this field at the top of the record.
+///
+/// A route with steps below it names something *inside* the field, so the field
+/// itself stays — which is why the deeper case is handled after the copy rather
+/// than by filtering it out here.
+fn omits(omit: &[FieldPath], name: &str) -> bool {
+    omit.iter()
+        .any(|route| route.path.steps().is_empty() && route.path.root() == name)
+}
+
+/// Remove what a route names from inside an already-copied record.
+///
+/// Silent where the route reaches nothing: a record that does not hold the field
+/// already answers without it, and there is nothing for an error to tell anyone.
+fn omit_within(fields: &mut BTreeMap<String, Value>, route: &Path) {
+    let Some((Step::Field(last), above)) = route.steps().split_last() else {
+        return;
+    };
+    let mut held = Value::Object(std::mem::take(fields));
+    let holder = Path::new(route.root().to_owned(), above.to_vec());
+    if let Some(Value::Object(inside)) = holder.resolve_mut(&mut held) {
+        inside.remove(last);
+    }
+    if let Value::Object(back) = held {
+        *fields = back;
+    }
+}
+
+/// What a read's projection produces, worked out once above the records.
+///
+/// One type rather than three parameters, because the three are one decision —
+/// what the answer is built from — and they were about to be added to the same
+/// signatures one at a time, which is the drift `Reporting` was made to stop.
+#[derive(Debug)]
+pub(crate) struct Shaped {
+    /// Whether the record's own fields start the answer.
+    pub(crate) everything: bool,
+    /// The routes the record's fields must not reach the answer by.
+    ///
+    /// Subtracts from what the star put there and from nothing else, so it is
+    /// empty and unread whenever `everything` is false — which the grammar
+    /// already guarantees by refusing `OMIT` without a `*`.
+    pub(crate) omit: Vec<FieldPath>,
+    /// The values written out by name, with their constant parts folded once.
+    pub(crate) values: Vec<Projected>,
+}
+
+/// The two channels a read reports on, which travel together everywhere.
+///
+/// A note the source *decides* to raise — a fall-back, an approximate path, a
+/// subquery that reached its ceiling — is pushed straight onto `collected`. A
+/// note the *evaluator* discovers while comparing values is recorded in
+/// `noticed` and drained when the read reports. One parameter rather than two,
+/// because they were being added to the same signatures one at a time and were
+/// drifting apart at the call sites.
+#[derive(Debug)]
+pub(crate) struct Reporting<'a> {
+    /// Notes the source raised.
+    pub(crate) collected: &'a mut Vec<Note>,
+    /// Where the evaluator records a comparison across two kinds.
+    pub(crate) noticed: &'a Noticed,
+}
+
 /// What the evaluator can see besides the expression itself.
 ///
 /// The record a condition is being tested against, and what its searched fields
@@ -1562,6 +2785,12 @@ pub(crate) struct Scope<'a> {
     pub(crate) record: Option<&'a Value>,
     /// The analyzers and collection statistics the searched paths need.
     searched: Option<&'a Searched>,
+    /// Where a comparison across two kinds is recorded, when this evaluation is
+    /// part of a read that reports notes.
+    ///
+    /// Borrowed, so it cannot outlive the read — which is the whole reason it
+    /// hangs here rather than on the session.
+    noticed: Option<&'a Noticed>,
 }
 
 impl<'a> Scope<'a> {
@@ -1575,6 +2804,7 @@ impl<'a> Scope<'a> {
         Self {
             record: None,
             searched: None,
+            noticed: None,
         }
     }
 
@@ -1583,6 +2813,7 @@ impl<'a> Scope<'a> {
         Self {
             record: Some(record),
             searched: None,
+            noticed: None,
         }
     }
 
@@ -1591,6 +2822,49 @@ impl<'a> Scope<'a> {
         Self {
             record: Some(record),
             searched: Some(searched),
+            noticed: None,
+        }
+    }
+
+    /// The same scope, reporting what it compares to this read's notes.
+    ///
+    /// Added by the read path and left off everywhere else, so an evaluation in
+    /// a value position — which has no answer to hang a note on — costs nothing
+    /// and says nothing.
+    pub(crate) const fn noticing(self, noticed: &'a Noticed) -> Self {
+        Self {
+            noticed: Some(noticed),
+            ..self
+        }
+    }
+
+    /// The same environment, over this record.
+    ///
+    /// A `Scope` with no record is what an evaluation needs *besides* the record
+    /// — the analyzers, and where to note a crossing — so a walk that evaluates
+    /// per record is handed one of those and attaches each record in turn. It is
+    /// one parameter where `searched` and `noticed` were two, and it stops the
+    /// pair drifting apart at the call sites.
+    pub(crate) const fn with(self, record: &'a Value) -> Self {
+        Self {
+            record: Some(record),
+            ..self
+        }
+    }
+
+    /// The environment alone: what evaluation needs besides a record.
+    pub(crate) const fn over(searched: &'a Searched, noticed: &'a Noticed) -> Self {
+        Self {
+            record: None,
+            searched: Some(searched),
+            noticed: Some(noticed),
+        }
+    }
+
+    /// Record a comparison, when this scope is reporting them.
+    fn compared(self, left: &Value, right: &Value) {
+        if let Some(noticed) = self.noticed {
+            noticed.compared(left, right);
         }
     }
 
@@ -1612,7 +2886,7 @@ impl<'a> Scope<'a> {
 /// rather than the record, which is a different question and is not this one.
 fn shown(select: &Select) -> Vec<&Expr> {
     let mut found = Vec::new();
-    if let Projection::Values(wanted) = &select.projection {
+    if let Projection::Values { values: wanted, .. } = &select.projection {
         for projected in wanted {
             found.push(&projected.value);
         }

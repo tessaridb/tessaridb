@@ -104,7 +104,7 @@ pub(crate) fn spans(db: &Db, records: u64) -> Failable<Samples> {
     session.run(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench;\n\
          DEFINE DATABASE bench; USE DATABASE bench;\n\
-         DEFINE TABLE spans;\n\
+         DEFINE COLLECTION spans;\n\
          DEFINE INDEX by_n ON spans FIELDS n;",
     )?;
 
@@ -154,13 +154,9 @@ fn at_width(db: &Db, width: u64, settled: Option<u64>) -> Failable<Vec<Report>> 
             "SELECT * FROM spans WHERE n >= {from} AND n < {until};"
         ))?;
         taken.push(started.elapsed());
-        if let Some(Outcome::Records {
-            records,
-            path: took,
-        }) = outcome.last()
-        {
+        if let Some(Outcome::Records { records, plan, .. }) = outcome.last() {
             answered = records.len();
-            path = Some(took.name());
+            path = Some(plan.access.name());
         }
     }
 

@@ -38,7 +38,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE sales;\n\
+             DEFINE COLLECTION sales;\n\
              CREATE sales:1 = { city: 'london', price: 100, clerk: 'ada' };\n\
              CREATE sales:2 = { city: 'london', price: 300, clerk: 'grace' };\n\
              CREATE sales:3 = { city: 'paris', price: 50, clerk: 'ada' };\n\
@@ -204,7 +204,7 @@ fn a_fold_in_a_filter_is_refused_and_says_what_it_would_be() {
     for script in [
         "SELECT city FROM sales WHERE mean(price) > 30 GROUP BY city;",
         "SELECT city, count(*) AS n FROM sales GROUP BY city ORDER BY count(*);",
-        "DELETE FROM sales WHERE count(*) > 1;",
+        "DELETE FROM sales WHERE count(*) > 1 LIMIT ALL;",
     ] {
         let refused = session.run(script);
         assert!(

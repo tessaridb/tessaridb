@@ -9,7 +9,7 @@ USE DATABASE orders;
 --- expect: ok
 
 --- case: a table is defined
-DEFINE TABLE users;
+DEFINE TABLE users SCHEMALESS;
 --- expect: ok
 
 --- case: a space is defined
@@ -25,11 +25,11 @@ DEFINE INDEX by_name ON users FIELDS last, first;
 --- expect: ok
 
 --- case: a name is unique within its parent
-DEFINE TABLE users;
+DEFINE TABLE users SCHEMALESS;
 --- expect: error NameTaken
 
 --- case: if not exists accepts a definition that already stands
-DEFINE TABLE IF NOT EXISTS users;
+DEFINE TABLE IF NOT EXISTS users SCHEMALESS;
 DEFINE INDEX IF NOT EXISTS by_email ON users FIELDS email UNIQUE;
 --- expect: ok
 
@@ -57,13 +57,13 @@ DROP INDEX by_name ON users;
 
 --- case: a table is removed, and its name is free again
 DROP TABLE users;
-DEFINE TABLE users;
+DEFINE TABLE users SCHEMALESS;
 --- expect: ok
 
 --- case: a definition in another database is reached by qualifying it
 DEFINE DATABASE archive;
 USE DATABASE archive;
-DEFINE TABLE users;
+DEFINE TABLE users SCHEMALESS;
 CREATE users:1 = { name: 'grace' };
 USE DATABASE orders;
 SELECT * FROM archive.users;
@@ -97,7 +97,7 @@ DEFINE FIELD balance ON accounts TYPE decimal;
 --- expect: ok
 
 --- case: a field may be required
-DEFINE TABLE ledgers;
+DEFINE TABLE ledgers SCHEMALESS;
 DEFINE FIELD holder ON ledgers TYPE string REQUIRED;
 --- expect: ok
 
@@ -126,8 +126,11 @@ DEFINE FIELD tier ON ledgers TYPE int DEFAULT 'gold';
 --- expect: error DefaultDoesNotMatch
 
 --- case: requiring a field over rows that lack it writes nothing
+# Two rows lack it, and the refusal says so about both. A declaration is
+# checked against every row it would newly constrain, and naming the first one
+# would send its author back for the second after fixing the first.
 DEFINE FIELD nickname ON ledgers TYPE string REQUIRED;
---- expect: error MissingRequiredField
+--- expect: error RecordsRefused
 
 # `ASSERT` — what a value must satisfy beyond its type. Checked by the store on
 # its apply path, so what the catalog holds is the lowered constraint rather than
@@ -162,13 +165,50 @@ DEFINE FIELD tier ON ledgers TYPE string ASSERT $value IN ['bronze', 'gold'];
 DEFINE FIELD seen ON ledgers TYPE datetime ASSERT $value < time::now();
 --- expect: error AssertionNotAConstraint
 
---- case: nor is a field of the record
-DEFINE FIELD low ON ledgers TYPE int ASSERT $value < high;
---- expect: error AssertionNotAConstraint
-
 --- case: nor any parameter but the value being checked
 DEFINE FIELD cap ON ledgers TYPE int ASSERT $limit > 3;
 --- expect: error AssertionNotAConstraint
+
+# Another field of the **same record** is inside the vocabulary, because the
+# record is already in hand: the route is data the store resolves, not an
+# expression it evaluates, so the verdict stays a pure function of the record and
+# the catalog and a replica reaches it without reading anything.
+
+--- case: a comparison may name another field of the same record
+DEFINE FIELD low ON ledgers TYPE int ASSERT $value < high;
+--- expect: ok
+
+--- case: and a route may reach into a nested value
+DEFINE FIELD ends_at ON ledgers TYPE int ASSERT $value > window.opens;
+--- expect: ok
+
+--- case: a route composes with AND
+DEFINE FIELD mid ON ledgers TYPE int ASSERT $value > floor AND $value < ceiling;
+--- expect: ok
+
+--- case: with OR
+DEFINE FIELD outer ON ledgers TYPE int ASSERT $value < floor OR $value > ceiling;
+--- expect: ok
+
+--- case: and under NOT
+DEFINE FIELD above ON ledgers TYPE int ASSERT NOT ($value < floor);
+--- expect: ok
+
+--- case: but a route reaching several values has no single value to compare
+DEFINE FIELD each ON ledgers TYPE int ASSERT $value > slots[*].opens;
+--- expect: error AssertionNotAConstraint
+
+--- case: a record the comparison accepts lands
+CREATE ledgers:20 = { holder: 'ada', low: 1, high: 5 };
+--- expect: ok
+
+--- case: one it refuses does not
+CREATE ledgers:21 = { holder: 'ada', low: 9, high: 5 };
+--- expect: error AssertionViolation
+
+--- case: and neither does one whose compared field is absent, the way an ordered comparison against a non-value is false anywhere else
+CREATE ledgers:22 = { holder: 'ada', low: 1 };
+--- expect: error AssertionViolation
 
 # `INFO FOR` — what the catalog holds, read from the catalog itself. Five
 # subjects, because each one has exactly one rule deciding what the caller may
@@ -206,3 +246,47 @@ INFO STORE;
 --- case: FOR is contextual, so it is still a perfectly good field name
 CREATE users:'for-test' = { for: 'reserved words are expensive' };
 --- expect: ok
+
+--- case: a field's type may be a union of string literals
+# `TYPE string` is true about a status column and says nothing. An ASSERT says
+# the right thing in the wrong place — a reader of the schema does not see it,
+# and a reader of the refusal gets a condition instead of a list.
+DEFINE TABLE articles SCHEMALESS;
+DEFINE FIELD status ON articles TYPE 'draft' | 'published' | 'archived';
+--- expect: ok
+
+--- case: a member of the union is accepted
+CREATE articles:1 = { status: 'draft' };
+--- expect: ok
+
+--- case: text the union does not name is refused
+CREATE articles:2 = { status: 'deleted' };
+--- expect: error SchemaViolation
+
+--- case: and so is a value that is not text at all
+CREATE articles:3 = { status: 3 };
+--- expect: error SchemaViolation
+
+--- case: the declared type reads back out of the schema report
+INFO FOR TABLE articles;
+--- expect: ok
+
+--- case: a union is a set, so declaring one twice in another order is one type
+DEFINE FIELD status ON articles TYPE 'published' | 'archived' | 'draft';
+--- expect: error NameTaken
+
+--- case: a default outside the union is refused when the field is declared
+DEFINE FIELD stage ON articles TYPE 'open' | 'closed' DEFAULT 'gone';
+--- expect: error DefaultDoesNotMatch
+
+--- case: a default inside it is not
+DEFINE FIELD stage ON articles TYPE 'open' | 'closed' DEFAULT 'open';
+--- expect: ok
+
+--- case: a union of one member is a type that holds exactly one string
+DEFINE FIELD kind ON articles TYPE 'article';
+--- expect: ok
+
+--- case: the bar is a union separator and not a boolean or
+SELECT * FROM articles WHERE status = 'draft' | status = 'published';
+--- expect: error UnexpectedToken

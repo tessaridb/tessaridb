@@ -294,3 +294,60 @@ fn values_nest_without_a_size_problem() {
     )]))]);
     assert_eq!(nested, nested.clone());
 }
+
+#[test]
+fn a_whole_number_has_an_integer_and_a_fractional_one_does_not() {
+    // The rule a cast rests on: the three numeric kinds compare semantically, so
+    // asking "is this a whole number" has to reduce to the same normal form the
+    // comparison does. `dec 2.00` is the case that separates the two.
+    assert_eq!(Number::Integer(7).as_exact_integer(), Some(7));
+    assert_eq!(Number::float(7.0).as_exact_integer(), Some(7));
+    assert_eq!(
+        Number::Decimal(Decimal::from_str_exact("2.00").unwrap()).as_exact_integer(),
+        Some(2)
+    );
+    // Refused rather than truncated: `math::floor`, `math::ceil` and
+    // `math::round` are how a caller says which whole number was meant.
+    assert_eq!(Number::float(2.5).as_exact_integer(), None);
+    assert_eq!(
+        Number::Decimal(Decimal::from_str_exact("2.01").unwrap()).as_exact_integer(),
+        None
+    );
+    for edge in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(Number::float(edge).as_exact_integer(), None, "{edge}");
+    }
+}
+
+#[test]
+fn an_integer_a_float_cannot_hold_exactly_has_no_float() {
+    assert_eq!(Number::Integer(7).as_float(), Some(7.0));
+    assert_eq!(Number::Integer(-1).as_float(), Some(-1.0));
+    // A float is already one, the three non-finite values included.
+    assert!(Number::float(f64::NAN).as_float().unwrap().is_nan());
+    assert_eq!(Number::float(f64::INFINITY).as_float(), Some(f64::INFINITY));
+
+    // 2^53 is the last integer with a float of its own. Past it consecutive
+    // integers share a float, so the answer would be a *different integer* —
+    // and an integer here is a count or an identity, where off by one is not a
+    // rounding.
+    let last = 9_007_199_254_740_992_i64;
+    assert_eq!(
+        Number::Integer(last).as_float(),
+        Some(9_007_199_254_740_992.0)
+    );
+    assert_eq!(Number::Integer(last.saturating_add(1)).as_float(), None);
+    assert_eq!(Number::Integer(i64::MAX).as_float(), None);
+    assert_eq!(Number::Integer(i64::MIN).as_float(), None);
+
+    // A decimal takes its nearest float, and that is deliberate: `19.99` has no
+    // exact float either, so demanding exactness would refuse nearly every
+    // decimal anybody holds and leave no way to convert at all.
+    assert_eq!(
+        Number::Decimal(Decimal::from_str_exact("0.5").unwrap()).as_float(),
+        Some(0.5)
+    );
+    assert_eq!(
+        Number::Decimal(Decimal::from_str_exact("19.99").unwrap()).as_float(),
+        Some(19.99)
+    );
+}

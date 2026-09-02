@@ -124,7 +124,7 @@ fn ready<'a>(store: &'a Store, declaration: &str) -> Session<'a> {
         .run(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE events;\n\
+             DEFINE TABLE events SCHEMALESS;\n\
              {declaration}"
         ))
         .unwrap();
@@ -163,10 +163,13 @@ fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
 /// path it took.
 fn answered(session: &mut Session<'_>, read: &str) -> (Vec<RecordId>, AccessPath) {
     let outcomes = session.run(read).unwrap();
-    let Some(Outcome::Records { records, path }) = outcomes.last() else {
+    let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
-    (records.iter().map(|(id, _)| id.clone()).collect(), *path)
+    (
+        records.iter().map(|(id, _)| id.clone()).collect(),
+        plan.access,
+    )
 }
 
 /// Every shape this file asserts over, so the two halves cannot drift apart.
@@ -285,7 +288,7 @@ fn a_route_below_a_required_field_is_refused() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE people;\n\
+             DEFINE TABLE people SCHEMALESS;\n\
              DEFINE FIELD address ON people TYPE object REQUIRED;\n\
              CREATE people:1 = { address: { city: 'london' } };\n\
              CREATE people:2 = { address: { } };\n\
@@ -312,7 +315,7 @@ fn a_required_field_cannot_be_declared_over_a_table_that_already_breaks_it() {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE events;\n\
+             DEFINE COLLECTION events;\n\
              CREATE events:1 = { at: 1 };\n\
              CREATE events:2 = { };",
         )

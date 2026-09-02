@@ -36,7 +36,7 @@ fn ready(store: &Store) -> Session<'_> {
 }
 
 /// Ten readings, so bounds of 3 and 7 sit exactly on stored values.
-const READINGS: &str = "DEFINE TABLE readings;\n\
+const READINGS: &str = "DEFINE COLLECTION readings;\n\
      CREATE readings:1 = { level: 1, name: 'a', at: datetime '2026-01-01T00:00:00Z' };\n\
      CREATE readings:2 = { level: 2, name: 'b', at: datetime '2026-01-02T00:00:00Z' };\n\
      CREATE readings:3 = { level: 3, name: 'c', at: datetime '2026-01-03T00:00:00Z' };\n\
@@ -177,7 +177,7 @@ fn a_range_over_numbers_of_different_kinds_agrees_with_the_scan() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE mixed;\n\
+            "DEFINE COLLECTION mixed;\n\
              DEFINE INDEX by_size ON mixed FIELDS size;\n\
              CREATE mixed:1 = { size: 7 };\n\
              CREATE mixed:2 = { size: 7.0 };\n\
@@ -201,7 +201,7 @@ fn a_bound_that_reads_the_record_is_not_a_bound() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE pairs;\n\
+            "DEFINE COLLECTION pairs;\n\
              DEFINE INDEX by_left ON pairs FIELDS left;\n\
              CREATE pairs:1 = { left: 5, right: 3 };\n\
              CREATE pairs:2 = { left: 1, right: 9 };",

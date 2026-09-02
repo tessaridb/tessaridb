@@ -122,7 +122,10 @@ impl FieldDefinition {
             (FIELD_DATABASE.to_owned(), number(self.database.get())),
             (FIELD_TABLE.to_owned(), number(self.table.get())),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
-            (FIELD_KIND.to_owned(), Value::from(self.kind.name())),
+            (
+                FIELD_KIND.to_owned(),
+                Value::from(self.kind.name().as_ref()),
+            ),
             (FIELD_REQUIRED.to_owned(), Value::Bool(self.required)),
             (
                 FIELD_DEFAULT.to_owned(),
@@ -290,16 +293,29 @@ impl Catalog<'_, '_> {
     ///
     /// Returns an error when a stored definition cannot be read.
     pub fn fields_on(&self, table: TableId) -> Result<Vec<FieldDefinition>> {
+        let mut found = self.fields()?;
+        found.retain(|definition| definition.table == table);
+        Ok(found)
+    }
+
+    /// Every field declared anywhere in the store.
+    ///
+    /// The unfiltered form of [`Self::fields_on`], which is what a question
+    /// about a **store-wide** name needs: an analyzer is declared once for the
+    /// whole store rather than per database, so asking whether one is still
+    /// attached is a question no single table can answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a stored definition cannot be read.
+    pub fn fields(&self) -> Result<Vec<FieldDefinition>> {
         let mut found = Vec::new();
         for (_, bytes) in self.transaction.scan_table(
             system::SYSTEM_NAMESPACE,
             system::SYSTEM_DATABASE,
             system::FIELDS,
         )? {
-            let definition = FieldDefinition::from_value(&decode_payload(&bytes)?)?;
-            if definition.table == table {
-                found.push(definition);
-            }
+            found.push(FieldDefinition::from_value(&decode_payload(&bytes)?)?);
         }
         Ok(found)
     }
@@ -403,7 +419,7 @@ mod tests {
     #[test]
     fn a_definition_of_every_kind_round_trips() {
         for kind in FieldKind::all() {
-            let original = definition(*kind);
+            let original = definition(kind.clone());
             assert_eq!(
                 FieldDefinition::from_value(&original.to_value()).unwrap(),
                 original,
@@ -442,7 +458,7 @@ mod tests {
         // nothing asserted that the known kinds *are* known, so adding one broke
         // a negative fixture with no positive one to contradict it.
         for kind in FieldKind::all() {
-            let stored = definition(*kind).to_value();
+            let stored = definition(kind.clone()).to_value();
             let read = FieldDefinition::from_value(&stored);
             assert!(
                 read.is_ok(),

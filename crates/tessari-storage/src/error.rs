@@ -11,7 +11,7 @@
 //! be to do nothing.
 
 use tessari_kv::ErrorCategory;
-use tessari_types::{RecordId, Sequence};
+use tessari_types::{FieldKind, RecordId, Sequence};
 
 /// Result alias for every fallible operation in this crate.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -107,16 +107,41 @@ pub enum Error {
         "table {table} declares {field} as {declared}, but record {record} holds {found} there"
     )]
     SchemaViolation {
-        /// The table whose declaration was violated.
-        table: u32,
+        /// The table whose declaration was violated, by the name a declaration
+        /// uses.
+        ///
+        /// Boxed for the reason [`found`](Self::SchemaViolation::found) is, and
+        /// adding it is what made the rest of this variant boxed too: this is
+        /// the widest refusal there is, four owned names carrying a `String`'s
+        /// spare capacity each put it past `clippy::result_large_err`, and the
+        /// lint is measured against the whole `Result` every call in three
+        /// crates returns.
+        table: Box<str>,
         /// The record that was being written.
-        record: String,
+        record: Box<str>,
         /// The field that disagreed.
-        field: String,
+        field: Box<str>,
         /// The type the table declares for it.
-        declared: &'static str,
+        /// Owned rather than `&'static str`: a literal union spells itself as
+        /// its members, so not every declared type is a word this binary knows
+        /// at compile time.
+        declared: Box<str>,
         /// The type the record held instead.
-        found: &'static str,
+        ///
+        /// Owned for the same reason `declared` is, and it became necessary for
+        /// the same reason: against a parameterised declaration a bare type name
+        /// is true and useless. "declares embedding as vector<768>, but record
+        /// documents:1 holds array there" tells a reader nothing they did not
+        /// write themselves, because the value **is** an array — the width is
+        /// the whole disagreement, so the width has to be in the message.
+        ///
+        /// A `Box<str>` and not a `String`, which is not a micro-optimisation.
+        /// This enum travels in every `Result` the store returns, and the third
+        /// word a `String` carries — the spare capacity a message never grows
+        /// into — pushed the `Err` variant past the width
+        /// `clippy::result_large_err` allows. Boxed, it is exactly the size the
+        /// `&'static str` here used to be.
+        found: Box<str>,
     },
 
     /// A value its field's declaration refuses.
@@ -124,14 +149,27 @@ pub enum Error {
     /// Checked on the apply path beside the type check, and for the same reason:
     /// the verdict is a pure function of the record and the catalog, so every
     /// replica reaches it without anything being sent.
-    #[error("record {record} of table {table} holds a {field} its declaration refuses")]
+    ///
+    /// The message names the other field when the declaration compares against
+    /// one, because "`ends_at` is refused" without "compared with `starts_at`"
+    /// leaves the writer to guess which of the record's fields the constraint
+    /// was about. Both fields came from the statement they just sent, so naming
+    /// the second discloses nothing they did not supply — which is the line this
+    /// message stays on: it never names a value, and never names a second
+    /// **record**.
+    #[error("record {record} of table {table} holds a {field} its declaration refuses{}",
+        .compared_with.as_ref().map_or_else(String::new, |other| format!(" (it is compared with {other})")))]
     AssertionViolation {
-        /// The table whose declaration was violated.
-        table: u32,
+        /// The table whose declaration was violated, by the name a declaration
+        /// uses.
+        table: Box<str>,
         /// The record that was being written.
         record: String,
         /// The field that disagreed.
         field: String,
+        /// The other fields of the same record the declaration compares against,
+        /// when it names any.
+        compared_with: Option<String>,
     },
 
     /// A required field that holds nothing.
@@ -142,8 +180,8 @@ pub enum Error {
     /// every field that is not required.
     #[error("record {record} in table {table} leaves required field {field} holding {found}")]
     MissingRequiredField {
-        /// The table the record is in.
-        table: u32,
+        /// The table the record is in, by the name a declaration uses.
+        table: Box<str>,
         /// The record's identity.
         record: String,
         /// The field that must hold a value.
@@ -157,14 +195,68 @@ pub enum Error {
     /// This is the misspelling that a schemaless table accepts in silence: the
     /// record lands, nothing is raised, and every query filtering on the name
     /// that was meant is quietly missing it.
+    ///
+    /// # Why every refusal here names its table the way a declaration would
+    ///
+    /// The fix for one of these is a declaration, and a declaration names its
+    /// table — so an internal id is a number the reader cannot write anywhere.
+    /// The name costs nothing to obtain: the schema is built from the table's
+    /// definition, which holds it.
+    ///
+    /// This variant carried the name first and its siblings carried an id, and
+    /// the reason recorded here for that was *"the refusals around it identify
+    /// a table by id, which is what this layer has"*. That was wrong on both
+    /// halves. The layer has the name — `check` holds the `TableSchema` that
+    /// carries it, and read it two match arms above the arm that wrote the id.
+    /// And "the refusal a caller acts on" does not separate one of these from
+    /// the others: every refusal in this group is the caller's data against a
+    /// constraint the caller declared, none of them can succeed on retry, and
+    /// each is fixed by changing the declaration or the record. Kept as a note
+    /// rather than deleted, because the id survived in three variants for as
+    /// long as this paragraph explained it.
     #[error("table {table} declares no field {field}, and record {record} carries one")]
     UndeclaredField {
-        /// The table that refused the write.
-        table: u32,
+        /// The table that refused the write, by the name a declaration uses.
+        table: String,
         /// The record that was being written.
         record: String,
         /// The field it carried.
         field: String,
+        /// The kind a declaration would have to give that field to accept it.
+        ///
+        /// Derived from the value the caller just sent, so it names nothing
+        /// about the table's other declarations — a field a caller's grants
+        /// hide is never mentioned by a refusal (ADR-0044). It is carried
+        /// rather than rendered because writing it as a statement needs the
+        /// language, and this layer deliberately does not have it.
+        ///
+        /// Boxed because every `Result` in this crate and the two above it
+        /// reserves room for the widest refusal there is, and this variant now
+        /// holds three names; unboxed it took that budget past what
+        /// `clippy::result_large_err` allows, which is a real cost paid on
+        /// every call that never fails.
+        kind: Box<FieldKind>,
+    },
+
+    /// Several records in one commit were refused, and here is each of them.
+    ///
+    /// A commit is all-or-nothing, so the first bad record already decides the
+    /// outcome and reporting only that one is *correct*. It is also the shape
+    /// that makes a caller fix a batch one round trip per mistake, discovering
+    /// the second problem only after the first is gone. So every record is
+    /// checked before any refusal is raised.
+    ///
+    /// Exactly one refusal is never wrapped: a batch of one is not a batch, and
+    /// the singular refusal is what everything already reads.
+    #[error(
+        "{} records were refused: {}",
+        refusals.len(),
+        refusals.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")
+    )]
+    RecordsRefused {
+        /// One refusal per record that disagreed, in the order the commit
+        /// walked them.
+        refusals: Vec<Error>,
     },
 
     /// The parent a catalog entry was to be created under does not exist.
@@ -200,6 +292,36 @@ pub enum Error {
     IdSpaceExhausted {
         /// The level whose counter reached its end.
         level: &'static str,
+    },
+
+    /// A read was asked for a point the store can no longer answer exactly.
+    ///
+    /// Reclamation removed the versions that stood there. Answering anyway
+    /// would return an older value, or none, and present it as the state at the
+    /// asked-for point — a wrong answer indistinguishable from a right one,
+    /// which is the one outcome a historical read must not have.
+    #[error(
+        "sequence {asked} is below the reclaim floor {floor}; the versions that \
+         answered there have been removed"
+    )]
+    VersionReclaimed {
+        /// The sequence the read asked for.
+        asked: u64,
+        /// The oldest sequence still answerable exactly.
+        floor: u64,
+    },
+
+    /// A read was asked for a point the store has not reached.
+    ///
+    /// Serving the present instead would let the same query return one answer
+    /// now and a different one later while naming the same version, which makes
+    /// a historical read non-reproducible — the property it exists to have.
+    #[error("sequence {asked} is ahead of the committed tail {tail}")]
+    VersionInTheFuture {
+        /// The sequence the read asked for.
+        asked: u64,
+        /// The newest sequence the store has committed.
+        tail: u64,
     },
 
     /// The operating system's randomness source could not be read.
@@ -256,7 +378,16 @@ impl Error {
             | Self::SchemaViolation { .. }
             | Self::MissingRequiredField { .. }
             | Self::UndeclaredField { .. }
-            | Self::IdSpaceExhausted { .. } => ErrorCategory::Validation,
+            // Every refusal it carries is a validation refusal — nothing else is
+            // ever collected into it — so it does not need to look inside.
+            | Self::RecordsRefused { .. }
+            | Self::IdSpaceExhausted { .. }
+            // Validation and not `Unavailable`: the store is healthy and the
+            // sequence asked for is the thing that is wrong. Retrying the same
+            // read cannot succeed, and a floor only ever rises, so a caller that
+            // treated this as transient would retry forever.
+            | Self::VersionReclaimed { .. }
+            | Self::VersionInTheFuture { .. } => ErrorCategory::Validation,
             Self::CatalogMalformed { .. } => ErrorCategory::Corruption,
             // A dependency this process needs is not reachable, which is what
             // `Unavailable` names. Not `Internal`: nothing here is a bug in the

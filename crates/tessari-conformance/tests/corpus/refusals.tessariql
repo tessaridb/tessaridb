@@ -5,7 +5,7 @@ DEFINE NAMESPACE prod;
 USE NAMESPACE prod;
 DEFINE DATABASE orders;
 USE DATABASE orders;
-DEFINE TABLE users;
+DEFINE COLLECTION users;
 CREATE users:1 = { name: 'ada', email: 'ada@example.com' };
 --- expect: ok
 
@@ -54,6 +54,6 @@ SELECT * FROM missing;
 --- expect: error Unknown
 
 --- case: a word that names an absent feature is still a legal name
-DEFINE TABLE order;
+DEFINE COLLECTION order;
 SELECT * FROM order;
 --- expect: rows 0

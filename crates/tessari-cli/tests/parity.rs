@@ -27,7 +27,7 @@ use std::sync::Arc;
 use tessari_wire::Node;
 use tessaridb::{Db, Parameters, Value};
 
-use crate::session::{Mode, run};
+use crate::session::{Mode, Piped, run};
 use crate::store::{Embedded, Remote, Store};
 
 // A binary has no library target to depend on, and giving it one to make a test
@@ -39,13 +39,15 @@ mod render;
 mod session;
 #[path = "../src/store.rs"]
 mod store;
+#[path = "../src/table.rs"]
+mod table;
 
 /// Enough of a store to answer every shape, written the same way twice.
 const SEED: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod; \
 DEFINE DATABASE orders; USE DATABASE orders; \
-DEFINE TABLE users; DEFINE TABLE readings; \
-DEFINE TABLE sessions; DEFINE TABLE k; \
+DEFINE COLLECTION users; DEFINE COLLECTION readings; \
+DEFINE COLLECTION sessions; DEFINE COLLECTION k; \
 CREATE users:1 = { name: 'ada', rank: 1 }; \
 CREATE users:2 = { name: 'grace', rank: 2 }; \
 CREATE readings:1 = { at: datetime '2026-01-01T00:00:00Z', value: 1 }; \
@@ -70,10 +72,13 @@ fn scripts() -> Vec<(&'static str, &'static str)> {
         ("a value that is a reference", "SET k:1 = users:2; GET k:1;"),
         ("a plain value", "GET sessions:'def';"),
         ("keys", "KEYS FROM sessions;"),
-        ("a statement that only does work", "DEFINE TABLE later;"),
+        (
+            "a statement that only does work",
+            "DEFINE COLLECTION later;",
+        ),
         (
             "a conditional delete's count",
-            "DELETE FROM readings WHERE value >= 1;",
+            "DELETE FROM readings WHERE value >= 1 LIMIT ALL;",
         ),
     ]
 }
@@ -91,7 +96,7 @@ fn remote(address: &str, script: &str) -> String {
 }
 
 fn said(store: &mut dyn Store, script: &str) -> String {
-    let mut input = Cursor::new(format!("{SELECTED} {script}").into_bytes());
+    let mut input = Piped::new(Cursor::new(format!("{SELECTED} {script}").into_bytes()));
     let mut out = Vec::new();
     run(store, &mut input, &mut out, Mode::Script).expect("a run");
     String::from_utf8(out).expect("text")

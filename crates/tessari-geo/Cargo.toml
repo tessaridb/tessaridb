@@ -4,7 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "geometry on a fixed integer grid — exact predicates, bounding boxes, spatial keys"
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Geometry on a fixed integer grid for TessariDB: exact predicates, bounding boxes, spatial keys"
 
 [dependencies]
 tessari-types.workspace = true

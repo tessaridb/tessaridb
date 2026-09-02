@@ -10,7 +10,7 @@ USE DATABASE orders;
 --- expect: ok
 
 --- case: rows carrying the three numeric kinds, and one missing a field
-DEFINE TABLE lines;
+DEFINE COLLECTION lines;
 CREATE lines:1 = { name: 'ada', price: dec 2.50, quantity: 3, weight: 1.5, tags: ['a', 'b'] };
 CREATE lines:2 = { name: 'grace', price: dec 1.00, quantity: 1 };
 --- expect: ok
@@ -80,7 +80,7 @@ SELECT -quantity AS owed FROM lines:1;
 --- expect: rows 1
 
 --- case: vectors to search
-DEFINE TABLE points;
+DEFINE COLLECTION points;
 CREATE points:1 = { name: 'east', at: [1.0, 0.0] };
 CREATE points:2 = { name: 'north-east', at: [0.7, 0.7] };
 CREATE points:3 = { name: 'north', at: [0.0, 1.0] };
@@ -103,3 +103,78 @@ SELECT vector::cosine(at, [2.0, 0.0]) AS angle, vector::euclidean(at, [2.0, 0.0]
 --- case: ordering by anything computed, which the same widening bought
 SELECT * FROM points ORDER BY string::len(name) DESC LIMIT 1;
 --- expect: rows 1
+
+--- case: a digest is the published one, which is the only way to know it is SHA-2
+# Every property a digest has — its length, its alphabet, that it changes when
+# the input does — is satisfied by a hash that is not SHA-256 at all. The
+# standard's own vector is the assertion that means something.
+RETURN crypto::sha256('abc');
+--- expect: value 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+
+--- case: and the same for SHA-512
+RETURN crypto::sha512('abc');
+--- expect: value 'ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f'
+
+--- case: the empty string has a digest, and it is not the empty string
+RETURN crypto::sha256('');
+--- expect: value 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+
+--- case: a digest is text, so it compares with what a caller wrote down
+RETURN crypto::sha256('abc') = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
+--- expect: value true
+
+--- case: the argument is text and nothing else, because type::string is total
+# Strictness is affordable exactly where the language holds the sentence the
+# caller should write instead. Hashing "the canonical text of any value" would
+# promise that `3`, `3.0` and the decimal `3.0` — one value in this store —
+# have one digest, which they could not.
+RETURN crypto::sha256(42);
+--- expect: error WrongArgument
+
+--- case: and that sentence works
+RETURN crypto::sha256(type::string(42)) = crypto::sha256('42');
+--- expect: value true
+
+--- case: an absent argument answers NONE, as every one-argument function does
+RETURN crypto::sha512(NONE);
+--- expect: value NONE
+
+--- case: a digest is pure, so one statement asking twice gets one answer
+RETURN crypto::sha256('x') = crypto::sha256('x');
+--- expect: value true
+
+--- case: and it is a function of its argument
+RETURN crypto::sha256('x') = crypto::sha256('y');
+--- expect: value false
+
+--- case: the wrong number of arguments is refused before anything runs
+RETURN crypto::sha256('a', 'b');
+--- expect: error WrongArity
+
+--- case: a line window returns the run it names
+RETURN string::lines('one\ntwo\nthree\nfour', 0, 2) = 'one\ntwo';
+--- expect: value true
+
+--- case: and the next window continues it, so two windows rebuild the document
+RETURN string::lines('one\ntwo\nthree\nfour', 2, 2) = 'three\nfour';
+--- expect: value true
+
+--- case: a count reaching past the end takes what is there
+RETURN string::lines('one\ntwo', 1, 10) = 'two';
+--- expect: value true
+
+--- case: a start past the end is empty rather than an error
+RETURN string::lines('one\ntwo', 9, 1) = '';
+--- expect: value true
+
+--- case: a negative start is refused, as it is for both slices
+RETURN string::lines('one\ntwo', -1, 1);
+--- expect: error CallFailed
+
+--- case: a carriage return does not survive into the window
+RETURN string::lines('one\r\ntwo\r\n', 0, 2) = 'one\ntwo';
+--- expect: value true
+
+--- case: a trailing newline does not grow a line for the count to spend
+RETURN string::lines('one\ntwo\n', 0, 3) = 'one\ntwo';
+--- expect: value true

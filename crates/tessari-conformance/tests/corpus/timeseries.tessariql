@@ -11,7 +11,7 @@ DEFINE NAMESPACE prod;
 USE NAMESPACE prod;
 DEFINE DATABASE metrics;
 USE DATABASE metrics;
-DEFINE TABLE readings;
+DEFINE COLLECTION readings;
 DEFINE INDEX by_at ON readings FIELDS at;
 --- expect: ok
 
@@ -57,7 +57,7 @@ SELECT count(*) AS held, max(level) AS peak FROM readings;
 --- expect: rows 1
 
 --- case: a retention policy is a statement, not a declaration
-DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z';
+DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z' LIMIT ALL;
 --- expect: ok
 
 --- case: and it says how many it removed

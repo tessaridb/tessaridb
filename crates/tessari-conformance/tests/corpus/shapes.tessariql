@@ -1,0 +1,282 @@
+# Shapes: geometry, written in the language and asked about in the language.
+# A corpus file is one session against one store, so these run in order.
+#
+# This file exists because until a shape could be written in a script, the
+# geometry half of the language had no executable definition at all — it could
+# only be reached through a bound parameter, which a corpus case cannot use.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE atlas;
+USE NAMESPACE atlas;
+DEFINE DATABASE world;
+USE DATABASE world;
+--- expect: ok
+
+--- case: every one of the seven shapes can be written and stored
+DEFINE COLLECTION shapes;
+CREATE shapes:1 = { s: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
+CREATE shapes:2 = { s: geometry { type: 'LineString', coordinates: [[0, 0], [1, 1]] } };
+CREATE shapes:3 = { s: geometry { type: 'Polygon', coordinates: [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]] } };
+CREATE shapes:4 = { s: geometry { type: 'MultiPoint', coordinates: [[0, 0], [9, 9]] } };
+CREATE shapes:5 = { s: geometry { type: 'MultiLineString', coordinates: [[[0, 0], [1, 1]]] } };
+CREATE shapes:6 = { s: geometry { type: 'MultiPolygon', coordinates: [[[[0, 0], [1, 0], [1, 1], [0, 0]]]] } };
+CREATE shapes:7 = { s: geometry { type: 'GeometryCollection', geometries: [{ type: 'Point', coordinates: [5, 5] }] } };
+--- expect: ok
+
+--- case: a shape west of Greenwich is written with a minus
+CREATE shapes:8 = { s: geometry { type: 'Point', coordinates: [-73.99, 40.75] } };
+--- expect: ok
+
+--- case: the marker is contextual, so the word is still a table
+DEFINE COLLECTION geometry;
+CREATE geometry:1 = { note: 'a table may be called that' };
+SELECT * FROM geometry;
+--- expect: rows 1
+
+--- case: and still a field name
+CREATE shapes:9 = { geometry: 'a word, not a shape' };
+--- expect: ok
+
+--- case: a shape that has to be computed is not a literal
+CREATE shapes:10 = { s: geometry { type: 'Point', coordinates: [$east, 0] } };
+--- expect: error ComputedGeometry
+
+--- case: a name that is not one of the seven is refused
+CREATE shapes:10 = { s: geometry { type: 'Circle', coordinates: [0, 0] } };
+--- expect: error MalformedGeometry
+
+--- case: a third coordinate is refused rather than dropped
+CREATE shapes:10 = { s: geometry { type: 'Point', coordinates: [1, 2, 3] } };
+--- expect: error MalformedGeometry
+
+--- case: a ring that does not close is refused when it reaches a record
+CREATE shapes:10 = { s: geometry { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1]]] } };
+--- expect: error GeometryRefused
+
+--- case: a coordinate off the sphere is refused
+CREATE shapes:10 = { s: geometry { type: 'Point', coordinates: [181, 0] } };
+--- expect: error GeometryRefused
+
+--- case: two members of a multi-polygon may not share ground
+CREATE shapes:10 = { s: geometry { type: 'MultiPolygon', coordinates: [
+  [[[0, 0], [6, 0], [6, 6], [0, 6], [0, 0]]],
+  [[[4, 4], [9, 4], [9, 9], [4, 9], [4, 4]]]] } };
+--- expect: error GeometryRefused
+
+--- case: a shape whose way round the world is not stated is refused
+# Written this way, a strip across the date line and a band round the rest of
+# the planet are the same six numbers. The store keeps neither rather than
+# picking one, because the two are each other's complement and a wrong pick
+# would look exactly like a right one.
+CREATE shapes:10 = { s: geometry { type: 'Polygon', coordinates: [
+  [[179, 0], [-179, 0], [-179, 1], [179, 1], [179, 0]]] } };
+--- expect: error GeometryRefused
+
+--- case: the short way across the date line is two shapes meeting at the meridian
+# What RFC 7946 asks producers to do, and it says only one thing.
+CREATE shapes:11 = { s: geometry { type: 'MultiPolygon', coordinates: [
+  [[[179, 0], [180, 0], [180, 1], [179, 1], [179, 0]]],
+  [[[-180, 0], [-179, 0], [-179, 1], [-180, 1], [-180, 0]]]] } };
+--- expect: ok
+
+--- case: the long way round is one position between the ends
+# The other intended shape, and it is just as sayable: with a vertex in the
+# middle no edge reaches half the world and the reading is unique.
+CREATE shapes:12 = { s: geometry { type: 'Polygon', coordinates: [
+  [[179, 0], [0, 0], [-179, 0], [-179, 1], [0, 1], [179, 1], [179, 0]]] } };
+--- expect: ok
+
+--- case: a place inside the query square is found, and one outside is not
+DEFINE COLLECTION places;
+CREATE places:1 = { name: 'middle', at: geometry { type: 'Point', coordinates: [5, 5] } };
+CREATE places:2 = { name: 'edge',   at: geometry { type: 'Point', coordinates: [2, 5] } };
+CREATE places:3 = { name: 'away',   at: geometry { type: 'Point', coordinates: [20, 20] } };
+SELECT * FROM places WHERE geo::intersects(at, geometry { type: 'Polygon', coordinates: [[[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]] });
+--- expect: rows 2
+
+--- case: disjoint answers with exactly the rest
+SELECT * FROM places WHERE geo::disjoint(at, geometry { type: 'Polygon', coordinates: [[[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]] });
+--- expect: rows 1
+
+--- case: covered_by takes the boundary and within does not
+SELECT * FROM places WHERE geo::covered_by(at, geometry { type: 'Polygon', coordinates: [[[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]] });
+--- expect: rows 2
+
+--- case: the same square, asked the strict way
+SELECT * FROM places WHERE geo::within(at, geometry { type: 'Polygon', coordinates: [[[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]] });
+--- expect: rows 1
+
+--- case: equals is about the ground covered, not about how it was written
+DEFINE COLLECTION zones;
+CREATE zones:1 = { z: geometry { type: 'Polygon', coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] } };
+CREATE zones:2 = { z: geometry { type: 'Polygon', coordinates: [[[0, 0], [5, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] } };
+CREATE zones:3 = { z: geometry { type: 'Polygon', coordinates: [[[0, 0], [9, 0], [9, 9], [0, 9], [0, 0]]] } };
+SELECT * FROM zones WHERE geo::equals(z, geometry { type: 'Polygon', coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] });
+--- expect: rows 2
+
+--- case: touching is meeting along an edge and not overlapping
+# `zones:1` is the ten-square and `zones:3` is the nine-square inside it, which
+# overlap; `zones:2` is the ten-square written with a redundant vertex. The
+# square to the east of all three shares only the meridian at x=10.
+SELECT * FROM zones WHERE geo::touches(z, geometry { type: 'Polygon', coordinates: [[[10, 0], [14, 0], [14, 10], [10, 10], [10, 0]]] });
+--- expect: rows 2
+
+--- case: the same square asked with intersects, and the answer differs
+# The whole content of the predicate is where these two part. Overlapping is
+# meeting, and it is not touching.
+SELECT * FROM zones WHERE geo::intersects(z, geometry { type: 'Polygon', coordinates: [[[5, 5], [14, 5], [14, 14], [5, 14], [5, 5]]] });
+--- expect: rows 3
+
+--- case: two positions never touch
+# A position's interior is the position, so meeting at all is meeting inside.
+SELECT * FROM places WHERE geo::touches(at, geometry { type: 'Point', coordinates: [5, 5] });
+--- expect: rows 0
+
+--- case: a record with no shape narrows the answer rather than failing the read
+CREATE places:4 = { name: 'nowhere' };
+SELECT * FROM places WHERE geo::intersects(at, geometry { type: 'Point', coordinates: [5, 5] });
+--- expect: rows 1
+
+--- case: a value that is present and is not a shape is a mistake
+CREATE places:5 = { name: 'wrong', at: 'over there' };
+SELECT * FROM places WHERE geo::intersects(at, geometry { type: 'Point', coordinates: [5, 5] });
+--- expect: error WrongArgument
+
+--- case: a distance is between positions and refuses anything larger
+SELECT geo::distance(z, geometry { type: 'Point', coordinates: [0, 0] }) AS far FROM zones;
+--- expect: error WrongArgument
+
+--- case: only a shape with an interior covers any ground
+DEFINE COLLECTION ground;
+CREATE ground:1 = { g: geometry { type: 'Point', coordinates: [0, 0] } };
+CREATE ground:2 = { g: geometry { type: 'LineString', coordinates: [[0, 0], [1, 1]] } };
+CREATE ground:3 = { g: geometry { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] } };
+SELECT * FROM ground WHERE geo::area(g) > 0;
+--- expect: rows 1
+
+--- case: a distance is in metres, so a degree of latitude runs to six figures
+# A degree of latitude is a hundred and ten kilometres, and the same span read as
+# degrees would be 1. The two differ by five orders of magnitude, so a filter at
+# a hundred kilometres cannot pass by accident.
+DEFINE COLLECTION marks;
+CREATE marks:1 = { m: geometry { type: 'Point', coordinates: [0, 0] } };
+CREATE marks:2 = { m: geometry { type: 'Point', coordinates: [0, 0.9] } };
+SELECT * FROM marks WHERE geo::distance(m, geometry { type: 'Point', coordinates: [0, 1] }) > 100000;
+--- expect: rows 1
+
+--- case: and the near one is a tenth of that, measured the same way
+SELECT * FROM marks WHERE geo::distance(m, geometry { type: 'Point', coordinates: [0, 1] }) < 20000;
+--- expect: rows 1
+
+--- case: a spatial index is defined over a geometry field
+# The index is now chosen by a reader as well as maintained, so what a corpus
+# case pins is the property that matters across every implementation of this
+# language: the same query answers the same way with the index present as
+# without it. An index changes what a read costs and never what it says.
+DEFINE COLLECTION sites;
+CREATE sites:1 = { at: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
+CREATE sites:2 = { at: geometry { type: 'Point', coordinates: [-73.99, 40.75] } };
+DEFINE INDEX by_at ON sites FIELDS at SPATIAL;
+--- expect: ok
+
+--- case: the answer is the same with the index as it was without it
+SELECT * FROM sites WHERE geo::intersects(at, geometry { type: 'Point', coordinates: [2.35, 48.85] });
+--- expect: rows 1
+
+--- case: a record with no geometry is simply not in the index
+CREATE sites:3 = { note: 'no shape here' };
+SELECT * FROM sites;
+--- expect: rows 3
+
+--- case: spatial is contextual, so it is still a field name
+CREATE sites:4 = { spatial: 'a word, not an index kind' };
+--- expect: ok
+
+--- case: an index is one kind and not two
+DEFINE INDEX bad_at ON sites FIELDS at SPATIAL UNIQUE;
+--- expect: error UnexpectedToken
+
+--- case: a route reaching several values has no single box
+DEFINE INDEX bad_spots ON sites FIELDS spots[*] SPATIAL;
+--- expect: error SeveralInAnAnalysedIndex
+
+--- case: a query box finds every shape that meets it, at every size
+# The shapes run from a point to a continent and the window is a city block, so
+# the answer includes records far larger than the box asked about. A reader that
+# only scanned forward from the window's own cells would find the small ones and
+# silently lose the large ones — fewer rows and no error.
+DEFINE COLLECTION areas;
+CREATE areas:'spot' = { at: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
+CREATE areas:'town' = { at: geometry { type: 'Polygon', coordinates: [[[2.2, 48.8], [2.5, 48.8], [2.5, 49.0], [2.2, 49.0], [2.2, 48.8]]] } };
+CREATE areas:'landmass' = { at: geometry { type: 'Polygon', coordinates: [[[-20.0, 30.0], [40.0, 30.0], [40.0, 70.0], [-20.0, 70.0], [-20.0, 30.0]]] } };
+CREATE areas:'away' = { at: geometry { type: 'Point', coordinates: [-73.98, 40.75] } };
+DEFINE INDEX by_at ON areas FIELDS at SPATIAL;
+SELECT * FROM areas WHERE geo::intersects(at, geometry { type: 'Polygon', coordinates: [[[2.3495, 48.8495], [2.3505, 48.8495], [2.3505, 48.8505], [2.3495, 48.8505], [2.3495, 48.8495]]] });
+--- expect: rows 3
+
+--- case: the field may be written as either argument of a relation
+# `geo::contains(at, Q)` and `geo::within(Q, at)` are the same question written
+# two ways, and both are ordinary. A store that understood only the first would
+# answer both correctly and read the whole table for one of them.
+SELECT * FROM areas WHERE geo::within(geometry { type: 'Point', coordinates: [2.35, 48.85] }, at);
+--- expect: rows 3
+
+--- case: a shape wholly inside the window, and nothing larger
+SELECT * FROM areas WHERE geo::within(at, geometry { type: 'Polygon', coordinates: [[[2.0, 48.5], [2.7, 48.5], [2.7, 49.2], [2.0, 49.2], [2.0, 48.5]]] });
+--- expect: rows 2
+
+--- case: a window holding nothing answers with nothing
+SELECT * FROM areas WHERE geo::intersects(at, geometry { type: 'Polygon', coordinates: [[[150.0, -40.0], [155.0, -40.0], [155.0, -35.0], [150.0, -35.0], [150.0, -40.0]]] });
+--- expect: rows 0
+
+--- case: disjoint is the complement of a region and stays exact
+# Every record whose box misses the window is disjoint, and so is every record
+# whose box meets it but whose shape does not. No set of cells holds them, so
+# this is answered by reading everything — correctly.
+SELECT * FROM areas WHERE geo::disjoint(at, geometry { type: 'Polygon', coordinates: [[[2.0, 48.5], [2.7, 48.5], [2.7, 49.2], [2.0, 49.2], [2.0, 48.5]]] });
+--- expect: rows 1
+
+--- case: a negated geometry test is not served from one side of itself
+SELECT * FROM areas WHERE NOT geo::intersects(at, geometry { type: 'Point', coordinates: [2.35, 48.85] });
+--- expect: rows 1
+
+--- case: a table of positions, and a spatial index over it
+# `geo::distance` measures between two positions, so a nearest-first read is over
+# a field holding points. The areas above are the filter's corpus; this is the
+# order's.
+DEFINE COLLECTION stops;
+CREATE stops:'gate' = { at: geometry { type: 'Point', coordinates: [2.35, 48.85] } };
+CREATE stops:'bridge' = { at: geometry { type: 'Point', coordinates: [2.41, 48.79] } };
+CREATE stops:'mill' = { at: geometry { type: 'Point', coordinates: [2.09, 48.93] } };
+CREATE stops:'quay' = { at: geometry { type: 'Point', coordinates: [3.62, 47.48] } };
+CREATE stops:'far' = { at: geometry { type: 'Point', coordinates: [-73.98, 40.75] } };
+DEFINE INDEX by_stop ON stops FIELDS at SPATIAL;
+--- expect: ok
+
+--- case: the nearest few is an order and a bound, and needs no new syntax
+SELECT * FROM stops ORDER BY geo::distance(at, geometry { type: 'Point', coordinates: [2.35, 48.85] }) LIMIT 3;
+--- expect: rows 3
+
+--- case: the place may be written as either argument of a distance
+# A distance is symmetric and both phrasings are ordinary. A store understanding
+# only one would answer both correctly and read the whole table for the other.
+SELECT * FROM stops ORDER BY geo::distance(geometry { type: 'Point', coordinates: [2.35, 48.85] }, at) LIMIT 3;
+--- expect: rows 3
+
+--- case: a bound past every record answers with the records there are
+SELECT * FROM stops ORDER BY geo::distance(at, geometry { type: 'Point', coordinates: [2.35, 48.85] }) LIMIT 40;
+--- expect: rows 5
+
+--- case: a record with no place sorts after every record that has one
+# An absence is unreachably far rather than unknown, so it never takes a place
+# near the front of the order. The index does not hold it, which is why a bound
+# reaching this far is answered by reading everything instead.
+CREATE stops:'nowhere' = { name: 'no place at all' };
+SELECT * FROM stops ORDER BY geo::distance(at, geometry { type: 'Point', coordinates: [2.35, 48.85] }) LIMIT 5;
+--- expect: rows 5
+
+--- case: a distance to something that is not a position is a mistake in the statement
+# `geo::distance` takes two positions. An area is not one, and reporting it as
+# unreachably far would sort the mistake quietly to the end instead of saying so.
+SELECT * FROM areas ORDER BY geo::distance(at, geometry { type: 'Point', coordinates: [2.35, 48.85] }) LIMIT 2;
+--- expect: error WrongArgument

@@ -288,7 +288,7 @@ fn one_process_answers_on_both_surfaces_over_one_store() {
             .run(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
                  DEFINE DATABASE orders; USE DATABASE orders; \
-                 DEFINE TABLE users; CREATE users:1 = { who: 'ada' };",
+                 DEFINE COLLECTION users; CREATE users:1 = { who: 'ada' };",
                 None,
             )
             .unwrap();
@@ -340,7 +340,7 @@ fn a_stopping_node_refuses_a_new_connection_and_finishes_the_store() {
             .run(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
                  DEFINE DATABASE orders; USE DATABASE orders; \
-                 DEFINE TABLE users; CREATE users:1 = { who: 'ada' };",
+                 DEFINE COLLECTION users; CREATE users:1 = { who: 'ada' };",
                 None,
             )
             .unwrap();
@@ -417,7 +417,7 @@ fn the_node_is_a_process_that_survives_being_killed() {
             .run(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
                  DEFINE DATABASE orders; USE DATABASE orders; \
-                 DEFINE TABLE users;",
+                 DEFINE COLLECTION users;",
                 None,
             )
             .unwrap();

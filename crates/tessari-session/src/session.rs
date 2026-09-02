@@ -10,18 +10,36 @@
 
 use tessari_ql::{Parameters, Statement, StatementKind, parse};
 use tessari_storage::{Catalog, Store, Transaction};
+use tessari_types::Sequence;
 
 use crate::effect::{Effect, admits};
 use crate::error::{Error, Result};
 use crate::identity::{self, Identity};
 use crate::outcome::Outcome;
+use crate::throttle;
 
 /// A hash to check a name that does not exist against.
 ///
 /// A refusal for an unknown name must take about as long as one for a wrong
 /// password, or the time itself says which half was wrong. This is a real Argon2
 /// hash of a value nobody knows, kept so the work happens either way.
-const ABSENT_USER_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$    c29tZXNhbHR2YWx1ZXNhbHQ$T8Q9M0Kdc5Cd3nZ3vFCVYD1CkPqmVWmvJcCf7EDlM2c";
+///
+/// # It has to actually parse, and for a while it did not
+///
+/// The value here was hand-written and carried four stray spaces before the
+/// salt, so `PasswordHash::new` rejected it and `verifies` returned before
+/// reaching the hasher. The equalisation this constant exists for had therefore
+/// never happened: a refusal for a missing name cost microseconds and one for a
+/// wrong password cost tens of milliseconds, which is exactly the oracle the
+/// paragraph above says it prevents. Nothing failed, because a sentinel that
+/// does not parse and a password that does not match both come back `false`.
+///
+/// This one is a genuine `hash` of a value nobody kept, produced at the pinned
+/// parameters, and `identity`'s tests hold both halves of that: that it parses,
+/// and that its parameters are still the ones the hasher uses. The parse
+/// assertion is deliberately not written as "verifying against it returns
+/// false", because that passes for the broken sentinel too.
+pub(crate) const ABSENT_USER_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$2vm2xorx4jAz1i0WAEts5w$Lfjcmkrqa+uTeY2uCU3GXJVSDbqhtpTrsPyYTXiTpLA";
 
 /// A connection's worth of state: where statements run, and against what.
 #[derive(Debug)]
@@ -91,7 +109,7 @@ impl<'a> Session<'a> {
     /// as [`Session::run`].
     pub fn run_with(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
         let store = self.store;
-        let script = parse(source)?.bind(parameters)?;
+        let mut script = parse(source)?.bind(parameters)?;
 
         // Where a statement may run, asked once for the whole script and before
         // any of it runs — a script that writes must not have its first half
@@ -109,9 +127,41 @@ impl<'a> Session<'a> {
         let mut outcomes = Vec::with_capacity(script.statements.len());
         let mut open: Option<(Transaction<'a>, tessari_ql::Span)> = None;
 
-        for statement in &script.statements {
-            let outcome = self.step(store, &mut open, statement)?;
+        // By index rather than by iterator, because a `LET` reaches forward: the
+        // value it produces is substituted into the statements that have not run
+        // yet, so the loop holds `&mut script` across the step.
+        let mut at = 0usize;
+        while at < script.statements.len() {
+            let outcome = self.step(store, &mut open, &script.statements[at])?;
+            let outcome = match &script.statements[at].kind {
+                StatementKind::Let { name, .. } => {
+                    // Substitution, not a lookup table — the same walk the
+                    // caller's parameters take, for the same reason: by the time
+                    // a statement runs, every name in it is a literal, so the
+                    // planner still finds a right-hand side an index can serve.
+                    let bound = match outcome {
+                        Outcome::Value(value) => value,
+                        // Unreachable while `execute` answers a binding with a
+                        // value, and named rather than unwrapped so that a
+                        // change there is a compile-time conversation.
+                        _ => {
+                            return Err(Error::BindingIsNotAValue {
+                                span: script.statements[at].span,
+                            });
+                        }
+                    };
+                    let name = name.clone();
+                    let mut supplied = Parameters::new();
+                    supplied.insert(name, bound);
+                    for later in &mut script.statements[at.saturating_add(1)..] {
+                        later.substitute(&supplied)?;
+                    }
+                    Outcome::Done
+                }
+                _ => outcome,
+            };
             outcomes.push(outcome);
+            at = at.saturating_add(1);
         }
 
         if let Some((transaction, span)) = open {
@@ -130,12 +180,28 @@ impl<'a> Session<'a> {
     /// Signing in again replaces the identity rather than adding to it, so a
     /// session is one conversation with one user at a time.
     ///
+    /// # What this costs, and what stops it costing that repeatedly
+    ///
+    /// Checking a password is expensive by design — nineteen mebibytes and tens
+    /// of milliseconds — so an unbounded sign-in path is an amplifier a caller
+    /// needs no valid credential to use. Two bounds stand in front of it, both
+    /// **before** the store is read: an identity that has missed too many times
+    /// in a row is made to wait, and this process runs only so many verifications
+    /// at once. See `throttle` for why neither substitutes for the other.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::SignInRefused`] for a wrong name and a wrong password
     /// alike — telling them apart tells an attacker which half to keep guessing
-    /// at — and a substrate failure otherwise.
+    /// at — [`Error::SignInThrottled`] when either bound declined to try, and a
+    /// substrate failure otherwise.
     pub fn sign_in(&mut self, name: &str, password: &str) -> Result<()> {
+        // First, and before the transaction below: a throttled attempt has to
+        // cost a lock and an array index, or the refusal has bounded nothing.
+        if !throttle::attempts().permit(name) {
+            log::warn!("sign-in for {name} refused: too many recent failures");
+            return Err(Error::SignInThrottled);
+        }
         let mut transaction = self.store.begin()?;
         let found = Catalog::new(&mut transaction)
             .users()?
@@ -143,15 +209,207 @@ impl<'a> Session<'a> {
             .find(|user| user.name == name);
         transaction.rollback();
 
+        // The place is taken here rather than above, because what it bounds is
+        // the memory the hash below holds. Held across the catalog read it would
+        // be spent on waiting for a disk instead of on hashing, which refuses
+        // callers the memory bound never needed to refuse.
+        let Some(_verifying) = throttle::verifying() else {
+            // The two limits are one answer to the caller and two lines here,
+            // because an operator tuning them needs to know which was reached
+            // and an attacker must not.
+            log::warn!("sign-in for {name} refused: already verifying as many as this node will");
+            return Err(Error::SignInThrottled);
+        };
+
         let Some(user) = found else {
             // The hash is still computed for a name that does not exist, so the
             // time a refusal takes does not say whether the name did.
             let _ = identity::verifies(password, ABSENT_USER_HASH);
+            // The name is reported and the reason is not, for the same reason
+            // the caller is told neither: a log an operator reads is also a log
+            // an attacker reads once they are inside.
+            log::warn!("sign-in refused for {name}");
+            // Counted against the name that was tried, not against the user that
+            // was not found. Counting only known names would let an attacker
+            // enumerate the catalog by watching which names start to wait.
+            throttle::attempts().failed(name);
             return Err(Error::SignInRefused);
         };
         if !identity::verifies(password, &user.secret) {
+            log::warn!("sign-in refused for {name}");
+            throttle::attempts().failed(name);
             return Err(Error::SignInRefused);
         }
+        log::info!("signed in as {name}");
+        throttle::attempts().succeeded(name);
+        self.identity = Identity::Signed(Box::new(user));
+        Ok(())
+    }
+
+    /// Act as a user the store already declared, without a credential.
+    ///
+    /// # Why this exists, and what it is not
+    ///
+    /// A declared consumer writes records long after the session that declared
+    /// it has gone, and until this existed it wrote them as **nobody** — so the
+    /// authority question was asked once, at `DEFINE CONSUMER`, and never again.
+    /// Demoting the declarer, revoking their authority or deleting the account
+    /// outright did not stop the writing, because there was no identity in the
+    /// loop for any of those to act on.
+    ///
+    /// This is the rule the rest of the store already follows — *a thing acts
+    /// with the authority of whoever asked for it* — reaching the one path that
+    /// had escaped it. Because the identity is re-established from the catalog
+    /// on every batch, a revocation takes effect on the next one rather than
+    /// never.
+    ///
+    /// **It is not a way around a password.** It takes an id rather than a name
+    /// so it cannot be reached from anything a caller types, and every authority
+    /// check downstream is the ordinary one — this hands out an identity, not a
+    /// permission. It is `pub` only because the ingestion runner is another
+    /// crate; an embedder able to call it is already linked against the store
+    /// and holds every byte in it, so it crosses no boundary that was not
+    /// already open. Nothing reachable over the wire calls it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnknownUser`] when no user carries that id — which is
+    /// what a deleted declarer looks like, and is therefore how deleting one
+    /// stops the consumer they declared.
+    pub fn acting_as(&mut self, id: u32) -> Result<()> {
+        let mut transaction = self.store.begin()?;
+        let found = tessari_storage::Catalog::new(&mut transaction)
+            .users()?
+            .into_iter()
+            .find(|user| user.id == id);
+        transaction.rollback();
+        let Some(user) = found else {
+            return Err(Error::UnknownUser { id });
+        };
+        self.identity = Identity::Signed(Box::new(user));
+        Ok(())
+    }
+
+    /// A throwaway session on this store, selecting what this one selects, as
+    /// somebody else.
+    ///
+    /// The only caller is `INFO FOR ACCESS TO TABLE`, and it exists because that
+    /// statement must not answer from a second reading of the catalog. The
+    /// function that decides whether a user may reach a table takes a session
+    /// and a statement, so the report builds the session and hands it the
+    /// statement — and gets the store's real answer rather than a re-derivation
+    /// of it.
+    ///
+    /// It carries the **asker's** namespace and database rather than the
+    /// subject's, because the object being reported on lives in the asker's
+    /// selection. A subject declared somewhere else is then refused by the
+    /// ordinary tenancy check, which is the report's answer rather than a gap
+    /// in it.
+    ///
+    /// Like [`Session::acting_as`] this hands out an identity and not a
+    /// permission: every check downstream is the ordinary one, it takes an id so
+    /// nothing a caller types can reach it, and the statement that uses it
+    /// already needs `govern`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnknownUser`] when no user carries that id — which a
+    /// caller iterating the catalog it just read will not see, and which is
+    /// still an error rather than a silent omission.
+    pub(crate) fn probing(&self, id: u32) -> Result<Self> {
+        let mut probe = Self {
+            store: self.store,
+            namespace: self.namespace.clone(),
+            database: self.database.clone(),
+            identity: Identity::Anonymous,
+        };
+        probe.acting_as(id)?;
+        Ok(probe)
+    }
+
+    /// Change **this session's own** password, proving the current one.
+    ///
+    /// **Not a statement**, for the same reason `sign_in` is not: it carries a
+    /// credential, and a script is text a caller composes, logs, pastes into an
+    /// issue and sends through a proxy.
+    ///
+    /// # Why this exists beside `ALTER USER`
+    ///
+    /// `ALTER USER … SET PASSWORD` is *administering somebody*, so it needs an
+    /// owner who administers the tenancy they sit in. That is right for
+    /// somebody else's credential and leaves a hole for your own: a `viewer` or
+    /// an `editor` whose password may have leaked could not rotate it at all,
+    /// and had to ask an owner — who then chooses it, and knows it.
+    ///
+    /// # Why the current password is required
+    ///
+    /// Because being signed in is not proof of a password. A token can be copied
+    /// off a plaintext connection or read out of a log, and if holding one were
+    /// enough to set a new password then a stolen token would be a permanent
+    /// takeover: the thief locks the owner out, and a closed store has no door
+    /// from outside. So this asks for the password as well as the session.
+    ///
+    /// That second proof is also what makes it safe for this to be the one path
+    /// that touches a user without administering them: the subject is always the
+    /// caller, so there is no subject to bound.
+    ///
+    /// Every token this user holds stops working, because a ticket is checked by
+    /// comparing the record it was cut from and the record has changed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotSignedIn`] for an anonymous session, [`Error::CurrentPasswordRefused`]
+    /// when the current password does not match, [`Error::PasswordEmpty`] when
+    /// the new one is empty, [`Error::Unknown`] when the user has been removed
+    /// since signing in, and a substrate failure otherwise.
+    pub fn change_password(&mut self, current: &str, new: &str) -> Result<()> {
+        // A span over nothing: no script produced this, and inventing one would
+        // put a caret under a character nobody wrote.
+        let span = tessari_ql::Span::new(0, 0);
+        let Identity::Signed(who) = &self.identity else {
+            return Err(Error::NotSignedIn { span });
+        };
+        let name = who.name.clone();
+        let id = who.id;
+
+        // Re-read rather than trust the session's copy, for the reason a ticket
+        // is re-read: a session open across a `DROP USER` would otherwise write
+        // a hash back over an id the catalog no longer holds.
+        let mut transaction = self.store.begin()?;
+        let found = Catalog::new(&mut transaction)
+            .users()?
+            .into_iter()
+            .find(|user| user.id == id);
+        transaction.rollback();
+        let Some(mut user) = found else {
+            return Err(Error::Unknown {
+                entity: "user",
+                name,
+                span,
+            });
+        };
+
+        // The new password is refused **before** the current one is checked, so
+        // an unusable new password does not spend a verification. `hash` is what
+        // refuses an empty one, in one place for every path that sets a password.
+        let secret = identity::hash(new, span)?;
+
+        let Some(_verifying) = throttle::verifying() else {
+            return Err(Error::SignInThrottled);
+        };
+        if !identity::verifies(current, &user.secret) {
+            log::warn!("a password change was refused for {}", user.name);
+            return Err(Error::CurrentPasswordRefused);
+        }
+
+        user.secret = secret;
+        let mut transaction = self.store.begin()?;
+        Catalog::new(&mut transaction).update_user(&user);
+        transaction.commit()?;
+        log::info!("{} changed their own password", user.name);
+        // The session keeps running as the same user, with the record it now
+        // has: leaving the old copy here would make the next `ticket()` cut one
+        // against a record that no longer exists.
         self.identity = Identity::Signed(Box::new(user));
         Ok(())
     }
@@ -196,7 +454,7 @@ impl<'a> Session<'a> {
                 let Some((transaction, _)) = open.take() else {
                     return Err(Error::NoOpenTransaction { span });
                 };
-                transaction.commit()?;
+                settle(transaction)?;
                 Ok(Outcome::Done)
             }
             StatementKind::Cancel => {
@@ -206,15 +464,97 @@ impl<'a> Session<'a> {
                 transaction.rollback();
                 Ok(Outcome::Done)
             }
-            other => match open.as_mut() {
-                Some((transaction, _)) => self.execute(transaction, other, span),
-                None => {
+            // Closes the transaction exactly as its two siblings do. A rehearsal
+            // that left the transaction open would invite a second one against a
+            // snapshot the first had already answered for.
+            StatementKind::Verify => {
+                let Some((transaction, _)) = open.take() else {
+                    return Err(Error::NoOpenTransaction { span });
+                };
+                transaction.dry_run().map_err(advised)?;
+                Ok(Outcome::Done)
+            }
+            other => match (read_version(other), open.as_mut()) {
+                // A transaction is one point in the store's history — that is
+                // what a snapshot is — so a statement inside one cannot ask for
+                // a different one. Refused rather than silently answered at the
+                // transaction's own snapshot, which would make the clause read
+                // as though it had been honoured.
+                (Some(version), Some(_)) => {
+                    Err(Error::VersionInsideTransaction { span: version.span })
+                }
+                (Some(version), None) => {
+                    let mut transaction = store.begin_at(Sequence::new(version.at))?;
+                    let outcome = self.execute(&mut transaction, other, span)?;
+                    // Rolled back, not committed. A read of the past has nothing
+                    // to commit, and a transaction holding an old snapshot is
+                    // exactly what a commit would have to reconcile against the
+                    // present.
+                    transaction.rollback();
+                    Ok(outcome)
+                }
+                (None, Some((transaction, _))) => self.execute(transaction, other, span),
+                (None, None) => {
                     let mut transaction = store.begin()?;
                     let outcome = self.execute(&mut transaction, other, span)?;
-                    transaction.commit()?;
+                    settle(transaction)?;
                     Ok(outcome)
                 }
             },
         }
+    }
+}
+
+/// Commit, and let the one refusal a caller fixes with a statement carry that
+/// statement.
+///
+/// Every check that can refuse a write runs inside the commit, so this is the
+/// one place a caller's write can be refused by the store, and therefore the one
+/// place worth teaching. It is deliberately not a second validation pass: the
+/// commit is unchanged and only its failure is read.
+fn settle(transaction: Transaction<'_>) -> Result<()> {
+    match transaction.commit() {
+        Ok(_) => Ok(()),
+        Err(refusal) => Err(advised(refusal)),
+    }
+}
+
+/// A store refusal, with the remedy attached when the remedy is real.
+///
+/// The suggestion is built from the caller's own field, table and value — never
+/// from what else the table declares, which a caller's grants may hide
+/// (ADR-0044) — and then **parsed**. A name this store accepts is not always a
+/// name the language can spell: a record's fields can arrive from a bound
+/// parameter, so one may be a reserved word or hold a space, and the statement
+/// naming it would not read back. Suggesting it anyway would be worse than
+/// suggesting nothing, because it looks like something to paste. So the parse is
+/// the gate, and a suggestion that fails it is dropped rather than repaired.
+fn advised(refusal: tessari_storage::Error) -> Error {
+    let tessari_storage::Error::UndeclaredField {
+        table, field, kind, ..
+    } = &refusal
+    else {
+        return Error::Store(refusal);
+    };
+    let suggestion = format!("DEFINE FIELD {field} ON {table} TYPE {}", kind.name());
+    if parse(&suggestion).is_err() {
+        return Error::Store(refusal);
+    }
+    Error::UndeclaredField {
+        refusal: Box::new(refusal),
+        suggestion,
+    }
+}
+
+/// The version clause a statement carries, if it carries one.
+///
+/// Only a read can: `VERSION` names which state answers the question, and every
+/// other statement changes state rather than asking about it. A free function so
+/// that the one place deciding which snapshot to open is also the one place that
+/// knows which statements may ask for a snapshot at all.
+const fn read_version(kind: &StatementKind) -> Option<tessari_ql::Version> {
+    match kind {
+        StatementKind::Select(select) => select.version,
+        _ => None,
     }
 }

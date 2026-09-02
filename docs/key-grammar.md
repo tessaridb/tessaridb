@@ -78,8 +78,11 @@ because renumbering after data exists is a full rebuild.
 | `0x11` | `UniqueIndex` | `index` | implemented |
 | `0x12` | `Posting` (full-text) | `index` | implemented |
 | `0x13` | `VectorNode` | `index` | implemented — see §6.2c |
-| `0x14` | `Edge` (graph) | `index` | reserved, **not needed** — see §9a |
+| `0x14` | `Edge` (adjacency) | `index` | implemented — see §3a |
 | `0x15` | `SearchStatistics` | `index` | implemented — see §3b |
+| `0x16` | `SpatialIndex` | `index` | implemented — see §3c |
+| `0x17` | `VectorRecall` | `index` | implemented — see §3d |
+| `0x18` | `SpatialRefinement` | `index` | implemented — see §3e |
 | `0x20` | `LogEntry` | `log` | implemented |
 | `0x30` | `FormatVersion` | `meta` | implemented |
 | `0x31` | `AppliedPosition` | `meta` | implemented |
@@ -90,6 +93,105 @@ because renumbering after data exists is a full rebuild.
 | `0x36` | `IdAllocator` | `meta` | reserved, unused — see §9 |
 | `0x37` | `BackfillWatermark` | `meta` | reserved — SG4 |
 | `0x38` | `NodeIdentity` | `meta` | implemented — see §3b |
+| `0x39` | `ReclaimFloor` | `meta` | implemented |
+| `0x3a` | `GraphCatalog` | `meta` | reserved, unused — see §9 |
+| `0x3b` | `EdgeKindCatalog` | `meta` | reserved, unused — see §9 |
+
+### 3c. The spatial entry
+
+```text
+key    <0x16> <namespace:u32> <database:u32> <table:u32> <index:u32> <first:u64> <level:u8> <record-id>
+value  <west:i64> <south:i64> <east:i64> <north:i64>
+```
+
+One entry per cell of the record's covering, so a record whose geometry spans
+several cells has several entries. `first` is the start of the cell's range in
+the Hilbert numbering of the finest level, and `level` says how coarse the cell
+is.
+
+**The range start comes first and the level second, and the order is the whole
+design.** A cell's index within its own level is small at a coarse level and
+large at a fine one, so ordering by it would interleave levels rather than
+space. Ordering by the range start does not:
+
+- every descendant of a cell has its start inside that cell's range, so **the
+  descendants of a cell are one contiguous scan**;
+- an ancestor's start is a truncation of a descendant's, so **the ancestors of a
+  cell are a bounded, computable set** — at most `level` of them.
+
+Both halves are needed by a reader. A record larger than the query box sits at a
+*coarser* cell, whose start lies below the query cell's range, so a scan alone
+never finds it: a reader that only scanned would return fewer rows than exist,
+with nothing raised.
+
+The value carries the record's bounding box so the filter step can reject a
+candidate without decoding the geometry. It is computed in the batch that
+carries the record's own mutation and by nothing else — a box maintained by a
+background job or recomputed by a reader can lag the geometry it describes, and
+a stale box excludes rows that should have matched.
+
+A cell match is a **candidate and never a result**: the cells are coarser than
+the box and the box is coarser than the shape.
+
+#### How a read uses it
+
+The query shape gets a covering of its own, and each of its cells is two reads:
+
+| half | read | why it exists |
+|---|---|---|
+| descendants | one scan of `[first, last+1)` after the index prefix | every cell under it has its range start inside that span |
+| ancestors | one fixed-width prefix lookup per level above it, at `(truncated start, level)` | a record **larger** than the query sits at a coarser cell, whose start lies *below* the span |
+
+**Neither half is optional.** A reader that only scanned would answer small
+questions perfectly and lose exactly the large records, with nothing raised — the
+one failure direction a filter must not have. There are at most `level` ancestors
+and each is one truncation, so the second half is cheap as well as necessary.
+
+Completeness, without appealing to the curve: if a record's geometry meets the
+query box, some position lies in both; a covering holds the cell of every
+position inside its box, so that position's finest cell lies under a record cell
+and under a query cell; two cells containing a common cell are nested. So the
+record's cell is a descendant of a query cell, is one, or is an ancestor of one —
+and those are exactly the two reads above. The curve decides the *order*; the
+monotonicity of the placement decides *inclusion*.
+
+The box test that follows is chosen per predicate rather than shared, because a
+filter narrower than its predicate drops true results while a wider one only
+costs refinement — `intersects` filters by box intersection, `within` by the
+query box containing the record's, `contains` by the reverse, `equals` by
+equality. `disjoint` has no such test at all and takes the scan.
+
+#### How a nearest-first read uses it instead
+
+A "closest ten" read asks a different question of the same keys and does not use
+either half above. It walks the **implicit quadtree** of cells from the root,
+keyed by a floor under the distance from the query position to the cell's own
+box, opening the cheapest cell waiting and stopping when the cheapest one left is
+further away than the worst answer already held.
+
+Two properties of the layout carry it. A cell's entries are one fixed-width
+prefix lookup at `(range start, level)`, which is what makes "what is stored
+exactly here" separable from "what is stored below here"; and a cell's whole
+subtree is the one span `[first, last+1)`, which is what lets the walk read a
+sparse region outright instead of descending thirty-two levels through cells that
+exist only because every cell exists. A subtree that comes back short of
+`SPATIAL_WALK_SUBTREE_ENTRIES` was not truncated, so the walk has all of it and
+never splits that cell.
+
+The floor is the whole of the correctness argument and the one thing that must
+not be approximated: a key that could **exceed** the true distance to something
+inside the cell would let the walk discard the cell holding the nearest record
+and answer, in order and with confidence, with the second. It is computed as the
+larger of two independently provable floors — the meridian arc to the cell's
+latitude band, and the straight-line distance in space to the wedge its longitude
+span sweeps, a chord being no longer than any surface path between the same two
+points.
+
+Ranking by an entry's **position** is not the same act as filtering by its
+existence, so this read carries the refusals an ordered read carries and a
+filtered read does not: an uncommitted write, a snapshot behind the committed
+tail, a field the caller cannot see, and an index that runs out before the bound
+is filled all send it to the scan.
 
 ### 3b. The node identity, and why it is `meta` rather than a record
 
@@ -109,27 +211,45 @@ it. The value's own payload begins with a revision byte because it is expected t
 grow: the version field in it is rewritten whenever the binary changes, which is
 what gives an upgrade a place to notice itself.
 
-### 3a. The edge tag, and why it is unused
+### 3a. The adjacency entry
 
-`0x14` was reserved for a graph adjacency key. The graph engine was then built
-without one, and the reservation stands rather than being withdrawn.
+```text
+<0x14> <ns:u32> <db:u32> <graph:u32> <node-table:u32> <node-id>
+       <edge-kind:u32> <dir:u8> <neighbour-table:u32> <neighbour-id>
+```
 
-An edge turned out to be an ordinary **record**: a row in an edge table carrying
-`out` and `in`, which hold record references. A record reference is one of the
-fifteen value types and is order-encoded like any other, so "the edges out of
-`users:1`" is "the records whose `out` equals `users:1`" — a read of an ordinary
-secondary index (`0x10`), which an edge table is given on each endpoint when it
-is declared.
+`0x14` was reserved for a graph adjacency key, went unused while an edge was an
+ordinary record, and is now what the graph engine writes.
 
-What that bought is everything an adjacency keyspace would have had to reimplement
-one at a time: MVCC versions, transactional atomicity with the records at both
-ends, replication through the same apply path, the schema check, and the
-bidirectional index sweep that already exists. What it costs is one index-id
-indirection in the key, which is a fixed-width prefix either way.
+**The earlier reading was right about edge tables and wrong about graphs.** An
+edge in an edge table is a record carrying `out` and `in`, so "the edges out of
+`users:1`" is a read of an ordinary secondary index (`0x10`), and that model
+still stands — edge tables are unchanged. What it cannot do is hold a node's
+neighbours *together*: a hop is an index probe followed by one random read per
+neighbour, and at depth three over a fanned-out node that is thousands of random
+reads. Holding adjacency beside the node makes a hop a single range read, and
+that difference is the reason the graph engine exists at all.
 
-The tag is **not withdrawn**. Withdrawing it would let a future kind reuse the
-byte, and a byte that once meant one thing and later means another is not
-something a stored key can be asked about. It costs one row in the table above.
+Every component's position is load-bearing. `<ns><db>` first, as everywhere else,
+so a tenancy is one range. `<graph>` above the node, so the whole structure is one
+prefix and `DROP GRAPH` is a range delete rather than a scan. `<node-table>` and
+`<node-id>` together, so everything touching one node is contiguous.
+`<edge-kind>` before `<dir>`, because "this node's `works_at` edges" is the common
+question and the reverse order would make it two ranges. The neighbour last, which
+makes the entry unique and makes "is A joined to B" a point read.
+
+Both directions are written — `0x00` out, `0x01` in — in the **same `WriteBatch`**
+as the edge that creates them. An entry written outside that batch is an orphan
+nothing reconciles: either the edge is gone and a walk still reaches through it,
+or the edge is there and no walk finds it, and neither is an error state. A
+direction byte that is neither `0x00` nor `0x01` is refused rather than defaulted,
+because a mis-decoded direction turns a follower into a followee silently.
+
+The value carries the edge's properties, encoded, on **both** entries. Storing a
+pointer to an edge record instead would reintroduce exactly the random read per
+neighbour this layout removes. The two copies cannot drift apart, because an edge
+is identified by its endpoints and endpoints are immutable; a property update
+rewrites both entries in the one batch that wrote them.
 
 Tags are grouped by family (`0x0_` data, `0x1_` index, `0x2_` log, `0x3_` meta)
 so a hex dump is readable and each family has room to grow.
@@ -153,6 +273,50 @@ will ever reconcile.
 
 It sits in the `index` keyspace rather than `meta` because it is derived from the
 postings, is meaningless without them, and is swept with them.
+
+### 3d. The vector-recall tag
+
+`0x17` holds the recall one vector index was last **measured** at, together with
+everything a reader needs to know what that number describes.
+
+It is a key kind rather than a field on the index definition for the reason
+`0x15` is: a definition is what the language wrote, and this is a measurement
+derived from the log. The key is the bare index prefix with no suffix, so one
+index has exactly one and finding it is a point read; and it is **derived from
+the index address** rather than stored beside it, so it cannot come to name the
+wrong index.
+
+Being in the `index` keyspace is what makes the figure correct over time. The
+keyspace is cleared as a unit when an index is rebuilt, so a rebuild that
+produces no measurement leaves **no** key rather than the previous one — and
+absence reads as *never measured*, which is a different statement from a measured
+zero. A figure left behind would describe a graph that no longer exists, and
+nothing would raise it until somebody read the number.
+
+### 3e. The spatial-refinement tag
+
+`0x18` holds what refining one spatial index's candidates last **cost**: how many
+records its cells offered against how many the box test kept.
+
+The reason it exists is that a spatial index does not answer the question it is
+asked. It answers by **bounding box**, and a box is not a geometry, so every
+spatial read is filter-and-refine and the exact predicate above it decides. The
+answer is exact; the filter is not. The ratio between what the filter offers and
+what survives is the health of the whole arrangement, and without it a query
+budget is tuned by intuition and a structurally awkward row — a river, a road, a
+border, whose box is many times its own area — is invisible.
+
+It is a key kind rather than a field on the index definition for the reason
+`0x15` and `0x17` are, and it sits in the `index` keyspace for the reason `0x17`
+does: the keyspace is cleared as a unit on rebuild, so a rebuild that produces no
+measurement leaves **no** key rather than the previous one.
+
+The measurement is taken at the build, from the store's **own** geometries used
+as queries. That is a deliberate choice over accumulating counts from real reads,
+and the reason is replica determinism: index entries here are derived from the
+log rather than logged (§1), so two replicas replaying one log must compute the
+same figure — and a figure accumulated from query traffic differs per replica by
+construction.
 
 ## 4. Component encodings
 
@@ -383,6 +547,62 @@ counted. `terms` is the token count **with repeats**, because it exists to be
 divided by `documents` and yield an average document *length*. The postings
 deduplicate and this does not; both come from one analyzer pass over the same
 text, so they cannot drift apart.
+
+### 6.2b-2 `VectorRecall` — keyspace `index`
+
+```
+key    <0x17> <namespace:u32> <database:u32> <table:u32> <index:u32>
+value  <recall:u32> <at:u32> <sample:u32> <records:u64> <neighbours:u32> <exploration:u32>
+```
+
+The key is the 17-byte index prefix with **no suffix**, exactly as `0x15` is.
+
+`recall` is a percentage and never appears alone. Recall decays as records arrive
+after the build that measured it, so a lone figure describes a store that may no
+longer exist: `at` says which `k` it is recall *at*, `sample` how many queries it
+averages, `records` how large the store was at the time — which is what lets a
+reader see the number has been outgrown — and `neighbours` and `exploration` the
+engine constants in force, since a recall measured at one budget does not
+describe another.
+
+The queries are the store's own vectors, sampled by position in key order, with
+the query record removed from both the exact answer and the walk's answer before
+they are compared. A stored vector queried against itself is at distance zero, so
+keeping it would put a floor of `1/at` under every figure.
+
+### 6.2b-3 `SpatialRefinement` — keyspace `index`
+
+```
+key    <0x18> <namespace:u32> <database:u32> <table:u32> <index:u32>
+value  <entries:u64> <reached:u64> <admitted:u64> <sample:u32> <records:u64>
+```
+
+The key is the 17-byte index prefix with **no suffix**, exactly as `0x15` and
+`0x17` are.
+
+Counts rather than a ratio, because there are **two** ratios here and they name
+two different repairs. `reached ÷ admitted` is how loose the stored boxes are —
+records the cells offered that the box test then threw away. `entries ÷ reached`
+is how fragmented the covering is — one record with an awkward shape occupies
+many cells, and every one of them is an entry the traversal reads to arrive at
+the same record. Storing the counts leaves both derivable and neither asserted.
+
+`sample` is how many queries stand behind the totals and `records` how large the
+index was when they were taken, so growth since is visible rather than hidden —
+the same discipline `0x17` follows and for the same reason.
+
+The queries are the store's own record boxes, sampled by position in key order,
+with the **asking record excluded** from both counts. A record queried by its own
+box always reaches itself and always survives its own box test, so counting it
+would add one to both sides of every ratio and pull each one toward one — that is,
+toward healthy.
+
+A sample in which no query reached any other record produces **no key at all**: a
+store whose geometries never reach one another has no refinement cost, and
+reporting a figure for it would report a number nobody computed. A sample that
+reached records and admitted **none** is the opposite case and is written — it is
+the worst thing a covering can do, and the ratio then reports as absent because it
+is unbounded, never as zero.
 
 ### 6.2c `VectorNode` — keyspace `index`
 

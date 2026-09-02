@@ -20,7 +20,7 @@
 //! scripts — so they belong to the embedded path alone, and asking for one over
 //! an address is refused in `main` rather than quietly ignored.
 
-use tessari_wire::{Answer, Client, Names};
+use tessari_wire::{Answer, Client, Names, Remark};
 use tessaridb::{Db, Outcome, Parameters, Session};
 
 /// Somewhere statements can be run.
@@ -143,19 +143,37 @@ impl Store for Remote {
 /// An outcome, as a client would have received it.
 fn into_answer(outcome: &Outcome, names: Names) -> Answer {
     match outcome {
-        Outcome::Records { records, path } => Answer::Records {
+        // The plan stops at its access path, because that is what the protocol
+        // encodes and an embedded answer that carried more would make the two
+        // surfaces disagree about what a client can see. The notes no longer
+        // stop here: the wire carries them now, so reporting them from the
+        // embedded path keeps the two identical rather than making them differ.
+        Outcome::Records {
+            records,
+            plan,
+            notes,
+            only,
+        } => Answer::Records {
             records: records
                 .iter()
-                .map(|(id, held)| (id.to_string(), held.clone()))
+                .map(|(id, held)| (tessari_wire::spell(id), held.clone()))
                 .collect(),
-            path: path.name().to_owned(),
+            path: plan.access.name().to_owned(),
             names,
+            notes: notes
+                .iter()
+                .map(|note| Remark {
+                    kind: note.kind().to_owned(),
+                    message: note.message(),
+                })
+                .collect(),
+            only: *only,
         },
         Outcome::Value(held) => Answer::Value {
             value: held.clone(),
             names,
         },
-        Outcome::Keys(keys) => Answer::Keys(keys.iter().map(ToString::to_string).collect()),
+        Outcome::Keys(keys) => Answer::Keys(keys.iter().map(tessari_wire::spell).collect()),
         Outcome::Removed { count } => Answer::Removed(*count),
         Outcome::Done => Answer::Done,
         // `Outcome` is `#[non_exhaustive]`, so a shape added to the store and

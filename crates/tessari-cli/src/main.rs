@@ -28,15 +28,21 @@
 //! pasted back in. JSON is what the HTTP endpoint speaks, and it had to decide
 //! how fifteen types become six; a terminal is owed no such compromise.
 //!
-//! There is no line editing and no history. Both mean a dependency, and a
-//! terminal library is a large surface to take for a convenience — so it is
-//! stated in `.help` rather than left to be discovered by pressing up.
+//! There is line editing and per-session history, written here rather than
+//! taken as a dependency: `line.rs` says why, and `raw.rs` says what it costs.
+//! Nothing is written to disk, because statements carry passwords.
 
 mod arguments;
+mod bootstrap;
+mod consumers;
+mod line;
+mod logging;
+mod raw;
 mod render;
 mod session;
 mod shutdown;
 mod store;
+mod table;
 
 use std::env;
 use std::fs;
@@ -49,6 +55,10 @@ use crate::arguments::{Asked, Serving, Source, credentials, parse};
 use crate::session::{Ended, Mode};
 
 fn main() -> ExitCode {
+    // Before anything that could have something to report. A second logger
+    // installed by an embedding caller would already have won, and that is the
+    // right outcome — this one belongs to the binary.
+    drop(logging::install());
     let asked = match parse(env::args().skip(1)) {
         Ok(asked) => asked,
         Err(complaint) => {
@@ -76,6 +86,24 @@ fn run(asked: Asked) -> Result<Ended, String> {
     let parameters = asked.parameters;
     let sequence = asked.at_sequence;
 
+    // Saying which build this is, or what the flags are, touches nothing at
+    // all, so both come before even the address: they have to answer on a
+    // machine with no store, no node to reach and no password to hand over.
+    // Standard output and a successful exit, because both are answers rather
+    // than refusals — a `--help` on standard error with a non-zero status is
+    // one a pipeline cannot read and a packaging check fails on.
+    match asked.source {
+        Source::Version => {
+            println!("tessaridb {}", tessaridb::BUILD_VERSION);
+            return Ok(Ended::Fine);
+        }
+        Source::Help => {
+            println!("{}", crate::arguments::USAGE);
+            return Ok(Ended::Fine);
+        }
+        _ => {}
+    }
+
     // Verifying reads a file and touches no store, so it happens before one is
     // opened — which is what makes it usable on a machine that has nothing but
     // the backup.
@@ -101,7 +129,12 @@ fn run(asked: Asked) -> Result<Ended, String> {
         Source::Restore(path) => return restore(&db, path, sequence).map(|()| Ended::Fine),
         Source::Health => return health(&db),
         Source::Serve => return serve(db, &asked.serving, started),
-        Source::Verify(_) | Source::Standard | Source::Inline(_) | Source::File(_) => {}
+        Source::Verify(_)
+        | Source::Version
+        | Source::Help
+        | Source::Standard
+        | Source::Inline(_)
+        | Source::File(_) => {}
     }
 
     let mut embedded = store::Embedded::new(&db, credentials.as_ref(), parameters)?;
@@ -131,7 +164,7 @@ fn statements(
 ) -> Result<Ended, String> {
     let ended = match source {
         Source::Inline(script) => {
-            let mut input = io::Cursor::new(script.clone().into_bytes());
+            let mut input = session::Piped::new(io::Cursor::new(script.clone().into_bytes()));
             session::run(store, &mut input, out, Mode::Script)
         }
         Source::File(path) => {
@@ -139,12 +172,14 @@ fn statements(
             // clear failure before anything runs instead of a partial script.
             let held =
                 fs::read(path).map_err(|failure| format!("{}: {failure}", path.display()))?;
-            let mut input = io::Cursor::new(held);
+            let mut input = session::Piped::new(io::Cursor::new(held));
             session::run(store, &mut input, out, Mode::Script)
         }
         Source::Backup(_)
         | Source::Restore(_)
         | Source::Verify(_)
+        | Source::Version
+        | Source::Help
         | Source::Health
         | Source::Serve => {
             // Resolved before this function is reached, for the embedded path,
@@ -161,8 +196,18 @@ fn statements(
             } else {
                 Mode::Script
             };
-            let mut input = BufReader::new(stdin.lock());
-            let ended = session::run(store, &mut input, out, mode);
+            // A person gets the editor; a pipe gets the reader it always had.
+            // `attach` answers `None` for anything that is not a terminal, so
+            // the two conditions cannot come apart.
+            let ended = match line::Edited::attach() {
+                Some(mut edited) if mode == Mode::Interactive => {
+                    session::run(store, &mut edited, out, mode)
+                }
+                _ => {
+                    let mut input = session::Piped::new(BufReader::new(stdin.lock()));
+                    session::run(store, &mut input, out, mode)
+                }
+            };
             if mode == Mode::Interactive && ended.is_ok() {
                 // End-of-input at a prompt leaves the cursor mid-line.
                 drop(writeln!(out));
@@ -179,6 +224,11 @@ fn statements(
 /// and that is an argument. It serves until it is stopped, so it never returns
 /// on the happy path.
 fn serve(db: Db, serving: &Serving, started: std::time::Instant) -> Result<Ended, String> {
+    // Before anything is bound. A node that came up **open** because its
+    // credentials were misconfigured should never have reached the point of
+    // answering on a network, so this is a failure to start rather than a
+    // warning behind a listening socket.
+    bootstrap::first_user(&db)?;
     let db = std::sync::Arc::new(db);
     // Both are bound before either serves, so an address that cannot be taken
     // is a failure to start rather than a surface that quietly went missing
@@ -209,6 +259,17 @@ fn serve(db: Db, serving: &Serving, started: std::time::Instant) -> Result<Ended
         eprintln!("tessaridb — http on {}", node.address());
     }
     eprintln!("tessaridb — there is no TLS, so trust the network");
+
+    // After both surfaces are bound and before either serves, so a node that
+    // could not take its address does not connect to a broker on the way to
+    // failing — and so a consumer that starts is a consumer on a node that is
+    // about to answer.
+    //
+    // Stopped at the stage that refuses new connections and joined before the
+    // store is dropped — see `consumers.rs` for why a `Drop` at the end of this
+    // function is neither of those moments.
+    let running = consumers::start(&db);
+    let quiet = consumers::halting(&running);
 
     // What the stages will act on, taken before either surface starts serving:
     // `serve` borrows its node for as long as it runs, so a caller that asked
@@ -258,16 +319,16 @@ fn serve(db: Db, serving: &Serving, started: std::time::Instant) -> Result<Ended
         // store, and no runtime to hold them. The watcher is a third, and it is
         // what turns a signal into the stages.
         (Some(wire), Some(http)) => std::thread::scope(|scope| {
-            scope.spawn(|| shutdown::watch(&surfaces));
+            scope.spawn(|| shutdown::watch(&surfaces, quiet.as_ref()));
             scope.spawn(|| http.serve());
             wire.serve();
         }),
         (Some(wire), None) => std::thread::scope(|scope| {
-            scope.spawn(|| shutdown::watch(&surfaces));
+            scope.spawn(|| shutdown::watch(&surfaces, quiet.as_ref()));
             wire.serve();
         }),
         (None, Some(http)) => std::thread::scope(|scope| {
-            scope.spawn(|| shutdown::watch(&surfaces));
+            scope.spawn(|| shutdown::watch(&surfaces, quiet.as_ref()));
             http.serve();
         }),
         // Unreachable through the parser, which sets `Source::Serve` only when
@@ -275,6 +336,10 @@ fn serve(db: Db, serving: &Serving, started: std::time::Instant) -> Result<Ended
         // are far enough apart to drift.
         (None, None) => return Err("--serve or --http wants an address".to_owned()),
     }
+    // Before the store, not after. Stage 1 told the consumers to stop and did
+    // not wait; this is the wait. Joining after `drop(db)` would flush the store
+    // and release its lock while threads were still writing through it.
+    consumers::stop(running);
     // Stage 4. Dropping the store is what flushes it and releases the file
     // lock, and it happens here rather than in the stages because this is what
     // owns it — the stages know about surfaces, not about a store.

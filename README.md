@@ -10,10 +10,10 @@ A real-time multi-model database, written in Rust, built for AI agents and the
 products around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-pre--1.0-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.0.2--alpha-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
-[![rust](https://img.shields.io/badge/rust-1.98-6B5FD1?style=flat-square)](rust-toolchain.toml)
-[![conformance](https://img.shields.io/badge/conformance-409%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
+[![conformance](https://img.shields.io/badge/conformance-1035%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/TessariDB/TessariDB-protocol) ·
@@ -27,6 +27,8 @@ products around them.
 > and the on-disk format all change without notice, there is no migration between
 > versions, and several engines are still partial. [**Status**](#status) says what
 > runs today, engine by engine — it is a report, not a roadmap.
+> The [**changelog**](CHANGELOG.md) says what each version is and what it is
+> missing.
 
 ---
 
@@ -98,16 +100,16 @@ compares against expected answers, case by case. The counts are those cases.
 
 | Engine | What it gives you | Cases | State |
 |---|---|---|:--|
-| **Documents** | schemaless or schemafull records, nested objects and arrays, typed fields with defaults | 38 + 59 | ✅ runs |
-| **Relational** | declared tables and fields, unique and multi-field indexes, joins whose answer an index may not change | 44 + 14 + 46 | ✅ runs |
-| **Graph** | edge tables, `RELATE`, properties on the edge, multi-hop traversal in both directions | 17 | ✅ runs |
+| **Documents** | schemaless or schemafull records, nested objects and arrays, typed fields with defaults | 38 + 78 + 16 | ✅ runs |
+| **Relational** | declared tables and fields, unique and multi-field indexes, joins whose answer an index may not change, `INSERT` of several records in one statement at identities the store produces | 62 + 27 + 51 + 21 | ✅ runs |
+| **Graph** | edge tables, `RELATE`, properties on the edge, multi-hop traversal in both directions, an edge table that names the pair it joins and refuses every other, a declared graph that holds its own records with no table declared beside it and takes them with it when dropped, tables you already have joining it with `IN`, `DEFINE EDGE` writing adjacency beside the node so a hop is a range read, an edge removed by the pair it joins, and `DEPTH n` bounding a repeated hop | 71 | ✅ runs |
 | **Key–value** | `SPACE`s — one key, one whole value, ordered range scans with inclusive or exclusive bounds | 12 | ✅ runs |
-| **Objects & files** | `BUCKET`s — bytes addressed by path, byte-range reads, writes at an offset, metadata that is an ordinary record | 28 | ✅ runs |
+| **Objects & files** | `BUCKET`s — bytes addressed by path, byte-range reads, writes at an offset, metadata that is an ordinary record, and a declared ceiling on the largest file the bucket takes | 35 | ✅ runs |
 | **Full-text** | per-field analyzers, whole-term search, lowercase · ASCII folding · Porter2 stemming | 34 | ✅ runs |
-| **Vector** | cosine, Euclidean and dot distance, kNN ordering, a graph index that declares whether it answered exactly | 12 | ✅ runs |
+| **Vector** | cosine, Euclidean and dot distance, kNN ordering, a graph index that declares whether it answered exactly, and a field that declares how wide its vectors are so a write of any other width is refused where it happens, and a vector store declared as one so the width, the index and the requirement cannot come apart, and a read that says what it will spend on the walk, and a recall the store reports only once something has measured it | 48 | ✅ runs |
 | **Time-series** | epoch-anchored windows every process agrees on, aggregates per window, retention as a statement that reports what it removed | 12 | ✅ runs |
 | **References** | `FETCH` — follow a reference, an array of them, or a nested route, without a join | 12 | ✅ runs |
-| **Geospatial** | a geometry type and an exact integer-grid predicate kernel — orientation, containment, intersection | — | 🚧 partial — no spatial index yet |
+| **Geospatial** | a geometry type on an exact integer grid, eight predicates over whole shapes, geodesic distance and area, shapes written as literals, a spatial index seven of the eight predicates read through, a nearest-first read over positions, a geo store declared as one so the field, the index and the requirement cannot come apart, and a measured refinement ratio saying what that index's candidates cost | 65 | 🚧 partial — the nearest few is over positions rather than whole shapes |
 
 Underneath all of them, one substrate with two backends: **in memory**, and
 **on disk** on a log-structured merge-tree engine. Everything above the
@@ -120,6 +122,7 @@ possible rather than aspirational.
 |---|---|
 | **Transactions** | snapshot isolation on the commit log, `BEGIN` · `COMMIT` · `CANCEL` |
 | **Real-time** | change subscriptions as a first-class feature — over the wire and over a WebSocket |
+| **Stream ingestion** | `DEFINE CONSUMER` — one statement says what to read, where it lands and under which group, and the node runs it; at-least-once, never exactly-once |
 | **Multi-tenant** | namespaces and databases, users, roles, `GRANT` and `REVOKE` per database |
 | **Four ways in** | embedded library · `tessaridb` CLI · HTTP + WebSocket · a framed binary wire protocol |
 | **Operable** | health and readiness endpoints, Prometheus metrics, graceful drain, log-as-backup with replay-as-restore |
@@ -127,20 +130,40 @@ possible rather than aspirational.
 
 ## Status
 
-**Stage: active development · pre-1.0 · not published to crates.io.** What
+**Stage: active development · `0.0.2-alpha` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
+<!-- absent: published-to-crates-io -->
 
 - ✅ **Runs:** the embedded library, the `tessaridb` command line, the HTTP and
   WebSocket surface, the binary wire protocol (v1.0, with a published spec and
   conformance corpus), single-node serving with roles, endpoints and graceful
   drain, backup and restore.
-- 🚧 **Partial:** geospatial has its value type, its exact predicate kernel and
-  its ingest boundary; the spatial index is not built yet. Peers are declared
-  and read back, but nothing replicates between them.
+- 🚧 **Partial:** geospatial can store a shape, answer eight predicates over
+  whole shapes, measure geodesic distance and area, and be written as a literal
+  in a script. `DEFINE INDEX … SPATIAL` writes and maintains a **spatial index**
+  — the cells covering each geometry, with the record's bounding box in each
+  entry — and **seven of the eight predicates now read through it**: the query
+  shape is covered by cells of its own, the entries under and above them are
+  read, the stored boxes reject what they can, and the exact predicate decides
+  the rest. `geo::disjoint` is the complement of a region and stays an exact
+  scan by design. The same index answers **the nearest few** —
+  `ORDER BY geo::distance(at, …) LIMIT k` walks cells cheapest-first, keyed by a
+  distance nothing inside the cell can beat, and stops when the best cell left is
+  further than the worst answer held; that is exact rather than approximate, so
+  it asks nothing of the statement. What is missing is a distance to a shape
+  larger than a position (which is why the nearest few is over positions), a
+  nearest-first read under a `WHERE`, and any measured tuning of how finely a
+  query is covered.
+  <!-- absent: distance-to-a-shape-larger-than-a-position -->
+  <!-- absent: nearest-first-under-a-where -->
+  <!-- absent: measured-covering-budget -->
+  Peers are declared and read back, but nothing replicates between them.
 - ⛔ **Not there:** sharding, replication, and cluster membership. The language
   has words for them; the engine does not have the machinery yet.
+  <!-- absent: sharding-replication-cluster-membership -->
 - ⚠️ **Unstable:** the query language, the wire format and the on-disk format all
   change without notice before 1.0, and there is no migration between versions.
+  <!-- absent: migration-between-versions -->
 
 Use it for prototypes, evaluation and development. Do not put data you cannot
 lose behind it yet — and if you do run it, pin a commit, because `dev` moves.
@@ -185,7 +208,7 @@ session.run(
      DEFINE INDEX by_email ON users FIELDS email UNIQUE;",
 )?;
 
-session.run("CREATE users:1 = { email: 'ada@example.com', city: 'Paris' };")?;
+session.run("CREATE users = { email: 'ada@example.com', city: 'Paris' };")?;
 
 let found = session.run(
     "SELECT email, string::upper(city) AS city
@@ -227,7 +250,7 @@ and a backup carries files because a backup carries the log.
 session.run("DEFINE BUCKET media;")?;
 session.run("PUT media:'/logo.png' = 0x89504e47;")?;
 session.run("READ media:'/logo.png';")?;
-session.run("CREATE users:1 = { name: 'ada', avatar: media:'/logo.png' };")?;
+session.run("CREATE users = { name: 'ada', avatar: media:'/logo.png' };")?;
 ```
 
 A caller who would rather speak HTTP can:
@@ -311,6 +334,52 @@ will never help.
 > address or put a reverse proxy in front of it. Note too that a store cannot be
 > re-opened from outside by dropping its last user — a lost owner password is a
 > restore from backup, not a recovery.
+
+**Authority is a role and a reach, not a role alone.** The three roles are
+`viewer`, `editor` and `owner`, and each is held *over* something: a user
+declared `ON prod.orders` holds it there, and a user declared with no tenancy at
+all holds it over the whole node. So the node's administrator is not a fourth
+role — it is an **owner with no tenancy**, and a second spelling of that
+authority is exactly what this store does not have.
+
+`INFO FOR USERS` lists them, and it lists **the tenancy the caller administers**:
+an owner of a database sees that database's users, an owner of the whole node
+sees everyone. Like `INFO FOR USER <name>` and `INFO FOR NODE`, it **refuses
+rather than narrowing** for a caller who administers nothing — a listing filtered
+down to what an `editor` may see would be a partial account of who may do what,
+and a partial account reads as the whole one.
+
+```
+tessaridb> INFO FOR USERS;
+{ users: [
+  { user: 'root', role: 'owner' },
+  { user: 'ada', role: 'editor', namespace: 'prod', database: 'orders' } ] }
+```
+
+Grants are not in it. They are per-user detail and stay in `INFO FOR USER
+<name>`, where one subject is examined rather than counted.
+
+`ALTER USER` changes **one** thing about somebody who already exists, and leaves
+everything else exactly where it was:
+
+```
+tessaridb> ALTER USER ada SET PASSWORD 'a longer one';
+tessaridb> ALTER USER ada SET ROLE owner;
+```
+
+There is deliberately no `SET ON`. A reach is fixed at declaration, because
+widening one is the single change an owner of a part could use to reach the
+whole — and the same reasoning bounds who may run either form at all: the
+`owner` role gets you as far as **the tenancy you administer** and no further, so
+an owner of `prod.orders` may rotate their own editor's password and may not
+touch the node's administrator. `DEFINE USER` is not the way to do any of this:
+it refuses a name already taken, so a rotation spelled as a re-declaration fails
+rather than half-succeeding.
+
+> **Defining the first user closes the store mid-script.** Every statement after
+> it in the same request is then refused with `NotSignedIn`, because the request
+> was placed by nobody and there is now somebody to be. Bootstrap in two
+> requests: declare the first user, then sign in as them for the rest.
 
 
 Following what changes is a cursor over the same log that carries replication,
@@ -448,7 +517,10 @@ rather than the shortfall: a commit is a compare-and-set, so an async server ove
 it would be `spawn_blocking` at every call, a thread pool wearing a runtime's
 clothes. The cost is a thread per *connection*, which will matter when idle
 subscribers outnumber what a thread each is worth, and that is the trigger for
-revisiting it.
+revisiting it. That cost is **bounded**: each surface admits at most 400
+connections and refuses beyond it rather than queueing, and a client that
+connects without greeting is let go after ten seconds instead of holding a
+thread for the life of the process.
 
 Both ends live in this one crate, so a change to a frame breaks the other end at
 compile time rather than in somebody's deployment. A client takes only its half:
@@ -460,7 +532,7 @@ cargo add tessari-wire --no-default-features   # the client, without the node
 The default carries the server, which reaches the storage engine — so a client
 built with it compiles the engine, the serving crate, and a password hasher for
 credentials a client never hashes, in order to send a `SELECT` down a socket.
-Turning the default off is the difference between 42 crates and 17, and nothing a
+Turning the default off is the difference between 43 crates and 18, and nothing a
 client calls lives behind the switch.
 
 A connection holds **one session**, so `USE NAMESPACE prod;` is still in force in
@@ -538,16 +610,62 @@ tessaridb ./data --serve 127.0.0.1:9080 --http 127.0.0.1:8000
 ```
 
 ```
-tessaridb> CREATE users:1 = { name: 'ada', joined: datetime '2026-01-15T09:30:00Z' };
-ok
 tessaridb> SELECT * FROM users;
-1: { joined: datetime '2026-01-15T09:30:00Z', name: 'ada' }
-(1 record(s), via scan)
+ id | active | name       | visits
+----+--------+------------+--------
+ 1  | true   | 'ada'      |     12
+ 2  | false  | 'grace'    |      3
+ 3  | true   | 'margaret' |   1204
+(3 record(s), via scan)
 ```
 
-Answers print in **TessariQL's own syntax**, so what comes out can be pasted back in.
-JSON is what the HTTP endpoint speaks, and it had to decide how fifteen types
-become six; a terminal is owed no such compromise.
+**The shape of the answer decides how it is drawn.** Records that share one flat
+set of fields become an aligned table, with numbers to the right so a column can
+be scanned for the large one. Anything else — a nested object, an array, or
+records that disagree about their fields — prints as documents:
+
+```
+tessaridb> SELECT * FROM users:1;
+1: { joined: datetime '2026-01-15T09:30:00Z', name: 'ada', tags: ['founder'] }
+(1 record(s), via record)
+```
+
+That is a rule rather than a preference. A union of field sets with blanks where
+a record has none would table more results and would make *absent* and *empty*
+look identical, in the rendering, where a distinction should never be lost. And
+a nested value has no honest column: truncating it, inlining it, or showing a
+placeholder are all worse than printing the document. `.mode auto|table|document`
+overrides in either direction.
+
+Answers print in **TessariQL's own syntax**, so what comes out can be pasted back
+in — strings keep their quotes, because in a schemaless store `'12'` and `12` are
+different answers. JSON is what the HTTP endpoint speaks, and it had to decide how
+fifteen types become six; a terminal is owed no such compromise.
+
+**A script never gets a table**, because a table cannot be pasted back and the
+promise above is the one that matters when the output is going somewhere other
+than a person. A prompt starts in `auto`; a pipe, a file and `-e` start in
+`document`.
+
+The prompt has shorthands, and every one of them **runs a statement you could
+have typed**:
+
+| shorthand      | runs                       |
+| -------------- | -------------------------- |
+| `.ns`          | `INFO FOR STORE;`          |
+| `.db`          | `INFO FOR NAMESPACE;`      |
+| `.tables`      | `INFO FOR DATABASE;`       |
+| `.d <table>`   | `INFO FOR TABLE <table>;`  |
+| `.users`       | `INFO FOR USERS;`          |
+| `.user <name>` | `INFO FOR USER <name>;`    |
+| `.node`        | `INFO FOR NODE;`           |
+
+`.help` prints that table, so using a shorthand teaches the statement rather than
+hiding it — and a test reads the help and checks each promise against what the
+shorthand actually runs, in that direction, so the help cannot advertise an
+eighth one nobody implemented. `.timing` prints how long each script took,
+round trip included when the store is a node, because that is the number that
+decides whether a query is slow from where you are sitting.
 
 A refusal at a prompt prints its message and the next statement runs; in a script
 it stops, because carrying on past a failed step is how a half-applied migration
@@ -572,9 +690,77 @@ store. Either may be given alone. An address handed to something that is not
 serving is refused rather than ignored, because a port that was named and never
 opened is worse than one that was refused — nothing tells you which happened.
 
-**There is no line editing or history** — both mean a dependency, and a terminal
-library is a large surface to take for a convenience, so `.help` says so rather
-than leaving it to be found by pressing up.
+**The prompt edits.** The arrows, `Home`, `End`, `Delete`, the `readline`
+control keys, per-session history on `↑`/`↓`, and `Ctrl-C` to throw away a
+statement you are halfway through typing without leaving the session. It is
+written here rather than taken as a dependency: a line-editing crate would have
+brought more crates than this whole workspace has, and the only thing the editor
+needs — `libc` — was already here for the signal handler.
+
+History stays **in the session and never reaches disk**, because statements
+carry passwords and a history file is how one ends up on a backup nobody was
+thinking about.
+
+The terminal is handed back the way it was found — on an ordinary exit, and on a
+panic, which needs its own hook because this workspace builds release with
+`panic = "abort"` and `Drop` does not run on the way down. That is asserted
+against a real pty in `crates/tessari-cli/tests/prompt.rs`, which reads the
+terminal's own settings before and after rather than taking the program's word
+for it.
+
+## In a container
+
+```bash
+docker run -d --name tessaridb \
+  -p 9080:9080 -p 8000:8000 \
+  -v tessaridb-data:/var/lib/tessaridb \
+  -e TESSARIDB_INITIAL_USER=owner \
+  -e TESSARIDB_INITIAL_PASSWORD='choose-a-real-one' \
+  tessaridb/tessaridb
+```
+
+That is a node on both surfaces over one store: `9080` is the wire protocol and
+`8000` is HTTP. Either can be turned off by setting its address to the empty
+string, and both empty is refused rather than started — a node asked to serve
+nothing would read from standard input, reach end of file and exit, which looks
+exactly like a crash.
+
+**Set the two initial variables on the first start.** A store with no users is
+open, and this image ships no default credential on purpose: one would close
+every store that pulls it with a password the whole internet knows, which is
+worse than the open store it appears to fix. The node declares that user as a
+store-wide owner once, on a store that has none, and leaves an existing store
+alone on every start after — so the pair can stay in a compose file, and it is
+not a way to reset a password. Half of it is refused rather than started.
+
+| Variable | Default | |
+|---|---|---|
+| `TESSARIDB_STORE` | `/var/lib/tessaridb/store` | empty is a store in memory |
+| `TESSARIDB_ADDRESS` | `0.0.0.0:9080` | the wire protocol; empty turns it off |
+| `TESSARIDB_HTTP_ADDRESS` | `0.0.0.0:8000` | HTTP; empty turns it off |
+| `TESSARIDB_LOG` | `info` | `error` … `trace` |
+| `TESSARIDB_INITIAL_USER` | unset | the first user, declared once |
+| `TESSARIDB_INITIAL_PASSWORD` | unset | its password; both or neither |
+
+The same image is the client, so a prompt against a node needs nothing else
+installed:
+
+```bash
+docker run --rm -it --network host -e TESSARIDB_PASSWORD='choose-a-real-one' \
+  tessaridb/tessaridb --at 127.0.0.1:9080 --user owner
+```
+
+The container runs as uid `10001`, so a **bind** mount over `/var/lib/tessaridb`
+has to be owned by it; a named volume needs nothing. There is no init process in
+the image, because the node installs its own signal handlers and forks nothing —
+`docker stop` reaches it directly and gets the staged shutdown below rather than
+a killed store. The health check asks the node's own `/health`, which needs no
+credential precisely so that a supervisor does not have to hold one.
+
+The `Dockerfile` builds from this working tree; the published image is
+[`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb). It is
+alpha, and `latest` moves — pin the version tag for anything you would mind
+losing.
 
 ## Stopping it
 
@@ -805,7 +991,9 @@ hand the copy the original's identity, and two processes would answer to one id
 with nothing reporting it. It is asserted to differ in a test of its own, because
 a hole in a comparison would also cover the key going missing entirely.
 
-Timed on two thousand records: 0.8 ms to write, 13 ms to replay.
+Timed on 2 004 records, on the machine and build the [benchmarks](benchmarks)
+record: **1.1 ms to write, 9.8 ms to replay**. A timing with no machine and no
+date beside it is not a measurement, which is why those are here.
 
 ## Who it is for
 
@@ -870,6 +1058,7 @@ crates/
   tessari-http                the HTTP and WebSocket surface
   tessari-wire                the wire protocol
   tessari-serve               stopping a serving process in the order the stages require
+  tessari-ingest              running the declared stream consumers: source, shaping, runner
   tessari-backup              log as backup, replay as restore
   tessari-conformance         the executable definition of TessariQL: corpora and runner
   tessari-cli          bin    `tessaridb` — a prompt and a script runner
@@ -882,12 +1071,28 @@ what exists, not a plan.
 
 ## Building
 
+**What you need beyond Rust.** The on-disk backend links a log-structured
+merge-tree engine that is **compiled from C++ source**, and its bindings are
+generated at build time by loading `libclang`. So a first build needs a C++
+toolchain and libclang present, and it takes several minutes — after which they
+are cached and rebuilds are ordinary.
+
+| | |
+|---|---|
+| Rust | 1.85 or newer (`rust-version` in `Cargo.toml`); the toolchain file asks for `stable` |
+| macOS | `xcode-select --install` — the Command Line Tools carry both |
+| Debian · Ubuntu | `apt install build-essential clang libclang-dev` |
+| Fedora · RHEL | `dnf install gcc-c++ clang clang-devel` |
+
 ```sh
 cargo build --workspace
 cargo test --workspace
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
+
+`cargo test --workspace` builds around 110 test binaries. Two of them bind fixed
+ports and must not run beside a second copy of themselves.
 
 ## Branches
 
@@ -920,16 +1125,16 @@ TessariDB is **source-available** under the
 **2030-08-24** — or four years after any given version is first published,
 whichever comes first — that version becomes **Apache-2.0** permanently.
 
-**Free, with no agreement and no charge, for:**
+**Free, with no agreement and no charge**, for any use — including production,
+including inside a commercial organisation, and including inside a product you
+sell.
 
-- personal projects,
-- non-profits, education, research, and community or open-source projects,
-- evaluation, prototyping, benchmarking, CI, and internal development, test and
-  staging environments.
-
-**A commercial licence is required** to run TessariDB in production in or behind
-anything that makes money, and to offer it — or a fork of it — to other people
-as a hosted or managed service. Write to
+**One restriction.** You may not provide TessariDB to third parties as a
+**database service**: a product, service or platform in which TessariDB, or a
+derivative of it, gives database functionality to people other than your own
+employees and contractors, where those people can create, manage or control
+namespaces, databases, tables or schemas. That needs a commercial licence or
+written permission. Write to
 **[licensing@tessaridb.com](mailto:licensing@tessaridb.com)** or see
 [tessaridb.com/licensing](https://tessaridb.com/licensing); we are
 straightforward to deal with.

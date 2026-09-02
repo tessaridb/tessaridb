@@ -20,10 +20,14 @@
 //! read below it is an early, friendlier refusal — not the enforcement.
 
 mod analyzer;
+mod authority;
 mod change;
+mod consumer;
 mod definition;
+mod edge_kind;
 mod field;
 mod grant;
+mod graph;
 mod replica;
 mod system;
 mod user;
@@ -32,13 +36,18 @@ use tessari_encoding::{decode_payload, encode_payload};
 use tessari_types::{DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId, TableId, Value};
 
 pub use analyzer::AnalyzerDefinition;
+pub use authority::{Authority, Held, Kind, Reach};
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
+pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{
-    DatabaseDefinition, IndexDefinition, IndexShape, NamespaceDefinition, TableDefinition,
-    TableShape, VectorDistance,
+    DatabaseDefinition, EdgeDeclaration, EdgeOrder, GEO_FIELD, IndexDefinition, IndexShape,
+    NamespaceDefinition, RECORD_LEVEL, TableDefinition, TableKind, TableShape, VECTOR_FIELD,
+    VectorDeclaration, VectorDistance,
 };
+pub use edge_kind::EdgeKindDefinition;
 pub use field::{FieldDefinition, FieldShape};
 pub use grant::GrantDefinition;
+pub use graph::GraphDefinition;
 pub use replica::ReplicaDefinition;
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 pub use user::{Role, UserDefinition, Verb};
@@ -116,9 +125,11 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
 
     /// Create a table inside an existing database.
     ///
-    /// The shape is fixed at creation. Changing `schemafull` on a populated
-    /// table is a migration, and the honest spelling of one is a drop and a
-    /// redefinition, which re-checks every row through the same path.
+    /// The shape is fixed at creation except for `schemafull`, which
+    /// [`Self::set_schemafull`] rewrites in place. That one moves because a
+    /// schema is a rule about what may be *written*, so changing it binds the
+    /// writes that follow and leaves the stored rows alone; the `kind` does not
+    /// move, because it describes what the records already **are**.
     ///
     /// An edge table additionally gets an index on `out` and one on `in`, in
     /// this same commit, so that traversal is an index read without the caller
@@ -152,12 +163,17 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             database,
             name: name.to_owned(),
             schemafull: shape.schemafull,
-            edge: shape.edge,
-            bucket: shape.bucket,
+            kind: shape.kind,
+            identity: shape.identity,
+            graph: shape.graph,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
-        if shape.edge {
+        if matches!(definition.kind, TableKind::Edge(_)) {
+            // Every edge table gets the endpoint machinery, declared pair or
+            // not: what the pair adds is a refusal at the write and an order on
+            // the key, not a different way of being reachable.
+            //
             // Each endpoint gets both an index and a declaration. The index is
             // what makes traversal a range read; the declaration is what lets an
             // edge table also be `SCHEMAFULL`, since nobody writes `out` and `in`
@@ -173,7 +189,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 self.create_field(id, endpoint, FieldKind::Record, FieldShape::default())?;
             }
         }
-        if shape.bucket {
+        if matches!(definition.kind, TableKind::Bucket(_)) {
             // The companion table the bytes live in. Its name carries a byte an
             // identifier cannot hold, so no statement can name it — the same
             // mechanism the catalog itself uses to be unreachable rather than
@@ -198,6 +214,19 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     #[must_use]
     pub fn chunks_named(bucket: &str) -> String {
         format!("{bucket}\u{1}chunks")
+    }
+
+    /// The name of the table an edge kind's edges live in.
+    ///
+    /// Derived rather than stored, and unnameable for the same reason a bucket's
+    /// chunk table is: an identifier is letters, digits and underscores, so the
+    /// `\u{1}` puts it out of reach of anything a caller can write. An edge kind
+    /// is not a table in the language, and this is what keeps that true while
+    /// still letting an edge be an ordinary record mutation — which is what
+    /// carries it, and the adjacency derived from it, to every replica.
+    #[must_use]
+    pub fn edges_named(kind: &str) -> String {
+        format!("{kind}\u{1}edges")
     }
 
     /// Create an index on an existing table.
@@ -251,6 +280,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             unique: shape.unique,
             search: shape.search,
             vector: shape.vector,
+            spatial: shape.spatial,
         };
         self.write(system::INDEXES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
@@ -491,8 +521,11 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     ///
     /// The table's records are **not** removed here — that is a bulk operation
     /// with its own cost and its own decisions, and doing it silently inside a
-    /// catalog call would hide it. Dropping a namespace or a database cascades
-    /// into everything below it and is not built yet.
+    /// catalog call would hide it. [`Self::drop_database`] and
+    /// [`Self::drop_namespace`] take the same stance one and two levels up:
+    /// each removes its own definition and nothing beneath it, and whether
+    /// anything is still down there is a question the statement asks, where the
+    /// span to refuse with lives.
     ///
     /// The id is not released. A reused id would let a stale key or an in-flight
     /// reference resolve against a different table, and nothing in the store
@@ -519,6 +552,79 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         Ok(true)
     }
 
+    /// Remove a database's definition and release its name.
+    ///
+    /// Answers `false` when there was nothing under that id.
+    ///
+    /// Nothing inside is touched, for the reason [`Self::drop_table`] leaves the
+    /// records: cascading here would be unbounded work hidden inside a catalog
+    /// call. Whether the database still holds anything is asked by the
+    /// statement, which has the span to say so with.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub fn drop_database(&mut self, id: DatabaseId) -> Result<bool> {
+        let Some(definition) = self.database(id)? else {
+            return Ok(false);
+        };
+        let qualified = qualify(
+            Level::Database,
+            &[definition.namespace.get()],
+            &definition.name,
+        );
+        self.transaction.delete(system::address(
+            system::DATABASES,
+            RecordId::Int(id_key(id.get())),
+        ));
+        self.transaction
+            .delete(system::address(system::NAMES, RecordId::from(qualified)));
+        Ok(true)
+    }
+
+    /// Remove a namespace's definition and release its name.
+    ///
+    /// Answers `false` when there was nothing under that id. Nothing inside is
+    /// touched — see [`Self::drop_database`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub fn drop_namespace(&mut self, id: NamespaceId) -> Result<bool> {
+        let Some(definition) = self.namespace(id)? else {
+            return Ok(false);
+        };
+        let qualified = qualify(Level::Namespace, &[], &definition.name);
+        self.transaction.delete(system::address(
+            system::NAMESPACES,
+            RecordId::Int(id_key(id.get())),
+        ));
+        self.transaction
+            .delete(system::address(system::NAMES, RecordId::from(qualified)));
+        Ok(true)
+    }
+
+    /// Rewrite a table's `schemafull` flag, leaving everything else as it is.
+    ///
+    /// Answers `false` when there was nothing under that id.
+    ///
+    /// The name is not touched, so the definition keeps its identity and every
+    /// index, field and record already pointing at this id stays pointed at it.
+    /// The rows are not visited: a schema is a rule about what may be written,
+    /// and this writes the rule.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub fn set_schemafull(&mut self, id: TableId, schemafull: bool) -> Result<bool> {
+        let Some(mut definition) = self.table(id)? else {
+            return Ok(false);
+        };
+        definition.schemafull = schemafull;
+        self.write(system::TABLES, id.get(), &definition.to_value());
+        Ok(true)
+    }
+
     /// Hand out the next id at `level`, and record that it was handed out.
     ///
     /// The counter is written in this transaction, so two concurrent creations
@@ -537,6 +643,49 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             address,
             encode_payload(&definition::number(following)).into_bytes(),
         );
+        Ok(next)
+    }
+
+    /// Hand out the next identity for a record in `table`, and record that it
+    /// was handed out.
+    ///
+    /// Written in the caller's transaction for the reason [`Self::allocate`]
+    /// gives: two writers that each read the same counter also both write it,
+    /// and that shared key is what makes one of them lose. So no number reaches
+    /// two records, and no second lock is needed to say so.
+    ///
+    /// The counter is a catalog record like every other, so it rides the log,
+    /// takes the snapshot and reaches a replica — which is the whole point. A
+    /// counter a replica derived for itself, or one restored from a backup taken
+    /// before the writes it counts, would re-issue an identity that already
+    /// names a record, and the next write under it would replace that record
+    /// rather than add one, with nothing anywhere in an error state.
+    ///
+    /// The number answered always fits an `i64`, so the caller can build a
+    /// [`RecordId::Int`] from it without a second refusal to invent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::IdSpaceExhausted`] when the table has spent every
+    /// identity the key grammar can express, and a substrate or decoding
+    /// failure otherwise.
+    pub fn next_record_number(&mut self, table: TableId) -> Result<u64> {
+        let address = system::address(system::RECORD_SEQUENCES, RecordId::Int(id_key(table.get())));
+        let next = match self.transaction.get(&address)? {
+            Some(bytes) => {
+                definition::count_of(&decode_payload(&bytes)?, "record sequence", "next")?
+            }
+            None => system::FIRST_RECORD_NUMBER,
+        };
+        let following = next.checked_add(1).ok_or(Error::IdSpaceExhausted {
+            level: definition::RECORD_LEVEL,
+        })?;
+        // Stored before it is answered, so a count this store could hold but
+        // could never spend is refused while the caller still has no identity to
+        // do anything with.
+        let held = definition::count(following)?;
+        self.transaction
+            .put(address, encode_payload(&held).into_bytes());
         Ok(next)
     }
 

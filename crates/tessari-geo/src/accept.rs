@@ -39,21 +39,50 @@
 //! quantisation was the cause; a message quoting the submitted coordinates back
 //! would describe a shape that was never in question.
 //!
+//! # Refused, too, when the coordinates do not say what shape they mean
+//!
+//! Most of the rules here are about a shape being well formed. One is not. An
+//! edge more than half the world wide in longitude can be joined two ways, and
+//! the wrapped one is the shorter — so a polygon written from 179°E to 179°W is
+//! a narrow strip to the person who wrote it and a band round the rest of the
+//! planet to anything reading the coordinates as written.
+//!
+//! The store reads them as written, and its box and its predicates agree with
+//! each other about that reading, so nothing here is inconsistent. What is
+//! missing is the caller's intent, and the two candidates are not near-misses:
+//! one is the complement of the other. Choosing silently would be the failure
+//! this boundary exists to prevent, arriving as a shape nobody wrote.
+//!
+//! So the edge is refused, for the same reason a bowtie is: a shape with two
+//! possible readings has none the store can keep. Both intended shapes remain
+//! sayable — split the geometry at ±180 for the short way, which is what
+//! RFC 7946 asks producers to do anyway, or put one position between the ends
+//! for the long way, after which every edge is under half the world and the
+//! reading is unique.
+//!
 //! # What is deliberately not checked here
 //!
 //! Ring winding order is not enforced. RFC 7946 asks an exterior ring to run
 //! counter-clockwise, and also tells parsers not to reject rings that do not —
-//! normalising would be a repair, and this boundary does not repair. Nor do the
-//! members of a multi-polygon get checked against each other for overlap; that is
-//! a property of the collection rather than of any shape in it, and no predicate
-//! here rests on it yet.
+//! normalising would be a repair, and this boundary does not repair.
+//!
+//! The members of a multi-polygon **are** checked against each other, and that
+//! is the one rule here whose reason lives in another module. It used to be
+//! omitted, harmlessly: an overlap was a property of the collection rather than
+//! of any shape in it, and nothing rested on it. [`crate::relate::covers`] does
+//! — its rule that a segment crossing a ring edge has left the region is exact
+//! for members with disjoint interiors and wrong otherwise — so the invariant is
+//! enforced where the value enters rather than assumed where it is read.
 
 use tessari_types::{Geometry, Polygon, Position, Ring};
 
+use crate::bounds::Bounds;
 use crate::grid::{OffGrid, Snapped};
 use crate::predicate::{
-    Containment, Orientation, orientation, ring_contains, segments_meet, twice_signed_area,
+    Containment, ring_contains, segments_cross, segments_meet, twice_signed_area,
 };
+use crate::relate::areas_share_area;
+use crate::shape::Area;
 
 /// Put a shape on the grid, and decide whether the store will hold it.
 ///
@@ -139,6 +168,26 @@ pub enum Defect {
         /// The grid point they both became.
         position: Position,
     },
+    /// An edge whose direction round the world its own coordinates do not state.
+    ///
+    /// Two positions more than half the world apart in longitude can be joined
+    /// two ways, and the wrapped one is the shorter. Coordinates are read as
+    /// written, so the store would keep the longer path — which for a shape
+    /// meant to cross the antimeridian is the complement of what was asked for,
+    /// with nothing to report it. Neither reading is guessed.
+    #[error(
+        "an edge from longitude {} latitude {} to longitude {} latitude {} spans more than half the world, so which way round it goes is not stated: to cross the antimeridian, split the shape in two at ±180; to mean the long way round, put a position between the two ends",
+        from.longitude,
+        from.latitude,
+        to.longitude,
+        to.latitude
+    )]
+    EdgeSpansHalfTheWorld {
+        /// Where the edge starts.
+        from: Position,
+        /// Where it ends.
+        to: Position,
+    },
     /// A ring that closes but encloses nothing.
     #[error("the ring encloses no area")]
     RingHasNoArea,
@@ -178,6 +227,19 @@ pub enum Defect {
     HolesOverlap {
         /// A position in the shared part.
         position: Position,
+    },
+    /// Two members of a multi-polygon share area, or share a stretch of edge.
+    ///
+    /// Named by position in the collection rather than by coordinate: what is
+    /// wrong is the pair, and the place where they meet is a rational point
+    /// rather than a grid one, so a coordinate here would be a rounded
+    /// approximation of the complaint.
+    #[error("member {earlier} and member {later} of a multi-polygon share area")]
+    MembersOverlap {
+        /// The earlier of the two, counting from zero.
+        earlier: usize,
+        /// The later of the two.
+        later: usize,
     },
 }
 
@@ -267,15 +329,17 @@ fn accept_shape(shape: &Geometry) -> Result<Geometry, Refused> {
                 .collect::<Result<Vec<_>, _>>()?,
         ),
         Geometry::Polygon(polygon) => Geometry::Polygon(accept_polygon(polygon)?),
-        Geometry::MultiPolygon(polygons) => Geometry::MultiPolygon(
-            polygons
+        Geometry::MultiPolygon(polygons) => {
+            let members = polygons
                 .iter()
                 .enumerate()
                 .map(|(index, polygon)| {
                     accept_polygon(polygon).map_err(|refused| refused.under(Step::Member(index)))
                 })
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
+                .collect::<Result<Vec<_>, _>>()?;
+            members_are_separate(&members)?;
+            Geometry::MultiPolygon(members)
+        }
         Geometry::Collection(shapes) => Geometry::Collection(
             shapes
                 .iter()
@@ -299,6 +363,7 @@ fn accept_line(positions: &[Position]) -> Result<Vec<Snapped>, Refused> {
         ));
     }
     no_repeats(&snapped)?;
+    directions_are_stated(&snapped)?;
     Ok(snapped)
 }
 
@@ -325,10 +390,12 @@ fn accept_polygon(polygon: &Polygon) -> Result<Polygon, Refused> {
 /// The checks a ring passes, in the order that gives the most useful answer.
 ///
 /// Structure first, because a ring that does not close has no other property
-/// worth reporting. Then the repeats snapping creates, then area, then
-/// self-intersection — so a sliver that collapsed under the grid is described as
-/// enclosing nothing rather than as crossing itself, which is the same fact told
-/// the less helpful way.
+/// worth reporting. Then the repeats snapping creates, then the edges whose
+/// direction round the world is not stated, then area, then self-intersection —
+/// so a sliver that collapsed under the grid is described as enclosing nothing
+/// rather than as crossing itself, which is the same fact told the less helpful
+/// way, and a ring reaching the wrong way round the planet is described as
+/// ambiguous rather than by whatever that reading happens to do to its area.
 fn accept_ring(ring: &Ring) -> Result<Vec<Snapped>, Refused> {
     let snapped = snap_all(&ring.0)?;
     if snapped.len() < 4 {
@@ -341,6 +408,7 @@ fn accept_ring(ring: &Ring) -> Result<Vec<Snapped>, Refused> {
         return Err(Refused::malformed(Defect::RingNotClosed, Site::whole()));
     }
     no_repeats(&snapped)?;
+    directions_are_stated(&snapped)?;
     if twice_signed_area(&snapped) == 0 {
         return Err(Refused::malformed(Defect::RingHasNoArea, Site::whole()));
     }
@@ -357,6 +425,52 @@ fn accept_ring(ring: &Ring) -> Result<Vec<Snapped>, Refused> {
 }
 
 // ------------------------------------------------------------ the checks
+
+/// Whether every edge of a path says which way round the world it goes.
+///
+/// The unit is the **edge**, not the box around the shape. The ambiguity is a
+/// property of a pair of consecutive positions, and a box is only a consequence
+/// of them — which is also what lets the refusal name the offending pair, and
+/// what keeps a shape that legitimately spans the world: a cap reaching over the
+/// pole has a box 360° wide and no edge wider than the gap between two of its
+/// own corners.
+fn directions_are_stated(positions: &[Snapped]) -> Result<(), Refused> {
+    for (index, pair) in positions.windows(2).enumerate() {
+        if !direction_is_stated(pair[0], pair[1]) {
+            return Err(Refused::malformed(
+                Defect::EdgeSpansHalfTheWorld {
+                    from: pair[0].to_position(),
+                    to: pair[1].to_position(),
+                },
+                Site::at(Step::Position(index)),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether one edge's own coordinates say which way round the world it goes.
+///
+/// The threshold is **more than** half the world, strictly. Under 180° the
+/// planar reading is the shorter of the two and is the only sensible one. At
+/// exactly 180° the two readings have the same length and the same box, so
+/// nothing a store can observe distinguishes them. Over 180° the planar reading
+/// is the *longer* one, the wrapped reading is shorter, and they are different
+/// shapes with different boxes — so the coordinates no longer state which was
+/// meant.
+///
+/// Two positions at one pole are the exception, because there every longitude
+/// is the same place and both readings are the same degenerate point. That is
+/// the rule's own statement rather than a case bolted onto it, and without it a
+/// polar cap would be unstorable for no correctness gained.
+fn direction_is_stated(from: Snapped, to: Snapped) -> bool {
+    if from.is_at_a_pole() && from.latitude_units() == to.latitude_units() {
+        return true;
+    }
+    !Bounds::of_position(from)
+        .widened_to(to)
+        .spans_more_than_half_the_world()
+}
 
 fn no_repeats(positions: &[Snapped]) -> Result<(), Refused> {
     for (index, pair) in positions.windows(2).enumerate() {
@@ -490,7 +604,7 @@ fn first_crossing(one: &[Snapped], other: &[Snapped]) -> Option<Snapped> {
         let (from, to) = edge(one, index);
         for against in 0..other.len().saturating_sub(1) {
             let (other_from, other_to) = edge(other, against);
-            if crosses(from, to, other_from, other_to) {
+            if segments_cross(from, to, other_from, other_to) {
                 return Some(from);
             }
         }
@@ -498,21 +612,47 @@ fn first_crossing(one: &[Snapped], other: &[Snapped]) -> Option<Snapped> {
     None
 }
 
-/// Whether two segments cross properly — each strictly straddling the other's line.
+/// Whether the members of a multi-polygon keep out of each other's way.
 ///
-/// Touching at a point does not count, which is what separates a hole escaping
-/// its shell from a hole legitimately resting against it.
-fn crosses(from: Snapped, to: Snapped, other_from: Snapped, other_to: Snapped) -> bool {
-    let sides = [
-        orientation(from, to, other_from),
-        orientation(from, to, other_to),
-        orientation(other_from, other_to, from),
-        orientation(other_from, other_to, to),
-    ];
-    if sides.contains(&Orientation::Collinear) {
-        return false;
+/// # Why this is checked here rather than left to the caller
+///
+/// It used to be left. Wave 98 recorded the omission and named the condition
+/// under which it would matter — "the moment an area or an overlay is computed"
+/// — and wave 99 made it matter one wave later by a route that sentence did not
+/// anticipate: [`crate::relate::covers`] rules that a segment crossing a ring
+/// edge transversally has left the region, which is exact for members with
+/// disjoint interiors and wrong for members that overlap.
+///
+/// So the invariant a predicate rests on is now enforced where the value enters
+/// the store, rather than assumed at the place that reads it.
+///
+/// # What counts as in each other's way
+///
+/// Shared **area**, and also a shared **stretch of edge**. Meeting at a corner
+/// or crossing at a single point is legal and stays legal; RFC 7946 and OGC both
+/// ask members to meet at finitely many points, so a shared line is already
+/// outside the format.
+///
+/// # Errors
+///
+/// Returns [`Defect::MembersOverlap`] naming the two members, by their position
+/// in the collection.
+fn members_are_separate(members: &[Polygon]) -> Result<(), Refused> {
+    let areas = members
+        .iter()
+        .map(Area::of)
+        .collect::<Result<Vec<_>, OffGrid>>()?;
+    for (later, area) in areas.iter().enumerate() {
+        for (earlier, before) in areas.iter().take(later).enumerate() {
+            if areas_share_area(before, area) {
+                return Err(Refused::malformed(
+                    Defect::MembersOverlap { earlier, later },
+                    Site::whole(),
+                ));
+            }
+        }
     }
-    sides[0] != sides[1] && sides[2] != sides[3]
+    Ok(())
 }
 
 // ------------------------------------------------------------- the plumbing

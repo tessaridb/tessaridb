@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use tessari_kv::{KeyRange, Keyspace, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
-use tessari_session::Session;
+use tessari_session::{Outcome, Session};
 use tessari_storage::Store;
 
 /// Every engine this project has built, in one script.
@@ -33,7 +33,7 @@ const EVERYTHING: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
 DEFINE DATABASE orders; USE DATABASE orders;\n\
 DEFINE ANALYZER simple FILTERS lowercase, ascii;\n\
-DEFINE TABLE people;\n\
+DEFINE TABLE people SCHEMALESS;\n\
 DEFINE FIELD name ON people TYPE string;\n\
 DEFINE FIELD bio ON people TYPE string ANALYZER simple;\n\
 DEFINE FIELD joined ON people TYPE datetime DEFAULT time::now();\n\
@@ -54,7 +54,7 @@ DELETE people:4;\n\
 DEFINE TABLE follows EDGE;\n\
 RELATE people:1->follows->people:2;\n\
 RELATE people:2->follows->people:3;\n\
-DEFINE TABLE sessions;\n\
+DEFINE COLLECTION sessions;\n\
 SET sessions:'abc' = { user: people:1, level: 3 };\n\
 SET sessions:'def' = [1, 2, 3];\n\
 DEL sessions:'def';\n\
@@ -170,6 +170,64 @@ fn a_restored_store_answers_exactly_what_the_original_did() {
             "the two stores disagree about {script}"
         );
     }
+}
+
+/// The counter that names records survives a restore, and it needs its own test.
+///
+/// A table's record counter is catalog state, so a restore that reproduced every
+/// record but not the counter would be invisible to everything else in this file:
+/// every read would answer exactly what the original answered, because the
+/// counter is not observable by reading. It is observable only by **writing**,
+/// which is why `a_restored_store_answers_exactly_what_the_original_did` — the
+/// strongest claim here — cannot make this one.
+///
+/// This is G020's kill criterion K2 in a test rather than in a paragraph: if the
+/// counter cannot be shown not to regress across a restore, the sequence does not
+/// ship as the default identity.
+///
+/// The store's own walk-past rule keeps a regression from *corrupting* anything —
+/// an occupied identity is stepped over rather than written onto — so the damage
+/// would be a restored table quietly re-walking its whole history on every write.
+/// That is a cost rather than a wrong answer, which is exactly why it would never
+/// be noticed, and why the assertion below is on the identity itself and not on
+/// the record count. A count would pass either way.
+#[test]
+fn the_record_counter_survives_a_restore_rather_than_starting_again() {
+    let (_, source) = store();
+    {
+        let mut session = Session::new(&source);
+        session
+            .run(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod;\
+                 DEFINE DATABASE orders; USE DATABASE orders;\
+                 DEFINE COLLECTION users;\
+                 CREATE users = { name: 'ada' };\
+                 CREATE users = { name: 'grace' };\
+                 CREATE users = { name: 'edith' };",
+            )
+            .unwrap();
+    }
+    let mut taken = Vec::new();
+    tessari_backup::write(&source, &mut taken).unwrap();
+
+    let (_, restored) = store();
+    tessari_backup::read(&restored, &mut taken.as_slice()).unwrap();
+
+    let mut there = Session::new(&restored);
+    there
+        .run("USE NAMESPACE prod; USE DATABASE orders;")
+        .unwrap();
+    let mut answers = there.run("CREATE users = { name: 'alan' };").unwrap();
+    let outcome = answers.pop().expect("one statement, one answer");
+    let Outcome::Keys(keys) = outcome else {
+        panic!("a generated write answers with the identity it produced, got {outcome:?}");
+    };
+    assert_eq!(keys.len(), 1, "one write, one identity: {keys:?}");
+    assert_eq!(
+        format!("{:?}", keys[0]),
+        "Int(4)",
+        "the restored table carried on from three rather than starting again: {keys:?}"
+    );
 }
 
 /// The one key that is deliberately **not** derived from the log.

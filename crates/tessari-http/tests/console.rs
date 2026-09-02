@@ -110,6 +110,13 @@ fn header<'a>(headers: &'a [String], field: &str) -> Option<&'a str> {
 /// Extracted from the served bytes rather than from a list written here: a list
 /// is a second opinion about what the page contains, and it agrees with the page
 /// right up until somebody edits one of them.
+/// Every script the page loads.
+///
+/// Named once here rather than at each call site, because the defect this
+/// guards against is a test that reads one of them and reports on both.
+#[cfg(feature = "console")]
+const SCRIPTS: &[&str] = &["/console.js", "/sections.js"];
+
 #[cfg(feature = "console")]
 fn quoted_urls(text: &str) -> Vec<String> {
     text.split('"')
@@ -161,6 +168,15 @@ fn every_url_the_console_references_is_served_by_this_process() {
             continue;
         }
         seen.push(url.clone());
+        // A `data:` URI is not a place; it is the bytes themselves, written
+        // where a reference would go. It satisfies F6 by construction rather
+        // than by being fetched from this process — so it is the one form of
+        // reference that is checked by *not* being followed. Excluding it is not
+        // a hole in the property: a page made entirely of them would still work
+        // with the network cut, which is the whole thing being protected.
+        if url.starts_with("data:") {
+            continue;
+        }
         assert!(
             !url.contains("://"),
             "the console references {url:?}, which is somewhere else — the page \
@@ -209,10 +225,25 @@ fn the_console_calls_no_route_that_did_not_already_exist() {
     // the script names are checked against the public ones by hand, because a
     // new one appearing here is exactly the violation.
     let (_node, address) = node();
-    let (_, _, code) = get(&address, "/console.js");
+    // **Both** scripts. This read `/console.js` alone until a route added in
+    // `sections.js` walked straight past it — a guard that covers half the
+    // console is a guard that reports "no private door" about one door.
+    let mut code = String::new();
+    for script in SCRIPTS {
+        let (status, _, held) = get(&address, script);
+        assert_eq!(status, 200, "{script} is not served");
+        code.push_str(&held);
+    }
 
     let public = [
-        "/script", "/watch", "/health", "/ready", "/metrics", "/backup",
+        "/script",
+        "/session",
+        "/password",
+        "/watch",
+        "/health",
+        "/ready",
+        "/metrics",
+        "/backup",
     ];
     for url in quoted_urls(&code) {
         // The console's own assets are answered above; what matters here is the
@@ -250,7 +281,7 @@ fn the_request_the_console_builds_is_one_this_node_answers() {
     let (status, body) = script(
         &address,
         "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE library; \
-         USE DATABASE library; DEFINE TABLE users; CREATE users:1 = { name: 'ada' }; \
+         USE DATABASE library; DEFINE COLLECTION users; CREATE users:1 = { name: 'ada' }; \
          SELECT * FROM users;",
     );
     assert_eq!(status, 200, "the console's own request was refused: {body}");

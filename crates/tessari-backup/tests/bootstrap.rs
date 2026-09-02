@@ -30,7 +30,7 @@ use tessari_types::Sequence;
 const LEADER: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
 DEFINE DATABASE orders; USE DATABASE orders;\n\
-DEFINE TABLE people;\n\
+DEFINE TABLE people SCHEMALESS;\n\
 DEFINE FIELD name ON people TYPE string;\n\
 DEFINE INDEX by_email ON people FIELDS email UNIQUE;\n\
 CREATE people:1 = { name: 'ada', email: 'a@x' };\n\

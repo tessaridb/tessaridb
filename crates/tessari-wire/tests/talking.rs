@@ -33,7 +33,7 @@ fn a_script_runs_and_answers_one_outcome_per_statement() {
 
     let answers = client
         .run(
-            &format!("{READY} DEFINE TABLE users; CREATE users:1 = {{ name: 'ada' }}; SELECT * FROM users;"),
+            &format!("{READY} DEFINE COLLECTION users; CREATE users:1 = {{ name: 'ada' }}; SELECT * FROM users;"),
             None,
         )
         .unwrap();
@@ -56,7 +56,7 @@ fn a_value_crosses_the_network_as_the_value_it_was() {
     let (_node, address) = serving(Db::in_memory().unwrap());
     let mut client = Client::connect(&address).unwrap();
     client
-        .run(&format!("{READY} DEFINE TABLE probe;"), None)
+        .run(&format!("{READY} DEFINE COLLECTION probe;"), None)
         .unwrap();
     client
         .run(
@@ -119,7 +119,7 @@ fn a_connection_remembers_what_it_selected() {
 
     client.run(READY, None).unwrap();
     // No `USE` here at all: the selection above is still in force.
-    client.run("DEFINE TABLE users;", None).unwrap();
+    client.run("DEFINE COLLECTION users;", None).unwrap();
     let answers = client
         .run(
             "CREATE users:1 = { name: 'ada' }; SELECT * FROM users;",
@@ -140,7 +140,7 @@ fn a_second_connection_starts_where_every_connection_starts() {
     let (_node, address) = serving(Db::in_memory().unwrap());
     let mut first = Client::connect(&address).unwrap();
     first.run(READY, None).unwrap();
-    first.run("DEFINE TABLE users;", None).unwrap();
+    first.run("DEFINE COLLECTION users;", None).unwrap();
 
     let mut second = Client::connect(&address).unwrap();
     let refused = second
@@ -158,7 +158,7 @@ fn a_reference_arrives_with_the_name_the_client_could_not_have_looked_up() {
     let mut client = Client::connect(&address).unwrap();
     client
         .run(
-            &format!("{READY} DEFINE TABLE users; DEFINE TABLE orders;"),
+            &format!("{READY} DEFINE COLLECTION users; DEFINE COLLECTION orders;"),
             None,
         )
         .unwrap();
@@ -287,7 +287,7 @@ fn two_clients_at_once_do_not_interfere() {
     {
         let mut setup = Client::connect(&address).unwrap();
         setup
-            .run(&format!("{READY} DEFINE TABLE counters;"), None)
+            .run(&format!("{READY} DEFINE COLLECTION counters;"), None)
             .unwrap();
     }
 

@@ -20,7 +20,7 @@
 //!
 //! [`TableId`]: tessari_types::TableId
 
-use tessari_types::{Assertion, FieldKind, Filter, Path, RecordId, Value};
+use tessari_types::{Assertion, Duration, FieldKind, Filter, IdentityKind, Path, RecordId, Value};
 
 use crate::function::Function;
 use crate::token::Span;
@@ -71,13 +71,76 @@ pub enum StatementKind {
         if_not_exists: bool,
     },
     /// `DEFINE TABLE users SCHEMAFULL` / `DEFINE TABLE follows EDGE`
+    ///
+    /// With columns: `DEFINE TABLE users (name string REQUIRED, age int)`.
     DefineTable {
         /// The name to create.
         name: Name,
+        /// The fields declared with the table, in the order they were written.
+        ///
+        /// Empty for the flag-only spelling, which is not the same statement
+        /// with nothing in its parentheses: `DEFINE TABLE t ()` is refused,
+        /// because a reader writing empty parentheses meant to write something.
+        columns: Vec<ColumnDeclaration>,
         /// Whether the table refuses a field it does not declare.
         schemafull: bool,
-        /// Whether the table holds edges, with an index on each endpoint.
-        edge: bool,
+        /// Whether the table holds edges, and the pair it joins when it says
+        /// so: `DEFINE TABLE follows EDGE FROM users TO users`.
+        edge: Option<EdgeClause>,
+        /// What the table names a record with when the caller does not:
+        /// `DEFINE TABLE sessions IDENTITY uuid`.
+        ///
+        /// A property of the table and not of the write, because two records in
+        /// one table named on two schemes sort into two regions of the keyspace
+        /// and read back as one table only by accident.
+        identity: IdentityKind,
+        /// The graph the table belongs to: `DEFINE TABLE person IN social`.
+        ///
+        /// A clause rather than a word, because a node kind is a table in every
+        /// respect that matters and differs by exactly this one fact (Q-314).
+        /// An edge kind is the asymmetric case and gets its own word, because it
+        /// is never selected from and its entries are not records.
+        graph: Option<Name>,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DEFINE GRAPH social` — the structure node tables belong to.
+    ///
+    /// The word names an **object**, which is the whole of what it adds: before
+    /// it, a graph was a fact in somebody's head about which tables were
+    /// related, so nothing could enumerate it, drop it, or be asked a question
+    /// about it. A bounded walk needs a boundary and a question about the whole
+    /// needs a whole to name, and this is where both come from.
+    DefineGraph {
+        /// The name to create.
+        name: Name,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DEFINE EDGE works_at IN social FROM person TO company` — a join a graph
+    /// writes adjacency under.
+    ///
+    /// A **word** rather than a clause, and the asymmetry with node membership is
+    /// deliberate. A node kind *is* a table — selected from, inserted into,
+    /// indexed, granted on — differing by exactly one fact, so it takes the
+    /// clause `IN <graph>` on `DEFINE TABLE`. An edge kind is never selected
+    /// from: its entries are adjacency keys held beside the node, so a hop is one
+    /// range read rather than an index probe and a random read per neighbour.
+    /// That is a difference large enough to earn a word of its own, and it is why
+    /// the word could not ship before the adjacency it names.
+    ///
+    /// Both endpoint tables must belong to the same graph. That is what bounds a
+    /// walk: a traversal cannot leave the graph through a join whose far side was
+    /// never part of it.
+    DefineEdge {
+        /// The name to create.
+        name: Name,
+        /// The graph it belongs to.
+        graph: Name,
+        /// The table an edge of this kind leaves.
+        from: Name,
+        /// The table an edge of this kind reaches.
+        to: Name,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -88,13 +151,122 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
-    /// `DEFINE BUCKET media` — a table whose records are files.
+    /// `DEFINE BUCKET media MAX 5242880` — a table whose records are files.
     ///
     /// The bytes live in a companion table nothing can name, and the records
     /// here are metadata the store fills in (ADR-0011). Declared with its own
     /// word rather than a flag on `DEFINE TABLE`, because what a caller may do
     /// to it differs: a bucket is written through `PUT` and never by hand.
     DefineBucket {
+        /// The name to create.
+        name: Name,
+        /// The largest file the bucket accepts, in bytes, if one was declared.
+        ///
+        /// Written as a plain count of bytes rather than as `5MB`, because
+        /// digits touching a letter are a **duration** in this grammar —
+        /// whatever the letter — so `5MB` lexes as a duration with a unit
+        /// nothing recognises and is refused. That rule is deliberate and
+        /// belongs to the whole language; changing it to give one clause a
+        /// shorter spelling would be a lexical change everywhere to buy a
+        /// convenience here.
+        ///
+        /// Optional, and absent means unbounded — so every bucket declared
+        /// before the clause existed keeps parsing and keeps its meaning, the
+        /// same contract the edge table's endpoint pair keeps.
+        max: Option<u64>,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DEFINE COLLECTION notes` — records that carry fields nobody declared.
+    ///
+    /// The fourth word in the row `TABLE`, `SPACE`, `BUCKET` already forms, and
+    /// it earns one on the same test they did: a difference in what a caller
+    /// may **do**. A table refuses a field it does not declare; a collection
+    /// accepts one, which is the whole of what a document is here.
+    ///
+    /// It carries no columns and no strictness marker, because there is nothing
+    /// for either to say. `DEFINE TABLE t (…) SCHEMALESS` is a *table* whose
+    /// declared fields are still constrained; a collection declares none. The
+    /// two are stored apart rather than collapsed, so `INFO` can answer with the
+    /// word that created the thing instead of one that merely behaves like it.
+    DefineCollection {
+        /// The name to create.
+        name: Name,
+        /// What the collection names a record with when the caller does not:
+        /// `DEFINE COLLECTION sessions IDENTITY uuid`.
+        identity: IdentityKind,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine` — a store whose
+    /// records are vectors.
+    ///
+    /// The fifth word in the row `TABLE`, `SPACE`, `BUCKET`, `COLLECTION` forms,
+    /// and it earns one on the same test they did. Written out as the three
+    /// statements it stands for, a vector store is:
+    ///
+    /// ```text
+    /// DEFINE COLLECTION embeddings;
+    /// DEFINE FIELD vector ON embeddings TYPE vector<768> REQUIRED;
+    /// DEFINE INDEX vector ON embeddings FIELDS vector VECTOR cosine;
+    /// ```
+    ///
+    /// Three statements a reader must get right *together*: a width without an
+    /// index is a declaration nothing searches, an index without a width is the
+    /// hole `vector<n>` was added to close, and either without `REQUIRED` admits
+    /// a record with no vector at all — legal in a table, and not a record of a
+    /// vector store. The word makes the three inseparable, which is a difference
+    /// in what a caller may do rather than a shorter way to say the same thing.
+    ///
+    /// It **desugars** into exactly those three, through the same functions
+    /// `DEFINE TABLE t (…)` desugars through. That is deliberate and it is the
+    /// point: there is no store-only path to disagree with the field one,
+    /// because the store's path *is* the field one.
+    DefineVector {
+        /// The name to create.
+        name: Name,
+        /// How wide every vector in the store is.
+        ///
+        /// Required, with no default, because declaring it is the whole
+        /// capability: undeclared, a 512-wide row and a 768-wide row sit
+        /// together legally and only the distance function notices — per read,
+        /// long after the bad write.
+        dimension: usize,
+        /// The distance its index is built and searched with.
+        ///
+        /// Carried as the word the author wrote rather than as a parsed kind,
+        /// for the reason [`StatementKind::DefineIndex`] carries it that way:
+        /// which distances exist is the store's question, not the grammar's.
+        distance: Name,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DEFINE GEO places`
+    ///
+    /// The sixth word in the row, and it earns one on the same test the fifth
+    /// did. Written out as the three statements it stands for, a geo store is:
+    ///
+    /// ```text
+    /// DEFINE COLLECTION places;
+    /// DEFINE FIELD geometry ON places TYPE geometry REQUIRED;
+    /// DEFINE INDEX geometry ON places FIELDS geometry SPATIAL;
+    /// ```
+    ///
+    /// Three statements that must be got right together: a geometry field with
+    /// no spatial index makes every place query a scan, a spatial index with no
+    /// declared field indexes nothing, and either without `REQUIRED` admits a
+    /// record with no geometry — legal in a table, and not a record of a place
+    /// store. It desugars into exactly those three, through the same functions
+    /// [`StatementKind::DefineVector`] desugars through, so there is no
+    /// store-only path that could come to disagree with the field one.
+    ///
+    /// **It takes no clause**, which is where the analogy with `DEFINE VECTOR`
+    /// stops. A width has to be declared because nothing else refuses a row of
+    /// the wrong shape; a geometry does not, because the read that needs a point
+    /// already refuses everything else where it happens. Narrowing the store to
+    /// one shape would also make a table of regions inexpressible, and regions
+    /// are served correctly today (Q-324).
+    DefineGeo {
         /// The name to create.
         name: Name,
         /// Whether re-defining an existing name is accepted.
@@ -112,6 +284,8 @@ pub enum StatementKind {
         unique: bool,
         /// Whether the index holds terms rather than whole values.
         search: bool,
+        /// Whether the index holds the cells covering each record's geometry.
+        spatial: bool,
         /// The distance a vector index's graph is built with, when it is one.
         ///
         /// Carried as the word the author wrote rather than as a parsed kind,
@@ -188,14 +362,28 @@ pub enum StatementKind {
     DefineUser {
         /// The name signed in with.
         name: Name,
-        /// The tenancy the user belongs to, or the store when absent.
-        scope: Option<TableRef>,
+        /// How far the user reaches, or the store when absent.
+        scope: Option<ReachRef>,
         /// What the user may do.
-        role: Name,
-        /// The password, as written.
-        password: String,
+        role: UserGrant,
+        /// The password, as written. Prints as `<redacted>`.
+        password: Password,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
+    },
+    /// `ALTER USER ada SET PASSWORD '…'` · `ALTER USER ada SET ROLE editor`
+    ///
+    /// Changes **one** thing about a user who already exists, and the tenancy is
+    /// not one of them: there is no `SET ON`, because widening somebody's reach
+    /// is the one change an administrator of a part could use to reach the
+    /// whole. Rotating a password and correcting a role are both things an owner
+    /// of a namespace does for their own people; moving a user out of that
+    /// namespace is not.
+    AlterUser {
+        /// The user being changed.
+        name: Name,
+        /// What about them.
+        change: UserChange,
     },
     /// `DEFINE NODE ROLES serving, writable ENDPOINTS 'host:9000'`
     ///
@@ -240,6 +428,70 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `DEFINE CONSUMER orders_in FROM 'broker:9092' TOPIC 'orders' …`
+    ///
+    /// Ingestion that is **declared rather than scripted**: one statement says
+    /// what to read, how to read it, where it lands, and under which group, and
+    /// the node runs it because the catalog says so (ADR-0023).
+    ///
+    /// # Why one object rather than two
+    ///
+    /// The obvious alternative splits this in half — a thing that consumes and a
+    /// thing that writes — which buys composition at the price of an ordering
+    /// nobody controls: the consumer can start before its destination exists,
+    /// and the binding between them lives inside a third object where nothing
+    /// names it as a relationship. Making the destination a *field* removes that
+    /// race by construction, because a field is resolved before the consumer is
+    /// started rather than raced against it.
+    ///
+    /// # What it refuses to say
+    ///
+    /// There is no exactly-once, and there is no schema inference. Both refusals
+    /// are also reported by `INFO FOR CONSUMER`, because a guarantee documented
+    /// away from the point of configuration is one that will be misread.
+    DefineConsumer {
+        /// The consumer's catalog identity.
+        name: Name,
+        /// Where the messages come from.
+        source: ConsumerSource,
+        /// The consumer group, as written — see [`ConsumerSource`] for why this
+        /// is never derived.
+        group: String,
+        /// How a message becomes fields, as the word a statement wrote.
+        ///
+        /// Carried as written for the reason a vector distance is: which formats
+        /// exist is the store's question and not the grammar's, so an unknown
+        /// one is refused where the store knows what it knows, with the span the
+        /// author can see.
+        format: Name,
+        /// Which message field carries the record's identity.
+        ///
+        /// Required, and it is what makes a replayed message converge to one
+        /// record rather than to two — the whole reason this node may claim
+        /// at-least-once delivery with idempotent application.
+        identity: FieldPath,
+        /// Which message fields become which record fields.
+        ///
+        /// A field nobody named **does not land**. That is the anti-inference
+        /// rule stated positively: a producer adding a field changes nothing
+        /// here, where an inferred mapping would have started writing it.
+        mapping: Vec<FieldMapping>,
+        /// The table the records land in.
+        destination: TableRef,
+        /// What happens to a message that cannot be applied.
+        on_failure: OnFailure,
+        /// How many consumers this declaration runs.
+        ///
+        /// `None` reads as one, not as "decide for me".
+        parallelism: Option<u32>,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DROP CONSUMER orders_in` — stops it and forgets the declaration.
+    DropConsumer {
+        /// The name to remove.
+        name: Name,
+    },
     /// `DROP USER ada`
     DropUser {
         /// The name to remove.
@@ -264,6 +516,46 @@ pub enum StatementKind {
         /// story, and naming nothing names no limit.
         fields: Vec<Name>,
         /// Who it is for.
+        user: Name,
+    },
+    /// `GRANT manage ON NAMESPACE prod TO ada`
+    ///
+    /// # A different thing from the grant above it, on purpose
+    ///
+    /// [`StatementKind::Grant`] narrows a user *within* the tenancy they were
+    /// declared in, by naming a table. This one says what they may do and how
+    /// far it goes, and the two do not compose into one statement because they
+    /// answer different questions: one is "which of my tables", the other is
+    /// "how much of this store".
+    ///
+    /// The reach is keyword-led in all three spellings, so a table can never be
+    /// read as a reach — see [`ReachRef`].
+    GrantAuthority {
+        /// What is being given — one or more kinds, as written.
+        kinds: Vec<Name>,
+        /// How far it goes.
+        reach: ReachRef,
+        /// Who it is for.
+        user: Name,
+    },
+    /// `REVOKE manage ON NAMESPACE prod FROM ada`
+    ///
+    /// # Taking away the last one is allowed here
+    ///
+    /// The opposite of [`StatementKind::Revoke`]'s rule, and for the reason
+    /// that rule exists: a table grant going from one to none *widens* a user
+    /// back to their role, so the last one is refused. An authority going from
+    /// one to none leaves them holding nothing, which is the narrowest a user
+    /// can be and cannot be a surprise.
+    RevokeAuthority {
+        /// What is being taken away.
+        kinds: Vec<Name>,
+        /// The reach it was at. Taking away `manage` at a namespace leaves
+        /// `manage` at a database inside it exactly where it was: the model's
+        /// only implication runs downward through *holding*, not through
+        /// removal.
+        reach: ReachRef,
+        /// Who it was for.
         user: Name,
     },
     /// `REVOKE write ON orders FROM ada`
@@ -298,7 +590,10 @@ pub enum StatementKind {
         /// The edge's target.
         to: RecordTarget,
         /// The edge's own properties, when the statement gives any.
-        value: Option<Expr>,
+        ///
+        /// Boxed because this variant is the widest in the enum and every
+        /// statement anywhere is sized by it.
+        value: Option<Box<Expr>>,
     },
     /// `DROP TABLE users` — removes the definition, not the records.
     DropTable {
@@ -311,6 +606,127 @@ pub enum StatementKind {
         name: Name,
         /// The table it indexes.
         table: TableRef,
+    },
+    /// `DROP ANALYZER simple` — refused while a field still names it.
+    ///
+    /// A field attaches an analyzer by **name**, so nothing in the catalog
+    /// enforces the link and a removal would leave a field pointing at a name
+    /// that no longer resolves. The symptom of that is a search which quietly
+    /// stops matching, which is why this refuses rather than cascades.
+    DropAnalyzer {
+        /// The analyzer to undeclare.
+        name: Name,
+    },
+    /// `DROP REPLICA warsaw` — stops counting an endpoint as a peer.
+    ///
+    /// The peer is not told and its data is not chased. Replication here is
+    /// declarative, so this statement says only that we no longer count that
+    /// endpoint, and a peer that disagrees is an operator's question.
+    DropReplica {
+        /// The peer to undeclare.
+        name: Name,
+    },
+    /// `DROP DATABASE staging` — refused while it still holds a table.
+    ///
+    /// The bound is inherited from `DELETE … LIMIT`: a destructive statement
+    /// with no predicate at all is the widest one this language can be asked to
+    /// run, so it refuses while anything is inside and counts what it found. A
+    /// `CASCADE` word is deliberately absent — it is the unbounded form under
+    /// another spelling.
+    DropDatabase {
+        /// The database to undefine.
+        name: Name,
+    },
+    /// `DROP NAMESPACE acme` — refused while it still holds a database.
+    DropNamespace {
+        /// The namespace to undefine.
+        name: Name,
+    },
+    /// `DROP GRAPH social` — refused while a table still belongs to it.
+    ///
+    /// Refuses rather than orphaning, on the same reasoning as `DROP DATABASE`:
+    /// a membership left pointing at an id nothing resolves would surface later
+    /// as a walk that finds no graph, rather than now as the drop that caused
+    /// it.
+    DropGraph {
+        /// The graph to undefine.
+        name: Name,
+    },
+    /// `DROP EDGE works_at` — the kind and every adjacency entry it wrote.
+    ///
+    /// The entries go with it, in the same transaction. A kind whose definition
+    /// was removed while its adjacency stayed would leave every one of those
+    /// entries pointing at an id nothing resolves, and a walk would reach through
+    /// a join that no longer exists.
+    DropEdge {
+        /// The edge kind to undefine.
+        name: Name,
+    },
+    /// `DROP VECTOR embeddings` — the store, its records and its index.
+    ///
+    /// The same act `DROP TABLE` performs, reached by the word that created the
+    /// thing. Two spellings for one effect is what the round trip already
+    /// requires: `INFO` reports a vector store as `DEFINE VECTOR`, so a reader
+    /// who has only ever seen that word must have a way to undo it without
+    /// having to learn that it was a table underneath.
+    DropVector {
+        /// The store to undefine.
+        name: Name,
+    },
+    /// `DROP GEO places` — the store, its records and its index.
+    ///
+    /// Exists for the reason [`StatementKind::DropVector`] does: `INFO` reports
+    /// a geo store as `DEFINE GEO`, so a reader who has only ever seen that word
+    /// must have a way to undo it without first having to learn that it was a
+    /// table underneath.
+    DropGeo {
+        /// The store to undefine.
+        name: Name,
+    },
+    /// `ALTER TABLE users ALTER FIELD email TYPE string REQUIRED`
+    ///
+    /// Redeclares a field that already exists, which a second `DEFINE FIELD`
+    /// cannot do — the catalog reserves the name, so the second one is refused
+    /// as taken. The declaration is replaced whole rather than patched: a
+    /// statement that changed only the parts it mentioned would make *leave the
+    /// default alone* and *remove the default* the same sentence, which is the
+    /// reason [`UserChange`] is an enum rather than a record of options.
+    ///
+    /// The drop and the declaration land in one commit, so the rows are held to
+    /// the **new** declaration by the store's own schema pass — an alteration no
+    /// stored row satisfies is refused, writing nothing at all.
+    AlterField {
+        /// The field's name.
+        name: Name,
+        /// The table it is declared on.
+        table: TableRef,
+        /// What it may now hold.
+        kind: FieldKind,
+        /// Whether it must now be present.
+        required: bool,
+        /// What fills it when a write omits it, as written.
+        default: Option<Written>,
+        /// The analyzer its text is turned into terms by.
+        analyzer: Option<Name>,
+        /// What a value must satisfy.
+        assert: Option<Assertion>,
+    },
+    /// `ALTER TABLE users SET SCHEMAFULL` · `… SET SCHEMALESS`
+    ///
+    /// The one thing about a table worth changing after it exists.
+    ///
+    /// **It changes the declaration and does not re-check the rows already
+    /// stored.** A schema here is a rule about what may be *written*, so going
+    /// schemafull binds every write from that commit onwards and leaves earlier
+    /// records exactly as they are — which is also what keeps this statement
+    /// bounded. Scanning the table would make a `DEFINE`-shaped statement do
+    /// work proportional to the data, and this wave refuses that in
+    /// `DROP DATABASE` for the same reason it declines it here (Q-233).
+    AlterTable {
+        /// The table to change.
+        table: TableRef,
+        /// What to change about it.
+        change: TableChange,
     },
     /// `REBUILD INDEX by_embedding ON papers`
     ///
@@ -325,29 +741,130 @@ pub enum StatementKind {
         /// The table it indexes.
         table: TableRef,
     },
-    /// `CREATE users:1 = { … }`
+    /// `CREATE users = { … }` — or `CREATE users:1 = { … }` when the caller has
+    /// a name for the record already.
     Create {
-        /// The record to write.
-        target: RecordTarget,
+        /// Where the record goes, and who named it.
+        target: CreateTarget,
         /// Its whole content.
         value: Expr,
+        /// What the statement answers with. `BEFORE` is refused: there was no
+        /// record before, and a statement that answered `NONE` to a question
+        /// somebody meant would be worse than one that says the question does
+        /// not apply.
+        answer: Answer,
+    },
+    /// `INSERT INTO users (name, email) VALUES ('ada', 'a@x'), ('grace', 'g@x')`
+    ///
+    /// # Why the identity is absent from the statement
+    ///
+    /// There is nowhere to write one. A caller who has an identity already —
+    /// an import, a migration, a foreign key — writes `CREATE users:1 = { … }`,
+    /// which is unchanged and stays the way to say that. This statement is for
+    /// the other case, which is the common one: the caller has records and no
+    /// names for them, and asking a human to invent a name per record is asking
+    /// for the collision they will eventually write.
+    ///
+    /// # Why the columns are names and the values are values
+    ///
+    /// The column list is **grammar**. It is parsed as names, so a caller's text
+    /// cannot arrive in that position and be read as one — the same property the
+    /// query builder is built around, and the reason a supplied value binds
+    /// after the script is parsed rather than being formatted into it.
+    Insert {
+        /// The table the records are written to.
+        table: TableRef,
+        /// The fields every row supplies, in the order they were written.
+        columns: Vec<Name>,
+        /// One row per record.
+        ///
+        /// Every row holds exactly as many values as there are columns, and
+        /// that is checked **at parse**: a row of the wrong length is a
+        /// statement the author mistyped, and finding out at the write means
+        /// finding out after some of the batch is already decided.
+        rows: Vec<Vec<Expr>>,
     },
     /// `SELECT * FROM …`
-    Select(Select),
+    ///
+    /// Boxed, as [`StatementKind::Explain`] already boxes the same type. A read
+    /// is much the widest statement this language has — clauses, projections, a
+    /// source that may itself hold a join — and an enum is as wide as its widest
+    /// variant, so unboxed it made every `COMMIT` and every `USE` in a parsed
+    /// script cost what a `SELECT` costs.
+    Select(Box<Select>),
     /// `UPDATE users:1 = { … }` — the value is replaced, never merged.
     Update {
         /// The record to change.
         target: RecordTarget,
         /// How it changes.
         edit: Edit,
+        /// What the statement answers with.
+        answer: Answer,
+    },
+    /// `THROW 'this order is already paid'` — refuse the script.
+    ///
+    /// With `IF` in the language a script can compute a decision and, until
+    /// this, could not act on it: every refusal had to be a condition the store
+    /// itself happened to check. The statement never answers — it fails, and a
+    /// failure inside a transaction discards the work above it, which is the
+    /// behaviour a guard clause needs to be worth writing.
+    Throw {
+        /// The message. Evaluated, so it may name what went wrong.
+        value: Expr,
+    },
+    /// `UPSERT users:1 = { … }` — write the record whether or not it is there.
+    ///
+    /// Its own statement rather than a flag on `UPDATE`, because the three verbs
+    /// assert three different things about the record before the write:
+    /// `CREATE` says it is absent, `UPDATE` says it is present, and this one
+    /// says nothing. A caller who knows which case they are in keeps the
+    /// refusal that tells them when they were wrong.
+    Upsert {
+        /// The record to write.
+        target: RecordTarget,
+        /// How it is written. A record that is not there starts as an empty
+        /// object, so `SET` and `MERGE` mean the same thing over an absence
+        /// that they mean over a record with none of the named routes.
+        edit: Edit,
+        /// What the statement answers with. `BEFORE` over a record that was not
+        /// there answers `NONE`, which is the true answer rather than a silent
+        /// one — the caller asked what was there, and nothing was.
+        answer: Answer,
     },
     /// `DELETE users:1`
     Delete {
         /// The record to remove.
         target: RecordTarget,
+        /// What the statement answers with. `AFTER` is refused: there is no
+        /// record after a delete, so the clause could only ever answer `NONE`.
+        answer: Answer,
     },
-    /// `DELETE FROM readings WHERE at < datetime '…'` — every record a
-    /// condition holds for.
+    /// `DELETE person:1->works_at->company:1` — one edge, named by what it joins.
+    ///
+    /// The mirror of [`StatementKind::Relate`], and it exists because an edge's
+    /// identity is **derived**: `RELATE` builds it from the two endpoints so that
+    /// relating the same pair twice replaces rather than doubles, and never tells
+    /// the caller what it built. Without this form, removing an edge would mean
+    /// reconstructing a string the language has no statement that shows —
+    /// a caller depending on an internal encoding to undo what one statement did.
+    ///
+    /// Separate from [`StatementKind::Delete`] for the reason the conditional
+    /// form is separate: it names its subject differently, and one variant
+    /// wearing three targets in an `Option` would put the difference in a field
+    /// rather than in the grammar.
+    DeleteEdge {
+        /// The edge's source.
+        from: RecordTarget,
+        /// The edge kind, or the edge table, the relation was recorded in.
+        edges: TableRef,
+        /// The edge's target.
+        to: RecordTarget,
+        /// What the statement answers with. `AFTER` is refused, as it is for any
+        /// delete.
+        answer: Answer,
+    },
+    /// `DELETE FROM readings WHERE at < datetime '…' LIMIT 100` — the records a
+    /// condition holds for, up to a stated bound.
     ///
     /// Separate from the single-record form rather than folded into it, because
     /// the two answer different questions and one of them can remove a table.
@@ -359,6 +876,12 @@ pub enum StatementKind {
         table: TableRef,
         /// What a record must satisfy to be removed.
         condition: Box<Expr>,
+        /// How much this statement may remove.
+        ///
+        /// Not an `Option`. A bound that could be absent would let the
+        /// unbounded form exist in the tree, and the whole point of the clause
+        /// is that removing a table has to be *said*.
+        limit: DeleteBound,
     },
     /// `GET sessions:'abc'` as a statement of its own.
     Get {
@@ -408,12 +931,68 @@ pub enum StatementKind {
         /// The range of keys, when the statement bounds it.
         range: Option<RangeExpr>,
     },
+    /// `LET $recent = SELECT id FROM notes ORDER BY at DESC LIMIT 5`
+    ///
+    /// # Why this is what makes the engines compose
+    ///
+    /// A read resolves to exactly one access path — a table, a record, an index,
+    /// a walk — chosen by the shape of the statement. That is what keeps the
+    /// cost of a read legible, and it is also why a question that crosses two
+    /// engines could not be *said*: the nearest neighbours by embedding, and
+    /// then who wrote them, is a vector read followed by a graph walk, and there
+    /// was no way for the first answer to reach the second statement.
+    ///
+    /// A binding is that way, and it needs no planner: each statement still
+    /// resolves to one path, and what travels between them is a value.
+    ///
+    /// # The value is substituted, not looked up
+    ///
+    /// When this statement runs, the value it produced replaces every mention of
+    /// its name in the statements that have **not run yet** — the same walk
+    /// [`Script::bind`](crate::Script::bind) performs for a caller's parameters,
+    /// for the same reason. The planner reads an expression tree to find a
+    /// right-hand side an index can serve, so a name it could not resolve would
+    /// silently drop the index for exactly the reads this feature exists to
+    /// enable. After the substitution there is no name left to resolve.
+    Let {
+        /// The name, without its `$`.
+        name: String,
+        /// The value to bind.
+        value: Expr,
+        /// Where the name was written, for the error that says it was bound
+        /// twice.
+        span: Span,
+    },
+    /// `RETURN { total: $sum, seen: $count }`
+    ///
+    /// Names the value the script answers with. A script may hold **at most
+    /// one**, refused at parse where there are two — a second would make "the
+    /// answer" depend on which one ran, which is a question no reader should
+    /// have to ask of a script they are looking at.
+    ///
+    /// It does not end the script. Ending it would make everything below
+    /// unreachable, and unreachable statements inside a `BEGIN`/`COMMIT` would
+    /// leave the transaction open.
+    Return {
+        /// What to answer with.
+        value: Expr,
+    },
     /// `BEGIN`
     Begin,
     /// `COMMIT`
     Commit,
     /// `CANCEL`
     Cancel,
+    /// `VERIFY` — run every check a `COMMIT` runs, then discard the work.
+    ///
+    /// A third thing to do with an open transaction, and therefore a third word
+    /// rather than a flag on one of the other two. `COMMIT` checks and keeps;
+    /// `CANCEL` discards **without** checking, because every check that refuses
+    /// a write runs inside the commit; this checks and discards.
+    ///
+    /// It exists because there was no way to ask *"would this be refused?"*
+    /// other than to be refused, and being refused means having sent the write.
+    Verify,
 }
 
 /// What an `INFO FOR` asks about.
@@ -432,12 +1011,84 @@ pub enum InfoSubject {
     Database,
     /// `INFO FOR TABLE users` — one table's shape, fields and indexes.
     Table(TableRef),
+    /// `INFO FOR GRAPH social` — the tables that belong to one graph.
+    ///
+    /// A graph with no members answers with an empty list rather than an error:
+    /// a graph you have just declared exists, and reporting it as absent would
+    /// make the first thing anyone does after declaring one look like a failure.
+    Graph(Name),
+    /// `INFO FOR VECTOR embeddings` — one vector store's width, distance and
+    /// measured recall.
+    ///
+    /// Distinct from `INFO FOR TABLE`, which reports fields and indexes, because
+    /// the question a vector store is asked is not *what is in it* but **how good
+    /// is it**: recall is the number that says whether an approximate answer is
+    /// worth having, and it is the one thing the table view can never carry,
+    /// since it is a property of a measurement rather than of a declaration.
+    ///
+    /// It reports the recall that was **measured**, and the parameters it was
+    /// measured at, or says it has never been measured. It never computes a
+    /// plausible figure: an approximate index whose recall came from a formula is
+    /// a number nobody checked.
+    Vector(Name),
+    /// `INFO FOR GEO places` — one geo store's field and index.
+    ///
+    /// Distinct from `INFO FOR TABLE` for the reason [`InfoSubject::Vector`] is:
+    /// the answer must carry the word that created the thing, or a round trip
+    /// re-executes as a collection and the store stops being one.
+    ///
+    /// It carries no measurement, and that is not an omission. A vector index
+    /// answers approximately, so what it is worth is a question only a
+    /// measurement settles; a spatial index answers exactly, so there is nothing
+    /// about it a number could report that the declaration does not already say.
+    Geo(Name),
     /// `INFO FOR USER ada` — one user's role, tenancy and grants.
     ///
     /// The one subject that refuses rather than filters, because its content
     /// *is* the permission system: a partial view of who may do what is worse
     /// than none, since it reads as the whole answer.
     User(Name),
+    /// `INFO FOR USERS` — the users of the tenancy the caller administers.
+    ///
+    /// The sixth subject, and it exists because the fifth cannot answer the
+    /// question an operator actually has: `INFO FOR USER <name>` needs a name,
+    /// and a name you have forgotten was, until this, unrecoverable from the
+    /// store by any route at all.
+    ///
+    /// It **refuses rather than filters**, exactly as [`InfoSubject::User`] and
+    /// [`InfoSubject::Node`] do. That is the whole reason it is safe to add: a
+    /// listing narrowed to what a `viewer` may see would be a partial account of
+    /// who may do what, and a partial account reads as the whole one. So it is
+    /// answered only to a caller who administers the tenancy — and then it is
+    /// answered in full for that tenancy, which is a different claim from a
+    /// filtered view across tenancies the caller does not hold.
+    ///
+    /// It carries each user's name, role and tenancy, and **not their grants**.
+    /// Grants are per-user detail and stay in `INFO FOR USER <name>`, where one
+    /// subject is being examined rather than counted.
+    Users,
+    /// `INFO FOR ACCESS TO TABLE orders` — who can reach this table, and how.
+    ///
+    /// The other direction of [`InfoSubject::User`]. That one answers *what may
+    /// this user reach*, starting from a person; this one starts from an object
+    /// and answers *who reaches it* — and an operator holding an incident needs
+    /// the second question far more often than the first, because the thing they
+    /// have is the table that leaked.
+    ///
+    /// # It is answered by asking, not by reading
+    ///
+    /// The answer is **not** derived from grants and authorities a second time.
+    /// For every user the caller administers, the store signs a throwaway session
+    /// in as that user and puts a real statement to the ordinary authorization
+    /// path — the same function every `SELECT` and every `DELETE` goes through.
+    /// A report that re-derived reachability would be a second evaluator, and two
+    /// evaluators of one rule disagree eventually; the one that disagrees
+    /// silently here is the one an auditor was trusting.
+    ///
+    /// Refuses rather than filters, for [`InfoSubject::User`]'s reason: its
+    /// content *is* the permission system, and a partial account of who may do
+    /// what reads as the whole account.
+    Access(TableRef),
     /// `INFO FOR NODE` — this node's own settings, and the peers it knows.
     ///
     /// The one subject that reads **two stores**: the local `META` keyspace and
@@ -450,6 +1101,114 @@ pub enum InfoSubject {
     /// key: it names no table, so a grant check would pass over it vacuously,
     /// and roles and endpoints have no smaller truthful form to hand a viewer.
     Node,
+    /// `INFO FOR CONSUMER orders_in` — one consumer's declaration and its
+    /// running state on **this** node.
+    ///
+    /// Two named groups rather than one flat object, for [`InfoSubject::Node`]'s
+    /// reason: the declaration follows a backup and the running state does not,
+    /// and flattening them would make that a thing you have to remember
+    /// (ADR-0020 §3).
+    ///
+    /// It is also where the two refusals are reported — no exactly-once, no
+    /// schema inference — because the loudest complaint about the system that
+    /// has shipped this feature for years is that a consumer can be declared and
+    /// not observed, and the second loudest is that its delivery guarantee is
+    /// documented somewhere other than where a person configures it.
+    Consumer(Name),
+    /// `INFO FOR CONSUMERS` — every declared consumer, and whether it is running.
+    Consumers,
+}
+
+/// Where a consumer's messages come from.
+///
+/// The **group is declared and never derived**. It is a broker-side identity,
+/// and deriving it from the node id would be a bug that appears only in a
+/// cluster: every node would form its own group, and every node would then
+/// consume every message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsumerSource {
+    /// The brokers to reach, as written.
+    pub brokers: Vec<String>,
+    /// The topic to read.
+    pub topic: String,
+}
+
+/// One message field, and what it is called in the record.
+///
+/// Read from a path so a nested payload works, written to a plain name so the
+/// record stays flat. That asymmetry is the boundary that keeps this a mapping
+/// rather than a transformation language.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldMapping {
+    /// Where to read it in the message.
+    pub from: FieldPath,
+    /// What it is called in the record.
+    pub to: Name,
+}
+
+/// What a consumer does with a message it cannot apply.
+///
+/// Two values, and the absence of a third is the decision. A skip-N mode would
+/// let a silent default decide about data loss, and the system that offers one
+/// miscounts what it skips: given a message holding several rows it discards
+/// *the row*, not the message, so the counter does not count what its name says.
+/// A misnamed safety knob is a safety knob set wrong.
+///
+/// There is no default value either, because a default here is a decision about
+/// data loss taken by whoever did not type the clause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnFailure {
+    /// Halt the consumer and record why.
+    Stop,
+    /// Bounded retries, then park the payload where the language can find it.
+    Quarantine,
+}
+
+impl OnFailure {
+    /// The word a statement writes it as.
+    #[must_use]
+    pub const fn spelling(self) -> &'static str {
+        match self {
+            Self::Stop => "stop",
+            Self::Quarantine => "quarantine",
+        }
+    }
+}
+
+/// What a write answers with.
+///
+/// Absent by default, because a write's answer is its effect and a store that
+/// shipped every changed record back by default would make the common case pay
+/// for the rare one. What this removes is the *second statement*: reading back
+/// what was just written cost a round trip to learn a value the store had in
+/// hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Answer {
+    /// No clause: the write reports that it happened and nothing more.
+    #[default]
+    Nothing,
+    /// `RETURN BEFORE` — the record as it stood before the write.
+    Before,
+    /// `RETURN AFTER` — the record as it stands after it.
+    After,
+}
+
+/// How much a conditional delete may remove.
+///
+/// Every `DELETE FROM … WHERE …` carries one, and there is no third variant for
+/// "unstated". A predicate wrong by one character is the ordinary way a table is
+/// emptied by accident, and the cheapest thing standing between that typo and
+/// the store is a clause the author had to write.
+///
+/// The bound is on what is **removed**, never on what is examined. A bound
+/// applied to candidates would make the same statement remove different records
+/// on two runs, depending on which index answered it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteBound {
+    /// `LIMIT 100` — stop after this many records have been removed.
+    AtMost(u64),
+    /// `LIMIT ALL` — every record the condition holds for, however many that is.
+    All,
 }
 
 /// How an `UPDATE` changes the record it names.
@@ -464,6 +1223,28 @@ pub enum Edit {
     /// `UPDATE users:1 SET name = 'grace', visits = visits + 1` — these routes
     /// change and nothing else does.
     Fields(Vec<Assignment>),
+    /// `UPDATE users:1 MERGE { address: { city: 'Paris' } }` — the object is
+    /// folded into the record, and what it does not name is left alone.
+    ///
+    /// Distinct from `Fields` rather than sugar for it: `SET` names routes one
+    /// at a time and computes each from the record, while this takes a whole
+    /// object whose shape is the shape of the change. It is what an HTTP `PATCH`
+    /// handler holds, and without it every client builds the same fold by hand.
+    ///
+    /// Merging is **deep on objects and total on everything else**: where both
+    /// sides hold an object the two are merged, and otherwise the incoming value
+    /// wins. An explicit `NULL` therefore sets the field to `NULL` — removing a
+    /// field is `SET route = NONE`, which says removal out loud.
+    ///
+    /// The object stands in the **value** position, as every object literal in
+    /// this language does, so a bare name inside it is a table and not a route
+    /// into the record being changed. That is the one place `MERGE` and `SET`
+    /// read differently, and it is deliberate: `{ a: b }` cannot mean two things
+    /// depending on which verb precedes it. `MERGE { visits: visits + 1 }` is
+    /// therefore not the way to say that — `SET visits = visits + 1` is, and
+    /// computing from the record is what `SET` is for. What `MERGE` is for is a
+    /// whole object arriving from outside, which is usually `MERGE $patch`.
+    Merge(Expr),
 }
 
 /// One route of a record, and what it becomes.
@@ -481,8 +1262,36 @@ pub struct Assignment {
 pub struct Select {
     /// Which values each record answers with.
     pub projection: Projection,
+    /// The routes `*` must not contribute, when `OMIT` named any.
+    ///
+    /// Empty means the clause was not written. It subtracts from what the star
+    /// put there and from nothing else: a value written out by name was asked
+    /// for explicitly, so removing it would be answering a question nobody
+    /// asked, and the parser refuses the clause where there is no star to
+    /// subtract from rather than accepting one that does nothing.
+    ///
+    /// A route rather than a name, because the field to leave out may be inside
+    /// the record: `OMIT address.postcode` keeps the address.
+    pub omit: Vec<FieldPath>,
     /// Which access path the statement resolves to.
     pub from: Source,
+    /// Where `ONLY` was written, when it was.
+    ///
+    /// The clause is an **assertion by the author** that at most one record
+    /// answers, and the answer is shaped to match: the record itself rather than
+    /// a list holding it, so that a caller reading one thing does not unwrap a
+    /// list of one everywhere.
+    ///
+    /// Its span rather than a bare `bool` because the refusal points at the word
+    /// — the author either meant a different read or did not mean the word, and
+    /// both are decided by looking at it.
+    ///
+    /// Nothing about it is checked before the read runs. A parse-time rule would
+    /// have to say which sources can answer with one, and it cannot know:
+    /// `FROM ONLY users WHERE email = $e` is the commonest correct use of the
+    /// clause and carries no bound the parser can see, because the uniqueness it
+    /// rests on lives in the schema and in the data.
+    pub only: Option<Span>,
     /// The routes whose record references are followed before anything else
     /// looks at the record.
     ///
@@ -492,6 +1301,21 @@ pub struct Select {
     /// which is the only ordering that makes the clause useful for the
     /// statements that want it.
     pub fetch: Vec<FieldPath>,
+    /// The route whose array is opened into one record per element, when
+    /// `SPLIT ON` named one.
+    ///
+    /// A route rather than a name, like `OMIT` and `FETCH`, so the array may be
+    /// inside the record: `SPLIT ON address.tags`.
+    ///
+    /// Applied **after** `FETCH` and before everything that groups, projects or
+    /// sorts — after the fetch because a reference resolved once and then opened
+    /// is the same answer as one opened and then resolved n times, and before
+    /// the rest because every one of them counts records and the split is what
+    /// decides how many there are.
+    ///
+    /// One route and not a list. Two would be a cartesian product, which is a
+    /// different question and should have to say so.
+    pub split: Option<FieldPath>,
     /// The keys the records are grouped by, when the read groups.
     ///
     /// Empty means no grouping — which is not the same as no aggregate:
@@ -506,6 +1330,30 @@ pub struct Select {
     pub group: Vec<Expr>,
     /// The keys the answer is sorted by, in order of significance.
     pub order: Vec<Ordering>,
+    /// The record the answer resumes after, when `AFTER` named one.
+    ///
+    /// A cursor: the page begins at the first record that sorts **strictly
+    /// after** this one in the answer's own order. A record identity rather than
+    /// an opaque token because the caller already holds it — the answer carries
+    /// the identity of every record in it — so the clause needs no new return
+    /// channel, no token format, and no version of one.
+    ///
+    /// **It supplies the order it resumes.** With an `ORDER BY` that is the
+    /// order written; with none, it is the store's own key order, which is why a
+    /// cursor read that names no order still answers identity-ascending rather
+    /// than in whatever order the source happened to produce. A cursor without
+    /// an order to resume would be a filter on a sequence nobody promised.
+    ///
+    /// A `START` beside it is refused where the statement is read: an offset and
+    /// a cursor are two answers to the same question, and accepting both would
+    /// make one of them silently lose.
+    ///
+    /// Boxed where every other field of this struct is inline, because a record
+    /// target is one of the larger things the grammar holds and a cursor is
+    /// absent from very nearly every statement ever parsed. Inline it made
+    /// `Select` the outlier variant of [`Statement`] — every statement of every
+    /// kind paying for a clause almost none of them write.
+    pub after: Option<Box<RecordTarget>>,
     /// Whether the caller will accept an approximate ordering.
     ///
     /// **Permission, not a demand.** Every index in this store may change what a
@@ -515,13 +1363,123 @@ pub struct Select {
     /// say this gets the exact scan, and one that does may be served by the
     /// graph if there is one. With no such index it is still exact, which is
     /// better than what was asked for; the reported access path says which.
-    pub approximate: bool,
+    ///
+    /// An `Option` and not a `bool` beside a separate budget field, because the
+    /// budget is meaningless without the permission: an exact scan has nothing to
+    /// spend. Kept as one value so *"an effort with no approximation"* is
+    /// unrepresentable rather than merely unreachable — the same reasoning
+    /// `TableKind` records, and for the same reason, since a `Select` is built by
+    /// the query builder as well as by the parser.
+    pub approximate: Option<Approximation>,
     /// How many records to pass over before answering.
     pub start: Option<u64>,
     /// How many to answer with at most.
     pub limit: Option<u64>,
+    /// What the author expects the read to have done, when they said.
+    ///
+    /// `None` is the ordinary case: the statement asks a question and the store
+    /// answers it however it can.
+    pub using: Option<Using>,
+    /// How long the read may take before it is refused.
+    ///
+    /// `None` is the ordinary case: a read takes as long as it takes.
+    pub timeout: Option<Timeout>,
+    /// The point in the store's history the read answers from.
+    ///
+    /// `None` is the ordinary case: the read answers from the committed tail.
+    pub version: Option<Version>,
     /// Where the statement sits in the source.
     pub span: Span,
+}
+
+/// A point in the store's history a read answers from.
+///
+/// # Why this is a sequence and not a timestamp
+///
+/// Records are versioned by a suffix on their own key, and that suffix is the
+/// log sequence the version was written at. The sequence is the store's only
+/// ordering authority: no log record carries a wall clock, and two commits
+/// within the same millisecond are ordered by sequence and by nothing else.
+///
+/// So a timestamp could not name a point *between* those two commits — it would
+/// be a spelling that looks more precise than the thing it addresses. The clause
+/// names the number the store actually orders by, which is the same number an
+/// answer reports and a caller can hand straight back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Version {
+    /// The sequence to read at.
+    pub at: u64,
+    /// Where the clause sits, for a refusal to point at.
+    pub span: Span,
+}
+
+/// What a caller accepted when they wrote `APPROXIMATE`, and what they will
+/// spend on it.
+///
+/// The budget is the walk's speed-against-recall dial: how many candidates it
+/// keeps in hand before it stops. Larger explores more and costs more, and the
+/// trade belongs to **this read** rather than to the declaration — a caller who
+/// needs a better answer for one query should not have to redeclare the store,
+/// and one who needs a cheaper answer should not degrade everybody else's.
+///
+/// It never reaches the index **build**. The build walks the same graph to choose
+/// a new node's neighbours, so a read's budget leaking into it would let two
+/// replicas replaying one log with different reads interleaved build different
+/// graphs — the determinism this index gave up its hierarchical layer to keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Approximation {
+    /// `APPROXIMATE` — the walk spends the budget the engine was built with.
+    Default,
+    /// `APPROXIMATE EFFORT 200` — the walk keeps this many candidates.
+    ///
+    /// At least one, refused below that where it is written, as `DEPTH n` and
+    /// `vector<n>` are: a walk that may keep no candidates is a search with no
+    /// way to answer.
+    Effort(usize),
+}
+
+/// A ceiling on how long a read may run.
+///
+/// **Refused, never truncated.** A read that reaches its ceiling fails; it does
+/// not answer with the part it had. A partial answer that looks whole is the
+/// failure this store spends its rules removing, and a timeout is the easiest
+/// place in a language to introduce one — the records are already in hand and
+/// returning them costs nothing, which is exactly why it must not be done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timeout {
+    /// The ceiling, as the statement wrote it.
+    pub after: Duration,
+    /// Where the clause sits, for the refusal to point at.
+    pub span: Span,
+}
+
+/// An assertion about how a read was served.
+///
+/// **A refusal, never a router.** It does not choose a path — nothing here
+/// reaches the planner — it fails the statement when the path taken is not the
+/// one named. That turns the worst failure mode an indexed store has, the query
+/// that quietly stops using its index and starts scanning, from a thing you find
+/// out from a latency graph into a thing the statement says out loud.
+///
+/// It is checked against what the read **did**, not against what the planner
+/// chose, and the difference matters: an ordered index that could not fill the
+/// bound sends the read to the scan, and an assertion satisfied by the planner's
+/// intention would pass exactly where the scan it was written to catch happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Using {
+    /// `USING <path>` — the access path the read is expected to report.
+    ///
+    /// Carried as written rather than as a checked variant, because the set of
+    /// path words belongs to the store that reports them and duplicating it in
+    /// the grammar would be a second vocabulary of exactly the kind one plan
+    /// structure exists to remove. An unrecognised word is refused before the
+    /// read runs, naming the ones that exist.
+    Path(Name),
+    /// `USING INDEX <name>` — the index the read is expected to have used.
+    ///
+    /// Stronger than a path word and often what is actually meant: `index` says
+    /// *an* index answered, this says *which*.
+    Index(Name),
 }
 
 /// One sort key, and which way it runs.
@@ -541,14 +1499,56 @@ pub struct Ordering {
 /// Which values a read answers with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Projection {
-    /// `*` — the record as it is stored.
+    /// `*` — the record as it is stored, with nothing added.
+    ///
+    /// Kept apart from the composed form below rather than expressed as one of
+    /// its cases, because it is the read that copies nothing: the records go to
+    /// the answer as they were decoded, and giving it a projection to apply
+    /// would give the commonest read in the language a per-record allocation to
+    /// pay for a list that is empty.
     All,
-    /// A named list, in the order it was written.
+    /// A named list, in the order it was written, and whether the record's own
+    /// fields join them.
     ///
     /// Order is carried even though the answer is a name-ordered object, because
     /// an error naming the second of two colliding projections should point at
-    /// the one the author wrote second.
-    Values(Vec<Projected>),
+    /// the one the author wrote second. It is also why `*` needs no position of
+    /// its own here: the answer is ordered by name whatever order the list was
+    /// written in, so *where* the star stands among the values cannot be
+    /// observed.
+    Values {
+        /// `*` written among the values, if it was.
+        ///
+        /// The span is what a message about a field the record and the list both
+        /// name would point at.
+        everything: Option<Span>,
+        /// The values written out, each with the name it answers under.
+        values: Vec<Projected>,
+    },
+}
+
+impl Projection {
+    /// Whether the record's own fields reach the answer.
+    ///
+    /// The one question two clauses ask of a projection — `OMIT`, which has
+    /// nothing to subtract from without it, and the projection stage, which
+    /// starts from the record rather than from nothing.
+    #[must_use]
+    pub const fn stars(&self) -> bool {
+        match self {
+            Self::All => true,
+            Self::Values { everything, .. } => everything.is_some(),
+        }
+    }
+
+    /// The values written out by name, which is none for a bare `*`.
+    #[must_use]
+    pub fn written(&self) -> &[Projected] {
+        match self {
+            Self::All => &[],
+            Self::Values { values, .. } => values,
+        }
+    }
 }
 
 /// One projected value, and the name it answers under.
@@ -625,6 +1625,20 @@ pub enum Source {
         direction: Direction,
         /// The steps, in order. Never empty.
         hops: Vec<Hop>,
+        /// `DEPTH n` — how many times the single hop repeats.
+        ///
+        /// `None` is a walk written out step by step, which is bounded because
+        /// the steps are written. `Some(n)` is the only construct in the
+        /// language that repeats, and `n` is an integer **literal** for that
+        /// reason: a walk whose length comes from a parameter is a walk whose
+        /// length is not in the statement, and nothing reading the statement
+        /// could tell how far it goes.
+        ///
+        /// Answers with every distinct record reachable in `1..=n` hops. The
+        /// start is marked seen before the first round, so a cycle terminates
+        /// and no record is answered twice — which is what makes `n` bound the
+        /// *work* and not merely the number written down.
+        depth: Option<u64>,
     },
     /// The records a condition holds for.
     ///
@@ -671,9 +1685,13 @@ pub enum Source {
     /// afterwards would change what already-written statements answer.
     Join {
         /// The side that is read and drives.
-        left: TableRef,
+        ///
+        /// Boxed, with the other side, because a side may itself hold a whole
+        /// read: inline they make this variant three times the size of every
+        /// other one, and every [`Source`] anywhere pays for it.
+        left: Box<JoinSide>,
         /// The side that is probed.
-        right: TableRef,
+        right: Box<JoinSide>,
         /// The route into a left record whose value is matched.
         left_key: FieldPath,
         /// The route into a right record it is matched against.
@@ -684,6 +1702,83 @@ pub enum Source {
         /// like everything else does.
         condition: Option<Box<Expr>>,
     },
+    /// A read whose answer is what the outer statement reads.
+    ///
+    /// The answer is the inner records themselves — not wrapped, not renamed —
+    /// so an outer `WHERE`, `ORDER BY` and projection read them exactly as they
+    /// would read the table. That is what makes one engine's answer the next
+    /// question's source without a shape to learn.
+    ///
+    /// # It states its own ceiling
+    ///
+    /// The inner read is **materialised**: unlike a table, there is no index to
+    /// walk and no bound to push down, so every record it answers with is held
+    /// at once. A source that could grow without limit is therefore refused
+    /// without a `LIMIT`, rather than truncated at a number nobody wrote — a
+    /// silently truncated source answers a different question from the one that
+    /// was asked, and looks exactly like a complete one.
+    ///
+    /// # It is also the only place some reads can be filtered
+    ///
+    /// `WHERE` belongs to the table position — `FROM t WHERE c` — so a
+    /// traversal and a grouped read have nowhere to put one. Wrapping either in
+    /// a materialised read gives it one, which is why the condition lives here
+    /// rather than only inside. It is also where a condition over a *projected*
+    /// name goes: `SELECT city, count(*) AS n … GROUP BY city` produces `n`, and
+    /// nothing inside that read can ask about it.
+    Subquery {
+        /// The read whose answer this source is.
+        read: Box<Select>,
+        /// What each of its records must satisfy, when a `WHERE` was written.
+        condition: Option<Box<Expr>>,
+    },
+}
+
+/// One side of a join — what it reads, and the name the row files it under.
+///
+/// The name is not decoration. A row is `{ <left>: …, <right>: … }`, so the two
+/// sides need two names, and `ON`, `WHERE`, `ORDER BY` and the projection are
+/// all routes through them. A table brings its own name and may be given
+/// another; a read brings none, which is why the two cases are different
+/// variants rather than one variant with an optional name that is sometimes
+/// required.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JoinSide {
+    /// A table, under its own name unless `AS` gave it another.
+    ///
+    /// An alias is what makes a self-join sayable: `users AS a JOIN users AS b`
+    /// files two records of one table under two names, where `users JOIN users`
+    /// has one name for both and no row a reader could address.
+    Table {
+        /// The table read.
+        table: TableRef,
+        /// The name `AS` gave it, when one was written.
+        alias: Option<Name>,
+    },
+    /// A read, materialised and then joined, under the name `AS` gave it.
+    ///
+    /// The name is **mandatory** and typed as such: a read has no name of its
+    /// own, and a side with no name has no place in the row.
+    Read {
+        /// The read whose answer this side joins.
+        read: Box<Select>,
+        /// The name the row files it under.
+        alias: Name,
+    },
+}
+
+impl JoinSide {
+    /// The name this side answers under in the row.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Table {
+                alias: Some(alias), ..
+            }
+            | Self::Read { alias, .. } => &alias.text,
+            Self::Table { table, alias: None } => &table.name.text,
+        }
+    }
 }
 
 /// An operator producing a number from two numbers.
@@ -903,6 +1998,35 @@ pub enum ExprKind {
         /// The right operand.
         right: Box<Expr>,
     },
+    /// `IF <test> THEN <a> ELSE <b> END` — a value that depends on a test.
+    ///
+    /// An expression rather than a statement, deliberately: what was missing was
+    /// not control flow but the ability to *compute* a value conditionally — in
+    /// a projection, an assignment, a filter, an ordering. A statement form
+    /// would have served none of those positions.
+    ///
+    /// Without an `ELSE` the answer is `NONE`, which is what a path into a field
+    /// the record does not have already answers — so the two absences compose
+    /// rather than needing a rule apiece.
+    If {
+        /// The test, which must answer with a boolean.
+        condition: Box<Expr>,
+        /// The value when it holds.
+        then: Box<Expr>,
+        /// The value when it does not; absent means `NONE`.
+        otherwise: Option<Box<Expr>>,
+    },
+    /// `a ?? b` — the left value unless it holds nothing.
+    ///
+    /// "Holds nothing" is `NONE` **or** `NULL`, and this is the one place the
+    /// language treats the two alike. It is the right place: the question `??`
+    /// asks is *"is there a value here for me to use"*, and the answer is no in
+    /// both cases. Everywhere else keeps them apart, which is why `= NONE` and
+    /// `= NULL` remain different questions.
+    ///
+    /// The right side is evaluated **only** when the left holds nothing, so
+    /// `cached ?? (SELECT …)` does not pay for a read it does not need.
+    Coalesce(Box<Expr>, Box<Expr>),
     /// A table named in a value position.
     Table(TableRef),
     /// A record named in a value position: `users:1`.
@@ -997,11 +2121,71 @@ pub enum Aggregate {
     Min,
     /// `max(<expr>)`, in the same order.
     Max,
+    /// `variance(<expr>)` — the **sample** variance, dividing by `n − 1`.
+    ///
+    /// Sample rather than population because a table's rows are usually a
+    /// sample of something, which is why the SQL standard's bare `VARIANCE` is
+    /// `VAR_SAMP` and why Postgres spells it the same way. The population form
+    /// is not a second name because the language can already say it:
+    /// `variance(x) * (count(x) - 1) / count(x)`.
+    ///
+    /// Over fewer than two numbers, `NONE` — `n − 1` is zero there, and the
+    /// spread of one value is not zero, it is unasked.
+    Variance,
+    /// `stddev(<expr>)` — the square root of [`Self::Variance`], and sample for
+    /// the same reason.
+    Stddev,
+    /// `median(<expr>)` — the middle number, or the mean of the two middles.
+    ///
+    /// Numeric like `mean`, and refusing anything else for the same reason. An
+    /// even count answers the mean of the two middles, which is a value that
+    /// was never in the data — acceptable only because the fold is numeric; the
+    /// same rule over a `datetime` or a `uuid` column would have to construct a
+    /// value of a kind that has no arithmetic.
+    Median,
+    /// `collect(<expr>)` — every present value, in the order the records arrived.
+    ///
+    /// Over nothing, `[]` and not `NONE`, by `sum`'s rule: an answer every
+    /// caller has to write `?? []` after is the wrong answer.
+    Collect,
+}
+
+/// How much a fold holds while its group is still arriving.
+///
+/// The question exists because two answers to it are not interchangeable, and
+/// the difference is invisible in the fold's *signature*: every fold takes many
+/// values and answers one. What separates them is whether the one answer can be
+/// computed as the values go past.
+///
+/// It is a property of the fold and not a rule about aggregation, for the same
+/// reason [`crate::Purity`] is a property of the function: a single rule would
+/// get one of them wrong in silence. `count`, `sum`, `mean`, `min`, `max`,
+/// `variance` and `stddev` all reduce one value at a time — Welford's algorithm
+/// carries `(count, mean, M2)` and is three numbers however long the group is.
+/// `collect` and `median` cannot: `collect`'s answer **is** the collection, and
+/// an exact median has to see every value before it knows which one is the
+/// middle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retention {
+    /// The answer is reducible one value at a time, in space that does not grow.
+    Constant,
+    /// The answer is a function of the whole group, so the whole group is held.
+    WholeGroup,
 }
 
 impl Aggregate {
     /// Every fold, so a listing cannot drift from the set.
-    pub const ALL: &'static [Self] = &[Self::Count, Self::Sum, Self::Mean, Self::Min, Self::Max];
+    pub const ALL: &'static [Self] = &[
+        Self::Count,
+        Self::Sum,
+        Self::Mean,
+        Self::Min,
+        Self::Max,
+        Self::Variance,
+        Self::Stddev,
+        Self::Median,
+        Self::Collect,
+    ];
 
     /// How the fold is written.
     #[must_use]
@@ -1012,6 +2196,30 @@ impl Aggregate {
             Self::Mean => "mean",
             Self::Min => "min",
             Self::Max => "max",
+            Self::Variance => "variance",
+            Self::Stddev => "stddev",
+            Self::Median => "median",
+            Self::Collect => "collect",
+        }
+    }
+
+    /// What this fold holds while its group arrives.
+    ///
+    /// Read by the executor's memory ceiling, which used to exempt every folding
+    /// read by name on the grounds that *"its answer does not grow with the
+    /// table"*. That was true of every fold the language had; it is false of
+    /// `collect`, whose answer is the table (Q-227).
+    #[must_use]
+    pub const fn retention(self) -> Retention {
+        match self {
+            Self::Count
+            | Self::Sum
+            | Self::Mean
+            | Self::Min
+            | Self::Max
+            | Self::Variance
+            | Self::Stddev => Retention::Constant,
+            Self::Median | Self::Collect => Retention::WholeGroup,
         }
     }
 
@@ -1062,6 +2270,169 @@ pub struct Name {
     pub span: Span,
 }
 
+/// A password as written, which prints as `<redacted>` and nothing else.
+///
+/// [`render`](crate::render) refuses to turn `DEFINE USER` back into text, so
+/// that a credential cannot be recovered from a statement the store is holding.
+/// A `String` field inside a derived `Debug` gives it back in one
+/// interpolation, and the line that does it is always somewhere else and
+/// written later — the same reasoning `tessari-wire` writes out over its own
+/// hand-written `Debug` for a request.
+///
+/// The plaintext is reachable only through [`Password::expose`], so every place
+/// that reads it is a place somebody chose to write that name.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Password(String);
+
+impl Password {
+    /// Hold a password the parser has just read.
+    #[must_use]
+    pub const fn new(text: String) -> Self {
+        Self(text)
+    }
+
+    /// The plaintext, for the one caller that hashes it.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Password {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl std::fmt::Display for Password {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+/// The one field an [`AlterUser`](StatementKind::AlterUser) statement changes.
+///
+/// One per statement rather than a record of optional fields, because the
+/// difference matters at the point of writing: a struct of `Option`s makes
+/// "leave the password alone" and "set the password to nothing" the same shape,
+/// and the executor then has to be trusted to tell them apart. Here the
+/// statement carries only what it came to change, and nothing else can be
+/// touched by accident.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserChange {
+    /// `SET PASSWORD '…'` — a new credential, hashed before it is stored.
+    Password(Password),
+    /// `SET ROLE editor` — what the user may do, within the tenancy they
+    /// already hold. The tenancy itself does not move.
+    Role(Name),
+}
+
+/// One field declared inside a table's parentheses.
+///
+/// Every field of [`DefineField`](StatementKind::DefineField) except the table,
+/// which the surrounding statement names, and `if_not_exists`, which the
+/// surrounding statement holds for the whole declaration. The two spellings are
+/// therefore the same declaration written two ways, and the executor desugars
+/// this one into the other rather than reimplementing what a field means —
+/// which is what keeps a constraint declared here checking the rows already
+/// there, exactly as the long spelling does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnDeclaration {
+    /// The field's name, unique within its table.
+    pub name: Name,
+    /// What the field is allowed to hold.
+    ///
+    /// Positional rather than introduced by `TYPE`: nothing but a type can
+    /// stand after a column name, and the word would be noise in a list whose
+    /// whole purpose is to be read down a page.
+    pub kind: FieldKind,
+    /// Whether the field must hold a value: present, and not `null`.
+    pub required: bool,
+    /// What a write supplying no value uses instead.
+    pub default: Option<Written>,
+    /// The analyzer this field's text becomes terms by, when it has one.
+    pub analyzer: Option<Name>,
+    /// What the value must satisfy, beyond its type.
+    pub assert: Option<Assertion>,
+}
+
+/// The order an edge table holds a node's edges in: `ORDER BY at DESC`.
+///
+/// A single field name and a direction, and deliberately not an [`Ordering`],
+/// which carries an expression because a `SELECT` sorts an answer it already
+/// has. This one is not a sort at all — it becomes the **suffix of the endpoint
+/// index's key**, so the edges arrive in this order because that is where they
+/// are written, and a bounded read of the first few is an adjacent-key read
+/// rather than a scan that throws most of its work away.
+///
+/// That is also why it is a field and not an expression: a key suffix has to be
+/// derivable from the record by the writer, at write time, identically on every
+/// replica. An expression would have to be evaluated to place a row, and any
+/// change to it would silently mean the stored keys no longer match the
+/// declaration they were written under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgeOrdering {
+    /// The edge property the order reads.
+    pub field: Name,
+    /// Whether the newest, or largest, comes first.
+    pub descending: bool,
+}
+
+/// What `EDGE` said, on the statement that declared the table.
+///
+/// Three states rather than a `bool` beside an `Option<pair>`, for the reason
+/// the catalog's table kind replaced three flags: the pair only means anything
+/// on an edge table, and a field beside a flag would make "declares a pair but
+/// is not an edge table" a thing a parser could hand downstream. Absent —
+/// `None` on the statement — is a table that holds records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EdgeClause {
+    /// `EDGE`: a link between any two records is accepted.
+    ///
+    /// The permissive spelling stays, because a store that discovers its shape
+    /// as it goes still has a word for that, and because every edge table
+    /// declared before the clause existed is one of these (Q-297).
+    Any,
+    /// `EDGE FROM users TO users ORDER BY at DESC`: a link whose endpoints the
+    /// table does not declare is refused.
+    ///
+    /// That refusal is the whole of what the clause buys — the difference in
+    /// what a caller may **do** that earns it a place in the grammar.
+    ///
+    /// Boxed because the pair is several times the size of the other variant and
+    /// this enum is carried by every `DEFINE TABLE`, edge table or not.
+    Between(Box<EdgeEndpoints>),
+}
+
+/// The pair an `EDGE FROM … TO …` declared, and the order it holds them in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgeEndpoints {
+    /// The table an edge leads out of.
+    pub from: TableRef,
+    /// The table an edge leads into.
+    pub to: TableRef,
+    /// The order a node's edges are held in, when the statement gives one.
+    pub order: Option<EdgeOrdering>,
+}
+
+/// The one thing an [`AlterTable`](StatementKind::AlterTable) statement changes.
+///
+/// One variant rather than a bool, for the reason [`UserChange`] is an enum:
+/// `SET SCHEMAFULL` and `SET SCHEMALESS` are two statements a reader writes,
+/// and a `schemafull: bool` field would make a third shape — *change nothing* —
+/// expressible in a statement that exists only to change something.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableChange {
+    /// `SET SCHEMAFULL` — from the commit onwards the declared fields are the
+    /// whole story. Records written before it are not revisited.
+    Schemafull,
+    /// `SET SCHEMALESS` — a record may carry a field nobody declared.
+    ///
+    /// Never refused: it only widens what is admissible, so no stored row can
+    /// contradict it.
+    Schemaless,
+}
+
 /// Which endpoint of an edge a traversal starts from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -1105,6 +2476,42 @@ pub struct TableRef {
     pub span: Span,
 }
 
+/// How far an authority goes, as the statement wrote it.
+///
+/// Every spelling is led by a keyword — `STORE`, `NAMESPACE`, `DATABASE` — so
+/// that no table name can be read as a reach. The exception is the bare
+/// `<namespace>.<database>` that `DEFINE USER … ON prod.orders` has always
+/// accepted, which is kept meaning what it has always meant.
+///
+/// Ids are absent here because a reach is written with names and stored with
+/// ids, and the resolution needs a transaction this tree does not have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReachRef {
+    /// `STORE` — every namespace, and the store-level surface above them.
+    Store,
+    /// `NAMESPACE prod` — one namespace and every database in it.
+    Namespace(Name),
+    /// `DATABASE prod.orders`, or the bare `prod.orders` — one database.
+    Database(TableRef),
+}
+
+/// What a `DEFINE USER` says the user may do.
+///
+/// Two spellings of one thing: a role is a *name for a set*, and the set is
+/// what the store keeps. Both are kept because dropping the role would make
+/// every existing statement and every existing record wrong to gain nothing —
+/// three names cover the common cases, and the set covers the rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserGrant {
+    /// `ROLE editor` — the bundle that name stands for.
+    Role(Name),
+    /// `AUTHORITIES manage, read` — the set, said directly.
+    ///
+    /// This is what makes the rule a role could not express sayable: a holder
+    /// of `manage` at a namespace who holds neither `read` nor `write` there.
+    Authorities(Vec<Name>),
+}
+
 /// One record, by table and identity: `users:1`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordTarget {
@@ -1114,4 +2521,95 @@ pub struct RecordTarget {
     pub id: Identity,
     /// Where the whole reference sits.
     pub span: Span,
+}
+
+/// Who names the record a `CREATE` writes.
+///
+/// The verb carries the meaning and the identity's **absence** is the whole
+/// signal: `CREATE users = { … }` says the caller has a record and no name for
+/// it, and `CREATE users:1 = { … }` says they have both. Nothing else in the
+/// statement changes, which is why this is a target rather than a second verb.
+///
+/// # Why this is not a third [`Identity`] variant
+///
+/// `Identity` stands in `UPDATE`, `UPSERT`, `DELETE`, `GET`, `PUT`, `RELATE`
+/// and every graph reference, and in every one of them the caller is pointing
+/// at a record that already exists. *Generated* has no reading there. A variant
+/// added to `Identity` would be representable in seven statements to serve one,
+/// and [`Identity::fixed`] would have to invent an error for a case its own
+/// grammar can never produce. Keeping the choice here means the type says which
+/// statements can be written without a name — and the compiler enforces it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateTarget {
+    /// `CREATE users:1 = { … }` — the caller names the record.
+    Named(RecordTarget),
+    /// `CREATE users = { … }` — the store names it, under the scheme the table
+    /// was declared with.
+    Generated(TableRef),
+}
+
+impl CreateTarget {
+    /// The table the record is written to, either way.
+    #[must_use]
+    pub const fn table(&self) -> &TableRef {
+        match self {
+            Self::Named(target) => &target.table,
+            Self::Generated(table) => table,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Aggregate, Retention};
+
+    /// The whole membership of [`Retention::WholeGroup`], asserted as a set.
+    ///
+    /// The same guard `Purity`'s membership tests give, for the same reason and
+    /// against a sharper failure. `retention` forces a new fold to be
+    /// *classified*, but the classification is a claim about what the fold costs
+    /// and the two can be written apart. Both directions are wrong and only one
+    /// is loud: a constant-space fold listed here is merely refused a memory
+    /// exemption it deserved, while a whole-group fold left out keeps the
+    /// exemption that says *"its answer does not grow with the table"* — and
+    /// then `SELECT collect(x) FROM huge` is exactly the unbounded read the
+    /// ceiling exists to refuse, waved through by name (Q-227).
+    ///
+    /// Adding a member is therefore allowed and cheap; the test exists so that
+    /// **failing to** add one cannot happen quietly.
+    #[test]
+    fn the_folds_that_hold_their_whole_group_are_exactly_the_two_that_must() {
+        let holding: Vec<&str> = Aggregate::ALL
+            .iter()
+            .filter(|fold| fold.retention() == Retention::WholeGroup)
+            .map(|fold| fold.spelling())
+            .collect();
+        assert_eq!(holding, ["median", "collect"]);
+    }
+
+    /// Every fold is in `ALL`, and every spelling parses back to itself.
+    ///
+    /// `ALL` is what the parser reads to recognise a fold at all, so a variant
+    /// missing from it is a fold nobody can write — and no other test would
+    /// notice, because the grammar simply treats the word as a field name.
+    #[test]
+    fn every_fold_is_listed_and_every_spelling_names_it_back() {
+        for fold in Aggregate::ALL {
+            assert_eq!(
+                Aggregate::parse(fold.spelling()),
+                Some(*fold),
+                "{} did not parse back to itself",
+                fold.spelling()
+            );
+        }
+        let spellings: Vec<&str> = Aggregate::ALL.iter().map(|fold| fold.spelling()).collect();
+        let mut sorted = spellings.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            spellings.len(),
+            "two folds share a spelling: {spellings:?}"
+        );
+    }
 }

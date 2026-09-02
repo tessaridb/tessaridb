@@ -11,12 +11,13 @@
 //! not silently rounded, clamped or reinterpreted, because every one of those
 //! produces a stored value the author did not write.
 
+use core::fmt::Write as _;
+
+use crate::calendar::{
+    SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, days_from_civil, days_in_month,
+};
 use crate::time::Datetime;
 
-/// Seconds in the units the wall-clock fields carry.
-const SECONDS_PER_MINUTE: i64 = 60;
-const SECONDS_PER_HOUR: i64 = 3_600;
-const SECONDS_PER_DAY: i64 = 86_400;
 /// The most sub-second digits the type can hold.
 const NANOS_DIGITS: usize = 9;
 
@@ -115,6 +116,58 @@ pub fn parse_uuid(text: &str) -> Option<[u8; 16]> {
     Some(bytes)
 }
 
+/// Write sixteen bytes in a UUID's canonical `8-4-4-4-12` text form.
+///
+/// The inverse of [`parse_uuid`], and it lives beside it for the reason this
+/// module's header gives for the readers: two writers for one literal disagree
+/// eventually.
+///
+/// `Value`'s `Display` writes `uuid:` and thirty-two undivided digits, and that
+/// is a *rendering* — tagged so a reader of a log cannot mistake it for a
+/// string, and never read back. This is the form a person writes and every
+/// other system reads, so it is the one a cast to text produces: that text is a
+/// value, and a value gets stored, sent, and read again.
+#[must_use]
+pub fn uuid_to_text(bytes: &[u8; 16]) -> String {
+    let mut text = String::with_capacity(36);
+    for (index, byte) in bytes.iter().enumerate() {
+        if matches!(index, 4 | 6 | 8 | 10) {
+            text.push('-');
+        }
+        // Two digits together, so a byte below sixteen keeps its leading zero —
+        // the difference between a UUID and a shorter string that looks like
+        // one. Writing into a `String` has no failure to handle.
+        let _infallible = write!(text, "{byte:02x}");
+    }
+    text
+}
+
+/// Write text as the language's single-quoted string literal.
+///
+/// Beside [`uuid_to_text`] for the reason that one gives: two writers for one
+/// literal disagree eventually. This one had two candidates and one writer — the
+/// console renders values in TessariQL and had the only escaper, privately,
+/// while the record-id spelling needs the same one and cannot reach into a
+/// binary crate. The choice was to write a second or to move this; a second
+/// escaper differs on the first character somebody forgets.
+#[must_use]
+pub fn string_to_literal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len().saturating_add(2));
+    out.push('\'');
+    for character in text.chars() {
+        match character {
+            '\'' => out.push_str("\\'"),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            other => out.push(other),
+        }
+    }
+    out.push('\'');
+    out
+}
+
 /// The sub-second digits, and whatever follows them.
 fn fraction(tail: &str) -> Option<(u32, &str)> {
     let Some(rest) = tail.strip_prefix('.') else {
@@ -160,46 +213,6 @@ fn offset_seconds(zone: &str) -> Option<i64> {
         .checked_mul(SECONDS_PER_HOUR)?
         .checked_add(minutes.checked_mul(SECONDS_PER_MINUTE)?)?
         .checked_mul(sign)
-}
-
-/// Days between the Unix epoch and a civil date, by Howard Hinnant's algorithm.
-///
-/// The era arithmetic is what makes the leap-year rule fall out instead of
-/// being special-cased: four hundred years hold exactly 146,097 days.
-fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
-    let year = if month <= 2 {
-        year.checked_sub(1)?
-    } else {
-        year
-    };
-    let era = year.div_euclid(400);
-    let year_of_era = year.rem_euclid(400);
-    let shift = if month > 2 { -3 } else { 9 };
-    let day_of_year = 153_i64
-        .checked_mul(month.checked_add(shift)?)?
-        .checked_add(2)?
-        .div_euclid(5)
-        .checked_add(day.checked_sub(1)?)?;
-    let day_of_era = year_of_era
-        .checked_mul(365)?
-        .checked_add(year_of_era.div_euclid(4))?
-        .checked_sub(year_of_era.div_euclid(100))?
-        .checked_add(day_of_year)?;
-    era.checked_mul(146_097)?
-        .checked_add(day_of_era)?
-        .checked_sub(719_468)
-}
-
-/// How many days the month holds, leap years included.
-fn days_in_month(year: i64, month: i64) -> Option<i64> {
-    let leap = year.rem_euclid(4) == 0 && (year.rem_euclid(100) != 0 || year.rem_euclid(400) == 0);
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => Some(31),
-        4 | 6 | 9 | 11 => Some(30),
-        2 if leap => Some(29),
-        2 => Some(28),
-        _ => None,
-    }
 }
 
 /// A run of ASCII digits as a number, or nothing.
@@ -333,6 +346,41 @@ mod tests {
     }
 
     #[test]
+    fn a_uuid_round_trips_through_its_canonical_text() {
+        // The property the reader and the writer share, asserted in both
+        // directions — the same one the instant has above, and for the same
+        // reason: a writer that was never checked against the reader is how a
+        // value comes back as something else.
+        for bytes in [
+            [0_u8; 16],
+            [0xff; 16],
+            [
+                0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44,
+                0x00, 0x00,
+            ],
+            // A leading zero in the first byte, which a writer that formats
+            // without a width silently drops.
+            [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+                0x0f, 0x00,
+            ],
+        ] {
+            let text = uuid_to_text(&bytes);
+            assert_eq!(text.len(), 36, "{text}");
+            assert_eq!(parse_uuid(&text), Some(bytes), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_canonical_form_is_the_one_everybody_writes() {
+        let bytes = [
+            0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44,
+            0x00, 0x00,
+        ];
+        assert_eq!(uuid_to_text(&bytes), "550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
     fn text_that_is_not_a_uuid_is_refused() {
         for bad in [
             "",
@@ -363,15 +411,12 @@ impl Datetime {
     /// whole second reads the way anybody writes one.
     #[must_use]
     pub fn to_rfc3339(self) -> String {
-        let seconds = self.seconds();
-        let days = seconds.div_euclid(SECONDS_PER_DAY);
-        let within = seconds.rem_euclid(SECONDS_PER_DAY);
-        let (year, month, day) = civil_from_days(days);
-        let hour = within.div_euclid(SECONDS_PER_HOUR);
-        let minute = within
-            .rem_euclid(SECONDS_PER_HOUR)
-            .div_euclid(SECONDS_PER_MINUTE);
-        let second = within.rem_euclid(SECONDS_PER_MINUTE);
+        // The date is read by `crate::calendar`, not derived here. A second copy
+        // of the era arithmetic beside the first is how a writer comes to
+        // disagree with its own reader on one day in four hundred years.
+        let civil = self.civil();
+        let (year, month, day) = (civil.year, civil.month, civil.day);
+        let (hour, minute, second) = (civil.hour, civil.minute, civil.second);
         let mut text = format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}");
         if self.nanos() > 0 {
             // Trailing zeros trimmed: `.5` and `.500000000` name one instant,
@@ -397,9 +442,26 @@ impl crate::time::Duration {
     pub fn to_literal(self) -> String {
         // The magnitude is written and the sign prefixed, so the units below do
         // not each have to know about it.
+        //
+        // Below zero the two fields are a FLOOR pair — negative seconds with a
+        // POSITIVE remainder added to them — so -500ms is (-1, 500_000_000) and
+        // its magnitude is one second less than the seconds', with the
+        // remainder taken the other way round. Reading the fields
+        // independently spells `-1s500ms` for that span, which is a different
+        // duration and loses another second every time it is read back.
         let negative = self.seconds() < 0;
-        let mut whole = self.seconds().unsigned_abs();
-        let nanos = self.nanos();
+        let (mut whole, nanos) = if negative && self.nanos() > 0 {
+            // Neither of these can saturate, and both are written that way
+            // rather than bare: the branch requires seconds below zero, so the
+            // magnitude is at least one, and the remainder is below a second by
+            // the type's own construction rule.
+            (
+                self.seconds().unsigned_abs().saturating_sub(1),
+                1_000_000_000_u32.saturating_sub(self.nanos()),
+            )
+        } else {
+            (self.seconds().unsigned_abs(), self.nanos())
+        };
         let mut text = String::new();
         if negative {
             text.push('-');
@@ -431,48 +493,6 @@ impl crate::time::Duration {
         }
         text
     }
-}
-
-/// The civil date a day count names, inverse of [`days_from_civil`].
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let shifted = days.saturating_add(719_468);
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted.rem_euclid(146_097);
-    let year_of_era = day_of_era
-        .saturating_sub(day_of_era.div_euclid(1_460))
-        .saturating_add(day_of_era.div_euclid(36_524))
-        .saturating_sub(day_of_era.div_euclid(146_096))
-        .div_euclid(365);
-    let year = year_of_era.saturating_add(era.saturating_mul(400));
-    let day_of_year = day_of_era.saturating_sub(
-        year_of_era
-            .saturating_mul(365)
-            .saturating_add(year_of_era.div_euclid(4))
-            .saturating_sub(year_of_era.div_euclid(100)),
-    );
-    let shifted_month = day_of_year
-        .saturating_mul(5)
-        .saturating_add(2)
-        .div_euclid(153);
-    let day = day_of_year
-        .saturating_sub(
-            153_i64
-                .saturating_mul(shifted_month)
-                .saturating_add(2)
-                .div_euclid(5),
-        )
-        .saturating_add(1);
-    let month = if shifted_month < 10 {
-        shifted_month.saturating_add(3)
-    } else {
-        shifted_month.saturating_sub(9)
-    };
-    let year = if month <= 2 {
-        year.saturating_add(1)
-    } else {
-        year
-    };
-    (year, month, day)
 }
 
 #[cfg(test)]
@@ -541,6 +561,32 @@ mod writing {
             (0, 1, "1ns"),
             (0, 1_500, "1us500ns"),
             (61, 250_000_000, "1m1s250ms"),
+        ];
+        for (seconds, nanos, expected) in cases {
+            let held = Duration::new(*seconds, *nanos).expect("a duration");
+            assert_eq!(held.to_literal(), *expected, "{seconds}s {nanos}ns");
+        }
+    }
+
+    #[test]
+    fn a_negative_span_is_written_as_its_own_magnitude() {
+        // A negative span is a FLOOR pair: the seconds are below zero and the
+        // remainder is a positive addend, so -500ms is (-1, 500_000_000) and
+        // its magnitude is one second LESS than the seconds' magnitude, with
+        // the remainder counted the other way round.
+        //
+        // Writing the two fields independently — `-`, then |seconds|, then the
+        // remainder — spells a different span, and the table above never caught
+        // it because its only negative rows carry no remainder, where the floor
+        // pair and the magnitude pair happen to agree.
+        let cases: &[(i64, u32, &str)] = &[
+            (-1, 500_000_000, "-500ms"),   // -0.5s
+            (-1, 999_999_999, "-1ns"),     // the smallest span below zero
+            (-1, 1, "-999ms999us999ns"),   // the carry reaches every unit
+            (-3, 500_000_000, "-2s500ms"), // -2.5s
+            (-5_401, 500_000_000, "-1h30m500ms"),
+            (-1, 0, "-1s"), // no remainder: unchanged, and still correct
+            (-3_600, 0, "-1h"),
         ];
         for (seconds, nanos, expected) in cases {
             let held = Duration::new(*seconds, *nanos).expect("a duration");

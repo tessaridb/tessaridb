@@ -58,7 +58,7 @@ pub use crate::client::{Client, Feed};
 pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]
 pub use crate::message::names_for;
-pub use crate::message::{Answer, Names, Request, spell};
+pub use crate::message::{Answer, Names, Remark, Request, spell};
 #[cfg(feature = "server")]
 pub use crate::node::Node;
 pub use crate::push::{Became, Follow, Happened};

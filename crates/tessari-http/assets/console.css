@@ -1,182 +1,583 @@
-/* Hand-written, no framework, no build step, and no web font: a font pulled
-   from a foundry is an outbound request, and this page is meant to work with no
-   route out at all. The stack below is what the operating system already has. */
+/*
+ * The console, in the same clothes as the rest of the project.
+ *
+ * Three token tiers, in this order and never skipped:
+ *
+ *   1. PRIMITIVE  raw values with no meaning attached. Nothing outside this
+ *                 block writes a colour literal.
+ *   2. SEMANTIC   roles. Everything below reads these and only these, so a
+ *                 re-theme is an edit to one block rather than a sweep.
+ *   3. COMPONENT  the few places something needs a value of its own.
+ *
+ * The violet is inherited rather than invented: oklch(0.647 0.137 289) is the
+ * colour the two squares of the mark are drawn in, and it is the same violet the
+ * product site and the documentation use. Two different violets across one
+ * product would read as two products.
+ *
+ * The neutrals are one hue (286), so the greys are never dead and never tinted
+ * enough to read as a second colour.
+ *
+ * No web font, no CDN, no framework. This page is meant to work on a machine
+ * with no route out at all, and one remote reference would quietly take that
+ * away — which is the whole reason the console is in the binary (ADR-0017).
+ */
+
+/* ─────────────────────────────────────────────────────────── 1. PRIMITIVE ── */
 
 :root {
-  --ink: #1c1f24;
-  --paper: #fbfbf9;
-  --line: #d9d6cf;
-  --quiet: #6a6f77;
-  --accent: #2f5d50;
-  --wrong: #8c2f2f;
-  --written: #2f5d50;
-  --removed: #8c2f2f;
+  --violet-500: oklch(0.647 0.137 289);
+  --violet-400: oklch(0.72 0.145 289);
+  --violet-300: oklch(0.8 0.11 289);
+  --violet-a12: oklch(0.647 0.137 289 / 0.12);
+  --violet-a20: oklch(0.647 0.137 289 / 0.2);
+  --violet-a40: oklch(0.647 0.137 289 / 0.4);
+
+  --n-1000: oklch(0.13 0.009 286);
+  --n-950: oklch(0.16 0.011 286);
+  --n-900: oklch(0.18 0.013 286);
+  --n-850: oklch(0.2 0.015 286);
+  --n-800: oklch(0.24 0.016 286);
+  --n-700: oklch(0.28 0.018 286);
+  --n-450: oklch(0.62 0.02 286);
+  --n-400: oklch(0.7 0.018 286);
+  --n-200: oklch(0.93 0.01 286);
+  --n-100: oklch(0.97 0.006 286);
+
+  /* Two signal hues only; a third would be a palette breach. */
+  --green-400: oklch(0.76 0.14 155);
+  --amber-400: oklch(0.79 0.13 75);
+  --red-400: oklch(0.7 0.17 25);
+
+  --s-1: 0.25rem;
+  --s-2: 0.5rem;
+  --s-3: 0.75rem;
+  --s-4: 1rem;
+  --s-5: 1.5rem;
+  --s-6: 2rem;
+
+  --t-12: 0.75rem;
+  --t-13: 0.8125rem;
+  --t-14: 0.875rem;
+  --t-15: 0.9375rem;
+  --t-18: 1.125rem;
+
+  /* ──────────────────────────────────────────────────────── 2. SEMANTIC ── */
+
+  --surface: var(--n-1000);
+  --surface-raised: var(--n-950);
+  --surface-sunken: var(--n-900);
+  --line: var(--n-800);
+  --line-strong: var(--n-700);
+
+  --text: var(--n-100);
+  --text-muted: var(--n-400);
+  /* The 450 step and not the 500: faint text is still text, and WCAG 2.2 AA
+     asks 4.5:1 under 24px. Table headers and captions are faint, and none of
+     them is decoration. */
+  --text-faint: var(--n-450);
+
+  --accent: var(--violet-400);
+  --accent-strong: var(--violet-500);
+  --accent-text: var(--violet-300);
+  --accent-wash: var(--violet-a12);
+  --accent-edge: var(--violet-a40);
+
+  --ok: var(--green-400);
+  --warn: var(--amber-400);
+  --bad: var(--red-400);
+
+  --sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  --mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  /* ─────────────────────────────────────────────────────── 3. COMPONENT ── */
+
+  --bar-height: 3.25rem;
+  --radius: 6px;
+  --radius-small: 4px;
+
+  /* The chevron a `<select>` draws for itself, drawn by us instead — inline, so
+     it is still a page that needs nothing from the network. `%23` is a `#`: a
+     bare one would start the fragment of the data URI. */
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%238f8aa3' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ink: #e6e6e3;
-    --paper: #16181b;
-    --line: #33373d;
-    --quiet: #9aa0a8;
-    --accent: #7fbfab;
-    --wrong: #e08585;
-    --written: #7fbfab;
-    --removed: #e08585;
-  }
+/* One line, and it does more for the dark panel than any rule below: it tells
+   the browser this page is dark, so the parts it draws itself — the dropdown a
+   `<select>` opens, the scrollbars, the number spinners, the focus rings — stop
+   arriving white. */
+:root {
+  color-scheme: dark;
 }
 
-* {
+/* ───────────────────────────────────────────────────────────────── base ── */
+
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
 body {
-  margin: 0 auto;
-  padding: 2rem 1.25rem 4rem;
-  max-width: 56rem;
-  background: var(--paper);
-  color: var(--ink);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  line-height: 1.5;
-}
-
-header {
-  display: flex;
-  align-items: baseline;
-  gap: 0.75rem;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 0.75rem;
-}
-
-h1 {
   margin: 0;
-  font-size: 1.5rem;
-  letter-spacing: -0.01em;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: var(--t-14);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
+h1,
 h2 {
-  margin: 2rem 0 0.5rem;
-  font-size: 1.05rem;
+  margin: 0;
   font-weight: 600;
 }
 
-#where,
-.note,
-.status {
-  margin: 0;
-  color: var(--quiet);
-  font-size: 0.85rem;
+h1 {
+  font-size: var(--t-15);
+  letter-spacing: 0.01em;
 }
 
-.plain {
-  margin: 1rem 0 0;
-  padding: 0.75rem 0.9rem;
-  border-left: 3px solid var(--line);
-  color: var(--quiet);
-  font-size: 0.85rem;
+h2 {
+  font-size: var(--t-13);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--accent-text);
+}
+
+.faint {
+  color: var(--text-faint);
+  font-size: var(--t-12);
+  margin: 0;
+}
+
+.note {
+  color: var(--text-muted);
+  font-size: var(--t-13);
+  margin: 0 0 var(--s-3);
+  max-width: 68ch;
+}
+
+.note.warn {
+  color: var(--warn);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ────────────────────────────────────────────────────────────────── bar ── */
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  min-height: var(--bar-height);
+  padding: 0 var(--s-5);
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--line);
+}
+
+.who {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+}
+
+/* The mark, drawn rather than fetched: two squares, one filled, in the brand
+   violet. An <img> would be a fourth asset for eleven pixels of identity. */
+.mark {
+  align-self: center;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--accent-strong);
+  border-radius: 2px;
+  position: relative;
+}
+
+.mark::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  background: var(--accent-strong);
+  border-radius: 1px;
+}
+
+/* ───────────────────────────────────────────────────────────── identity ── */
+
+.identity {
+  position: relative;
+}
+
+.identity > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: var(--s-1) var(--s-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-small);
+  color: var(--text-muted);
+  font-size: var(--t-13);
+}
+
+.identity > summary::-webkit-details-marker {
+  display: none;
+}
+
+.identity[open] > summary {
+  border-color: var(--accent-edge);
+  color: var(--accent-text);
+}
+
+.sheet {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--s-2));
+  z-index: 10;
+  width: min(30rem, calc(100vw - var(--s-6)));
+  padding: var(--s-4);
+  background: var(--surface-sunken);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px oklch(0 0 0 / 0.45);
+}
+
+/* ───────────────────────────────────────────────────────────────── tabs ── */
+
+.tabs {
+  padding: 0 var(--s-5);
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--line);
+}
+
+.tabs [role="tablist"] {
+  display: flex;
+  gap: var(--s-1);
+}
+
+.tabs [role="tab"] {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: var(--s-2) var(--s-3);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--t-13);
+  cursor: pointer;
+}
+
+.tabs [role="tab"]:hover {
+  color: var(--text);
+}
+
+.tabs [role="tab"][aria-selected="true"] {
+  color: var(--accent-text);
+  border-bottom-color: var(--accent);
+}
+
+[role="tabpanel"][hidden] {
+  display: none;
+}
+
+/* ──────────────────────────────────────────────────────────────── panes ── */
+
+main {
+  padding: var(--s-5);
+  display: grid;
+  gap: var(--s-5);
+}
+
+.split {
+  display: grid;
+  gap: var(--s-5);
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 60rem) {
+  .split {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+.pane {
+  display: grid;
+  gap: var(--s-3);
+  align-content: start;
+  padding: var(--s-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  min-height: 1.75rem;
+}
+
+/* ─────────────────────────────────────────────────────────────── inputs ── */
+
+label {
+  display: grid;
+  gap: var(--s-1);
+  font-size: var(--t-12);
+  color: var(--text-faint);
+}
+
+input,
+textarea,
+select {
+  font-family: var(--mono);
+  font-size: var(--t-13);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-small);
+  padding: var(--s-2);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--accent-edge);
+}
+
+select {
+  appearance: none;
+  /* Room for the chevron, which is drawn in the padding rather than over the
+     text — a long option should run out of room before it runs under it. */
+  padding-right: var(--s-6);
+  background-image: var(--chevron);
+  background-repeat: no-repeat;
+  background-position: right var(--s-3) center;
+  background-size: 10px 7px;
+  cursor: pointer;
+  /* Native width is the widest option, which makes one long label stretch a
+     control that holds three short ones. */
+  max-width: 22rem;
+}
+
+select:hover {
+  border-color: var(--accent-edge);
+}
+
+/* macOS draws the open list itself and `color-scheme` above is what makes it
+   dark; these two are for the platforms that let the page say. */
+option {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+label[hidden] {
+  display: none;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  line-height: 1.6;
 }
 
 .row {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
-  gap: 0.75rem;
-  margin: 0.5rem 0;
+  gap: var(--s-3);
 }
 
-label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  font-size: 0.8rem;
-  color: var(--quiet);
+.row.spread {
+  justify-content: space-between;
+  align-items: center;
 }
 
-input,
-textarea,
+.row.tight {
+  gap: var(--s-1);
+}
+
 button {
+  appearance: none;
   font: inherit;
-  color: inherit;
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 0.4rem 0.55rem;
-}
-
-input[type="number"] {
-  width: 7rem;
-}
-
-textarea {
-  width: 100%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85rem;
-  resize: vertical;
-}
-
-button {
+  font-size: var(--t-13);
+  padding: var(--s-2) var(--s-4);
+  border-radius: var(--radius-small);
+  border: 1px solid var(--accent-edge);
+  background: var(--accent-wash);
+  color: var(--accent-text);
   cursor: pointer;
-  border-color: var(--accent);
-  color: var(--accent);
+}
+
+button:hover:not(:disabled) {
+  background: var(--violet-a20);
+}
+
+button.primary {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--n-1000);
   font-weight: 600;
 }
 
+button.quiet {
+  background: none;
+  border-color: var(--line-strong);
+  color: var(--text-muted);
+}
+
+button.quiet.chosen {
+  border-color: var(--accent-edge);
+  color: var(--accent-text);
+}
+
 button:disabled {
-  cursor: not-allowed;
-  border-color: var(--line);
-  color: var(--quiet);
+  opacity: 0.45;
+  cursor: default;
 }
 
-code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85em;
+/* ─────────────────────────────────────────────────────────────── status ── */
+
+.status {
+  font-family: var(--mono);
+  font-size: var(--t-12);
+  color: var(--text-faint);
 }
 
-.answer,
-.changes {
-  margin: 0.5rem 0 0;
-  padding: 0.75rem 0.9rem;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: transparent;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.8rem;
-  max-height: 22rem;
-  overflow: auto;
+.status.failed {
+  color: var(--bad);
 }
+
+/* ─────────────────────────────────────────────────────────────── answer ── */
 
 .answer {
-  white-space: pre-wrap;
-  word-break: break-word;
-  min-height: 2.5rem;
+  min-height: 12rem;
+  max-height: 30rem;
+  overflow: auto;
+  padding: var(--s-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  font-family: var(--mono);
+  font-size: var(--t-12);
 }
 
-.answer:empty,
-.changes:empty {
-  display: none;
+.answer pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
+
+/* The query pane keeps a floor so the page does not jump when an answer lands.
+   A pane holding a handful of facts has no such problem and should not hold a
+   screenful of nothing to prove it. */
+.answer.small {
+  min-height: 0;
+}
+
+.answer .empty {
+  color: var(--text-faint);
+}
+
+.answer .trailer {
+  color: var(--text-faint);
+  margin-top: var(--s-2);
+}
+
+/* The same rule the terminal follows: records of one flat shape become an
+   aligned table, and anything else stays a document. A table with a column that
+   had to lie about a nested value is worse than no table. */
+table {
+  border-collapse: collapse;
+  /* Content-sized rather than stretched: a stretched table spreads four narrow
+     columns across the pane and puts a two-character id half a screen from the
+     name it belongs to. This is the width a terminal would give it. */
+  width: auto;
+  font-size: var(--t-12);
+}
+
+th,
+td {
+  text-align: left;
+  padding: var(--s-1) var(--s-3);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+th {
+  color: var(--text-faint);
+  font-weight: 600;
+}
+
+/* Only a COLUMN heading is uppercased. A row heading here is a name that came
+   out of the node — a metric carries its own labels, and `surface="wire"` drawn
+   as `SURFACE="WIRE"` is not what the node said. Shouting at data changes it. */
+thead th {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  position: sticky;
+  top: calc(var(--s-3) * -1);
+  background: var(--surface);
+}
+
+tbody th {
+  font-family: var(--mono);
+  font-weight: 400;
+  padding-right: var(--s-5);
+}
+
+td.number {
+  text-align: right;
+}
+
+tbody tr:hover td {
+  background: var(--surface-raised);
+}
+
+/* ────────────────────────────────────────────────────────────── changes ── */
 
 .changes {
   list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 20rem;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: var(--t-12);
 }
 
 .changes li {
-  padding: 0.2rem 0;
-  border-bottom: 1px solid var(--line);
+  padding: var(--s-1) var(--s-2);
+  border-left: 2px solid var(--line-strong);
+  margin-bottom: 1px;
 }
 
-.changes li:last-child {
-  border-bottom: 0;
+.changes li.written {
+  border-left-color: var(--ok);
 }
 
-.written {
-  color: var(--written);
+.changes li.removed {
+  border-left-color: var(--warn);
+  color: var(--text-muted);
 }
 
-.removed {
-  color: var(--removed);
-}
-
-.failed {
-  color: var(--wrong);
+/* Two panes' worth of controls in one pane, separated rather than merged: the
+   one above acts on somebody else and the one below acts on you, and that is a
+   difference worth a line. */
+hr.between {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 1.25rem 0 0.25rem;
 }

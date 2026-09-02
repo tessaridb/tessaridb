@@ -32,10 +32,19 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --upto <n>      with --restore: stop replaying after sequence <n>
   --restore <file> replay <file> into an empty store and exit
   --health        say whether the store is well, and exit non-zero if not
+  --version       say which build this is, and exit
   --help          this
 
 with neither -e nor -f, statements are read from standard input: a prompt when
-that is a terminal, a script when it is a pipe.";
+that is a terminal, a script when it is a pipe.
+
+serving a store that has no users yet, TESSARIDB_INITIAL_USER and
+TESSARIDB_INITIAL_PASSWORD declare that user as a store-wide owner and close the
+store. Both or neither: half of them is refused rather than started, because a
+node that came up open because a variable was misspelled looks exactly like one
+that came up correctly. A store that already has users ignores them, so a
+container may carry them on every restart, and they are not a way to reset a
+password.";
 
 /// Where the password is read from.
 ///
@@ -111,6 +120,21 @@ pub enum Source {
     Verify(PathBuf),
     /// Serve this store, on whichever surfaces `Asked::serving` names.
     Serve,
+    /// Say which build this is, and nothing else.
+    ///
+    /// Needs no store, like `Verify`, and for a stronger reason: the first
+    /// thing anybody does with a binary they have just been handed is ask it
+    /// what it is, and a version that could only be obtained by opening a store
+    /// would be unavailable at exactly that moment.
+    Version,
+    /// Print the usage and stop.
+    ///
+    /// A request rather than a refusal, which is the whole reason it is a
+    /// variant instead of an early `Err`: asking a program for its help is not
+    /// an error, and answering on standard error with a non-zero status breaks
+    /// `tessaridb --help | grep serve` and fails any packaging smoke test that
+    /// runs it.
+    Help,
 }
 
 /// Read the arguments, refusing anything unrecognised.
@@ -129,7 +153,12 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     let mut arguments = arguments;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
-            "--help" | "-h" => return Err(USAGE.to_owned()),
+            "--help" | "-h" => source = Source::Help,
+            // Read here rather than short-circuited before parsing, so that
+            // `--version` alongside a misspelled flag still complains about the
+            // misspelling. This module refuses unrecognised options everywhere
+            // else and an exception would be one place a typo goes unreported.
+            "--version" | "-V" => source = Source::Version,
             "-e" | "--execute" => {
                 let script = arguments
                     .next()
@@ -232,7 +261,14 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
             Source::Health => Some("--health"),
             Source::Serve => Some("--serve"),
             Source::Verify(_) => Some("--verify"),
-            Source::Standard | Source::Inline(_) | Source::File(_) => None,
+            // `--version` and `--help` name this binary, not the node at the
+            // address, so an address alongside them is neither refused nor
+            // consulted.
+            Source::Version
+            | Source::Help
+            | Source::Standard
+            | Source::Inline(_)
+            | Source::File(_) => None,
         };
         if let Some(named) = reached_past_the_session {
             return Err(format!(
@@ -249,6 +285,8 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
         Source::Health => Some("--health"),
         Source::Serve => Some("--serve"),
         Source::Verify(_) => Some("--verify"),
+        Source::Version => Some("--version"),
+        Source::Help => Some("--help"),
         Source::Standard | Source::Inline(_) | Source::File(_) => None,
     };
     if let Some(named) = runs_no_script
@@ -339,6 +377,65 @@ mod tests {
         let held = asked(&[]).expect("defaults");
         assert!(held.store.is_none());
         assert!(matches!(held.source, Source::Standard));
+    }
+
+    #[test]
+    fn asking_for_the_version_is_its_own_thing_to_do() {
+        assert!(matches!(
+            asked(&["--version"]).expect("--version").source,
+            Source::Version
+        ));
+        assert!(matches!(
+            asked(&["-V"]).expect("-V").source,
+            Source::Version
+        ));
+    }
+
+    #[test]
+    fn asking_for_the_help_is_a_request_and_not_a_refusal() {
+        // It used to be `Err(USAGE)`, which `main` printed to standard error
+        // with a non-zero status — so `tessaridb --help | grep serve` came back
+        // empty and any packaging check that runs `--help` failed. A parse
+        // *error* is still an error; being asked for the usage is not one.
+        assert!(matches!(
+            asked(&["--help"]).expect("--help").source,
+            Source::Help
+        ));
+        assert!(matches!(asked(&["-h"]).expect("-h").source, Source::Help));
+    }
+
+    #[test]
+    fn a_misspelled_flag_is_still_a_refusal_and_still_carries_the_usage() {
+        // The other half of the split above: the usage text did double duty as
+        // both the answer to `--help` and the body of a parse error, and only
+        // the first of those changed channel.
+        let complaint = asked(&["--nonsense"]).expect_err("a typo");
+        assert!(
+            complaint.contains("--nonsense") && complaint.contains("usage:"),
+            "a refusal that names neither the flag nor the usage: {complaint}"
+        );
+    }
+
+    #[test]
+    fn a_misspelled_flag_beside_the_version_is_still_reported() {
+        // The reason `--version` is read by the parser rather than
+        // short-circuited ahead of it. A binary that answered the version and
+        // swallowed a typo would be the one place this module lets an
+        // unrecognised option through.
+        let complaint = asked(&["--version", "--serv", "127.0.0.1:0"]).expect_err("a typo");
+        assert!(
+            complaint.contains("--serv"),
+            "the typo is not named: {complaint}"
+        );
+    }
+
+    #[test]
+    fn a_parameter_bound_for_a_version_that_runs_no_script_is_refused() {
+        let complaint = asked(&["--version", "--param", "x=1"]).expect_err("no script");
+        assert!(
+            complaint.contains("--version"),
+            "the refusal does not say which flag runs no script: {complaint}"
+        );
     }
 
     #[test]

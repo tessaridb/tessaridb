@@ -12,9 +12,12 @@
 use tessari_types::Number;
 
 use super::Parser;
-use crate::ast::{Expr, ExprKind, FieldPath, Ordering, Projection, Source};
+use crate::ast::{
+    DeleteBound, Expr, ExprKind, FieldPath, Hop, Ordering, Projection, RecordTarget, Source,
+    Timeout, Using, Version,
+};
 use crate::error::{Error, Result};
-use crate::token::{Punct, Span, Token};
+use crate::token::{Keyword, Punct, Span, Token};
 
 impl Parser<'_> {
     /// `GROUP BY city, address.country`, when it is there.
@@ -52,6 +55,78 @@ impl Parser<'_> {
         Ok(routes)
     }
 
+    /// `SPLIT ON tags` after the `FETCH`, when it is there.
+    ///
+    /// Written where it is applied, like every other clause here. Contextual, so
+    /// a field or a table called `split` still works — the position it stands in
+    /// holds clause words and never a name, which is the whole difference
+    /// between this word and `ONLY`.
+    ///
+    /// `ON` is required rather than optional. `SPLIT tags` would read as a verb
+    /// taking an object, and what the clause does is name the route the rows
+    /// come *from*.
+    pub(super) fn split_path(&mut self) -> Result<Option<FieldPath>> {
+        if !self.eat_word("split") {
+            return Ok(None);
+        }
+        self.expect_keyword(Keyword::On, "`ON` and the route to open")?;
+        Ok(Some(self.field_path()?))
+    }
+
+    /// `OMIT embedding, address.postcode` after the projection, when it is
+    /// there.
+    ///
+    /// Written next to the `*` it subtracts from rather than down among the
+    /// clauses after `FROM`, because it says what the star does and not what the
+    /// read does. Contextual like every other clause word here: a field called
+    /// `omit` is still a field, and there is no ambiguity to resolve because a
+    /// projection reading it as a value has already consumed it by the time this
+    /// is asked.
+    pub(super) fn omit_paths(&mut self, projection: &Projection) -> Result<Vec<FieldPath>> {
+        if !self.peek_word("omit") {
+            return Ok(Vec::new());
+        }
+        // Refused here rather than accepted and ignored: with nothing to
+        // subtract from, the clause is either a mistake about what the read
+        // answers with or a request to drop a value the author wrote out by
+        // name, and both deserve to be said rather than silently dropped.
+        if !projection.stars() {
+            return Err(self.error_here(
+                "a `*` for `OMIT` to subtract from — a value written out by name \
+                 was asked for on purpose",
+            ));
+        }
+        self.advance();
+        let mut routes = vec![self.omitted_path()?];
+        while self.eat_punct(Punct::Comma) {
+            routes.push(self.omitted_path()?);
+        }
+        Ok(routes)
+    }
+
+    /// One route `OMIT` may name: fields all the way down, never a position.
+    ///
+    /// `OMIT tags[0]` would renumber everything after it, so what the answer
+    /// held at position one would depend on what was left out — a different
+    /// question from the one `OMIT` is for, and refused rather than guessed at.
+    fn omitted_path(&mut self) -> Result<FieldPath> {
+        let route = self.field_path()?;
+        if route
+            .path
+            .steps()
+            .iter()
+            .any(|step| !matches!(step, tessari_types::Step::Field(_)))
+        {
+            return Err(Error::UnexpectedToken {
+                expected: "a route of field names — `OMIT` cannot leave out a \
+                           position, because the rest would renumber",
+                found: route.path.to_string(),
+                span: route.span,
+            });
+        }
+        Ok(route)
+    }
+
     /// `ORDER BY name, address.city DESC`, when it is there.
     ///
     /// Keys are read in the condition position, so a bare name is a route into
@@ -84,6 +159,25 @@ impl Parser<'_> {
         Ok(Ordering { key, descending })
     }
 
+    /// `AFTER users:1042` after the order, when it is there.
+    ///
+    /// Contextual, like every clause word here but `ONLY`: a field or a table
+    /// called `after` is still one, because the position this stands in holds
+    /// clause words and never a name.
+    ///
+    /// The anchor is written as a record identity — table and all — rather than
+    /// as a bare id. It is the spelling every identity in this language already
+    /// has, it is exactly what the answer handed back, and carrying the table
+    /// is what lets a cursor from another page of another table be refused
+    /// instead of silently paging by an identity that happens to compare.
+    pub(super) fn after_anchor(&mut self) -> Result<Option<Box<RecordTarget>>> {
+        if !self.eat_word("after") {
+            return Ok(None);
+        }
+        let table = self.table_ref()?;
+        Ok(Some(Box::new(self.record_target_after(table)?)))
+    }
+
     /// `LIMIT 10` or `START 20`, when it is there.
     pub(super) fn bound(&mut self, word: &str) -> Result<Option<u64>> {
         if !self.eat_word(word) {
@@ -97,6 +191,243 @@ impl Parser<'_> {
         self.advance();
         Ok(Some(count))
     }
+
+    /// `USING <path>` or `USING INDEX <name>`, when it is there.
+    ///
+    /// The path word is taken as written and is **not** checked here. The set of
+    /// words belongs to the store that reports them, and a copy of it in the
+    /// grammar would be a second vocabulary of exactly the kind one plan
+    /// structure exists to remove — so an unrecognised word is refused where the
+    /// words live, before the read runs, naming the ones that exist.
+    pub(super) fn using(&mut self) -> Result<Option<Using>> {
+        if !self.eat_word("using") {
+            return Ok(None);
+        }
+        // `index` is both a path word and the keyword that introduces a named
+        // index, so the two forms are told apart by what follows: a name means
+        // `USING INDEX by_email`, and anything else means the path word. One
+        // token of lookahead, and no spelling has to be given up — `USING index`
+        // asks whether *an* index answered, `USING INDEX by_email` asks which.
+        if self.peek_keyword() == Some(Keyword::Index)
+            && matches!(self.peek_ahead(1), Some(Token::Ident(_)))
+            && !self.opens_the_next_clause()
+        {
+            self.advance();
+            return Ok(Some(Using::Index(self.name()?)));
+        }
+        // `word_or_name`, because several path words are also keywords —
+        // `index`, `join`, `record` — and a clause that accepted only the ones
+        // that happen not to be would be a vocabulary decided by the lexer.
+        Ok(Some(Using::Path(self.word_or_name()?)))
+    }
+
+    /// Whether the word one token ahead opens the next clause rather than being
+    /// a name belonging to the clause being parsed.
+    ///
+    /// `USING INDEX by_email` takes a name, and every clause word in this
+    /// grammar is contextual — so `USING index TIMEOUT 5s` looks exactly like
+    /// `USING INDEX timeout` followed by a stray duration, and the first reading
+    /// swallows the next clause. Reserving `timeout` would settle it and would
+    /// also take the word away from anyone with an index called `timeout`, which
+    /// is the trade this language has already refused seven times.
+    ///
+    /// So it is settled by what follows instead: `timeout` is a clause only when
+    /// a duration comes after it, and a name in every other position. Both
+    /// readings stay sayable and neither is guessed at.
+    fn opens_the_next_clause(&self) -> bool {
+        let Some(Token::Ident(word)) = self.peek_ahead(1) else {
+            return false;
+        };
+        word.eq_ignore_ascii_case("timeout")
+            && matches!(self.peek_ahead(2), Some(Token::Duration(_)))
+    }
+
+    /// `TIMEOUT 200ms`, when it is there.
+    ///
+    /// The duration is a literal rather than an expression, and a parameter is
+    /// not accepted in its place. A ceiling that a bound value could set is a
+    /// ceiling a caller could raise, and the statement is where this one is meant
+    /// to be readable — an operator reading a slow query wants the budget in
+    /// front of them, not in a bindings map somewhere else.
+    pub(super) fn timeout(&mut self) -> Result<Option<Timeout>> {
+        if !self.eat_word("timeout") {
+            return Ok(None);
+        }
+        let expected = "a duration, like `200ms` or `5s`";
+        let Some(Token::Duration(after)) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let after = *after;
+        let at = self.span_here();
+        self.advance();
+        // A ceiling of zero or less is refused here rather than at the read.
+        // Neither names a budget a statement could satisfy, so the clause could
+        // only ever refuse — and a clause that can only refuse is a mistake in
+        // the statement, which is a thing to say when the statement is read.
+        if after.seconds() < 0 || (after.seconds() == 0 && after.nanos() == 0) {
+            return Err(Error::EmptyTimeout {
+                written: after.to_literal(),
+                span: at,
+            });
+        }
+        Ok(Some(Timeout { after, span: at }))
+    }
+
+    /// `VERSION 42`, when it is there.
+    ///
+    /// Contextual for the same reason `timeout` is, and with the same guard: a
+    /// field called `version` is at least as likely as one called `timeout`, so
+    /// the word opens a clause only when an integer follows it and reads as a
+    /// name everywhere else.
+    ///
+    /// A literal rather than an expression, and no parameter in its place. The
+    /// point of the read is that it is reproducible — the same statement asked
+    /// twice answers the same — and a version a binding could set is one a caller
+    /// could move between two runs of the statement that names it.
+    pub(super) fn version(&mut self) -> Result<Option<Version>> {
+        if !matches!(self.peek(), Some(Token::Ident(word)) if word.eq_ignore_ascii_case("version"))
+            || !matches!(self.peek_ahead(1), Some(Token::Number(Number::Integer(_))))
+        {
+            return Ok(None);
+        }
+        let at = self.span_here();
+        self.advance();
+        let expected = "a sequence, like `42` — the version a read answers from";
+        let Some(Token::Number(Number::Integer(sequence))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let sequence = *sequence;
+        self.advance();
+        // A negative sequence names no point in any store's history. Refused
+        // here rather than at the read, for the reason an empty timeout is: a
+        // clause that could only ever be refused is a mistake in the statement,
+        // and the statement is where it should be said.
+        let at_sequence = u64::try_from(sequence).map_err(|_| self.error_here(expected))?;
+        Ok(Some(Version {
+            at: at_sequence,
+            span: at,
+        }))
+    }
+
+    /// The bound a conditional delete must carry: `LIMIT 100` or `LIMIT ALL`.
+    ///
+    /// Required, unlike every other `LIMIT` in this grammar. A read that omits
+    /// one answers with more rows than the caller expected; a delete that omits
+    /// one removes a table. `LIMIT ALL` is the way to say the second on purpose,
+    /// and it costs one word — which is the entire mechanism.
+    pub(super) fn delete_bound(&mut self) -> Result<DeleteBound> {
+        let expected =
+            "`LIMIT n` or `LIMIT ALL` — a conditional delete states how much it may remove";
+        if !self.eat_word("limit") {
+            return Err(self.error_here(expected));
+        }
+        if self.eat_word("all") {
+            return Ok(DeleteBound::All);
+        }
+        let Some(Token::Number(Number::Integer(count))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let count = u64::try_from(*count).map_err(|_| self.error_here(expected))?;
+        self.advance();
+        Ok(DeleteBound::AtMost(count))
+    }
+
+    /// `DEPTH 3` at the end of a walk, when it is there.
+    ///
+    /// The number is an integer **literal** and the grammar has no position here
+    /// for anything else — not a parameter, not an expression, not a field. That
+    /// is the whole of what the clause guarantees: every walk this language can
+    /// write states its own length, and a reader of the statement knows how far
+    /// it goes without knowing what the caller bound.
+    ///
+    /// A parameter would look harmless and would not be. `DEPTH $n` is a walk
+    /// whose length arrives at run time from somewhere the statement cannot
+    /// show, which is the same shape as an unbounded walk with a promise
+    /// attached — and the promise is kept by whoever wrote the caller.
+    pub(super) fn depth_bound(&mut self, hops: &[Hop]) -> Result<Option<u64>> {
+        if !self.eat_word("depth") {
+            return Ok(None);
+        }
+        let span = self.span_here();
+        // Checked before the number is read, so `DEPTH x` on a chain refuses as
+        // the chain it is rather than as a missing integer — the first fault a
+        // reader can act on is the one worth reporting.
+        if hops.len() != 1 || hops.first().is_none_or(|hop| hop.target.is_none()) {
+            return Err(Error::DepthNeedsOneHopToATable { span });
+        }
+        let Some(Token::Number(Number::Integer(count))) = self.peek() else {
+            return Err(self.error_here("`DEPTH n` — a whole number of steps, written out"));
+        };
+        // A negative and a zero refuse as the same thing, which they are: the
+        // clause counts steps, and both say fewer than one.
+        let count = u64::try_from(*count).unwrap_or(0);
+        self.advance();
+        if count == 0 {
+            return Err(Error::DepthBelowOne { span });
+        }
+        Ok(Some(count))
+    }
+}
+
+/// What a cursor may be written beside, and which table its anchor may name.
+///
+/// Both refusals are properties of the statement, so neither waits for a read.
+///
+/// **A `START` beside an `AFTER`** is refused because the two are answers to the
+/// same question — where does this page begin — and applying both means one of
+/// them silently loses: the offset would count from the cursor's own position
+/// and skip a page nobody asked to skip.
+///
+/// **An anchor from another table** is refused because a record identity carries
+/// no table once it is compared. `orders:5` and `users:5` compare identically,
+/// so a cursor pasted from the wrong page would page a real table by a real
+/// identity and answer with records — the wrong ones, quietly. The check is
+/// possible only where the source names one table; a join, a walk and a
+/// materialised source each reach records from more than one place, and there is
+/// no name there to disagree with.
+///
+/// **A clause that changes what a row is** is refused beside it for a third
+/// reason: an anchor is a record, and `GROUP BY` answers with groups, `FETCH`
+/// answers with records whose references have been opened, and `SPLIT ON`
+/// answers with a row per element. In each of those the thing the cursor is
+/// compared against is not the thing the anchor is, so the comparison would be
+/// between two different kinds of row and the page would be decided by whichever
+/// of them the sort key happened to reach.
+pub(super) fn check_cursor(
+    from: &Source,
+    after: Option<&RecordTarget>,
+    start: Option<u64>,
+    reshaping: [(&'static str, bool); 3],
+) -> Result<()> {
+    let Some(anchor) = after else {
+        return Ok(());
+    };
+    if start.is_some() {
+        return Err(Error::CursorBesideAnOffset { span: anchor.span });
+    }
+    for (clause, written) in reshaping {
+        if written {
+            return Err(Error::CursorBesideAReshaping {
+                clause,
+                span: anchor.span,
+            });
+        }
+    }
+    let named = match from {
+        Source::Table(table) | Source::Where { table, .. } => &table.name,
+        Source::Record(target) => &target.table.name,
+        Source::Node | Source::Traverse { .. } | Source::Join { .. } | Source::Subquery { .. } => {
+            return Ok(());
+        }
+    };
+    if !anchor.table.name.text.eq_ignore_ascii_case(&named.text) {
+        return Err(Error::AnchorFromAnotherTable {
+            anchor: anchor.table.name.text.clone(),
+            table: named.text.clone(),
+            span: anchor.span,
+        });
+    }
+    Ok(())
 }
 
 /// A grouped read may project only its keys and its folds.
@@ -106,7 +437,7 @@ impl Parser<'_> {
 /// wrong number reaches a report. It is a property of the statement, so it is
 /// refused when the statement is read.
 pub(super) fn check_grouping(projection: &Projection, group: &[Expr]) -> Result<()> {
-    let Projection::Values(values) = projection else {
+    let Projection::Values { values, .. } = projection else {
         // `SELECT *` over a group would answer with whichever record came last.
         if group.is_empty() {
             return Ok(());
@@ -157,6 +488,21 @@ fn grouped_by(expr: &Expr, group: &[Expr]) -> bool {
     match &expr.kind {
         ExprKind::Fold { .. } | ExprKind::Literal(_) => true,
         ExprKind::Not(inner) | ExprKind::Negate(inner) => grouped_by(inner, group),
+        // Every arm has to be grouped, not just the one that will run: which
+        // one runs is a property of the data, and whether a projection is legal
+        // is a property of the statement.
+        ExprKind::If {
+            condition,
+            then,
+            otherwise,
+        } => {
+            grouped_by(condition, group)
+                && grouped_by(then, group)
+                && otherwise
+                    .as_deref()
+                    .is_none_or(|otherwise| grouped_by(otherwise, group))
+        }
+        ExprKind::Coalesce(left, right) => grouped_by(left, group) && grouped_by(right, group),
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Arithmetic { left, right, .. }
@@ -211,6 +557,16 @@ fn children(expr: &Expr) -> Vec<&Expr> {
     match &expr.kind {
         ExprKind::Fold { over, .. } => over.as_deref().into_iter().collect(),
         ExprKind::Not(inner) | ExprKind::Negate(inner) => vec![inner],
+        ExprKind::If {
+            condition,
+            then,
+            otherwise,
+        } => {
+            let mut parts = vec![&**condition, &**then];
+            parts.extend(otherwise.as_deref());
+            parts
+        }
+        ExprKind::Coalesce(left, right) => vec![left, right],
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Arithmetic { left, right, .. }
@@ -244,12 +600,19 @@ pub(super) fn check_fold_positions(
         Source::Join {
             condition: Some(condition),
             ..
+        }
+        | Source::Subquery {
+            condition: Some(condition),
+            ..
         } => no_fold(condition)?,
+        // The inner read was checked as it was parsed, so there is nothing left
+        // to say about it here.
         Source::Node
         | Source::Record(_)
         | Source::Table(_)
         | Source::Traverse { .. }
-        | Source::Join { .. } => {}
+        | Source::Join { .. }
+        | Source::Subquery { .. } => {}
     }
     for key in group {
         no_fold(key)?;

@@ -44,7 +44,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE social; USE DATABASE social;\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              DEFINE TABLE follows EDGE;\n\
              CREATE users:1 = { handle: 'ada' };\n\
              CREATE users:2 = { handle: 'grace' };\n\
@@ -184,7 +184,7 @@ fn every_table_in_the_chain_is_asked_about_and_not_only_the_first() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE posts;\n\
+            "DEFINE COLLECTION posts;\n\
              DEFINE TABLE wrote EDGE;\n\
              CREATE posts:1 = { title: 'notes on the engine' };\n\
              RELATE users:2->wrote->posts:1;\n\

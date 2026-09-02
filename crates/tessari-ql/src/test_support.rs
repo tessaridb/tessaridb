@@ -33,8 +33,9 @@
 //! exhaustive matches below are what keep it complete as the language grows.
 
 use crate::ast::{
-    Edit, Expr, ExprKind, FieldPath, InfoSubject, Name, Projection, RecordTarget, Script, Select,
-    Source, Statement, StatementKind, TableRef, Written,
+    CreateTarget, Edit, Expr, ExprKind, FieldPath, InfoSubject, JoinSide, Name, Projection,
+    ReachRef, RecordTarget, Script, Select, Source, Statement, StatementKind, TableRef, UserChange,
+    UserGrant, Written,
 };
 use crate::token::Span;
 
@@ -63,6 +64,11 @@ fn erase_statement(statement: &mut Statement) {
     match &mut statement.kind {
         StatementKind::Select(select) => erase_select(select),
         StatementKind::Explain(select) => erase_select(select),
+        StatementKind::Return { value } | StatementKind::Throw { value } => erase_expr(value),
+        StatementKind::Let { value, span, .. } => {
+            *span = CANONICAL;
+            erase_expr(value);
+        }
         StatementKind::Use {
             namespace,
             database,
@@ -75,7 +81,39 @@ fn erase_statement(statement: &mut Statement) {
         | StatementKind::DefineTable { name, .. }
         | StatementKind::DefineSpace { name, .. }
         | StatementKind::DefineBucket { name, .. }
-        | StatementKind::DropUser { name } => erase_name(name),
+        | StatementKind::DefineCollection { name, .. }
+        // In the name-only list rather than in its own arm, unlike
+        // `DEFINE VECTOR`: a geo store declares no clause, so a name is all
+        // there is to erase.
+        | StatementKind::DefineGeo { name, .. }
+        | StatementKind::DefineGraph { name, .. }
+        | StatementKind::DefineEdge { name, .. }
+        | StatementKind::DropEdge { name }
+        | StatementKind::DropVector { name }
+        | StatementKind::DropGeo { name }
+        | StatementKind::DropGraph { name }
+        | StatementKind::DropUser { name }
+        | StatementKind::DropAnalyzer { name }
+        | StatementKind::DropReplica { name }
+        | StatementKind::DropDatabase { name }
+        | StatementKind::DropNamespace { name } => erase_name(name),
+        // The change is a word the statement was written with rather than a
+        // value, so there is nothing under it to normalise.
+        StatementKind::AlterTable { table, .. } => erase_table(table),
+        StatementKind::AlterField {
+            name,
+            table,
+            analyzer,
+            default,
+            ..
+        } => {
+            erase_name(name);
+            erase_table(table);
+            erase_optional_name(analyzer.as_mut());
+            if let Some(default) = default {
+                erase_written(default);
+            }
+        }
         StatementKind::DefineIndex {
             name,
             table,
@@ -108,25 +146,73 @@ fn erase_statement(statement: &mut Statement) {
             InfoSubject::Store
             | InfoSubject::Namespace
             | InfoSubject::Database
-            | InfoSubject::Node => {}
-            InfoSubject::Table(table) => erase_table(table),
-            InfoSubject::User(name) => erase_name(name),
+            | InfoSubject::Users
+            | InfoSubject::Node
+            | InfoSubject::Consumers => {}
+            InfoSubject::Table(table) | InfoSubject::Access(table) => erase_table(table),
+            InfoSubject::User(name)
+            | InfoSubject::Consumer(name)
+            | InfoSubject::Graph(name)
+            | InfoSubject::Vector(name)
+            | InfoSubject::Geo(name) => {
+                erase_name(name);
+            }
         },
+        // Its own arm rather than the name-only list above, because the
+        // distance is a `Name` too: left unerased it carries a span, and two
+        // identical declarations would compare as different.
+        StatementKind::DefineVector { name, distance, .. } => {
+            erase_name(name);
+            erase_name(distance);
+        }
         StatementKind::DefineAnalyzer { name, .. } => erase_name(name),
         StatementKind::DefineUser {
             name, scope, role, ..
         } => {
             erase_name(name);
             if let Some(scope) = scope {
-                erase_table(scope);
+                erase_reach(scope);
             }
-            erase_name(role);
+            match role {
+                UserGrant::Role(role) => erase_name(role),
+                UserGrant::Authorities(kinds) => erase_names(Some(kinds)),
+            }
+        }
+        StatementKind::GrantAuthority { kinds, reach, user }
+        | StatementKind::RevokeAuthority { kinds, reach, user } => {
+            erase_names(Some(kinds));
+            erase_reach(reach);
+            erase_name(user);
+        }
+        StatementKind::AlterUser { name, change } => {
+            erase_name(name);
+            if let UserChange::Role(role) = change {
+                erase_name(role);
+            }
         }
         StatementKind::DefineNode { roles, .. } => erase_names(roles.as_deref_mut()),
         StatementKind::DefineReplica { name, roles, .. } => {
             erase_name(name);
             erase_names(roles.as_deref_mut());
         }
+        StatementKind::DefineConsumer {
+            name,
+            format,
+            identity,
+            mapping,
+            destination,
+            ..
+        } => {
+            erase_name(name);
+            erase_name(format);
+            erase_path(identity);
+            for pair in mapping {
+                erase_path(&mut pair.from);
+                erase_name(&mut pair.to);
+            }
+            erase_table(destination);
+        }
+        StatementKind::DropConsumer { name } => erase_name(name),
         StatementKind::Grant {
             verbs,
             table,
@@ -163,16 +249,43 @@ fn erase_statement(statement: &mut Statement) {
                 erase_expr(value);
             }
         }
-        StatementKind::Create { target, value }
-        | StatementKind::Set { target, value }
-        | StatementKind::Put { target, value, .. } => {
+        StatementKind::DeleteEdge {
+            from, edges, to, ..
+        } => {
+            erase_record(from);
+            erase_table(edges);
+            erase_record(to);
+        }
+        StatementKind::Insert {
+            table,
+            columns,
+            rows,
+        } => {
+            erase_table(table);
+            for column in columns.iter_mut() {
+                erase_name(column);
+            }
+            for row in rows.iter_mut() {
+                for value in row.iter_mut() {
+                    erase_expr(value);
+                }
+            }
+        }
+        StatementKind::Create { target, value, .. } => {
+            match target {
+                CreateTarget::Named(named) => erase_record(named),
+                CreateTarget::Generated(table) => erase_table(table),
+            }
+            erase_expr(value);
+        }
+        StatementKind::Set { target, value } | StatementKind::Put { target, value, .. } => {
             erase_record(target);
             erase_expr(value);
         }
-        StatementKind::Update { target, edit } => {
+        StatementKind::Update { target, edit, .. } | StatementKind::Upsert { target, edit, .. } => {
             erase_record(target);
             match edit {
-                Edit::Whole(value) => erase_expr(value),
+                Edit::Whole(value) | Edit::Merge(value) => erase_expr(value),
                 Edit::Fields(assignments) => {
                     for assignment in assignments {
                         erase_path(&mut assignment.route);
@@ -181,11 +294,13 @@ fn erase_statement(statement: &mut Statement) {
                 }
             }
         }
-        StatementKind::Delete { target }
+        StatementKind::Delete { target, .. }
         | StatementKind::Get { target }
         | StatementKind::Del { target }
         | StatementKind::Read { target, .. } => erase_record(target),
-        StatementKind::DeleteWhere { table, condition } => {
+        StatementKind::DeleteWhere {
+            table, condition, ..
+        } => {
             erase_table(table);
             erase_expr(condition);
         }
@@ -199,16 +314,23 @@ fn erase_statement(statement: &mut Statement) {
         StatementKind::Backup { .. }
         | StatementKind::Begin
         | StatementKind::Commit
-        | StatementKind::Cancel => {}
+        | StatementKind::Cancel
+        | StatementKind::Verify => {}
     }
 }
 
 /// One read, and everything under it.
 fn erase_select(select: &mut Select) {
     select.span = CANONICAL;
+    if let Some(at) = &mut select.only {
+        *at = CANONICAL;
+    }
     match &mut select.projection {
         Projection::All => {}
-        Projection::Values(values) => {
+        Projection::Values { everything, values } => {
+            if let Some(at) = everything {
+                *at = CANONICAL;
+            }
             for projected in values {
                 erase_expr(&mut projected.value);
                 erase_name(&mut projected.name);
@@ -216,6 +338,12 @@ fn erase_select(select: &mut Select) {
         }
     }
     erase_source(&mut select.from);
+    if let Some(route) = &mut select.split {
+        erase_path(route);
+    }
+    for route in &mut select.omit {
+        erase_path(route);
+    }
     for route in &mut select.fetch {
         erase_path(route);
     }
@@ -253,13 +381,35 @@ fn erase_source(source: &mut Source) {
             right_key,
             condition,
         } => {
-            erase_table(left);
-            erase_table(right);
+            erase_join_side(left);
+            erase_join_side(right);
             erase_path(left_key);
             erase_path(right_key);
             if let Some(condition) = condition {
                 erase_expr(condition);
             }
+        }
+        Source::Subquery { read, condition } => {
+            erase_select(read);
+            if let Some(condition) = condition {
+                erase_expr(condition);
+            }
+        }
+    }
+}
+
+/// One side of a join, whichever of the two it is.
+fn erase_join_side(side: &mut JoinSide) {
+    match side {
+        JoinSide::Table { table, alias } => {
+            erase_table(table);
+            if let Some(alias) = alias {
+                erase_name(alias);
+            }
+        }
+        JoinSide::Read { read, alias } => {
+            erase_select(read);
+            erase_name(alias);
         }
     }
 }
@@ -272,6 +422,21 @@ fn erase_expr(expr: &mut Expr) {
         ExprKind::Literal(_) | ExprKind::Parameter(_) => {}
         ExprKind::Path(path) => erase_path(path),
         ExprKind::Not(inner) | ExprKind::Negate(inner) => erase_expr(inner),
+        ExprKind::If {
+            condition,
+            then,
+            otherwise,
+        } => {
+            erase_expr(condition);
+            erase_expr(then);
+            if let Some(otherwise) = otherwise {
+                erase_expr(otherwise);
+            }
+        }
+        ExprKind::Coalesce(left, right) => {
+            erase_expr(left);
+            erase_expr(right);
+        }
         // The first of the two sites a search for `pub span: Span` cannot see.
         ExprKind::Fold { over, span, .. } => {
             *span = CANONICAL;
@@ -330,6 +495,15 @@ fn erase_table(table: &mut TableRef) {
         erase_name(database);
     }
     erase_name(&mut table.name);
+}
+
+/// A reach, in whichever of its three spellings the statement used.
+fn erase_reach(reach: &mut ReachRef) {
+    match reach {
+        ReachRef::Store => {}
+        ReachRef::Namespace(name) => erase_name(name),
+        ReachRef::Database(table) => erase_table(table),
+    }
 }
 
 /// A route into a record.

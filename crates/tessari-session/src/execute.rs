@@ -2,21 +2,52 @@
 
 use std::collections::BTreeMap;
 use tessari_encoding::{Roles, decode_payload, encode_payload};
-use tessari_ql::{Assignment, Edit, FieldPath, Name, RecordTarget, Span, StatementKind, TableRef};
+use tessari_ql::{
+    Answer, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, EdgeClause, Edit,
+    FieldMapping, FieldPath, Name, RecordTarget, Span, StatementKind, TableChange, TableRef,
+};
 use tessari_storage::{
-    Catalog, EDGE_IN, EDGE_OUT, FieldShape, IndexDefinition, IndexShape, RecordAddress, TableShape,
-    Transaction, VectorDistance,
+    Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeOrder, FieldShape,
+    GEO_FIELD, IndexDefinition, IndexShape, Mapped, OnFailure, RecordAddress, TableKind,
+    TableShape, Transaction, VECTOR_FIELD, VectorDeclaration, VectorDistance,
 };
 
 use tessari_types::{
-    Analyzer, FieldId, FieldKind, Filter, Path, RecordId, RecordRef, Step, TableId, Value,
+    Analyzer, FieldId, FieldKind, Filter, GraphId, IdentityKind, Path, RecordId, RecordRef, Step,
+    TableId, Value,
 };
 
-use crate::error::{Error, Result};
+use crate::context::Context;
+use crate::error::{Depended, Error, Result};
 use crate::evaluate::{key_bound, within};
+use crate::generate;
 use crate::geometry::on_the_grid;
 use crate::outcome::Outcome;
 use crate::session::Session;
+
+/// The one message format this store reads.
+///
+/// Named rather than written twice, because the refusal below and the reader
+/// that acts on it have to mean the same word.
+const FORMAT_JSON: &str = "json";
+
+/// A `DEFINE CONSUMER` statement's parts, carried together.
+///
+/// Nine fields is more than a function signature should take, and the grouping
+/// is not only clippy's preference: passing them as one borrow means a field
+/// added to the statement cannot be silently dropped on the way to the catalog,
+/// which is exactly the failure a long positional argument list invites.
+struct Declared<'a> {
+    name: &'a Name,
+    source: &'a ConsumerSource,
+    group: &'a str,
+    format: &'a Name,
+    identity: &'a FieldPath,
+    mapping: &'a [FieldMapping],
+    destination: &'a TableRef,
+    on_failure: tessari_ql::OnFailure,
+    parallelism: Option<u32>,
+}
 
 impl Session<'_> {
     pub(crate) fn execute(
@@ -36,20 +67,38 @@ impl Session<'_> {
             } => self.define_database(transaction, name, *if_not_exists, span),
             StatementKind::DefineTable {
                 name,
+                columns,
                 schemafull,
                 edge,
+                identity,
+                graph,
                 if_not_exists,
-            } => self.define_table(
-                transaction,
-                name,
-                TableShape {
-                    schemafull: *schemafull,
-                    edge: *edge,
-                    bucket: false,
-                },
-                *if_not_exists,
-                span,
-            ),
+            } => {
+                // The endpoints are resolved **before** the table is created, so
+                // a declaration naming a table that is not there refuses having
+                // written nothing. An edge table whose endpoint is a dangling
+                // name could never refuse a `RELATE` against it, which is the
+                // whole capability the clause was added for.
+                let kind = self.edge_kind(transaction, edge.as_ref(), columns)?;
+                // Resolved before the table is created for the same reason, and
+                // it is the same failure: a table left standing with a
+                // membership nothing resolves belongs to no graph anyone can
+                // name, and `INFO FOR GRAPH` would never list it.
+                let graph = self.resolve_graph(transaction, graph.as_ref())?;
+                self.define_table_with_columns(
+                    transaction,
+                    name,
+                    columns,
+                    TableShape {
+                        schemafull: *schemafull,
+                        kind,
+                        identity: *identity,
+                        graph,
+                    },
+                    *if_not_exists,
+                    span,
+                )
+            }
             // A space holds single values rather than named fields (ADR-0010),
             // so there is nothing for a schema to declare about one.
             StatementKind::DefineSpace {
@@ -75,7 +124,7 @@ impl Session<'_> {
                 transaction,
                 name,
                 table,
-                *kind,
+                kind.clone(),
                 FieldShape {
                     required: *required,
                     default: default.as_ref().map(|written| written.text.clone()),
@@ -119,7 +168,37 @@ impl Session<'_> {
                 roles.as_deref(),
                 *if_not_exists,
             ),
-            StatementKind::DropUser { name } => self.drop_user(transaction, name),
+            StatementKind::DefineConsumer {
+                name,
+                source,
+                group,
+                format,
+                identity,
+                mapping,
+                destination,
+                on_failure,
+                parallelism,
+                if_not_exists,
+            } => self.define_consumer(
+                transaction,
+                &Declared {
+                    name,
+                    source,
+                    group,
+                    format,
+                    identity,
+                    mapping,
+                    destination,
+                    on_failure: *on_failure,
+                    parallelism: *parallelism,
+                },
+                *if_not_exists,
+            ),
+            StatementKind::DropConsumer { name } => self.drop_consumer(transaction, name, span),
+            StatementKind::AlterUser { name, change } => {
+                self.alter_user(transaction, name, change, span)
+            }
+            StatementKind::DropUser { name } => self.drop_user(transaction, name, span),
             StatementKind::Grant {
                 verbs,
                 table,
@@ -128,6 +207,12 @@ impl Session<'_> {
             } => self.grant(transaction, verbs, table, fields, user, span),
             StatementKind::Revoke { verbs, table, user } => {
                 self.revoke(transaction, verbs, table, user, span)
+            }
+            StatementKind::GrantAuthority { kinds, reach, user } => {
+                self.grant_authority(transaction, kinds, reach, user, span)
+            }
+            StatementKind::RevokeAuthority { kinds, reach, user } => {
+                self.revoke_authority(transaction, kinds, reach, user, span)
             }
             StatementKind::DropField { name, table } => {
                 let (_, id) = self.resolve_table(transaction, table)?;
@@ -141,6 +226,7 @@ impl Session<'_> {
                 fields,
                 unique,
                 search,
+                spatial,
                 vector,
                 if_not_exists,
             } => self.define_index(
@@ -151,6 +237,7 @@ impl Session<'_> {
                 IndexShape {
                     unique: *unique,
                     search: *search,
+                    spatial: *spatial,
                     vector: match vector {
                         Some(named) => {
                             Some(VectorDistance::parse(&named.text).ok_or_else(|| {
@@ -170,9 +257,51 @@ impl Session<'_> {
                 edges,
                 to,
                 value,
-            } => self.relate(transaction, from, edges, to, value.as_ref()),
+            } => self.relate(transaction, from, edges, to, value.as_deref()),
+            StatementKind::DeleteEdge {
+                from,
+                edges,
+                to,
+                answer,
+            } => self.delete_edge(transaction, from, edges, to, *answer),
             StatementKind::DropTable { table } => {
-                let (_, id) = self.resolve_table(transaction, table)?;
+                let (context, id) = self.resolve_table(transaction, table)?;
+                // A bucket's bytes live in a companion table `DEFINE BUCKET`
+                // created alongside it, and whose name carries a byte no
+                // identifier can hold — so nothing can drop it by naming it, and
+                // dropping the bucket alone orphans it forever. The corpus found
+                // this by redefining a bucket it had just dropped and being told
+                // the chunk table's name was taken.
+                // A graph's own node collection is the same shape as the chunk
+                // table below — a table the caller never declared, carrying a
+                // name the caller did not choose — except that this one IS
+                // nameable, so it is refused by name rather than protected by
+                // an unspellable one. `DROP GRAPH` is the statement that removes
+                // it; see `Error::TableBelongsToGraph`.
+                if let Some(definition) = Catalog::new(transaction).table(id)?
+                    && let Some(graph) = definition.graph
+                    && let Some(graph) = Catalog::new(transaction).graph(graph)?
+                    && graph.name == definition.name
+                {
+                    return Err(Error::TableBelongsToGraph {
+                        table: definition.name,
+                        graph: graph.name,
+                        span,
+                    });
+                }
+                let chunks = Catalog::new(transaction)
+                    .table(id)?
+                    .filter(|definition| definition.is_bucket())
+                    .map(|definition| Catalog::chunks_named(&definition.name));
+                if let Some(name) = chunks
+                    && let Some(chunk_id) = Catalog::new(transaction).table_id(
+                        context.namespace,
+                        context.database,
+                        &name,
+                    )?
+                {
+                    Catalog::new(transaction).drop_table(chunk_id)?;
+                }
                 Catalog::new(transaction).drop_table(id)?;
                 Ok(Outcome::Done)
             }
@@ -180,6 +309,60 @@ impl Session<'_> {
                 let (_, id) = self.resolve_table(transaction, table)?;
                 let index = self.index_named(transaction, id, name)?;
                 Catalog::new(transaction).drop_index(index.id)?;
+                Ok(Outcome::Done)
+            }
+            StatementKind::DropAnalyzer { name } => self.drop_analyzer(transaction, name, span),
+            StatementKind::DropReplica { name } => self.drop_replica(transaction, name, span),
+            StatementKind::DropDatabase { name } => self.drop_database(transaction, name, span),
+            StatementKind::DropNamespace { name } => self.drop_namespace(transaction, name, span),
+            StatementKind::DefineGraph {
+                name,
+                if_not_exists,
+            } => self.define_graph(transaction, name, *if_not_exists, span),
+            StatementKind::DropGraph { name } => self.drop_graph(transaction, name, span),
+            StatementKind::DefineEdge {
+                name,
+                graph,
+                from,
+                to,
+                if_not_exists,
+            } => self.define_edge(transaction, name, graph, from, to, *if_not_exists, span),
+            StatementKind::DropEdge { name } => self.drop_edge(transaction, name, span),
+            // Drop and declare in ONE transaction, which is what makes this
+            // more than sugar: the catalog change and the rows ride the same log
+            // record, so the store's schema pass holds every stored row to the
+            // NEW declaration and refuses the alteration outright when one does
+            // not fit — writing neither the removal nor the replacement.
+            StatementKind::AlterField {
+                name,
+                table,
+                kind,
+                required,
+                default,
+                analyzer,
+                assert,
+            } => {
+                let (_, id) = self.resolve_table(transaction, table)?;
+                let field = self.field_named(transaction, id, name)?;
+                Catalog::new(transaction).drop_field(field)?;
+                self.define_field(
+                    transaction,
+                    name,
+                    table,
+                    kind.clone(),
+                    FieldShape {
+                        required: *required,
+                        default: default.as_ref().map(|written| written.text.clone()),
+                        analyzer: analyzer.as_ref().map(|named| named.text.clone()),
+                        assert: assert.clone(),
+                    },
+                    false,
+                )
+            }
+            StatementKind::AlterTable { table, change } => {
+                let (_, id) = self.resolve_table(transaction, table)?;
+                Catalog::new(transaction)
+                    .set_schemafull(id, matches!(change, TableChange::Schemafull))?;
                 Ok(Outcome::Done)
             }
             // Writing the definition again is the whole statement: the entries
@@ -191,7 +374,11 @@ impl Session<'_> {
                 Catalog::new(transaction).rebuild_index(&index);
                 Ok(Outcome::Done)
             }
-            StatementKind::Create { target, value } => {
+            StatementKind::Create {
+                target: CreateTarget::Named(target),
+                value,
+                answer,
+            } => {
                 let (_, address) = self.writable(transaction, target)?;
                 // A create over a record that is already there is refused. The
                 // alternative is silent replacement, which loses a record with
@@ -205,10 +392,24 @@ impl Session<'_> {
                 }
                 let payload = self.evaluate(transaction, value)?;
                 let payload = self.with_defaults(transaction, address.table, payload)?;
-                self.put_record(transaction, address, payload, span)?;
-                Ok(Outcome::Done)
+                self.put_record(transaction, address, payload.clone(), span)?;
+                Ok(answered(*answer, Value::None, payload))
             }
-            StatementKind::Update { target, edit } => {
+            StatementKind::Create {
+                target: CreateTarget::Generated(table),
+                value,
+                answer,
+            } => self.create_named_by_the_store(transaction, table, value, *answer, span),
+            StatementKind::Insert {
+                table,
+                columns,
+                rows,
+            } => self.insert(transaction, table, columns, rows, span),
+            StatementKind::Update {
+                target,
+                edit,
+                answer,
+            } => {
                 let (_, address) = self.writable(transaction, target)?;
                 let Some(existing) = transaction.get(&address)? else {
                     return Err(Error::NoSuchRecord {
@@ -216,21 +417,56 @@ impl Session<'_> {
                         span: target.span,
                     });
                 };
-                let payload = match edit {
-                    // Replacing the whole record is a write like a create, so
-                    // the defaults apply to it the same way.
-                    Edit::Whole(value) => self.evaluate(transaction, value)?,
-                    Edit::Fields(assignments) => {
-                        self.edited(transaction, &existing, assignments, target.span)?
-                    }
-                };
+                let before = decode_payload(&existing)?;
+                let payload = self.applied(transaction, edit, before.clone(), target.span)?;
                 // One rule rather than two: the result of either shape is a
                 // record being written, so `REQUIRED` + `DEFAULT` keeps meaning
                 // "this field always holds a value" even when a caller sets one
                 // to `none`.
                 let payload = self.with_defaults(transaction, address.table, payload)?;
-                self.put_record(transaction, address, payload, span)?;
-                Ok(Outcome::Done)
+                self.put_record(transaction, address, payload.clone(), span)?;
+                Ok(answered(*answer, before, payload))
+            }
+            // Neither `CREATE`'s "it must be absent" nor `UPDATE`'s "it must be
+            // present". A record that is not there starts as an empty object, so
+            // the three edit shapes need no case of their own: `= { … }` writes
+            // the value, and `SET` and `MERGE` fold into nothing and produce
+            // exactly what they name.
+            // Never answers: it fails, and the failure discards the work above
+            // it in the transaction. That is what makes it a guard rather than a
+            // log line.
+            StatementKind::Throw { value } => {
+                let message = match self.evaluate(transaction, value)? {
+                    // A string is used as written, so `THROW 'already paid'`
+                    // reads back exactly as it was typed rather than quoted.
+                    Value::String(text) => text,
+                    other => other.to_string(),
+                };
+                Err(Error::Thrown { message, span })
+            }
+            StatementKind::Upsert {
+                target,
+                edit,
+                answer,
+            } => {
+                let (_, address) = self.writable(transaction, target)?;
+                let held = transaction.get(&address)?;
+                // `BEFORE` over a record that was not there answers `NONE`. That
+                // is the true answer to the question the caller asked, and it is
+                // exactly what distinguishes an upsert that created from one
+                // that replaced — which is the reason to ask.
+                let before = match &held {
+                    Some(held) => decode_payload(held)?,
+                    None => Value::None,
+                };
+                let existing = match held {
+                    Some(held) => decode_payload(&held)?,
+                    None => Value::Object(std::collections::BTreeMap::new()),
+                };
+                let payload = self.applied(transaction, edit, existing, target.span)?;
+                let payload = self.with_defaults(transaction, address.table, payload)?;
+                self.put_record(transaction, address, payload.clone(), span)?;
+                Ok(answered(*answer, before, payload))
             }
             // A key-value write replaces whatever was there, which is why it is
             // a different verb from `CREATE` rather than the same one.
@@ -240,32 +476,85 @@ impl Session<'_> {
                 self.put_record(transaction, address, payload, span)?;
                 Ok(Outcome::Done)
             }
-            StatementKind::Delete { target } | StatementKind::Del { target } => {
+            StatementKind::Delete { target, answer } => {
                 // A file's bytes go with its metadata, in this commit. A bucket
                 // that kept chunks nothing describes would leak space nothing
                 // could ever find its way back to.
                 self.clear_file(transaction, target)?;
                 let (_, address) = self.address(transaction, target)?;
+                let before = match transaction.get(&address)? {
+                    Some(held) => decode_payload(&held)?,
+                    None => Value::None,
+                };
+                transaction.delete(address);
+                Ok(answered(*answer, before, Value::None))
+            }
+            StatementKind::Del { target } => {
+                self.clear_file(transaction, target)?;
+                let (_, address) = self.address(transaction, target)?;
                 transaction.delete(address);
                 Ok(Outcome::Done)
             }
-            StatementKind::DeleteWhere { table, condition } => {
-                self.delete_where(transaction, table, condition)
-            }
+            StatementKind::DeleteWhere {
+                table,
+                condition,
+                limit,
+            } => self.delete_where(transaction, table, condition, *limit),
             StatementKind::DefineBucket {
                 name,
+                max,
                 if_not_exists,
             } => self.define_table(
                 transaction,
                 name,
                 TableShape {
                     schemafull: false,
-                    edge: false,
-                    bucket: true,
+                    kind: TableKind::Bucket(*max),
+                    identity: IdentityKind::default(),
+                    graph: None,
                 },
                 *if_not_exists,
                 span,
             ),
+            // A collection is lenient because that is what the word means, not
+            // because a flag was left off: it declares no fields, so there is
+            // nothing for strictness to constrain. The `collection` flag is what
+            // keeps it distinguishable from a table that was told to be lenient.
+            StatementKind::DefineCollection {
+                name,
+                identity,
+                if_not_exists,
+            } => self.define_table(
+                transaction,
+                name,
+                TableShape {
+                    schemafull: false,
+                    kind: TableKind::Collection,
+                    identity: *identity,
+                    graph: None,
+                },
+                *if_not_exists,
+                span,
+            ),
+            StatementKind::DefineVector {
+                name,
+                dimension,
+                distance,
+                if_not_exists,
+            } => self.define_vector(
+                transaction,
+                name,
+                *dimension,
+                distance,
+                *if_not_exists,
+                span,
+            ),
+            StatementKind::DropVector { name } => self.drop_vector(transaction, name, span),
+            StatementKind::DefineGeo {
+                name,
+                if_not_exists,
+            } => self.define_geo(transaction, name, *if_not_exists, span),
+            StatementKind::DropGeo { name } => self.drop_geo(transaction, name, span),
             StatementKind::Put {
                 target,
                 start,
@@ -298,8 +587,18 @@ impl Session<'_> {
                 Ok(Outcome::Value(self.read_key(transaction, target)?))
             }
             StatementKind::Select(select) => {
-                let (records, path) = self.read(transaction, select)?;
-                Ok(Outcome::Records { records, path })
+                // `None` twice: a statement is the outermost read there is, so
+                // its own clause is the only ceiling in force, and nothing is
+                // holding its records except the caller who asked for them —
+                // which is the case the held ceiling exists to tell apart from a
+                // read built into memory for somebody else (Q-209).
+                let answered = self.read(transaction, select, None, None)?;
+                Ok(Outcome::Records {
+                    records: answered.records,
+                    plan: answered.plan,
+                    notes: answered.notes,
+                    only: select.only.is_some(),
+                })
             }
             StatementKind::Explain(select) => self.explain(transaction, select),
             StatementKind::Info { subject } => self.info(transaction, subject, span),
@@ -307,9 +606,21 @@ impl Session<'_> {
             // The transaction verbs and `USE` never reach here; the session
             // handles them, because they change what the next statement runs in
             // rather than touching the store.
+            // Both evaluate an expression and answer with its value. What the
+            // run loop does with that value is where they part: a `RETURN`'s
+            // value is the script's answer and is handed to the caller, while a
+            // `LET`'s is substituted into the statements below it and the
+            // statement itself reports `Done`. Neither decision belongs here —
+            // this layer runs one statement and knows nothing of the ones
+            // around it.
+            StatementKind::Let { value, .. } | StatementKind::Return { value } => {
+                Ok(Outcome::Value(self.evaluate(transaction, value)?))
+            }
+
             StatementKind::Begin
             | StatementKind::Commit
             | StatementKind::Cancel
+            | StatementKind::Verify
             | StatementKind::Use { .. } => Ok(Outcome::Done),
         }
     }
@@ -339,6 +650,292 @@ impl Session<'_> {
         Ok(())
     }
 
+    /// Write one record the store names itself: `CREATE users = { … }`.
+    ///
+    /// # Why this is the path the documentation leads with
+    ///
+    /// Asking a caller to invent a name per record is asking for the collision
+    /// they will eventually write, and it puts a decision in front of every
+    /// example that the store is better placed to make. The addressed form
+    /// stays for the caller who has a name already — an import, a migration, a
+    /// foreign key — which is the case it was always right for.
+    ///
+    /// # What it answers with, and why the identity is the default answer
+    ///
+    /// Without a `RETURN` clause this answers the produced identity rather than
+    /// [`Outcome::Done`]. `Done` would be the one honest thing it must not say:
+    /// the caller did not choose the identity, cannot derive it, and has no
+    /// second statement that would find the record again — so a write that
+    /// reported only that it happened would be a write nothing can reach.
+    /// `RETURN AFTER` still answers the record, because a caller who asked for
+    /// the record asked for the record.
+    ///
+    /// The shape is [`Outcome::Keys`], which is what `INSERT` already answers
+    /// with for the same reason. One shape for one idea, so the surface that
+    /// renders it has one arm to add rather than two to keep in step — this
+    /// project's own scar on that is `plan/reported.rs`.
+    fn create_named_by_the_store(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: &TableRef,
+        value: &tessari_ql::Expr,
+        answer: Answer,
+        span: Span,
+    ) -> Result<Outcome> {
+        let (context, id) = self.resolve_table(transaction, table)?;
+        // The same refusal `Session::writable` gives, reached directly for the
+        // same reason `insert` reaches it directly: that one takes a record
+        // target and this statement names no record.
+        if Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|found| found.is_bucket())
+        {
+            return Err(Error::NotWrittenByHand {
+                table: table.name.text.clone(),
+                span: table.span,
+            });
+        }
+        // Evaluated before the identity is allocated, so a value that refuses
+        // does not spend a number. The counter is transactional and would roll
+        // back anyway; not spending it keeps the sequence gapless for a reader,
+        // and a gap in a sequence reads as a deletion.
+        let payload = self.evaluate(transaction, value)?;
+        let payload = self.with_defaults(transaction, id, payload)?;
+        // Free by construction — `free_identity` does the read that establishes
+        // it, so nothing here writes over a record that was already there.
+        let identity = self.free_identity(transaction, &context, id, table.span)?;
+        let address = RecordAddress::new(context.namespace, context.database, id, identity.clone());
+        self.put_record(transaction, address, payload.clone(), span)?;
+        Ok(match answer {
+            Answer::After => Outcome::Value(payload),
+            _ => Outcome::Keys(vec![identity]),
+        })
+    }
+
+    /// An identity the table will give a record it is not given a name for, and
+    /// which no record in it holds.
+    ///
+    /// # Why the scheme is the table's
+    ///
+    /// It is read from the declaration rather than decided here. A store that
+    /// chose per statement would name records into one table under two schemes,
+    /// and afterwards nothing could say which one a missing record had been
+    /// written under. A table with no stored scheme reads [`IdentityKind::Int`],
+    /// which is the default `DEFINE TABLE` writes and what the declaration would
+    /// have said had the choice existed when that table was made.
+    ///
+    /// # Why the counter walks past an identity somebody named
+    ///
+    /// One table has **one** identity space, and the caller may write into it by
+    /// hand: `CREATE users:1` and `CREATE users = { … }` address the same table.
+    /// A counter that started at 1 against a table whose low identities were
+    /// imported would collide, and — because a refusal discards the counter's
+    /// advance along with the rest of the transaction — it would collide again
+    /// on the next attempt, and every attempt after that. That is not a bad
+    /// error message; it is a table that can never again be written to without
+    /// naming the record. So the counter advances until it finds an identity
+    /// nothing holds.
+    ///
+    /// **The cost is a read per identity walked past, and it is paid once.** The
+    /// counter keeps its advance when the statement commits, so the skipping is
+    /// amortised over the table's life rather than repeated. The shape that is
+    /// genuinely slow is a table given millions of named identities from 1
+    /// upwards and *then* asked to generate — one statement pays for all of
+    /// them. `IDENTITY uuid` is the declaration for a table expecting that, and
+    /// it needs no counter at all.
+    ///
+    /// A repeated **UUID** is not walked past. It cannot happen unless the
+    /// machine's randomness is broken, and a store that quietly drew again would
+    /// be hiding that rather than reporting it.
+    fn free_identity(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: &Context,
+        table: TableId,
+        span: Span,
+    ) -> Result<RecordId> {
+        let kind = Catalog::new(transaction)
+            .table(table)?
+            .map_or_else(IdentityKind::default, |found| found.identity);
+        loop {
+            let identity = match kind {
+                IdentityKind::Uuid => RecordId::Uuid(generate::uuid_v7(span)?),
+                IdentityKind::Int => {
+                    let number = Catalog::new(transaction).next_record_number(table)?;
+                    // The counter is a `u64` and a record identity is an `i64`,
+                    // so the boundary is crossed with a check rather than an
+                    // `as`. It cannot refuse — the counter declines to *store* a
+                    // number past `i64::MAX`, so a number it answered is one
+                    // this store can spend — and the branch is written anyway
+                    // because a cast that wrapped here would hand out an
+                    // identity that already names a record, silently.
+                    let held = i64::try_from(number).map_err(|_| {
+                        tessari_storage::Error::IdSpaceExhausted {
+                            level: tessari_storage::RECORD_LEVEL,
+                        }
+                    })?;
+                    RecordId::Int(held)
+                }
+            };
+            let address =
+                RecordAddress::new(context.namespace, context.database, table, identity.clone());
+            if transaction.get(&address)?.is_none() {
+                return Ok(identity);
+            }
+            if matches!(kind, IdentityKind::Uuid) {
+                return Err(Error::RecordExists {
+                    id: identity.to_string(),
+                    span,
+                });
+            }
+        }
+    }
+
+    /// Write a batch of records the store names itself.
+    ///
+    /// # One transaction, and why that needs no code here
+    ///
+    /// The rows are written in a loop against the transaction this statement was
+    /// handed, and a row that refuses leaves through `?` — so `session::run`
+    /// never reaches its `commit`, and the rows already written go with it. The
+    /// batch is atomic because the transaction is, not because anything here
+    /// arranges it. The test for it uses a **middle** row, because an
+    /// implementation that committed as it went would still pass a batch whose
+    /// only bad row is the last.
+    ///
+    /// # Why the produced identity is checked against the store
+    ///
+    /// [`Self::free_identity`] does the read that makes the identity free, and a
+    /// read per row is what that costs. A store that skipped it and wrote over a
+    /// record would lose it with nothing anywhere to notice — and the case is not
+    /// hypothetical, because the caller may name identities in this same table
+    /// by hand.
+    ///
+    /// The refusal tells the caller nothing they could have used: they did not
+    /// choose the identity and cannot choose the next one, so this is not the
+    /// existence oracle that keeps `CREATE` at `read` + `write`. `INSERT` needs
+    /// `write` alone — see `identity::Needs::of`.
+    fn insert(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: &TableRef,
+        columns: &[Name],
+        rows: &[Vec<tessari_ql::Expr>],
+        span: Span,
+    ) -> Result<Outcome> {
+        let (context, id) = self.resolve_table(transaction, table)?;
+        // A bucket's records describe bytes the store holds, so one written by
+        // hand can lie about them. The same refusal `Session::writable` gives,
+        // for the same reason — reached here directly because that one takes a
+        // record target and an insert names no record.
+        if Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|found| found.is_bucket())
+        {
+            return Err(Error::NotWrittenByHand {
+                table: table.name.text.clone(),
+                span: table.span,
+            });
+        }
+
+        let mut produced = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut fields = BTreeMap::new();
+            for (column, value) in columns.iter().zip(row) {
+                fields.insert(column.text.clone(), self.evaluate(transaction, value)?);
+            }
+            let payload = self.with_defaults(transaction, id, Value::Object(fields))?;
+
+            let identity = self.free_identity(transaction, &context, id, table.span)?;
+            let address =
+                RecordAddress::new(context.namespace, context.database, id, identity.clone());
+            self.put_record(transaction, address, payload, span)?;
+            produced.push(identity);
+        }
+        Ok(Outcome::Keys(produced))
+    }
+
+    /// The kind a `DEFINE TABLE` produces, with any declared pair resolved.
+    ///
+    /// Resolution happens here rather than inside the table's own creation
+    /// because an endpoint that does not exist has to refuse before anything is
+    /// written: a table carrying a dangling endpoint id could refuse nothing,
+    /// and the clause exists only to refuse.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Unknown`] when an endpoint names no table, or when the
+    /// order names a field the statement does not declare.
+    /// The graph a `DEFINE TABLE … IN social` clause names, resolved to its id.
+    ///
+    /// The graph is looked up in the tenancy the statement is running in, which
+    /// is where `DEFINE GRAPH` put it. A name that resolves to nothing refuses
+    /// here, before the table exists, so a refusal leaves the store exactly as
+    /// it found it.
+    fn resolve_graph(
+        &self,
+        transaction: &mut Transaction<'_>,
+        graph: Option<&Name>,
+    ) -> Result<Option<GraphId>> {
+        let Some(graph) = graph else {
+            return Ok(None);
+        };
+        let context = self.context(transaction, None, graph.span)?;
+        let id = Catalog::new(transaction)
+            .graph_id(context.namespace, context.database, &graph.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "graph",
+                name: graph.text.clone(),
+                span: graph.span,
+            })?;
+        Ok(Some(id))
+    }
+
+    fn edge_kind(
+        &self,
+        transaction: &mut Transaction<'_>,
+        edge: Option<&EdgeClause>,
+        columns: &[ColumnDeclaration],
+    ) -> Result<TableKind> {
+        let Some(edge) = edge else {
+            return Ok(TableKind::Table);
+        };
+        let EdgeClause::Between(declared) = edge else {
+            return Ok(TableKind::Edge(None));
+        };
+        let (_, from_id) = self.resolve_table(transaction, &declared.from)?;
+        let (_, to_id) = self.resolve_table(transaction, &declared.to)?;
+        // The ordering field has to be one the table declares. Nothing else can
+        // guarantee an edge carries it, and the order is the endpoint index's
+        // key suffix rather than a sort applied afterwards: an edge missing the
+        // field has no place to be written, and the failure would surface much
+        // later as neighbours arriving in roughly the right sequence.
+        let order = match &declared.order {
+            Some(ordering) => {
+                if !columns
+                    .iter()
+                    .any(|column| column.name.text == ordering.field.text)
+                {
+                    return Err(Error::Unknown {
+                        entity: "field",
+                        name: ordering.field.text.clone(),
+                        span: ordering.field.span,
+                    });
+                }
+                Some(EdgeOrder {
+                    field: ordering.field.text.clone(),
+                    descending: ordering.descending,
+                })
+            }
+            None => None,
+        };
+        Ok(TableKind::Edge(Some(EdgeDeclaration {
+            from: from_id,
+            to: to_id,
+            order,
+        })))
+    }
+
     /// Write an edge between two records.
     ///
     /// The edge is an ordinary record in the edge table, carrying `out` and `in`
@@ -360,18 +957,47 @@ impl Session<'_> {
         to: &RecordTarget,
         value: Option<&tessari_ql::Expr>,
     ) -> Result<Outcome> {
+        let context = self.context(transaction, None, edges.span)?;
+        // An edge *kind* is looked for first, because it is the narrower word: a
+        // kind and an edge table cannot share a name (both claim it in the same
+        // catalog), so finding one settles which path this is.
+        if let Some(kind) = Catalog::new(transaction).edge_kind_id(
+            context.namespace,
+            context.database,
+            &edges.name.text,
+        )? {
+            return self.relate_in_graph(transaction, kind, from, edges, to, value);
+        }
+
         let (context, edge_table) = self.resolve_table(transaction, edges)?;
-        if !Catalog::new(transaction)
-            .table(edge_table)?
-            .is_some_and(|found| found.edge)
-        {
+        let Some(definition) = Catalog::new(transaction).table(edge_table)? else {
+            return Err(Error::NotAnEdgeTable {
+                table: edges.name.text.clone(),
+                span: edges.span,
+            });
+        };
+        if !definition.is_edge() {
             return Err(Error::NotAnEdgeTable {
                 table: edges.name.text.clone(),
                 span: edges.span,
             });
         }
+        let declared = definition.edge_endpoints().cloned();
         let (_, out) = self.address(transaction, from)?;
         let (_, into) = self.address(transaction, to)?;
+        // A table that declared its pair refuses a link between any other, and
+        // that refusal is the whole of what the clause buys. It is checked after
+        // both endpoints resolve so that a link naming a record that is not
+        // there fails as the missing record it is, rather than as a pair the
+        // table does not join.
+        if let Some(declared) = declared
+            && (out.table != declared.from || into.table != declared.to)
+        {
+            return Err(Error::EndpointsNotDeclared {
+                table: edges.name.text.clone(),
+                span: edges.span,
+            });
+        }
 
         let mut fields = match value {
             Some(expression) => match self.evaluate(transaction, expression)? {
@@ -397,16 +1023,183 @@ impl Session<'_> {
             Value::Record(RecordRef::new(into.table, into.id.clone())),
         );
 
-        let id = RecordId::from(format!(
-            "{}:{}->{}:{}",
-            out.table, out.id, into.table, into.id
-        ));
-        let address = RecordAddress::new(context.namespace, context.database, edge_table, id);
+        let address = RecordAddress::new(
+            context.namespace,
+            context.database,
+            edge_table,
+            edge_identity(&out, &into),
+        );
         // An edge is an ordinary record, so an edge table's declarations apply
         // to it — including their defaults.
         let payload = self.with_defaults(transaction, edge_table, Value::Object(fields))?;
         self.put_record(transaction, address, payload, edges.span)?;
         Ok(Outcome::Done)
+    }
+
+    /// `RELATE person:1->works_at->company:1` — an edge of a declared kind.
+    ///
+    /// The record written here is never read by a walk. It exists so that the
+    /// edge is an ordinary mutation, which is what carries it and the adjacency
+    /// derived from it through the log to every replica; the neighbours and their
+    /// properties are read from the adjacency entries instead.
+    fn relate_in_graph(
+        &self,
+        transaction: &mut Transaction<'_>,
+        kind: tessari_types::EdgeKindId,
+        from: &RecordTarget,
+        edges: &TableRef,
+        to: &RecordTarget,
+        value: Option<&tessari_ql::Expr>,
+    ) -> Result<Outcome> {
+        let declared =
+            Catalog::new(transaction)
+                .edge_kind(kind)?
+                .ok_or_else(|| Error::Unknown {
+                    entity: "edge kind",
+                    name: edges.name.text.clone(),
+                    span: edges.span,
+                })?;
+        let (_, out) = self.address(transaction, from)?;
+        let (_, into) = self.address(transaction, to)?;
+        // Checked after both endpoints resolve, so a relation naming a record
+        // that is not there fails as the missing record rather than as a pair the
+        // kind does not join. The order matters too: an unordered check would
+        // accept `company:1->works_at->person:1`.
+        if out.table != declared.from || into.table != declared.to {
+            return Err(Error::EndpointsNotDeclared {
+                table: edges.name.text.clone(),
+                span: edges.span,
+            });
+        }
+
+        let mut fields = match value {
+            Some(expression) => match self.evaluate(transaction, expression)? {
+                Value::Object(given) => given,
+                other => {
+                    return Err(Error::EdgePropertiesNotAnObject {
+                        found: other.type_name(),
+                        span: edges.span,
+                    });
+                }
+            },
+            None => BTreeMap::new(),
+        };
+        fields.insert(
+            EDGE_OUT.to_owned(),
+            Value::Record(RecordRef::new(out.table, out.id.clone())),
+        );
+        fields.insert(
+            EDGE_IN.to_owned(),
+            Value::Record(RecordRef::new(into.table, into.id.clone())),
+        );
+
+        // Identified by its endpoints, as an edge-table edge is: relating the
+        // same pair twice replaces one record rather than adding a second, which
+        // is what makes `RELATE` idempotent and keeps the adjacency a set.
+        let address = RecordAddress::new(
+            declared.namespace,
+            declared.database,
+            declared.edges,
+            edge_identity(&out, &into),
+        );
+        self.put_record(transaction, address, Value::Object(fields), edges.span)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DELETE person:1->works_at->company:1` — one edge, by what it joins.
+    ///
+    /// The caller writes the two endpoints and the edge, exactly as they wrote
+    /// them to create it, and the identity is derived here by the same rule that
+    /// derived it there. That is the whole statement: without it, removing an
+    /// edge means reconstructing `"person:1->company:1"` by hand, which is a
+    /// caller depending on an internal encoding to undo what `RELATE` did — and
+    /// a caller who derives it slightly differently deletes nothing and is told
+    /// it worked.
+    ///
+    /// **The adjacency needs no code here.** The entries are derived from this
+    /// record's own mutation in `adjacency::maintain`, so the tombstone written
+    /// below removes both of them in the batch that carries it — the same reason
+    /// `DROP EDGE` needed no sweep.
+    fn delete_edge(
+        &self,
+        transaction: &mut Transaction<'_>,
+        from: &RecordTarget,
+        edges: &TableRef,
+        to: &RecordTarget,
+        answer: Answer,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, edges.span)?;
+        let (_, out) = self.address(transaction, from)?;
+        let (_, into) = self.address(transaction, to)?;
+
+        // An edge kind is looked for first, for the reason `relate` looks for it
+        // first: a kind and an edge table cannot share a name, so finding one
+        // settles which path this is.
+        let address = if let Some(kind) = Catalog::new(transaction).edge_kind_id(
+            context.namespace,
+            context.database,
+            &edges.name.text,
+        )? {
+            let declared =
+                Catalog::new(transaction)
+                    .edge_kind(kind)?
+                    .ok_or_else(|| Error::Unknown {
+                        entity: "edge kind",
+                        name: edges.name.text.clone(),
+                        span: edges.span,
+                    })?;
+            // Refused rather than answered with a no-op. The derived identity
+            // for a pair the kind does not join cannot exist, so deleting it
+            // would succeed and remove nothing — and a caller who wrote the
+            // endpoints the wrong way round would be told their edge is gone.
+            // `RELATE` refuses the same two shapes, and an asymmetry between the
+            // statement that writes an edge and the one that removes it is the
+            // surprising thing, not the refusal.
+            if out.table != declared.from || into.table != declared.to {
+                return Err(Error::EndpointsNotDeclared {
+                    table: edges.name.text.clone(),
+                    span: edges.span,
+                });
+            }
+            RecordAddress::new(
+                declared.namespace,
+                declared.database,
+                declared.edges,
+                edge_identity(&out, &into),
+            )
+        } else {
+            let (context, edge_table) = self.resolve_table(transaction, edges)?;
+            let declared = Catalog::new(transaction)
+                .table(edge_table)?
+                .filter(|found| found.is_edge())
+                .ok_or_else(|| Error::NotAnEdgeTable {
+                    table: edges.name.text.clone(),
+                    span: edges.span,
+                })?;
+            if let Some(pair) = declared.edge_endpoints()
+                && (out.table != pair.from || into.table != pair.to)
+            {
+                return Err(Error::EndpointsNotDeclared {
+                    table: edges.name.text.clone(),
+                    span: edges.span,
+                });
+            }
+            RecordAddress::new(
+                context.namespace,
+                context.database,
+                edge_table,
+                edge_identity(&out, &into),
+            )
+        };
+
+        // An edge that is not there deletes as a record that is not there does:
+        // `BEFORE` answers `NONE`, which is the true answer to what was removed.
+        let before = match transaction.get(&address)? {
+            Some(held) => decode_payload(&held)?,
+            None => Value::None,
+        };
+        transaction.delete(address);
+        Ok(answered(answer, before, Value::None))
     }
 
     fn define_namespace(
@@ -442,6 +1235,268 @@ impl Session<'_> {
             return Ok(Outcome::Done);
         }
         Catalog::new(transaction).create_database(namespace, &name.text)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DEFINE GRAPH social` — the graph, **and the collection its own nodes
+    /// live in**.
+    ///
+    /// Two statements behind one word, exactly as [`Self::define_vector`] and
+    /// [`Self::define_geo`] are three behind theirs, and for the same reason: a
+    /// graph that owns no records is a label rather than a structure. Without
+    /// the collection a caller cannot write a single node until they have
+    /// declared a table of their own and marked it `IN <graph>` — so the word
+    /// named a structure and delivered a membership flag, which is the objection
+    /// that was raised against it twice.
+    ///
+    /// The collection takes the **graph's own name**, which is what makes
+    /// `CREATE social:1 = { … }` the obvious spelling and keeps the declared
+    /// engines symmetrical: `DEFINE VECTOR embeddings` is written into as
+    /// `embeddings`, and now `DEFINE GRAPH social` is written into as `social`.
+    ///
+    /// The two names do not collide because [`qualify`] reserves a name under
+    /// its **level**, so `graph:<ns>/<db>/social` and `table:<ns>/<db>/social`
+    /// are separate reservations. That same reservation is load-bearing a second
+    /// time: it is what guarantees the graph's node collection is the *one*
+    /// member that can carry the graph's name, which is how [`Self::drop_graph`]
+    /// tells it apart from a table the caller attached. A pre-existing table
+    /// called `social` therefore refuses this statement with `NameTaken` rather
+    /// than being silently adopted, and the graph row rolls back with it.
+    ///
+    /// A collection rather than a declared table, because the node shape is the
+    /// caller's to decide — `DEFINE FIELD … ON social` narrows it afterwards for
+    /// anyone who wants that, the same way it would on any other collection.
+    ///
+    /// [`qualify`]: tessari_storage::Catalog
+    fn define_graph(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        if_not_exists: bool,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        if if_not_exists
+            && Catalog::new(transaction)
+                .graph_id(context.namespace, context.database, &name.text)?
+                .is_some()
+        {
+            return Ok(Outcome::Done);
+        }
+        let graph = Catalog::new(transaction).create_graph(
+            context.namespace,
+            context.database,
+            &name.text,
+        )?;
+        self.define_table(
+            transaction,
+            name,
+            TableShape {
+                schemafull: false,
+                kind: TableKind::Collection,
+                identity: IdentityKind::default(),
+                graph: Some(graph.id),
+            },
+            if_not_exists,
+            span,
+        )?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP GRAPH social` — refused while a table still belongs to it.
+    ///
+    /// The same stance [`Self::drop_database`] takes one level away: the
+    /// statement asks whether anything still depends, because it holds the span
+    /// to refuse with. Dropping anyway would leave every member table pointing
+    /// at an id nothing resolves, and the symptom would surface later as a walk
+    /// that finds no graph rather than now as the drop that caused it.
+    fn drop_graph(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        let id = Catalog::new(transaction)
+            .graph_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "graph",
+                name: name.text.clone(),
+                span,
+            })?;
+        // The graph's own node collection is not a dependant — it is part of the
+        // structure being dropped, and it carries the graph's name because
+        // nothing else is allowed to. Counting it here would make every graph
+        // this store creates permanently undroppable, refused by a table the
+        // caller never declared and cannot name. That is the companion-table
+        // shape the bucket already found once; see `StatementKind::DropTable`.
+        let (own, attached): (Vec<_>, Vec<_>) = Catalog::new(transaction)
+            .tables_in(context.namespace, context.database)?
+            .into_iter()
+            .filter(|table| table.graph == Some(id))
+            .partition(|table| table.name == name.text);
+        if let Some(first) = attached.first() {
+            return Err(Error::StillDepended {
+                depended: Depended::GraphByTable,
+                name: name.text.clone(),
+                count: attached.len(),
+                first: first.name.clone(),
+                span,
+            });
+        }
+        let kinds: Vec<_> = Catalog::new(transaction)
+            .edge_kinds_in(context.namespace, context.database)?
+            .into_iter()
+            .filter(|kind| kind.graph == id)
+            .collect();
+        if let Some(first) = kinds.first() {
+            return Err(Error::StillDepended {
+                depended: Depended::GraphByEdgeKind,
+                name: name.text.clone(),
+                count: kinds.len(),
+                first: first.name.clone(),
+                span,
+            });
+        }
+        for table in own {
+            Catalog::new(transaction).drop_table(table.id)?;
+        }
+        Catalog::new(transaction).drop_graph(id)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DEFINE EDGE works_at IN social FROM person TO company`.
+    ///
+    /// Everything is resolved before anything is written, so a declaration that
+    /// names a graph or a table that is not there leaves the store exactly as it
+    /// found it — the same ordering the membership clause keeps.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the statement's own shape; a struct here would name a grouping \
+                  the grammar does not have"
+    )]
+    fn define_edge(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        graph: &Name,
+        from: &Name,
+        to: &Name,
+        if_not_exists: bool,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        if if_not_exists
+            && Catalog::new(transaction)
+                .edge_kind_id(context.namespace, context.database, &name.text)?
+                .is_some()
+        {
+            return Ok(Outcome::Done);
+        }
+        let graph_id = Catalog::new(transaction)
+            .graph_id(context.namespace, context.database, &graph.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "graph",
+                name: graph.text.clone(),
+                span,
+            })?;
+        let declared =
+            Catalog::new(transaction)
+                .graph(graph_id)?
+                .ok_or_else(|| Error::Unknown {
+                    entity: "graph",
+                    name: graph.text.clone(),
+                    span,
+                })?;
+
+        let mut endpoints = Vec::with_capacity(2);
+        for endpoint in [from, to] {
+            let id = Catalog::new(transaction)
+                .table_id(context.namespace, context.database, &endpoint.text)?
+                .ok_or_else(|| Error::Unknown {
+                    entity: "table",
+                    name: endpoint.text.clone(),
+                    span,
+                })?;
+            // Both endpoints must be in the graph, and this is the refusal that
+            // bounds a walk: a far side outside the structure would let a
+            // traversal leave it and still answer.
+            let member = Catalog::new(transaction)
+                .table(id)?
+                .is_some_and(|table| table.graph == Some(graph_id));
+            if !member {
+                return Err(Error::EndpointOutsideGraph {
+                    table: endpoint.text.clone(),
+                    graph: graph.text.clone(),
+                    span,
+                });
+            }
+            endpoints.push(id);
+        }
+
+        // The companion table holds the edges as ordinary records, which is what
+        // carries them — and the adjacency derived from them — through the log to
+        // every replica. Nothing can name it.
+        let edges = Catalog::new(transaction).create_table(
+            context.namespace,
+            context.database,
+            &Catalog::edges_named(&name.text),
+            TableShape::default(),
+        )?;
+        Catalog::new(transaction).create_edge_kind(
+            &declared,
+            &name.text,
+            endpoints[0],
+            endpoints[1],
+            edges.id,
+        )?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP EDGE works_at` — the kind, its edges, and the adjacency they wrote.
+    ///
+    /// The edges are deleted rather than the entries being range-swept, and that
+    /// is deliberate: deleting a record produces a tombstone in the same log
+    /// record, and the adjacency derived from it is removed in the batch that
+    /// carries the deletion. A second, parallel way to remove an entry is how one
+    /// of the two ends up forgotten.
+    fn drop_edge(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        let id = Catalog::new(transaction)
+            .edge_kind_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "edge kind",
+                name: name.text.clone(),
+                span,
+            })?;
+        let kind = Catalog::new(transaction)
+            .edge_kind(id)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "edge kind",
+                name: name.text.clone(),
+                span,
+            })?;
+
+        let edges: Vec<_> = transaction
+            .scan_table(context.namespace, context.database, kind.edges)?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        for id in edges {
+            transaction.delete(RecordAddress::new(
+                context.namespace,
+                context.database,
+                kind.edges,
+                id,
+            ));
+        }
+        Catalog::new(transaction).drop_table(kind.edges)?;
+        Catalog::new(transaction).drop_edge_kind(id)?;
         Ok(Outcome::Done)
     }
 
@@ -503,6 +1558,322 @@ impl Session<'_> {
     /// the table to it — the ones already there and the ones this transaction
     /// writes. The declaration and the rows it constrains land together or
     /// neither does.
+    /// `DEFINE TABLE t (a string, b int REQUIRED)` — the table, then its fields.
+    ///
+    /// **A desugaring, not a second implementation.** Each column goes through
+    /// the same `define_field` the long spelling does, which is what makes a
+    /// constraint declared here behave the way one declared there does — it is
+    /// checked against the rows already in the table, and a violation refuses
+    /// the whole statement. Reimplementing the field half would have produced
+    /// the one thing this criterion is about: two spellings that agree on the
+    /// happy path and disagree on the day the data does not fit.
+    ///
+    /// Fields are declared **after** the table exists and in written order, so
+    /// a failure at the third column rolls back the first two and the table
+    /// with them: the statement's transaction is the unit, and a half-declared
+    /// table is not a state this can leave behind.
+    ///
+    /// `IF NOT EXISTS` covers the whole declaration rather than the table
+    /// alone. The alternative makes the statement un-re-runnable — the table is
+    /// tolerated and the first column then refuses — which is the opposite of
+    /// what the words ask for.
+    fn define_table_with_columns(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        columns: &[ColumnDeclaration],
+        shape: TableShape,
+        if_not_exists: bool,
+        span: Span,
+    ) -> Result<Outcome> {
+        let outcome = self.define_table(transaction, name, shape, if_not_exists, span)?;
+        if columns.is_empty() {
+            return Ok(outcome);
+        }
+        let table = TableRef {
+            database: None,
+            name: name.clone(),
+            span: name.span,
+        };
+        for column in columns {
+            self.define_field(
+                transaction,
+                &column.name,
+                &table,
+                column.kind.clone(),
+                FieldShape {
+                    required: column.required,
+                    default: column.default.as_ref().map(|written| written.text.clone()),
+                    analyzer: column.analyzer.as_ref().map(|named| named.text.clone()),
+                    assert: column.assert.clone(),
+                },
+                if_not_exists,
+            )?;
+        }
+        Ok(outcome)
+    }
+
+    /// `DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine`
+    ///
+    /// **A desugaring, not a second implementation**, on exactly the reasoning
+    /// [`Self::define_table_with_columns`] records. The statement stands for
+    /// three:
+    ///
+    /// ```text
+    /// DEFINE COLLECTION embeddings;
+    /// DEFINE FIELD vector ON embeddings TYPE vector<768> REQUIRED;
+    /// DEFINE INDEX vector ON embeddings FIELDS vector VECTOR cosine;
+    /// ```
+    ///
+    /// and it runs them through the same three functions the long spellings do.
+    /// That is what discharges the criterion this node was written for: there is
+    /// no store-only path that could disagree with the field one, because the
+    /// store's path **is** the field one. A width declared here is checked by
+    /// the store's apply pass, where a replica reaches the same verdict from the
+    /// record alone — not because this function arranged it, but because there
+    /// is nothing else here to arrange.
+    ///
+    /// The field and the index share the name `vector`. Fields and indexes are
+    /// separate namespaces, so nothing collides, and the store then has one name
+    /// to remember rather than two — `INFO FOR TABLE` reads
+    /// `DEFINE INDEX vector ON embeddings FIELDS vector VECTOR cosine`, which
+    /// says what it is.
+    ///
+    /// `IF NOT EXISTS` covers all three, for the reason it covers a table and
+    /// its columns: tolerating the table and then refusing at the field makes
+    /// the statement un-re-runnable, which is the opposite of what the words ask.
+    fn define_vector(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        dimension: usize,
+        distance: &Name,
+        if_not_exists: bool,
+        span: Span,
+    ) -> Result<Outcome> {
+        let distance =
+            VectorDistance::parse(&distance.text).ok_or_else(|| Error::NoSuchDistance {
+                name: distance.text.clone(),
+                span: distance.span,
+            })?;
+        // Written as a conversion rather than a cast, so that raising the
+        // ceiling is a question the compiler asks rather than a truncation
+        // nobody sees. The parser refuses anything above it, so the only way
+        // here is through a change to that ceiling.
+        let held = u32::try_from(dimension).map_err(|_| {
+            tessari_ql::Error::VectorWidthAboveTheCeiling {
+                most: tessari_ql::WIDEST_VECTOR,
+                span,
+            }
+        })?;
+        let outcome = self.define_table(
+            transaction,
+            name,
+            TableShape {
+                schemafull: false,
+                kind: TableKind::Vector(VectorDeclaration {
+                    dimension: held,
+                    distance,
+                }),
+                identity: IdentityKind::default(),
+                graph: None,
+            },
+            if_not_exists,
+            span,
+        )?;
+        let table = TableRef {
+            database: None,
+            name: name.clone(),
+            span: name.span,
+        };
+        let field = Name {
+            text: VECTOR_FIELD.to_owned(),
+            span: name.span,
+        };
+        self.define_field(
+            transaction,
+            &field,
+            &table,
+            FieldKind::vector(dimension).ok_or(tessari_ql::Error::VectorWidthBelowOne { span })?,
+            FieldShape {
+                // The one property the three loose statements cannot express
+                // between them: `TYPE vector<n>` leaves a field optional, so a
+                // record with no vector at all is legal in a table — and is not
+                // a record of a vector store.
+                required: true,
+                default: None,
+                analyzer: None,
+                assert: None,
+            },
+            if_not_exists,
+        )?;
+        self.define_index(
+            transaction,
+            &field,
+            &table,
+            &[FieldPath {
+                path: Path::field(VECTOR_FIELD),
+                span: name.span,
+            }],
+            IndexShape {
+                unique: false,
+                search: false,
+                spatial: false,
+                vector: Some(distance),
+            },
+            if_not_exists,
+        )?;
+        Ok(outcome)
+    }
+
+    /// `DROP VECTOR embeddings` — the store's definition, its field and its
+    /// index declaration.
+    ///
+    /// **Not its records.** This calls [`Catalog::drop_table`], which removes the
+    /// catalog rows and does not reach what is stored under them — the rule every
+    /// drop in this language follows, and the reason there is no `CASCADE`. The
+    /// summary line said "its records" until it was read against the code; a
+    /// wrong sentence here is worse than a wrong one in the manual, because the
+    /// next person to reason about the statement reads it and stops checking.
+    ///
+    /// Refuses a table that is not one, rather than dropping it. The two words
+    /// name different things even where they would remove the same rows, and a
+    /// `DROP VECTOR` that quietly removed an ordinary table would be a typo with
+    /// the blast radius of a table.
+    fn drop_vector(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        let id = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "vector store",
+                name: name.text.clone(),
+                span,
+            })?;
+        let is_vector = Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|definition| matches!(definition.kind, TableKind::Vector(_)));
+        if !is_vector {
+            return Err(Error::Unknown {
+                entity: "vector store",
+                name: name.text.clone(),
+                span,
+            });
+        }
+        Catalog::new(transaction).drop_table(id)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DEFINE GEO places` — the collection, its geometry field and its index.
+    ///
+    /// The same three calls [`Session::define_vector`] makes, in the same order,
+    /// through the same functions. There is no geo-only path: what the word
+    /// creates is what the three statements create, which is what makes the
+    /// round trip through `INFO` honest.
+    fn define_geo(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        if_not_exists: bool,
+        span: Span,
+    ) -> Result<Outcome> {
+        let outcome = self.define_table(
+            transaction,
+            name,
+            TableShape {
+                schemafull: false,
+                kind: TableKind::Geo,
+                identity: IdentityKind::default(),
+                graph: None,
+            },
+            if_not_exists,
+            span,
+        )?;
+        let table = TableRef {
+            database: None,
+            name: name.clone(),
+            span: name.span,
+        };
+        let field = Name {
+            text: GEO_FIELD.to_owned(),
+            span: name.span,
+        };
+        self.define_field(
+            transaction,
+            &field,
+            &table,
+            FieldKind::Geometry,
+            FieldShape {
+                // The property the three loose statements cannot express between
+                // them, exactly as in the vector store: `TYPE geometry` leaves
+                // the field optional, and a record with no geometry is legal in
+                // a table while being a record a place store cannot answer for.
+                required: true,
+                default: None,
+                analyzer: None,
+                assert: None,
+            },
+            if_not_exists,
+        )?;
+        self.define_index(
+            transaction,
+            &field,
+            &table,
+            &[FieldPath {
+                path: Path::field(GEO_FIELD),
+                span: name.span,
+            }],
+            IndexShape {
+                unique: false,
+                search: false,
+                spatial: true,
+                vector: None,
+            },
+            if_not_exists,
+        )?;
+        Ok(outcome)
+    }
+
+    /// `DROP GEO places` — the store's definition, its geometry field and its
+    /// spatial index declaration, and not its records; see
+    /// [`Session::drop_vector`] for why the distinction is written down.
+    ///
+    /// Refuses a table that is not one, for the reason [`Session::drop_vector`]
+    /// does: the words name different things even where they would remove the
+    /// same rows, and a `DROP GEO` that quietly removed an ordinary table would
+    /// be a typo with the blast radius of a table.
+    fn drop_geo(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        let id = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "geo store",
+                name: name.text.clone(),
+                span,
+            })?;
+        let is_geo = Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|definition| definition.kind == TableKind::Geo);
+        if !is_geo {
+            return Err(Error::Unknown {
+                entity: "geo store",
+                name: name.text.clone(),
+                span,
+            });
+        }
+        Catalog::new(transaction).drop_table(id)?;
+        Ok(Outcome::Done)
+    }
+
     fn define_field(
         &self,
         transaction: &mut Transaction<'_>,
@@ -533,7 +1904,7 @@ impl Session<'_> {
             if !kind.accepts(&value) {
                 return Err(Error::DefaultDoesNotMatch {
                     field: name.text.clone(),
-                    declared: kind.name(),
+                    declared: kind.name().into_owned(),
                     found: value.type_name(),
                     span: name.span,
                 });
@@ -608,6 +1979,258 @@ impl Session<'_> {
         // asked for or declares nothing.
         let roles = roles.map(named_roles).transpose()?.unwrap_or(Roles::NONE);
         Catalog::new(transaction).create_replica(&name.text, endpoint, roles)?;
+        Ok(Outcome::Done)
+    }
+
+    /// Declare a consumer, after checking everything it names actually exists.
+    ///
+    /// The order matters and is the same one `DEFINE REPLICA` uses for its
+    /// roles: everything that can be refused is refused **before** the name is
+    /// claimed, so a statement either declares the consumer it was asked for or
+    /// declares nothing. Here that covers three things a mistyped statement gets
+    /// wrong — an unknown format, a destination that does not exist, and a
+    /// mapping that names the same record field twice.
+    fn define_consumer(
+        &self,
+        transaction: &mut Transaction<'_>,
+        declared: &Declared<'_>,
+        if_not_exists: bool,
+    ) -> Result<Outcome> {
+        if if_not_exists
+            && Catalog::new(transaction)
+                .consumers()?
+                .iter()
+                .any(|found| found.name == declared.name.text)
+        {
+            return Ok(Outcome::Done);
+        }
+
+        // Refused where the store knows what it knows, with the span the author
+        // can see — the rule a vector distance and a node role already follow.
+        // There is one format today, and an unknown one is a consumer that would
+        // start and then fail on its first message rather than at declaration.
+        if declared.format.text != FORMAT_JSON {
+            return Err(Error::Unknown {
+                entity: "message format",
+                name: declared.format.text.clone(),
+                span: declared.format.span,
+            });
+        }
+
+        // The destination is resolved rather than remembered, which is what
+        // removes the race the two-object design cannot: a consumer whose
+        // destination does not exist is refused here instead of starting and
+        // discovering it later, with messages already read.
+        let (context, destination) = self.resolve_table(transaction, declared.destination)?;
+
+        let mut mapping = Vec::with_capacity(declared.mapping.len());
+        for pair in declared.mapping {
+            // Two message fields landing on one record field is a mapping whose
+            // result depends on which one is applied last. Refused rather than
+            // ordered, because there is no ordering that is not arbitrary.
+            if mapping.iter().any(|held: &Mapped| held.to == pair.to.text) {
+                return Err(Error::DuplicateMapping {
+                    field: pair.to.text.clone(),
+                    span: pair.to.span,
+                });
+            }
+            mapping.push(Mapped {
+                from: pair.from.path.to_string(),
+                to: pair.to.text.clone(),
+            });
+        }
+
+        let definition = ConsumerDefinition {
+            // Replaced by the catalog when the record is written; the field
+            // exists on the way in only because the definition is one type.
+            id: 0,
+            name: declared.name.text.clone(),
+            brokers: declared.source.brokers.clone(),
+            topic: declared.source.topic.clone(),
+            group: declared.group.to_owned(),
+            format: declared.format.text.clone(),
+            identity: declared.identity.path.to_string(),
+            mapping,
+            namespace: context.namespace,
+            database: context.database,
+            destination,
+            on_failure: match declared.on_failure {
+                tessari_ql::OnFailure::Stop => OnFailure::Stop,
+                tessari_ql::OnFailure::Quarantine => OnFailure::Quarantine,
+            },
+            // `None` reads as one, not as "decide for me". The parser has
+            // already refused a zero, so this cannot be a consumer that runs
+            // nothing.
+            parallelism: declared.parallelism.unwrap_or(1),
+            // Whose authority the writes will carry. `None` only on an open
+            // store, where there is nobody to record and nothing to enforce —
+            // the same condition under which the first user is declared.
+            declarer: self.identity.user().map(|user| user.id),
+        };
+        // A name already taken is refused by the catalog itself, which is where
+        // every other declaration's collision is decided.
+        Catalog::new(transaction).create_consumer(&definition)?;
+        Ok(Outcome::Done)
+    }
+
+    /// Forget a consumer.
+    ///
+    /// Removing the declaration is all this does here. Stopping whatever is
+    /// running is the runner's job, and it learns of the change the same way a
+    /// follower does — by reading the catalog — rather than by being called from
+    /// inside a transaction that has not committed yet.
+    fn drop_consumer(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let found = Catalog::new(transaction)
+            .consumers()?
+            .into_iter()
+            .find(|held| held.name == name.text);
+        let Some(consumer) = found else {
+            return Err(Error::Unknown {
+                entity: "consumer",
+                name: name.text.clone(),
+                span,
+            });
+        };
+        Catalog::new(transaction).drop_consumer(&consumer)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP ANALYZER simple` — refused while a field still names it.
+    ///
+    /// The reference is by **name** rather than by id
+    /// (`FieldDefinition::analyzer`), so nothing in the catalog enforces it and
+    /// nothing would notice it break. What a dangling reference produces is a
+    /// search that quietly stops matching — a wrong answer indistinguishable
+    /// from a right one, which is the shape this store refuses everywhere.
+    ///
+    /// Every field in the store is read, not every field on one table: an
+    /// analyzer is declared once for the whole store, so no single table can
+    /// answer whether it is still attached.
+    fn drop_analyzer(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let found = Catalog::new(transaction)
+            .analyzers()?
+            .into_iter()
+            .find(|held| held.name == name.text);
+        let Some(analyzer) = found else {
+            return Err(Error::Unknown {
+                entity: "analyzer",
+                name: name.text.clone(),
+                span,
+            });
+        };
+        let attached: Vec<String> = Catalog::new(transaction)
+            .fields()?
+            .into_iter()
+            .filter(|field| field.analyzer.as_deref() == Some(name.text.as_str()))
+            .map(|field| field.name)
+            .collect();
+        if let Some(first) = attached.first() {
+            return Err(Error::StillDepended {
+                depended: Depended::AnalyzerByField,
+                name: name.text.clone(),
+                count: attached.len(),
+                first: first.clone(),
+                span,
+            });
+        }
+        Catalog::new(transaction).drop_analyzer(analyzer.id)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP REPLICA warsaw` — stops counting an endpoint as a peer.
+    ///
+    /// Nothing depends on a peer the way a field depends on an analyzer, so
+    /// there is no refusal here: a replica declaration is a statement about who
+    /// we send to, and withdrawing it is complete on its own.
+    fn drop_replica(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let found = Catalog::new(transaction)
+            .replicas()?
+            .into_iter()
+            .find(|held| held.name == name.text);
+        let Some(replica) = found else {
+            return Err(Error::Unknown {
+                entity: "replica",
+                name: name.text.clone(),
+                span,
+            });
+        };
+        Catalog::new(transaction).drop_replica(replica.id)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP DATABASE staging` — refused while it still holds a table.
+    ///
+    /// The bound is the one `DELETE … LIMIT` established: a destructive
+    /// statement carrying no predicate at all is the widest thing this language
+    /// can be asked to run, and the person writing it is thinking about one
+    /// name. The refusal counts and names, so acting on it needs no second
+    /// query.
+    fn drop_database(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, Some(name.text.as_str()), span)?;
+        let held = Catalog::new(transaction).tables_in(context.namespace, context.database)?;
+        if let Some(first) = held.first() {
+            return Err(Error::StillDepended {
+                depended: Depended::DatabaseByTable,
+                name: name.text.clone(),
+                count: held.len(),
+                first: first.name.clone(),
+                span,
+            });
+        }
+        Catalog::new(transaction).drop_database(context.database)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP NAMESPACE acme` — refused while it still holds a database.
+    ///
+    /// One level up from [`Self::drop_database`] and refusing on the same
+    /// ground. Resolved by name against the catalog rather than through the
+    /// session's tenancy, because a namespace is what a tenancy is selected
+    /// *within* — asking the context for it would require having selected it.
+    fn drop_namespace(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let id = Catalog::new(transaction)
+            .namespace_id(&name.text)?
+            .ok_or_else(|| Error::Unknown {
+                entity: "namespace",
+                name: name.text.clone(),
+                span,
+            })?;
+        let held = Catalog::new(transaction).databases_in(id)?;
+        if let Some(first) = held.first() {
+            return Err(Error::StillDepended {
+                depended: Depended::NamespaceByDatabase,
+                name: name.text.clone(),
+                count: held.len(),
+                first: first.name.clone(),
+                span,
+            });
+        }
+        Catalog::new(transaction).drop_namespace(id)?;
         Ok(Outcome::Done)
     }
 
@@ -735,14 +2358,46 @@ impl Session<'_> {
     /// `SET a.b.c = 1` on a record with no `a` is an error naming the route.
     /// Creating the objects would be the store writing structure nobody asked
     /// for — the same call this store makes about zero-filling a hole in a file.
+    /// The record an edit produces, whichever of the three shapes it is.
+    ///
+    /// Shared by `UPDATE` and `UPSERT` so the two cannot drift: the only thing
+    /// that separates them is what they assert about the record beforehand, and
+    /// a second copy of this match is how that stops being true.
+    fn applied(
+        &self,
+        transaction: &mut Transaction<'_>,
+        edit: &Edit,
+        existing: Value,
+        span: Span,
+    ) -> Result<Value> {
+        match edit {
+            // Replacing the whole record is a write like a create, so the
+            // defaults apply to it the same way.
+            Edit::Whole(value) => self.evaluate(transaction, value),
+            Edit::Fields(assignments) => self.edited(transaction, existing, assignments, span),
+            Edit::Merge(value) => {
+                // The value position, like every other object literal — see
+                // `Edit::Merge`. Computing from the record is `SET`'s job.
+                let incoming = self.evaluate(transaction, value)?;
+                let Value::Object(_) = incoming else {
+                    return Err(Error::MergeIsNotAnObject {
+                        found: incoming.type_name(),
+                        span,
+                    });
+                };
+                Ok(merged(existing, incoming))
+            }
+        }
+    }
+
     fn edited(
         &self,
         transaction: &mut Transaction<'_>,
-        existing: &[u8],
+        existing: Value,
         assignments: &[Assignment],
         span: Span,
     ) -> Result<Value> {
-        let mut record = decode_payload(existing)?;
+        let mut record = existing;
         let mut wanted = Vec::with_capacity(assignments.len());
         for assignment in assignments {
             wanted.push(self.evaluate_in(
@@ -812,6 +2467,74 @@ fn named_roles(named: &[Name]) -> Result<Roles> {
                 span: role.span,
             })
     })
+}
+
+/// The outcome a write reports, given what it was asked to answer with.
+///
+/// One place rather than four, so that the four writes cannot come to disagree
+/// about what `AFTER` means. `Nothing` is the default and stays `Done`: a write
+/// that answered with a record by default would make every caller pay to ship
+/// back a value most of them already have.
+/// The identity an edge record is written under.
+///
+/// One function rather than the formula repeated at each site, because `RELATE`
+/// writes it and `DELETE a->e->b` has to derive the *same* string to find what
+/// was written. Two copies that drift do not fail: the delete addresses a key
+/// nothing is under, removes nothing, and reports success.
+///
+/// It is derived rather than supplied so that relating the same pair twice
+/// replaces one record instead of adding a second — which is what makes `RELATE`
+/// idempotent and keeps a node's adjacency a set.
+fn edge_identity(out: &RecordAddress, into: &RecordAddress) -> RecordId {
+    RecordId::from(format!(
+        "{}:{}->{}:{}",
+        out.table, out.id, into.table, into.id
+    ))
+}
+
+fn answered(answer: Answer, before: Value, after: Value) -> Outcome {
+    match answer {
+        Answer::Nothing => Outcome::Done,
+        Answer::Before => Outcome::Value(before),
+        Answer::After => Outcome::Value(after),
+    }
+}
+
+/// Two records folded into one: `incoming` over `existing`.
+///
+/// Deep where **both** sides hold an object and total everywhere else. That rule
+/// is the whole of it, and the shapes it settles are worth naming:
+///
+/// - object over object — merged, one level deeper;
+/// - anything over anything else — the incoming value, whole. An array replaces
+///   an array rather than concatenating or merging by position, because there is
+///   no reading of "merge these two lists" that is right more often than it is
+///   surprising;
+/// - a field the incoming object does not name — left exactly as it was, which
+///   is the point of the verb;
+/// - an explicit `NULL` — written, because `NULL` is a value here and means
+///   "known to be nothing". Removing a field is `SET route = NONE`, which says
+///   removal out loud rather than hiding it inside a merge.
+fn merged(existing: Value, incoming: Value) -> Value {
+    match (existing, incoming) {
+        (Value::Object(mut into), Value::Object(from)) => {
+            for (name, value) in from {
+                let folded = match (into.remove(&name), value) {
+                    (Some(held @ Value::Object(_)), value @ Value::Object(_)) => {
+                        merged(held, value)
+                    }
+                    (_, value) => value,
+                };
+                into.insert(name, folded);
+            }
+            Value::Object(into)
+        }
+        // One side is not an object, so there is nothing to fold into: the
+        // incoming value stands whole. The top level never reaches here — the
+        // caller refuses a non-object there — but a route below it does, and
+        // that is the "incoming wins" rule doing its job.
+        (_, incoming) => incoming,
+    }
 }
 
 /// Put a value into one field of an object, or take it out.

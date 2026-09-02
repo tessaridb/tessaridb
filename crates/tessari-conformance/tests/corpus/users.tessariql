@@ -20,11 +20,15 @@ DEFINE NAMESPACE prod;
 USE NAMESPACE prod;
 DEFINE DATABASE orders;
 USE DATABASE orders;
-DEFINE TABLE notes;
+DEFINE COLLECTION notes;
 --- expect: ok
 
 --- case: an open store runs anything, which is what makes an empty one usable
 CREATE notes:1 = { body: 'before there were users' };
+--- expect: ok
+
+--- case: an open store answers the listing, and the list is empty
+INFO FOR USERS;
 --- expect: ok
 
 --- case: a user is declared like anything else, and its tenancy is resolved
@@ -46,3 +50,24 @@ DEFINE USER grace ROLE viewer PASSWORD 'x';
 --- case: and so is dropping one, so a store cannot be re-opened from outside
 DROP USER ada;
 --- expect: error NotSignedIn
+
+
+--- case: and the listing is refused once the store is closed, like every read
+INFO FOR USERS;
+--- expect: error NotSignedIn
+
+--- case: altering a user is administering one, so an anonymous caller is refused
+ALTER USER ada SET ROLE viewer;
+--- expect: error NotSignedIn
+
+--- case: and so is changing a password, which is the same act on a different field
+ALTER USER ada SET PASSWORD 'a different horse';
+--- expect: error NotSignedIn
+
+--- case: the verb takes USER and says so rather than guessing what was meant
+ALTER ada SET ROLE viewer;
+--- expect: error UnexpectedToken
+
+--- case: and it changes one named thing, never a whole record at once
+ALTER USER ada SET everything;
+--- expect: error UnexpectedToken

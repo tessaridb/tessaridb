@@ -120,7 +120,7 @@ fn send(
 }
 
 const READY: &str = "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
-                     DEFINE DATABASE orders; USE DATABASE orders; DEFINE TABLE users;";
+                     DEFINE DATABASE orders; USE DATABASE orders; DEFINE COLLECTION users;";
 
 #[test]
 fn a_script_runs_over_the_wire_and_answers_one_object_per_statement() {
@@ -142,6 +142,33 @@ fn a_script_runs_over_the_wire_and_answers_one_object_per_statement() {
     assert!(body.contains(r#""name":"ada""#), "{body}");
     // The access path is reported, so a scan is visible rather than folklore.
     assert!(body.contains(r#""path":"record""#), "{body}");
+    // …and a read with nothing to report says nothing, so every response that
+    // had no note is byte-identical to what it was before notes existed.
+    assert!(!body.contains(r#""notes""#), "{body}");
+}
+
+#[test]
+fn a_note_reaches_the_client_over_http() {
+    // The channel is only worth building if it arrives somewhere. This is the
+    // surface it arrives on: a JSON key that is absent when there is nothing to
+    // say, which every JSON reader already handles, and present with a kind a
+    // client can group on and a message a person can act on.
+    let (_node, address) = node();
+    request(&address, "POST", "/script", READY);
+    let (status, body) = request(
+        &address,
+        "POST",
+        "/script",
+        "USE NAMESPACE prod DATABASE orders; \
+         CREATE users:1 = { name: 'ada' }; CREATE users:2 = { name: 'grace' }; \
+         SELECT * FROM (SELECT * FROM users LIMIT 1);",
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(r#""kind":"subquery-ceiling""#), "{body}");
+    assert!(body.contains("reached its ceiling of 1"), "{body}");
+    // The note did not displace the answer it is about.
+    assert!(body.contains(r#""kind":"records""#), "{body}");
+    assert!(body.contains(r#""name":"ada""#), "{body}");
 }
 
 #[test]
@@ -160,7 +187,7 @@ fn the_status_says_what_kind_of_failure_it_was() {
         &address,
         "POST",
         "/script",
-        "USE NAMESPACE prod DATABASE orders; DEFINE TABLE users;",
+        "USE NAMESPACE prod DATABASE orders; DEFINE COLLECTION users;",
     );
     assert_eq!(status, 409, "{body}");
     assert!(body.contains("already in use"), "{body}");
@@ -195,7 +222,7 @@ fn the_wire_and_the_library_answer_the_same_script() {
     std::thread::spawn(move || serving.serve());
 
     let script = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
-                  USE DATABASE orders; DEFINE TABLE users; \
+                  USE DATABASE orders; DEFINE COLLECTION users; \
                   CREATE users:1 = { name: 'ada', city: 'Paris' };";
     let (status, _) = request(&address, "POST", "/script", script);
     assert_eq!(status, 200);
@@ -345,7 +372,7 @@ fn closed() -> (Arc<Node>, String) {
         "/script",
         "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
          DEFINE DATABASE orders; USE DATABASE orders; \
-         DEFINE TABLE notes; CREATE notes:1 = { body: 'x' }; \
+         DEFINE COLLECTION notes; CREATE notes:1 = { body: 'x' }; \
          DEFINE USER root ROLE owner PASSWORD 'root secret';",
         None,
     );
@@ -632,7 +659,7 @@ fn a_record_reference_comes_back_as_something_a_client_can_follow() {
     // that had been renamed.
     let (_node, address) = node();
     let script = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
-                  USE DATABASE orders; DEFINE TABLE users; DEFINE TABLE posts; \
+                  USE DATABASE orders; DEFINE COLLECTION users; DEFINE COLLECTION posts; \
                   CREATE users:1 = { name: 'ada' }; \
                   CREATE posts:1 = { author: users:1, tags: [users:1] }; \
                   SELECT * FROM posts:1;";

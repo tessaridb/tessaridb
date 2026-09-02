@@ -1,0 +1,32 @@
+[package]
+name = "tessari-ingest"
+description = "Running the stream consumers the catalog declares."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# The Kafka client, which vendors and compiles librdkafka and therefore needs a
+# C toolchain. Off by default so an ordinary `cargo build` of this database needs
+# no C compiler; the statement still parses and the declaration is still stored
+# without it, and the node reports that it is not running one (ADR-0024 §2).
+kafka = ["dep:rdkafka"]
+
+[dependencies]
+tessari-types = { workspace = true }
+tessari-storage = { workspace = true }
+tessari-session = { workspace = true }
+log = { workspace = true }
+# No default features: they pull an async runtime this node deliberately does not
+# have, and the synchronous `BaseConsumer` is what ADR-0024 measured and chose.
+rdkafka = { version = "0.39", default-features = false, optional = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tessari-kv = { workspace = true }

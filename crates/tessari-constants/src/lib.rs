@@ -20,7 +20,53 @@
 /// Eight is a starting value chosen to absorb ordinary interleaving on an
 /// embedded store while still surfacing sustained contention quickly. It is
 /// provisional until measured under a real write workload.
+///
+/// The budget is a count and not a duration, which only works because the
+/// attempts are spread apart by [`COMMIT_BACKOFF_STEP`]. Re-racing immediately
+/// makes a count budget a measure of how fast the machine is rather than of how
+/// contended the store is — see that constant.
 pub const MAX_COMMIT_ATTEMPTS: u32 = 8;
+
+/// How long a commit waits before re-racing for the committed tail, doubling
+/// each time it loses.
+///
+/// Unit: microseconds.
+///
+/// # Why waiting at all is the point
+///
+/// Losing the race means another commit landed between reading the tail and
+/// applying. Re-reading and re-racing **immediately** is what turns a busy store
+/// into a contended one: every loser retries at once, into the same instant, and
+/// collides with every other loser. The budget above then runs out — not because
+/// the store is saturated, but because nothing ever spread the writers apart.
+///
+/// The failure that shape produces is worse than slow, because it is
+/// **load-dependent**. On an idle machine the interleaving is thin and eight
+/// attempts are plenty; on a busy one, each attempt takes longer, more
+/// competing commits land inside it, and the same code gives up sooner the
+/// busier the host is. A caller then sees a store that refuses writes in
+/// proportion to how much else the machine is doing.
+///
+/// Doubling makes the spread grow to match the contention rather than being
+/// guessed in advance, which is the property a fixed pause does not have.
+///
+/// Fifty microseconds is a starting value: below the cost of the apply it
+/// follows, so an uncontended retry is not noticeably delayed, and far enough
+/// above thread-scheduling granularity to actually separate two racers.
+/// Provisional until measured under a real write workload.
+pub const COMMIT_BACKOFF_STEP: u64 = 50;
+
+/// The longest a commit waits between attempts, however many it has lost.
+///
+/// Unit: microseconds.
+///
+/// Doubling without a ceiling would put the last attempts of a long run several
+/// seconds apart, and a caller blocked that long would rather have been told the
+/// store is contended. With the values here, a commit that loses every attempt
+/// is refused after roughly twenty-five milliseconds of waiting — long enough to
+/// have genuinely tried, short enough that contention is reported while it is
+/// still actionable.
+pub const COMMIT_BACKOFF_CEILING: u64 = 8_000;
 
 /// How many log records a subscription reads at a time while skipping a backlog
 /// it has decided not to receive.
@@ -158,6 +204,63 @@ pub const ORDERED_FILTER_REACH: usize = 32;
 /// close rather than an allocation.
 pub const SOCKET_MAX_FRAME_BYTES: usize = 64 * 1024;
 
+/// How many connections one serving surface holds open at once.
+///
+/// Unit: connections.
+///
+/// # Why a ceiling exists at all
+///
+/// A thread per connection is this node's deliberate model, and the paragraph
+/// that justifies it does not bound it. Without a ceiling the node has no point
+/// at which it refuses: it degrades, and then fails to spawn a thread, and the
+/// failure arrives at whichever connection happened to be next rather than at
+/// the one that caused it. A number here turns that into an answer a client can
+/// read.
+///
+/// # Why this number
+///
+/// Each connection costs one operating-system thread, which reserves stack
+/// address space — eight megabytes by default on Linux and macOS — plus a
+/// scheduler slot and whatever the session holds. Four hundred is comfortably
+/// inside what a modest machine runs without the scheduler becoming the cost,
+/// and comfortably above what an embedded caller or a small deployment reaches.
+/// The crate documentation for the wire protocol names the trigger for changing
+/// the *model* — idle subscribers in the tens of thousands — and this constant
+/// is what makes reaching that trigger visible rather than fatal.
+///
+/// It is per **surface** rather than per process: the wire protocol and the HTTP
+/// endpoint each hold their own door, so a flood of one cannot starve the other
+/// of the places it needs to answer a health check.
+///
+/// Provisional in the same sense as [`MAX_COMMIT_ATTEMPTS`] — chosen to be
+/// obviously safe rather than measured, and the refusal count is what a
+/// deployment tunes it from.
+pub const MAX_CONNECTIONS: usize = 400;
+
+/// How long a freshly accepted connection has to send its greeting.
+///
+/// Unit: seconds.
+///
+/// # The attack this closes
+///
+/// `accept` returns, the node blocks reading the greeting, and a client that
+/// sends **nothing at all** holds that thread for the life of the process. It
+/// costs the client one socket and no traffic, which is why it is the cheapest
+/// way to take a thread-per-connection node down, and why it needs no
+/// credential. A deadline on the first read is what makes the cost symmetric.
+///
+/// # Why only the greeting
+///
+/// The deadline is cleared once the greeting arrives, and deliberately so. After
+/// it, the node is reading a *statement*, and a session that is idle between
+/// statements is the ordinary state of an interactive prompt — a deadline there
+/// would disconnect the normal case in order to bound the abnormal one, which
+/// [`MAX_CONNECTIONS`] already bounds.
+///
+/// Ten seconds because a greeting is a handful of bytes and any network that
+/// cannot deliver them in ten seconds cannot carry a query either.
+pub const GREETING_SECONDS: u64 = 10;
+
 /// The largest reassembled WebSocket message this node will read from a client.
 ///
 /// Unit: bytes.
@@ -172,3 +275,243 @@ pub const SOCKET_MAX_FRAME_BYTES: usize = 64 * 1024;
 /// route defines fits in one frame, so fragmentation here is a proxy's doing
 /// rather than a client's need, and a proxy does not enlarge what it forwards.
 pub const SOCKET_MAX_MESSAGE_BYTES: usize = 64 * 1024;
+
+/// How many cells a spatial index writes per record's geometry.
+///
+/// Unit: cells.
+///
+/// A record's covering is one entry per cell, so this is directly the index's
+/// write amplification for a geometry: a point produces one entry whatever the
+/// budget, and a country produces up to this many. It bounds the *store* rather
+/// than the query, and the two want opposite things — more cells approximate the
+/// shape more tightly and cost more to write, so the trade is per workload and
+/// this is the workload-free starting point.
+///
+/// Sixteen because the covering halves its error roughly per level and stops as
+/// soon as the next subdivision would exceed the budget, so a budget of sixteen
+/// buys two full levels of refinement past the first cell that meets the box.
+/// Eight was the alternative and refines one level less, which for an elongated
+/// shape — a river, a road, a coastline, the shapes a bounding box already
+/// serves worst — leaves the covering close to the box it started from.
+///
+/// It is a bound and not a target. A geometry needing fewer cells writes fewer,
+/// and the covering keeps a **coarser** cell rather than dropping a finer one
+/// when the budget runs out, so exceeding it costs candidates to refine and
+/// never rows.
+pub const SPATIAL_INDEX_CELLS_PER_RECORD: usize = 16;
+
+/// How many cells a **query** box is covered by.
+///
+/// Unit: cells.
+///
+/// The other side of the same trade, and it is not the same number for the same
+/// reasons. A record's covering is paid once per record at write time and
+/// forever after in space; a query's is paid once per read and in nothing else,
+/// so a query can afford to be finer. What it cannot afford is unboundedly
+/// finer: each cell of a query covering costs one range scan **plus one lookup
+/// per level above it**, so the read's fixed cost is linear in this number while
+/// the candidates it saves are not.
+///
+/// Sixteen, which is the record budget, and deliberately so until something is
+/// measured. Symmetry is the honest starting point when the only argument for
+/// asymmetry is that a query covering is cheaper — that says the number could be
+/// larger, not what it should be. The candidate-to-result ratio is instrumented
+/// precisely so this can be moved on evidence rather than on the intuition in
+/// this paragraph.
+///
+/// It is a bound and not a target, with the same guarantee: the covering keeps a
+/// coarser cell rather than dropping a finer one, so exhausting the budget costs
+/// candidates to refine and never rows.
+pub const SPATIAL_QUERY_CELLS: usize = 16;
+
+/// How many entries a nearest-first walk will read from a cell's whole subtree
+/// before it descends into that subtree instead.
+///
+/// Unit: index entries.
+///
+/// The walk over cells is best-first, and the tree it walks is **implicit**:
+/// every cell exists at every level whether or not anything was ever written
+/// there. Without a cut-off, reaching one record a kilometre away in an empty
+/// region means opening a cell at each of the thirty-two levels on the way down,
+/// and each of those is a seek that finds one entry or none.
+///
+/// So a cell is first read as a whole subtree, with a limit one above this
+/// number. A short answer means the scan was not truncated — every entry under
+/// that cell is in hand, the walk ranks them all and never descends. Only a
+/// subtree that fills the limit is worth splitting into four.
+///
+/// Sixty-four, because four levels of descent cost four seeks and four scans to
+/// find what one scan of sixty-four entries returns outright, and a region
+/// holding fewer than this many records is not a region a walk needs to be
+/// clever about. Larger wastes reads inside a dense cell that pruning would have
+/// skipped; smaller reinstates the deep chain this exists to cut.
+pub const SPATIAL_WALK_SUBTREE_ENTRIES: usize = 64;
+
+/// How many password verifications this process will run at once.
+///
+/// Unit: concurrent verifications.
+///
+/// # What this bounds, and why it is not the connection ceiling
+///
+/// A password hash is deliberately expensive — [`PASSWORD_HASH_MEMORY_KIB`] of
+/// memory and tens of milliseconds of CPU, by design, because that is what makes
+/// an offline crack of a stolen catalog slow. Online and unbounded, the same
+/// property makes an **amplifier**: one TCP write costs the attacker nothing and
+/// costs this node nineteen mebibytes, and **no attempt has to be valid**, so no
+/// credential is needed to spend the memory.
+///
+/// [`MAX_CONNECTIONS`] does not close it. Four hundred connections all
+/// presenting a credential is several gigabytes, which is the multiplication
+/// rather than the bound.
+///
+/// # Why twenty-four, and why a refusal
+///
+/// The number is derived rather than chosen: the budget this node is willing to
+/// lose to authentication is **512 MiB** — enough to matter, small enough to
+/// leave the store's cache standing — and one verification costs
+/// [`PASSWORD_HASH_MEMORY_KIB`], so the budget buys twenty-six and twenty-four
+/// is that with room left. A test asserts the product against the budget, so the
+/// two cannot drift apart quietly.
+///
+/// It was eight first, which was a number nobody derived, and being a third of
+/// its own stated budget it refused sign-ins a database has no business
+/// refusing: nine clients authenticating at once is an ordinary Tuesday, not an
+/// attack. A bound set below ordinary use is not a security control, it is an
+/// outage that only fires under load.
+///
+/// Refused rather than queued, for the reason the door itself gives: a queue
+/// moves the unbounded growth instead of removing it, and a client told to come
+/// back can, while a client parked in a queue cannot even tell that it is
+/// waiting.
+///
+/// The cost is real and belongs here rather than in a surprise: a fleet
+/// reconnecting all at once signs in twenty-four at a time and the rest are
+/// refused and retry. That is the trade a bound is.
+pub const MAX_SIGN_IN_VERIFICATIONS: usize = 24;
+
+/// How long a session token stays good for.
+///
+/// Unit: seconds.
+///
+/// Twelve hours, which covers a working day without covering the night after
+/// it. The number is a trade between two costs that pull opposite ways: a short
+/// life sends every client back through the memory-hard sign-in
+/// [`MAX_SIGN_IN_VERIFICATIONS`] exists to bound, and a long one widens the
+/// window in which a token copied off the wire is still worth having.
+///
+/// It bounds the window and not the damage. What actually revokes a token is
+/// the user record changing under it — a rotated password, a corrected role, a
+/// removal — and that takes effect on the very next request rather than at
+/// expiry. This constant is what covers the case nobody noticed and so nobody
+/// revoked.
+pub const SESSION_TOKEN_SECONDS: u64 = 12 * 60 * 60;
+
+/// How many session tokens one node will hold at once.
+///
+/// Unit: tokens.
+///
+/// A bound on memory a caller who *does* hold a valid credential could
+/// otherwise grow without limit: signing in successfully is not throttled — only
+/// failing is — so nothing else stands between one account and an unbounded
+/// table.
+///
+/// Ten per connection slot ([`MAX_CONNECTIONS`]), because a client that
+/// reconnects gets a new connection and may reasonably still hold its old
+/// token. At roughly two hundred bytes an entry the whole table is under a
+/// mebibyte, which is the point: it is cheap enough that the bound can be
+/// generous and still be a bound.
+///
+/// Reaching it **refuses to issue** rather than evicting somebody else's live
+/// token. Eviction would make minting tokens a way to sign other people out.
+pub const MAX_SESSION_TOKENS: usize = MAX_CONNECTIONS * 10;
+
+/// How many times one identity may fail to sign in before it is made to wait.
+///
+/// Unit: consecutive failures.
+///
+/// Three, because a person mistyping a password twice is ordinary and a third
+/// consecutive miss is where a human stops guessing and goes to look the
+/// password up. A success clears the count, so the allowance is renewed by
+/// getting it right rather than by waiting.
+pub const FREE_SIGN_IN_FAILURES: u32 = 3;
+
+/// How long an identity waits after its first throttled failure, doubling with
+/// each further one.
+///
+/// Unit: milliseconds.
+///
+/// # Why doubling, and why this is a delay rather than a lockout
+///
+/// A fixed delay is a fixed guess rate, and a fixed guess rate is still a rate:
+/// an attacker willing to spend a week gets a week's worth of guesses out of it.
+/// Doubling makes the total attempts available in any window logarithmic instead
+/// of linear, which is the difference between slowing an attack and ending it.
+///
+/// It is not a lockout, and that is deliberate. A permanent lockout hands an
+/// attacker a denial of service against any account whose name they know — they
+/// need no password to fail three times. A delay that decays to nothing when the
+/// attack stops costs a real user a pause and costs an attacker the attack.
+///
+/// A quarter of a second is below the point where a person retrying by hand
+/// notices, and it is already five times the cost of the verification it is
+/// standing in front of.
+pub const SIGN_IN_BACKOFF_MILLIS: u64 = 250;
+
+/// The longest an identity waits between sign-in attempts, however many it has
+/// missed.
+///
+/// Unit: milliseconds.
+///
+/// Doubling without a ceiling reaches days, and a real user who mistyped a
+/// password six times would be locked out in everything but name — which is
+/// exactly what [`SIGN_IN_BACKOFF_MILLIS`] argues against. Thirty seconds is long
+/// enough that a sustained attack is measured in attempts per hour and short
+/// enough that a person who went to find their password comes back to a store
+/// that will talk to them.
+pub const SIGN_IN_BACKOFF_CEILING_MILLIS: u64 = 30_000;
+
+/// How much memory one password hash is made to cost.
+///
+/// Unit: kibibytes.
+///
+/// # Why this number is written down at all
+///
+/// It is Argon2id's `m` parameter, and it was previously whatever the hashing
+/// crate's `Default` said. That is the thing **LR-DB-004** forbids: a default
+/// that was never read is not evidence, and a routine dependency upgrade that
+/// moved it would change this store's password-hashing posture with nothing in
+/// the repository, the decision records or the tests showing that it had
+/// happened. Read from `argon2` 0.5.3 and recorded in ADR-0043, along with the
+/// two below.
+///
+/// Nineteen mebibytes is the second of OWASP's Argon2id options — the one paired
+/// with two passes — and memory is the parameter that actually resists a GPU,
+/// because a GPU has thousands of cores and not thousands of memory channels.
+///
+/// It is also, directly, the amplification factor
+/// [`MAX_SIGN_IN_VERIFICATIONS`] exists to bound: raising it makes a stolen
+/// catalog harder to crack **and** makes an unauthenticated attempt more
+/// expensive to serve, so the two constants are read together or neither is
+/// understood.
+pub const PASSWORD_HASH_MEMORY_KIB: u32 = 19_456;
+
+/// How many passes one password hash is made to take over that memory.
+///
+/// Unit: passes.
+///
+/// Argon2id's `t`. Two, which is what OWASP pairs with nineteen mebibytes: at a
+/// fixed cost budget, memory buys more resistance than iterations do, so the
+/// passes are the parameter kept low. Recorded with the crate version in
+/// ADR-0043 for the reason [`PASSWORD_HASH_MEMORY_KIB`] gives.
+pub const PASSWORD_HASH_PASSES: u32 = 2;
+
+/// How many lanes one password hash is spread across.
+///
+/// Unit: lanes.
+///
+/// Argon2id's `p`. One, so a verification is one thread's work. Parallelism here
+/// would divide the wall-clock cost of a single hash by spending more of the
+/// machine on it, which on a serving node is the wrong direction twice over: the
+/// point of the cost is that it is paid, and a node under an authentication
+/// flood would multiply its own load by the lane count. Recorded in ADR-0043.
+pub const PASSWORD_HASH_LANES: u32 = 1;

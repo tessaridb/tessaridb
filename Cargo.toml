@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.0.2-alpha"
 edition = "2024"
 rust-version = "1.85"
 license = "BUSL-1.1"
@@ -12,26 +12,35 @@ repository = "https://github.com/TessariDB/TessariDB"
 publish = false
 
 [workspace.dependencies]
-tessari-types = { path = "crates/tessari-types" }
-tessari-constants = { path = "crates/tessari-constants" }
-tessari-kv = { path = "crates/tessari-kv" }
-tessari-encoding = { path = "crates/tessari-encoding" }
-tessari-geo = { path = "crates/tessari-geo" }
-tessari-storage = { path = "crates/tessari-storage" }
-tessari-lsm = { path = "crates/tessari-lsm" }
-tessari-ql = { path = "crates/tessari-ql" }
-tessari-session = { path = "crates/tessari-session" }
-tessari-conformance = { path = "crates/tessari-conformance" }
-tessaridb = { path = "crates/tessaridb" }
-tessari-backup = { path = "crates/tessari-backup" }
-tessari-wire = { path = "crates/tessari-wire" }
-tessari-http = { path = "crates/tessari-http" }
-tessari-serve = { path = "crates/tessari-serve" }
+tessari-types = { path = "crates/tessari-types", version = "0.0.2-alpha" }
+tessari-constants = { path = "crates/tessari-constants", version = "0.0.2-alpha" }
+tessari-kv = { path = "crates/tessari-kv", version = "0.0.2-alpha" }
+tessari-encoding = { path = "crates/tessari-encoding", version = "0.0.2-alpha" }
+tessari-geo = { path = "crates/tessari-geo", version = "0.0.2-alpha" }
+tessari-storage = { path = "crates/tessari-storage", version = "0.0.2-alpha" }
+tessari-lsm = { path = "crates/tessari-lsm", version = "0.0.2-alpha" }
+tessari-ql = { path = "crates/tessari-ql", version = "0.0.2-alpha" }
+tessari-session = { path = "crates/tessari-session", version = "0.0.2-alpha" }
+tessari-conformance = { path = "crates/tessari-conformance", version = "0.0.2-alpha" }
+tessaridb = { path = "crates/tessaridb", version = "0.0.2-alpha" }
+tessari-backup = { path = "crates/tessari-backup", version = "0.0.2-alpha" }
+tessari-wire = { path = "crates/tessari-wire", version = "0.0.2-alpha" }
+tessari-http = { path = "crates/tessari-http", version = "0.0.2-alpha" }
+tessari-ingest = { path = "crates/tessari-ingest", version = "0.0.2-alpha" }
+tessari-serve = { path = "crates/tessari-serve", version = "0.0.2-alpha" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 rust_decimal = { version = "1", default-features = false, features = ["std"] }
 argon2 = { version = "0.5", features = ["std"] }
+# The RustCrypto SHA-2. Chosen over hand-rolling it: `digest` 0.10 is already
+# in the tree under `argon2`, so this shares its traits and buffering rather
+# than adding a parallel stack, and a database is the last place to keep its
+# own two hundred lines of unaudited bit manipulation.
+sha2 = { version = "0.10", default-features = false }
+# Facade only. The binary picks the implementation, so a library caller keeps
+# control of whether anything is emitted at all, and `log` pulls in nothing.
+log = { version = "0.4", features = ["std"] }
 
 proptest = "1"
 
@@ -62,6 +71,10 @@ opt-level = 0
 
 [profile.dev.package."*"]
 opt-level = 2
+# Dependency debug info is linked into every one of this workspace's test
+# binaries and nobody steps into a dependency frame — and at opt-level 2
+# those frames are inlined past in any case.
+debug = false
 
 [profile.dev.build-override]
 opt-level = 3

@@ -35,7 +35,7 @@ fn ready(store: &Store) {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE library; USE DATABASE library;\n\
-             DEFINE BUCKET media; DEFINE TABLE users;\n\
+             DEFINE BUCKET media; DEFINE COLLECTION users;\n\
              PUT media:'/secret.txt' = 'the salary spreadsheet';\n\
              CREATE users:1 = { name: 'ada' };\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",

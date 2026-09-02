@@ -8,7 +8,7 @@
 //! ```text
 //! # a comment
 //! --- case: a table is defined and written
-//! DEFINE TABLE users;
+//! DEFINE COLLECTION users;
 //! CREATE users:1 = { name: 'ada' };
 //! --- expect: ok
 //!
@@ -187,7 +187,7 @@ mod tests {
             "sample",
             "# a note\n\
              --- case: first\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              --- expect: ok\n\
              \n\
              --- case: second\n\
@@ -197,7 +197,7 @@ mod tests {
         .unwrap();
         assert_eq!(corpus.cases.len(), 2);
         assert_eq!(corpus.cases[0].name, "first");
-        assert_eq!(corpus.cases[0].script.trim(), "DEFINE TABLE users;");
+        assert_eq!(corpus.cases[0].script.trim(), "DEFINE COLLECTION users;");
         assert_eq!(corpus.cases[1].expectation, Expectation::Rows(0));
     }
 

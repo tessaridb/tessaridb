@@ -2,7 +2,8 @@
 //!
 //! # One rule, and it is the corpus's rule
 //!
-//! Input is accumulated until a `;` **outside a string** closes a statement.
+//! Input is accumulated until a `;` **outside a string and outside a comment**
+//! closes a statement.
 //! The conformance corpus had to solve exactly this — its own splitter has a
 //! test called *the statement splitter does not cut a string in half* — and this
 //! is the same rule rather than a second one, because two answers to "where does
@@ -24,6 +25,7 @@ use tessari_wire::Answer;
 
 use crate::render;
 use crate::store::Store;
+use crate::table::Shape;
 
 /// Whether input is coming from a person or from a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +34,60 @@ pub enum Mode {
     Interactive,
     /// A script: a refusal stops the run.
     Script,
+}
+
+/// What a reader produced.
+///
+/// Three cases rather than `Option<String>` because a person at a terminal can
+/// do a third thing: throw away a statement they are halfway through typing. A
+/// sentinel line would have carried that instead, and a sentinel is a value the
+/// language could also produce.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Given {
+    /// A line, with its newline still on it.
+    Line(String),
+    /// Whatever is half-typed should go, and the prompt start over.
+    Abandon,
+    /// There is no more input.
+    Ended,
+}
+
+/// Where a session's lines come from.
+///
+/// The prompt is drawn *by the reader* rather than by the session, because a
+/// reader that owns the terminal has to redraw it on every keystroke and cannot
+/// have somebody else deciding when it appears.
+pub trait Lines {
+    /// The next line, drawing `prompt` when there is one to draw.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when reading or writing fails.
+    fn next(&mut self, prompt: &str, out: &mut dyn Write) -> std::io::Result<Given>;
+}
+
+/// Lines from anything that reads: a file, a pipe, a string.
+pub struct Piped<R>(R);
+
+impl<R: BufRead> Piped<R> {
+    /// Read lines from `source`.
+    pub const fn new(source: R) -> Self {
+        Self(source)
+    }
+}
+
+impl<R: BufRead> Lines for Piped<R> {
+    fn next(&mut self, prompt: &str, out: &mut dyn Write) -> std::io::Result<Given> {
+        if !prompt.is_empty() {
+            write!(out, "{prompt}")?;
+            out.flush()?;
+        }
+        let mut line = String::new();
+        match self.0.read_line(&mut line)? {
+            0 => Ok(Given::Ended),
+            _ => Ok(Given::Line(line)),
+        }
+    }
 }
 
 /// What a run ended as.
@@ -51,56 +107,87 @@ pub enum Ended {
 /// reported through [`Ended`] rather than as an error, because it is an answer.
 pub fn run(
     store: &mut dyn Store,
-    input: &mut impl BufRead,
+    input: &mut dyn Lines,
     out: &mut impl Write,
     mode: Mode,
 ) -> std::io::Result<Ended> {
     let mut pending = String::new();
     let mut ended = Ended::Fine;
+    let mut timing = false;
+    // A table cannot be pasted back into a statement, and this program prints
+    // TessariQL precisely so that it can be. So the table is for a person at a
+    // prompt, and anything piped or scripted keeps the pasteable form — which is
+    // also the one a `diff` against a recorded answer expects. `.mode` overrides
+    // either way.
+    let mut shape = match mode {
+        Mode::Interactive => Shape::Auto,
+        Mode::Script => Shape::Document,
+    };
 
     loop {
-        if mode == Mode::Interactive {
-            write!(
-                out,
-                "{}",
-                if pending.is_empty() {
-                    "tessaridb> "
-                } else {
-                    "   > "
-                }
-            )?;
-            out.flush()?;
-        }
-        let mut line = String::new();
-        if input.read_line(&mut line)? == 0 {
-            break;
-        }
+        let prompt = match (mode, pending.is_empty()) {
+            (Mode::Script, _) => "",
+            (Mode::Interactive, true) => "tessaridb> ",
+            (Mode::Interactive, false) => "   > ",
+        };
+        let line = match input.next(prompt, out)? {
+            Given::Line(line) => line,
+            // Not an error and not an end: the statement goes, and the next
+            // prompt is a first-line prompt again because there is no longer
+            // anything unfinished for it to continue.
+            Given::Abandon => {
+                pending.clear();
+                continue;
+            }
+            Given::Ended => break,
+        };
         let trimmed = line.trim();
 
         // Dot-commands are read only at the start of a statement, so a `.exit`
         // pasted inside an unfinished object is data rather than a command.
-        if pending.is_empty() && trimmed.starts_with('.') {
-            match trimmed {
-                ".exit" | ".quit" => break,
-                ".help" => writeln!(out, "{HELP}")?,
-                other => writeln!(out, "no such command: {other}\n{HELP}")?,
+        let script = if pending.is_empty() && trimmed.starts_with('.') {
+            match shorthand(trimmed) {
+                Some(statement) => statement,
+                None => {
+                    match trimmed.split_once(' ') {
+                        Some((".mode", asked)) => match Shape::named(asked.trim()) {
+                            Some(chosen) => shape = chosen,
+                            None => writeln!(
+                                out,
+                                "no such mode: {} — auto, table or document",
+                                asked.trim()
+                            )?,
+                        },
+                        _ => match trimmed {
+                            ".exit" | ".quit" => break,
+                            ".help" => writeln!(out, "{HELP}")?,
+                            ".mode" => writeln!(out, "{}", shape.name())?,
+                            ".timing" => {
+                                timing = !timing;
+                                writeln!(out, "timing is {}", if timing { "on" } else { "off" })?;
+                            }
+                            other => writeln!(out, "no such command: {other}\n{HELP}")?,
+                        },
+                    }
+                    continue;
+                }
             }
-            continue;
-        }
-
-        pending.push_str(&line);
-        if !closed(&pending) {
-            continue;
-        }
-        let script = core::mem::take(&mut pending);
+        } else {
+            pending.push_str(&line);
+            if !closed(&pending) {
+                continue;
+            }
+            core::mem::take(&mut pending)
+        };
         if script.trim().is_empty() {
             continue;
         }
 
+        let began = std::time::Instant::now();
         match store.run(&script) {
             Ok(answers) => {
                 for answer in &answers {
-                    report(out, answer)?;
+                    report(out, answer, shape)?;
                 }
             }
             Err(refusal) => {
@@ -111,11 +198,39 @@ pub fn run(
                 }
             }
         }
+        if timing {
+            // Wall clock around the whole script, which is what somebody timing
+            // a statement is asking about. It includes the round trip when the
+            // store is a node, and saying so is the point: that is the number
+            // that decides whether a query is slow from where you are sitting.
+            writeln!(
+                out,
+                "time: {:.3} ms",
+                began.elapsed().as_secs_f64() * 1000.0
+            )?;
+        }
     }
 
     // Input that ran out mid-statement is worth saying: silently discarding it
     // looks exactly like a statement that ran and answered nothing.
-    if !pending.trim().is_empty() {
+    let remainder = scan(&pending);
+    if remainder.open_transaction {
+        // Hand it over rather than describing it. The store is what discards
+        // the work of a transaction nobody closed, so the store's own wording
+        // is what reports it — the same message `-e` and the conformance
+        // corpus already get for the same input.
+        match store.run(&pending) {
+            Ok(answers) => {
+                for answer in &answers {
+                    report(out, answer, shape)?;
+                }
+            }
+            Err(refusal) => {
+                writeln!(out, "error: {refusal}")?;
+                ended = Ended::Refused;
+            }
+        }
+    } else if remainder.substantial {
         writeln!(out, "error: input ended inside an unfinished statement")?;
         ended = Ended::Refused;
     }
@@ -127,24 +242,62 @@ pub fn run(
 /// The same [`Answer`] whether the store is in this process or across a socket,
 /// which is what makes the two renderings identical by construction rather than
 /// by two code paths agreeing.
-fn report(out: &mut impl Write, answer: &Answer) -> std::io::Result<()> {
+fn report(out: &mut impl Write, answer: &Answer, shape: Shape) -> std::io::Result<()> {
     match answer {
         Answer::Records { records, .. } if records.is_empty() => writeln!(out, "(no records)"),
+        // `only` is read and deliberately not drawn. The console already prints
+        // a record per line, so a read of one already looks like one record —
+        // the flag exists for a caller assembling a value, and the surface where
+        // it shows is the wire and the JSON, not this one. Named rather than
+        // swept up by `..` so that the next field added here has to be decided
+        // about instead of ignored.
         Answer::Records {
             records,
             path,
             names,
+            notes,
+            only: _,
         } => {
-            for (id, held) in records {
-                writeln!(out, "{}", render::record(id, held, names))?;
+            // The trailer is the same either way, and deliberately so: how many
+            // and by which path is the part an operator reads for the answer
+            // behind the answer, and it should not move when the drawing does.
+            match shape.drawn(records, names) {
+                Some(drawn) => write!(out, "{drawn}")?,
+                None => {
+                    for (id, held) in records {
+                        writeln!(out, "{}", render::record(id, held, names))?;
+                    }
+                }
             }
-            writeln!(out, "({} record(s), via {path})", records.len())
+            writeln!(out, "({} record(s), via {path})", records.len())?;
+            // After the trailer, because a note is about the answer above it.
+            // One line each and none at all for almost every read, which is what
+            // makes a note worth reading when one appears.
+            for note in notes {
+                writeln!(out, "note: {}", note.message)?;
+            }
+            Ok(())
         }
         Answer::Value { value, names } => writeln!(out, "{}", render::value(value, names)),
-        // `Keys` and `Removed` have never had a rendering of their own and keep
-        // the one they had, so the parity test certifies today's output rather
-        // than an output changed in the same commit that gave it a second path.
-        // Q-2026-08-22-52.
+        // A write the store named the record for answers with the identity it
+        // produced, because that is the only way back to the record: the caller
+        // did not choose it, cannot derive it, and has no second statement that
+        // would find it. `ok` was the answer until a write existed that the
+        // caller could not address afterwards, and it discarded the one thing
+        // such a write owes.
+        //
+        // One line each rather than a list on one, so the common answer — a
+        // single `CREATE` — is a single identity a person can select, and a
+        // batch `INSERT` is one per row rather than something to split up.
+        Answer::Keys(keys) => {
+            for key in keys {
+                writeln!(out, "{key}")?;
+            }
+            Ok(())
+        }
+        // `Removed` keeps the rendering it had, so the parity test certifies
+        // today's output rather than an output changed in the same commit that
+        // gave it a second path. Q-2026-08-22-52.
         _ => writeln!(out, "ok"),
     }
 }
@@ -154,9 +307,73 @@ fn report(out: &mut impl Write, answer: &Answer) -> std::io::Result<()> {
 /// A `;` inside a string does not, which is the whole reason this is a walk
 /// rather than a `contains`.
 fn closed(text: &str) -> bool {
+    scan(text).closed
+}
+
+/// What one pass over partial input found.
+struct Scan {
+    /// A statement ended in this text.
+    closed: bool,
+    /// There is something here besides whitespace and comments.
+    ///
+    /// The difference matters only at end of input, where text that never
+    /// closed is reported as a statement that ran out. A file whose last line
+    /// is a note has nothing unfinished in it.
+    substantial: bool,
+    /// A `BEGIN` in this text has no `COMMIT` or `CANCEL` after it.
+    open_transaction: bool,
+}
+
+/// The three words that move a transaction boundary, recognised only where a
+/// statement begins — so a field called `begin` is a field.
+fn boundary(word: &str, open: &mut bool) {
+    if word.eq_ignore_ascii_case("BEGIN") {
+        *open = true;
+    } else if word.eq_ignore_ascii_case("COMMIT") || word.eq_ignore_ascii_case("CANCEL") {
+        *open = false;
+    }
+}
+
+/// Reads far enough to find a statement's end, honouring quotes and comments.
+///
+/// Comments run from `--` to the end of their line, which the lexer already
+/// knows and this did not. Both halves of that omission were wrong, and the
+/// second one silently:
+///
+/// - a script ending in a comment left text that never closed, and was reported
+///   as input that ran out mid-statement — sending the reader to look for an
+///   unbalanced quote that is not there;
+/// - a `;` **inside** a comment ended the statement early. `SELECT * FROM users
+///   -- oops; a note` then `WHERE name = 'ada';` split into a read with no
+///   filter and a fragment beginning `WHERE`. The first ran and printed every
+///   record. Nothing reported a fault about the answer, because as far as
+///   everything below here was concerned there was no fault: the wrong question
+///   was asked correctly.
+fn scan(text: &str) -> Scan {
     let mut quote: Option<char> = None;
     let mut escaped = false;
-    for character in text.chars() {
+    let mut commented = false;
+    let mut substantial = false;
+    let mut open_transaction = false;
+    let mut closed = false;
+    // The first word of a statement is the only place a keyword is a keyword.
+    let mut at_statement_start = true;
+    let mut word = String::new();
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        // A word ends at anything that cannot be inside one.
+        if !character.is_alphanumeric() && character != '_' && !word.is_empty() {
+            if at_statement_start {
+                boundary(&word, &mut open_transaction);
+                at_statement_start = false;
+            }
+            word.clear();
+        }
+
+        if commented {
+            commented = character != '\n';
+            continue;
+        }
         if escaped {
             escaped = false;
             continue;
@@ -165,21 +382,89 @@ fn closed(text: &str) -> bool {
             (Some(_), '\\') => escaped = true,
             (Some(open), held) if held == open => quote = None,
             (Some(_), _) => {}
-            (None, '\'' | '"') => quote = Some(character),
-            (None, ';') => return true,
-            (None, _) => {}
+            (None, '\'' | '"') => {
+                substantial = true;
+                at_statement_start = false;
+                quote = Some(character);
+            }
+            // Only a doubled dash opens a comment. A single one is arithmetic,
+            // and `-1` is a number — the lexer draws the same line.
+            (None, '-') if characters.peek() == Some(&'-') => {
+                let _ = characters.next();
+                commented = true;
+            }
+            (None, ';') => {
+                substantial = true;
+                at_statement_start = true;
+                // A `;` inside a transaction ends a statement and not the group
+                // that has to be submitted together. Closing here is what made a
+                // `BEGIN;` in a file arrive on its own, be discarded for ending
+                // with a transaction open, and leave every statement after it
+                // to commit by itself.
+                if !open_transaction {
+                    closed = true;
+                    break;
+                }
+            }
+            (None, held) if held.is_alphanumeric() || held == '_' => {
+                substantial = true;
+                word.push(held);
+            }
+            (None, held) => substantial = substantial || !held.is_whitespace(),
         }
     }
-    false
+    // A word running up to the end of the text was never terminated above.
+    if at_statement_start && !word.is_empty() {
+        boundary(&word, &mut open_transaction);
+    }
+    Scan {
+        closed,
+        substantial,
+        open_transaction,
+    }
+}
+
+/// The statement a shorthand stands for, or `None` where it is not one.
+///
+/// Every one of these is a statement anybody can type, and `.help` prints the
+/// statement beside the shorthand so that using one teaches the language rather
+/// than hiding it. That is the line this file will not cross: a shorthand saves
+/// keystrokes, and never reaches anything a statement could not.
+fn shorthand(command: &str) -> Option<String> {
+    let (word, named) = command.split_once(' ').unwrap_or((command, ""));
+    let named = named.trim();
+    Some(match (word, named.is_empty()) {
+        (".ns", true) => "INFO FOR STORE;".to_owned(),
+        (".db", true) => "INFO FOR NAMESPACE;".to_owned(),
+        (".tables", true) => "INFO FOR DATABASE;".to_owned(),
+        (".node", true) => "INFO FOR NODE;".to_owned(),
+        (".d", false) => format!("INFO FOR TABLE {named};"),
+        (".users", true) => "INFO FOR USERS;".to_owned(),
+        (".user", false) => format!("INFO FOR USER {named};"),
+        _ => return None,
+    })
 }
 
 const HELP: &str = "\
 statements end with `;` and may span lines
   .help   this
-  .exit   leave (so does end-of-input, Ctrl-D)
+  .mode   how records are drawn: auto (the default), table, document
+  .timing print how long each script took
+  .exit   leave (so does Ctrl-D on an empty line)
 
-there is no line editing or history: arrow keys will print escape codes.
-that is a dependency not yet taken rather than an oversight.";
+shorthands — each runs the statement beside it, and nothing a statement cannot:
+  .ns             INFO FOR STORE;
+  .db             INFO FOR NAMESPACE;
+  .tables         INFO FOR DATABASE;
+  .d <table>      INFO FOR TABLE <table>;
+  .users          INFO FOR USERS;
+  .user <name>    INFO FOR USER <name>;
+  .node           INFO FOR NODE;
+
+editing:  ← → Home End Delete, and Ctrl-A E B F K U W L
+history:  ↑ ↓ (this session only, never written to disk — statements carry
+          passwords, and a history file is how one reaches a backup)
+Ctrl-C    throw away the statement being typed; the session stays";
 
 #[cfg(test)]
 mod tests {
@@ -189,16 +474,134 @@ mod tests {
 
     use tessaridb::{Db, Parameters};
 
-    use super::{Ended, Mode, closed, run};
+    use super::{Ended, Given, HELP, Lines, Mode, Piped, Write, closed, run, shorthand};
     use crate::store::Embedded;
+
+    /// A reader that hands over exactly what a test says, in order.
+    ///
+    /// The abandon path has no other way in: it is a keystroke, and a keystroke
+    /// cannot be spelt in a `Cursor` full of statements.
+    struct Scripted(std::collections::VecDeque<Given>);
+
+    impl Lines for Scripted {
+        fn next(&mut self, _prompt: &str, _out: &mut dyn Write) -> std::io::Result<Given> {
+            Ok(self.0.pop_front().unwrap_or(Given::Ended))
+        }
+    }
+
+    #[test]
+    fn abandoning_throws_away_the_half_typed_statement_and_nothing_else() {
+        // Ctrl-C at the continuation prompt. What must NOT happen is the
+        // fragment joining the next statement, and what must also not happen is
+        // "input ended inside an unfinished statement" at the end — the input
+        // did not end, it was withdrawn.
+        let db = Db::in_memory().expect("a database");
+        let mut store = Embedded::new(&db, None, Parameters::new()).expect("a session");
+        let mut input = Scripted(
+            [
+                Given::Line("CREATE users:1 = {\n".to_owned()),
+                Given::Abandon,
+                Given::Line("DEFINE NAMESPACE prod;\n".to_owned()),
+                Given::Ended,
+            ]
+            .into(),
+        );
+        let mut out = Vec::new();
+        let ended = run(&mut store, &mut input, &mut out, Mode::Interactive).expect("a run");
+        let said = String::from_utf8(out).expect("text");
+
+        assert_eq!(ended, Ended::Fine, "{said}");
+        assert_eq!(
+            said.trim(),
+            "ok",
+            "the statement after the abandon ran, and it ran alone"
+        );
+        assert!(
+            !said.contains("unfinished"),
+            "the fragment was withdrawn, not left dangling: {said}"
+        );
+    }
 
     fn ran(script: &str, mode: Mode) -> (String, Ended) {
         let db = Db::in_memory().expect("a database");
         let mut store = Embedded::new(&db, None, Parameters::new()).expect("a session");
-        let mut input = Cursor::new(script.as_bytes().to_vec());
+        let mut input = Piped::new(Cursor::new(script.as_bytes().to_vec()));
         let mut out = Vec::new();
         let ended = run(&mut store, &mut input, &mut out, mode).expect("a run");
         (String::from_utf8(out).expect("text"), ended)
+    }
+
+    /// The tenancy every write below needs, and nothing else.
+    const READY: &str = "\
+DEFINE NAMESPACE prod; USE NAMESPACE prod;
+DEFINE DATABASE shop; USE DATABASE shop;
+DEFINE COLLECTION users;
+DEFINE COLLECTION sessions IDENTITY uuid;
+";
+
+    /// The lines a script produced that are not `ok` — what was actually said.
+    fn said(script: &str) -> Vec<String> {
+        let (out, ended) = ran(&format!("{READY}{script}"), Mode::Script);
+        assert_eq!(ended, Ended::Fine, "{out}");
+        out.lines()
+            .filter(|line| *line != "ok")
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn a_write_the_store_named_answers_with_the_identity_it_produced() {
+        // `ok` was the answer here until this wave, and it threw away the only
+        // route back to the record: the caller did not choose the identity and
+        // has no statement that would find it again.
+        assert_eq!(said("CREATE users = { name: 'ada' };"), ["1"]);
+    }
+
+    #[test]
+    fn a_batch_insert_answers_with_one_identity_per_row() {
+        assert_eq!(
+            said("INSERT INTO users (name) VALUES ('ada'), ('grace'), ('alan');"),
+            ["1", "2", "3"]
+        );
+    }
+
+    #[test]
+    fn the_identity_a_uuid_table_answers_with_is_one_the_grammar_reads() {
+        // The case the integer default hides, and the one this wave is for.
+        // Before it, a uuid table answered with thirty-two undivided hex digits
+        // — which the grammar does not read as an identity at all, so pasting
+        // the answer back produced "not a duration this store can hold", a
+        // refusal naming nothing a reader could act on.
+        //
+        // That the spelling then *finds* the record is asserted where the store
+        // outlives the statement: `tessari-ql`'s `identity_spelling` parses it
+        // back for all four kinds, and `tessari-session`'s `store_named_records`
+        // reads the record at it. Split that way because this harness gives each
+        // script its own database, so a second script here could only address a
+        // record the first one did not write.
+        let produced = said("CREATE sessions = { token: 'abc' };");
+        let [identity] = produced.as_slice() else {
+            panic!("expected one identity, got {produced:?}");
+        };
+        assert!(
+            identity.starts_with("uuid '") && identity.ends_with('\''),
+            "a uuid table should answer in the spelling the grammar reads: {identity}"
+        );
+        assert_eq!(
+            identity.len(),
+            "uuid '".len() + 36 + 1,
+            "the canonical 8-4-4-4-12 form, not the undivided digits: {identity}"
+        );
+    }
+
+    #[test]
+    fn an_addressed_write_still_answers_the_way_it_did() {
+        // The relaxation is about the write that has no identity to report. A
+        // caller who supplied one is being told nothing new by hearing it back.
+        assert_eq!(
+            said("CREATE users:9 = { name: 'ada' };"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -217,17 +620,256 @@ mod tests {
     }
 
     #[test]
+    fn a_semicolon_inside_a_comment_does_not_end_a_statement() {
+        // The one that returns a **wrong answer** rather than an error. Split
+        // at the semicolon in the comment, the first half is `SELECT * FROM
+        // users` — which parses, runs, and prints every record, because the
+        // `WHERE` that was going to narrow it is now the start of the next
+        // statement. The reader sees a plausible answer to a question they did
+        // not ask, and then an error about `WHERE` that describes none of it.
+        assert!(!closed("SELECT * FROM users -- oops; a note\n"));
+        assert!(closed(
+            "SELECT * FROM users -- oops; a note\nWHERE name = 'ada';"
+        ));
+
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE orders; USE DATABASE orders;\n\
+             DEFINE COLLECTION users;\n\
+             CREATE users:1 = { name: 'ada' };\n\
+             CREATE users:2 = { name: 'grace' };\n\
+             SELECT * FROM users -- oops; a note\n\
+             WHERE name = 'ada';\n",
+            Mode::Script,
+        );
+        assert_eq!(ended, Ended::Fine, "{out}");
+        assert!(
+            out.contains("(1 record(s)"),
+            "the filter was dropped\n{out}"
+        );
+        assert!(!out.contains("grace"), "the filter was dropped\n{out}");
+    }
+
+    #[test]
+    fn a_transaction_read_from_a_file_is_one_transaction() {
+        // The defect this pins was silent and total: split at every `;`, a
+        // `BEGIN;` arrived as a script of its own, was discarded for ending
+        // with a transaction open, and every statement that followed ran as
+        // its own committed write. A migration in a file was therefore not a
+        // migration — it was its statements, applied one at a time, which is
+        // the half-applied state the boundary exists to prevent. It worked
+        // through `-e`, because that path hands the whole string over at once,
+        // so the two ways of running the same script disagreed.
+        assert!(!closed("BEGIN;\n"));
+        assert!(!closed("BEGIN;\nCREATE users:1 = { name: 'ada' };\n"));
+        assert!(closed("BEGIN;\nCREATE users:1 = { name: 'ada' };\nCOMMIT;"));
+        assert!(closed("BEGIN;\nCREATE users:1 = { name: 'ada' };\nCANCEL;"));
+
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE orders; USE DATABASE orders;\n\
+             BEGIN;\n\
+             DEFINE COLLECTION users;\n\
+             CREATE users:1 = { name: 'ada' };\n\
+             COMMIT;\n\
+             SELECT * FROM users;\n",
+            Mode::Script,
+        );
+        assert_eq!(ended, Ended::Fine, "{out}");
+        assert!(out.contains("(1 record(s)"), "{out}");
+    }
+
+    #[test]
+    fn a_cancelled_transaction_from_a_file_leaves_nothing() {
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE orders; USE DATABASE orders;\n\
+             BEGIN;\n\
+             DEFINE COLLECTION accounts;\n\
+             CREATE accounts:1 = { balance: 10 };\n\
+             CANCEL;\n\
+             SELECT * FROM accounts;\n",
+            Mode::Script,
+        );
+        // The table was never defined, so the read is refused — which is the
+        // corpus's assertion, and it can only hold if the `CANCEL` undid a
+        // `DEFINE` that was inside the boundary with it.
+        //
+        // Naming the refusal is what makes this test discriminating. Before the
+        // fix it also ended `Refused`, but for an unrelated reason: the `CANCEL`
+        // arrived with nothing open and was itself the refusal, while the
+        // `DEFINE` it was meant to undo had already committed on its own.
+        assert_eq!(ended, Ended::Refused, "{out}");
+        assert!(out.contains(r#"no table named "accounts""#), "{out}");
+        assert!(!out.contains("balance"), "{out}");
+    }
+
+    #[test]
+    fn a_transaction_left_open_is_reported_by_the_store_that_discarded_it() {
+        // Not by a message this module invents. The store is the thing that
+        // discarded the work, so the store's own wording is what says so, and
+        // it is the same wording `-e` and the corpus already get.
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE orders; USE DATABASE orders;\n\
+             DEFINE COLLECTION users;\n\
+             BEGIN;\n\
+             CREATE users:2 = { name: 'grace' };\n",
+            Mode::Script,
+        );
+        assert_eq!(ended, Ended::Refused, "{out}");
+        assert!(out.contains("transaction still open"), "{out}");
+    }
+
+    #[test]
+    fn a_field_called_begin_does_not_open_one() {
+        // The keyword is only a keyword where a statement starts. A record with
+        // a `begin` field is ordinary data, and reading it as an open boundary
+        // would swallow every statement after it up to the end of the input.
+        assert!(closed("CREATE meetings:1 = { begin: '09:00' };"));
+        assert!(closed("SELECT begin FROM meetings;"));
+    }
+
+    #[test]
+    fn a_script_may_end_with_a_comment() {
+        // A file whose last line is a note is an ordinary file, and reporting
+        // it as input that ran out mid-statement sends somebody looking for an
+        // unbalanced quote that is not there.
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n-- and that is all\n",
+            Mode::Script,
+        );
+        assert_eq!(ended, Ended::Fine, "{out}");
+        assert!(!out.contains("error:"), "{out}");
+    }
+
+    #[test]
+    fn a_comment_does_not_hide_an_unfinished_statement() {
+        // The half that must keep working: text that really did run out
+        // mid-statement is still reported, comment or no comment.
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\nSELECT * FROM users\n-- and then nothing\n",
+            Mode::Script,
+        );
+        assert_eq!(ended, Ended::Refused, "{out}");
+        assert!(out.contains("unfinished statement"), "{out}");
+    }
+
+    #[test]
     fn a_statement_may_span_lines() {
         let (out, ended) = ran(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              CREATE users:1 = {\n  name: 'ada'\n};\n\
              SELECT * FROM users:1;\n",
             Mode::Script,
         );
         assert_eq!(ended, Ended::Fine, "{out}");
         assert!(out.contains("name: 'ada'"), "{out}");
+    }
+
+    /// A store with one flat record in it, ready to be selected from.
+    const ONE_RECORD: &str = "\
+DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+DEFINE DATABASE orders; USE DATABASE orders;\n\
+DEFINE COLLECTION users;\n\
+CREATE users:1 = { name: 'ada' };\n\
+SELECT * FROM users:1;\n";
+
+    #[test]
+    fn a_prompt_draws_a_table_and_a_script_draws_what_pastes_back() {
+        // The property being protected is not the table. It is that a piped run
+        // still prints TessariQL, because that is what this program promises its
+        // output is — and a table is not something a statement can be fed.
+        let (at_prompt, _) = ran(ONE_RECORD, Mode::Interactive);
+        let (in_script, _) = ran(ONE_RECORD, Mode::Script);
+
+        assert!(
+            at_prompt.contains("| name"),
+            "no table at a prompt:\n{at_prompt}"
+        );
+        assert!(
+            in_script.contains("name: 'ada'"),
+            "a script lost the pasteable form:\n{in_script}"
+        );
+        assert!(
+            !in_script.contains("| name"),
+            "a script drew a table:\n{in_script}"
+        );
+    }
+
+    #[test]
+    fn dot_mode_turns_the_table_off_and_reports_what_it_is() {
+        let (asked, _) = ran(
+            &format!(".mode document\n{ONE_RECORD}.mode\n"),
+            Mode::Interactive,
+        );
+        assert!(
+            !asked.contains("| name"),
+            "`.mode document` still drew a table:\n{asked}"
+        );
+        assert!(asked.contains("name: 'ada'"), "{asked}");
+        assert!(
+            asked.lines().any(|line| line.ends_with("> document")),
+            "`.mode` did not say which mode it is in:\n{asked}"
+        );
+
+        let (refused, _) = ran(".mode sideways\n", Mode::Interactive);
+        assert!(refused.contains("no such mode: sideways"), "{refused}");
+    }
+
+    #[test]
+    fn a_shorthand_runs_the_statement_the_help_says_it_runs() {
+        // The obligation runs this way round on purpose: `.help` is the contract
+        // and the table has to satisfy it. Reading the table and checking the
+        // help mentions each entry would pass while the help promised a seventh
+        // shorthand nobody implemented.
+        let promised: Vec<(&str, &str)> = HELP
+            .lines()
+            .skip_while(|line| !line.starts_with("shorthands"))
+            .filter_map(|line| line.trim().split_once("  "))
+            .map(|(left, right)| (left.trim(), right.trim()))
+            .filter(|(left, _)| left.starts_with('.'))
+            .collect();
+        assert_eq!(promised.len(), 7, "the help lists {promised:?}");
+
+        for (spelling, statement) in promised {
+            // `.d <table>` in the help is `.d users` at a prompt.
+            let typed = spelling
+                .replace("<table>", "users")
+                .replace("<name>", "ada");
+            let expected = statement
+                .replace("<table>", "users")
+                .replace("<name>", "ada");
+            assert_eq!(
+                shorthand(&typed).as_deref(),
+                Some(expected.as_str()),
+                "`{typed}` does not run what the help says it runs"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shorthand_that_needs_a_name_and_is_given_none_is_not_a_shorthand() {
+        assert!(shorthand(".d").is_none());
+        assert!(shorthand(".user").is_none());
+        // And one that takes none refuses a name rather than ignoring it.
+        assert!(shorthand(".tables users").is_none());
+        assert!(shorthand(".users ada").is_none());
+        // The plural and the singular are separate words to the
+        // splitter, so neither can be reached by mistyping the other.
+        assert_eq!(shorthand(".users").as_deref(), Some("INFO FOR USERS;"));
+    }
+
+    #[test]
+    fn timing_is_off_until_it_is_asked_for() {
+        let (quiet, _) = ran("DEFINE NAMESPACE prod;\n", Mode::Interactive);
+        assert!(!quiet.contains("time:"), "{quiet}");
+
+        let (timed, _) = ran(".timing\nDEFINE NAMESPACE prod;\n", Mode::Interactive);
+        assert!(timed.contains("timing is on"), "{timed}");
+        assert!(timed.contains("time:"), "{timed}");
     }
 
     #[test]
@@ -273,7 +915,7 @@ mod tests {
         let (out, ended) = ran(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              CREATE users:1 = { name: 'ada' };\n\
              SELECT * FROM users;\n",
             Mode::Script,

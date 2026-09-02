@@ -19,10 +19,45 @@ mod path;
 mod shape;
 mod statement;
 
-use crate::ast::{Expr, Script};
+use std::collections::BTreeSet;
+
+use crate::ast::{Expr, Script, Statement, StatementKind};
 use crate::error::{Error, Result};
 use crate::lexer::tokenize;
 use crate::token::{Keyword, Punct, Span, Spanned, Token};
+
+/// What a script may say about names it binds and the value it answers with.
+///
+/// Both rules are properties of the statement **text**, so they are settled
+/// here rather than left for something to discover at run time: a script that
+/// binds a name twice or answers twice is wrong whether or not it is ever run,
+/// and refusing it before anything runs means it cannot half-run first.
+fn check_bindings(statements: &[Statement]) -> Result<()> {
+    let mut bound: BTreeSet<&str> = BTreeSet::new();
+    let mut answered = false;
+    for statement in statements {
+        match &statement.kind {
+            StatementKind::Let { name, span, .. } => {
+                if !bound.insert(name.as_str()) {
+                    return Err(Error::BoundTwice {
+                        name: name.clone(),
+                        span: *span,
+                    });
+                }
+            }
+            StatementKind::Return { .. } => {
+                if answered {
+                    return Err(Error::ReturnedTwice {
+                        span: statement.span,
+                    });
+                }
+                answered = true;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
 
 /// Read `source` into a script.
 ///
@@ -94,6 +129,7 @@ impl Parser<'_> {
                 return Err(self.error_here("`;` between statements"));
             }
         }
+        check_bindings(&statements)?;
         Ok(Script {
             statements,
             span: Span::new(0, self.source.len()),
@@ -102,6 +138,13 @@ impl Parser<'_> {
 
     fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.position).map(|spanned| &spanned.token)
+    }
+
+    /// The token `offset` places past the cursor, when there is one.
+    fn peek_ahead(&self, offset: usize) -> Option<&Token> {
+        self.tokens
+            .get(self.position.saturating_add(offset))
+            .map(|spanned| &spanned.token)
     }
 
     /// Whether the token `offset` places past the cursor is this one.
@@ -123,6 +166,18 @@ impl Parser<'_> {
     ///
     /// Matched case-insensitively, like a keyword, because that is what it is
     /// everywhere except in the token table.
+    /// Whether the next token is this contextual word, without consuming it.
+    ///
+    /// For a clause that has something to refuse *before* it starts reading, so
+    /// that the refusal points at the clause word rather than at whatever
+    /// followed it.
+    fn peek_word(&self, word: &str) -> bool {
+        matches!(
+            self.peek(),
+            Some(Token::Ident(found)) if found.eq_ignore_ascii_case(word)
+        )
+    }
+
     fn eat_word(&mut self, word: &str) -> bool {
         let matched = matches!(
             self.peek(),
@@ -212,8 +267,13 @@ impl Parser<'_> {
         false
     }
 
+    /// Whether this punctuation stands at the cursor, without consuming it.
+    fn at_punct(&self, punct: Punct) -> bool {
+        self.peek() == Some(&Token::Punct(punct))
+    }
+
     fn eat_punct(&mut self, punct: Punct) -> bool {
-        if self.peek() == Some(&Token::Punct(punct)) {
+        if self.at_punct(punct) {
             self.position = self.position.saturating_add(1);
             return true;
         }

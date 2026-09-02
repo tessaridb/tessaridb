@@ -21,6 +21,234 @@ pub enum Error {
     #[error(transparent)]
     Store(#[from] tessari_storage::Error),
 
+    /// A `SCHEMAFULL` table was written a field it does not declare, with the
+    /// statement that would make the same write succeed.
+    ///
+    /// The store raises the refusal; the suggestion is added here, because
+    /// writing a declaration needs the language and *proving* the text is a
+    /// declaration needs the parser — neither of which the store has, and both
+    /// of which are the difference between a remedy and a plausible-looking
+    /// string. It is the same rule `describe` follows for a rendered
+    /// declaration: offered only when it re-reads as what it claims to be, and
+    /// omitted rather than approximated otherwise, in which case the plain
+    /// [`Store`](Self::Store) refusal is what a caller sees.
+    #[error("{refusal}; declare it with `{suggestion}`")]
+    UndeclaredField {
+        /// The store's refusal, unchanged.
+        ///
+        /// Boxed because this is the only variant that carries a whole store
+        /// refusal **beside** something else, and the two together are wider
+        /// than every `Result` in this crate should be asked to reserve.
+        refusal: Box<tessari_storage::Error>,
+        /// A statement that would accept the write, proven to parse.
+        suggestion: String,
+    },
+
+    /// A script refused itself with `THROW`.
+    ///
+    /// Carried as its own variant rather than folded into a generic failure, so
+    /// that a caller can tell a refusal the script *chose* from one the store
+    /// raised — the two mean different things to whatever is handling them.
+    #[error("{message} (at {span})")]
+    Thrown {
+        /// What the script said.
+        message: String,
+        /// Where it said it.
+        span: tessari_ql::Span,
+    },
+
+    /// A `USING` naming a word that is not an access path.
+    ///
+    /// Almost always a typo, and refused before the read rather than after it:
+    /// running a scan to then report that `inedx` is not a word would be the
+    /// worst of both answers.
+    #[error("`USING {named}` names no access path — this store reports {known} (at {span})")]
+    NoSuchAccessPath {
+        /// The word as written.
+        named: String,
+        /// The words that exist, comma-separated.
+        known: String,
+        /// Where it was written.
+        span: tessari_ql::Span,
+    },
+
+    /// A read passed the ceiling its statement set.
+    ///
+    /// Refused rather than answered in part. The records it had produced are
+    /// dropped, and the count is reported here — which is the same thing a
+    /// truncated answer would have told the caller, in the one place a caller
+    /// cannot mistake for the result.
+    #[error(
+        "the read passed its ceiling of {after} after {produced} records (at {span}); \
+         it is refused rather than answered in part"
+    )]
+    TimedOut {
+        /// The ceiling, as the statement wrote it.
+        after: String,
+        /// How many records the read had produced when the ceiling passed.
+        produced: u64,
+        /// Where the clause is.
+        span: tessari_ql::Span,
+    },
+
+    /// A read standing in an expression grew past the ceiling this node applies
+    /// when the read named none.
+    ///
+    /// Refused rather than truncated, and the refusal names the one word that
+    /// lifts it. A default that quietly kept a prefix would turn a read that is
+    /// expensive and right into one that is cheap and wrong.
+    #[error(
+        "the read standing here passed {most} records without a bound of its own \
+         (at {span}); give it a `LIMIT` to say how many of them the question is about"
+    )]
+    Unbounded {
+        /// The ceiling this node applies to a read that named none.
+        most: u64,
+        /// Where the held read is.
+        span: tessari_ql::Span,
+    },
+
+    /// The same ceiling reached by a read whose fold holds its whole group.
+    ///
+    /// A separate refusal because it names a different escape, and naming the
+    /// wrong one is worse than refusing without advice: a `LIMIT` bounds what a
+    /// fold **answers with** and not what it reads, so the sentence
+    /// [`Self::Unbounded`] tells the author to write would lift the ceiling here
+    /// and change nothing about the memory it was protecting. The escape that
+    /// does work is bounding what the fold reads (Q-227).
+    #[error(
+        "the read standing here folded `{fold}` over more than {most} records \
+         (at {span}); `{fold}` keeps every value it is given, and a `LIMIT` bounds \
+         what a fold answers with rather than what it reads — bound its source \
+         instead, as in `FROM (SELECT … LIMIT {most})`"
+    )]
+    UnboundedCollection {
+        /// The fold that holds its group, as it is written.
+        fold: &'static str,
+        /// The ceiling this node applies to a read that named none.
+        most: u64,
+        /// Where the held read is.
+        span: tessari_ql::Span,
+    },
+
+    /// An `ONLY` read that more than one record answered.
+    ///
+    /// Refused rather than answered with the first, for the reason a timeout
+    /// refuses rather than truncating: the records are already correct, so
+    /// handing back one of them costs nothing and looks like success. The count
+    /// is reported because it is what tells a mistaken assertion from a mistaken
+    /// condition — two is a duplicate, four thousand is the wrong `WHERE`.
+    ///
+    /// None is not this error. `ONLY` asserts at most one, and an absence
+    /// answers `NONE`.
+    #[error(
+        "`ONLY` says one record answers this read and {found} did (at {span}); \
+         narrow it, or drop the word and take the list"
+    )]
+    NotAlone {
+        /// How many answered.
+        found: usize,
+        /// Where the word is.
+        span: tessari_ql::Span,
+    },
+
+    /// An `AFTER` anchor names a record that is not there, on a read that needs
+    /// its key.
+    ///
+    /// A cursor resumes an order, and an order this read named is a value the
+    /// anchor held — so with the record gone there is no position to resume
+    /// from. Every guess at one picks a page: the page after where the record
+    /// used to be, the page after the next record, or the whole table again.
+    ///
+    /// A read that named **no** order never raises this. Its order is the
+    /// store's own, the identity is the whole key, and the position outlives the
+    /// record standing on it.
+    #[error(
+        "`AFTER` names a record `{table}` no longer holds (at {span}), \
+         and this read's order needs the value it held; \
+         resume from a record that is there, or drop the `ORDER BY`"
+    )]
+    AnchorGone {
+        /// The table the anchor named.
+        table: String,
+        /// Where the anchor is.
+        span: tessari_ql::Span,
+    },
+
+    /// A `USING <path>` the read did not satisfy.
+    ///
+    /// The whole point of the clause. It is checked against what the read
+    /// **did**, so an ordered index that could not fill the bound and handed the
+    /// read to the scan is caught here — which is precisely the case an
+    /// assertion checked against the planner's *intention* would have passed.
+    #[error("this read was asked to take the {expected} path and took the {took} path (at {span})")]
+    PathNotTaken {
+        /// The path the statement named.
+        expected: String,
+        /// The path the read reported.
+        took: String,
+        /// Where the assertion was written.
+        span: tessari_ql::Span,
+    },
+
+    /// A `USING INDEX <name>` the read did not satisfy.
+    ///
+    /// Separate from [`Self::PathNotTaken`] because it is a different question:
+    /// `USING index` asks whether *an* index answered and this asks *which*, and
+    /// a read served by the wrong index is a plan regression that the path word
+    /// alone cannot see.
+    #[error("this read was asked to use the index {expected} and used {took} (at {span})")]
+    IndexNotUsed {
+        /// The index the statement named.
+        expected: String,
+        /// What served it instead — an index by name, or `no index`.
+        took: String,
+        /// Where the assertion was written.
+        span: tessari_ql::Span,
+    },
+
+    /// A join whose two sides hold different kinds of value at their keys.
+    ///
+    /// Equality across two kinds is false, so such a join can only ever answer
+    /// no rows — and *no rows* is exactly what a correct join over data that
+    /// happens not to match answers too. The two are indistinguishable to
+    /// whoever reads the answer, and only one of them is a mistake. A join is
+    /// written to be trusted, so the store says which one it is rather than
+    /// handing back an empty list.
+    ///
+    /// The commonest shape is `record` against `string`: an identity stored as
+    /// text on one side and as a reference on the other.
+    #[error(
+        "the join matched {left_key} ({left_kinds}) against {right_key} ({right_kinds}), \
+         and no value of one kind equals a value of the other, so this could only \
+         answer no rows (at {span})"
+    )]
+    JoinKeysDiffer {
+        /// The route into the left record.
+        left_key: String,
+        /// The kinds the left side held there, in order.
+        left_kinds: String,
+        /// The route into the right record.
+        right_key: String,
+        /// The kinds the right side held there, in order.
+        right_kinds: String,
+        /// Where the read was written.
+        span: tessari_ql::Span,
+    },
+
+    /// A `MERGE` whose right-hand side is not an object.
+    ///
+    /// The verb folds one object into another, so a scalar or an array there has
+    /// no reading: `MERGE 3` could only mean "replace the record with 3", and
+    /// `UPDATE t:1 = 3` already says that.
+    #[error("MERGE takes an object to fold in, and this is {found} (at {span})")]
+    MergeIsNotAnObject {
+        /// What stood there instead.
+        found: &'static str,
+        /// Where it was written.
+        span: tessari_ql::Span,
+    },
+
     /// An assignment into a route the record does not have.
     ///
     /// `SET a.b.c = 1` on a record with no `a`. Creating the objects on the way
@@ -48,6 +276,26 @@ pub enum Error {
         at: usize,
         /// How long the file is.
         size: usize,
+        /// Where the statement is.
+        span: tessari_ql::Span,
+    },
+
+    /// A write that would leave a file larger than its bucket accepts.
+    ///
+    /// Reported against the size the file **would end up** being rather than
+    /// the bytes the statement carried, because a ranged write reaches the
+    /// ceiling by splicing — and a message naming the splice would be naming
+    /// the smaller of the two numbers the caller needs.
+    #[error(
+        "writing {path} would leave {size} bytes: the bucket takes at most {ceiling} (at {span})"
+    )]
+    FileAboveBucketCeiling {
+        /// The file's path.
+        path: String,
+        /// How long the file would have been.
+        size: u64,
+        /// The largest file the bucket accepts.
+        ceiling: u64,
         /// Where the statement is.
         span: tessari_ql::Span,
     },
@@ -111,6 +359,53 @@ pub enum Error {
         span: Span,
     },
 
+    /// A catalog object was asked to go while something still points at it.
+    ///
+    /// Refused rather than cascaded, and the choice is the same one
+    /// [`Error::Unbounded`] makes about a read: a statement that removes an
+    /// unbounded amount on the strength of one name is the widest thing this
+    /// language can be asked to run, and the person writing it is thinking
+    /// about the one name. So the refusal counts what it found and names the
+    /// first of them, because a message saying only *not empty* leaves the
+    /// reader to go and run the query this statement already ran.
+    ///
+    /// There is deliberately no `CASCADE`: it is the unbounded form under
+    /// another spelling.
+    #[error(
+        "{} `{name}` still {} {count} {} (at {span}), the first being `{first}` \
+         — remove {} first; there is no `CASCADE`, because a statement that \
+         removes an unbounded amount from one name is the mistake this refusal \
+         exists to catch",
+        .depended.entity(),
+        .depended.relation(),
+        .depended.dependants(*count),
+        .depended.dependants(2),
+    )]
+    StillDepended {
+        /// Which of the three dependencies this is.
+        depended: Depended,
+        /// The name that was asked to go, as written.
+        name: String,
+        /// How many dependants were found.
+        count: usize,
+        /// One of them, named so the reader can act without a second query.
+        first: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A `LET` produced something that is not a single value.
+    ///
+    /// Unreachable while the executor answers a binding with a value, and named
+    /// rather than unwrapped: an executor change that made a binding answer with
+    /// records would otherwise become a panic in a running node, and here it is
+    /// a compile-time conversation followed by an honest refusal.
+    #[error("a binding must produce one value (at {span})")]
+    BindingIsNotAValue {
+        /// Where the binding is.
+        span: Span,
+    },
+
     /// `BEGIN` inside a transaction that is already open.
     #[error("a transaction is already open (at {span})")]
     NestedTransaction {
@@ -122,6 +417,25 @@ pub enum Error {
     #[error("no transaction is open (at {span})")]
     NoOpenTransaction {
         /// Where the statement is.
+        span: Span,
+    },
+
+    /// `VERSION` inside an open transaction.
+    ///
+    /// A transaction *is* a point in the store's history — one snapshot, held
+    /// for as long as it runs, which is what makes its reads agree with each
+    /// other. A statement inside it asking for a different point is asking for
+    /// something a transaction cannot be.
+    ///
+    /// Refused rather than answered at the transaction's own snapshot, which
+    /// would run the statement, return rows, and leave the clause reading as
+    /// though it had been honoured.
+    #[error(
+        "`VERSION` cannot be used inside a transaction — a transaction already \
+         reads at one point in history (at {span})"
+    )]
+    VersionInsideTransaction {
+        /// Where the clause is.
         span: Span,
     },
 
@@ -168,6 +482,92 @@ pub enum Error {
         /// The table as written.
         table: String,
         /// Where it was written.
+        span: Span,
+    },
+
+    /// A `RELATE` between a pair the edge table does not declare.
+    ///
+    /// Only an edge table declared `EDGE FROM a TO b` refuses this; the bare
+    /// `EDGE` accepts any pair, which is the difference the clause buys. The
+    /// refusal is the point of declaring the pair at all: a link into a table
+    /// the graph was never told about traverses out of the structure the caller
+    /// thought they had, and nothing downstream would be in an error state.
+    #[error(
+        "{table} does not join these two tables — it was declared with `EDGE FROM … TO …` (at {span})"
+    )]
+    EndpointsNotDeclared {
+        /// The edge table as written.
+        table: String,
+        /// Where the relation was written.
+        span: Span,
+    },
+
+    /// A `DROP TABLE` naming a graph's own node collection.
+    ///
+    /// Refused rather than allowed, and the refusal is what makes the node
+    /// collection part of the graph rather than something the graph depends on.
+    /// `DEFINE GRAPH g` creates it, under the graph's own name, so the caller
+    /// never declared it; dropping it alone would leave a graph that is still
+    /// declared, still answers `INFO FOR GRAPH`, and can hold no record — the
+    /// state the collection exists to remove, reachable in one statement with
+    /// nothing anywhere in an error state. There is no statement that puts it
+    /// back, because `DEFINE GRAPH g` would refuse: the graph is already there.
+    ///
+    /// The refusal names `DROP GRAPH` rather than only saying no, which is what
+    /// makes it a signpost. A table the caller attached with `IN` is a different
+    /// thing and still drops freely: that clause is one the caller wrote and may
+    /// withdraw.
+    #[error(
+        "`{table}` is graph `{graph}`'s own node collection, not a table of its \
+         own (at {span}) — write `DROP GRAPH {graph}` to remove the graph and \
+         everything it holds"
+    )]
+    TableBelongsToGraph {
+        /// The table as written.
+        table: String,
+        /// The graph whose collection it is.
+        graph: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// An edge kind named an endpoint table that does not belong to its graph.
+    ///
+    /// Refused rather than allowed, because this refusal is what **bounds** a
+    /// walk. A kind whose far side sat outside the graph would let a traversal
+    /// leave the structure it was told to stay inside, and the walk would still
+    /// answer — with records the graph does not contain.
+    #[error("table `{table}` does not belong to graph `{graph}`")]
+    EndpointOutsideGraph {
+        /// The endpoint table as written.
+        table: String,
+        /// The graph the edge kind was declared in.
+        graph: String,
+        /// Where the declaration was written.
+        span: Span,
+    },
+
+    /// A graph traversal was asked for inside a read of the past.
+    ///
+    /// Edges are followed through the edge table's direction indexes, and an
+    /// index entry carries no version: it describes the committed tail. Every
+    /// other index-served read answers this by falling back to a scan, but a
+    /// traversal has nothing to fall back to — the indexes are the mechanism,
+    /// not a shortcut past it.
+    ///
+    /// So the choice is a refusal or a set of records reached through today's
+    /// edges and read at yesterday's snapshot. The second is a wrong answer with
+    /// nothing to distinguish it from a right one, in the query shape whose
+    /// working nobody can see.
+    #[error(
+        "a graph traversal cannot be read at an earlier version: edges{} are \
+         indexed at the present (at {span})",
+        if table.is_empty() { String::new() } else { format!(" in {table}") }
+    )]
+    NoHistoricalTraversal {
+        /// The first edge table in the traversal, when one was named.
+        table: String,
+        /// Where the traversal was written.
         span: Span,
     },
 
@@ -259,6 +659,48 @@ pub enum Error {
         span: Span,
     },
 
+    /// The store could not produce a record identity.
+    ///
+    /// Its own refusal rather than [`Error::CallFailed`], which names the
+    /// function that failed: the caller of an `INSERT` called nothing. Reporting
+    /// this as `rand::uuid() has no answer here` would send them looking through
+    /// a statement that contains no such call.
+    #[error("the store cannot produce a record identity: {reason} (at {span})")]
+    IdentityUnavailable {
+        /// Why there is no identity.
+        reason: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A value the cast asked for cannot hold.
+    ///
+    /// Distinct from [`Error::WrongArgument`], because the argument's *type* is
+    /// not the complaint: `type::int` takes a string happily and answers `42`
+    /// for `'42'`. What failed is this particular value, so this is the one
+    /// refusal in the function surface that names the value rather than its
+    /// type — a message saying only "wants a number, found string" would be
+    /// describing an argument the function accepts.
+    ///
+    /// **Why it refuses instead of answering `none`.** An absent argument
+    /// already answers `none`, and a store built on the distinction between
+    /// "the field is not there" and "the field is there and holds nothing"
+    /// cannot then use `none` for a third thing — "the field is there, holds
+    /// something, and that something is not what you asked for". A caller who
+    /// wants the lenient reading can say so with `IF`; a caller who gets it by
+    /// default has no way back.
+    #[error("{function} cannot read {value} as {target} (at {span})")]
+    NotCastable {
+        /// The cast called.
+        function: Function,
+        /// The value as it was written, quoted when it is text.
+        value: String,
+        /// The kind that was asked for.
+        target: &'static str,
+        /// Where the call is.
+        span: Span,
+    },
+
     /// A default that cannot satisfy the type its own field declares.
     ///
     /// Checked when the declaration is made rather than when it first bites: by
@@ -269,7 +711,11 @@ pub enum Error {
         /// The field being declared.
         field: String,
         /// The type it declares.
-        declared: &'static str,
+        ///
+        /// Owned rather than `&'static str`: a literal union spells itself as
+        /// its members, so not every declared type is a word known at compile
+        /// time.
+        declared: String,
         /// The type its default evaluated to.
         found: &'static str,
         /// Where the field was named.
@@ -346,6 +792,22 @@ pub enum Error {
     #[error("no user of that name and password")]
     SignInRefused,
 
+    /// A signin this node declined to attempt at all.
+    ///
+    /// Either the identity has missed too many times in a row and is waiting, or
+    /// this node is already running as many password verifications as it will.
+    /// One answer for both, because both mean the same thing to a client — come
+    /// back — and separating them would tell an attacker which of the two limits
+    /// they had reached and therefore which one to work around.
+    ///
+    /// Distinct from [`Error::SignInRefused`], and that distinction is
+    /// deliberate: this one says nothing about whether the credential was right,
+    /// so a client can tell "wait" from "wrong" and stop retrying a password that
+    /// will never work. An operator reading the log gets the two apart there,
+    /// where an attacker is not.
+    #[error("this node is not taking a sign-in for that user right now")]
+    SignInThrottled,
+
     /// A score was asked for where there is no collection to measure against.
     ///
     /// Not answered with zero, and not answered against whatever records
@@ -375,6 +837,104 @@ pub enum Error {
         span: Span,
     },
 
+    /// An owner reached a user outside the tenancy they own.
+    ///
+    /// Distinct from [`Error::RoleForbids`], which says the caller's role is too
+    /// small: here the role is exactly right and the *reach* is not, and the two
+    /// send an operator to different fixes — one to a role change, the other to
+    /// somebody further up.
+    ///
+    /// It names the user rather than answering "no such user", which would be
+    /// the other way to keep the boundary. A store where `ALTER USER root …`
+    /// says the name is unknown while `DEFINE USER root …` says it is taken is a
+    /// store that lies to the person trying to fix something, and a name is not
+    /// the secret here — the password hash and the grants are, and neither is in
+    /// this message. The disclosure is also bounded: reaching this at all means
+    /// the caller already owns a tenancy of their own.
+    #[error("{user:?} is not in a tenancy you administer (at {span})")]
+    NotYours {
+        /// The user they named.
+        user: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// Declaring somebody who would reach further than the declarer.
+    ///
+    /// Separate from [`Error::NotYours`], which is about a user who already
+    /// exists: this one is about a reach being *asked for*, and the two send an
+    /// operator to different places — one to somebody further up, the other to
+    /// the `ON` clause they left off.
+    #[error("{user:?} would reach further than you do; name a tenancy inside your own (at {span})")]
+    WiderThanYou {
+        /// The name they tried to declare.
+        user: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// Granting an authority over a reach the subject is confined outside of.
+    ///
+    /// The refusal exists because the alternative is worse than either obvious
+    /// answer. A declared tenancy is a second, independent confinement asked
+    /// before the held set is consulted, so an authority granted outside it can
+    /// never be used — which meant `GRANT read ON NAMESPACE staging TO nina`,
+    /// where `nina` was declared `ON NAMESPACE prod`, **succeeded and did
+    /// nothing**. A statement that returns `ok` and has no effect is the worst
+    /// of the three available designs, because the operator's only evidence that
+    /// they did the thing *is* the `ok`; the next person reads the holding in
+    /// `INFO FOR USER` and believes it.
+    ///
+    /// It is the subject-side twin of [`Error::WiderThanYou`], which refuses the
+    /// same escalation on the declaring side. Without it the escalation simply
+    /// moves: declare somebody narrow, then grant them out of their own `ON`.
+    ///
+    /// `REVOKE` is deliberately **not** refused this way. Taking away a holding
+    /// that could never be used is harmless, and the store may already hold such
+    /// a holding from before this refusal existed — a revocation is how that is
+    /// cleaned up, so refusing it would trap the very rows this rule is about.
+    #[error(
+        "{user:?} is confined to a tenancy that does not contain that reach, so the authority could never be used (at {span})"
+    )]
+    OutsideTheirTenancy {
+        /// The subject of the grant.
+        user: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// Handing out an authority the caller does not hold at that reach.
+    ///
+    /// Two refusals wear this one message because they are the same rule read
+    /// from both ends: you may not hand out an authority you were never given,
+    /// and you may not hand out anything at all somewhere you do not govern.
+    /// Together they are the property the whole model exists for — **no
+    /// statement can mint an identity above the one running it**.
+    ///
+    /// Separate from [`Error::WiderThanYou`], which is about the `ON` clause of
+    /// a declaration and sends an operator to a smaller tenancy. This one is
+    /// about an authority, and sends them to whoever holds it.
+    #[error("you do not hold {kind} at that reach yourself (at {span})")]
+    CannotHandOut {
+        /// The authority that is missing — the one being granted, or `govern`.
+        kind: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// No user carries that id.
+    ///
+    /// Carries an id and no span because nothing typed it: it is reached when a
+    /// stored declaration names a user who has since been deleted, and a caret
+    /// under a character nobody wrote would point at the wrong thing. For a
+    /// consumer this is not a fault — it is how deleting a declarer stops the
+    /// background writer they declared.
+    #[error("no user has id {id}")]
+    UnknownUser {
+        /// The id the stored declaration named.
+        id: u32,
+    },
+
     /// A role this language does not have.
     #[error("there is no role called {name:?} (at {span})")]
     NoSuchRole {
@@ -383,6 +943,83 @@ pub enum Error {
         /// Where it was written.
         span: Span,
     },
+
+    /// An authority kind this store does not have.
+    ///
+    /// Its own error rather than [`Error::NoSuchRole`], because the two sets do
+    /// not overlap and being told there is no role called `manage` sends the
+    /// reader looking for the wrong thing entirely.
+    #[error("there is no authority called {name:?} — the kinds are {known} (at {span})")]
+    NoSuchAuthority {
+        /// The name as written.
+        name: String,
+        /// Every kind there is, so the answer is in the refusal.
+        known: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A password that is not one.
+    ///
+    /// An empty password is not a weak credential, it is the absence of one
+    /// wearing the shape of a credential — and the account it belongs to is open
+    /// to anybody who types the name. Refused where a password is *set* rather
+    /// than where it is checked, because by the time it is checked the account
+    /// already exists.
+    #[error("a password cannot be empty (at {span})")]
+    PasswordEmpty {
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A caller changing their own password who did not prove the current one.
+    ///
+    /// Distinct from [`Error::SignInRefused`] so a client can tell "your
+    /// password is wrong" from "you are not signed in": here the caller *is*
+    /// signed in, and what failed is the second proof this statement asks for.
+    #[error("the current password does not match")]
+    CurrentPasswordRefused,
+
+    /// An owner of one tenancy attempting something whose subject is the store.
+    ///
+    /// Deliberately not [`Error::RoleForbids`]. The two have different fixes —
+    /// *be made an owner* against *be made an owner of the store* — and an owner
+    /// told they are not an owner goes looking for the wrong thing.
+    #[error(
+        "{user:?} holds one database, and this statement's subject is the whole store (at {span})"
+    )]
+    NotTheWholeStore {
+        /// Who asked.
+        user: String,
+        /// Where they asked.
+        span: Span,
+    },
+    /// Two message fields mapped onto one record field.
+    ///
+    /// Refused rather than resolved by order, because there is no order here
+    /// that is not arbitrary: the mapping is a set of pairs, and whichever one
+    /// happened to be applied last would win silently on every message.
+    #[error(
+        "{field:?} is mapped more than once, so which message field wins is undefined (at {span})"
+    )]
+    DuplicateMapping {
+        /// The record field named twice.
+        field: String,
+        /// Where the second one was written.
+        span: Span,
+    },
+
+    /// A token whose user has since been changed or removed.
+    ///
+    /// Deliberately one refusal for four different events — a rotated password,
+    /// a corrected role, a moved tenancy, a dropped user. Which one it was is
+    /// the holder's business only insofar as they must sign in again, and
+    /// naming it would tell somebody holding a stolen token what happened to the
+    /// account they stole it from.
+    ///
+    /// Carries no span, because no statement produced it.
+    #[error("this session's token is no longer current; sign in again")]
+    TicketStale,
 
     /// A verb this language does not have.
     #[error("there is no verb called {name:?}; a grant carries `read` or `write` (at {span})")]
@@ -600,4 +1237,68 @@ pub enum Error {
         /// Where it was written.
         span: Span,
     },
+}
+
+/// Which catalog dependency a [`Error::StillDepended`] refusal is about.
+///
+/// An enum rather than the three `&'static str` fields this began as, for two
+/// reasons and only one of them is size. The other is that the strings had to
+/// agree — `analyzer` with `is named by` with `fields` — and nothing made them:
+/// the first draft shipped *"still is named by 1 fields"*, which is what a free
+/// pairing of a verb and a plural noun produces the first time somebody writes
+/// the third one. Here the three are one value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Depended {
+    /// An analyzer a field still names. The reference is by name, so nothing in
+    /// the catalog enforces it and a dangling one is a search that quietly stops
+    /// matching.
+    AnalyzerByField,
+    /// A database that still holds tables.
+    DatabaseByTable,
+    /// A namespace that still holds databases.
+    NamespaceByDatabase,
+    /// A graph that tables still belong to.
+    GraphByTable,
+    /// A graph that edge kinds still belong to.
+    GraphByEdgeKind,
+}
+
+impl Depended {
+    /// What was asked to go.
+    pub(crate) const fn entity(self) -> &'static str {
+        match self {
+            Self::AnalyzerByField => "analyzer",
+            Self::DatabaseByTable => "database",
+            Self::NamespaceByDatabase => "namespace",
+            Self::GraphByTable | Self::GraphByEdgeKind => "graph",
+        }
+    }
+
+    /// How the dependants stand to it, as the sentence needs it.
+    pub(crate) const fn relation(self) -> &'static str {
+        match self {
+            Self::AnalyzerByField => "is named by",
+            Self::DatabaseByTable | Self::NamespaceByDatabase => "holds",
+            // Not "holds": a graph does not contain its tables the way a
+            // database contains them — they belong to it while living in the
+            // database, and the sentence has to say which relation is in the way.
+            Self::GraphByTable | Self::GraphByEdgeKind => "is joined by",
+        }
+    }
+
+    /// What they are, agreeing with how many there are.
+    pub(crate) const fn dependants(self, count: usize) -> &'static str {
+        match (self, count) {
+            (Self::AnalyzerByField, 1) => "field",
+            (Self::AnalyzerByField, _) => "fields",
+            (Self::DatabaseByTable, 1) => "table",
+            (Self::DatabaseByTable, _) => "tables",
+            (Self::NamespaceByDatabase, 1) => "database",
+            (Self::NamespaceByDatabase, _) => "databases",
+            (Self::GraphByTable, 1) => "table",
+            (Self::GraphByTable, _) => "tables",
+            (Self::GraphByEdgeKind, 1) => "edge kind",
+            (Self::GraphByEdgeKind, _) => "edge kinds",
+        }
+    }
 }

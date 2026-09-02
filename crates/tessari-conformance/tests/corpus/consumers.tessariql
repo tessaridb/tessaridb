@@ -1,0 +1,97 @@
+# Consumers: ingestion that is declared rather than scripted.
+#
+# One statement says what to read, how to read it, where it lands, and under
+# which group. The node then runs it because the catalog says so, which is the
+# whole difference between this and a script somebody remembered to start.
+#
+# A corpus file is one session against one store and runs in order, so the
+# destination is created first — which is also the property being pinned: a
+# consumer's destination is a **field** and is resolved when the declaration is
+# made, so there is no window in which a consumer is consuming into a table that
+# does not exist yet.
+#
+# Nothing here connects to a broker. What these cases pin is the grammar, the
+# refusals, and what the catalog holds afterwards.
+
+--- case: somewhere for the records to land
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+DEFINE COLLECTION orders;
+--- expect: ok
+
+--- case: the whole declaration, every clause in the order the grammar reads them
+DEFINE CONSUMER orders_in
+    FROM 'broker-1:9092', 'broker-2:9092'
+    TOPIC 'orders'
+    GROUP 'shop-orders'
+    FORMAT json
+    INTO orders
+    IDENTITY order_id
+    MAP amount AS total, placed.at AS placed_at
+    ON FAILURE quarantine
+    PARALLELISM 2;
+--- expect: ok
+
+--- case: the declaration is read back, with its running half and its refusals
+INFO FOR CONSUMER orders_in;
+--- expect: ok
+
+--- case: and it appears in the listing
+INFO FOR CONSUMERS;
+--- expect: ok
+
+--- case: the name is claimed once
+DEFINE CONSUMER orders_in
+    FROM 'broker-1:9092' TOPIC 'orders' GROUP 'shop-orders'
+    FORMAT json INTO orders IDENTITY order_id MAP amount AS total
+    ON FAILURE stop;
+--- expect: error NameTaken
+
+--- case: which is what `IF NOT EXISTS` is for, so a setup script re-runs
+DEFINE CONSUMER IF NOT EXISTS orders_in
+    FROM 'broker-1:9092' TOPIC 'orders' GROUP 'shop-orders'
+    FORMAT json INTO orders IDENTITY order_id MAP amount AS total
+    ON FAILURE stop;
+--- expect: ok
+
+--- case: parallelism may be left out, and reads as one rather than as "decide for me"
+DEFINE CONSUMER orders_slow
+    FROM 'broker-1:9092' TOPIC 'orders' GROUP 'shop-orders-slow'
+    FORMAT json INTO orders IDENTITY order_id MAP amount AS total
+    ON FAILURE stop;
+--- expect: ok
+
+--- case: a destination that does not exist is refused before anything is stored
+DEFINE CONSUMER nowhere_in
+    FROM 'broker-1:9092' TOPIC 'orders' GROUP 'g'
+    FORMAT json INTO nowhere IDENTITY order_id MAP amount AS total
+    ON FAILURE stop;
+--- expect: error Unknown
+
+--- case: a format this store cannot read is refused where it is written
+DEFINE CONSUMER protobuf_in
+    FROM 'broker-1:9092' TOPIC 'orders' GROUP 'g'
+    FORMAT protobuf INTO orders IDENTITY order_id MAP amount AS total
+    ON FAILURE stop;
+--- expect: error Unknown
+
+--- case: two message fields may not land on one record field
+DEFINE CONSUMER ambiguous_in
+    FROM 'broker-1:9092' TOPIC 'orders' GROUP 'g'
+    FORMAT json INTO orders IDENTITY order_id MAP amount AS total, gross AS total
+    ON FAILURE stop;
+--- expect: error DuplicateMapping
+
+--- case: forgetting one, which frees its name again
+DROP CONSUMER orders_slow;
+--- expect: ok
+
+--- case: and forgetting one that is not there says so
+DROP CONSUMER orders_slow;
+--- expect: error Unknown
+
+--- case: asking about one that is not there says so too
+INFO FOR CONSUMER orders_slow;
+--- expect: error Unknown

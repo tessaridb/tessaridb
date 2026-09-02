@@ -21,7 +21,9 @@
 
 #![forbid(unsafe_code)]
 
+mod adjacency;
 mod catalog;
+mod covering;
 mod error;
 mod feed;
 mod graph;
@@ -29,23 +31,30 @@ mod index;
 mod log;
 mod node;
 mod reclaim;
+mod running;
 mod schema;
 mod snapshots;
 mod store;
 mod transaction;
 
 pub use catalog::{
-    AnalyzerDefinition, Catalog, DatabaseDefinition, EDGE_IN, EDGE_OUT, FieldDefinition,
-    FieldShape, GrantDefinition, IndexDefinition, IndexShape, NamespaceDefinition,
-    ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition, TableShape,
-    UserDefinition, VectorDistance, Verb,
+    AnalyzerDefinition, Authority, Catalog, ConsumerDefinition, DatabaseDefinition, EDGE_IN,
+    EDGE_OUT, EdgeDeclaration, EdgeKindDefinition, EdgeOrder, FieldDefinition, FieldShape,
+    GEO_FIELD, GrantDefinition, GraphDefinition, Held, IndexDefinition, IndexShape, Kind, Mapped,
+    NamespaceDefinition, OnFailure, RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE,
+    SYSTEM_NAMESPACE, TableDefinition, TableKind, TableShape, UserDefinition, VECTOR_FIELD,
+    VectorDeclaration, VectorDistance, Verb,
 };
+// Exported because a refinement figure is only readable beside the relation it
+// was measured under, and that relation is a decision this crate takes.
+pub use covering::MEASURED_RELATION;
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
 pub use error::{Error, Result};
 pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use graph::vector_of;
 pub use reclaim::Reclaimed;
+pub use running::{Progress, Running};
 pub use store::{Health, Store};
-pub use tessari_encoding::Roles;
-pub use transaction::{RecordAddress, StoredRecord, Transaction};
+pub use tessari_encoding::{BUILD_VERSION, Roles};
+pub use transaction::{Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction};

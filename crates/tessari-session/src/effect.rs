@@ -58,7 +58,18 @@ impl Effect {
             // Reads, including the ones that look heavier than they are.
             // `BACKUP` streams the whole log and writes nothing to the store —
             // it is the largest read in the language, not a write.
-            StatementKind::Select(_)
+            // A binding and an answer hold an **expression**, and no expression
+            // in this language writes. What one may hold is a read, which is
+            // already a read. Both stay `Read` for the same reason `SELECT`
+            // does, and `of_script` still sees the write if one stands beside
+            // them in the same block.
+            StatementKind::Let { .. }
+            | StatementKind::Return { .. }
+            // A refusal holds an expression and changes nothing. It is a read
+            // for the same reason a binding is, and `of_script` still sees the
+            // write standing beside it in the same block.
+            | StatementKind::Throw { .. }
+            | StatementKind::Select(_)
             | StatementKind::Explain(_)
             | StatementKind::Get { .. }
             | StatementKind::Keys { .. }
@@ -78,7 +89,11 @@ impl Effect {
             StatementKind::Use { .. }
             | StatementKind::Begin
             | StatementKind::Commit
-            | StatementKind::Cancel => Self::Read,
+            | StatementKind::Cancel
+            // A rehearsal writes nothing, and saying otherwise would make a
+            // read-only node refuse to tell a caller whether a write would be
+            // accepted — which is exactly the question worth asking there.
+            | StatementKind::Verify => Self::Read,
 
             // Structure.
             StatementKind::DefineNamespace { .. }
@@ -86,21 +101,38 @@ impl Effect {
             | StatementKind::DefineTable { .. }
             | StatementKind::DefineSpace { .. }
             | StatementKind::DefineBucket { .. }
+            | StatementKind::DefineCollection { .. }
+            | StatementKind::DefineVector { .. }
+            | StatementKind::DropVector { .. }
+            | StatementKind::DefineGeo { .. }
+            | StatementKind::DropGeo { .. }
+            | StatementKind::DefineGraph { .. }
+            | StatementKind::DropGraph { .. }
+            | StatementKind::DefineEdge { .. }
+            | StatementKind::DropEdge { .. }
             | StatementKind::DefineIndex { .. }
             | StatementKind::DefineField { .. }
             | StatementKind::DefineAnalyzer { .. }
             | StatementKind::DropTable { .. }
             | StatementKind::DropIndex { .. }
             | StatementKind::DropField { .. }
+            | StatementKind::DropAnalyzer { .. }
+            | StatementKind::DropDatabase { .. }
+            | StatementKind::DropNamespace { .. }
+            | StatementKind::AlterTable { .. }
+            | StatementKind::AlterField { .. }
             | StatementKind::RebuildIndex { .. } => Self::Write,
 
             // Who may reach it. Administering in `Needs`, and a write here:
             // a grant is a record like any other and must be decided in one
             // place, which is the leader.
             StatementKind::DefineUser { .. }
+            | StatementKind::AlterUser { .. }
             | StatementKind::DropUser { .. }
             | StatementKind::Grant { .. }
-            | StatementKind::Revoke { .. } => Self::Write,
+            | StatementKind::Revoke { .. }
+            | StatementKind::GrantAuthority { .. }
+            | StatementKind::RevokeAuthority { .. } => Self::Write,
 
             // Topology, and the two halves part company here (ADR-0020 §3).
             //
@@ -121,16 +153,32 @@ impl Effect {
             // `DEFINE REPLICA` is the opposite half and stays a write: it is a
             // catalog record, commits in the transaction that issued it, and
             // reaches every node through the ordinary apply path (ADR-0009).
-            StatementKind::DefineReplica { .. } => Self::Write,
+            // `DROP REPLICA` is the inverse of that half and travels the same
+            // way: it removes a catalog record, so it is a write and it reaches
+            // every node. `DROP NODE` has no arm here because it has no
+            // statement — the parser refuses it and says why.
+            StatementKind::DefineReplica { .. } | StatementKind::DropReplica { .. } => Self::Write,
+            // A consumer's **declaration** is a catalog record and replicates,
+            // exactly as a replica's does; whether it is running on this machine
+            // is local and is not part of the record. So both forms are writes,
+            // and a follower that received one starts its own consumer in the
+            // same group — which is the behaviour wanted, because the broker then
+            // spreads the partitions across them.
+            StatementKind::DefineConsumer { .. } | StatementKind::DropConsumer { .. } => {
+                Self::Write
+            }
 
             // Records and files. `UPDATE` and `DELETE … WHERE` read to find
             // their targets and then change them, which is exactly the shape a
             // keyword test gets wrong.
             StatementKind::Create { .. }
+            | StatementKind::Insert { .. }
             | StatementKind::Update { .. }
+            | StatementKind::Upsert { .. }
             | StatementKind::Delete { .. }
             | StatementKind::DeleteWhere { .. }
             | StatementKind::Relate { .. }
+            | StatementKind::DeleteEdge { .. }
             | StatementKind::Set { .. }
             | StatementKind::Del { .. }
             | StatementKind::Put { .. } => Self::Write,

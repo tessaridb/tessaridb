@@ -370,7 +370,7 @@ fn script_as(address: &str, source: &str, credential: Option<&str>) -> u16 {
 }
 
 const READY: &str = "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
-                     DEFINE DATABASE library; USE DATABASE library; DEFINE TABLE users;";
+                     DEFINE DATABASE library; USE DATABASE library; DEFINE COLLECTION users;";
 
 #[test]
 fn a_change_committed_on_another_connection_arrives_as_a_frame_on_this_one() {
@@ -518,7 +518,7 @@ fn granted() -> (Arc<Node>, String) {
             &address,
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
              DEFINE DATABASE library; USE DATABASE library; \
-             DEFINE TABLE users; DEFINE TABLE ledger; \
+             DEFINE COLLECTION users; DEFINE COLLECTION ledger; \
              DEFINE USER root ROLE owner PASSWORD 'root secret';"
         ),
         200,

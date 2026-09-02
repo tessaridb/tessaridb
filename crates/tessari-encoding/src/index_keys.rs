@@ -84,7 +84,7 @@ impl IndexAddress {
         writer.finish()
     }
 
-    fn read(reader: &mut KeyReader<'_>) -> Result<Self> {
+    pub(crate) fn read(reader: &mut KeyReader<'_>) -> Result<Self> {
         Ok(Self {
             namespace: NamespaceId::new(reader.take_u32()?),
             database: DatabaseId::new(reader.take_u32()?),
@@ -344,6 +344,288 @@ impl StoreValue for SearchStatistics {
     }
 }
 
+/// The recall one vector index was last measured at.
+///
+/// A vector index answers **approximately**, so the only number that says
+/// whether its answers are worth having is the fraction of the true nearest it
+/// actually returns. That is a property of a measurement and not of a
+/// declaration — a figure derived from the build parameters would be a number
+/// nobody checked wearing the name of one somebody did.
+///
+/// Beside the index rather than on its definition, for the reason
+/// [`SearchStatisticsKey`] is: this is a measurement derived from the log, and
+/// the definition is what the language wrote. The key is **derived from the
+/// [`IndexAddress`]** rather than stored beside it, so it cannot come to name
+/// the wrong index, and it is cleared as part of the index's keyspace when the
+/// entries are — which is what stops a rebuild leaving a figure describing a
+/// graph that no longer exists.
+///
+/// The key is exactly an index prefix with no suffix, so one index has exactly
+/// one of these and finding it is a point read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VectorRecallKey {
+    /// Which index this measurement describes.
+    pub address: IndexAddress,
+}
+
+impl VectorRecallKey {
+    /// Name the measurement of one index.
+    #[must_use]
+    pub const fn new(address: IndexAddress) -> Self {
+        Self { address }
+    }
+}
+
+impl StoreKey for VectorRecallKey {
+    type Value = VectorRecall;
+
+    const KIND: KeyKind = KeyKind::VectorRecall;
+
+    fn encode(&self) -> Key {
+        Key::from(self.address.prefix(Self::KIND))
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let address = IndexAddress::read(&mut reader)?;
+        reader.finish()?;
+        Ok(Self { address })
+    }
+}
+
+/// A measured recall, and everything needed to read it.
+///
+/// # Why a bare percentage is not stored
+///
+/// Recall decays as records are added after the measurement — the graph keeps
+/// answering, and answers less of the truth — so a lone figure describes a store
+/// that may no longer exist, and it goes stale in silence. Every field here
+/// exists so a reader can tell whether the number still means anything:
+///
+/// - `at` — recall@10 and recall@1 are different numbers.
+/// - `sample` — a figure from four queries is not a figure from four hundred.
+/// - `records` — how large the store was when it was measured, so growth since
+///   is visible rather than hidden.
+/// - `neighbours` and `exploration` — the engine constants in force; a recall
+///   measured at one budget does not describe another.
+///
+/// Absence of this value means **never measured**, which is a different
+/// statement from a measured zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VectorRecall {
+    /// The fraction of the true nearest the walk returned, as a percentage.
+    pub recall: u32,
+    /// How many neighbours each query asked for.
+    pub at: u32,
+    /// How many queries the figure is an average over.
+    pub sample: u32,
+    /// How many records the index held when it was measured.
+    pub records: u64,
+    /// The neighbour count each node was built with.
+    pub neighbours: u32,
+    /// The exploration budget the measuring walks spent.
+    pub exploration: u32,
+}
+
+impl StoreValue for VectorRecall {
+    fn encode(&self) -> Value {
+        let mut writer = KeyWriter::new();
+        writer
+            .put_u32(self.recall)
+            .put_u32(self.at)
+            .put_u32(self.sample)
+            .put_u64(self.records)
+            .put_u32(self.neighbours)
+            .put_u32(self.exploration);
+        let body = writer.finish();
+        let mut buffer = with_header(0, body.len());
+        buffer.extend_from_slice(&body);
+        Value::from(buffer)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let (_, payload) = split_header(bytes, 0)?;
+        let mut reader = KeyReader::new(KeyKind::VectorRecall, payload);
+        let recall = reader.take_u32()?;
+        let at = reader.take_u32()?;
+        let sample = reader.take_u32()?;
+        let records = reader.take_u64()?;
+        let neighbours = reader.take_u32()?;
+        let exploration = reader.take_u32()?;
+        reader.finish()?;
+        Ok(Self {
+            recall,
+            at,
+            sample,
+            records,
+            neighbours,
+            exploration,
+        })
+    }
+}
+
+/// What refining one spatial index's candidates last cost.
+///
+/// A spatial index answers by **bounding box**, and a box is not a geometry — so
+/// every read is filter-and-refine, and the number that says whether the filter
+/// is earning its keep is how many records it offers against how many survive.
+/// A ratio near one means the stored boxes approximate their geometries well; a
+/// large one means the index is doing work the exact predicate throws away.
+/// Without it a query budget is tuned by intuition, and a structurally bad row —
+/// a river, a road, a border, whose box is many times its own area — is
+/// invisible.
+///
+/// Beside the index rather than on its definition, for the reason
+/// [`VectorRecallKey`] is: this is a measurement derived from the log, and the
+/// definition is what the language wrote. The key is **derived from the
+/// [`IndexAddress`]**, so it cannot come to name the wrong index, and it is
+/// cleared as part of the index's keyspace when the entries are — which is what
+/// stops a rebuild leaving a figure describing a covering that no longer exists.
+///
+/// The key is exactly an index prefix with no suffix, so one index has exactly
+/// one of these and finding it is a point read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpatialRefinementKey {
+    /// Which index this measurement describes.
+    pub address: IndexAddress,
+}
+
+impl SpatialRefinementKey {
+    /// Name the measurement of one index.
+    #[must_use]
+    pub const fn new(address: IndexAddress) -> Self {
+        Self { address }
+    }
+}
+
+impl StoreKey for SpatialRefinementKey {
+    type Value = SpatialRefinement;
+
+    const KIND: KeyKind = KeyKind::SpatialRefinement;
+
+    fn encode(&self) -> Key {
+        Key::from(self.address.prefix(Self::KIND))
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let address = IndexAddress::read(&mut reader)?;
+        reader.finish()?;
+        Ok(Self { address })
+    }
+}
+
+/// The counts a covering is judged by, and everything needed to read them.
+///
+/// # Why counts rather than a ratio
+///
+/// There are **two** ratios here and they name two different repairs, so a
+/// single stored number would answer neither question:
+///
+/// - `reached` over `admitted` is how loose the stored boxes are. The cells
+///   offer records the box test then throws away.
+/// - `entries` over `reached` is how fragmented the covering is. One record with
+///   an awkward shape occupies many cells, and every one of them is an entry the
+///   traversal reads to arrive at the same record — which is exactly the river,
+///   the road and the border the measurement exists to make visible.
+///
+/// Storing the counts leaves both derivable and neither asserted.
+///
+/// # Why it cannot go stale in silence
+///
+/// The counts describe the store as it was when the index was built. `sample`
+/// says how many queries stand behind them — a figure from four is not a figure
+/// from four hundred — and `records` says how large the index was, so growth
+/// since is visible rather than hidden.
+///
+/// # The query record is not counted
+///
+/// Each measuring query is a record's own box, and a record always reaches
+/// itself and always survives its own box test. Counting it would add one to
+/// both sides of every ratio and pull each one toward one, which is to say
+/// toward "healthy" — so the record being asked about is excluded from both.
+/// A store whose records never reach one another therefore measures nothing at
+/// all rather than measuring a perfect score.
+///
+/// Absence of this value means **never measured**, which is a different
+/// statement from a measured zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpatialRefinement {
+    /// Index entries the measuring reads walked.
+    pub entries: u64,
+    /// Distinct records those entries named.
+    pub reached: u64,
+    /// How many of those the box test admitted.
+    pub admitted: u64,
+    /// How many queries the counts are a total over.
+    pub sample: u32,
+    /// How many records the index held when it was measured.
+    pub records: u64,
+}
+
+impl SpatialRefinement {
+    /// Records offered per record kept, as a percentage.
+    ///
+    /// `None` when nothing was admitted — not because there was no measurement,
+    /// but because the ratio is unbounded there. A covering that offered records
+    /// and kept none is the worst refinement there is, and the counts beside this
+    /// say so plainly; collapsing it to a number would either invent a ceiling or
+    /// print `0`, which reads as a perfect filter.
+    ///
+    /// `checked_div` rather than a guard and a `saturating_div`: the absence and
+    /// the division are the same fact, so writing them as two would let a later
+    /// edit separate them. `saturating_div` also does not saturate a zero
+    /// divisor — it panics — which is a poor thing to reach for in a database.
+    #[must_use]
+    pub const fn refinement(self) -> Option<u64> {
+        self.reached.saturating_mul(100).checked_div(self.admitted)
+    }
+
+    /// Entries read per record reached, as a percentage.
+    ///
+    /// `None` for the same reason [`Self::refinement`] returns one.
+    #[must_use]
+    pub const fn fragmentation(self) -> Option<u64> {
+        self.entries.saturating_mul(100).checked_div(self.reached)
+    }
+}
+
+impl StoreValue for SpatialRefinement {
+    fn encode(&self) -> Value {
+        let mut writer = KeyWriter::new();
+        writer
+            .put_u64(self.entries)
+            .put_u64(self.reached)
+            .put_u64(self.admitted)
+            .put_u32(self.sample)
+            .put_u64(self.records);
+        let body = writer.finish();
+        let mut buffer = with_header(0, body.len());
+        buffer.extend_from_slice(&body);
+        Value::from(buffer)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let (_, payload) = split_header(bytes, 0)?;
+        let mut reader = KeyReader::new(KeyKind::SpatialRefinement, payload);
+        let entries = reader.take_u64()?;
+        let reached = reader.take_u64()?;
+        let admitted = reader.take_u64()?;
+        let sample = reader.take_u32()?;
+        let records = reader.take_u64()?;
+        reader.finish()?;
+        Ok(Self {
+            entries,
+            reached,
+            admitted,
+            sample,
+            records,
+        })
+    }
+}
+
 /// One record's place in a vector index's graph.
 ///
 /// ```text
@@ -527,7 +809,7 @@ impl PostingKey {
 }
 
 impl StoreKey for PostingKey {
-    type Value = NoPayload;
+    type Value = Posting;
 
     const KIND: KeyKind = KeyKind::Posting;
 
@@ -666,6 +948,82 @@ impl StoreValue for NoPayload {
     }
 }
 
+/// What a term does in one record: how often it occurs, and how long the record
+/// is.
+///
+/// # Why a posting carries the record's length, which is not a property of the
+/// term
+///
+/// A relevance score needs four numbers. Two describe the collection — how many
+/// records there are and how long a typical one is — and are held once, beside
+/// the postings, in [`SearchStatistics`]. The other two describe *this* record:
+/// how often it holds the term, and how long it is.
+///
+/// The frequency plainly belongs here. The length is a property of the record,
+/// so the tidy place for it would be one entry per record — and it is here
+/// instead, repeated once per distinct term. That is deliberate: it makes a
+/// score computable from the postings scan **alone**. A scan of one term's
+/// postings yields the record, the frequency and the length together, so
+/// scoring costs no further read at all, where a separate length entry would
+/// cost one point read per candidate — most of what storing the numbers was
+/// meant to remove.
+///
+/// The redundancy also cannot drift. A record's update already deletes its whole
+/// posting set and writes a new one, so a changed length rewrites exactly the
+/// postings that were being rewritten anyway, by the same code, in the same
+/// batch.
+///
+/// # A posting written before this payload existed
+///
+/// [`Self::Membership`] is what an older format wrote: the header and nothing
+/// after it. It says the term is in the record and no more, which is all
+/// `MATCHES` ever needed — so an index written that way keeps answering
+/// `MATCHES` correctly and only cannot be **scored**. The distinction is carried
+/// by the encoding itself rather than by a declared version, so it cannot
+/// disagree with the data it describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Posting {
+    /// The term is in the record. Written before postings carried a payload.
+    Membership,
+    /// The term is in the record this often, and the record is this long.
+    Counted {
+        /// Occurrences of this term in this record, **with** repeats.
+        frequency: u32,
+        /// Tokens in the record's analysed field, **with** repeats.
+        ///
+        /// The same quantity [`SearchStatistics::terms`] accumulates, so the two
+        /// cannot mean different things by "length".
+        length: u32,
+    },
+}
+
+impl StoreValue for Posting {
+    fn encode(&self) -> Value {
+        let Self::Counted { frequency, length } = *self else {
+            // Byte-identical to `NoPayload`, because it is the same statement.
+            return Value::from(with_header(0, 0));
+        };
+        let mut writer = KeyWriter::new();
+        writer.put_u32(frequency).put_u32(length);
+        let body = writer.finish();
+        let mut buffer = with_header(0, body.len());
+        buffer.extend_from_slice(&body);
+        Value::from(buffer)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let (_, payload) = split_header(bytes, 0)?;
+        if payload.is_empty() {
+            return Ok(Self::Membership);
+        }
+        let mut reader = KeyReader::new(KeyKind::Posting, payload);
+        let frequency = reader.take_u32()?;
+        let length = reader.take_u32()?;
+        reader.finish()?;
+        Ok(Self::Counted { frequency, length })
+    }
+}
+
 /// Walk the field list and keep its bytes verbatim.
 ///
 /// The fields are not decoded — the encoding normalises numbers and so cannot be
@@ -718,6 +1076,90 @@ mod tests {
         let encoded = held.encode();
         let read = SearchStatistics::decode(encoded.as_slice()).expect("statistics");
         assert_eq!(read, held);
+    }
+
+    #[test]
+    fn a_counted_posting_survives_the_round_trip() {
+        use super::Posting;
+        for (frequency, length) in [(1_u32, 1_u32), (3, 97), (u32::MAX, u32::MAX), (1, u32::MAX)] {
+            let held = Posting::Counted { frequency, length };
+            let read = Posting::decode(held.encode().as_slice()).expect("a posting");
+            assert_eq!(read, held, "{frequency}/{length}");
+        }
+    }
+
+    #[test]
+    fn a_posting_with_no_payload_is_the_membership_one_an_older_format_wrote() {
+        use super::{NoPayload, Posting};
+        // Byte-identical, because it is the same statement — which is what lets
+        // an index written before postings carried a payload keep answering
+        // `MATCHES` instead of failing to decode.
+        assert_eq!(
+            Posting::Membership.encode().as_slice(),
+            NoPayload.encode().as_slice()
+        );
+        let read = Posting::decode(NoPayload.encode().as_slice()).expect("a posting");
+        assert_eq!(read, Posting::Membership);
+    }
+
+    #[test]
+    fn a_counted_posting_is_not_mistaken_for_a_membership_one() {
+        use super::Posting;
+        // The distinction is carried by the encoding rather than by a declared
+        // version, so it cannot disagree with the data. A zero frequency is
+        // still `Counted`: it is a statement, where `Membership` is the absence
+        // of one.
+        let zero = Posting::Counted {
+            frequency: 0,
+            length: 0,
+        };
+        assert_ne!(
+            zero.encode().as_slice(),
+            Posting::Membership.encode().as_slice()
+        );
+        assert_eq!(
+            Posting::decode(zero.encode().as_slice()).expect("a posting"),
+            zero
+        );
+    }
+
+    #[test]
+    fn a_truncated_posting_payload_is_refused_rather_than_read_short() {
+        use super::Posting;
+        let full = Posting::Counted {
+            frequency: 7,
+            length: 11,
+        };
+        let encoded = full.encode();
+        let bytes = encoded.as_slice();
+        // Every cut between the header and the end: a decoder that read a short
+        // payload as a smaller number would return a plausible wrong score.
+        for cut in 3..bytes.len() {
+            assert!(
+                Posting::decode(&bytes[..cut]).is_err(),
+                "{cut} bytes decoded when it should not"
+            );
+        }
+    }
+
+    #[test]
+    fn a_posting_payload_longer_than_the_format_is_refused() {
+        use super::Posting;
+        // Found by falsification: dropping `reader.finish()` left every other
+        // assertion green, because a short payload is caught by the reads
+        // themselves and nothing here asked about a long one. Trailing bytes
+        // mean the value was written by something this build does not
+        // understand, and reading the prefix of it would be reading two numbers
+        // out of a structure that has more.
+        let mut bytes = Posting::Counted {
+            frequency: 7,
+            length: 11,
+        }
+        .encode()
+        .as_slice()
+        .to_vec();
+        bytes.push(0);
+        assert!(Posting::decode(&bytes).is_err(), "trailing byte accepted");
     }
 
     #[test]

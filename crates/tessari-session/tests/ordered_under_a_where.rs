@@ -137,7 +137,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE events;",
+             DEFINE COLLECTION events;",
         )
         .unwrap();
     // Written a hundred at a time rather than one at a time: four thousand
@@ -187,10 +187,10 @@ fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
 
 fn path(session: &mut Session<'_>, read: &str) -> AccessPath {
     let outcomes = session.run(read).unwrap();
-    let Some(Outcome::Records { path, .. }) = outcomes.last() else {
+    let Some(Outcome::Records { plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
-    *path
+    plan.access
 }
 
 /// Every read this file cares about, at three selectivities and two windows.
@@ -366,13 +366,13 @@ fn a_write_in_the_same_transaction_gives_the_order_up() {
             READS[0]
         ))
         .unwrap();
-    let Some(Outcome::Records { records, path }) = outcomes
+    let Some(Outcome::Records { records, plan, .. }) = outcomes
         .iter()
         .find(|outcome| matches!(outcome, Outcome::Records { .. }))
     else {
         panic!("no read in {outcomes:?}");
     };
-    assert_eq!(*path, AccessPath::Scan);
+    assert_eq!(plan.access, AccessPath::Scan);
     // …and the record written in this transaction is the first one, which is the
     // answer the scan gives and the index could not have.
     assert_eq!(records.len(), LIMIT);

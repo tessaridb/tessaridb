@@ -1,0 +1,226 @@
+//! Two real tenants, and a caller who belongs to one asking for the other.
+//!
+//! # Attempted, not inspected
+//!
+//! The distinction is the whole file. A test that reads its own tenancy and
+//! counts the rows proves a filter ran; only a test that asks `prod.shop` for
+//! `staging.shop`'s record proves the answer is a **refusal** rather than an
+//! empty list — and empty and refused are different answers, of which only one
+//! survives the filter being dropped. Every case here is a crossing the store
+//! must say no to, and every one is paired with the same request inside the
+//! caller's own tenancy, so a surface that had simply stopped working could not
+//! pass.
+//!
+//! # Why the tenancies are named the way they are
+//!
+//! `prod.shop` and `staging.shop` share a database name on purpose. A store that
+//! confined by database name rather than by the resolved container would let
+//! `staging.shop` answer for `prod.shop`, and a fixture with two distinct names
+//! would never notice.
+
+#![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
+use std::sync::Arc;
+
+use tessari_http::Node;
+use tessaridb::Db;
+
+/// `root:a long one` and `nina:a long one`, in base64.
+const ROOT: &str = "Basic cm9vdDphIGxvbmcgb25l";
+const NINA: &str = "Basic bmluYTphIGxvbmcgb25l";
+
+fn node() -> (Arc<Node>, String) {
+    let db = Arc::new(Db::in_memory().unwrap());
+    let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
+    let address = node.address();
+    let serving = Arc::clone(&node);
+    std::thread::spawn(move || serving.serve());
+    (node, address)
+}
+
+fn send(
+    address: &str,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    credential: Option<&str>,
+) -> (u16, String) {
+    let mut stream = TcpStream::connect(address).unwrap();
+    let authorization =
+        credential.map_or_else(String::new, |value| format!("Authorization: {value}\r\n"));
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\n{authorization}Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(body).unwrap();
+    stream.flush().unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).unwrap();
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        if line.trim().is_empty() {
+            break;
+        }
+    }
+    let mut answered = Vec::new();
+    reader.read_to_end(&mut answered).unwrap();
+    (status, String::from_utf8_lossy(&answered).into_owned())
+}
+
+fn script(address: &str, source: &str, credential: Option<&str>) -> (u16, String) {
+    send(address, "POST", "/script", source.as_bytes(), credential)
+}
+
+/// Two tenancies, each with the same database and bucket names, and a user who
+/// owns one of them and nothing above it.
+fn two_tenants(address: &str) {
+    let (status, said) = script(
+        address,
+        "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+         DEFINE COLLECTION orders; CREATE orders:1 = { total: 5 }; DEFINE BUCKET media; \
+         DEFINE USER root ROLE owner PASSWORD 'a long one';",
+        None,
+    );
+    assert_eq!(status, 200, "{said}");
+    let (status, said) = script(
+        address,
+        "DEFINE NAMESPACE staging; USE NAMESPACE staging; DEFINE DATABASE shop; \
+         USE DATABASE shop; DEFINE COLLECTION orders; CREATE orders:1 = { total: 9 }; \
+         DEFINE BUCKET media; \
+         USE NAMESPACE prod; DEFINE DATABASE archive; USE DATABASE archive; \
+         DEFINE COLLECTION orders; CREATE orders:1 = { total: 7 }; \
+         USE DATABASE shop; \
+         DEFINE USER nina ON prod.shop ROLE owner PASSWORD 'a long one';",
+        Some(ROOT),
+    );
+    assert_eq!(status, 200, "{said}");
+    // A file in each, so a refusal is never mistakable for a 404.
+    for tenancy in ["prod", "staging"] {
+        let (status, said) = send(
+            address,
+            "PUT",
+            &format!("/files/{tenancy}/shop/media/note.txt"),
+            b"bytes",
+            Some(ROOT),
+        );
+        assert_eq!(status, 201, "{said}");
+    }
+}
+
+#[test]
+fn the_script_route_refuses_a_crossing_by_selection_and_by_name() {
+    let (_node, address) = node();
+    two_tenants(&address);
+
+    // Her own, which is what makes the two refusals below mean something.
+    let (status, said) = script(
+        &address,
+        "USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;",
+        Some(NINA),
+    );
+    assert_eq!(status, 200, "her own tenancy was refused: {said}");
+
+    // Selecting her way across.
+    let (status, said) = script(&address, "USE NAMESPACE staging;", Some(NINA));
+    assert!(status >= 400, "she selected another namespace: {said}");
+
+    // And naming her way across, which never touches `USE` — a guard on the
+    // front door of a room with two doors is not a guard. The name is a sibling
+    // **database**, because that is the crossing the language can express: it
+    // qualifies a table as `database.table` within the selected namespace and
+    // has no three-part form, so the only door out of a namespace is `USE`.
+    let (status, said) = script(
+        &address,
+        "USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM archive.orders;",
+        Some(NINA),
+    );
+    assert!(status >= 400, "she read a sibling database by name: {said}");
+    // The field name rather than the value: a span in the refusal carries
+    // digits of its own, and asserting on a digit would read one of those as
+    // the record and pass or fail for the wrong reason.
+    assert!(
+        !said.contains("total"),
+        "the refusal carried the sibling's record: {said}"
+    );
+
+    // The same statement as somebody the sibling *is* theirs: without it, a
+    // refusal produced by a name nobody can parse would pass just as well.
+    let (status, said) = script(
+        &address,
+        "USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM archive.orders;",
+        Some(ROOT),
+    );
+    assert_eq!(status, 200, "the name is not readable by anybody: {said}");
+    assert!(said.contains("total"), "the control read nothing: {said}");
+}
+
+#[test]
+fn the_backup_route_refuses_a_caller_who_would_take_a_tenancy_that_is_not_theirs() {
+    // A backup is every record in the store, so for a tenant it is the widest
+    // crossing there is: one request that would hand over every namespace.
+    let (_node, address) = node();
+    two_tenants(&address);
+
+    let (status, said) = send(&address, "GET", "/backup", b"", Some(NINA));
+    assert!(status >= 400, "a tenant downloaded the whole store: {said}");
+
+    let (status, _) = send(&address, "GET", "/backup", b"", Some(ROOT));
+    assert_eq!(status, 200, "the store owner was refused their own backup");
+}
+
+#[test]
+fn the_file_routes_refuse_a_crossing_on_every_method_that_reads() {
+    let (_node, address) = node();
+    two_tenants(&address);
+
+    // Her own bucket, by each reading method, so the crossings below are about
+    // the tenancy rather than about the route.
+    let (status, said) = send(
+        &address,
+        "GET",
+        "/files/prod/shop/media/note.txt",
+        b"",
+        Some(NINA),
+    );
+    assert_eq!(status, 200, "her own file was refused: {said}");
+    let (status, _) = send(
+        &address,
+        "HEAD",
+        "/files/prod/shop/media/note.txt",
+        b"",
+        Some(NINA),
+    );
+    assert_eq!(status, 200, "her own file was refused a head");
+    let (status, _) = send(&address, "GET", "/files/prod/shop/media", b"", Some(NINA));
+    assert_eq!(status, 200, "her own bucket would not list");
+
+    // The same three, one namespace across. The file is really there, so a
+    // refusal cannot be a 404 wearing a different number.
+    for (method, path) in [
+        ("GET", "/files/staging/shop/media/note.txt"),
+        ("HEAD", "/files/staging/shop/media/note.txt"),
+        ("GET", "/files/staging/shop/media"),
+    ] {
+        let (status, said) = send(&address, method, path, b"", Some(NINA));
+        assert!(
+            status >= 400 && status != 404,
+            "{method} {path} answered {status}: {said}"
+        );
+        assert!(
+            !said.contains("bytes"),
+            "{method} {path} handed over the file: {said}"
+        );
+    }
+}

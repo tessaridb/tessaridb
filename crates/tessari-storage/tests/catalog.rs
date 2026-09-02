@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use tessari_encoding::{decode_payload, encode_payload};
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_storage::{Catalog, Error, IndexShape, RecordAddress, Store, TableShape};
+use tessari_storage::{Catalog, Error, IndexShape, RecordAddress, Store, TableKind, TableShape};
 use tessari_types::{Path, RecordId, Sequence, Value};
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
@@ -265,6 +265,58 @@ fn a_reader_at_an_older_snapshot_does_not_see_a_table_defined_after_it_began() {
 }
 
 #[test]
+fn a_reader_at_an_older_snapshot_sees_a_table_altered_after_it_began_as_it_was() {
+    // The other half of the property above, and the half that a schema cache
+    // would be free to break: a table that EXISTED when the reader began and
+    // was altered afterwards. Absence is conspicuous — a `None` where a table
+    // was expected fails loudly. A definition that is merely the WRONG VERSION
+    // decodes records against a shape nobody asked for and reports nothing.
+    let (_backend, store) = store();
+    let (_, _, table) = create_tree(&store, ("prod", "orders", "invoices"));
+    let table = tessari_types::TableId::new(table);
+
+    let mut older = store.begin().unwrap();
+    // Read once before the alteration, so this reader has already answered for
+    // the definition it is entitled to.
+    let as_it_began = Catalog::new(&mut older)
+        .table(table)
+        .unwrap()
+        .expect("the table was committed before this snapshot")
+        .schemafull;
+
+    let mut altering = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut altering);
+    assert!(
+        catalog.set_schemafull(table, !as_it_began).unwrap(),
+        "the alteration must have taken effect, or this test proves nothing"
+    );
+    altering.commit().unwrap();
+
+    // A second transaction sees the new definition, which is what makes the
+    // assertion below a statement about snapshots rather than about caching.
+    let mut newer = store.begin().unwrap();
+    assert_eq!(
+        Catalog::new(&mut newer)
+            .table(table)
+            .unwrap()
+            .expect("the table still exists")
+            .schemafull,
+        !as_it_began,
+        "a reader that began after the alteration sees it"
+    );
+
+    assert_eq!(
+        Catalog::new(&mut older)
+            .table(table)
+            .unwrap()
+            .expect("the table still exists at the older snapshot")
+            .schemafull,
+        as_it_began,
+        "the older reader must still see the definition as of its own snapshot"
+    );
+}
+
+#[test]
 fn an_index_is_created_on_a_table_and_found_by_it() {
     let (_backend, store) = store();
     let (_, _, table) = create_tree(&store, ("prod", "orders", "users"));
@@ -280,6 +332,7 @@ fn an_index_is_created_on_a_table_and_found_by_it() {
             IndexShape {
                 unique: true,
                 search: false,
+                spatial: false,
                 vector: None,
             },
         )
@@ -351,6 +404,7 @@ fn two_indexes_on_one_table_cannot_share_a_name_but_two_tables_can() {
             IndexShape {
                 unique: true,
                 search: false,
+                spatial: false,
                 vector: None,
             },
         )
@@ -374,6 +428,7 @@ fn two_indexes_on_one_table_cannot_share_a_name_but_two_tables_can() {
             IndexShape {
                 unique: true,
                 search: false,
+                spatial: false,
                 vector: None,
             },
         )
@@ -461,7 +516,7 @@ fn an_edge_table_carries_an_index_on_each_endpoint_from_the_moment_it_exists() {
             database.id,
             "follows",
             TableShape {
-                edge: true,
+                kind: TableKind::Edge(None),
                 ..TableShape::default()
             },
         )
@@ -482,7 +537,7 @@ fn an_edge_table_carries_an_index_on_each_endpoint_from_the_moment_it_exists() {
         vec![vec![Path::field("in")], vec![Path::field("out")]],
         "an edge table needs both directions"
     );
-    assert!(catalog.table(follows.id).unwrap().unwrap().edge);
+    assert!(catalog.table(follows.id).unwrap().unwrap().is_edge());
 
     // And each endpoint is declared, so an edge table can also be schemafull
     // without the caller declaring fields the store itself fills in.
@@ -525,7 +580,7 @@ fn a_plain_table_gets_no_indexes_it_did_not_ask_for() {
             .table(tessari_types::TableId::new(table))
             .unwrap()
             .unwrap()
-            .edge
+            .is_edge()
     );
 }
 
@@ -549,7 +604,7 @@ fn a_replica_rebuilds_an_edge_table_with_its_indexes_and_its_declarations() {
             database.id,
             "follows",
             TableShape {
-                edge: true,
+                kind: TableKind::Edge(None),
                 ..TableShape::default()
             },
         )
@@ -586,7 +641,7 @@ fn a_replica_rebuilds_an_edge_table_with_its_indexes_and_its_declarations() {
 
     let mut transaction = replica.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    assert!(catalog.table(follows.id).unwrap().unwrap().edge);
+    assert!(catalog.table(follows.id).unwrap().unwrap().is_edge());
     assert_eq!(catalog.indexes_on(follows.id).unwrap().len(), 2);
     assert_eq!(catalog.fields_on(follows.id).unwrap().len(), 2);
 
@@ -606,4 +661,132 @@ fn a_replica_rebuilds_an_edge_table_with_its_indexes_and_its_declarations() {
             .len(),
         1
     );
+}
+
+/// A table's own next record number, in one transaction.
+fn next(store: &Store, table: u32) -> u64 {
+    let mut transaction = store.begin().unwrap();
+    let number = Catalog::new(&mut transaction)
+        .next_record_number(tessari_types::TableId::new(table))
+        .unwrap();
+    transaction.commit().unwrap();
+    number
+}
+
+#[test]
+fn a_table_numbers_the_records_it_names_itself_from_one_upwards() {
+    // One rather than zero: a record legitimately called `users:0` would spend
+    // the rest of its life being read as an unset identity.
+    let (_backend, store) = store();
+    let (_, _, table) = create_tree(&store, ("prod", "orders", "line_items"));
+
+    assert_eq!(next(&store, table), 1);
+    assert_eq!(next(&store, table), 2);
+    assert_eq!(next(&store, table), 3);
+}
+
+#[test]
+fn two_tables_count_their_records_independently() {
+    // The reason there is a counter per table rather than one per store. A
+    // shared counter would work and would also leave both tables full of gaps
+    // that nothing in either of them explains.
+    let (_backend, store) = store();
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").unwrap();
+    let database = catalog.create_database(namespace.id, "orders").unwrap();
+    let users = catalog
+        .create_table(namespace.id, database.id, "users", TableShape::default())
+        .unwrap();
+    let items = catalog
+        .create_table(namespace.id, database.id, "items", TableShape::default())
+        .unwrap();
+    transaction.commit().unwrap();
+
+    assert_eq!(next(&store, users.id.get()), 1);
+    assert_eq!(next(&store, users.id.get()), 2);
+    assert_eq!(next(&store, items.id.get()), 1);
+    assert_eq!(next(&store, users.id.get()), 3);
+    assert_eq!(next(&store, items.id.get()), 2);
+}
+
+#[test]
+fn the_record_counter_does_not_regress_when_the_store_is_reopened() {
+    // The failure this test exists for is silent in a way the others are not: a
+    // counter that comes back lower re-issues an identity that already names a
+    // record, and the next write under it *replaces* that record instead of
+    // adding one. Nothing is in an error state, on either side, ever.
+    let (backend, store) = store();
+    let (_, _, table) = create_tree(&store, ("prod", "orders", "line_items"));
+
+    assert_eq!(next(&store, table), 1);
+    assert_eq!(next(&store, table), 2);
+    drop(store);
+
+    let reopened = Store::open(backend).unwrap();
+    assert_eq!(next(&reopened, table), 3);
+}
+
+#[test]
+fn a_record_number_that_was_never_committed_is_never_spent() {
+    // The counter is written in the caller's transaction, so a write that rolls
+    // back takes its identity with it. The alternative — a counter outside the
+    // transaction — would leave a gap for every refused insert, which is
+    // harmless right up until someone reads the gaps as deleted records.
+    let (_backend, store) = store();
+    let (_, _, table) = create_tree(&store, ("prod", "orders", "line_items"));
+
+    let mut abandoned = store.begin().unwrap();
+    assert_eq!(
+        Catalog::new(&mut abandoned)
+            .next_record_number(tessari_types::TableId::new(table))
+            .unwrap(),
+        1
+    );
+    drop(abandoned);
+
+    assert_eq!(next(&store, table), 1);
+}
+
+#[test]
+fn two_transactions_racing_for_one_table_never_receive_the_same_number() {
+    // The same mechanism that keeps names unique, and the reason this needs no
+    // lock: both transactions read the counter and both *write* it, and conflict
+    // detection is over writes.
+    let (_backend, store) = store();
+    let (_, _, table) = create_tree(&store, ("prod", "orders", "line_items"));
+    let id = tessari_types::TableId::new(table);
+
+    let mut first = store.begin().unwrap();
+    let mut second = store.begin().unwrap();
+    let mine = Catalog::new(&mut first).next_record_number(id).unwrap();
+    let theirs = Catalog::new(&mut second).next_record_number(id).unwrap();
+    assert_eq!(mine, theirs, "both read the same counter, as they must");
+
+    first.commit().unwrap();
+    let error = second.commit().unwrap_err();
+    assert!(matches!(error, Error::Conflict { .. }), "{error}");
+
+    // And the loser's number was never spent, so the retry gets the next one
+    // rather than the one it was already holding.
+    assert_eq!(next(&store, table), 2);
+}
+
+#[test]
+fn the_record_counter_reaches_a_replica_rather_than_being_derived_there() {
+    // A counter is an ordinary catalog record (ADR-0009), so it travels in the
+    // log like a definition does. A replica that derived its own would start at
+    // one and hand out identities the leader has already given away.
+    let (_backend, store) = store();
+    let (_, _, table) = create_tree(&store, ("prod", "orders", "line_items"));
+    assert_eq!(next(&store, table), 1);
+    assert_eq!(next(&store, table), 2);
+
+    let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    for (sequence, record) in store.log_records(Sequence::ZERO, 1024).unwrap() {
+        replica.apply_record(sequence, &record).unwrap();
+    }
+
+    assert_eq!(next(&replica, table), 3);
 }

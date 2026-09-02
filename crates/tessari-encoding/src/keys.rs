@@ -261,6 +261,40 @@ impl StoreKey for AppliedPositionKey {
     }
 }
 
+/// Addresses the oldest sequence a read can still be answered at exactly.
+///
+/// Reclamation keeps, for each record, the newest version at or below the floor
+/// it ran at, and removes what is strictly older. So a reader **at** that floor
+/// still resolves correctly and a reader **below** it may not — it can find an
+/// older value than it should, or none, and nothing anywhere reports that.
+///
+/// This is the only durable record of that boundary. Without it a historical
+/// read is unfalsifiable: the store has no way to distinguish "this record did
+/// not exist then" from "the version that said so has been removed".
+///
+/// A singleton, absent until the first pass removes something. Absent means
+/// nothing has ever been reclaimed, which is the store's state until reclamation
+/// is scheduled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReclaimFloorKey;
+
+impl StoreKey for ReclaimFloorKey {
+    type Value = Sequence;
+
+    const KIND: KeyKind = KeyKind::ReclaimFloor;
+
+    fn encode(&self) -> Key {
+        Key::from(vec![Self::KIND.tag()])
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        reader.finish()?;
+        Ok(Self)
+    }
+}
+
 /// Addresses this node's own identity.
 ///
 /// A singleton, generated once when absent and read at every open. It is in

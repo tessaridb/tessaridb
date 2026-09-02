@@ -7,7 +7,7 @@ DEFINE NAMESPACE prod;
 USE NAMESPACE prod;
 DEFINE DATABASE social;
 USE DATABASE social;
-DEFINE TABLE users;
+DEFINE COLLECTION users;
 DEFINE TABLE follows EDGE;
 CREATE users:1 = { handle: 'ada' };
 CREATE users:2 = { handle: 'grace' };
@@ -85,3 +85,254 @@ RELATE users:1->users->users:2;
 --- case: traversing a table that is not an edge table is refused
 SELECT * FROM users:1->users;
 --- expect: error NotAnEdgeTable
+
+--- case: an edge table may name the pair it joins
+DEFINE COLLECTION posts;
+DEFINE TABLE wrote EDGE FROM users TO posts;
+CREATE posts:1 = { title: 'first' };
+--- expect: ok
+
+--- case: a relation between the declared pair is accepted
+RELATE users:1->wrote->posts:1;
+--- expect: ok
+
+--- case: a relation between a pair the table does not declare is refused
+RELATE users:1->wrote->users:2;
+--- expect: error EndpointsNotDeclared
+
+--- case: the direction is part of the declaration, so the reverse pair is refused too
+RELATE posts:1->wrote->users:1;
+--- expect: error EndpointsNotDeclared
+
+--- case: the bare EDGE table still accepts the pair the declared one refuses
+RELATE users:1->follows->users:2;
+--- expect: ok
+
+--- case: an endpoint naming no table refuses and leaves nothing behind
+DEFINE TABLE mentions EDGE FROM users TO nowhere;
+--- expect: error Unknown
+
+--- case: and the refused declaration created no table
+RELATE users:1->mentions->posts:1;
+--- expect: error Unknown
+
+--- case: a graph is an object the store holds, and a place to put records
+DEFINE GRAPH social;
+--- expect: ok
+
+--- case: a graph just declared already lists its own node collection
+INFO FOR GRAPH social;
+--- expect: ok
+
+--- case: records go into the graph itself, with no table declared by the caller
+CREATE social:1 = { name: 'ada', team: 'core' };
+CREATE social:2 = { name: 'grace', team: 'core' };
+--- expect: ok
+
+--- case: and are read back the way any other table's records are
+SELECT * FROM social WHERE team = 'core';
+--- expect: rows 2
+
+--- case: a graph's own record is updated in place
+UPDATE social:1 SET team = 'edge';
+SELECT * FROM social WHERE team = 'core';
+--- expect: rows 1
+
+--- case: and deleted
+DELETE social:2;
+SELECT * FROM social;
+--- expect: rows 1
+
+--- case: a table declares which graph it belongs to
+DEFINE TABLE person (name string) IN social;
+CREATE person:'alice' = { name: 'Alice' };
+--- expect: ok
+
+--- case: and a node table is read the way any other table is
+SELECT * FROM person WHERE name = 'Alice';
+--- expect: rows 1
+
+--- case: a membership naming no graph is refused
+DEFINE TABLE ghost (name string) IN nowhere;
+--- expect: error Unknown
+
+--- case: and the refused declaration created no table
+SELECT * FROM ghost;
+--- expect: error Unknown
+
+--- case: a graph refuses to be dropped while a table still belongs to it
+DROP GRAPH social;
+--- expect: error StillDepended
+
+--- case: and the graph's own collection is refused a DROP TABLE of its own
+DROP TABLE social;
+--- expect: error TableBelongsToGraph
+
+--- case: and succeeds once nothing the caller attached does
+DROP TABLE person;
+DROP GRAPH social;
+--- expect: ok
+
+--- case: the graph's own collection went with it, rather than outliving it
+SELECT * FROM social;
+--- expect: error Unknown
+
+--- case: asking about a graph that was never declared refuses
+INFO FOR GRAPH social;
+--- expect: error Unknown
+
+# The graph engine. An edge kind is not a table: its entries are adjacency keys
+# beside the node, so a hop is a range read rather than an index probe followed
+# by a random read of every edge record.
+
+--- case: a graph with two node kinds to join
+DEFINE GRAPH org;
+DEFINE TABLE employee (name string) IN org;
+DEFINE TABLE employer (name string) IN org;
+CREATE employee:1 = { name: 'Ada' };
+CREATE employee:2 = { name: 'Grace' };
+CREATE employer:1 = { name: 'Analytical' };
+--- expect: ok
+
+--- case: an edge kind is declared between a pair that belongs to the graph
+DEFINE EDGE works_at IN org FROM employee TO employer;
+--- expect: ok
+
+--- case: an endpoint outside the graph is refused, because that is what bounds a walk
+DEFINE EDGE audited IN org FROM employee TO users;
+--- expect: error EndpointOutsideGraph
+
+--- case: a relation between the declared pair is accepted
+RELATE employee:1->works_at->employer:1;
+RELATE employee:2->works_at->employer:1;
+--- expect: ok
+
+--- case: one arrow reads the edges themselves
+SELECT * FROM employee:1->works_at;
+--- expect: rows 1
+
+--- case: two arrows resolve the far endpoint
+SELECT * FROM employee:1->works_at->employer;
+--- expect: rows 1
+
+--- case: the reverse direction is a range read too, not a scan of everything
+SELECT * FROM employer:1<-works_at<-employee;
+--- expect: rows 2
+
+--- case: a node nothing reaches has an empty neighbourhood rather than an error
+CREATE employer:2 = { name: 'Naval' };
+SELECT * FROM employer:2<-works_at<-employee;
+--- expect: rows 0
+
+--- case: a relation off the declared pair is refused
+RELATE employee:1->works_at->employee:2;
+--- expect: error EndpointsNotDeclared
+
+--- case: and the reverse pair is refused too, because direction is declared
+RELATE employer:1->works_at->employee:1;
+--- expect: error EndpointsNotDeclared
+
+--- case: relating the same pair twice replaces rather than doubles
+RELATE employee:1->works_at->employer:1;
+SELECT * FROM employee:1->works_at;
+--- expect: rows 1
+
+--- case: an edge of a declared kind carries properties of its own
+RELATE employee:2->works_at->employer:1 = { since: 1943 };
+SELECT * FROM employer:1<-works_at;
+--- expect: rows 2
+
+--- case: a graph lists its edge kinds
+INFO FOR GRAPH org;
+--- expect: ok
+
+--- case: a graph refuses to be dropped while an edge kind belongs to it
+DROP GRAPH org;
+--- expect: error StillDepended
+
+--- case: dropping the kind takes its adjacency with it
+DROP EDGE works_at;
+SELECT * FROM employee:1->works_at;
+--- expect: error Unknown
+
+--- case: and dropping an edge kind that was never declared refuses
+DROP EDGE works_at;
+--- expect: error Unknown
+
+# Removing an edge, and bounding a walk. An edge's identity is derived from its
+# endpoints and never shown, so the statement that removes one names the same
+# two records that made it.
+
+--- case: a graph to remove edges from
+DEFINE EDGE works_at IN org FROM employee TO employer;
+RELATE employee:1->works_at->employer:1;
+RELATE employee:2->works_at->employer:1;
+--- expect: ok
+
+--- case: an edge is removed by the pair it joins
+DELETE employee:1->works_at->employer:1;
+SELECT * FROM employee:1->works_at;
+--- expect: rows 0
+
+--- case: and the mirror goes with it, so the reverse walk agrees
+SELECT * FROM employer:1<-works_at<-employee;
+--- expect: rows 1
+
+--- case: the records it joined are untouched
+SELECT * FROM employee WHERE name = 'Ada';
+--- expect: rows 1
+
+--- case: an edge that was never there removes nothing rather than failing
+DELETE employee:1->works_at->employer:2;
+--- expect: ok
+
+--- case: a pair the kind does not join is refused rather than silently removing nothing
+DELETE employee:1->works_at->employee:2;
+--- expect: error EndpointsNotDeclared
+
+--- case: and the reverse pair is refused too, because direction is declared
+DELETE employer:1->works_at->employee:2;
+--- expect: error EndpointsNotDeclared
+
+--- case: an edge-table edge is removed the same way
+DELETE users:1->follows->users:2;
+SELECT * FROM users:1->follows->users;
+--- expect: rows 1
+
+--- case: a chain to walk with a bound
+DEFINE EDGE knows IN org FROM employee TO employee;
+CREATE employee:3 = { name: 'Katherine' };
+CREATE employee:4 = { name: 'Dorothy' };
+RELATE employee:1->knows->employee:2;
+RELATE employee:2->knows->employee:3;
+RELATE employee:3->knows->employee:4;
+--- expect: ok
+
+--- case: DEPTH answers with everything within n steps
+SELECT * FROM employee:1->knows->employee DEPTH 2;
+--- expect: rows 2
+
+--- case: one step is the walk written out
+SELECT * FROM employee:1->knows->employee DEPTH 1;
+--- expect: rows 1
+
+--- case: a cycle terminates and answers each record once
+RELATE employee:4->knows->employee:1;
+SELECT * FROM employee:1->knows->employee DEPTH 100;
+--- expect: rows 3
+
+--- case: DEPTH counts steps, so it starts at one
+SELECT * FROM employee:1->knows->employee DEPTH 0;
+--- expect: error DepthBelowOne
+
+--- case: the bound is a literal, so a parameter has no position here
+SELECT * FROM employee:1->knows->employee DEPTH $n;
+--- expect: error UnexpectedToken
+
+--- case: DEPTH repeats one step, so a chain of two is refused
+SELECT * FROM employee:1->knows->employee->knows->employee DEPTH 2;
+--- expect: error DepthNeedsOneHopToATable
+
+--- case: and a walk ending on the edges has nothing for a second round to start from
+SELECT * FROM employee:1->knows DEPTH 2;
+--- expect: error DepthNeedsOneHopToATable

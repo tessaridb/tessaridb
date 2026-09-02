@@ -111,10 +111,12 @@ pub type Delivered = bool;
 ///
 /// Returns the refusal when the session may not read, has selected no database,
 /// has selected one that has since gone, or named a table that does not exist or
-/// that it was not granted.
+/// that it was not granted — and returns one **mid-feed** when the authority it
+/// was reading on is taken away, which is what ends a subscription a revocation
+/// was meant to end.
 pub fn follow(
     db: &Db,
-    session: &Session<'_>,
+    session: &mut Session<'_>,
     asked: &Following<'_>,
     committed: &Commits,
     stop: &dyn Fn() -> bool,
@@ -126,7 +128,7 @@ pub fn follow(
     // The *table* question, which `may_read` does not answer. A grant-governed
     // subscriber sees what they were granted and nothing else — the same answer
     // their `SELECT` per table would give.
-    let readable = session
+    let mut readable = session
         .readable(db.store())
         .map_err(|failure| failure.to_string())?;
     let (Some(namespace), Some(database)) = (session.namespace(), session.database()) else {
@@ -172,6 +174,22 @@ pub fn follow(
         if stop() {
             return Ok(());
         }
+        // And every authority this feed rests on is asked again, here, once a
+        // round. Asked only before the loop they would be bounded by the
+        // subscription's lifetime — which for a connection that stays open is
+        // no bound at all, and is the longest-lived hole a revocation can leave.
+        // The cost is three catalog reads per round against a loop that spends
+        // its life blocked for `PATIENCE`, so the bound this buys is one round.
+        if let Err(refusal) = session.may_read(db.store()) {
+            return Err(refusal.to_string());
+        }
+        readable = session
+            .readable(db.store())
+            .map_err(|failure| failure.to_string())?;
+        // The field grant too: it is cached per table for the round, and a round
+        // is now what the cache lives for. A revocation that reached the table
+        // list but not the field list would keep pushing a column nobody grants.
+        visible.clear();
         let changes = db
             .poll(&mut subscription, MOUTHFUL)
             .map_err(|failure| failure.to_string())?;

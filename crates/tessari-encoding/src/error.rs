@@ -87,6 +87,13 @@ pub enum Error {
         offset: usize,
     },
 
+    /// An adjacency key carried a direction byte this build does not know.
+    #[error("adjacency key holds an unknown direction byte 0x{found:02x}")]
+    UnknownDirection {
+        /// The byte found where a direction was expected.
+        found: u8,
+    },
+
     /// A text record id did not decode as UTF-8.
     #[error("{kind} key holds a text record id that is not valid UTF-8")]
     InvalidUtf8 {
@@ -192,6 +199,30 @@ pub enum Error {
     #[error("node identity holds an endpoint that is not valid UTF-8")]
     InvalidNodeEndpoint,
 
+    /// A spatial key's level and range start name no cell of the cell grid.
+    #[error("spatial-index key holds level {level} beginning at {first}, which names no cell")]
+    NoSuchCell {
+        /// The level read from the key.
+        level: u32,
+        /// The range start read from the key.
+        first: u64,
+    },
+
+    /// A stored extent's corners do not describe a rectangle.
+    #[error(
+        "spatial-index extent holds west {west} east {east} south {south} north {north}, which is not a box"
+    )]
+    NotABox {
+        /// The western edge read from the value.
+        west: i64,
+        /// The southern edge.
+        south: i64,
+        /// The eastern edge.
+        east: i64,
+        /// The northern edge.
+        north: i64,
+    },
+
     /// The store's on-disk format version is newer than this build supports.
     #[error("store on-disk format version is {found}, this build supports up to {supported}")]
     UnsupportedFormatVersion {
@@ -217,12 +248,15 @@ impl Error {
             | Self::InvalidEscape { .. }
             | Self::UnexpectedKind { .. }
             | Self::UnknownRecordIdKind { .. }
+            | Self::UnknownDirection { .. }
             | Self::InvalidUtf8 { .. }
             | Self::ValueTruncated { .. }
             | Self::TombstoneWithPayload { .. }
             | Self::InvalidDecimal { .. }
             | Self::InvalidSubSecond { .. }
-            | Self::InvalidNodeEndpoint => ErrorCategory::Corruption,
+            | Self::InvalidNodeEndpoint
+            | Self::NoSuchCell { .. }
+            | Self::NotABox { .. } => ErrorCategory::Corruption,
             Self::UnsupportedCodecVersion { .. }
             | Self::ReservedFlags { .. }
             | Self::UnknownValueTag { .. }

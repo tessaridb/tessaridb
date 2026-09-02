@@ -25,8 +25,9 @@
 
 use tessaridb::{Db, Outcome, Parameters, Value};
 
-use crate::basic::Credentials;
+use crate::basic::Presented;
 use crate::respond::{Answer, failure, session_for};
+use crate::tokens::Tokens;
 
 /// What a request named.
 pub(crate) struct Target<'a> {
@@ -83,7 +84,8 @@ pub(crate) fn put(
     db: &Db,
     target: &Target<'_>,
     bytes: Vec<u8>,
-    credentials: Option<&Credentials>,
+    tokens: &Tokens,
+    presented: &Presented,
 ) -> Answer {
     let Some(path) = target.path.clone() else {
         return Answer::bad_request("a put needs a file's path");
@@ -91,7 +93,7 @@ pub(crate) fn put(
     if !target.named_properly() {
         return Answer::bad_request("a namespace, database and bucket are ordinary names");
     }
-    let mut session = match session_for(db, credentials) {
+    let mut session = match session_for(db, tokens, presented) {
         Ok(session) => session,
         Err(answer) => return answer,
     };
@@ -106,11 +108,11 @@ pub(crate) fn put(
 }
 
 /// `GET /files/…/{path}` — a file's bytes, or the bucket's listing.
-pub(crate) fn get(db: &Db, target: &Target<'_>, credentials: Option<&Credentials>) -> Answer {
+pub(crate) fn get(db: &Db, target: &Target<'_>, tokens: &Tokens, presented: &Presented) -> Answer {
     if !target.named_properly() {
         return Answer::bad_request("a namespace, database and bucket are ordinary names");
     }
-    let mut session = match session_for(db, credentials) {
+    let mut session = match session_for(db, tokens, presented) {
         Ok(session) => session,
         Err(answer) => return answer,
     };
@@ -138,14 +140,19 @@ pub(crate) fn get(db: &Db, target: &Target<'_>, credentials: Option<&Credentials
 }
 
 /// `DELETE /files/…/{path}` — remove a file and its bytes.
-pub(crate) fn delete(db: &Db, target: &Target<'_>, credentials: Option<&Credentials>) -> Answer {
+pub(crate) fn delete(
+    db: &Db,
+    target: &Target<'_>,
+    tokens: &Tokens,
+    presented: &Presented,
+) -> Answer {
     let Some(path) = target.path.clone() else {
         return Answer::bad_request("a delete needs a file's path");
     };
     if !target.named_properly() {
         return Answer::bad_request("a namespace, database and bucket are ordinary names");
     }
-    let mut session = match session_for(db, credentials) {
+    let mut session = match session_for(db, tokens, presented) {
         Ok(session) => session,
         Err(answer) => return answer,
     };

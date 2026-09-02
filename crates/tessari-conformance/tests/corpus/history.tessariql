@@ -1,0 +1,89 @@
+# Reading the store as it stood at an earlier version.
+# A corpus file is one session against one store, so these run in order.
+#
+# `VERSION <n>` names a **log sequence**, not a timestamp. Records are versioned
+# by a suffix on their own key and that suffix is the sequence the version was
+# written at; no log record carries a wall clock, and two commits within one
+# millisecond are ordered by sequence and by nothing else. A timestamp spelling
+# would look more precise than the thing it addresses.
+#
+# **Why almost every case here is a refusal.** A positive case would have to
+# write an absolute sequence into the file, which couples the case to how many
+# sequences the statements above it happen to spend — a fact about the write
+# path, not about the language. The row-level behaviour is pinned in
+# `tessari-session/tests/history.rs`, where the sequence is read from the store
+# instead of written down. What belongs here is the grammar and the refusals,
+# which are the same whatever the store has committed.
+#
+# **The catalog is read at the version too**, which was found here rather than
+# designed: `SELECT * FROM docs VERSION 1` does not answer with nothing, it
+# refuses with *no database named library* — at sequence 1 the database had not
+# been defined. That is the honest reading and the useful one. A historical read
+# answers the question *what did this store look like then*, and the schema is
+# part of what it looked like; resolving today's names against yesterday's
+# records would be a third state that never existed.
+
+--- case: a namespace and a database are defined and selected
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE library;
+USE DATABASE library;
+--- expect: ok
+
+--- case: a table, an index on it, and a record
+DEFINE COLLECTION docs;
+DEFINE INDEX by_status ON docs FIELDS status;
+CREATE docs:1 = { status: 'draft' };
+--- expect: ok
+
+--- case: a name defined after the version is not known at it
+SELECT * FROM docs VERSION 1;
+--- expect: error Unknown
+
+--- case: the same holds for a condition, because the name is resolved first
+SELECT * FROM docs WHERE status = 'draft' VERSION 1;
+--- expect: error Unknown
+
+--- case: a version ahead of the store is refused rather than served the present
+SELECT * FROM docs VERSION 999999;
+--- expect: error VersionInTheFuture
+
+--- case: a version inside a transaction is refused, because a transaction is one point
+BEGIN;
+SELECT * FROM docs VERSION 1;
+COMMIT;
+--- expect: error VersionInsideTransaction
+
+--- case: the word is contextual, so a field called version is still a field
+DEFINE COLLECTION runs;
+CREATE runs:1 = { version: 3 };
+SELECT version FROM runs;
+--- expect: rows 1
+
+--- case: and a read can be ordered by a field called version
+SELECT * FROM runs ORDER BY version;
+--- expect: rows 1
+
+--- case: a negative sequence names no point in any store's history
+SELECT * FROM docs VERSION -1;
+--- expect: error UnexpectedToken
+
+--- case: the clause wants a sequence, and a duration is not one
+SELECT * FROM docs VERSION 5s;
+--- expect: error UnexpectedToken
+
+--- case: an edge table, and a relation between two records
+DEFINE COLLECTION people;
+DEFINE TABLE follows EDGE;
+CREATE people:1 = { handle: 'ada' };
+CREATE people:2 = { handle: 'grace' };
+RELATE people:1->follows->people:2;
+--- expect: ok
+
+--- case: the traversal answers in the present
+SELECT * FROM people:1->follows->people;
+--- expect: rows 1
+
+--- case: but not at an earlier version, because edges are indexed at the present
+SELECT * FROM people:1->follows->people VERSION 1;
+--- expect: error NoHistoricalTraversal

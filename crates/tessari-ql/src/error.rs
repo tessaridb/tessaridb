@@ -43,6 +43,32 @@ pub enum Error {
         span: Span,
     },
 
+    /// A shape literal whose object is not a shape.
+    ///
+    /// The reason comes from the geometry reader rather than being reworded
+    /// here, so a caller reading "a position is two numbers, longitude first"
+    /// reads the same sentence whichever surface refused their shape.
+    #[error("{reason}, in the shape at {span}")]
+    MalformedGeometry {
+        /// What the reader said.
+        reason: String,
+        /// Where the literal is.
+        span: Span,
+    },
+
+    /// A shape literal holding something that is not a written-out value.
+    ///
+    /// A literal is read at parse time, so every part of it has to be known
+    /// then. A field, a parameter or a call inside one would have to be
+    /// evaluated, and a shape that could change per record is not a literal.
+    #[error("a shape literal is written out in full, and {found} at {span} is not")]
+    ComputedGeometry {
+        /// What stood where a written-out value belonged.
+        found: &'static str,
+        /// Where it is.
+        span: Span,
+    },
+
     /// A number the language cannot represent.
     #[error("{text:?} at {span} is not a number this store can hold")]
     InvalidNumber {
@@ -158,6 +184,134 @@ pub enum Error {
         span: Span,
     },
 
+    /// A row of an `INSERT` holds a different number of values than the
+    /// statement named fields.
+    ///
+    /// Refused at parse rather than at the write, and the reason is not tidiness:
+    /// a batch discovers this row while some of it is already decided, so a
+    /// typing mistake would arrive wearing the shape of a write failure. Here it
+    /// arrives as what it is, before anything is attempted, naming the row and
+    /// both counts so the author does not have to count the parentheses.
+    #[error(
+        "row {row} of the insert holds {found} values, \
+         and the field list names {expected} (at {span})"
+    )]
+    InsertRowArity {
+        /// Which row, counted from one as a reader counts them.
+        row: usize,
+        /// How many values the row holds.
+        found: usize,
+        /// How many fields the column list named.
+        expected: usize,
+        /// Where the row is.
+        span: Span,
+    },
+
+    /// `DEFINE COLLECTION t;` — a table declaring no fields and saying no strictness.
+    ///
+    /// A declared table is strict about the fields it names, and this one names
+    /// none, so there is nothing for the declaration to mean. The reader wanted
+    /// one of two other things, and the message says both rather than leaving
+    /// them to find out which: a collection if the records carry fields nobody
+    /// declares, or the explicit lenient table if an older script is being run
+    /// unchanged. Refusing without naming the replacement would turn a one-word
+    /// fix into a search through the specification.
+    #[error(
+        "the table {name} declares no fields, so there is nothing for it to be \
+         strict about — write `DEFINE COLLECTION {name}` for records that carry \
+         fields nobody declared, or `DEFINE TABLE {name} SCHEMALESS` to keep the \
+         older lenient reading (at {span})"
+    )]
+    TableWithoutColumns {
+        /// The table the declaration named.
+        name: String,
+        /// Where the name is.
+        span: Span,
+    },
+
+    /// `IDENTITY` was followed by a word that names no identity scheme.
+    ///
+    /// Refused rather than read as the default. A table declared under a scheme
+    /// this build does not know about would otherwise start naming records with
+    /// a counter while the author believed it was minting UUIDs, and nothing
+    /// would say so until two schemes shared one table.
+    #[error(
+        "`{word}` is not a way of naming a record — write `IDENTITY int` for a \
+         per-table counter or `IDENTITY uuid` for an identifier that discloses \
+         neither order nor count (at {span})"
+    )]
+    UnknownIdentityKind {
+        /// The word that was written.
+        word: String,
+        /// Where it is.
+        span: Span,
+    },
+
+    /// A `START` was written beside an `AFTER`.
+    ///
+    /// Both say where the page begins, and applying both means the offset counts
+    /// from the cursor's own position — so one page is skipped and nothing says
+    /// so. Which of the two was meant is the author's to say.
+    #[error(
+        "`START` and `AFTER` (at {span}) both say where this page begins; \
+         keep the cursor and drop the offset, or the other way round"
+    )]
+    CursorBesideAnOffset {
+        /// Where the anchor is.
+        span: Span,
+    },
+
+    /// An `AFTER` was written beside a clause that changes what a row is.
+    ///
+    /// An anchor is a record. A grouped read answers with groups, a `FETCH`
+    /// answers with records whose references have been opened, and a `SPLIT ON`
+    /// answers with a row per element — so the cursor would be comparing an
+    /// anchor of one kind against rows of another, and the page would fall
+    /// wherever the sort key happened to reach.
+    #[error(
+        "`AFTER` (at {span}) resumes after a record and `{clause}` answers with \
+         something else; page the records and reshape them after"
+    )]
+    CursorBesideAReshaping {
+        /// The clause that reshapes the row.
+        clause: &'static str,
+        /// Where the anchor is.
+        span: Span,
+    },
+
+    /// An `AFTER` anchor names a table the read does not.
+    ///
+    /// A record identity carries no table once it is compared, so `orders:5` and
+    /// `users:5` compare identically — a cursor pasted from another page would
+    /// page this table by that identity and answer with the wrong records and no
+    /// complaint.
+    #[error(
+        "`AFTER {anchor}:…` (at {span}) anchors this page in `{anchor}` \
+         and the read is of `{table}`"
+    )]
+    AnchorFromAnotherTable {
+        /// The table the anchor named.
+        anchor: String,
+        /// The table the read names.
+        table: String,
+        /// Where the anchor is.
+        span: Span,
+    },
+
+    /// A `TIMEOUT` names a ceiling no statement could satisfy.
+    ///
+    /// `TIMEOUT 0s` and `TIMEOUT -5s` can only refuse, whatever the read does and
+    /// however fast the store is. A clause that can only refuse is a mistake in
+    /// the statement rather than a budget, so it is caught where the statement is
+    /// read — before a scan runs to be refused by it.
+    #[error("a timeout of {written} (at {span}) can only refuse; a ceiling is a positive duration")]
+    EmptyTimeout {
+        /// The ceiling as it was written.
+        written: String,
+        /// Where the clause is.
+        span: Span,
+    },
+
     /// Two projections in one read answer under the same name.
     ///
     /// `SELECT address.city, work.city` would write one field twice into a
@@ -169,6 +323,77 @@ pub enum Error {
         /// The name they share.
         name: String,
         /// Where the second one is.
+        span: Span,
+    },
+
+    /// `DEPTH` written on a walk that has nothing repeatable to repeat.
+    ///
+    /// Two shapes reach here and they refuse for one reason: there is no single
+    /// step for the clause to apply. `a->e1->b->e2->c DEPTH 3` could mean the
+    /// whole chain again or the last step again, and answering either way
+    /// silently is worse than saying so. `a->knows DEPTH 3` ends on the edges
+    /// themselves, so the second round would have to hop from an edge.
+    ///
+    /// Refused when the statement is read, because it is a property of the
+    /// statement and not of what happens to be stored.
+    #[error(
+        "`DEPTH` repeats one step, so it needs a walk of exactly one hop that names the table it lands on (at {span})"
+    )]
+    DepthNeedsOneHopToATable {
+        /// Where the clause is.
+        span: Span,
+    },
+
+    /// `vector<0>`.
+    ///
+    /// The only value such a field could hold is the empty array, which no
+    /// distance can measure and no index will keep — so the declaration refuses
+    /// every write anybody meant to make. Refused here rather than accepted and
+    /// discovered later, for the reason an empty literal union is: a type
+    /// nothing useful satisfies is a mistake and not a constraint.
+    #[error("a vector holds at least one component (at {span})")]
+    VectorWidthBelowOne {
+        /// Where the width is.
+        span: Span,
+    },
+
+    /// A width past what a declaration can be written back as.
+    ///
+    /// Not a limit anybody meets — the widest embeddings in use are three orders
+    /// of magnitude below it — and it is stated anyway, because a store that
+    /// accepted a width it could not store in its own catalog would report a
+    /// declaration nobody made. A ceiling refused where the author wrote the
+    /// number says more than one discovered later by a reader.
+    #[error("a vector holds at most {most} components (at {span})")]
+    VectorWidthAboveTheCeiling {
+        /// The widest a declaration may be.
+        most: usize,
+        /// Where the width is.
+        span: Span,
+    },
+
+    /// `APPROXIMATE EFFORT 0`.
+    ///
+    /// A walk that may keep no candidates is a search with no way to answer, so
+    /// the budget refuses below one where it is written — as a width and a depth
+    /// already do. A zero accepted here would return an empty answer to a read
+    /// that named records, and an empty answer is indistinguishable from a store
+    /// that holds none.
+    #[error("a walk keeps at least one candidate (at {span})")]
+    EffortBelowOne {
+        /// Where the budget is.
+        span: Span,
+    },
+
+    /// `DEPTH 0`.
+    ///
+    /// A walk of no steps is the record the walk starts from, and `SELECT * FROM
+    /// person:1` already says that. Refused rather than answered with an empty
+    /// set, because a caller who computed the bound and got zero has a bug the
+    /// empty answer would hide.
+    #[error("`DEPTH` counts steps, so it starts at 1 (at {span})")]
+    DepthBelowOne {
+        /// Where the clause is.
         span: Span,
     },
 
@@ -429,6 +654,45 @@ pub enum Error {
         /// Where it was written.
         span: Span,
     },
+
+    /// Two `LET`s in one script bind the same name.
+    ///
+    /// Refused rather than shadowed. A binding is substituted into the
+    /// statements below it, so two of them would make `$x` mean one value in
+    /// part of the script and another value further down — and a reader would
+    /// have to count statements to know which. One name, one value, everywhere
+    /// it is written.
+    #[error("`${name}` is bound twice in one script (at {span})")]
+    BoundTwice {
+        /// The name they share, without its marker.
+        name: String,
+        /// Where the second `LET` is.
+        span: Span,
+    },
+
+    /// A `LET` binds a name the caller also supplied a value for.
+    ///
+    /// Refused because there is no reading of it that is not surprising: either
+    /// the caller's value is silently discarded, or the script's own binding is.
+    /// The caller drops the entry or the script picks another name.
+    #[error("`${name}` was supplied by the caller and is also bound by the script (at {span})")]
+    BindingCollidesWithParameter {
+        /// The name they share, without its marker.
+        name: String,
+        /// Where the `LET` is.
+        span: Span,
+    },
+
+    /// A script names its answer twice.
+    ///
+    /// `RETURN` says which value the script answers with, so two of them make
+    /// "the answer" depend on which one ran. A property of the statement text,
+    /// so it is refused where it is written.
+    #[error("a script answers with one value, and this one has two `RETURN`s (at {span})")]
+    ReturnedTwice {
+        /// Where the second `RETURN` is.
+        span: Span,
+    },
 }
 
 impl Error {
@@ -442,6 +706,9 @@ impl Error {
             | Self::InvalidNumber { span, .. }
             | Self::InvalidBytes { span, .. }
             | Self::InvalidDuration { span, .. }
+            | Self::InsertRowArity { span, .. }
+            | Self::TableWithoutColumns { span, .. }
+            | Self::UnknownIdentityKind { span, .. }
             | Self::UnexpectedToken { span, .. }
             | Self::UnexpectedEnd { span, .. }
             | Self::Unsupported { span, .. }
@@ -468,8 +735,22 @@ impl Error {
             | Self::OneSidedJoin { span, .. }
             | Self::JoinKeyIsNotAField { span, .. }
             | Self::UnboundParameter { span, .. }
+            | Self::BoundTwice { span, .. }
+            | Self::BindingCollidesWithParameter { span, .. }
+            | Self::ReturnedTwice { span }
             | Self::NotARecordIdentity { span, .. }
-            | Self::Unrenderable { span, .. } => *span,
+            | Self::Unrenderable { span, .. }
+            | Self::MalformedGeometry { span, .. }
+            | Self::ComputedGeometry { span, .. }
+            | Self::CursorBesideAnOffset { span }
+            | Self::CursorBesideAReshaping { span, .. }
+            | Self::AnchorFromAnotherTable { span, .. }
+            | Self::EmptyTimeout { span, .. }
+            | Self::DepthNeedsOneHopToATable { span }
+            | Self::DepthBelowOne { span }
+            | Self::VectorWidthBelowOne { span }
+            | Self::VectorWidthAboveTheCeiling { span, .. }
+            | Self::EffortBelowOne { span } => *span,
         }
     }
 }

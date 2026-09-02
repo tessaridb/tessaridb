@@ -321,6 +321,88 @@ fn a_hole_inside_another_hole_is_refused() {
     assert!(matches!(defect(&nested), Defect::HolesOverlap { .. }));
 }
 
+// ------------------------------------------- which way round the world it goes
+
+#[test]
+fn a_line_edge_spanning_more_than_half_the_world_is_refused() {
+    let across = Geometry::Line(vec![at(179.0, 0.0), at(-179.0, 0.0)]);
+    assert!(matches!(
+        defect(&across),
+        Defect::EdgeSpansHalfTheWorld { .. }
+    ));
+}
+
+#[test]
+fn exactly_half_the_world_is_held() {
+    // The boundary, and it belongs on the accepting side: at 180 degrees the two
+    // readings have the same length and the same box, so nothing the store can
+    // observe distinguishes them and there is no choice being made for anyone.
+    accept(&Geometry::Line(vec![at(-90.0, 0.0), at(90.0, 0.0)]))
+        .expect("half the world is not more than half the world");
+
+    // And one grid unit past it is not.
+    let past = Geometry::Line(vec![at(-90.0, 0.0), at(90.000_000_001, 0.0)]);
+    assert!(matches!(
+        defect(&past),
+        Defect::EdgeSpansHalfTheWorld { .. }
+    ));
+}
+
+#[test]
+fn an_edge_between_two_positions_at_one_pole_is_exempt() {
+    // At latitude 90 every longitude is the same place, so both readings of this
+    // edge are the same degenerate point. Refusing it would cost the polar cap
+    // for no correctness gained.
+    accept(&Geometry::Line(vec![at(-180.0, 90.0), at(180.0, 90.0)]))
+        .expect("there is no direction to state where there is no direction");
+    accept(&Geometry::Line(vec![at(-180.0, -90.0), at(180.0, -90.0)]))
+        .expect("and the same at the other pole");
+}
+
+#[test]
+fn an_edge_from_one_pole_to_the_other_is_not_exempt() {
+    // The exemption is about positions at *one* pole. An edge running between
+    // them passes through every latitude in between, where longitude means what
+    // it usually means, so which way round is a real question again.
+    let meridian_to_meridian = Geometry::Line(vec![at(-179.0, 90.0), at(179.0, -90.0)]);
+    assert!(matches!(
+        defect(&meridian_to_meridian),
+        Defect::EdgeSpansHalfTheWorld { .. }
+    ));
+}
+
+#[test]
+fn the_refusal_names_the_offending_edge_at_any_depth() {
+    let nested = Geometry::MultiLine(vec![
+        vec![at(0.0, 0.0), at(1.0, 1.0)],
+        vec![at(0.0, 0.0), at(10.0, 0.0), at(179.0, 0.0), at(-179.0, 0.0)],
+    ]);
+    match accept(&nested) {
+        Err(Refused::Malformed {
+            defect: Defect::EdgeSpansHalfTheWorld { from, to },
+            at: site,
+        }) => {
+            assert_eq!((from, to), (at(179.0, 0.0), at(-179.0, 0.0)));
+            assert_eq!(
+                site.steps(),
+                &[Step::Member(1), Step::Position(2)],
+                "the third edge of the second line, and the message says so: {site}"
+            );
+        }
+        other => unreachable!("expected the second line's last edge to be refused, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_multi_point_straddling_the_meridian_is_still_held() {
+    // Deliberate, and recorded rather than incidental. A set of points states
+    // its meaning completely — there is no path between them to be read one way
+    // or the other — so there is nothing here for the store to be unsure about.
+    // Its box is loose, which costs refinement and never an answer.
+    accept(&Geometry::MultiPoint(vec![at(179.0, 0.0), at(-179.0, 0.0)]))
+        .expect("points have no edges");
+}
+
 // ------------------------------------------------------- where it went wrong
 
 #[test]
@@ -427,4 +509,105 @@ proptest! {
         let twice = accept(&once).expect("a snapped point stays on the sphere");
         prop_assert_eq!(twice, once);
     }
+}
+
+// ------------------------------------------- the members of a multi-polygon
+
+/// Two squares given as one multi-polygon.
+fn two_members(first: &[(f64, f64)], second: &[(f64, f64)]) -> Geometry {
+    Geometry::MultiPolygon(vec![
+        Polygon {
+            exterior: ring(first),
+            interiors: Vec::new(),
+        },
+        Polygon {
+            exterior: ring(second),
+            interiors: Vec::new(),
+        },
+    ])
+}
+
+#[test]
+fn two_members_that_share_area_are_refused_and_named_by_their_positions() {
+    // The invariant `covers` rests on. Two overlapping members mean a segment
+    // can cross a ring edge and still be inside the shape, which is exactly what
+    // the containment rule assumes cannot happen.
+    let overlapping = two_members(
+        &[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0)],
+        &[(4.0, 4.0), (10.0, 4.0), (10.0, 10.0), (4.0, 10.0)],
+    );
+    assert_eq!(
+        defect(&overlapping),
+        Defect::MembersOverlap {
+            earlier: 0,
+            later: 1
+        }
+    );
+}
+
+#[test]
+fn a_member_nested_inside_another_shares_area_and_is_refused() {
+    let nested = two_members(
+        &[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+        &[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0)],
+    );
+    assert_eq!(
+        defect(&nested),
+        Defect::MembersOverlap {
+            earlier: 0,
+            later: 1
+        }
+    );
+}
+
+#[test]
+fn two_members_sharing_a_stretch_of_edge_are_refused_but_a_shared_corner_is_not() {
+    // A shared edge encloses no area and still breaks the same rule, because a
+    // segment crossing it passes from one member's inside to the other's. A
+    // shared *corner* does not, and both RFC 7946 and OGC allow it.
+    let along_an_edge = two_members(
+        &[(0.0, 0.0), (5.0, 0.0), (5.0, 5.0), (0.0, 5.0)],
+        &[(5.0, 1.0), (9.0, 1.0), (9.0, 4.0), (5.0, 4.0)],
+    );
+    assert_eq!(
+        defect(&along_an_edge),
+        Defect::MembersOverlap {
+            earlier: 0,
+            later: 1
+        }
+    );
+
+    let at_a_corner = two_members(
+        &[(0.0, 0.0), (5.0, 0.0), (5.0, 5.0), (0.0, 5.0)],
+        &[(5.0, 5.0), (9.0, 5.0), (9.0, 9.0), (5.0, 9.0)],
+    );
+    assert!(accept(&at_a_corner).is_ok(), "a shared corner is legal");
+}
+
+#[test]
+fn members_that_stay_apart_are_accepted() {
+    let apart = two_members(
+        &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+        &[(5.0, 5.0), (6.0, 5.0), (6.0, 6.0), (5.0, 6.0)],
+    );
+    assert!(accept(&apart).is_ok());
+}
+
+#[test]
+fn a_member_sitting_in_another_members_hole_is_accepted() {
+    // The one nesting that is legal: the outer member does not cover the hole,
+    // so the two share no area at all. A check that tested shells rather than
+    // areas would refuse this, and a doughnut with its own centre is a shape
+    // people draw.
+    let doughnut_and_its_centre = Geometry::MultiPolygon(vec![
+        Polygon {
+            exterior: ring(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]),
+            interiors: vec![ring(&[(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0)])],
+        },
+        Polygon {
+            exterior: ring(&[(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)]),
+            interiors: Vec::new(),
+        },
+    ]);
+    assert!(accept(&doughnut_and_its_centre).is_ok());
 }

@@ -26,19 +26,36 @@ use crate::error::{Error, Result};
 /// What every connection says first, in both directions.
 pub(crate) const HELLO: &[u8; 4] = b"TESS";
 
-/// The protocol's version.
+/// The protocol's major version — the half a mismatch is refused on.
 ///
 /// Checked on both sides at the hello, so a mismatch is one clear refusal at the
 /// start rather than a decode failure somewhere in the middle that reads like
 /// corruption.
 ///
-/// It moved to 2 when a records answer began carrying the names of the tables
-/// its references point at, and to 3 when a request began carrying the values
-/// its script's parameters bind to. Both are changes to the layout of a body,
-/// which is exactly the kind of change this byte exists for: a version that does
-/// not move when the layout does teaches a reader that the number is decoration,
-/// and the next mismatch arrives as corruption in the middle of a frame.
-pub(crate) const VERSION: u8 = 3;
+/// # Why this is 1 and not 4
+///
+/// A single version byte lived here and moved twice during development — to 2
+/// when a records answer began carrying table names, to 3 when a request began
+/// carrying its parameters' values. Both moves were correct by the rule the byte
+/// carried and pointless by purpose: **a version exists to refuse a mismatch
+/// between builds that are actually in somebody's hands**, and before a release
+/// there are none. Left alone it would have made the first public version 3 with
+/// two unreachable predecessors, so the specification retired it and the
+/// published protocol starts at 1.0.
+pub(crate) const MAJOR: u8 = 1;
+
+/// The protocol's minor version — the half a mismatch is *not* refused on.
+///
+/// A differing minor means the two sides agree about frames and about every
+/// value, and the newer one merely knows more outcome kinds — which the older
+/// one steps over by the length in front of each (see `message`). So the peer's
+/// minor is kept rather than compared, and it decides exactly one thing: what
+/// this side may *send* to an older peer.
+///
+/// This is why a new outcome kind is a minor change and a new value type is a
+/// major one: a value nested inside an array carries no length of its own, so an
+/// unknown one cannot be stepped over.
+pub(crate) const MINOR: u8 = 0;
 
 /// The largest frame this build will read.
 ///
@@ -161,26 +178,39 @@ pub(crate) fn read(input: &mut impl Read) -> Result<Option<(Kind, Vec<u8>)>> {
 ///
 /// Returns [`Error::NotThisProtocol`] when the greeting is not one, and
 /// [`Error::WrongVersion`] when it is one this build does not speak.
-pub(crate) fn greet(stream: &mut (impl Read + Write)) -> Result<()> {
+pub(crate) fn greet(stream: &mut (impl Read + Write)) -> Result<u8> {
     stream.write_all(HELLO)?;
-    stream.write_all(&[VERSION])?;
+    stream.write_all(&[MAJOR, MINOR])?;
     stream.flush()?;
 
-    let mut said = [0_u8; 5];
+    // The magic is judged on its own four bytes, before the version bytes are
+    // read at all. A peer that is not a node owes nothing — it may send three
+    // bytes of an HTTP request line and hang up — and a reader that waited for
+    // all six first would report that as a truncated stream, which sends
+    // whoever reads the error to the network when the answer is that the
+    // address is wrong.
+    let mut magic = [0_u8; 4];
     stream
-        .read_exact(&mut said)
+        .read_exact(&mut magic)
         .map_err(|_| Error::NotThisProtocol)?;
-    if said.get(..4) != Some(HELLO.as_slice()) {
+    if &magic != HELLO {
         return Err(Error::NotThisProtocol);
     }
-    let found = said[4];
-    if found != VERSION {
+
+    let mut version = [0_u8; 2];
+    stream
+        .read_exact(&mut version)
+        .map_err(|_| Error::Truncated)?;
+    let found = version[0];
+    if found != MAJOR {
         return Err(Error::WrongVersion {
             found,
-            supported: VERSION,
+            supported: MAJOR,
         });
     }
-    Ok(())
+    // The peer's minor, returned rather than discarded: it is the only thing
+    // that decides what this side may send to an older peer.
+    Ok(version[1])
 }
 
 /// A length-prefixed string, the shape every text in a body takes.
@@ -287,8 +317,103 @@ mod tests {
 
     use std::io::Cursor;
 
-    use super::{CEILING, Kind, put_text, read, take_text, write};
+    use super::{CEILING, Kind, greet, put_text, read, take_text, write};
     use crate::error::Error;
+
+    /// What a node must put on the wire, written as bytes rather than built from
+    /// this module's own constants.
+    ///
+    /// Interpolating `MAJOR` and `MINOR` here would make the test agree with
+    /// whatever they say, which is not a check — and agreeing with itself is
+    /// exactly how this drifted to a five-byte greeting at version 3 while every
+    /// test in the crate passed. The specification says six bytes; six bytes are
+    /// written here by hand.
+    const SPECIFIED_GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 0];
+
+    /// A peer: what it will say, and what it hears.
+    ///
+    /// A `Cursor` cannot stand in for one here — `greet` writes before it reads,
+    /// and a cursor's write would land on top of the bytes the read is about to
+    /// take.
+    struct Peer {
+        says: Cursor<Vec<u8>>,
+        heard: Vec<u8>,
+    }
+
+    impl Peer {
+        fn saying(bytes: &[u8]) -> Self {
+            Self {
+                says: Cursor::new(bytes.to_vec()),
+                heard: Vec::new(),
+            }
+        }
+    }
+
+    impl std::io::Read for Peer {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.says.read(buffer)
+        }
+    }
+
+    impl std::io::Write for Peer {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.heard.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_greeting_this_node_sends_is_the_six_bytes_the_specification_names() {
+        let mut peer = Peer::saying(&SPECIFIED_GREETING);
+        let minor = greet(&mut peer).expect("a node greets a node");
+        assert_eq!(
+            peer.heard, SPECIFIED_GREETING,
+            "what this node puts on the wire is not what the specification says"
+        );
+        assert_eq!(minor, 0, "the peer's minor is kept, not discarded");
+    }
+
+    #[test]
+    fn a_peer_that_is_not_a_node_is_named_as_such_and_not_as_a_short_read() {
+        // Three bytes of an HTTP request line, then nothing. The magic is judged
+        // on its own four bytes, so this is `NotThisProtocol` — which sends the
+        // reader to the address — and not `Truncated`, which would send them to
+        // the network, where there is nothing to find.
+        let mut peer = Peer::saying(b"GET");
+        assert!(matches!(greet(&mut peer), Err(Error::NotThisProtocol)));
+    }
+
+    #[test]
+    fn a_differing_major_is_refused_and_carries_both_numbers() {
+        let mut peer = Peer::saying(&[b'T', b'E', b'S', b'S', 9, 0]);
+        match greet(&mut peer) {
+            Err(Error::WrongVersion { found, supported }) => {
+                assert_eq!(found, 9);
+                assert_eq!(supported, 1);
+            }
+            other => panic!("expected a refusal naming both versions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_differing_minor_is_not_a_refusal() {
+        // The half the specification says must be tolerated: the two sides agree
+        // about frames and about every value, and the newer one merely knows
+        // more outcome kinds, which the older steps over by their lengths.
+        let mut peer = Peer::saying(&[b'T', b'E', b'S', b'S', 1, 7]);
+        assert_eq!(greet(&mut peer).expect("tolerated"), 7);
+    }
+
+    #[test]
+    fn a_greeting_that_stops_after_the_magic_is_a_truncation() {
+        // Four correct bytes and then nothing is a node that died mid-greeting,
+        // which is a transport problem and is reported as one.
+        let mut peer = Peer::saying(b"TESS");
+        assert!(matches!(greet(&mut peer), Err(Error::Truncated)));
+    }
 
     #[test]
     fn a_frame_survives_the_round_trip() {

@@ -13,15 +13,24 @@ publish.workspace = true
 name = "tessaridb"
 path = "src/main.rs"
 
+[features]
+# Carry the broker client, so this binary can actually run a declared consumer.
+# Off by default because the client compiles librdkafka and therefore needs a C
+# toolchain, which an ordinary build of this database must not (ADR-0024 §2).
+kafka = ["tessari-ingest/kafka"]
+
 [dependencies]
 tessaridb.workspace = true
 tessari-backup.workspace = true
 tessari-http.workspace = true
+tessari-ingest.workspace = true
 tessari-serve.workspace = true
 # Installing a signal handler is not expressible in safe Rust and `std` has no
 # signal API. Already in the tree through the engine, so this costs no crate.
 libc = "0.2"
+log.workspace = true
 tessari-ql.workspace = true
+tessari-session.workspace = true
 tessari-storage.workspace = true
 tessari-types.workspace = true
 tessari-wire.workspace = true
@@ -31,7 +40,6 @@ tessari-wire.workspace = true
 # that builds a decimal needs the type that holds one.
 rust_decimal.workspace = true
 tessari-kv.workspace = true
-tessari-session.workspace = true
 # Already in the tree through `tessari-lsm`; the process-level test needs a
 # directory that cleans itself up when the node it served is killed.
 tempfile = "3"

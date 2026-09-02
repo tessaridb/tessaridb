@@ -26,6 +26,7 @@
 
 #![forbid(unsafe_code)]
 
+mod adjacency;
 mod error;
 mod index_keys;
 mod index_value;
@@ -35,20 +36,23 @@ mod node;
 mod order;
 mod payload;
 mod record_id;
+mod spatial_keys;
 mod value;
 
+pub use adjacency::{AdjacencyKey, Direction, EdgeProperties};
 pub use error::{Error, Result};
 pub use index_keys::{
-    INDEX_PREFIX_LEN, IndexAddress, IndexTarget, IndexValues, NoPayload, PostingKey,
-    SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, UniqueIndexKey, VectorNode,
-    VectorNodeKey,
+    INDEX_PREFIX_LEN, IndexAddress, IndexTarget, IndexValues, NoPayload, Posting, PostingKey,
+    SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, SpatialRefinement,
+    SpatialRefinementKey, UniqueIndexKey, VectorNode, VectorNodeKey, VectorRecall, VectorRecallKey,
 };
 pub use keys::{
-    AppliedPositionKey, FormatVersionKey, LogKey, NodeIdentityKey, RecordKey, StoreKey,
-    TABLE_PREFIX_LEN,
+    AppliedPositionKey, FormatVersionKey, LogKey, NodeIdentityKey, ReclaimFloorKey, RecordKey,
+    StoreKey, TABLE_PREFIX_LEN,
 };
 pub use kind::KeyKind;
-pub use node::{Membership, NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};
+pub use node::{BUILD_VERSION, Membership, NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};
 pub use order::{KeyReader, KeyWriter};
 pub use payload::{decode as decode_payload, encode as encode_payload};
+pub use spatial_keys::{SpatialExtent, SpatialIndexKey};
 pub use value::{CODEC_VERSION, FormatVersion, LogRecord, Mutation, RecordValue, StoreValue};

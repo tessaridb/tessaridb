@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_session::{AccessPath, Outcome, Session};
+use tessari_session::{AccessPath, Outcome, Plan, Session};
 use tessari_storage::Store;
 use tessari_types::{RecordId, Value};
 
@@ -30,7 +30,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE users; DEFINE TABLE orders;\n\
+             DEFINE COLLECTION users; DEFINE COLLECTION orders;\n\
              CREATE users:1 = { name: 'ada', city: 'london' };\n\
              CREATE users:2 = { name: 'grace', city: 'new york' };\n\
              CREATE orders:1 = { who: 'ada', total: 3 };\n\
@@ -43,12 +43,16 @@ fn ready(store: &Store) -> Session<'_> {
 
 const JOINED: &str = "SELECT * FROM users JOIN orders ON users.name = orders.who;";
 
-/// The rows and the path one statement answered with.
-fn answered(session: &mut Session<'_>, script: &str) -> (Vec<(RecordId, Value)>, AccessPath) {
+/// The rows and the plan one statement answered with.
+///
+/// The plan rather than the access path alone, because a join answers `join`
+/// however its sides were read — what tells a probe from a map of the whole
+/// right table is the index the plan names, not the word.
+fn answered(session: &mut Session<'_>, script: &str) -> (Vec<(RecordId, Value)>, Plan) {
     let outcomes = session.run(script).unwrap();
     let last = outcomes.last().unwrap();
     match last {
-        Outcome::Records { records, path } => (records.clone(), *path),
+        Outcome::Records { records, plan, .. } => (records.clone(), plan.clone()),
         other => panic!("not records: {other:?}"),
     }
 }
@@ -94,14 +98,20 @@ fn an_index_on_the_right_key_changes_the_path_and_not_the_answer() {
     // hold. The statements are identical; only the index between them differs.
     let store = store();
     let mut session = ready(&store);
-    let (scanned, path) = answered(&mut session, JOINED);
-    assert_eq!(path, AccessPath::Scan);
+    let (scanned, plan) = answered(&mut session, JOINED);
+    assert_eq!(plan.access, AccessPath::Join);
+    assert_eq!(plan.index, None, "there was no index to probe through");
 
     session
         .run("DEFINE INDEX by_who ON orders FIELDS who;")
         .unwrap();
-    let (indexed, path) = answered(&mut session, JOINED);
-    assert_eq!(path, AccessPath::Index, "the index was not used");
+    let (indexed, plan) = answered(&mut session, JOINED);
+    assert_eq!(plan.access, AccessPath::Join);
+    assert_eq!(
+        plan.index.as_deref(),
+        Some("by_who"),
+        "the index was not used"
+    );
     assert_eq!(scanned, indexed, "the index changed the answer");
 }
 
@@ -131,8 +141,8 @@ fn the_join_agrees_with_the_operator_it_is_spelled_with() {
     session
         .run("DEFINE INDEX by_qty ON orders FIELDS qty;")
         .unwrap();
-    let (indexed, path) = answered(&mut session, across);
-    assert_eq!(path, AccessPath::Index);
+    let (indexed, plan) = answered(&mut session, across);
+    assert_eq!(plan.index.as_deref(), Some("by_qty"));
     assert_eq!(rows, indexed);
 }
 
@@ -206,7 +216,7 @@ fn a_join_cannot_reach_a_table_outside_the_session_users_tenancy() {
     session
         .run(
             "DEFINE DATABASE elsewhere; USE DATABASE elsewhere;\n\
-             DEFINE TABLE secrets; CREATE secrets:1 = { who: 'ada' };\n\
+             DEFINE COLLECTION secrets; CREATE secrets:1 = { who: 'ada' };\n\
              USE DATABASE shop;\n\
              DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse';",
         )

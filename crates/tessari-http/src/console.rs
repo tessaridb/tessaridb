@@ -23,7 +23,7 @@ type Asset = (&'static str, &'static str, &'static str);
 
 /// Everything the console is made of.
 ///
-/// `include_str!` rather than `include_bytes!` because all three are text, and
+/// `include_str!` rather than `include_bytes!` because all five are text, and
 /// text is what a reader of this file can check against the served answer.
 const ASSETS: &[Asset] = &[
     (
@@ -41,6 +41,18 @@ const ASSETS: &[Asset] = &[
         "text/javascript; charset=utf-8",
         include_str!("../assets/console.js"),
     ),
+    (
+        "/sections.js",
+        "text/javascript; charset=utf-8",
+        include_str!("../assets/sections.js"),
+    ),
+    // Named by the page, so a browser asks for this instead of `/favicon.ico`
+    // and the 404 that would otherwise sit in every operator's console.
+    (
+        "/favicon.svg",
+        "image/svg+xml",
+        include_str!("../assets/favicon.svg"),
+    ),
 ];
 
 /// The console asset served at `path`, if the console serves one there.
@@ -52,6 +64,11 @@ pub(crate) fn asset(method: &Method, path: &str) -> Option<Answer> {
     if *method != Method::Get {
         return None;
     }
+    // Split on `?` for the same reason `/backup` does: a query string is not
+    // part of the path, and a console that 404s because somebody's link carried
+    // a tracking parameter — or because a browser was asked to reload past its
+    // cache — is a console that looks broken for a reason nobody can see.
+    let path = path.split_once('?').map_or(path, |(before, _)| before);
     ASSETS.iter().find_map(|(at, kind, body)| {
         (*at == path).then(|| Answer::text(200, (*body).to_owned(), kind))
     })
@@ -59,7 +76,117 @@ pub(crate) fn asset(method: &Method, path: &str) -> Option<Answer> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic)]
+
     use super::ASSETS;
+
+    /// The page's own text, which the tests below read rather than assume.
+    fn page() -> &'static str {
+        ASSETS
+            .iter()
+            .find_map(|(at, _, body)| (*at == "/").then_some(*body))
+            .expect("the console serves a root page")
+    }
+
+    #[test]
+    fn the_roles_the_page_offers_are_the_roles_this_build_has() {
+        // The page hard-codes three roles, which is the only way it can offer a
+        // list without a statement to ask for one. So the list is pinned to the
+        // engine's own `Role::ALL` — the constant that exists, in its own words,
+        // "so a listing cannot drift from the set". A fourth role added to the
+        // storage crate and not to the page fails here rather than quietly
+        // becoming a role nobody can grant from the console.
+        let page = page();
+        // Scoped to the selects that offer roles, rather than to every option on
+        // the page minus a list of exceptions. The exception list was the first
+        // shape and it grew by one every time an unrelated dropdown was added,
+        // which is a check that quietly loosens as the page fills up.
+        for id in ["new-role", "change-role"] {
+            let offered = options(page, id);
+            for role in tessari_storage::Role::ALL {
+                assert!(
+                    offered.iter().any(|value| value == role.name()),
+                    "{id} offers no way to choose the {} role",
+                    role.name()
+                );
+            }
+            // And the other direction: an option the engine has never heard of.
+            // The one exception is `other`, the free-text escape the page offers
+            // on purpose — a role this build refuses is shown refusing, rather
+            // than hidden behind a control that pretends it cannot be asked for.
+            for value in &offered {
+                assert!(
+                    value == "other"
+                        || tessari_storage::Role::ALL
+                            .iter()
+                            .any(|role| role.name() == value),
+                    "{id} offers a {value:?} role and this build has no such thing"
+                );
+            }
+        }
+    }
+
+    /// The `value` of every `<option>` inside one named `<select>`.
+    ///
+    /// Panics when the select is not there, which is the point: a renamed
+    /// control would otherwise turn its cross-check into a loop over nothing,
+    /// and a test that asserts about an empty list passes for the wrong reason.
+    fn options(page: &str, id: &str) -> Vec<String> {
+        let opening = format!(r#"<select id="{id}">"#);
+        let at = page
+            .find(&opening)
+            .unwrap_or_else(|| panic!("the page has no <select id={id:?}>"));
+        let rest = &page[at.saturating_add(opening.len())..];
+        let end = rest
+            .find("</select>")
+            .unwrap_or_else(|| panic!("<select id={id:?}> is never closed"));
+        rest[..end]
+            .match_indices(r#"<option value=""#)
+            .filter_map(|(found, _)| {
+                let after = rest.get(found.saturating_add(r#"<option value=""#.len())..end)?;
+                after.split('"').next().map(str::to_owned)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_tab_names_a_panel_that_exists_and_every_panel_has_a_tab() {
+        // Both directions, because each catches a different half-finished edit:
+        // a tab whose panel was never added is a section that shows nothing, and
+        // a panel whose tab was never added is a section nobody can reach. The
+        // second is the quieter one — the markup is all there, and it is simply
+        // invisible.
+        let page = page();
+        let named = |attribute: &str| -> Vec<String> {
+            page.match_indices(attribute)
+                .filter_map(|(at, _)| {
+                    let rest = page.get(at.saturating_add(attribute.len())..)?;
+                    rest.split('"').next().map(str::to_owned)
+                })
+                .collect()
+        };
+        let controls = named(r#"aria-controls=""#);
+        let labelled = named(r#"aria-labelledby=""#);
+        assert!(!controls.is_empty(), "the page has no tabs at all");
+        assert_eq!(
+            controls.len(),
+            labelled.len(),
+            "{controls:?} vs {labelled:?}"
+        );
+
+        for panel in &controls {
+            assert!(
+                page.contains(&format!(r#"id="{panel}""#)),
+                "a tab controls {panel}, which is not on the page"
+            );
+        }
+        for tab in &labelled {
+            assert!(
+                page.contains(&format!(r#"id="{tab}""#)),
+                "a panel is labelled by {tab}, which is not on the page"
+            );
+        }
+    }
 
     #[test]
     fn every_asset_the_page_references_is_one_this_module_serves() {
@@ -67,10 +194,7 @@ mod tests {
         // needs, and the table has to satisfy it. Reading the table and then
         // checking the page mentions each entry would pass while the page
         // referenced a fourth file nobody embedded.
-        let page = ASSETS
-            .iter()
-            .find_map(|(at, _, body)| (*at == "/").then_some(*body))
-            .expect("the console serves a root page");
+        let page = page();
         let mut referenced = 0;
         for quoted in page.split('"') {
             if !quoted.starts_with('/') || quoted.len() < 2 {

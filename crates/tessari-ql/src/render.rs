@@ -25,8 +25,8 @@
 //! than claimed.
 
 use crate::ast::{
-    Expr, ExprKind, FieldPath, Ordering, Projected, Projection, Script, Select, Source, Statement,
-    StatementKind, TableRef,
+    Approximation, Expr, ExprKind, FieldPath, Ordering, Projected, Projection, Script, Select,
+    Source, Statement, StatementKind, TableRef, Using,
 };
 use crate::error::{Error, Result};
 use crate::token::Span;
@@ -68,12 +68,20 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DefineTable { .. } => Err(unrenderable("DEFINE TABLE", span)),
         StatementKind::DefineSpace { .. } => Err(unrenderable("DEFINE SPACE", span)),
         StatementKind::DefineBucket { .. } => Err(unrenderable("DEFINE BUCKET", span)),
+        StatementKind::DefineCollection { .. } => Err(unrenderable("DEFINE COLLECTION", span)),
+        StatementKind::DefineVector { .. } => Err(unrenderable("DEFINE VECTOR", span)),
+        StatementKind::DropVector { .. } => Err(unrenderable("DROP VECTOR", span)),
+        StatementKind::DefineGeo { .. } => Err(unrenderable("DEFINE GEO", span)),
+        StatementKind::DropGeo { .. } => Err(unrenderable("DROP GEO", span)),
         StatementKind::DefineIndex { .. } => Err(unrenderable("DEFINE INDEX", span)),
         StatementKind::DefineField { .. } => Err(unrenderable("DEFINE FIELD", span)),
         StatementKind::DefineAnalyzer { .. } => Err(unrenderable("DEFINE ANALYZER", span)),
         StatementKind::DefineUser { .. } => Err(unrenderable("DEFINE USER", span)),
+        StatementKind::AlterUser { .. } => Err(unrenderable("ALTER USER", span)),
         StatementKind::DefineNode { .. } => Err(unrenderable("DEFINE NODE", span)),
         StatementKind::DefineReplica { .. } => Err(unrenderable("DEFINE REPLICA", span)),
+        StatementKind::DefineConsumer { .. } => Err(unrenderable("DEFINE CONSUMER", span)),
+        StatementKind::DropConsumer { .. } => Err(unrenderable("DROP CONSUMER", span)),
         StatementKind::Explain(_) => Err(unrenderable("EXPLAIN", span)),
         StatementKind::Info { .. } => Err(unrenderable("INFO", span)),
         StatementKind::Backup { .. } => Err(unrenderable("BACKUP", span)),
@@ -81,13 +89,29 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DropField { .. } => Err(unrenderable("DROP FIELD", span)),
         StatementKind::DropTable { .. } => Err(unrenderable("DROP TABLE", span)),
         StatementKind::DropIndex { .. } => Err(unrenderable("DROP INDEX", span)),
+        StatementKind::DropAnalyzer { .. } => Err(unrenderable("DROP ANALYZER", span)),
+        StatementKind::DropReplica { .. } => Err(unrenderable("DROP REPLICA", span)),
+        StatementKind::DropDatabase { .. } => Err(unrenderable("DROP DATABASE", span)),
+        StatementKind::DropNamespace { .. } => Err(unrenderable("DROP NAMESPACE", span)),
+        StatementKind::DefineGraph { .. } => Err(unrenderable("DEFINE GRAPH", span)),
+        StatementKind::DropGraph { .. } => Err(unrenderable("DROP GRAPH", span)),
+        StatementKind::DefineEdge { .. } => Err(unrenderable("DEFINE EDGE", span)),
+        StatementKind::DropEdge { .. } => Err(unrenderable("DROP EDGE", span)),
+        StatementKind::AlterTable { .. } => Err(unrenderable("ALTER TABLE", span)),
+        StatementKind::AlterField { .. } => Err(unrenderable("ALTER TABLE ALTER FIELD", span)),
         StatementKind::RebuildIndex { .. } => Err(unrenderable("REBUILD INDEX", span)),
         StatementKind::Grant { .. } => Err(unrenderable("GRANT", span)),
         StatementKind::Revoke { .. } => Err(unrenderable("REVOKE", span)),
+        StatementKind::GrantAuthority { .. } => Err(unrenderable("GRANT", span)),
+        StatementKind::RevokeAuthority { .. } => Err(unrenderable("REVOKE", span)),
         StatementKind::Relate { .. } => Err(unrenderable("RELATE", span)),
         StatementKind::Create { .. } => Err(unrenderable("CREATE", span)),
+        StatementKind::Insert { .. } => Err(unrenderable("INSERT", span)),
         StatementKind::Update { .. } => Err(unrenderable("UPDATE", span)),
+        StatementKind::Upsert { .. } => Err(unrenderable("UPSERT", span)),
+        StatementKind::Throw { .. } => Err(unrenderable("THROW", span)),
         StatementKind::Delete { .. } => Err(unrenderable("DELETE", span)),
+        StatementKind::DeleteEdge { .. } => Err(unrenderable("DELETE of an edge", span)),
         StatementKind::DeleteWhere { .. } => Err(unrenderable("DELETE FROM", span)),
         StatementKind::Get { .. } => Err(unrenderable("GET", span)),
         StatementKind::Set { .. } => Err(unrenderable("SET", span)),
@@ -95,9 +119,12 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::Put { .. } => Err(unrenderable("PUT", span)),
         StatementKind::Read { .. } => Err(unrenderable("READ", span)),
         StatementKind::Keys { .. } => Err(unrenderable("KEYS", span)),
+        StatementKind::Let { .. } => Err(unrenderable("LET", span)),
+        StatementKind::Return { .. } => Err(unrenderable("RETURN", span)),
         StatementKind::Begin => Err(unrenderable("BEGIN", span)),
         StatementKind::Commit => Err(unrenderable("COMMIT", span)),
         StatementKind::Cancel => Err(unrenderable("CANCEL", span)),
+        StatementKind::Verify => Err(unrenderable("VERIFY", span)),
     }
 }
 
@@ -106,14 +133,26 @@ const fn unrenderable(statement: &'static str, span: Span) -> Error {
     Error::Unrenderable { statement, span }
 }
 
-/// `SELECT … FROM … [FETCH …] [GROUP BY …] [ORDER BY …] [START n] [LIMIT n] [APPROXIMATE]`
+/// `SELECT … FROM … [FETCH …] [GROUP BY …] [ORDER BY …] [START n] [LIMIT n]
+///  [APPROXIMATE] [USING …]`
 ///
 /// Clause order is the parser's, which is also application order — the grammar
 /// keeps the two the same on purpose, so there is nothing to choose here.
 fn write_select(out: &mut String, select: &Select) -> Result<()> {
     out.push_str("SELECT ");
     write_projection(out, &select.projection)?;
+    if let Some((first, rest)) = select.omit.split_first() {
+        out.push_str(" OMIT ");
+        write_path(out, first);
+        for route in rest {
+            out.push_str(", ");
+            write_path(out, route);
+        }
+    }
     out.push_str(" FROM ");
+    if select.only.is_some() {
+        out.push_str("ONLY ");
+    }
     write_source(out, &select.from, select.span)?;
 
     if let Some((first, rest)) = select.fetch.split_first() {
@@ -123,6 +162,10 @@ fn write_select(out: &mut String, select: &Select) -> Result<()> {
             out.push_str(", ");
             write_path(out, route);
         }
+    }
+    if let Some(route) = &select.split {
+        out.push_str(" SPLIT ON ");
+        write_path(out, route);
     }
     if let Some((first, rest)) = select.group.split_first() {
         out.push_str(" GROUP BY ");
@@ -140,6 +183,14 @@ fn write_select(out: &mut String, select: &Select) -> Result<()> {
             write_ordering(out, ordering)?;
         }
     }
+    // A cursor names a record identity, and an identity is the one thing this
+    // renderer has never learned to write — which is also why a read of one
+    // record is unrenderable above. The builder cannot produce either, so this
+    // arm is unreachable from the only caller; it is here so that it stays that
+    // way rather than becoming a clause quietly dropped from rendered text.
+    if select.after.is_some() {
+        return Err(unrenderable("a cursor", select.span));
+    }
     if let Some(start) = select.start {
         out.push_str(" START ");
         out.push_str(&start.to_string());
@@ -148,8 +199,24 @@ fn write_select(out: &mut String, select: &Select) -> Result<()> {
         out.push_str(" LIMIT ");
         out.push_str(&limit.to_string());
     }
-    if select.approximate {
-        out.push_str(" APPROXIMATE");
+    match select.approximate {
+        None => {}
+        Some(Approximation::Default) => out.push_str(" APPROXIMATE"),
+        Some(Approximation::Effort(candidates)) => {
+            out.push_str(" APPROXIMATE EFFORT ");
+            out.push_str(&candidates.to_string());
+        }
+    }
+    match &select.using {
+        Some(Using::Path(name)) => {
+            out.push_str(" USING ");
+            out.push_str(&name.text);
+        }
+        Some(Using::Index(name)) => {
+            out.push_str(" USING INDEX ");
+            out.push_str(&name.text);
+        }
+        None => {}
     }
     Ok(())
 }
@@ -176,8 +243,14 @@ fn write_projection(out: &mut String, projection: &Projection) -> Result<()> {
             out.push('*');
             Ok(())
         }
-        Projection::Values(values) => {
-            let mut written = false;
+        Projection::Values { everything, values } => {
+            // The star first, always, whatever position it was written in: the
+            // answer is ordered by name, so where it stood cannot be observed,
+            // and one canonical place is what keeps a rendered statement stable.
+            let mut written = everything.is_some();
+            if written {
+                out.push('*');
+            }
             for value in values {
                 if written {
                     out.push_str(", ");
@@ -219,6 +292,7 @@ fn write_source(out: &mut String, source: &Source, span: Span) -> Result<()> {
         Source::Record(_) => unwritten("a read of one record"),
         Source::Traverse { .. } => unwritten("a traversal"),
         Source::Join { .. } => unwritten("a join"),
+        Source::Subquery { .. } => unwritten("a materialised read"),
     }
 }
 
@@ -276,6 +350,8 @@ fn write_expr(out: &mut String, expr: &Expr) -> Result<()> {
         ExprKind::Set(_) => unwritten("a set"),
         ExprKind::Object(_) => unwritten("an object"),
         ExprKind::Range(_) => unwritten("a range"),
+        ExprKind::If { .. } => unwritten("a conditional"),
+        ExprKind::Coalesce(..) => unwritten("a coalesce"),
         ExprKind::Get(_) => unwritten("an embedded GET"),
         ExprKind::Select(_) => unwritten("an embedded read"),
     }

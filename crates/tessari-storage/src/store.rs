@@ -71,6 +71,12 @@ impl Health {
 pub struct Store {
     backend: Arc<dyn KvBackend>,
     snapshots: Arc<Registry>,
+    /// What this process is doing with the declared consumers.
+    ///
+    /// Shared like the snapshot registry and for the same reason: a session
+    /// answering `INFO FOR CONSUMER` and the thread doing the consuming must be
+    /// looking at one registry, not at two that agree until they do not.
+    running: Arc<crate::running::Running>,
 }
 
 impl Store {
@@ -96,6 +102,7 @@ impl Store {
         Ok(Self {
             backend,
             snapshots: Arc::new(Registry::default()),
+            running: Arc::new(crate::running::Running::default()),
         })
     }
 
@@ -127,6 +134,16 @@ impl Store {
         crate::node::read(&self.backend)?.ok_or(Error::NoIdentity)
     }
 
+    /// What this process is doing with the consumers the catalog declares.
+    ///
+    /// Empty until the runner starts something, and empty again after a restart
+    /// — nothing here is persisted, because a persisted `running` flag outlives
+    /// the thread it describes and the next process reads it as true.
+    #[must_use]
+    pub fn running(&self) -> &Arc<crate::running::Running> {
+        &self.running
+    }
+
     /// Change what this node is for, and where it is reached.
     ///
     /// Absent arguments leave their field alone. Applied to the `META` keyspace
@@ -154,6 +171,47 @@ impl Store {
     /// Returns an error when the committed tail cannot be read or decoded.
     pub fn begin(&self) -> Result<Transaction<'_>> {
         Ok(Transaction::new(self, self.committed_tail()?))
+    }
+
+    /// Begin a transaction reading the store as it stood at `at`.
+    ///
+    /// Records are versioned by a suffix on their own key, so reading the past
+    /// is the read this store already performs with a different sequence — not
+    /// a second mechanism. What has to be added is the honesty about when it
+    /// cannot be done.
+    ///
+    /// Two refusals, and they are refusals rather than best-effort answers
+    /// because both alternatives are a plausible wrong number that nothing
+    /// reports:
+    ///
+    /// - **Below the reclaim floor.** Reclamation removed the versions that
+    ///   would have answered, so the read would resolve to something older, or
+    ///   to nothing, and call that the past.
+    /// - **Above the committed tail.** There is no state there yet. Answering
+    ///   with the present would make a read of the future silently succeed and
+    ///   then change its answer the next time it is asked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::VersionReclaimed`] when `at` is below the reclaim floor,
+    /// [`Error::VersionInTheFuture`] when it is above the committed tail, or a
+    /// backend error when either bound cannot be read.
+    pub fn begin_at(&self, at: Sequence) -> Result<Transaction<'_>> {
+        let floor = self.reclaim_floor()?;
+        if at < floor {
+            return Err(Error::VersionReclaimed {
+                asked: at.get(),
+                floor: floor.get(),
+            });
+        }
+        let tail = self.committed_tail()?;
+        if at > tail {
+            return Err(Error::VersionInTheFuture {
+                asked: at.get(),
+                tail: tail.get(),
+            });
+        }
+        Ok(Transaction::new(self, at))
     }
 
     /// The oldest sequence any live reader can still need.

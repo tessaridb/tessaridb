@@ -263,6 +263,57 @@ impl KvBackend for LsmBackend {
         Ok(collected)
     }
 
+    /// Advance an iterator over the range and count what it passes.
+    ///
+    /// # What this does and does not save
+    ///
+    /// It saves the **allocations**: [`Self::scan`] copies every key and every
+    /// value out of the engine into an owned `Key` and `Value` and collects
+    /// them, so counting through it costs two allocations per entry and a
+    /// `Vec` proportional to the range. Here nothing is copied out.
+    ///
+    /// It does **not** avoid reading the values from storage. The engine's
+    /// iterator materialises a block at a time and a value lives beside its key
+    /// in that block; there is no key-only iteration to ask for without a
+    /// second structure to iterate. Said plainly because the reverse is easy to
+    /// assume from the name.
+    ///
+    /// # Why not the engine's own estimate
+    ///
+    /// The engine can report an approximate key count per column family for
+    /// nothing. It is an estimate — it counts entries not yet merged, so a key
+    /// written twice counts twice and a deleted one still counts — and it is
+    /// per column family rather than per range. A ranking fed an estimate
+    /// produces a plausible ordering that is quietly wrong, which is worse than
+    /// a slow one that is right.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's failure. The status check after the walk is not
+    /// defensiveness: an iterator that has stopped is either past the end of
+    /// the range or has failed to read, the two are indistinguishable from
+    /// `valid()` alone, and without the check a failed read returns a short
+    /// count that looks like an answer.
+    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
+        if range.is_provably_empty() {
+            return Ok(0);
+        }
+        let region = self.region(keyspace)?;
+        let mut iterator = self
+            .database
+            .raw_iterator_cf_opt(region, read_options(range));
+        // The read options carry both bounds, so the first key at or after the
+        // lower one is where this lands and the upper one ends the walk.
+        iterator.seek_to_first();
+        let mut total: u64 = 0;
+        while iterator.valid() {
+            total = total.saturating_add(1);
+            iterator.next();
+        }
+        iterator.status().map_err(|error| from_engine(&error))?;
+        Ok(total)
+    }
+
     /// One iterator, seeked many times, instead of one iterator per range.
     ///
     /// [`Self::scan`] creates an engine iterator per call, and creating one is

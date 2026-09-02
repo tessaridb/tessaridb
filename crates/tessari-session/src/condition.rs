@@ -9,11 +9,25 @@
 //!
 //! What is left here is what only a session asks:
 //!
-//! **A condition is a boolean.** Every operator answers with one, so a condition
-//! can only be non-boolean when the author wrote a bare path or literal in that
-//! position. `WHERE tags` is not a question with a false answer; it is a
-//! question that was not finished, and an error naming what was found says so
-//! where an empty result would hide it.
+//! **A condition is a boolean, or it is an absence.** Every operator answers
+//! with a boolean, so a condition can only be some *other* type when the author
+//! wrote a bare path or literal in that position. `WHERE tags` is not a question
+//! with a false answer; it is a question that was not finished, and an error
+//! naming what was found says so where an empty result would hide it.
+//!
+//! An **absence is different, and it is not an error**. A function of an absence
+//! is an absence (`tessari_session::call`), which is what lets a read over
+//! records of differing shapes narrow instead of failing — and the only place
+//! that rule is ever exercised is a condition. Refusing `none` here would make
+//! the two rules contradict each other exactly where they meet: one record
+//! missing one field would fail the whole read, which is the outcome the absence
+//! rule exists to prevent.
+//!
+//! So an absent or null condition is **false**: the record did not answer the
+//! question, and a record that did not answer it is not one of the records that
+//! did. That is the same resolution SQL reaches through three-valued logic, and
+//! it is deliberately narrow — every type that is neither a boolean nor an
+//! absence is still refused.
 //!
 //! **A pattern sometimes has a prefix.** Which is a planner question — what an
 //! index can be asked — rather than a question about what `LIKE` means.
@@ -27,6 +41,9 @@ use crate::error::{Error, Result};
 pub(crate) fn boolean(value: &Value, span: Span) -> Result<bool> {
     match value {
         Value::Bool(held) => Ok(*held),
+        // The record did not answer the question, so it is not one of the
+        // records that answered it yes.
+        Value::None | Value::Null => Ok(false),
         other => Err(Error::ConditionNotBoolean {
             found: other.type_name(),
             span,

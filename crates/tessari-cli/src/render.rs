@@ -58,20 +58,20 @@ fn write(out: &mut String, held: &Value, names: &Names) {
                 out.push_str(&format!("{byte:02x}"));
             }
         }
-        // Both use the writers that live beside their readers in
-        // `tessari_types::text`, not `Display` — which writes a debugging form
-        // (`5400.000000000s`, `0.000000000`) that the lexer will not read back.
-        // These two break this module's rule — everything else here prints a
-        // form the lexer reads back, and these cannot, because the language has
-        // no literal for either yet. They arrive through a bound parameter and
-        // leave as a description. Printing something that *looked* like a
-        // literal would be worse: a caller would paste it into a script and get
-        // a parse error with no clue why.
+        // A shape prints as the literal the language now reads, which is the
+        // rule this module holds everything else to. It was the exception until
+        // the literal existed; the description it printed instead is gone rather
+        // than kept alongside, because two renderings of one value is how a
+        // caller ends up pasting the one that does not parse.
         Value::Geometry(shape) => {
-            out.push_str("<geometry ");
-            out.push_str(shape.kind_name());
-            out.push_str(&format!(" of {}>", shape.positions().len()));
+            out.push_str("geometry ");
+            write(out, &tessari_types::to_geojson(shape), names);
         }
+        // A regex still breaks this module's rule — the language has no literal
+        // for one yet. It arrives through a bound parameter and leaves as a
+        // description. Printing something that *looked* like a literal would be
+        // worse: a caller would paste it into a script and get a parse error
+        // with no clue why.
         Value::Regex(pattern) => {
             out.push_str("<regex ");
             string_into(out, pattern);
@@ -102,7 +102,11 @@ fn write(out: &mut String, held: &Value, names: &Names) {
             None => out.push_str(&format!("<table {id}>")),
         },
         Value::Record(reference) => match names.get(&reference.table) {
-            Some(named) => out.push_str(&format!("{named}:{}", reference.id)),
+            // The identity in the spelling the grammar reads, not the rendering
+            // — `users:1` was fine for an integer and this was never true for
+            // any other kind, which is what a fixture holding only integers
+            // could not tell anybody.
+            Some(named) => out.push_str(&format!("{named}:{}", reference.id.to_literal())),
             None => out.push_str(&format!("<record {reference}>")),
         },
         Value::Array(items) => {
@@ -201,19 +205,13 @@ fn bound_into(out: &mut String, held: &core::ops::Bound<Value>, upper: bool, nam
 }
 
 /// A string in single quotes, escaping what would end it.
+///
+/// The escaping itself moved to `tessari_types::text`, beside the UUID writer,
+/// when the record-id spelling needed the same rule and could not reach into a
+/// binary crate to get it. This stays as the writer-shaped call the renderer
+/// makes everywhere.
 fn string_into(out: &mut String, text: &str) {
-    out.push('\'');
-    for character in text.chars() {
-        match character {
-            '\'' => out.push_str("\\'"),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            other => out.push(other),
-        }
-    }
-    out.push('\'');
+    out.push_str(&tessari_types::string_to_literal(text));
 }
 
 /// Whether this can be written bare as a field name.

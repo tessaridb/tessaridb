@@ -11,6 +11,12 @@
 //! written in a debugging form the lexer will not read, and a record reference
 //! cannot be written at all.
 //!
+//! A **shape** is in the fixture as of the wave that gave the language a
+//! literal for one. It is the kind whose rendering was previously a deliberate
+//! exception — the console printed `<geometry point of 1>` precisely so that
+//! nobody would paste it — and it is therefore the one most worth holding here
+//! now that the exception is gone.
+//!
 //! **Two of the fifteen are absent from the fixture**, and no longer because
 //! they cannot be rendered. A `table` and a `record` hold an id, and the name
 //! comes from a resolver the caller supplies (`Db::names_in`) — which this test
@@ -48,7 +54,10 @@ const ONE_OF_EACH: &str = "CREATE probe:1 = {\n\
     list:     [1, 'two', [3]],\n\
     nested:   { inner: { deeper: 1 } },\n\
     keyed:    { 'with space': 1 },\n\
-    unique:   set [1, 2, 3]\n\
+    unique:   set [1, 2, 3],\n\
+    place:    geometry { type: 'Point', coordinates: [2.35, 48.85] },\n\
+    path:     geometry { type: 'LineString', coordinates: [[-1.5, 0], [1, 2]] },\n\
+    zone:     geometry { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] }\n\
 };";
 
 fn store() -> Store {
@@ -62,7 +71,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
-             DEFINE TABLE probe;",
+             DEFINE COLLECTION probe;",
         )
         .unwrap();
     session

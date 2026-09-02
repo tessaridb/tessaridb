@@ -33,7 +33,7 @@ fn ready(store: &Store) -> Session<'_> {
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
-             DEFINE TABLE users;\n\
+             DEFINE COLLECTION users;\n\
              CREATE users:1 = { email: 'ada@example.com', city: 'Paris' };\n\
              CREATE users:2 = { email: 'grace@example.com', city: 'Paris' };\n\
              CREATE users:3 = { email: 'alan@example.com', city: 'Lyon' };",
@@ -220,6 +220,24 @@ fn a_point_read_and_a_walk_say_what_they_are() {
 }
 
 #[test]
+fn a_materialised_source_says_it_is_one() {
+    // Honest rather than complete: the inner read has a plan of its own and this
+    // report does not carry it. One structure covering both is R-2, and it
+    // belongs with the note channel rather than here — so the word says what
+    // this read did and claims nothing about what the read inside it did.
+    let store = store();
+    let mut session = ready(&store);
+    assert_eq!(
+        plan(
+            &mut session,
+            "EXPLAIN SELECT * FROM (SELECT * FROM users LIMIT 10);",
+            "access"
+        ),
+        r#"String("materialised")"#
+    );
+}
+
+#[test]
 fn it_needs_exactly_the_permission_the_read_needs() {
     // An `EXPLAIN` that named the index serving a table the caller may not read
     // would be a metadata disclosure wearing a diagnostic's clothes — and the
@@ -229,7 +247,7 @@ fn it_needs_exactly_the_permission_the_read_needs() {
     let mut session = ready(&store);
     session
         .run(
-            "DEFINE TABLE secrets;\n\
+            "DEFINE COLLECTION secrets;\n\
              CREATE secrets:1 = { held: 'x' };\n\
              DEFINE INDEX by_held ON secrets FIELDS held;\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",

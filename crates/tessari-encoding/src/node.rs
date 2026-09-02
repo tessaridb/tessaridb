@@ -144,6 +144,32 @@ impl Roles {
     ];
 }
 
+/// The version this build is, written the way a person writes one.
+///
+/// This is the whole version, **including a pre-release suffix**:
+/// `0.0.1-alpha`, where [`NodeVersion`] would say `0.0.1`. The two are not
+/// alternatives and neither replaces the other — they answer different
+/// questions, and the difference is worth stating because a single field trying
+/// to answer both is how a node comes to report a version it is not running.
+///
+/// [`NodeVersion`] is the **ordered** form. It is stored, compared and
+/// transmitted, and the question it answers is "is this older than the build
+/// that needs the migration" — which is why it is three numbers and not text.
+/// A pre-release suffix has no place in it: sorting `0.0.1-alpha` against
+/// `0.0.1` correctly would need rules that three integers do not have.
+///
+/// This constant is the **exact** form. It is never compared and never stored;
+/// it exists so that everywhere a human is told what is running — a command
+/// line, an `INFO` answer — the answer names the build and not the family it
+/// belongs to. An operator holding a pre-release wants to be able to see that
+/// they are holding one.
+///
+/// The consequence of the ordered form dropping the suffix is real and is
+/// handled by discipline rather than by machinery: **the three numbers of a
+/// pre-release are never reused by the release that follows it.** ADR-0034
+/// records why that is the trade taken here and what would reverse it.
+pub const BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Which build of the software this node last ran.
 ///
 /// # Why it is here and why it is written rather than derived
@@ -365,6 +391,52 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn the_exact_version_begins_with_the_ordered_one_and_says_more() {
+        // The relationship between the two forms, pinned. `BUILD_VERSION` may
+        // carry a suffix the ordered form drops, but it may never disagree
+        // about the three numbers themselves — a build whose command line and
+        // whose stored identity named different versions would send somebody
+        // looking for a bug in the wrong release.
+        let ordered = NodeVersion::current().to_string();
+        assert!(
+            BUILD_VERSION.starts_with(&ordered),
+            "the exact version {BUILD_VERSION} does not begin with the ordered one {ordered}"
+        );
+        let rest = BUILD_VERSION.strip_prefix(&ordered).unwrap_or_default();
+        assert!(
+            rest.is_empty() || rest.starts_with('-') || rest.starts_with('+'),
+            "the exact version {BUILD_VERSION} carries {rest:?} after the numbers, \
+             which is neither a pre-release nor build metadata"
+        );
+    }
+
+    #[test]
+    fn a_pre_release_is_visible_where_a_person_reads_it_and_invisible_where_it_is_compared() {
+        // This is the whole point of holding two forms, so it is asserted on
+        // whichever kind of build is running rather than only on a
+        // pre-release. Both branches are real: the assertion that matters flips
+        // when the suffix goes away, and a test that only held for one of them
+        // would go quiet exactly when the release it was written for shipped.
+        let ordered = NodeVersion::current().to_string();
+        if BUILD_VERSION == ordered {
+            assert!(
+                !BUILD_VERSION.contains('-'),
+                "a final release carries no pre-release suffix"
+            );
+        } else {
+            assert!(
+                BUILD_VERSION.contains('-'),
+                "{BUILD_VERSION} differs from the ordered form {ordered} \
+                 without carrying a pre-release suffix"
+            );
+            assert!(
+                !ordered.contains('-'),
+                "the ordered form {ordered} kept a suffix it cannot compare"
+            );
+        }
+    }
 
     #[test]
     fn every_role_that_can_be_written_can_be_read_back() {

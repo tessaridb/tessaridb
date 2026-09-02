@@ -123,6 +123,37 @@ fn durations_compose_and_normalise_the_way_the_value_system_stores_them() {
 }
 
 #[test]
+fn the_text_a_span_writes_reads_back_as_that_span() {
+    // The property the two crates share and neither owns: the writer is in the
+    // value crate and the reader is here, so a disagreement between them is
+    // invisible to either crate's own tests. It was real — a negative span with
+    // a remainder was written one second longer than itself, and every trip
+    // through the text added another second. `-500ms` wrote `-1s500ms`, which
+    // read back as -1.5s and wrote `-2s500ms`.
+    for source in [
+        "0s",
+        "2s",
+        "1h30m",
+        "500ms",
+        "1h30m500ms",
+        "-1s",
+        "-1h",
+        "-500ms",
+        "-1ns",
+        "-2500ms",
+    ] {
+        let Token::Duration(held) = tokens(source).first().cloned().unwrap() else {
+            panic!("expected a duration from {source}");
+        };
+        let written = held.to_literal();
+        let Token::Duration(again) = tokens(&written).first().cloned().unwrap() else {
+            panic!("expected a duration from {written}");
+        };
+        assert_eq!(held, again, "{source} was written as {written}");
+    }
+}
+
+#[test]
 fn a_duration_with_an_unknown_unit_is_refused() {
     let error = tokenize("5y").unwrap_err();
     assert!(matches!(error, Error::InvalidDuration { .. }), "{error}");

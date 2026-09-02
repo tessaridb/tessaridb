@@ -32,7 +32,11 @@ type Keyed = (Vec<Value>, RecordId, Value);
 /// unbounded sort that each carried their own comparison would be two orders
 /// that agree until somebody edits one of them, and the symptom would be a
 /// statement answering differently with a `LIMIT` than without.
-fn ranked(left: &Keyed, right: &Keyed, order: &[Ordering]) -> core::cmp::Ordering {
+fn ranked(
+    left: (&[Value], &RecordId),
+    right: (&[Value], &RecordId),
+    order: &[Ordering],
+) -> core::cmp::Ordering {
     for (position, key) in order.iter().enumerate() {
         let Some((held, other)) = left.0.get(position).zip(right.0.get(position)) else {
             continue;
@@ -46,7 +50,7 @@ fn ranked(left: &Keyed, right: &Keyed, order: &[Ordering]) -> core::cmp::Orderin
             return ordered;
         }
     }
-    left.1.cmp(&right.1)
+    left.1.cmp(right.1)
 }
 
 /// The records an order puts first, without holding the ones it does not.
@@ -118,6 +122,16 @@ pub(crate) struct Topmost<'a> {
     /// The best seen so far, plus whatever has arrived since the last
     /// compaction.
     held: Vec<Keyed>,
+    /// The record a cursor resumes after, keyed the same way the offered
+    /// records are.
+    ///
+    /// Applied here rather than to the finished answer, and that placement is
+    /// the whole point: filtering afterwards would let the bound keep the
+    /// *first* `wanted` records — the ones before the anchor — and then throw
+    /// them all away, so page two of a bounded read would come back empty. Sat
+    /// in front of the bound, the bound keeps the first `wanted` records **of
+    /// the page**, which is what was asked for.
+    anchor: Option<(Vec<Value>, RecordId)>,
 }
 
 impl<'a> Topmost<'a> {
@@ -133,13 +147,31 @@ impl<'a> Topmost<'a> {
             wanted,
             room: wanted.map(|wanted| wanted.saturating_mul(2).max(1)),
             held: Vec::new(),
+            anchor: None,
         }
+    }
+
+    /// Resume after one record: keep only what sorts strictly past it.
+    ///
+    /// The keys are the anchor's own, evaluated by the same stage that evaluates
+    /// every other record's, so the comparison is the answer's order and not an
+    /// approximation of it. An empty key list is the read that named no order,
+    /// where [`ranked`] falls through to the identity and the page resumes in
+    /// the store's own order.
+    pub(crate) fn after(&mut self, keys: Vec<Value>, id: RecordId) {
+        self.anchor = Some((keys.into_iter().map(projected).collect(), id));
     }
 
     /// Offer one record, which is kept only while it may still be in the answer.
     pub(crate) fn offer(&mut self, keys: Vec<Value>, id: RecordId, record: Value) {
-        self.held
-            .push((keys.into_iter().map(projected).collect(), id, record));
+        let keys: Vec<Value> = keys.into_iter().map(projected).collect();
+        if let Some((anchor_keys, anchor_id)) = &self.anchor
+            && ranked((&keys, &id), (anchor_keys, anchor_id), self.order)
+                != core::cmp::Ordering::Greater
+        {
+            return;
+        }
+        self.held.push((keys, id, record));
         if self.room.is_some_and(|room| self.held.len() > room) {
             self.compact();
         }
@@ -161,7 +193,8 @@ impl<'a> Topmost<'a> {
     /// them.
     fn compact(&mut self) {
         let order = self.order;
-        self.held.sort_by(|left, right| ranked(left, right, order));
+        self.held
+            .sort_by(|left, right| ranked((&left.0, &left.1), (&right.0, &right.1), order));
         if let Some(wanted) = self.wanted {
             self.held.truncate(wanted);
         }

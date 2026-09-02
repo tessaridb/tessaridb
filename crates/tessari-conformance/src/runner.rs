@@ -152,7 +152,14 @@ fn value_of(expr: &Expr) -> Option<Value> {
             .map(|field| value_of(&field.value).map(|value| (field.name.text.clone(), value)))
             .collect::<Option<_>>()
             .map(Value::Object),
-        ExprKind::Table(_) | ExprKind::Record(_) | ExprKind::Range(_) => None,
+        // A conditional and a coalesce are values only once something has
+        // decided which side wins, and deciding is evaluation. An expectation
+        // that needs evaluating is not an expectation.
+        ExprKind::If { .. }
+        | ExprKind::Coalesce(..)
+        | ExprKind::Table(_)
+        | ExprKind::Record(_)
+        | ExprKind::Range(_) => None,
         ExprKind::Get(_) | ExprKind::Select(_) => None,
         // A test is not a value, and a path needs a record to read from —
         // neither can stand where a corpus says what it expects. Nor can a
@@ -177,19 +184,29 @@ fn kind_name(error: &Error) -> &'static str {
     match error {
         Error::Script(inner) => script_kind(inner),
         Error::Store(inner) => store_kind(inner),
+        // Named for the refusal it carries, not for the wrapper. A corpus row
+        // asserts what was refused; whether the session could also say how to
+        // fix it is an improvement to the message, which is exactly what this
+        // function exists not to be sensitive to.
+        Error::UndeclaredField { refusal, .. } => store_kind(refusal),
         Error::Encoding(_) => "Encoding",
         Error::WriteWouldLeaveAHole { .. } => "WriteWouldLeaveAHole",
+        Error::FileAboveBucketCeiling { .. } => "FileAboveBucketCeiling",
         Error::NoSuchRouteToAssign { .. } => "NoSuchRouteToAssign",
         Error::NoNamespaceSelected { .. } => "NoNamespaceSelected",
         Error::NoDatabaseSelected { .. } => "NoDatabaseSelected",
         Error::Unknown { .. } => "Unknown",
         Error::NestedTransaction { .. } => "NestedTransaction",
         Error::NoOpenTransaction { .. } => "NoOpenTransaction",
+        Error::VersionInsideTransaction { .. } => "VersionInsideTransaction",
         Error::UnclosedTransaction { .. } => "UnclosedTransaction",
         Error::RecordExists { .. } => "RecordExists",
         Error::NoSuchRecord { .. } => "NoSuchRecord",
         Error::InvalidKeyBound { .. } => "InvalidKeyBound",
         Error::NotAnEdgeTable { .. } => "NotAnEdgeTable",
+        Error::EndpointsNotDeclared { .. } => "EndpointsNotDeclared",
+        Error::EndpointOutsideGraph { .. } => "EndpointOutsideGraph",
+        Error::NoHistoricalTraversal { .. } => "NoHistoricalTraversal",
         Error::EdgePropertiesNotAnObject { .. } => "EdgePropertiesNotAnObject",
         Error::ConditionNotBoolean { .. } => "ConditionNotBoolean",
         Error::NoRecordInScope { .. } => "NoRecordInScope",
@@ -198,8 +215,11 @@ fn kind_name(error: &Error) -> &'static str {
         Error::NotSignedIn { .. } => "NotSignedIn",
         Error::RoleForbids { .. } => "RoleForbids",
         Error::SignInRefused => "SignInRefused",
+        Error::SignInThrottled => "SignInThrottled",
         Error::NoSuchRole { .. } => "NoSuchRole",
         Error::NoSuchVerb { .. } => "NoSuchVerb",
+        Error::NoSuchAuthority { .. } => "NoSuchAuthority",
+        Error::CannotHandOut { .. } => "CannotHandOut",
         Error::NotGranted { .. } => "NotGranted",
         Error::GrantedUserCannotDeclare { .. } => "GrantedUserCannotDeclare",
         Error::LastGrant { .. } => "LastGrant",
@@ -209,7 +229,9 @@ fn kind_name(error: &Error) -> &'static str {
         Error::NotArithmetic { .. } => "NotArithmetic",
         Error::ArithmeticFailed { .. } => "ArithmeticFailed",
         Error::WrongArgument { .. } => "WrongArgument",
+        Error::GeometryRefused { .. } => "GeometryRefused",
         Error::CallFailed { .. } => "CallFailed",
+        Error::NotCastable { .. } => "NotCastable",
         Error::NotABucket { .. } => "NotABucket",
         Error::NotWrittenByHand { .. } => "NotWrittenByHand",
         Error::FileNeedsAPath { .. } => "FileNeedsAPath",
@@ -217,12 +239,27 @@ fn kind_name(error: &Error) -> &'static str {
         Error::FileIsIncomplete { .. } => "FileIsIncomplete",
         Error::NotWritable { .. } => "NotWritable",
         Error::ManyWritablePeers { .. } => "ManyWritablePeers",
+        Error::DuplicateMapping { .. } => "DuplicateMapping",
+        Error::MergeIsNotAnObject { .. } => "MergeIsNotAnObject",
+        Error::Thrown { .. } => "Thrown",
+        Error::JoinKeysDiffer { .. } => "JoinKeysDiffer",
+        Error::NoSuchAccessPath { .. } => "NoSuchAccessPath",
+        Error::PathNotTaken { .. } => "PathNotTaken",
+        Error::IndexNotUsed { .. } => "IndexNotUsed",
+        Error::TimedOut { .. } => "TimedOut",
+        Error::Unbounded { .. } => "Unbounded",
+        Error::UnboundedCollection { .. } => "UnboundedCollection",
+        Error::NotAlone { .. } => "NotAlone",
+        Error::AnchorGone { .. } => "AnchorGone",
+        Error::StillDepended { .. } => "StillDepended",
+        Error::TableBelongsToGraph { .. } => "TableBelongsToGraph",
         _ => "Unnamed",
     }
 }
 
 fn script_kind(error: &tessari_ql::Error) -> &'static str {
     match error {
+        tessari_ql::Error::EmptyTimeout { .. } => "EmptyTimeout",
         tessari_ql::Error::UnexpectedCharacter { .. } => "UnexpectedCharacter",
         tessari_ql::Error::UnterminatedString { .. } => "UnterminatedString",
         tessari_ql::Error::InvalidEscape { .. } => "InvalidEscape",
@@ -254,6 +291,22 @@ fn script_kind(error: &tessari_ql::Error) -> &'static str {
         tessari_ql::Error::SeveralRoutesInOneIndex { .. } => "SeveralRoutesInOneIndex",
         tessari_ql::Error::FoldInsideAFold { .. } => "FoldInsideAFold",
         tessari_ql::Error::FoldInAFilter { .. } => "FoldInAFilter",
+        tessari_ql::Error::MalformedGeometry { .. } => "MalformedGeometry",
+        tessari_ql::Error::ComputedGeometry { .. } => "ComputedGeometry",
+        tessari_ql::Error::UnboundParameter { .. } => "UnboundParameter",
+        tessari_ql::Error::BoundTwice { .. } => "BoundTwice",
+        tessari_ql::Error::BindingCollidesWithParameter { .. } => "BindingCollidesWithParameter",
+        tessari_ql::Error::ReturnedTwice { .. } => "ReturnedTwice",
+        tessari_ql::Error::CursorBesideAnOffset { .. } => "CursorBesideAnOffset",
+        tessari_ql::Error::CursorBesideAReshaping { .. } => "CursorBesideAReshaping",
+        tessari_ql::Error::AnchorFromAnotherTable { .. } => "AnchorFromAnotherTable",
+        tessari_ql::Error::InsertRowArity { .. } => "InsertRowArity",
+        tessari_ql::Error::TableWithoutColumns { .. } => "TableWithoutColumns",
+        tessari_ql::Error::DepthNeedsOneHopToATable { .. } => "DepthNeedsOneHopToATable",
+        tessari_ql::Error::DepthBelowOne { .. } => "DepthBelowOne",
+        tessari_ql::Error::VectorWidthBelowOne { .. } => "VectorWidthBelowOne",
+        tessari_ql::Error::VectorWidthAboveTheCeiling { .. } => "VectorWidthAboveTheCeiling",
+        tessari_ql::Error::EffortBelowOne { .. } => "EffortBelowOne",
         _ => "Unnamed",
     }
 }
@@ -267,9 +320,12 @@ fn store_kind(error: &tessari_storage::Error) -> &'static str {
         tessari_storage::Error::UniqueViolation { .. } => "UniqueViolation",
         tessari_storage::Error::SchemaViolation { .. } => "SchemaViolation",
         tessari_storage::Error::UndeclaredField { .. } => "UndeclaredField",
+        tessari_storage::Error::RecordsRefused { .. } => "RecordsRefused",
         tessari_storage::Error::MissingRequiredField { .. } => "MissingRequiredField",
         tessari_storage::Error::AssertionViolation { .. } => "AssertionViolation",
         tessari_storage::Error::NoSuchParent { .. } => "NoSuchParent",
+        tessari_storage::Error::VersionReclaimed { .. } => "VersionReclaimed",
+        tessari_storage::Error::VersionInTheFuture { .. } => "VersionInTheFuture",
         _ => "Unnamed",
     }
 }

@@ -12,16 +12,20 @@
 //!   back. This catches the language doing the wrong thing.
 //! - **The coverage ratchet** ([`coverage`]) fails when a statement form has no
 //!   case. This catches the language growing a statement nobody proved.
-//! - **The document extractor** (in `tests/`) parses every fenced example in
+//! - **The document extractor** ([`document`]) parses every fenced example in
 //!   `docs/tessariql.md` itself. This catches the document and the parser drifting
-//!   apart, which is silent in both directions.
+//!   apart, which is silent in both directions, and it is what the documentation
+//!   ratchet in `tests/documented.rs` reads to ask the other question: whether
+//!   the document names every kind, function and form the engine has.
 
 #![forbid(unsafe_code)]
 
 pub mod case;
 pub mod coverage;
+pub mod document;
 pub mod runner;
 
 pub use case::{Case, Corpus, Expectation, MalformedCorpus, read};
 pub use coverage::{FORMS, form_name, forms_in, uncovered};
+pub use document::{examples, fenced_blocks, specification, specification_path, split_statements};
 pub use runner::{CaseResult, run};

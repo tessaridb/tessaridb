@@ -1,0 +1,225 @@
+# Managing a schema: every catalog object either goes away by a statement, or
+# says why it does not.
+#
+# Before this wave the language could declare twelve kinds of thing and undeclare
+# six of them. That asymmetry is not a missing-feature list — it is a store you
+# can get into a state you cannot get out of, and the way out was editing the
+# catalog by hand.
+#
+# Two rules are being fixed here, and both are inherited rather than invented.
+#
+# **A drop refuses while something still points at it.** `DELETE FROM t WHERE c`
+# had to grow a `LIMIT` because a predicate wrong by one character emptied a
+# table; `DROP DATABASE` is that statement with no predicate at all. So it
+# refuses while anything is inside, counts what it found, and names the first —
+# and there is deliberately no `CASCADE`, because `CASCADE` is the unbounded form
+# under another spelling.
+#
+# **A drop removes its own definition and nothing beneath it.** `DROP TABLE`
+# already left the records alone, on the ground that bulk work hidden inside a
+# catalog call is bulk work nobody costed. A namespace and a database take the
+# same stance one and two levels up.
+#
+# One object is declined rather than delivered: `DROP NODE`. `DEFINE NODE` writes
+# this process's own configuration outside the transaction, so its inverse is an
+# edit to a config file, and a store that let one node undeclare another's
+# identity over the wire would be answering a question nobody asked it. The
+# refusal says so and points at `DROP REPLICA`, which is the statement that
+# actually stops counting an endpoint as a peer.
+#
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+--- expect: ok
+
+# ---------------------------------------------------------------- DROP BUCKET
+
+--- case: a bucket is declared
+DEFINE BUCKET media;
+--- expect: ok
+
+--- case: a bucket is undeclared by the word it was declared with
+# A bucket is a table row carrying `bucket: true`, so this and `DROP TABLE`
+# undefine the same catalog entry. The word exists because a reader who wrote
+# `DEFINE BUCKET` should not have to know that.
+DROP BUCKET media;
+--- expect: ok
+
+--- case: and it is gone
+DEFINE BUCKET media;
+--- expect: ok
+
+--- case: dropping it as a table works too, because it is one
+DROP TABLE media;
+--- expect: ok
+
+# -------------------------------------------------------------- DROP ANALYZER
+
+--- case: an analyzer is declared
+DEFINE ANALYZER simple FILTERS lowercase;
+--- expect: ok
+
+--- case: an analyzer nothing names goes away
+DROP ANALYZER simple;
+--- expect: ok
+
+--- case: dropping one that was never declared is refused
+DROP ANALYZER simple;
+--- expect: error Unknown
+
+--- case: a field is attached to an analyzer
+DEFINE ANALYZER simple FILTERS lowercase;
+DEFINE TABLE posts SCHEMALESS;
+DEFINE FIELD body ON posts TYPE string ANALYZER simple;
+--- expect: ok
+
+--- case: and now the analyzer refuses to go
+# The attachment is by NAME — nothing in the catalog enforces it — so removing
+# the analyzer would leave `posts.body` pointing at a name that no longer
+# resolves, and the symptom is a search that quietly stops matching. That is a
+# wrong answer indistinguishable from a right one, which is the class of failure
+# this store refuses rather than reports.
+DROP ANALYZER simple;
+--- expect: error StillDepended
+
+--- case: remove the field and the analyzer goes
+DROP FIELD body ON posts;
+DROP ANALYZER simple;
+--- expect: ok
+
+# --------------------------------------------------------------- ALTER TABLE
+
+--- case: a schemaless table takes a field nobody declared
+DEFINE TABLE notes SCHEMALESS;
+CREATE notes:1 = { title: 'first', extra: 'whatever' };
+--- expect: ok
+
+--- case: it refuses to become schemafull while a stored row does not fit
+# `notes:1` carries `extra`, which nothing declares. Refusing is the same stance
+# `DEFINE FIELD` takes over data that already violates it: a constraint that can
+# be declared over rows breaking it is a comment. The flag is not written.
+DEFINE FIELD title ON notes TYPE string;
+ALTER TABLE notes SET SCHEMAFULL;
+--- expect: error UndeclaredField
+
+--- case: it is still schemaless, so the undeclared field still writes
+CREATE notes:9 = { title: 'ninth', extra: 'still fine' };
+--- expect: ok
+
+--- case: declare the field the rows carry, and now it becomes schemafull
+DEFINE FIELD extra ON notes TYPE string;
+ALTER TABLE notes SET SCHEMAFULL;
+--- expect: ok
+
+--- case: and now a field beyond the declared ones is refused
+CREATE notes:2 = { title: 'second', extra: 'ok', beyond: 'no' };
+--- expect: error UndeclaredField
+
+--- case: the declared field alone is accepted
+CREATE notes:3 = { title: 'third' };
+--- expect: ok
+
+--- case: the rows that predate the change are untouched, because they fit
+# Nothing was rewritten to make them fit — the alter was refused until they did.
+RETURN (SELECT extra FROM notes WHERE title = 'first') = [{ extra: 'whatever' }];
+--- expect: value true
+
+--- case: going back is never refused, because it only widens
+ALTER TABLE notes SET SCHEMALESS;
+CREATE notes:4 = { title: 'fourth', extra: 'again' };
+--- expect: ok
+
+--- case: altering a table that does not exist is refused
+ALTER TABLE nothing SET SCHEMAFULL;
+--- expect: error Unknown
+
+# ------------------------------ ALTER TABLE ADD / ALTER / DROP FIELD
+
+--- case: a field is added by the columnar spelling
+DEFINE COLLECTION people;
+ALTER TABLE people ADD FIELD name TYPE string;
+CREATE people:1 = { name: 'ada' };
+--- expect: ok
+
+--- case: adding one that is already there is refused, as `DEFINE FIELD` would be
+ALTER TABLE people ADD FIELD name TYPE string;
+--- expect: error NameTaken
+
+--- case: a field is altered, which a second declaration cannot do
+# `ALTER FIELD` drops and redeclares in one commit. `ADD FIELD` twice is refused
+# above precisely because the catalog reserves the name — that is the difference
+# between the two verbs, rather than a preference about which reads better.
+ALTER TABLE people ALTER FIELD name TYPE string REQUIRED;
+--- expect: ok
+
+--- case: and the new declaration binds — the field is now required
+CREATE people:2 = { };
+--- expect: error MissingRequiredField
+
+--- case: altering to a type the stored rows do not satisfy is refused
+# The drop and the declaration are one commit, so the rows answer for the NEW
+# declaration. Nothing is written: neither the removal nor the replacement.
+ALTER TABLE people ALTER FIELD name TYPE int;
+--- expect: error SchemaViolation
+
+--- case: and the field is still there, still a string, still required
+CREATE people:3 = { name: 'grace' };
+--- expect: ok
+
+--- case: a field is removed by the columnar spelling
+ALTER TABLE people DROP FIELD name;
+CREATE people:4 = { name: 42 };
+--- expect: ok
+
+# ------------------------------------------------------------- DROP DATABASE
+
+--- case: a database still holding a table refuses to go
+DROP DATABASE shop;
+--- expect: error StillDepended
+
+--- case: an empty database goes
+DEFINE DATABASE spare;
+DROP DATABASE spare;
+--- expect: ok
+
+--- case: dropping a database that was never defined is refused
+USE DATABASE shop;
+DROP DATABASE ghost;
+--- expect: error Unknown
+
+# ------------------------------------------------------------ DROP NAMESPACE
+
+--- case: a namespace still holding a database refuses to go
+DROP NAMESPACE prod;
+--- expect: error StillDepended
+
+--- case: an empty namespace goes
+DEFINE NAMESPACE spare;
+DROP NAMESPACE spare;
+--- expect: ok
+
+--- case: dropping a namespace that was never defined is refused
+DROP NAMESPACE ghost;
+--- expect: error Unknown
+
+# -------------------------------------------------- DROP REPLICA, and no NODE
+
+--- case: a peer is declared and undeclared
+DEFINE REPLICA warsaw AT 'warsaw:9001';
+DROP REPLICA warsaw;
+--- expect: ok
+
+--- case: dropping a peer that was never declared is refused
+DROP REPLICA warsaw;
+--- expect: error Unknown
+
+--- case: a node is not undeclared by a statement, and the refusal says so
+# Declined, not missing. The message names the configuration as the place to
+# change and `DROP REPLICA` as the statement that does the related job, so a
+# reader who guessed `DROP NODE` is not left guessing twice.
+DROP NODE second;
+--- expect: error UnexpectedToken

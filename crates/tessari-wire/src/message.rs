@@ -194,18 +194,59 @@ mod tag {
 #[cfg(feature = "server")]
 #[must_use]
 pub fn encode_outcome(outcome: &Outcome, names: &Names) -> Vec<u8> {
+    let inner = encode_outcome_body(outcome, names);
+    // The length in front is what makes an unknown outcome survivable: a client
+    // that does not recognise the tag reads the length, yields `Unknown`, steps
+    // over the rest and carries on with the next outcome. Without it a newer
+    // node introducing an outcome kind anywhere in an answer breaks every older
+    // client, because the reader has no way to find where the next one starts.
+    let mut body = Vec::with_capacity(inner.len().saturating_add(4));
+    put_u32(&mut body, u32::try_from(inner.len()).unwrap_or(u32::MAX));
+    body.extend_from_slice(&inner);
+    body
+}
+
+/// The outcome itself, from its tag onward — everything the length counts.
+#[cfg(feature = "server")]
+fn encode_outcome_body(outcome: &Outcome, names: &Names) -> Vec<u8> {
     let mut body = Vec::new();
     match outcome {
         Outcome::Done => body.push(tag::DONE),
-        Outcome::Records { records, path } => {
+        // The notes go **last**, after the records, and that placement is the
+        // whole of their compatibility story. An outcome is length-prefixed and
+        // the reader advances by the declared length rather than by what it
+        // consumed, so bytes appended at the end are bytes an older client steps
+        // over — the same mechanism that lets it survive an outcome tag it has
+        // never heard of. Put anywhere else they would shift the offsets of
+        // fields an older client does know how to read.
+        Outcome::Records {
+            records,
+            plan,
+            notes,
+            only,
+        } => {
             body.push(tag::RECORDS);
-            body.push(path_tag(*path));
+            body.push(path_tag(plan.access));
             put_names(&mut body, names);
             put_u32(&mut body, u32::try_from(records.len()).unwrap_or(u32::MAX));
             for (id, value) in records {
-                put_text(&mut body, &id.to_string());
+                put_text(&mut body, &spell(id));
                 put_bytes(&mut body, encode_payload(value).as_slice());
             }
+            // A kind and a rendered message rather than the typed note. `Answer`
+            // is deliberately not `Outcome` — a record id on this wire is text
+            // too — and a client's two uses are to group by the kind and to show
+            // the message, both of which the store already writes.
+            put_u32(&mut body, u32::try_from(notes.len()).unwrap_or(u32::MAX));
+            for note in notes {
+                put_text(&mut body, note.kind());
+                put_text(&mut body, &note.message());
+            }
+            // After the notes, for the reason the notes are after the records:
+            // a client that stops before it reads `false`, which is the truth
+            // about every read written by somebody who has never heard of
+            // `ONLY`.
+            body.push(u8::from(*only));
         }
         Outcome::Value(held) => {
             body.push(tag::VALUE);
@@ -216,7 +257,7 @@ pub fn encode_outcome(outcome: &Outcome, names: &Names) -> Vec<u8> {
             body.push(tag::KEYS);
             put_u32(&mut body, u32::try_from(keys.len()).unwrap_or(u32::MAX));
             for key in keys {
-                put_text(&mut body, &key.to_string());
+                put_text(&mut body, &spell(key));
             }
         }
         Outcome::Removed { count } => {
@@ -246,6 +287,18 @@ pub enum Answer {
         path: String,
         /// What the tables these records reference are called.
         names: Names,
+        /// What the store did that the records alone do not show.
+        ///
+        /// Empty for almost every read, and empty too when the node answering
+        /// is older than this client — a body that ends before the notes is a
+        /// node that had none to send, not a malformed one.
+        notes: Vec<Remark>,
+        /// Whether the read said `ONLY`, so `records` holds the one record the
+        /// caller asked about rather than a list to unwrap.
+        ///
+        /// `false` from a node older than this client, which is what every read
+        /// such a node serves actually is.
+        only: bool,
     },
     /// One value, and the names of the tables it references.
     Value {
@@ -262,14 +315,39 @@ pub enum Answer {
     Unknown,
 }
 
+/// One thing the store said about how it answered.
+///
+/// A kind and a message rather than the store's typed note, because a client's
+/// two uses are to group by the first and show the second, and a typed note
+/// would put the store's whole note vocabulary in every client's build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remark {
+    /// A short stable name, for grouping and filtering.
+    pub kind: String,
+    /// The note in the words a reader would want it in.
+    pub message: String,
+}
+
 /// Read one outcome back, and how much of the buffer it used.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Malformed`] when the body does not hold what it claims.
 pub fn decode_outcome(body: &[u8], at: usize) -> Result<(Answer, usize)> {
-    let tag = body.get(at).copied().ok_or(Error::Malformed)?;
-    let mut at = at.saturating_add(1);
+    let (length, start) = take_u32(body, at)?;
+    let length = usize::try_from(length).map_err(|_| Error::Malformed)?;
+    let end = start.checked_add(length).ok_or(Error::Malformed)?;
+    let inner = body.get(start..end).ok_or(Error::Malformed)?;
+    // The next outcome begins where the length said it would, whatever the
+    // decode below consumed. That is the whole point of the length: an outcome
+    // this build has no name for costs it the bytes and not the connection.
+    Ok((decode_outcome_body(inner)?, end))
+}
+
+/// One outcome, from its tag onward, in exactly the bytes its length claimed.
+fn decode_outcome_body(body: &[u8]) -> Result<Answer> {
+    let tag = body.first().copied().ok_or(Error::Malformed)?;
+    let mut at = 1_usize;
     let answer = match tag {
         tag::DONE => Answer::Done,
         tag::RECORDS => {
@@ -286,10 +364,33 @@ pub fn decode_outcome(body: &[u8], at: usize) -> Result<(Answer, usize)> {
                 at = next;
                 records.push((id, decode_payload(&bytes)?));
             }
+            // Only if there are bytes left. A node older than this build sends
+            // a body that ends here, and that is a node with nothing to say
+            // rather than a short read — the one direction the length prefix
+            // does not cover on its own.
+            let notes = if at < body.len() {
+                let (count, next) = take_u32(body, at)?;
+                at = next;
+                let mut notes = Vec::new();
+                for _ in 0..count {
+                    let (kind, next) = take_text(body, at)?;
+                    let (message, next) = take_text(body, next)?;
+                    at = next;
+                    notes.push(Remark { kind, message });
+                }
+                notes
+            } else {
+                Vec::new()
+            };
+            // Same rule one field further along: absent means `false`, which is
+            // what an older node's every read was.
+            let only = body.get(at).copied().unwrap_or(0) != 0;
             Answer::Records {
                 records,
                 path,
                 names,
+                notes,
+                only,
             }
         }
         tag::VALUE => {
@@ -322,7 +423,11 @@ pub fn decode_outcome(body: &[u8], at: usize) -> Result<(Answer, usize)> {
         }
         _ => Answer::Unknown,
     };
-    Ok((answer, at))
+    // `at` has done its work inside this outcome; the caller advances by the
+    // declared length instead, so a short read here cannot desynchronise the
+    // stream.
+    let _ = at;
+    Ok(answer)
 }
 
 /// The names, as a count and that many pairs.
@@ -356,6 +461,10 @@ const fn path_tag(path: AccessPath) -> u8 {
         AccessPath::Index => 1,
         AccessPath::Scan => 2,
         AccessPath::Ordered => 3,
+        AccessPath::Approximate => 4,
+        AccessPath::Graph => 5,
+        AccessPath::Join => 6,
+        AccessPath::Materialised => 7,
     }
 }
 
@@ -368,6 +477,10 @@ const fn path_name(tag: u8) -> &'static str {
         0 => "record",
         1 => "index",
         3 => "ordered",
+        4 => "approximate",
+        5 => "graph",
+        6 => "join",
+        7 => "materialised",
         _ => "scan",
     }
 }
@@ -377,9 +490,20 @@ const fn path_name(tag: u8) -> &'static str {
 /// Kept as the store spells it rather than re-parsed, because a client that
 /// wants to name a record writes that text into its next script — and a second
 /// reading of a record id is a second place for the two to disagree.
+///
+/// The spelling is the language's, which is what makes the sentence above true:
+/// this returned `Display` until the wave that measured it, and `Display` writes
+/// a UUID as thirty-two undivided digits and a text identity unquoted, neither
+/// of which stands where the grammar puts an identity. A client following the
+/// protocol to the letter got back text that its next script could not read.
+///
+/// Every place that puts an identity on this wire calls this. It returned the
+/// wrong form partly because nothing called it at all — the encoder stringified
+/// the id itself, so the one function documenting the promise was not the one
+/// keeping it.
 #[must_use]
 pub fn spell(id: &RecordId) -> String {
-    id.to_string()
+    id.to_literal()
 }
 
 // The node's encoding half is what these exercise — `encode_outcome`, the
@@ -388,10 +512,10 @@ pub fn spell(id: &RecordId) -> String {
 mod tests {
     #![allow(clippy::panic)]
 
-    use tessari_session::{AccessPath, Outcome, Parameters};
+    use tessari_session::{AccessPath, Outcome, Parameters, Plan};
     use tessari_types::{Number, RecordId, RecordRef, TableId, Value};
 
-    use super::{Answer, Names, Request, decode_outcome, encode_outcome};
+    use super::{Answer, Names, Remark, Request, decode_outcome, encode_outcome};
 
     /// No answer below carries a reference, so none of them needs a name.
     fn unnamed() -> Names {
@@ -453,7 +577,9 @@ mod tests {
             Outcome::Removed { count: 12_043 },
             Outcome::Records {
                 records: vec![(RecordId::Int(7), Value::from("ada"))],
-                path: AccessPath::Index,
+                plan: Plan::new(AccessPath::Index),
+                notes: Vec::new(),
+                only: false,
             },
         ];
         for outcome in &outcomes {
@@ -503,7 +629,9 @@ mod tests {
                 RecordId::Int(1),
                 Value::Record(RecordRef::new(table, RecordId::Int(7))),
             )],
-            path: AccessPath::Record,
+            plan: Plan::new(AccessPath::Record),
+            notes: Vec::new(),
+            only: false,
         };
         let (answer, used) = decode_outcome(&encode_outcome(&held, &names), 0).expect("an answer");
         assert_eq!(used, encode_outcome(&held, &names).len());
@@ -538,5 +666,136 @@ mod tests {
             }
         );
         assert_eq!(at, body.len());
+    }
+
+    /// One read that has something to say, for the compatibility tests below.
+    fn noted() -> Outcome {
+        Outcome::Records {
+            records: vec![(RecordId::Int(7), Value::from("ada"))],
+            plan: Plan::new(AccessPath::Scan),
+            notes: vec![tessari_session::Note::Approximate],
+            only: false,
+        }
+    }
+
+    #[test]
+    fn a_note_survives_the_wire() {
+        let body = encode_outcome(&noted(), &unnamed());
+        let (answer, used) = decode_outcome(&body, 0).expect("an answer");
+        assert_eq!(used, body.len());
+        let Answer::Records { notes, records, .. } = answer else {
+            panic!("not records")
+        };
+        // The records are still there, which is the half a note must never cost.
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            notes,
+            vec![Remark {
+                kind: "approximate".to_owned(),
+                message: "an approximate index answered this, so a nearer record may exist"
+                    .to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_newer_node_does_not_break_an_older_client() {
+        // The older client is modelled by its behaviour rather than by an old
+        // build: it reads the fields it knows and then advances by the *declared
+        // length*, which is what `decode_outcome` returns. A body carrying notes
+        // it never heard of costs it those bytes and not the connection.
+        let plain = encode_outcome(
+            &Outcome::Records {
+                records: vec![(RecordId::Int(7), Value::from("ada"))],
+                plan: Plan::new(AccessPath::Scan),
+                notes: Vec::new(),
+                only: false,
+            },
+            &unnamed(),
+        );
+        let noted = encode_outcome(&noted(), &unnamed());
+        assert!(noted.len() > plain.len(), "the notes were not encoded");
+        // Two outcomes back to back: the second is found only if the first's
+        // extra bytes were stepped over correctly, which is the property an
+        // appended field actually needs.
+        let mut stream = noted.clone();
+        stream.extend_from_slice(&plain);
+        let (_, after) = decode_outcome(&stream, 0).expect("the first");
+        assert_eq!(after, noted.len(), "the notes desynchronised the stream");
+        let (second, end) = decode_outcome(&stream, after).expect("the second");
+        assert_eq!(end, stream.len());
+        assert!(matches!(second, Answer::Records { .. }));
+    }
+
+    #[test]
+    fn an_older_node_does_not_break_a_newer_client() {
+        // The direction the length prefix does *not* cover on its own. An older
+        // node sends a body that simply ends after the records, and this build
+        // must read that as a node with nothing to say rather than as a short
+        // read.
+        let full = encode_outcome(
+            &Outcome::Records {
+                records: vec![(RecordId::Int(7), Value::from("ada"))],
+                plan: Plan::new(AccessPath::Scan),
+                notes: Vec::new(),
+                only: false,
+            },
+            &unnamed(),
+        );
+        // Drop the tail the current encoder writes — the note count and the
+        // `ONLY` flag, five bytes — and shrink the declared length to match,
+        // which is exactly the body an older node would have produced. The
+        // count is written from the constants rather than as a literal, so the
+        // next field appended here fails to compile instead of quietly making
+        // this test assert about the wrong byte.
+        const NOTE_COUNT: usize = 4;
+        const ONLY_FLAG: usize = 1;
+        let inner = &full[4..full.len() - NOTE_COUNT - ONLY_FLAG];
+        let mut older = Vec::new();
+        older.extend_from_slice(&u32::try_from(inner.len()).expect("small").to_be_bytes());
+        older.extend_from_slice(inner);
+        let (answer, used) = decode_outcome(&older, 0).expect("an older answer");
+        assert_eq!(used, older.len());
+        let Answer::Records {
+            notes,
+            records,
+            only,
+            ..
+        } = answer
+        else {
+            panic!("not records")
+        };
+        assert_eq!(records.len(), 1, "an older body lost its records");
+        assert!(notes.is_empty(), "notes appeared from nowhere");
+        assert!(!only, "a body that ends early claimed to be an `ONLY` read");
+    }
+
+    #[test]
+    fn the_only_flag_survives_the_wire_and_does_not_desynchronise_a_stream() {
+        let alone = encode_outcome(
+            &Outcome::Records {
+                records: vec![(RecordId::Int(7), Value::from("ada"))],
+                plan: Plan::new(AccessPath::Record),
+                notes: Vec::new(),
+                only: true,
+            },
+            &unnamed(),
+        );
+        let (answer, used) = decode_outcome(&alone, 0).expect("an answer");
+        assert_eq!(used, alone.len(), "the flag left bytes unread");
+        assert!(
+            matches!(answer, Answer::Records { only: true, .. }),
+            "the flag did not survive"
+        );
+        // Back to back with a second outcome, which is the property an appended
+        // field actually needs: the second is found only if the first's flag was
+        // stepped over.
+        let mut stream = alone.clone();
+        stream.extend_from_slice(&alone);
+        let (_, after) = decode_outcome(&stream, 0).expect("the first");
+        assert_eq!(after, alone.len(), "the flag desynchronised the stream");
+        let (second, end) = decode_outcome(&stream, after).expect("the second");
+        assert_eq!(end, stream.len());
+        assert!(matches!(second, Answer::Records { only: true, .. }));
     }
 }

@@ -92,7 +92,7 @@ fn two_nodes() -> (Arc<Db>, String, Arc<Db>, String, Arc<Node>, Arc<Node>) {
         .session()
         .run(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
-             USE DATABASE orders; DEFINE TABLE users; \
+             USE DATABASE orders; DEFINE COLLECTION users; \
              CREATE users:1 = {{ name: 'ada' }}; \
              DEFINE REPLICA first AT '{leader_address}' ROLES serving, writable;"
         ))
@@ -173,7 +173,7 @@ fn read_only_with_no_peer() -> (Arc<Db>, String, Arc<Node>) {
         .session()
         .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
-             USE DATABASE orders; DEFINE TABLE users; \
+             USE DATABASE orders; DEFINE COLLECTION users; \
              CREATE users:1 = { name: 'ada' }; DEFINE NODE ROLES serving;",
         )
         .unwrap();

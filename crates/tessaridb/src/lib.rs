@@ -15,7 +15,7 @@
 //!      USE NAMESPACE prod;
 //!      DEFINE DATABASE orders;
 //!      USE DATABASE orders;
-//!      DEFINE TABLE users;
+//!      DEFINE COLLECTION users;
 //!      CREATE users:1 = { name: 'ada' };",
 //! )?;
 //!
@@ -85,11 +85,12 @@ pub mod feed;
 
 pub use tessari_lsm::{Durability, StoreConfig};
 pub use tessari_session::redact::{Visible, seen};
-pub use tessari_session::{AccessPath, Error, Outcome, Parameters, Result, Session};
-pub use tessari_storage::{Change, ChangeKind, Changes, Subscription, Watch};
+pub use tessari_session::{AccessPath, Error, Note, Outcome, Parameters, Result, Session, Ticket};
+pub use tessari_storage::{BUILD_VERSION, Change, ChangeKind, Changes, Subscription, Watch};
 pub use tessari_types::{
     DatabaseId, Datetime, Duration, FieldKind, Geometry, NamespaceId, Number, Path as FieldPath,
-    Polygon, Position, RecordId, RecordRef, Ring, Sequence, Step, TableId, Value,
+    Polygon, Position, RecordId, RecordRef, Ring, Sequence, Step, TableId, Value, from_geojson,
+    geojson_name, to_geojson,
 };
 
 /// Every table an answer's references point at.

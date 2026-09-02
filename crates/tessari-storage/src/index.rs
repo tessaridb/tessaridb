@@ -69,15 +69,18 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use tessari_constants::SPATIAL_INDEX_CELLS_PER_RECORD;
 use tessari_encoding::{
-    IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, NoPayload, PostingKey,
-    RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, StoreKey, StoreValue,
-    UniqueIndexKey, decode_payload,
+    IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, NoPayload, Posting,
+    PostingKey, RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey,
+    SpatialExtent, SpatialIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
 };
+use tessari_geo::{Bounds, Cell, Shape};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{Analyzer, RecordId, TableId, Value};
 
 use crate::catalog::{Catalog, IndexDefinition, defined_index};
+use crate::covering;
 use crate::error::{Error, Result};
 use crate::graph;
 use crate::store::Store;
@@ -253,7 +256,32 @@ fn build(
             };
             written.extend(graph.insert(id, held));
         }
-        return Ok(graph::write(batch, &address, &written));
+        // Measured here and nowhere else: this is the one place the whole graph
+        // and every stored vector are in hand at once, and it is reached by
+        // applying a log record, so every replica computes the same figure.
+        let batch = graph::write(batch, &address, &written);
+        return Ok(graph::measure(batch, &address, &graph));
+    }
+
+    if definition.spatial {
+        // Measured here and nowhere else, for the reason the vector branch above
+        // states: this is the one place every geometry and its covering are in
+        // hand at once, and it is reached by applying a log record, so every
+        // replica computes the same figure. A figure accumulated from real reads
+        // would differ per replica by construction.
+        let mut placed = Vec::with_capacity(rows.len());
+        for (id, payload) in &rows {
+            let held = decode_payload(payload)?;
+            if let Some((bounds, cells)) = covering_of(definition, &held) {
+                batch = place_cells(batch, &address, id, bounds, &cells);
+                placed.push(covering::Placed {
+                    id: id.clone(),
+                    bounds,
+                    cells,
+                });
+            }
+        }
+        return Ok(covering::measure(batch, &address, &placed));
     }
 
     if definition.search {
@@ -263,11 +291,12 @@ fn build(
         for (id, payload) in &rows {
             let analysed = terms_of(definition, analyzer, &decode_payload(payload)?);
             counted.added(analysed.tokens);
-            for term in analysed.postings {
+            let length = analysed.length();
+            for (term, frequency) in analysed.postings {
                 batch = batch.put(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, id.clone()).encode(),
-                    NoPayload.encode(),
+                    Posting::Counted { frequency, length }.encode(),
                 );
             }
         }
@@ -303,9 +332,15 @@ fn build(
 /// records that have gone, a posting for text nobody stores any more, an entry
 /// under a value the record no longer holds.
 ///
-/// All five index key kinds, because a rebuild has to be safe on any index a
+/// All eight index key kinds, because a rebuild has to be safe on any index a
 /// caller may name, and an index whose shape changed is not a case this store
 /// wants to reason about one kind at a time.
+///
+/// The measurements are cleared with the entries for a reason worth stating: a
+/// recall or a refinement figure left behind would describe a graph or a
+/// covering that no longer exists, which is exactly the stale number the
+/// measurements were introduced to prevent, arriving from inside. Neither fails
+/// a test until somebody reads it.
 fn clear(store: &Store, mut batch: WriteBatch, address: &IndexAddress) -> Result<WriteBatch> {
     for kind in [
         KeyKind::SecondaryIndex,
@@ -313,6 +348,9 @@ fn clear(store: &Store, mut batch: WriteBatch, address: &IndexAddress) -> Result
         KeyKind::Posting,
         KeyKind::VectorNode,
         KeyKind::SearchStatistics,
+        KeyKind::SpatialIndex,
+        KeyKind::VectorRecall,
+        KeyKind::SpatialRefinement,
     ] {
         let keyspace = kind.keyspace();
         let prefix = address.prefix(kind);
@@ -369,6 +407,34 @@ fn apply_one(
         return Ok(batch);
     }
 
+    if definition.spatial {
+        // Both sides enumerate with the same function, so a record that kept its
+        // geometry writes back exactly the keys it already had and a record that
+        // changed it leaves none behind. Reasoning about *what moved* instead is
+        // where an orphan cell would come from — and an orphan here is a record
+        // answering a box it is no longer inside, which no reader would question
+        // because the answer is geographically plausible.
+        if let Some(bytes) = previous {
+            batch = displace(
+                batch,
+                &address,
+                &mutation.id,
+                &decode_payload(bytes)?,
+                definition,
+            );
+        }
+        if let RecordValue::Present(payload) = &mutation.value {
+            batch = place(
+                batch,
+                &address,
+                &mutation.id,
+                &decode_payload(payload)?,
+                definition,
+            );
+        }
+        return Ok(batch);
+    }
+
     if definition.search {
         let analyzer = search_analyzer(definition, analyzers);
         let counted = pending.moved.entry(address).or_default();
@@ -379,7 +445,7 @@ fn apply_one(
         if let Some(bytes) = previous {
             let analysed = terms_of(definition, analyzer, &decode_payload(bytes)?);
             counted.removed(analysed.tokens);
-            for term in analysed.postings {
+            for (term, _) in analysed.postings {
                 batch = batch.delete(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, mutation.id.clone()).encode(),
@@ -389,11 +455,12 @@ fn apply_one(
         if let RecordValue::Present(payload) = &mutation.value {
             let analysed = terms_of(definition, analyzer, &decode_payload(payload)?);
             counted.added(analysed.tokens);
-            for term in analysed.postings {
+            let length = analysed.length();
+            for (term, frequency) in analysed.postings {
                 batch = batch.put(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, mutation.id.clone()).encode(),
-                    NoPayload.encode(),
+                    Posting::Counted { frequency, length }.encode(),
                 );
             }
         }
@@ -532,13 +599,129 @@ fn search_analyzer<'a>(
 /// the shape of drift that gets noticed as a ranking that is subtly wrong.
 #[derive(Debug, Default)]
 struct Analysed {
-    /// One entry per **distinct** term: a word twice in one document is one
-    /// posting, because the question a posting answers is membership and a
-    /// duplicate key would be written twice to say the same thing.
-    postings: Vec<IndexValues>,
+    /// One entry per **distinct** term, with the number of times it occurs.
+    ///
+    /// Still one posting per distinct term — a duplicate key would be written
+    /// twice to say the same thing — but the count is no longer discarded on the
+    /// way there. It is what a relevance score means by *how often*, and it can
+    /// only be taken here, from the same analyzer pass that produced the terms.
+    postings: Vec<(IndexValues, u32)>,
     /// How many tokens the text holds, **with** repeats — this is a length, and
     /// a length that collapsed repeats would not be one.
     tokens: u64,
+}
+
+impl Analysed {
+    /// The record's length as a posting states it.
+    ///
+    /// Narrowed rather than cast: a document of more than four billion tokens
+    /// saturates, and a saturated length makes a score slightly wrong for one
+    /// absurd record where a wrapped one would make it wrong by an arbitrary
+    /// amount for that record and correct-looking for every other.
+    fn length(&self) -> u32 {
+        u32::try_from(self.tokens).unwrap_or(u32::MAX)
+    }
+}
+
+/// Every cell of one record's geometry, written into `batch`.
+///
+/// The record's bounding box travels in each entry's value, and it is computed
+/// **here** — inside the batch that carries the record's own mutation, by the
+/// writer, once. Nothing else may compute it: a box maintained by a background
+/// job or recomputed by a reader can lag the geometry it describes, and a stale
+/// box excludes rows that should have matched with nothing raised anywhere. That
+/// is the one failure direction a spatial filter must not have, and keeping the
+/// computation on this path is the whole of the defence.
+fn place(
+    batch: WriteBatch,
+    address: &IndexAddress,
+    id: &RecordId,
+    value: &Value,
+    definition: &IndexDefinition,
+) -> WriteBatch {
+    let Some((bounds, cells)) = covering_of(definition, value) else {
+        return batch;
+    };
+    place_cells(batch, address, id, bounds, &cells)
+}
+
+/// The write half of [`place`], for a caller that already holds the covering.
+///
+/// Split out so a build can write the entries and measure them from **one**
+/// computed covering rather than two. Computing it twice would cost a second
+/// pass and, worse, would let the entries and the figure describing them be
+/// derived from separately-computed cells.
+fn place_cells(
+    mut batch: WriteBatch,
+    address: &IndexAddress,
+    id: &RecordId,
+    bounds: Bounds,
+    cells: &[Cell],
+) -> WriteBatch {
+    let extent = SpatialExtent::new(bounds).encode();
+    for cell in cells {
+        batch = batch.put(
+            SpatialIndexKey::keyspace(),
+            SpatialIndexKey::new(*address, *cell, id.clone()).encode(),
+            extent.clone(),
+        );
+    }
+    batch
+}
+
+/// Every cell of one record's geometry, deleted from `batch`.
+fn displace(
+    mut batch: WriteBatch,
+    address: &IndexAddress,
+    id: &RecordId,
+    value: &Value,
+    definition: &IndexDefinition,
+) -> WriteBatch {
+    let Some((_, cells)) = covering_of(definition, value) else {
+        return batch;
+    };
+    for cell in cells {
+        batch = batch.delete(
+            SpatialIndexKey::keyspace(),
+            SpatialIndexKey::new(*address, cell, id.clone()).encode(),
+        );
+    }
+    batch
+}
+
+/// The box around one record's geometry, and the cells covering that box.
+///
+/// `None` when the field is absent or holds something that is not a geometry —
+/// the same "not in this index at all" answer an ordered index gives for a
+/// missing field, and the same answer a scan gives for the same record.
+///
+/// A geometry that will not lower to the grid gets the same answer, and cannot
+/// arise for a stored record: positions are snapped at ingest and a geometry off
+/// the sphere is refused there rather than here. Returning "not indexed" for it
+/// keeps this function total without inventing a second refusal path for a case
+/// the write path has already closed.
+///
+/// The cell count is bounded by [`SPATIAL_INDEX_CELLS_PER_RECORD`], and the
+/// covering keeps a coarser cell rather than dropping a finer one when that
+/// bound is reached — so exceeding the budget costs candidates to refine and
+/// never rows.
+fn covering_of(definition: &IndexDefinition, value: &Value) -> Option<(Bounds, Vec<Cell>)> {
+    let path = definition.fields.first()?;
+    let Value::Geometry(geometry) = path.resolve(value)? else {
+        return None;
+    };
+    let bounds = Shape::of(geometry).ok()?.bounds()?;
+    // The class each cell comes with is discarded, and only here: it says
+    // whether the cell lies wholly inside the box it was produced for, which for
+    // a *record's* own box tells a reader nothing. It is a query-side fact — the
+    // reader's box is what decides whether a candidate may skip the predicate —
+    // so keeping it in the entry would store an answer to a question nobody has
+    // asked yet.
+    let cells = tessari_geo::covering(bounds, SPATIAL_INDEX_CELLS_PER_RECORD)
+        .into_iter()
+        .map(|(cell, _)| cell)
+        .collect();
+    Some((bounds, cells))
 }
 
 /// The vector one record contributes to a vector index.
@@ -567,11 +750,17 @@ fn terms_of(definition: &IndexDefinition, analyzer: Option<&Analyzer>, value: &V
     let mut terms: Vec<String> = analyzer.terms(text);
     let tokens = u64::try_from(terms.len()).unwrap_or(u64::MAX);
     terms.sort_unstable();
-    terms.dedup();
+    // Sorting puts equal terms next to each other, so a run *is* the count. This
+    // replaces a `dedup()` that threw the run length away — the same pass, one
+    // number further.
     Analysed {
         postings: terms
-            .into_iter()
-            .map(|term| IndexValues::of(&[Value::from(term.as_str())]))
+            .chunk_by(|held, next| held == next)
+            .filter_map(|run| {
+                let term = run.first()?;
+                let frequency = u32::try_from(run.len()).unwrap_or(u32::MAX);
+                Some((IndexValues::of(&[Value::from(term.as_str())]), frequency))
+            })
             .collect(),
         tokens,
     }
@@ -723,4 +912,93 @@ pub(crate) fn project(definition: &IndexDefinition, value: &Value) -> Vec<IndexV
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
+    use tessari_types::{Analyzer, DatabaseId, Filter, IndexId, NamespaceId, Path, TableId, Value};
+
+    use super::terms_of;
+    use crate::catalog::IndexDefinition;
+
+    fn definition() -> IndexDefinition {
+        IndexDefinition {
+            id: IndexId::new(1),
+            namespace: NamespaceId::new(1),
+            database: DatabaseId::new(1),
+            table: TableId::new(1),
+            name: "by_body".to_owned(),
+            fields: vec![Path::field("body")],
+            search: true,
+            unique: false,
+            vector: None,
+            spatial: false,
+        }
+    }
+
+    fn record(text: &str) -> Value {
+        Value::Object(
+            [("body".to_owned(), Value::from(text))]
+                .into_iter()
+                .collect(),
+        )
+    }
+
+    /// The frequency of each term, keyed by the term as written.
+    fn analysed(text: &str) -> (Vec<u32>, u64) {
+        let analyzer = Analyzer::new(vec![Filter::Lowercase]);
+        let found = terms_of(&definition(), Some(&analyzer), &record(text));
+        (
+            found.postings.iter().map(|(_, count)| *count).collect(),
+            found.tokens,
+        )
+    }
+
+    #[test]
+    fn a_word_twice_is_one_posting_that_says_twice() {
+        // The whole of what changed here: the terms are still deduplicated into
+        // one posting each, but the run length is no longer thrown away on the
+        // way. `dedup()` discarded exactly this number.
+        let (frequencies, tokens) = analysed("lock lock contention");
+        assert_eq!(frequencies.len(), 2, "two distinct terms");
+        assert_eq!(frequencies.iter().sum::<u32>(), 3, "three tokens posted");
+        assert!(frequencies.contains(&2), "the repeated term says 2");
+        assert_eq!(tokens, 3, "length counts repeats");
+    }
+
+    #[test]
+    fn every_term_of_a_text_with_no_repeats_says_once() {
+        let (frequencies, tokens) = analysed("lock contention here");
+        assert_eq!(frequencies, vec![1, 1, 1]);
+        assert_eq!(tokens, 3);
+    }
+
+    #[test]
+    fn the_frequency_is_taken_after_the_filters_and_not_before() {
+        // `Lock` and `lock` are one term once lowercased, so they are one posting
+        // with a frequency of two. Counting before the filters would report two
+        // postings of one, which is the same mistake as scoring the spelling
+        // rather than the word.
+        let (frequencies, tokens) = analysed("Lock lock");
+        assert_eq!(frequencies, vec![2]);
+        assert_eq!(tokens, 2);
+    }
+
+    #[test]
+    fn a_field_with_no_analyzer_posts_nothing_and_has_no_length() {
+        let found = terms_of(&definition(), None, &record("lock contention"));
+        assert!(found.postings.is_empty());
+        assert_eq!(found.tokens, 0);
+    }
+
+    #[test]
+    fn the_length_a_posting_states_saturates_rather_than_wrapping() {
+        // A wrapped length would make one absurd record's score wrong by an
+        // arbitrary amount while every other record still looked right.
+        let mut found = terms_of(&definition(), None, &record(""));
+        found.tokens = u64::from(u32::MAX) + 1;
+        assert_eq!(found.length(), u32::MAX);
+    }
 }
