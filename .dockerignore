@@ -1,0 +1,46 @@
+# What the build context does NOT need.
+#
+# The first four lines are the whole point of this file: the target directories
+# hold tens of gigabytes between them, and every one of those bytes would be
+# packed, sent to the daemon and thrown away, because the image builds in a
+# container that has its own empty target. A context that large also defeats the
+# layer cache — any file in it changing invalidates the COPY.
+target/
+target-lint/
+target-pkg/
+target-ra/
+
+# The git directory is history, and the build wants a working tree. Excluding it
+# also keeps the branch and the remote out of the image's layers.
+.git/
+.githooks/
+
+# Local agent-tooling state and host-governance files. These are gitignored for
+# the same reason they are excluded here: they are not part of the product, and
+# some of them name hosts and paths that have no business in a published image.
+.bgv/
+CLAUDE.md
+AGENTS.md
+MEMORY.md
+
+# Runtime leftovers a developer's checkout accumulates. A store copied into the
+# build context would be baked into a layer and shipped to everybody.
+data/
+*.db
+*.rdb
+*.log
+.env
+.env.*
+
+# Editor and OS droppings.
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# The image is built from the workspace, not from documentation about it.
+benchmarks/
+assets/
+CHANGELOG.md

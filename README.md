@@ -708,6 +708,60 @@ against a real pty in `crates/tessari-cli/tests/prompt.rs`, which reads the
 terminal's own settings before and after rather than taking the program's word
 for it.
 
+## In a container
+
+```bash
+docker run -d --name tessaridb \
+  -p 9080:9080 -p 8000:8000 \
+  -v tessaridb-data:/var/lib/tessaridb \
+  -e TESSARIDB_INITIAL_USER=owner \
+  -e TESSARIDB_INITIAL_PASSWORD='choose-a-real-one' \
+  tessaridb/tessaridb
+```
+
+That is a node on both surfaces over one store: `9080` is the wire protocol and
+`8000` is HTTP. Either can be turned off by setting its address to the empty
+string, and both empty is refused rather than started — a node asked to serve
+nothing would read from standard input, reach end of file and exit, which looks
+exactly like a crash.
+
+**Set the two initial variables on the first start.** A store with no users is
+open, and this image ships no default credential on purpose: one would close
+every store that pulls it with a password the whole internet knows, which is
+worse than the open store it appears to fix. The node declares that user as a
+store-wide owner once, on a store that has none, and leaves an existing store
+alone on every start after — so the pair can stay in a compose file, and it is
+not a way to reset a password. Half of it is refused rather than started.
+
+| Variable | Default | |
+|---|---|---|
+| `TESSARIDB_STORE` | `/var/lib/tessaridb/store` | empty is a store in memory |
+| `TESSARIDB_ADDRESS` | `0.0.0.0:9080` | the wire protocol; empty turns it off |
+| `TESSARIDB_HTTP_ADDRESS` | `0.0.0.0:8000` | HTTP; empty turns it off |
+| `TESSARIDB_LOG` | `info` | `error` … `trace` |
+| `TESSARIDB_INITIAL_USER` | unset | the first user, declared once |
+| `TESSARIDB_INITIAL_PASSWORD` | unset | its password; both or neither |
+
+The same image is the client, so a prompt against a node needs nothing else
+installed:
+
+```bash
+docker run --rm -it --network host -e TESSARIDB_PASSWORD='choose-a-real-one' \
+  tessaridb/tessaridb --at 127.0.0.1:9080 --user owner
+```
+
+The container runs as uid `10001`, so a **bind** mount over `/var/lib/tessaridb`
+has to be owned by it; a named volume needs nothing. There is no init process in
+the image, because the node installs its own signal handlers and forks nothing —
+`docker stop` reaches it directly and gets the staged shutdown below rather than
+a killed store. The health check asks the node's own `/health`, which needs no
+credential precisely so that a supervisor does not have to hold one.
+
+The `Dockerfile` builds from this working tree; the published image is
+[`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb). It is
+alpha, and `latest` moves — pin the version tag for anything you would mind
+losing.
+
 ## Stopping it
 
 `SIGTERM` or `SIGINT`, and it stops in stages:
