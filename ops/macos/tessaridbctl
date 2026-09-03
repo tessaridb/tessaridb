@@ -1,0 +1,170 @@
+#!/bin/sh
+# tessaridbctl — start, stop and look at the node this machine keeps running.
+#
+# The node is a launchd agent, so it is up after a reboot and after a logout without
+# anybody remembering to start it. This is how a person talks to it.
+#
+# The settings live in one file that both this command and the agent read, so there is
+# nothing to keep in step: ~/.tessaridb/config.env. The variables are the ones the
+# container path already uses — TESSARIDB_STORE and TESSARIDB_ADDRESS — because a node
+# configured two different ways depending on where it runs is two things to learn.
+#
+# `sh` rather than `bash`: everything here is POSIX, and an interpreter is a dependency
+# like any other.
+
+set -eu
+
+LABEL="com.tessaridb.node"
+HOME_DIR="${TESSARIDB_HOME:-$HOME/.tessaridb}"
+CONFIG="$HOME_DIR/config.env"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+DOMAIN="gui/$(id -u)"
+
+# How long start waits for an answer, and stop waits for the port to come free.
+#
+# A ceiling, not a claim about how fast either happens. A node has only its own listeners
+# to close, which is immediate; the ceiling exists because a stop that returns while the
+# port is still held is a stop that lies to the next start, and that has been observed.
+PATIENCE=10
+
+die() { echo "tessaridbctl: $1" >&2; exit 1; }
+
+load_config() {
+	[ -f "$CONFIG" ] || die "no configuration at $CONFIG — run ops/macos/install.sh first"
+	# shellcheck disable=SC1090
+	. "$CONFIG"
+	: "${TESSARIDB_BIN:?TESSARIDB_BIN is not set in $CONFIG}"
+	: "${TESSARIDB_STORE:?TESSARIDB_STORE is not set in $CONFIG}"
+	: "${TESSARIDB_ADDRESS:?TESSARIDB_ADDRESS is not set in $CONFIG}"
+	: "${TESSARIDB_LOG_DIR:?TESSARIDB_LOG_DIR is not set in $CONFIG}"
+	HOST="${TESSARIDB_ADDRESS%:*}"
+	PORT="${TESSARIDB_ADDRESS##*:}"
+}
+
+listening() { nc -z "$HOST" "$PORT" >/dev/null 2>&1; }
+
+loaded() { launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; }
+
+# The agent runs this. It replaces itself with the node, so launchd tracks the engine
+# rather than a shell that would exit and take the service down with it.
+cmd_run() {
+	mkdir -p "$TESSARIDB_STORE" "$TESSARIDB_LOG_DIR"
+	if [ -n "${TESSARIDB_HTTP_ADDRESS:-}" ]; then
+		exec "$TESSARIDB_BIN" "$TESSARIDB_STORE" \
+			--serve "$TESSARIDB_ADDRESS" --http "$TESSARIDB_HTTP_ADDRESS"
+	fi
+	exec "$TESSARIDB_BIN" "$TESSARIDB_STORE" --serve "$TESSARIDB_ADDRESS"
+}
+
+cmd_start() {
+	[ -f "$PLIST" ] || die "no agent at $PLIST — run ops/macos/install.sh first"
+	if listening; then
+		echo "already listening on $TESSARIDB_ADDRESS"
+		return 0
+	fi
+	if loaded; then
+		launchctl kickstart "$DOMAIN/$LABEL" >/dev/null
+	else
+		launchctl bootstrap "$DOMAIN" "$PLIST"
+	fi
+
+	waited=0
+	while [ "$waited" -lt "$PATIENCE" ]; do
+		if listening; then
+			echo "listening on $TESSARIDB_ADDRESS — store at $TESSARIDB_STORE"
+			return 0
+		fi
+		sleep 1
+		waited=$((waited + 1))
+	done
+	die "the agent started but nothing answers on $TESSARIDB_ADDRESS after ${PATIENCE}s — see $TESSARIDB_LOG_DIR/node.err"
+}
+
+cmd_stop() {
+	loaded || { echo "not running"; return 0; }
+	launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+
+	# The stop is not this command returning; it is the port coming free. A node that
+	# stayed reachable after being asked to stop has been seen, so the wait is for the
+	# address and the escalation below is not theoretical.
+	waited=0
+	while [ "$waited" -lt "$PATIENCE" ]; do
+		listening || { echo "stopped — $TESSARIDB_ADDRESS is free"; return 0; }
+		sleep 1
+		waited=$((waited + 1))
+	done
+
+	echo "still holding $TESSARIDB_ADDRESS ${PATIENCE}s after being asked to stop — killing it" >&2
+	pkill -9 -f "serve $TESSARIDB_ADDRESS" || true
+	listening && die "$TESSARIDB_ADDRESS is still held; find the process with: lsof -nP -iTCP:$PORT"
+	echo "stopped — $TESSARIDB_ADDRESS is free"
+}
+
+cmd_status() {
+	if loaded; then echo "agent:     loaded ($LABEL)"; else echo "agent:     not loaded"; fi
+	if listening; then echo "address:   $TESSARIDB_ADDRESS — answering"; else echo "address:   $TESSARIDB_ADDRESS — nothing answers"; fi
+	[ -n "${TESSARIDB_HTTP_ADDRESS:-}" ] && echo "http:      $TESSARIDB_HTTP_ADDRESS"
+	echo "store:     $TESSARIDB_STORE"
+	echo "logs:      $TESSARIDB_LOG_DIR"
+	echo "engine:    $("$TESSARIDB_BIN" --version 2>/dev/null || echo unknown)"
+}
+
+# Two checks, and which one runs depends on what the node was asked to serve — the same
+# rule the container healthcheck follows, for the same reason: `/health` is answered by
+# the node, so a process that is listening but wedged fails it.
+#
+# `--health` is not either of them. It speaks about a store the asking process opened,
+# and a node reached over the wire was opened by somebody else.
+cmd_health() {
+	listening || die "nothing answers on $TESSARIDB_ADDRESS — start it first"
+
+	if [ -n "${TESSARIDB_HTTP_ADDRESS:-}" ]; then
+		code="$(curl -s -o /dev/null -w '%{http_code}' "http://$TESSARIDB_HTTP_ADDRESS/health" || true)"
+		[ "$code" = "200" ] || die "/health answered ${code:-nothing}"
+		echo "well — $TESSARIDB_HTTP_ADDRESS/health answered 200"
+		return 0
+	fi
+
+	# With HTTP off, a question only a running node answers. It is the ANSWER that is
+	# checked: a statement the node refuses still leaves the client exiting zero, so
+	# reading the exit code here would report health on every reply, errors included.
+	said="$("$TESSARIDB_BIN" --at "$TESSARIDB_ADDRESS" -e 'RETURN 1;' 2>&1 | tr -d '[:space:]')"
+	[ "$said" = "1" ] || die "the node on $TESSARIDB_ADDRESS answered '$said' rather than 1"
+	echo "well — $TESSARIDB_ADDRESS answered"
+}
+
+cmd_logs() { tail -n "${1:-40}" "$TESSARIDB_LOG_DIR/node.log" "$TESSARIDB_LOG_DIR/node.err"; }
+
+usage() {
+	cat >&2 <<USAGE
+usage: tessaridbctl <command>
+
+  start      bring the node up and wait until it answers
+  stop       take it down and wait until the port is free
+  restart    stop, then start
+  status     what the agent, the address and the store are
+  health     ask the running node whether it is well
+  logs [n]   the last n lines of both logs (default 40)
+  address    print host:port
+  config     print the settings file
+USAGE
+	exit 2
+}
+
+[ $# -ge 1 ] || usage
+load_config
+
+command="$1"
+shift
+case "$command" in
+	run)     cmd_run ;;
+	start)   cmd_start ;;
+	stop)    cmd_stop ;;
+	restart) cmd_stop; cmd_start ;;
+	status)  cmd_status ;;
+	health)  cmd_health ;;
+	logs)    cmd_logs "$@" ;;
+	address) echo "$TESSARIDB_ADDRESS" ;;
+	config)  echo "$CONFIG"; cat "$CONFIG" ;;
+	*)       usage ;;
+esac

@@ -762,6 +762,51 @@ The `Dockerfile` builds from this working tree; the published image is
 alpha, and `latest` moves — pin the version tag for anything you would mind
 losing.
 
+## Keeping one running on a Mac
+
+A node you use, rather than one you are testing, wants to be up without anybody
+remembering to start it. On macOS that is a `launchd` agent, and `ops/macos/`
+installs one:
+
+```sh
+ops/macos/install.sh --address 127.0.0.1:39500
+```
+
+It builds the node, puts it and `tessaridbctl` in `~/.local/bin`, writes
+`~/.tessaridb/config.env`, and loads the agent. Nothing needs privilege and
+nothing is written outside your home, so `ops/macos/uninstall.sh` undoes all of
+it. An **agent**, not a daemon: it runs as you and keeps its store under your
+home. A node serving a machine rather than a person belongs in
+`/Library/LaunchDaemons` and is a different file.
+
+```sh
+tessaridbctl start | stop | restart
+tessaridbctl status | health | logs
+```
+
+The settings live in one file that both `tessaridbctl` and the agent read, so
+there is nothing to keep in step — the plist carries no address and no store
+path. Change the port in `~/.tessaridb/config.env` and `tessaridbctl restart`.
+The variables are `TESSARIDB_STORE` and `TESSARIDB_ADDRESS`, the same ones the
+container path uses, because a node configured two different ways depending on
+where it runs is two things to learn.
+
+**A stop is the port coming free, not the command returning.** The staged
+shutdown below goes on serving for five seconds after it is asked to stop, so a
+check taken immediately finds a node that is both stopping and answering.
+`tessaridbctl stop` waits for the address to go quiet and says so, and kills the
+process if it is still held ten seconds later rather than reporting a stop that
+did not happen.
+
+`health` asks the node a question rather than asking the kernel whether a port is
+open — `/health` when the HTTP surface is on, and a statement over the wire when
+it is not. `--health` is neither of those: it speaks about a store the asking
+process opened, and a node reached over the wire was opened by somebody else.
+
+The agent restarts the node if it crashes and does **not** restart it after
+`tessaridbctl stop`. A service that comes back when it is asked to stop cannot be
+stopped.
+
 ## Stopping it
 
 `SIGTERM` or `SIGINT`, and it stops in stages:
