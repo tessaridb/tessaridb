@@ -99,7 +99,20 @@ sed -e "s|@CTL@|$PREFIX/tessaridbctl|g" \
 echo "wrote $PLIST"
 
 launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
-launchctl bootstrap "$DOMAIN" "$PLIST"
+
+# Tearing an agent down is asynchronous, so a bootstrap issued straight after a bootout
+# meets a label launchd has not finished releasing and fails with `Input/output error` —
+# observed, not guessed at, and it is not a brief window: the node it is tearing down goes
+# on serving for five seconds and then gives requests already in flight up to twenty more,
+# so the budget here is that shutdown plus room, and a shorter one just fails later.
+attempt=1
+while :; do
+	launchctl bootstrap "$DOMAIN" "$PLIST" 2>/tmp/tessaridb-bootstrap.$$ && break
+	[ "$attempt" -lt 30 ] || die "could not load the agent: $(cat /tmp/tessaridb-bootstrap.$$)"
+	attempt=$((attempt + 1))
+	sleep 1
+done
+rm -f /tmp/tessaridb-bootstrap.$$
 
 waited=0
 while [ "$waited" -lt 15 ]; do

@@ -65,7 +65,18 @@ cmd_start() {
 	if loaded; then
 		launchctl kickstart "$DOMAIN/$LABEL" >/dev/null
 	else
-		launchctl bootstrap "$DOMAIN" "$PLIST"
+		# Tearing an agent down is asynchronous and slower than a stop looks, because the
+		# node it is tearing down serves for five more seconds and then finishes what is
+		# in flight. A bootstrap inside that window fails with `Input/output error`, which
+		# is what `restart` would otherwise hit every time.
+		attempt=1
+		while :; do
+			launchctl bootstrap "$DOMAIN" "$PLIST" 2>/tmp/tessaridbctl.$$ && break
+			[ "$attempt" -lt 30 ] || die "could not load the agent: $(cat /tmp/tessaridbctl.$$)"
+			attempt=$((attempt + 1))
+			sleep 1
+		done
+		rm -f /tmp/tessaridbctl.$$
 	fi
 
 	waited=0
