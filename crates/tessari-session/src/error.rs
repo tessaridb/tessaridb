@@ -874,6 +874,27 @@ pub enum Error {
         span: Span,
     },
 
+    /// A search query that excludes terms and requires none.
+    ///
+    /// An inverted index enumerates **presence**, so `NOT babbage` names the
+    /// complement of a posting list — every record in the table, which the index
+    /// cannot produce. The two honest answers are a full scan and a refusal, and
+    /// this store refuses, exactly as it refuses a score over a field with no
+    /// search index: a statement that did not run beats one that quietly read the
+    /// whole table because a word was spelled `NOT`.
+    ///
+    /// Raised **before any access path is chosen**, and before the catalog is
+    /// read at all, so the refusal cannot come to depend on whether an index
+    /// exists (ADR-0046, extended to errors).
+    #[error(
+        "a search query cannot exclude terms without requiring one; write at \
+         least one word to match, as in `ada NOT babbage` (at {span})"
+    )]
+    NegationWithoutTerm {
+        /// Where the query was written.
+        span: Span,
+    },
+
     /// A vector distance this store does not have.
     ///
     /// The distance is declared rather than defaulted, because a default would

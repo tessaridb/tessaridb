@@ -35,5 +35,5 @@ mod query;
 mod resolve;
 
 pub(crate) use matching::{matches_fuzzy_terms, matches_prefix_terms, matches_terms};
-pub(crate) use query::asked_terms;
+pub(crate) use query::{Asked, asked};
 pub(crate) use resolve::{Ranked, Searched};

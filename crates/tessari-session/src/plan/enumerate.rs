@@ -149,29 +149,57 @@ impl Session<'_> {
                     else {
                         continue;
                     };
-                    // Not `analyzer.terms(query)`: a phrase's wrapper and its
-                    // slop marker are not terms, and asking the dictionary for
-                    // them returns an empty candidate set for a query the scan
-                    // answers. The index and the predicate must ask the same
-                    // question of the same string.
-                    let terms = crate::search::asked_terms(analyzer, query);
-                    if terms.is_empty() {
+                    // Not `analyzer.terms(query)`: a phrase's wrapper, its slop
+                    // marker and the boolean operators are not terms, and asking
+                    // the dictionary for them returns an empty candidate set for
+                    // a query the scan answers. The index and the predicate must
+                    // ask the same question of the same string, so both call the
+                    // one function that reads the query's shape.
+                    let groups = match crate::search::asked(analyzer, query) {
+                        // A phrase's terms all have to be present before their
+                        // order can matter, so the candidate set is the same
+                        // intersection an unquoted conjunction asks for and the
+                        // predicate settles the order.
+                        crate::search::Asked::Phrase { terms, .. } => {
+                            terms.into_iter().map(|term| vec![term]).collect()
+                        }
+                        // The excluded terms are dropped here on purpose: an
+                        // index enumerates presence, so what it can produce is
+                        // the records the required groups reach — a superset,
+                        // which the condition then refines as it does every
+                        // other candidate.
+                        crate::search::Asked::Boolean { required, .. } => required,
+                    };
+                    if groups.is_empty() {
                         continue;
                     }
+                    // A query with no `OR` is a conjunction of single terms, and
+                    // saying so keeps `EXPLAIN` reporting `terms` for every query
+                    // that could be written before this one could.
+                    let plain = groups.iter().all(|group| group.len() == 1);
                     for index in serving(declared, seek.path, true) {
-                        // The intersection of the postings cannot be larger than
-                        // the smallest of them, and a document frequency is a
-                        // count of keys rather than a set of decoded ids — so
-                        // this ceiling is real and cheap. Were it expensive, a
-                        // search candidate would have to rank by shape like the
-                        // others.
+                        // The intersection cannot be larger than the smallest of
+                        // the groups, and a group is no larger than the sum of
+                        // its terms' postings. A document frequency is a count of
+                        // keys rather than a set of decoded ids, so this ceiling
+                        // is real and cheap. Were it expensive, a search
+                        // candidate would have to rank by shape like the others.
                         let mut smallest = u64::MAX;
-                        for term in &terms {
-                            let held = transaction.document_frequency(index, term)?;
-                            smallest = smallest.min(held);
+                        for group in &groups {
+                            let mut reach: u64 = 0;
+                            for term in group {
+                                let held = transaction.document_frequency(index, term)?;
+                                reach = reach.saturating_add(held);
+                            }
+                            smallest = smallest.min(reach);
                         }
+                        let served = if plain {
+                            Served::Terms(groups.iter().flatten().cloned().collect())
+                        } else {
+                            Served::AnyTerms(groups.clone())
+                        };
                         offered.push(Candidate {
-                            served: Served::Terms(terms.clone()),
+                            served,
                             index: (*index).clone(),
                             rows: Rows::AtMost(smallest),
                         });

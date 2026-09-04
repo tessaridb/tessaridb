@@ -1792,6 +1792,49 @@ happens to be indexed.
 One quote is not a phrase. `'"ada lovelace'` is the two words, unquoted, because
 guessing which quote was meant would make the query depend on a typo.
 
+#### `OR` and `NOT` inside a query
+
+An unquoted query is a conjunction — every word must be held. `OR` unions the
+word beside it into the one before, and `NOT` excludes the word after it:
+
+```
+SELECT * FROM notes WHERE body MATCHES 'ada OR lovelace';       -- either name
+SELECT * FROM notes WHERE body MATCHES 'ada NOT babbage';       -- ada, without babbage
+SELECT * FROM notes WHERE body MATCHES 'ada OR lovelace NOT babbage';
+```
+
+`OR` binds tighter than the space between words, so the last query requires
+*either* name and excludes `babbage`.
+
+**The operators are uppercase, and that is load-bearing rather than a style
+choice.** They are recognised on the query as written, before analysis, because
+the analyzer keeps only alphanumerics and stems what is left — by the time terms
+exist an operator would be a word like any other. Requiring them uppercase is
+what keeps `salt or pepper` meaning three words, so a query written before these
+operators existed still asks what it asked.
+
+**A query that excludes without requiring is refused by name:**
+
+```
+SELECT * FROM notes WHERE body MATCHES 'NOT babbage';
+```
+
+The refusal reads *a search query cannot exclude terms without requiring one*.
+A search index enumerates the records that **hold** a word, so `NOT babbage`
+names the complement of a posting list — every record in the table, which the
+index cannot produce. The two honest answers are reading the whole table or
+refusing, and this store refuses, exactly as it refuses a score over a field with
+no search index. Add a word to match and the exclusion applies to it. Like the
+slop refusal, this one is raised before any index is consulted.
+
+**A query answers the same with an index and without one.** With a search index
+each `OR`-group is read as the union of its terms' postings and the groups are
+intersected; without one every record is read and tested. The exclusions are
+applied when each record is tested either way, because an index cannot enumerate
+what a record does *not* hold — so the index narrows to a superset and the
+condition finishes the job. `EXPLAIN` reports `any-terms` for a query using `OR`,
+and keeps reporting `terms` for one without it.
+
 #### `MATCHES PREFIX` — the words a reader has started typing
 
 ```
@@ -3949,9 +3992,31 @@ under the `DESC` a ranked read is written with.
 
 **A word written twice in the query weighs twice.** `search::score(body, 'lock
 lock')` is not the same order as `search::score(body, 'lock')` — it lifts the
-records that hold `lock` and leaves the rest where they were, which is a way of
-saying "this word matters more" without a boost syntax. Whether that is what you
-meant is worth checking when the query is assembled from parts.
+records that hold `lock` and leaves the rest where they were. Whether that is
+what you meant is worth checking when the query is assembled from parts.
+
+**Weighting a whole field is multiplication**, because a score is an ordinary
+expression:
+
+```
+SELECT title, search::score(title, 'lock') * 3
+            + search::score(body,  'lock') AS relevance
+  FROM notes
+ ORDER BY relevance DESC;
+```
+
+The two are different tools and neither replaces the other: repetition weights a
+**word** inside one field's score, the multiplier weights a **field** against
+the others. There is no `^3` syntax because there is nothing for it to do that
+arithmetic does not already do, with precedence and composition a reader already
+knows.
+
+**A boost multiplies a score the record earned, and can never manufacture one.**
+A field the record does not match contributes exactly `0`, so `0 × 1000` is
+still `0`. That is worth stating because the alternative is not a tie: BM25
+divides by document length, so a record given any weight for a word it does not
+hold arrives *first*, and the resulting order looks like a strong opinion rather
+than a bug.
 
 `k1 = 1.2` and `b = 0.75` — how fast repetition stops helping, and how much
 length is held against a document — are **constants of this implementation**, not
@@ -5026,7 +5091,7 @@ be, because it is confined to the run its fixed values name.
 | layers in the vector index | a hierarchical graph assigns each node a random level, and a random level is what a store whose index entries are *derived rather than logged* cannot have — two replicas would build different graphs from one log. A level derived from a hash of the record id is the right shape when the layers earn their cost; the key already reserves the byte. |
 | a filtered nearest-neighbour read | the graph answers a distance question and knows nothing of a `WHERE`, so combining them needs either over-fetching by an unknown factor or a filtered walk |
 | highlighting | it needs the postings to carry byte offsets, which is a different index rather than a bigger one, and a rule for which of the matched terms a fragment is chosen around. Fuzzy matching, phrase and proximity queries were listed here until they were built: each turned out to need no index change at all, because the analyzer is a property of the *schema* and so the ordered token list is already in hand wherever text is read — see `MATCHES FUZZY` and the quoted-phrase form of `MATCHES` above. Ranking itself is built: see [Ranking](#ranking) |
-| per-index `k1` / `b`, per-field weighting | tuning knobs nobody can yet turn responsibly: this project has no labelled relevance set to measure a different value against, and a knob chosen without one is a guess with a syntax |
+| per-index `k1` / `b` | tuning knobs nobody can yet turn responsibly: this project has no labelled relevance set to measure a different value against, and a knob chosen without one is a guess with a syntax. Per-field weighting was listed here until it turned out to need no knob at all — a score is an expression, so weighting a field is multiplying it, and the only thing the wave had to prove was that a field the record does not match contributes exactly `0`. See [Ranking](#ranking) |
 | a **function applied to each reached value** | `array::len(tags[*])` is refused because it has two answers — the function over the collected values, or the function applied to each of them. The second is a mapping operator and deserves its own spelling rather than being what a parenthesis happens to mean. §3 |
 | a **`UNIQUE` multikey index** | two readings — no two records sharing an element, or a record's own elements being distinct — which refuse different writes. It needs a spelling that says which, not a default. §4 |
 | a **multikey index over two multi-valued routes** | the entries would be one per pair of elements, paid on every write. Worth building when somebody has the query that needs it, so the cost is paid for a reason. §4 |

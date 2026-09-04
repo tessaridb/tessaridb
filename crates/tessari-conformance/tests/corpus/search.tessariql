@@ -312,3 +312,52 @@ SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"';
 --- case: and the refusal is raised before the index is consulted
 SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"~x';
 --- expect: error MalformedSlop
+
+--- case: a collection for the boolean forms, with a record only OR reaches
+DEFINE COLLECTION boolean;
+DEFINE FIELD body ON boolean TYPE string ANALYZER simple;
+CREATE boolean:1 = { body: 'ada worked with babbage on the engine' };
+CREATE boolean:2 = { body: 'ada wrote the first program' };
+CREATE boolean:3 = { body: 'lovelace is the surname' };
+CREATE boolean:4 = { body: 'nothing to do with either of them' };
+--- expect: ok
+
+--- case: an unquoted query is still the conjunction it always was
+SELECT * FROM boolean WHERE body MATCHES 'ada babbage';
+--- expect: rows 1
+
+--- case: OR unions the terms, reaching a record the conjunction drops
+SELECT * FROM boolean WHERE body MATCHES 'ada OR lovelace';
+--- expect: rows 3
+
+--- case: NOT removes a record the required terms reached
+SELECT * FROM boolean WHERE body MATCHES 'ada NOT babbage';
+--- expect: rows 1
+
+--- case: the three forms compose in one query
+SELECT * FROM boolean WHERE body MATCHES 'ada OR lovelace NOT babbage';
+--- expect: rows 2
+
+--- case: a lowercase or is a word, so a query written before the operators is unchanged
+SELECT * FROM boolean WHERE body MATCHES 'ada or lovelace';
+--- expect: rows 0
+
+--- case: excluding without requiring is refused by name
+SELECT * FROM boolean WHERE body MATCHES 'NOT babbage';
+--- expect: error NegationWithoutTerm
+
+--- case: an index does not change what the boolean forms mean
+DEFINE INDEX by_boolean ON boolean FIELDS body SEARCH;
+--- expect: ok
+
+--- case: the same disjunction, now served from the index
+SELECT * FROM boolean WHERE body MATCHES 'ada OR lovelace';
+--- expect: rows 3
+
+--- case: and the same composition
+SELECT * FROM boolean WHERE body MATCHES 'ada OR lovelace NOT babbage';
+--- expect: rows 2
+
+--- case: and the refusal is raised before the index is consulted
+SELECT * FROM boolean WHERE body MATCHES 'NOT babbage';
+--- expect: error NegationWithoutTerm

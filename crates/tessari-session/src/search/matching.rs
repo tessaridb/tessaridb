@@ -9,7 +9,7 @@ use tessari_types::{Analyzer, Value, within_edits};
 
 use tessari_constants::{SEARCH_FUZZY_MAX_EDITS, SEARCH_FUZZY_PREFIX};
 
-use super::query::{asked_terms, phrase_of};
+use super::query::{Asked, asked};
 
 /// Whether `asked` appears in `held` in order, within `slop` extra tokens.
 ///
@@ -71,17 +71,28 @@ fn holds_run(held: &[String], asked: &[String], slop: usize) -> bool {
 /// split or dropped one would move a phrase's meaning silently, which is why
 /// the tests assert that property directly rather than inferring it from a
 /// passing query.
+///
+/// An **unquoted** query is boolean: every group must be answered by one of its
+/// terms and no excluded term may be held. A query with no `OR` and no `NOT` is
+/// that with every group a single term, which is the conjunction this operator
+/// always meant — so the boolean forms widen the language without moving what
+/// an existing query asks.
 pub(crate) fn matches_terms(analyzer: Option<&Analyzer>, held: &Value, wanted: &Value) -> bool {
     let (Some(analyzer), Value::String(text), Value::String(query)) = (analyzer, held, wanted)
     else {
         return false;
     };
     let terms = analyzer.terms(text);
-    let asked = asked_terms(analyzer, query);
-    if let Some((_, slop)) = phrase_of(query) {
-        return holds_run(&terms, &asked, slop);
+    match asked(analyzer, query) {
+        Asked::Phrase { terms: run, slop } => holds_run(&terms, &run, slop),
+        Asked::Boolean { required, excluded } => {
+            !required.is_empty()
+                && required
+                    .iter()
+                    .all(|group| group.iter().any(|term| terms.contains(term)))
+                && !excluded.iter().any(|term| terms.contains(term))
+        }
     }
-    !asked.is_empty() && asked.iter().all(|term| terms.contains(term))
 }
 
 /// Whether the analyzed text holds a term beginning with every prefix of the

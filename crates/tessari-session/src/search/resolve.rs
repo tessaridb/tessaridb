@@ -18,7 +18,7 @@ use crate::error::{Error, Result};
 use crate::rank::Corpus;
 use crate::session::Session;
 
-use super::query::malformed_slop;
+use super::query::{malformed_slop, negation_without_term};
 
 /// What one ranked path was resolved against.
 ///
@@ -76,11 +76,12 @@ impl Session<'_> {
             searched_paths(expr, &mut wanted, &mut ranked, &mut prefixed, &mut phrased);
         }
 
-        // The phrase contract is checked FIRST, before the catalog is read at
+        // The query contracts are checked FIRST, before the catalog is read at
         // all — earlier even than the prefix contract below, which needs an
-        // analyzer. A malformed slop marker is a mistake in the query and not a
-        // question about the data, so nothing about the table, the field or the
-        // indexes may change whether it is refused.
+        // analyzer. A malformed slop marker and a query that excludes without
+        // requiring are both mistakes in the query rather than questions about
+        // the data, so nothing about the table, the field or the indexes may
+        // change whether they are refused.
         for query in phrased {
             let Value::String(text) = self.evaluate(transaction, query)? else {
                 continue;
@@ -90,6 +91,9 @@ impl Session<'_> {
                     marker: marker.to_owned(),
                     span: query.span,
                 });
+            }
+            if negation_without_term(&text) {
+                return Err(Error::NegationWithoutTerm { span: query.span });
             }
         }
 

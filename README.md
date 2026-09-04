@@ -13,7 +13,7 @@ products around them.
 [![version](https://img.shields.io/badge/version-0.0.2--alpha-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-1072%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-1083%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/TessariDB/TessariDB-protocol) ·
@@ -105,7 +105,7 @@ compares against expected answers, case by case. The counts are those cases.
 | **Graph** | edge tables, `RELATE`, properties on the edge, multi-hop traversal in both directions, an edge table that names the pair it joins and refuses every other, a declared graph that holds its own records with no table declared beside it and takes them with it when dropped, tables you already have joining it with `IN`, `DEFINE EDGE` writing adjacency beside the node so a hop is a range read, an edge removed by the pair it joins, and `DEPTH n` bounding a repeated hop | 71 | ✅ runs |
 | **Key–value** | `SPACE`s — one key, one whole value, ordered range scans with inclusive or exclusive bounds | 12 | ✅ runs |
 | **Objects & files** | `BUCKET`s — bytes addressed by path, byte-range reads, writes at an offset, metadata that is an ordinary record, and a declared ceiling on the largest file the bucket takes | 35 | ✅ runs |
-| **Full-text** | per-field analyzers, whole-term search, prefix search a reader is served by while still typing, fuzzy search that survives a typo, lowercase · ASCII folding · Porter2 stemming, and a quoted phrase with declared slop that widens the window without relaxing the order | 67 | ✅ runs |
+| **Full-text** | per-field analyzers, whole-term search, prefix search a reader is served by while still typing, fuzzy search that survives a typo, lowercase · ASCII folding · Porter2 stemming, a quoted phrase with declared slop that widens the window without relaxing the order, `OR` and `NOT` inside a query, and per-field weighting written as arithmetic | 78 | ✅ runs |
 | **Vector** | cosine, Euclidean and dot distance, kNN ordering, a graph index that declares whether it answered exactly, and a field that declares how wide its vectors are so a write of any other width is refused where it happens, and a vector store declared as one so the width, the index and the requirement cannot come apart, and a read that says what it will spend on the walk, and a recall the store reports only once something has measured it | 50 | ✅ runs |
 | **Time-series** | epoch-anchored windows every process agrees on, aggregates per window, retention as a statement that reports what it removed | 12 | ✅ runs |
 | **References** | `FETCH` — follow a reference, an array of them, or a nested route, without a join | 12 | ✅ runs |

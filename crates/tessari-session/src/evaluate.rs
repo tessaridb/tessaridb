@@ -1927,11 +1927,14 @@ impl Session<'_> {
                 }
                 Ok(rows)
             }
-            // One arm for two variants: once a walk has produced concrete
-            // terms, a prefix expansion and a fuzzy one are the same object and
-            // are read the same way. They stay separate variants so `EXPLAIN`
-            // can still say which walk produced them.
-            plan::Served::PrefixTerms(expansions) | plan::Served::FuzzyTerms(expansions) => {
+            // One arm for three variants: a union of posting lists per group,
+            // intersected across groups, is one read however the groups were
+            // arrived at — a prefix walk, a fuzzy walk, or the `OR`s somebody
+            // wrote. They stay separate variants so `EXPLAIN` can still say
+            // which question produced them.
+            plan::Served::PrefixTerms(expansions)
+            | plan::Served::FuzzyTerms(expansions)
+            | plan::Served::AnyTerms(expansions) => {
                 let mut rows = Vec::new();
                 for id in transaction.records_by_expansions(&chosen.index, expansions)? {
                     let at = RecordAddress::new(context.namespace, context.database, table, id);
