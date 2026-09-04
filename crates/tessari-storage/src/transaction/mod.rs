@@ -36,6 +36,7 @@ mod spatial;
 
 pub use address::{RecordAddress, StoredRecord};
 pub use adjacency::Neighbour;
+pub use search::Expansion;
 pub use spatial::{Nearby, Region};
 
 use std::collections::BTreeMap;

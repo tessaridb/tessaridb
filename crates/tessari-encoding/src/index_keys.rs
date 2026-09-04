@@ -161,6 +161,24 @@ impl IndexValues {
         &self.0
     }
 
+    /// The text, when these are exactly one string.
+    ///
+    /// The single exception to this type's opacity, and it is narrow on purpose.
+    /// What makes the encoding irreversible is **number** normalisation — `1`,
+    /// `1.0` and decimal `1.00` become the same bytes, so no reader can say
+    /// which was written. A string is written as its own bytes under a
+    /// byte-local escape and comes back exactly.
+    ///
+    /// It exists for the term dictionary, where the stored key *is* the word and
+    /// a caller walking it needs the word: to measure an edit distance against
+    /// it, to offer it as a completion, or to name it in a refusal. `None` for
+    /// anything that is not a lone string, so an ordered index's entry cannot be
+    /// read back as a term.
+    #[must_use]
+    pub fn as_text(&self) -> Option<String> {
+        index_value::lone_string(&self.0)
+    }
+
     /// The bytes of this entry's first `fields` values, without the terminator.
     ///
     /// **What a tie group is, when the order names fewer fields than the index

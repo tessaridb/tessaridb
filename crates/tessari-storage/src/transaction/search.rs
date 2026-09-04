@@ -19,6 +19,23 @@ use super::{RecordAddress, Transaction};
 use crate::catalog::IndexDefinition;
 use crate::error::Result;
 
+/// The terms a prefix reached, and whether reaching them ran out of room.
+///
+/// The flag is not a diagnostic. An expansion that was cut answers a **different
+/// question** from one that was not — "the first `cap` words beginning with this"
+/// rather than "the words beginning with this" — and a caller that cannot tell
+/// them apart reports a subset as a set. Every surface built on this carries the
+/// distinction outward rather than resolving it here, because only the caller
+/// knows whether a truncated expansion is a refusal or an approximation it is
+/// allowed to declare.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Expansion {
+    /// The matching terms, in dictionary order, at most `cap` of them.
+    pub terms: Vec<String>,
+    /// Whether more terms matched than the cap allowed.
+    pub capped: bool,
+}
+
 impl Transaction<'_> {
     /// Hand every pair of a range to `take`, reading it in bounded batches.
     ///
@@ -188,6 +205,55 @@ impl Transaction<'_> {
             .store
             .backend()
             .count(PostingKey::keyspace(), &KeyRange::prefix(&prefix))?)
+    }
+
+    /// The distinct terms this index holds that begin with `prefix`, at most
+    /// `cap` of them.
+    ///
+    /// A **bounded ordered walk of the term dictionary**, and the bound is the
+    /// point. The entries are ordered by term and the encoded prefix selects a
+    /// contiguous run, so the backend is asked for `cap + 1` entries of that run
+    /// and stops. The work is therefore a function of how many terms **match**,
+    /// never of how many terms the index holds — which is the property the whole
+    /// dictionary exists to buy, and the one a prefix or fuzzy query is a denial
+    /// of service without.
+    ///
+    /// `cap + 1` rather than `cap`, so the answer can say whether it was cut.
+    /// A caller that got exactly `cap` terms and no signal cannot tell a complete
+    /// expansion from a truncated one, and the two mean different things: the
+    /// first is an answer, the second is an answer plus a silent omission.
+    ///
+    /// The terms come back as text. That is safe here and nowhere else in this
+    /// module: a dictionary key is a lone string, which the index encoding
+    /// reverses exactly (see [`IndexValues::as_text`]). An entry that is not one
+    /// is skipped rather than guessed at.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a key cannot be decoded.
+    pub fn terms_with_prefix(
+        &self,
+        index: &IndexDefinition,
+        prefix: &str,
+        cap: usize,
+    ) -> Result<Expansion> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let bounds = SearchTermKey::term_prefix(&address, prefix);
+        let request = ScanRequest {
+            keyspace: SearchTermKey::keyspace(),
+            range: KeyRange::prefix(&bounds),
+            direction: ScanDirection::Forward,
+            limit: Some(cap.saturating_add(1)),
+        };
+        let found = self.store.backend().scan(&request)?;
+        let capped = found.len() > cap;
+        let mut terms = Vec::with_capacity(found.len().min(cap));
+        for (key, _) in found.iter().take(cap) {
+            if let Some(text) = SearchTermKey::decode(key.as_slice())?.term.as_text() {
+                terms.push(text);
+            }
+        }
+        Ok(Expansion { terms, capped })
     }
 
     /// The records one term is posted against.
