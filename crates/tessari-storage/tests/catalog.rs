@@ -103,6 +103,35 @@ fn a_name_cannot_be_taken_twice_at_the_same_level() {
 }
 
 #[test]
+fn the_same_name_in_two_namespaces_is_two_different_databases() {
+    // The property a tenant expects and nothing else asserts: `docs` in one
+    // namespace and `docs` in another are separate databases, so a second tenant
+    // is not refused a name because a first one took it. The store-wide levels
+    // are namespaces, users, analyzers, consumers and replicas — a database is
+    // not one of them, and this pins that rather than leaving it to the reading
+    // of `qualify`.
+    let (_backend, store) = store();
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let first = catalog.create_namespace("alpha").unwrap();
+    let second = catalog.create_namespace("beta").unwrap();
+    let left = catalog.create_database(first.id, "docs").unwrap();
+    let right = catalog.create_database(second.id, "docs").unwrap();
+    assert_ne!(left.id, right.id);
+    // And each name still resolves inside its own namespace, which is the half
+    // that would fail if the two entries collided on one key.
+    assert_eq!(
+        catalog.database_id(first.id, "docs").unwrap(),
+        Some(left.id)
+    );
+    assert_eq!(
+        catalog.database_id(second.id, "docs").unwrap(),
+        Some(right.id)
+    );
+    transaction.commit().unwrap();
+}
+
+#[test]
 fn the_same_name_in_two_databases_is_two_different_tables() {
     let (_backend, store) = store();
     let mut transaction = store.begin().unwrap();
