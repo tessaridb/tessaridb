@@ -77,6 +77,48 @@ SELECT * FROM notes WHERE body MATCHES 'ada program';
 SELECT * FROM notes WHERE body MATCHES 'CAFE';
 --- expect: rows 1
 
+# `MATCHES PREFIX` — the words a reader has started typing. Every case is run
+# here with the index in place; the scan's agreement with it is asserted per
+# record by the session suite, which can hold two stores at once.
+
+--- case: a table of its own, so these cases cannot move another case's count
+DEFINE TABLE typed SCHEMALESS;
+DEFINE FIELD body ON typed TYPE string ANALYZER simple;
+DEFINE INDEX by_typed ON typed FIELDS body SEARCH;
+CREATE typed:1 = { body: 'Vector search over a store', title: 'one' };
+CREATE typed:2 = { body: 'Vectors and their distances' };
+CREATE typed:3 = { body: 'A vectorised inner loop' };
+CREATE typed:4 = { body: 'Locking and contention' };
+--- expect: ok
+
+--- case: a prefix reaches every word that begins with it
+SELECT * FROM typed WHERE body MATCHES PREFIX 'vecto';
+--- expect: rows 3
+
+--- case: it is still a conjunction across the words that were typed
+SELECT * FROM typed WHERE body MATCHES PREFIX 'vecto sea';
+--- expect: rows 1
+
+--- case: a word nothing begins with empties the conjunction
+SELECT * FROM typed WHERE body MATCHES PREFIX 'vecto zzz';
+--- expect: rows 0
+
+--- case: a complete word is a prefix of itself
+SELECT * FROM typed WHERE body MATCHES PREFIX 'vectorised';
+--- expect: rows 1
+
+--- case: below the minimum it is refused rather than answered slowly
+SELECT * FROM typed WHERE body MATCHES PREFIX 've';
+--- expect: error PrefixTooShort
+
+--- case: and at the minimum it is served
+SELECT * FROM typed WHERE body MATCHES PREFIX 'vec';
+--- expect: rows 3
+
+--- case: a field with no analyzer holds no terms to begin with either
+SELECT * FROM typed WHERE title MATCHES PREFIX 'one';
+--- expect: rows 0
+
 --- case: an update takes back the postings the record no longer earns
 UPDATE notes:1 = { body: 'Grace Hopper wrote a compiler', title: 'Ada' };
 SELECT * FROM notes WHERE body MATCHES 'lovelace';

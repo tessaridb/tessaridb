@@ -140,6 +140,62 @@ impl Transaction<'_> {
         Ok(holding.into_iter().collect())
     }
 
+    /// The records a search index says hold, for **every** expansion, at least
+    /// one of its terms.
+    ///
+    /// The shape of a prefix query: a conjunction across the words that were
+    /// typed and a disjunction within each word, because "a word beginning with
+    /// `vecto`" is satisfied by `vector` or `vectors` or `vectorised` and the
+    /// second word must be satisfied too.
+    ///
+    /// The union is taken **before** the intersection, and per expansion rather
+    /// than over everything at once. Flattening the two levels into one list
+    /// would turn the conjunction into a single disjunction, and the read would
+    /// answer with every record holding any of the words — more rows, all of
+    /// them plausible, none of them raising anything.
+    ///
+    /// An empty expansion is a word nothing begins with, and it empties the
+    /// whole answer: the conjunction cannot be satisfied. That is checked before
+    /// any posting is read.
+    ///
+    /// Candidates are confirmed against the record by the condition that asked,
+    /// exactly as [`Transaction::records_by_terms`] leaves them to be.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a key cannot be decoded.
+    pub fn records_by_expansions(
+        &self,
+        index: &IndexDefinition,
+        expansions: &[Vec<String>],
+    ) -> Result<Vec<RecordId>> {
+        let Some(first) = expansions.first() else {
+            return Ok(Vec::new());
+        };
+        if expansions.iter().any(Vec::is_empty) {
+            return Ok(Vec::new());
+        }
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let mut holding = self.union(&address, first)?;
+        for expansion in expansions.iter().skip(1) {
+            if holding.is_empty() {
+                break;
+            }
+            let next = self.union(&address, expansion)?;
+            holding.retain(|id| next.contains(id));
+        }
+        Ok(holding.into_iter().collect())
+    }
+
+    /// The records any one of these terms is posted against.
+    fn union(&self, address: &IndexAddress, terms: &[String]) -> Result<BTreeSet<RecordId>> {
+        let mut found = BTreeSet::new();
+        for term in terms {
+            found.extend(self.postings(address, term)?);
+        }
+        Ok(found)
+    }
+
     /// What a search index knows about its collection as a whole.
     ///
     /// An index that has never been written to has no statistics key, and the

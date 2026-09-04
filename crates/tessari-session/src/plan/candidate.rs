@@ -19,6 +19,15 @@ pub(crate) enum Shape {
     Equality,
     /// `<path> MATCHES '<text>'` — the postings of every term, intersected.
     Terms,
+    /// `<path> MATCHES PREFIX '<text>'` — for each word, the postings of every
+    /// term it reaches, unioned; then those intersected across the words.
+    ///
+    /// Below [`Shape::Terms`] and above a value prefix, which is where the work
+    /// puts it. It reads more posting lists than an exact term match — one per
+    /// expanded term rather than one per word — but it reads them from the same
+    /// structure with the same ceiling, where a value prefix walks an ordered
+    /// index whose size is not knowable without doing the read.
+    PrefixTerms,
     /// `<path> LIKE '<literal>%'` — a range over the values beginning with it.
     Prefix,
     /// `<path> < <constant>`, and the other three orderings — a bounded scan.
@@ -70,6 +79,19 @@ pub(crate) enum Served {
     Prefix(String),
     /// The terms whose postings are intersected.
     Terms(Vec<String>),
+    /// The **expansions** whose postings are unioned and then intersected: one
+    /// set of terms per word the query typed.
+    ///
+    /// Two levels deep because the question is two levels deep — every typed
+    /// word must be matched by *some* term beginning with it. Flattening the
+    /// sets into one list would lose which word each term came from and turn a
+    /// conjunction of disjunctions into a single disjunction, which answers with
+    /// every record holding any of the words.
+    ///
+    /// Resolved by the planner rather than at execution, because whether the
+    /// index can serve the read at all depends on how far the expansions reach:
+    /// past the cap, this candidate is not offered and the scan answers.
+    PrefixTerms(Vec<Vec<String>>),
     /// The two ends of an ordered scan, either of which may be absent.
     ///
     /// Both are carried as **values**, not as byte bounds, because the index
@@ -116,6 +138,7 @@ impl Served {
             Self::Equality(_) => Shape::Equality,
             Self::Prefix(_) => Shape::Prefix,
             Self::Terms(_) => Shape::Terms,
+            Self::PrefixTerms(_) => Shape::PrefixTerms,
             Self::Range { .. } => Shape::Range,
             Self::Region { .. } => Shape::Region,
         }
@@ -133,7 +156,7 @@ impl Served {
     pub(crate) fn fixed(&self) -> usize {
         match self {
             Self::Equality(values) => values.len(),
-            Self::Prefix(_) | Self::Terms(_) | Self::Region { .. } => 1,
+            Self::Prefix(_) | Self::Terms(_) | Self::PrefixTerms(_) | Self::Region { .. } => 1,
             Self::Range { fixed, .. } => fixed.len().saturating_add(1),
         }
     }
@@ -219,6 +242,7 @@ impl Shape {
             Self::Range => "range",
             Self::Region => "region",
             Self::Terms => "terms",
+            Self::PrefixTerms => "prefix-terms",
         }
     }
 }

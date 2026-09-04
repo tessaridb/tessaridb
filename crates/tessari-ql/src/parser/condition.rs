@@ -187,11 +187,21 @@ impl Parser<'_> {
             (Keyword::Contains, BinaryOp::Contains),
             (Keyword::Like, BinaryOp::Like),
             (Keyword::Ilike, BinaryOp::Ilike),
-            (Keyword::Matches, BinaryOp::Matches),
         ] {
             if self.eat_keyword(keyword) {
                 return Some(op);
             }
+        }
+        // `MATCHES` and `MATCHES PREFIX` are one operator with an optional
+        // second word rather than two entries above, because the second word
+        // only means anything after the first: a bare `PREFIX` in operator
+        // position would otherwise become a spelling nothing rejects.
+        if self.eat_keyword(Keyword::Matches) {
+            return Some(if self.eat_keyword(Keyword::Prefix) {
+                BinaryOp::MatchesPrefix
+            } else {
+                BinaryOp::Matches
+            });
         }
         None
     }

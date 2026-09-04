@@ -87,6 +87,20 @@ pub enum BinaryOp {
     /// pattern over the whole value and `CONTAINS` is membership in a
     /// collection, and neither can ask whether text holds a *word*.
     Matches,
+    /// `MATCHES PREFIX` — the analyzed text holds a word **beginning with**
+    /// every term of the query.
+    ///
+    /// The operator a reader is served by while still typing, and a separate
+    /// operator rather than a flag on [`BinaryOp::Matches`] for the reason
+    /// `LIKE` and `CONTAINS` are separate: it asks a different question, and it
+    /// is answered by a different structure — a bounded walk of the term
+    /// dictionary rather than a lookup of one term.
+    ///
+    /// It is deliberately **not** spelled with a wildcard inside the query
+    /// string. `'vecto*'` would make every query a parse of the caller's own
+    /// data, and a reader searching for a literal asterisk would have to know
+    /// that before they could ask for one.
+    MatchesPrefix,
 }
 
 impl BinaryOp {
@@ -105,6 +119,7 @@ impl BinaryOp {
             Self::Like => "LIKE",
             Self::Ilike => "ILIKE",
             Self::Matches => "MATCHES",
+            Self::MatchesPrefix => "MATCHES PREFIX",
         }
     }
 
@@ -128,6 +143,7 @@ impl BinaryOp {
             Self::Like,
             Self::Ilike,
             Self::Matches,
+            Self::MatchesPrefix,
         ]
         .into_iter()
         .find(|held| held.spelling() == spelling)
@@ -175,7 +191,7 @@ pub fn apply(op: BinaryOp, left: &Value, right: &Value) -> bool {
         // stated `false` rather than an `unreachable!()`: this project has none,
         // and "no analyzer, no terms, no match" is the same answer a field with
         // no analyzer gets anyway.
-        BinaryOp::Matches => false,
+        BinaryOp::Matches | BinaryOp::MatchesPrefix => false,
     }
 }
 

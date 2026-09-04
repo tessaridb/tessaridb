@@ -1707,9 +1707,25 @@ nobody should have to read about. The filters are the part that differs:
 |---|---|
 | `lowercase` | folds case, so `Lovelace` and `lovelace` are one term |
 | `ascii` | folds the common accented Latin letters, so `café` and `cafe` are one term |
+| `stemmer` | reduces an English word to the form its relatives share, so `running`, `runs` and `run` are one term |
 
 A letter the fold does not know passes through rather than being dropped — a
 letter it has no opinion about is still a letter.
+
+The first two make two **spellings** of a word meet. `stemmer` is the one that
+makes two **words** meet, which is what a person usually means by search: without
+it, a collection answers `backup` with the documents that happen to spell it that
+way and silently omits the ones that say `backups`. It is Porter2 (English
+Snowball) and it stems only lower-case ASCII words, so a chain that wants it
+writes `lowercase` first — `FILTERS stemmer, lowercase` compiles, runs, and does
+nothing, because the stemmer declines a word it does not recognise as one rather
+than half-stemming it.
+
+**A chain is part of the analyzer's identity, and an analyzer cannot be
+redefined.** A name already declared is refused — the postings on disk were
+written by the chain that was in force, and changing it under them would make
+stored terms and query terms disagree with nothing in an error state. Changing a
+chain therefore means a new analyzer name, a field that binds it, and a reindex.
 
 **An index makes it fast and cannot make it different:**
 
@@ -1726,6 +1742,63 @@ A search index answers a term and nothing else, and an ordered index answers an
 equality or a prefix and nothing else. Asking the wrong one would return the
 wrong rows rather than none, so the shape of the test is checked against the
 index before either is used.
+
+#### `MATCHES PREFIX` — the words a reader has started typing
+
+```
+SELECT * FROM notes WHERE body MATCHES PREFIX 'vecto';
+SELECT * FROM notes WHERE body MATCHES PREFIX 'vecto sea';
+```
+
+It asks whether the text holds a word **beginning with** each of the query's
+words: a conjunction across what was typed, a disjunction within each word. So
+`'vecto'` reaches `vector`, `vectors` and `vectorised`, and `'vecto sea'` reaches
+only the documents that hold something from each.
+
+A separate operator rather than a wildcard inside the string. `'vecto*'` would
+make every query a parse of the caller's own data, and a reader searching for a
+literal asterisk would have to know that before they could ask for one.
+
+**A prefix is folded but not stemmed — and the query is tried both ways.** The
+beginning of a word cannot be stemmed: `runni` stems to `runni`, which is the
+beginning of nothing, while the field stores `running` as `run`. So the typed
+spelling is one candidate. It is not enough alone, because typing the *whole*
+word would then fail: `contention` is stored as `content`, and `content` does not
+begin with `contention`. The stemmed spelling is the second candidate, and with
+it a complete word is always a prefix of itself — `MATCHES PREFIX 'w'` always
+reaches at least what `MATCHES 'w'` reaches.
+
+One limit is left and it is honest: a prefix longer than the stem and not a word
+in its own right reaches nothing. `runni` finds no `running`, because the store
+holds `run` and neither spelling of the query begins it. Those letters were never
+stored.
+
+**The minimum is three characters and it is a refusal**, not a slow answer:
+
+```
+SELECT * FROM notes WHERE body MATCHES PREFIX 've';
+-- the prefix "ve" is shorter than 3 characters, which is the shortest this
+-- store will expand
+```
+
+The cost of a prefix is the size of its expansion, and two characters reach a
+large fraction of an English vocabulary — an answer nobody can use, paid for in
+full, on the query a frustrated reader retries. The refusal is raised **before
+any access path is chosen**, so adding an index can never change whether the
+statement runs.
+
+**The expansion cap is not a refusal.** A prefix reaching more than sixty-four
+distinct terms is answered by the scan instead, and `EXPLAIN` reports `scan`. The
+answer is identical either way — a cap that refused would make a statement
+succeed on a table with no index and fail on the same table once somebody added
+one, which is exactly what the access-path rule exists to prevent.
+
+**With a `SEARCH` index it is a bounded walk of the term dictionary.** The index
+keeps one entry per distinct term, so finding which words a prefix reaches costs
+what it *matches* rather than what the index holds: measured at one thousand, ten
+thousand and one hundred thousand distinct terms, the same query reads three
+entries in one scan. Without an index the scan analyses each record and compares,
+and the two are asserted to agree record for record.
 
 **A field with no analyzer holds no terms**, so `MATCHES` over it finds nothing
 rather than failing. A schemaless table is allowed to hold text nobody has
@@ -4795,7 +4868,6 @@ be, because it is confined to the run its fixed values name.
 | a traversal whose arrows change direction | `a->follows->users<-follows<-users` — "who follows somebody ada follows" — is a real question, and a useful one. It needs a rule for what each step's anchor *is* when the direction turns, and a chain where every arrow reads the same way is the one a reader can follow without one |
 | a traversal that answers with the path rather than its end | the answer would be a list of records rather than a record, which is a shape for rows and not for records — the same wall the join met, and the same milestone |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |
-| stemming | a filter, and one could be added under the rule above; a correct stemmer is a language-specific artefact rather than a hundred lines, and a bad one is worse than none |
 | n-grams, so `MATCHES` never answers a substring question | index size proportional to text length × (max − min), paid on every write; Q-31 holds the measurement that would decide it |
 | phrase queries (`'"ada lovelace"'`) | they need positions in the postings and a second matching rule |
 | layers in the vector index | a hierarchical graph assigns each node a random level, and a random level is what a store whose index entries are *derived rather than logged* cannot have — two replicas would build different graphs from one log. A level derived from a hash of the record id is the right shape when the layers earn their cost; the key already reserves the byte. |

@@ -224,6 +224,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::GrantedUserCannotDeclare { .. } => "GrantedUserCannotDeclare",
         Error::LastGrant { .. } => "LastGrant",
         Error::NoSearchIndex { .. } => "NoSearchIndex",
+        Error::PrefixTooShort { .. } => "PrefixTooShort",
         Error::NoSuchDistance { .. } => "NoSuchDistance",
         Error::OutsideTenancy { .. } => "OutsideTenancy",
         Error::NotArithmetic { .. } => "NotArithmetic",

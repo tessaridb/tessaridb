@@ -515,3 +515,38 @@ pub const PASSWORD_HASH_PASSES: u32 = 2;
 /// point of the cost is that it is paid, and a node under an authentication
 /// flood would multiply its own load by the lane count. Recorded in ADR-0043.
 pub const PASSWORD_HASH_LANES: u32 = 1;
+
+/// The shortest prefix `MATCHES PREFIX` will accept.
+///
+/// Unit: characters, after the field's non-stemming filters have been applied.
+///
+/// **Contract, not tuning.** A prefix below this is refused by name and the
+/// refusal states the limit; it is not merely served slowly. The reason is that
+/// the cost of a prefix is the size of its expansion, and the expansion of a
+/// short prefix is a large fraction of the whole vocabulary — `a` reaches every
+/// word beginning with `a`, which on English prose is roughly one word in
+/// fourteen. A reader gains nothing from that answer and the store pays for all
+/// of it, on the query a frustrated reader retries.
+///
+/// Three rather than two, because two is where the fraction stops being small:
+/// `th` alone reaches a tenth of an English vocabulary. Three is also the
+/// conventional floor in the engines that offer this, which matters less than
+/// the reason but is worth not contradicting without one.
+pub const SEARCH_PREFIX_MINIMUM: usize = 3;
+
+/// How many distinct terms one prefix may expand to before the index declines
+/// to serve it.
+///
+/// Unit: terms.
+///
+/// **Not a refusal.** A prefix expanding past this is answered by the scan
+/// instead, and `EXPLAIN` reports `scan` — the answer is identical either way,
+/// which is the rule this store holds everywhere: *which access path runs is
+/// decided by what exists; the answer is not.* A cap that refused would make a
+/// query succeed without an index and fail once somebody added one.
+///
+/// What the cap protects is the **index** path, where an expansion is a union of
+/// that many posting lists. Sixty-four is enough for every prefix a person
+/// actually types at three characters or more and small enough that the union
+/// stays cheaper than the scan it replaces.
+pub const SEARCH_PREFIX_EXPANSION_CAP: usize = 64;

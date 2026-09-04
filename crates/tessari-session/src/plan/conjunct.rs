@@ -195,6 +195,12 @@ pub(super) enum Comparison {
     Prefix,
     /// `<path> MATCHES '<text>'`
     Terms,
+    /// `<path> MATCHES PREFIX '<text>'`
+    ///
+    /// Separate from [`Comparison::Terms`] because it is served by a different
+    /// structure: the term dictionary is walked to find which words the query
+    /// reaches, and only then are their posting lists read.
+    PrefixTerms,
     /// `<path> < <constant>`, and the other three orderings.
     Range,
 }
@@ -247,6 +253,7 @@ pub(super) fn seekable(condition: &Expr) -> Vec<Seek<'_>> {
                 BinaryOp::Equal => Comparison::Equality,
                 BinaryOp::Like => Comparison::Prefix,
                 BinaryOp::Matches => Comparison::Terms,
+                BinaryOp::MatchesPrefix => Comparison::PrefixTerms,
                 // The four orderings are a bounded scan over the ordered index,
                 // which is safe because byte order **is** value order
                 // (`docs/key-grammar.md` §1).

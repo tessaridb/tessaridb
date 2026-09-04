@@ -119,10 +119,75 @@ impl Analyzer {
     /// tokens never survive, so punctuation contributes nothing.
     #[must_use]
     pub fn terms(&self, text: &str) -> Vec<String> {
+        self.tokens(text, &self.filters)
+    }
+
+    /// The **prefixes** this text holds: for each word typed, the spellings a
+    /// stored term may begin with.
+    ///
+    /// One entry per word, and each entry is a small set of alternatives, so a
+    /// caller asks *does some stored term begin with any of these*.
+    ///
+    /// # Why a prefix is analysed differently, and why it needs two spellings
+    ///
+    /// This module's opening argument is that index-time and query-time analysis
+    /// must be identical, and they still are — for a *term*. A prefix is not a
+    /// term. It is the beginning of one, and the beginning of a word cannot be
+    /// stemmed: `runni` stemmed is `runni`, which is the beginning of nothing,
+    /// while the field stores `running` as `run`. Applying the whole chain would
+    /// be consistent and would find nothing.
+    ///
+    /// So the **unstemmed** spelling is one alternative. It is not enough on its
+    /// own, and the case that shows why is the one a reader hits first: typing
+    /// the *complete* word. `contention` is stored as `content`, and `content`
+    /// does not begin with `contention` — so a reader who typed six letters
+    /// would find the record and a reader who typed all ten would not. The
+    /// **stemmed** spelling is therefore the second alternative, and with it a
+    /// complete word is always a prefix of itself.
+    ///
+    /// That is the property worth stating plainly: `MATCHES PREFIX 'w'` always
+    /// reaches at least what `MATCHES 'w'` reaches. Without the second spelling
+    /// it does not, and a prefix operator that can find *less* than an exact one
+    /// is not something to offer a reader as they type.
+    ///
+    /// The lowercasing and folding apply to both, because those make two
+    /// spellings one and the dictionary holds the folded form.
+    ///
+    /// One honest limit remains: a prefix longer than the stem and not a word in
+    /// its own right reaches nothing. `runni` finds no `running`, because the
+    /// store holds `run` and neither spelling of the query begins it. The letters
+    /// were never stored, and inventing a match for them would be guessing.
+    ///
+    /// On a chain with no stemmer the two alternatives coincide and each entry
+    /// holds exactly one spelling.
+    #[must_use]
+    pub fn prefixes(&self, text: &str) -> Vec<Vec<String>> {
+        let unstemmed: Vec<Filter> = self
+            .filters
+            .iter()
+            .copied()
+            .filter(|filter| *filter != Filter::Stemmer)
+            .collect();
+        let raw = self.tokens(text, &unstemmed);
+        let stemmed = self.tokens(text, &self.filters);
+        raw.into_iter()
+            .zip(stemmed)
+            .map(|(plain, stem)| {
+                if plain == stem {
+                    vec![plain]
+                } else {
+                    vec![plain, stem]
+                }
+            })
+            .collect()
+    }
+
+    /// Split, then fold each token through `filters`.
+    fn tokens(&self, text: &str, filters: &[Filter]) -> Vec<String> {
         text.split(|character: char| !character.is_alphanumeric())
             .filter(|token| !token.is_empty())
             .map(|token| {
-                self.filters
+                filters
                     .iter()
                     .fold(token.to_owned(), |held, filter| filter.apply(&held))
             })
@@ -226,6 +291,73 @@ mod tests {
         // reason the filter exists.
         assert_ne!(simple().terms("running"), simple().terms("runs"));
         assert_eq!(full.terms("running"), full.terms("runs"));
+    }
+
+    /// Whether any stored term begins with any spelling of any typed word.
+    ///
+    /// The matching rule `MATCHES PREFIX` applies, written here so the tests
+    /// assert the rule rather than a re-derivation of it.
+    fn reaches(analyzer: &Analyzer, stored: &str, typed: &str) -> bool {
+        let terms = analyzer.terms(stored);
+        let asked = analyzer.prefixes(typed);
+        !asked.is_empty()
+            && asked.iter().all(|alternatives| {
+                alternatives
+                    .iter()
+                    .any(|prefix| terms.iter().any(|term| term.starts_with(prefix)))
+            })
+    }
+
+    #[test]
+    fn a_prefix_is_folded_but_never_stemmed() {
+        let full = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii, Filter::Stemmer]);
+        // The folding applies: a prefix of a lower-cased, unaccented word is
+        // what the dictionary holds.
+        assert_eq!(full.prefixes("VECto"), vec![vec!["vecto".to_owned()]]);
+        assert_eq!(full.prefixes("Café"), vec![vec!["cafe".to_owned()]]);
+        // The stemming does not remove the typed spelling — it adds one beside
+        // it. `runni` stems to itself, so there is only the one.
+        assert_eq!(full.prefixes("runni"), vec![vec!["runni".to_owned()]]);
+        assert_eq!(full.terms("running"), vec!["run"]);
+        // A prefix longer than the stem and not a word of its own reaches
+        // nothing, because the store never held those letters.
+        assert!(!reaches(&full, "running", "runni"));
+        // A prefix at or below the stem does reach it.
+        assert!(reaches(&full, "running", "ru"));
+    }
+
+    #[test]
+    fn a_complete_word_is_a_prefix_of_itself_even_when_it_stems_to_something_shorter() {
+        // The case that makes the second spelling necessary, and the one a
+        // reader hits first: typing all of a word rather than most of it.
+        let full = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii, Filter::Stemmer]);
+        assert_eq!(full.terms("contention"), vec!["content"]);
+        assert!(reaches(&full, "Locking and contention", "conten"));
+        assert!(reaches(&full, "Locking and contention", "contention"));
+        assert!(reaches(&full, "Running a compaction", "running"));
+        // Which is the property in general: a prefix reaches at least what an
+        // exact term match reaches.
+        for word in ["contention", "running", "locking", "compaction"] {
+            let stored = "Locking and contention while running a compaction";
+            let terms = full.terms(stored);
+            let exact = full.terms(word);
+            assert!(exact.iter().all(|term| terms.contains(term)), "{word}");
+            assert!(reaches(&full, stored, word), "{word}");
+        }
+    }
+
+    #[test]
+    fn a_chain_with_no_stemmer_offers_one_spelling_per_word() {
+        // The two alternatives coincide, so on a field that does not stem there
+        // is no asymmetry and no second walk to pay for.
+        for text in ["Ada Lovelace", "Café au lait", "1843"] {
+            let asked = simple().prefixes(text);
+            let terms = simple().terms(text);
+            assert_eq!(asked.len(), terms.len(), "{text}");
+            for (alternatives, term) in asked.iter().zip(&terms) {
+                assert_eq!(alternatives, &vec![term.clone()], "{text}");
+            }
+        }
     }
 
     #[test]

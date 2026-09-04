@@ -824,6 +824,29 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `MATCHES PREFIX` whose prefix is shorter than the store will serve.
+    ///
+    /// Refused rather than answered slowly, and refused **before any access path
+    /// is chosen**, so an index cannot change whether the query runs. The cost
+    /// of a prefix is the size of its expansion, and a one- or two-character
+    /// prefix expands to a large fraction of the vocabulary — an answer nobody
+    /// can use, paid for in full, on the query a frustrated reader retries.
+    ///
+    /// The limit is stated in the message because a refusal that does not say
+    /// what would have worked leaves the caller guessing at it.
+    #[error(
+        "the prefix {prefix:?} is shorter than {minimum} characters, \
+         which is the shortest this store will expand (at {span})"
+    )]
+    PrefixTooShort {
+        /// The prefix as it was analysed, not as it was typed.
+        prefix: String,
+        /// The shortest prefix that would have been served.
+        minimum: usize,
+        /// Where the query was written.
+        span: Span,
+    },
+
     /// A vector distance this store does not have.
     ///
     /// The distance is declared rather than defaulted, because a default would

@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use tessari_constants::SEARCH_PREFIX_EXPANSION_CAP;
 use tessari_geo::{Cell, Shape as Geometry};
 use tessari_ql::{BinaryOp, Expr};
 use tessari_storage::{IndexDefinition, Transaction};
@@ -165,6 +166,87 @@ impl Session<'_> {
                             served: Served::Terms(terms.clone()),
                             index: (*index).clone(),
                             rows: Rows::AtMost(smallest),
+                        });
+                    }
+                }
+                Comparison::PrefixTerms => {
+                    let (Value::String(query), Some(analyzer)) =
+                        (bound, searched.analyzer(seek.path))
+                    else {
+                        continue;
+                    };
+                    let asked = analyzer.prefixes(query);
+                    if asked.is_empty() {
+                        continue;
+                    }
+                    for index in serving(declared, seek.path, true) {
+                        // Every word is expanded before any candidate is
+                        // offered, because one word reaching past the cap
+                        // decides the whole read: the answer is a conjunction,
+                        // so an index that cannot enumerate one of its parts
+                        // cannot serve it at all.
+                        //
+                        // Past the cap the candidate is **not offered** and the
+                        // scan answers. It is not a refusal, deliberately: a cap
+                        // that refused would make a statement run on a table
+                        // with no index and fail on the same table once somebody
+                        // added one, which is the failure the access-path rule
+                        // exists to prevent.
+                        let mut expansions = Vec::with_capacity(asked.len());
+                        let mut ceiling: u64 = u64::MAX;
+                        let mut serviceable = true;
+                        for alternatives in &asked {
+                            let mut reached: BTreeSet<String> = BTreeSet::new();
+                            for prefix in alternatives {
+                                let found = transaction.terms_with_prefix(
+                                    index,
+                                    prefix,
+                                    SEARCH_PREFIX_EXPANSION_CAP,
+                                )?;
+                                if found.capped {
+                                    serviceable = false;
+                                    break;
+                                }
+                                reached.extend(found.terms);
+                            }
+                            // The alternatives overlap — a word and its stem
+                            // share a beginning — so the union is deduplicated
+                            // before it is measured against the cap, and a word
+                            // is judged by how many distinct terms it actually
+                            // reaches rather than by how many times it was
+                            // asked.
+                            if !serviceable || reached.len() > SEARCH_PREFIX_EXPANSION_CAP {
+                                serviceable = false;
+                                break;
+                            }
+                            if reached.is_empty() {
+                                // A word nothing begins with makes the whole
+                                // conjunction empty, and the index can say so
+                                // without reading a single posting.
+                                expansions.clear();
+                                expansions.push(Vec::new());
+                                ceiling = 0;
+                                break;
+                            }
+                            // The union of these postings is at most their sum,
+                            // and the intersection across words is at most the
+                            // smallest union. Both are counts of keys rather
+                            // than sets of ids, so the ceiling stays cheap.
+                            let mut union: u64 = 0;
+                            for term in &reached {
+                                union = union
+                                    .saturating_add(transaction.document_frequency(index, term)?);
+                            }
+                            ceiling = ceiling.min(union);
+                            expansions.push(reached.into_iter().collect());
+                        }
+                        if !serviceable {
+                            continue;
+                        }
+                        offered.push(Candidate {
+                            served: Served::PrefixTerms(expansions),
+                            index: (*index).clone(),
+                            rows: Rows::AtMost(ceiling),
                         });
                     }
                 }

@@ -34,7 +34,7 @@ use crate::outcome::{AccessPath, Note};
 use crate::plan;
 use crate::plan::Plan;
 use crate::rank::{Corpus, score};
-use crate::search::{Searched, matches_terms};
+use crate::search::{Searched, matches_prefix_terms, matches_terms};
 use crate::session::Session;
 
 /// How many of an index's leading values an index-served order compares.
@@ -186,12 +186,12 @@ impl Session<'_> {
                     };
                     let analyzer = scope.analyzer(&field.path);
                     let held = field.path.reach(record);
-                    return Ok(Value::Bool(held.into_iter().any(|value| {
-                        if *op == BinaryOp::Matches {
-                            matches_terms(analyzer, value, &other)
-                        } else {
+                    return Ok(Value::Bool(held.into_iter().any(|value| match *op {
+                        BinaryOp::Matches => matches_terms(analyzer, value, &other),
+                        BinaryOp::MatchesPrefix => matches_prefix_terms(analyzer, value, &other),
+                        held_op => {
                             scope.compared(value, &other);
-                            apply(*op, value, &other)
+                            apply(held_op, value, &other)
                         }
                     })));
                 }
@@ -200,12 +200,16 @@ impl Session<'_> {
                 // analyzer turns this field's text into terms is a property of
                 // the field, so that both a scan and an index ask the same
                 // question of it.
-                if *op == BinaryOp::Matches {
+                if matches!(*op, BinaryOp::Matches | BinaryOp::MatchesPrefix) {
                     let analyzer = match &left.kind {
                         ExprKind::Path(field) => scope.analyzer(&field.path),
                         _ => None,
                     };
-                    return Ok(Value::Bool(matches_terms(analyzer, &held, &other)));
+                    return Ok(Value::Bool(if *op == BinaryOp::Matches {
+                        matches_terms(analyzer, &held, &other)
+                    } else {
+                        matches_prefix_terms(analyzer, &held, &other)
+                    }));
                 }
                 // Beside the comparison rather than inside it: what an operator
                 // means once both sides are values belongs to `tessari_types`,
@@ -1847,6 +1851,16 @@ impl Session<'_> {
             plan::Served::Terms(terms) => {
                 let mut rows = Vec::new();
                 for id in transaction.records_by_terms(&chosen.index, terms)? {
+                    let at = RecordAddress::new(context.namespace, context.database, table, id);
+                    if let Some(payload) = transaction.get(&at)? {
+                        rows.push((at.id, payload));
+                    }
+                }
+                Ok(rows)
+            }
+            plan::Served::PrefixTerms(expansions) => {
+                let mut rows = Vec::new();
+                for id in transaction.records_by_expansions(&chosen.index, expansions)? {
                     let at = RecordAddress::new(context.namespace, context.database, table, id);
                     if let Some(payload) = transaction.get(&at)? {
                         rows.push((at.id, payload));

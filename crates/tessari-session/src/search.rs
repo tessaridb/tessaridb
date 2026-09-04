@@ -27,7 +27,9 @@ use tessari_ql::{BinaryOp, Expr, ExprKind, Function};
 use tessari_storage::{Catalog, Transaction};
 use tessari_types::{Analyzer, Path, TableId, Value};
 
-use crate::error::Result;
+use tessari_constants::SEARCH_PREFIX_MINIMUM;
+
+use crate::error::{Error, Result};
 use crate::rank::Corpus;
 use crate::session::Session;
 
@@ -68,8 +70,9 @@ impl Session<'_> {
     ) -> Result<Searched> {
         let mut wanted = Vec::new();
         let mut ranked: Vec<(&Path, &Expr)> = Vec::new();
+        let mut prefixed: Vec<(&Path, &Expr)> = Vec::new();
         for expr in expressions {
-            searched_paths(expr, &mut wanted, &mut ranked);
+            searched_paths(expr, &mut wanted, &mut ranked, &mut prefixed);
         }
         if wanted.is_empty() {
             return Ok(Searched::default());
@@ -91,6 +94,37 @@ impl Session<'_> {
             for path in &wanted {
                 if named.get(path.root()) == Some(&definition.name) {
                     analyzers.insert((*path).clone(), definition.analyzer.clone());
+                }
+            }
+        }
+
+        // The prefix contract is checked **here**, once per read and before any
+        // access path exists. That placement is the whole guarantee: a refusal
+        // raised where the index is chosen would make the same statement run on
+        // a table without an index and fail on one with it, which is the exact
+        // failure this store's access-path rule exists to prevent.
+        for (path, query) in prefixed {
+            let Some(analyzer) = analyzers.get(path) else {
+                continue;
+            };
+            let Value::String(text) = self.evaluate(transaction, query)? else {
+                continue;
+            };
+            for alternatives in analyzer.prefixes(&text) {
+                // The **typed** spelling decides, which is the first of the
+                // alternatives. Judging by the stem instead would refuse
+                // `runs` — three letters typed, two stored — and admit a word
+                // whose stem happens to be long, so the limit would depend on
+                // English morphology rather than on what the reader wrote.
+                let Some(prefix) = alternatives.first() else {
+                    continue;
+                };
+                if prefix.chars().count() < SEARCH_PREFIX_MINIMUM {
+                    return Err(Error::PrefixTooShort {
+                        prefix: prefix.clone(),
+                        minimum: SEARCH_PREFIX_MINIMUM,
+                        span: query.span,
+                    });
                 }
             }
         }
@@ -143,6 +177,7 @@ fn searched_paths<'a>(
     expr: &'a Expr,
     into: &mut Vec<&'a Path>,
     ranked: &mut Vec<(&'a Path, &'a Expr)>,
+    prefixed: &mut Vec<(&'a Path, &'a Expr)>,
 ) {
     match &expr.kind {
         ExprKind::Binary {
@@ -152,6 +187,16 @@ fn searched_paths<'a>(
         } => {
             if let ExprKind::Path(field) = &left.kind {
                 into.push(&field.path);
+            }
+        }
+        ExprKind::Binary {
+            op: BinaryOp::MatchesPrefix,
+            left,
+            right,
+        } => {
+            if let ExprKind::Path(field) = &left.kind {
+                into.push(&field.path);
+                prefixed.push((&field.path, right));
             }
         }
         ExprKind::Call {
@@ -169,17 +214,19 @@ fn searched_paths<'a>(
         }
         ExprKind::Call { arguments, .. } => {
             for argument in arguments {
-                searched_paths(argument, into, ranked);
+                searched_paths(argument, into, ranked, prefixed);
             }
         }
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Binary { left, right, .. }
         | ExprKind::Arithmetic { left, right, .. } => {
-            searched_paths(left, into, ranked);
-            searched_paths(right, into, ranked);
+            searched_paths(left, into, ranked, prefixed);
+            searched_paths(right, into, ranked, prefixed);
         }
-        ExprKind::Not(inner) | ExprKind::Negate(inner) => searched_paths(inner, into, ranked),
+        ExprKind::Not(inner) | ExprKind::Negate(inner) => {
+            searched_paths(inner, into, ranked, prefixed);
+        }
         _ => {}
     }
 }
@@ -197,4 +244,37 @@ pub(crate) fn matches_terms(analyzer: Option<&Analyzer>, held: &Value, wanted: &
     let terms = analyzer.terms(text);
     let asked = analyzer.terms(query);
     !asked.is_empty() && asked.iter().all(|term| terms.contains(term))
+}
+
+/// Whether the analyzed text holds a term beginning with every prefix of the
+/// query.
+///
+/// **Every** prefix and **a** term: the conjunction is across what was typed and
+/// the disjunction is within each word, which is what "documents about vecto…
+/// and lo…" means. The same shape `MATCHES` has, one level looser.
+///
+/// The query is analysed with [`Analyzer::prefixes`] rather than
+/// [`Analyzer::terms`] — the beginning of a word is not a word, and stemming it
+/// produces the beginning of nothing. That function carries the argument.
+///
+/// This is the **scan**'s answer. The index reaches the same set through the term
+/// dictionary, and the two are asserted to agree record for record, exactly as
+/// they are for `MATCHES`.
+pub(crate) fn matches_prefix_terms(
+    analyzer: Option<&Analyzer>,
+    held: &Value,
+    wanted: &Value,
+) -> bool {
+    let (Some(analyzer), Value::String(text), Value::String(query)) = (analyzer, held, wanted)
+    else {
+        return false;
+    };
+    let terms = analyzer.terms(text);
+    let asked = analyzer.prefixes(query);
+    !asked.is_empty()
+        && asked.iter().all(|alternatives| {
+            alternatives
+                .iter()
+                .any(|prefix| terms.iter().any(|term| term.starts_with(prefix)))
+        })
 }
