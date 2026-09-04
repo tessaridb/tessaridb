@@ -1743,6 +1743,55 @@ equality or a prefix and nothing else. Asking the wrong one would return the
 wrong rows rather than none, so the shape of the test is checked against the
 index before either is used.
 
+#### A quoted phrase — the words in that order
+
+```
+SELECT * FROM notes WHERE body MATCHES '"ada lovelace"';
+SELECT * FROM notes WHERE body MATCHES '"ada wrote"~1';
+```
+
+Quoting a query makes it a **phrase**: the words in the order written, adjacent.
+`'ada lovelace'` finds every record holding both words anywhere; `'"ada
+lovelace"'` finds only the ones holding them side by side, in that order. A
+record reading `lovelace ada` answers the first and not the second, which is the
+whole of the difference — the two hold the same words with the same frequencies,
+so nothing but order separates them.
+
+A trailing `~n` declares **slop**: how many extra words the run may absorb while
+staying in order.
+
+```
+SELECT * FROM notes WHERE body MATCHES '"ada wrote"~0';  -- adjacent only
+SELECT * FROM notes WHERE body MATCHES '"ada wrote"~1';  -- one word may sit between
+```
+
+`~0` and no marker at all are the same query, so an exact phrase is slop 0 rather
+than a separate rule. **Slop widens the window and never relaxes the order** — no
+value of `n` makes `'"wrote ada"'` match text reading `ada … wrote`.
+
+A phrase needs no index and no special declaration. The analyzer belongs to the
+field rather than to an index, so the words are already in order wherever they
+are read from, and a phrase means the same thing with an index and without one.
+
+A marker that is not a whole number is **refused by name** rather than answered:
+
+```
+SELECT * FROM notes WHERE body MATCHES '"ada lovelace"~x';
+```
+
+The refusal reads *"~x" is not a slop marker; write `~` followed by a whole
+number, as in "a phrase"~2, or leave it off for an exact phrase*.
+
+Reading `~x` as an exact phrase would answer a question nobody asked, and
+letting the characters fall through to the analyzer makes `x` a word of its own
+that no record holds — so the query would answer nothing, which looks exactly
+like "no matches" and means something else entirely. The refusal is raised before
+any index is consulted, so whether a query is refused never depends on what
+happens to be indexed.
+
+One quote is not a phrase. `'"ada lovelace'` is the two words, unquoted, because
+guessing which quote was meant would make the query depend on a typo.
+
 #### `MATCHES PREFIX` — the words a reader has started typing
 
 ```
@@ -4974,10 +5023,9 @@ be, because it is confined to the run its fixed values name.
 | a traversal that answers with the path rather than its end | the answer would be a list of records rather than a record, which is a shape for rows and not for records — the same wall the join met, and the same milestone |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |
 | n-grams, so `MATCHES` never answers a substring question | index size proportional to text length × (max − min), paid on every write; Q-31 holds the measurement that would decide it |
-| phrase queries (`'"ada lovelace"'`) | they need positions in the postings and a second matching rule |
 | layers in the vector index | a hierarchical graph assigns each node a random level, and a random level is what a store whose index entries are *derived rather than logged* cannot have — two replicas would build different graphs from one log. A level derived from a hash of the record id is the right shape when the layers earn their cost; the key already reserves the byte. |
 | a filtered nearest-neighbour read | the graph answers a distance question and knows nothing of a `WHERE`, so combining them needs either over-fetching by an unknown factor or a filtered walk |
-| highlighting, fuzzy matching, phrase and proximity queries | each needs postings to carry more than membership — offsets for a highlight or a phrase, an edit automaton for fuzziness — which is a different index rather than a bigger one. Ranking itself is built: see [Ranking](#ranking) |
+| highlighting | it needs the postings to carry byte offsets, which is a different index rather than a bigger one, and a rule for which of the matched terms a fragment is chosen around. Fuzzy matching, phrase and proximity queries were listed here until they were built: each turned out to need no index change at all, because the analyzer is a property of the *schema* and so the ordered token list is already in hand wherever text is read — see `MATCHES FUZZY` and the quoted-phrase form of `MATCHES` above. Ranking itself is built: see [Ranking](#ranking) |
 | per-index `k1` / `b`, per-field weighting | tuning knobs nobody can yet turn responsibly: this project has no labelled relevance set to measure a different value against, and a knob chosen without one is a guess with a syntax |
 | a **function applied to each reached value** | `array::len(tags[*])` is refused because it has two answers — the function over the collected values, or the function applied to each of them. The second is a mapping operator and deserves its own spelling rather than being what a parenthesis happens to mean. §3 |
 | a **`UNIQUE` multikey index** | two readings — no two records sharing an element, or a record's own elements being distinct — which refuse different writes. It needs a spelling that says which, not a default. §4 |

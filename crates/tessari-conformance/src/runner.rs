@@ -225,6 +225,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::LastGrant { .. } => "LastGrant",
         Error::NoSearchIndex { .. } => "NoSearchIndex",
         Error::PrefixTooShort { .. } => "PrefixTooShort",
+        Error::MalformedSlop { .. } => "MalformedSlop",
         Error::NoSuchDistance { .. } => "NoSuchDistance",
         Error::OutsideTenancy { .. } => "OutsideTenancy",
         Error::NotArithmetic { .. } => "NotArithmetic",

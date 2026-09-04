@@ -847,6 +847,33 @@ pub enum Error {
         span: Span,
     },
 
+    /// A quoted phrase whose trailing slop marker does not parse.
+    ///
+    /// Refused rather than answered, and refused **before any access path is
+    /// chosen**, for the same reason [`Error::PrefixTooShort`] is: whether a
+    /// query runs must not depend on whether an index happens to exist.
+    ///
+    /// The alternative is what this store did before phrases existed, and it is
+    /// the failure the whole operator was built to remove. `~x` is not a slop
+    /// marker, so the characters fall through to the analyzer, `x` becomes a
+    /// term of its own, no record holds it, and the query answers `[]` — an
+    /// empty answer that looks exactly like "nothing matched" and is really
+    /// "you typed something I did not understand". A caller cannot tell those
+    /// apart, and nothing in the answer invites them to look.
+    ///
+    /// Reading it as slop 0 would be the same mistake wearing a helpful face: it
+    /// answers a question the caller did not ask, and it does so silently.
+    #[error(
+        "{marker:?} is not a slop marker; write `~` followed by a whole number, \
+         as in \"a phrase\"~2, or leave it off for an exact phrase (at {span})"
+    )]
+    MalformedSlop {
+        /// The tail as written, after the phrase's closing quote.
+        marker: String,
+        /// Where the query was written.
+        span: Span,
+    },
+
     /// A vector distance this store does not have.
     ///
     /// The distance is declared rather than defaulted, because a default would

@@ -84,9 +84,28 @@ impl Session<'_> {
         let mut wanted = Vec::new();
         let mut ranked: Vec<(&Path, &Expr)> = Vec::new();
         let mut prefixed: Vec<(&Path, &Expr, BinaryOp)> = Vec::new();
+        let mut phrased: Vec<&Expr> = Vec::new();
         for expr in expressions {
-            searched_paths(expr, &mut wanted, &mut ranked, &mut prefixed);
+            searched_paths(expr, &mut wanted, &mut ranked, &mut prefixed, &mut phrased);
         }
+
+        // The phrase contract is checked FIRST, before the catalog is read at
+        // all — earlier even than the prefix contract below, which needs an
+        // analyzer. A malformed slop marker is a mistake in the query and not a
+        // question about the data, so nothing about the table, the field or the
+        // indexes may change whether it is refused.
+        for query in phrased {
+            let Value::String(text) = self.evaluate(transaction, query)? else {
+                continue;
+            };
+            if let Some(marker) = malformed_slop(&text) {
+                return Err(Error::MalformedSlop {
+                    marker: marker.to_owned(),
+                    span: query.span,
+                });
+            }
+        }
+
         if wanted.is_empty() {
             return Ok(Searched::default());
         }
@@ -203,15 +222,17 @@ fn searched_paths<'a>(
     into: &mut Vec<&'a Path>,
     ranked: &mut Vec<(&'a Path, &'a Expr)>,
     prefixed: &mut Vec<(&'a Path, &'a Expr, BinaryOp)>,
+    phrased: &mut Vec<&'a Expr>,
 ) {
     match &expr.kind {
         ExprKind::Binary {
             op: BinaryOp::Matches,
             left,
-            ..
+            right,
         } => {
             if let ExprKind::Path(field) = &left.kind {
                 into.push(&field.path);
+                phrased.push(right);
             }
         }
         ExprKind::Binary {
@@ -239,35 +260,165 @@ fn searched_paths<'a>(
         }
         ExprKind::Call { arguments, .. } => {
             for argument in arguments {
-                searched_paths(argument, into, ranked, prefixed);
+                searched_paths(argument, into, ranked, prefixed, phrased);
             }
         }
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Binary { left, right, .. }
         | ExprKind::Arithmetic { left, right, .. } => {
-            searched_paths(left, into, ranked, prefixed);
-            searched_paths(right, into, ranked, prefixed);
+            searched_paths(left, into, ranked, prefixed, phrased);
+            searched_paths(right, into, ranked, prefixed, phrased);
         }
         ExprKind::Not(inner) | ExprKind::Negate(inner) => {
-            searched_paths(inner, into, ranked, prefixed);
+            searched_paths(inner, into, ranked, prefixed, phrased);
         }
         _ => {}
     }
 }
 
-/// Whether the analyzed text holds every term of the query.
+/// The inside of a quoted phrase, when the query is one.
+///
+/// Recognised on the **raw** query string, before analysis, because by the time
+/// terms exist the quotes are gone: the tokenizer splits on anything that is not
+/// alphanumeric and drops empty tokens, so punctuation contributes nothing. A
+/// phrase asked of `Analyzer::terms` is indistinguishable from the same words
+/// unquoted — which is exactly what this store did until it did not, and the
+/// failure was silent in the worst way, answering plausible records in the wrong
+/// order rather than answering nothing.
+///
+/// Both quotes are required. A string with one is a string with one, not a
+/// phrase somebody half-typed, and guessing which they meant would make the
+/// operator's meaning depend on a typo.
+///
+/// A trailing `~n` declares **slop**: how many extra tokens the run may absorb.
+/// It lives inside the string because that is where the phrase already lives,
+/// so no grammar changes and a phrase stays one value a caller can build. `~0`
+/// and no marker at all are the same query, which is the property that makes
+/// "exact phrase is slop 0" true by construction rather than by convention.
+///
+/// A malformed marker — `~`, `~-1`, `~x` — is **not** silently treated as 0.
+/// It is not a phrase at all, so the query falls back to conjunction, which is
+/// what an unparseable phrase already meant before this wave.
+fn phrase_of(query: &str) -> Option<(&str, usize)> {
+    let trimmed = query.trim();
+    let rest = trimmed.strip_prefix('"')?;
+    // Split at the LAST quote, so a phrase may contain one.
+    let (inner, tail) = rest.rsplit_once('"')?;
+    if tail.is_empty() {
+        return Some((inner, 0));
+    }
+    let slop = tail.strip_prefix('~')?.parse::<usize>().ok()?;
+    Some((inner, slop))
+}
+
+/// The malformed slop marker in a query, when somebody tried to write one.
+///
+/// Separate from [`phrase_of`] because the two answer different questions: that
+/// one asks *is this a phrase*, this one asks *did somebody mean one and get the
+/// marker wrong*. A string with no opening quote is not an attempt at either.
+pub(crate) fn malformed_slop(query: &str) -> Option<&str> {
+    let trimmed = query.trim();
+    let (_, tail) = trimmed.strip_prefix('"')?.rsplit_once('"')?;
+    if tail.is_empty() {
+        return None;
+    }
+    match tail.strip_prefix('~').map(str::parse::<usize>) {
+        Some(Ok(_)) => None,
+        _ => Some(tail),
+    }
+}
+
+/// The terms a query asks for, whatever shape the query has.
+///
+/// **One function, because the scan and the index must agree on this.** The
+/// index generates candidates from these terms and the predicate then refines
+/// them, so a query the two analyse differently is a query the index answers
+/// empty while the scan answers correctly — a divergence that depends on
+/// whether an index happens to exist, which is exactly what ADR-0046 forbids.
+///
+/// That divergence was not hypothetical: computing this in two places meant a
+/// slop marker tokenized into a term of its own on the index side. `~0` asked
+/// the dictionary for a term `0`, no record held one, and the candidate set was
+/// empty — so `MATCHES '"ada lovelace"~0'` answered nothing with an index and
+/// correctly with none.
+pub(crate) fn asked_terms(analyzer: &Analyzer, query: &str) -> Vec<String> {
+    match phrase_of(query) {
+        Some((inner, _)) => analyzer.terms(inner),
+        None => analyzer.terms(query),
+    }
+}
+
+/// Whether `asked` appears in `held` in order, within `slop` extra tokens.
+///
+/// Order is the whole difference between a phrase and a conjunction, and the
+/// reason the fixture that tests it holds the same two terms in both orders:
+/// `ada lovelace` and `lovelace ada` carry identical terms with identical
+/// frequencies, so every test written against conjunction passes on either.
+///
+/// The span of a run of `n` terms is `n - 1` when they are adjacent, so the
+/// admissible span is `n - 1 + slop` and **slop 0 is contiguity** — the two
+/// cases are one rule rather than a special case and a general one, which is
+/// what keeps them from drifting apart.
+///
+/// For a fixed start the *earliest* later occurrence of each term minimises the
+/// span, so a greedy walk decides the whole question and no backtracking is
+/// needed.
+fn holds_run(held: &[String], asked: &[String], slop: usize) -> bool {
+    let Some(first) = asked.first() else {
+        return false;
+    };
+    let limit = asked.len().saturating_sub(1).saturating_add(slop);
+    held.iter().enumerate().any(|(start, token)| {
+        if token != first {
+            return false;
+        }
+        let mut at = start;
+        for term in &asked[1..] {
+            let Some(found) = held
+                .iter()
+                .skip(at.saturating_add(1))
+                .position(|held| held == term)
+            else {
+                return false;
+            };
+            at = at.saturating_add(1).saturating_add(found);
+        }
+        at.saturating_sub(start) <= limit
+    })
+}
+
+/// Whether the analyzed text answers the query — as a phrase when it is quoted,
+/// and as a conjunction when it is not.
 ///
 /// **Every** term, because "find me documents about X Y" means both — and a
 /// field with no analyzer holds no terms, so it matches nothing rather than
 /// failing.
+///
+/// A **quoted** query means the words in that order and adjacent. It is answered
+/// here, exactly, without an index and without positions: the analyzer is a
+/// property of the *field* rather than of an index, so this function already
+/// holds the record's ordered token list, and a token's ordinal is its index in
+/// that list. Positions on an index are therefore an access path and not a
+/// capability — the same relationship the term dictionary has to `MATCHES` — so
+/// a phrase on a field nobody declared `positions` for is answered rather than
+/// refused (ADR-0046, applied without amendment).
+///
+/// One token in, one token out is what makes the ordinals line up: `lowercase`,
+/// `ascii` and `stemmer` each map a token to exactly one token. A filter that
+/// split or dropped one would move a phrase's meaning silently, which is why
+/// the tests assert that property directly rather than inferring it from a
+/// passing query.
 pub(crate) fn matches_terms(analyzer: Option<&Analyzer>, held: &Value, wanted: &Value) -> bool {
     let (Some(analyzer), Value::String(text), Value::String(query)) = (analyzer, held, wanted)
     else {
         return false;
     };
     let terms = analyzer.terms(text);
-    let asked = analyzer.terms(query);
+    let asked = asked_terms(analyzer, query);
+    if let Some((_, slop)) = phrase_of(query) {
+        return holds_run(&terms, &asked, slop);
+    }
     !asked.is_empty() && asked.iter().all(|term| terms.contains(term))
 }
 

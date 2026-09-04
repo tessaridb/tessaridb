@@ -149,7 +149,12 @@ impl Session<'_> {
                     else {
                         continue;
                     };
-                    let terms = analyzer.terms(query);
+                    // Not `analyzer.terms(query)`: a phrase's wrapper and its
+                    // slop marker are not terms, and asking the dictionary for
+                    // them returns an empty candidate set for a query the scan
+                    // answers. The index and the predicate must ask the same
+                    // question of the same string.
+                    let terms = crate::search::asked_terms(analyzer, query);
                     if terms.is_empty() {
                         continue;
                     }

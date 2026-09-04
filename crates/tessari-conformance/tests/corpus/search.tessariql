@@ -244,3 +244,71 @@ SELECT * FROM mistyped WHERE body MATCHES FUZZY 'vectro';
 --- case: but a transposition inside the first three characters is not found
 SELECT * FROM mistyped WHERE body MATCHES FUZZY 'vetcor';
 --- expect: rows 0
+
+--- case: a collection holding the same two words in both orders
+DEFINE COLLECTION phrased;
+DEFINE FIELD body ON phrased TYPE string ANALYZER simple;
+CREATE phrased:1 = { body: 'ada lovelace wrote the first program' };
+CREATE phrased:2 = { body: 'lovelace ada, reversed on purpose' };
+CREATE phrased:3 = { body: 'ada alone without the surname' };
+--- expect: ok
+
+--- case: unquoted is a conjunction, so word order does not matter
+SELECT * FROM phrased WHERE body MATCHES 'ada lovelace';
+--- expect: rows 2
+
+--- case: quoted is a phrase, so word order is the whole question
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"';
+--- expect: rows 1
+
+--- case: and the reversed phrase finds the reversed record
+SELECT * FROM phrased WHERE body MATCHES '"lovelace ada"';
+--- expect: rows 1
+
+--- case: a phrase of one word is that word
+SELECT * FROM phrased WHERE body MATCHES '"ada"';
+--- expect: rows 3
+
+--- case: slop zero is contiguity, and one word sits between these two
+SELECT * FROM phrased WHERE body MATCHES '"ada wrote"~0';
+--- expect: rows 0
+
+--- case: one token of slop absorbs exactly one token
+SELECT * FROM phrased WHERE body MATCHES '"ada wrote"~1';
+--- expect: rows 1
+
+--- case: slop widens the window and never relaxes the order
+SELECT * FROM phrased WHERE body MATCHES '"wrote ada"~9';
+--- expect: rows 0
+
+--- case: an explicit zero is the bare phrase
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"~0';
+--- expect: rows 1
+
+--- case: one quote is not a phrase, so it is the words it holds
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace';
+--- expect: rows 2
+
+--- case: a slop marker that is not a number is refused by name
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"~x';
+--- expect: error MalformedSlop
+
+--- case: a slop marker with no number is the same refusal
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"~';
+--- expect: error MalformedSlop
+
+--- case: a negative slop is refused rather than clamped to zero
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"~-1';
+--- expect: error MalformedSlop
+
+--- case: an index does not change what a phrase means
+DEFINE INDEX by_phrased ON phrased FIELDS body SEARCH;
+--- expect: ok
+
+--- case: the same phrase, now served from the index
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"';
+--- expect: rows 1
+
+--- case: and the refusal is raised before the index is consulted
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"~x';
+--- expect: error MalformedSlop
