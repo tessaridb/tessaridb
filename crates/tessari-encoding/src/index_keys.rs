@@ -226,6 +226,41 @@ pub struct PostingKey {
     pub id: RecordId,
 }
 
+/// One distinct term of one search index — the dictionary entry.
+///
+/// # Why a keyspace for something the postings already imply
+///
+/// The set of terms an index holds is derivable: walk every posting and take the
+/// distinct prefixes. That is precisely the problem. Enumerating the terms under
+/// `vect` today means walking every posting of `vector`, `vectors`, `vectorised`
+/// and everything else that starts that way — work proportional to how many
+/// *records* hold those words, to answer a question about *words*.
+///
+/// One entry per term makes three things bounded that are not bounded without
+/// it, which is what earns a keyspace rather than a derived read:
+///
+/// - a **prefix** is a range read over distinct terms;
+/// - a **fuzzy** match is an automaton intersected with an ordered walk of them;
+/// - a term's **document frequency** is a point read, where it is currently a
+///   scan of the term's whole posting range counted entry by entry — already the
+///   dominant cost of a ranked read, once per query term per query.
+///
+/// The key is `address | term` with no record suffix, so a term has exactly one
+/// entry and finding it is a point read. It sorts beside its own postings only
+/// by accident of the address prefix; the kinds are separate bytes, so the
+/// dictionary can be scanned without touching a single posting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchTermKey {
+    /// Which index this term belongs to.
+    pub address: IndexAddress,
+    /// The term, order-encoded exactly as the posting encodes it.
+    ///
+    /// The same encoding deliberately: a dictionary entry that spelled its term
+    /// differently from the postings beside it would be a second vocabulary, and
+    /// a prefix walk over one would not reach the other.
+    pub term: IndexValues,
+}
+
 /// What one search index knows about its collection as a whole.
 ///
 /// A posting says a term is in a document. A **score** says how much that
@@ -341,6 +376,66 @@ impl StoreValue for SearchStatistics {
         let terms = reader.take_u64()?;
         reader.finish()?;
         Ok(Self { documents, terms })
+    }
+}
+
+/// What one search index knows about one term.
+///
+/// # One number, and where the second one goes
+///
+/// `documents` is the term's document frequency — how many records hold it. It
+/// is maintained rather than counted for the reason the collection statistics
+/// are: counting it means walking the term's whole posting range, and a ranked
+/// read does that once per query term, per query.
+///
+/// The format specification places a second number here, `max_impact`: the
+/// largest contribution any single posting of this term can make to a score,
+/// which is the upper bound safe top-k pruning prunes against. It is
+/// deliberately **not** written yet. Nothing reads it until there is a pruning
+/// evaluator, and a maintained bound with no reader is a number that can drift
+/// for a release without anything failing. The payload dispatches on its own
+/// length, so adding it is a value-codec bump and not a redesign — the same
+/// mechanism that lets a membership posting and a counted one share a keyspace.
+///
+/// When it does arrive it is a **non-increasing** bound: raised when a posting
+/// exceeds it, never lowered on delete, because a maximum cannot fall without
+/// knowing the second-largest. It stays sound and becomes loose, which costs
+/// pruning efficiency and never correctness. A bound wrong in the other
+/// direction would silently change the result set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TermStatistics {
+    /// How many records hold this term.
+    pub documents: u64,
+}
+
+impl TermStatistics {
+    /// State the frequency.
+    #[must_use]
+    pub const fn new(documents: u64) -> Self {
+        Self { documents }
+    }
+}
+
+impl StoreValue for TermStatistics {
+    fn encode(&self) -> Value {
+        let mut writer = KeyWriter::new();
+        writer.put_u64(self.documents);
+        let body = writer.finish();
+        let mut buffer = with_header(0, body.len());
+        buffer.extend_from_slice(&body);
+        Value::from(buffer)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let (_, payload) = split_header(bytes, 0)?;
+        let mut reader = KeyReader::new(KeyKind::SearchTerm, payload);
+        let documents = reader.take_u64()?;
+        // Trailing bytes are refused rather than ignored. When `max_impact`
+        // arrives it arrives as a longer payload this build has never seen, and
+        // reading such an entry as though it were the shorter one would report a
+        // frequency from a format whose meaning this build cannot check.
+        reader.finish()?;
+        Ok(Self { documents })
     }
 }
 
@@ -832,6 +927,58 @@ impl StoreKey for PostingKey {
     }
 }
 
+impl SearchTermKey {
+    /// Name one term of one index.
+    #[must_use]
+    pub const fn new(address: IndexAddress, term: IndexValues) -> Self {
+        Self { address, term }
+    }
+
+    /// The prefix every term of one index shares.
+    ///
+    /// Bounding a scan with this walks the whole dictionary and nothing else —
+    /// no postings, no statistics, no entries of another index.
+    #[must_use]
+    pub fn dictionary_prefix(address: &IndexAddress) -> Vec<u8> {
+        address.prefix(KeyKind::SearchTerm)
+    }
+
+    /// The prefix shared by every term beginning with these bytes.
+    ///
+    /// Exact rather than approximate, for the reason
+    /// `IndexValues::string_prefix` gives: a string encodes as its tag, its
+    /// escaped bytes and a terminator, and the escape is byte-local — so the
+    /// entries under this prefix are exactly the terms beginning with it, and
+    /// nothing has to be filtered out afterwards.
+    #[must_use]
+    pub fn term_prefix(address: &IndexAddress, prefix: &str) -> Vec<u8> {
+        let mut bytes = Self::dictionary_prefix(address);
+        bytes.extend_from_slice(&IndexValues::string_prefix(prefix));
+        bytes
+    }
+}
+
+impl StoreKey for SearchTermKey {
+    type Value = TermStatistics;
+
+    const KIND: KeyKind = KeyKind::SearchTerm;
+
+    fn encode(&self) -> Key {
+        let mut bytes = Self::dictionary_prefix(&self.address);
+        bytes.extend_from_slice(self.term.as_slice());
+        Key::from(bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let address = IndexAddress::read(&mut reader)?;
+        let term = take_values(&mut reader)?;
+        reader.finish()?;
+        Ok(Self { address, term })
+    }
+}
+
 impl UniqueIndexKey {
     /// Build an entry key.
     #[must_use]
@@ -1076,6 +1223,83 @@ mod tests {
         let encoded = held.encode();
         let read = SearchStatistics::decode(encoded.as_slice()).expect("statistics");
         assert_eq!(read, held);
+    }
+
+    #[test]
+    fn a_dictionary_entry_survives_the_round_trip_and_carries_no_record() {
+        use super::SearchTermKey;
+        let term = IndexValues::of(&[Value::from("vector")]);
+        let key = SearchTermKey::new(address(), term.clone());
+        let encoded = key.encode();
+        let read = SearchTermKey::decode(encoded.as_slice()).expect("a key");
+        assert_eq!(read, key);
+        // One entry per term, so the key ends where the term ends. A record
+        // suffix would make the dictionary as long as the posting list and
+        // remove the whole reason for it.
+        assert_eq!(
+            encoded.as_slice().len(),
+            super::INDEX_PREFIX_LEN + term.as_slice().len()
+        );
+    }
+
+    #[test]
+    fn a_dictionary_entry_and_its_postings_spell_the_term_the_same_way() {
+        use super::{PostingKey, SearchTermKey};
+        // The load-bearing property: a prefix walk of the dictionary finds the
+        // terms whose postings a lookup then reads. Two encodings would be two
+        // vocabularies, and the walk would reach terms the lookup could not.
+        let term = IndexValues::of(&[Value::from("vector")]);
+        let dictionary = SearchTermKey::new(address(), term.clone()).encode();
+        let postings = PostingKey::term_prefix(&address(), &term);
+        assert_eq!(
+            &dictionary.as_slice()[super::INDEX_PREFIX_LEN..],
+            &postings[super::INDEX_PREFIX_LEN..]
+        );
+        // And only the kind byte differs, so scanning one never reaches the
+        // other.
+        assert_ne!(dictionary.as_slice()[0], postings[0]);
+    }
+
+    #[test]
+    fn a_term_prefix_bounds_exactly_the_terms_that_begin_with_it() {
+        use super::SearchTermKey;
+        let bounds = SearchTermKey::term_prefix(&address(), "vect");
+        let under = ["vect", "vector", "vectorised"];
+        for term in under {
+            let key = SearchTermKey::new(address(), IndexValues::of(&[Value::from(term)])).encode();
+            assert!(key.as_slice().starts_with(&bounds), "{term} not under vect");
+        }
+        // And nothing else is, including the words a naive substring match
+        // would admit — the escape is byte-local, so no filtering step is owed.
+        for term in ["vec", "invective", "wave"] {
+            let key = SearchTermKey::new(address(), IndexValues::of(&[Value::from(term)])).encode();
+            assert!(!key.as_slice().starts_with(&bounds), "{term} under vect");
+        }
+    }
+
+    #[test]
+    fn a_term_frequency_survives_the_round_trip() {
+        use super::TermStatistics;
+        for documents in [0_u64, 1, 12_345, u64::MAX] {
+            let held = TermStatistics::new(documents);
+            let read = TermStatistics::decode(held.encode().as_slice()).expect("statistics");
+            assert_eq!(read, held, "{documents}");
+        }
+    }
+
+    #[test]
+    fn a_dictionary_entry_from_a_later_format_is_refused_rather_than_half_read() {
+        use super::TermStatistics;
+        // `max_impact` will arrive as a longer payload. Reading such an entry as
+        // though it were this build's would report a frequency out of a format
+        // whose meaning this build cannot check — the same refusal a posting
+        // with a trailing byte already gets.
+        let mut bytes = TermStatistics::new(7).encode().as_slice().to_vec();
+        bytes.push(0);
+        assert!(
+            TermStatistics::decode(&bytes).is_err(),
+            "trailing byte read"
+        );
     }
 
     #[test]

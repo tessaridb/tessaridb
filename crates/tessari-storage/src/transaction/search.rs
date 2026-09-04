@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, PostingKey, SearchStatistics,
-    SearchStatisticsKey, SecondaryIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
+    SearchStatisticsKey, SearchTermKey, SecondaryIndexKey, StoreKey, StoreValue, TermStatistics,
+    UniqueIndexKey, decode_payload,
 };
 use tessari_kv::{Key, KeyRange, Keyspace, ScanDirection, ScanRequest, Value as KvValue};
 use tessari_types::{RecordId, Value};
@@ -148,22 +149,40 @@ impl Transaction<'_> {
 
     /// How many documents this index posts the term against.
     ///
-    /// The count a ranking needs, and it is a count of the postings rather than
-    /// a number kept beside them — the postings *are* the answer, so a
-    /// maintained copy would be a second statement of one fact.
+    /// The number a ranking weighs a term by. It is read from the term's
+    /// dictionary entry — a **point read** — and only counted from the postings
+    /// when there is no entry to read.
     ///
-    /// The postings are **counted, never materialised**. This was once a scan
-    /// whose `len()` was read off, which decoded every posting key *and value*
-    /// for the term into a `Vec` to arrive at one integer — memory sized by the
-    /// corpus, once per query term, per query. The count is now asked of the
-    /// backend, which walks the range without copying anything out of it.
+    /// # Why there are two paths and why the second one is not a fallback in the
+    /// usual sense
+    ///
+    /// This was a count of the term's whole posting range: not materialised, but
+    /// still a walk proportional to how many records hold the word, performed
+    /// once per query term per query. On a common word in a large table that is
+    /// the dominant cost of a ranked read, and it is spent to arrive at one
+    /// integer the writer already knew.
+    ///
+    /// The dictionary holds that integer. An index written before the dictionary
+    /// existed has none, and its terms have no entries — so the count is what
+    /// answers there, and such an index keeps ranking correctly at the old cost
+    /// rather than reporting every term as unheld. The two paths agree by
+    /// construction: the entry is maintained in the same batch as the postings it
+    /// counts, so a discrepancy is not a state this store can reach.
+    ///
+    /// A term nobody holds has no entry either, and the count it falls through to
+    /// is a walk of an empty range — the cheapest read in the store.
     ///
     /// # Errors
     ///
-    /// Returns an error when the backend fails.
+    /// Returns an error when the backend fails or a stored entry cannot be
+    /// decoded.
     pub fn document_frequency(&self, index: &IndexDefinition, term: &str) -> Result<u64> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let encoded = IndexValues::of(&[Value::from(term)]);
+        let key = SearchTermKey::new(address, encoded.clone()).encode();
+        if let Some(bytes) = self.store.backend().get(SearchTermKey::keyspace(), &key)? {
+            return Ok(TermStatistics::decode(bytes.as_slice())?.documents);
+        }
         let prefix = PostingKey::term_prefix(&address, &encoded);
         Ok(self
             .store

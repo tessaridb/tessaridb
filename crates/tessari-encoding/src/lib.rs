@@ -43,8 +43,9 @@ pub use adjacency::{AdjacencyKey, Direction, EdgeProperties};
 pub use error::{Error, Result};
 pub use index_keys::{
     INDEX_PREFIX_LEN, IndexAddress, IndexTarget, IndexValues, NoPayload, Posting, PostingKey,
-    SearchStatistics, SearchStatisticsKey, SecondaryIndexKey, SpatialRefinement,
-    SpatialRefinementKey, UniqueIndexKey, VectorNode, VectorNodeKey, VectorRecall, VectorRecallKey,
+    SearchStatistics, SearchStatisticsKey, SearchTermKey, SecondaryIndexKey, SpatialRefinement,
+    SpatialRefinementKey, TermStatistics, UniqueIndexKey, VectorNode, VectorNodeKey, VectorRecall,
+    VectorRecallKey,
 };
 pub use keys::{
     AppliedPositionKey, FormatVersionKey, LogKey, NodeIdentityKey, ReclaimFloorKey, RecordKey,

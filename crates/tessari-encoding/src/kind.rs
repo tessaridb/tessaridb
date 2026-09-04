@@ -41,6 +41,8 @@ pub enum KeyKind {
     VectorRecall,
     /// What refining one spatial index's candidates last cost.
     SpatialRefinement,
+    /// One distinct term of one search index — the term dictionary.
+    SearchTerm,
     /// One entry in the ordered log.
     LogEntry,
     /// The store's own on-disk format version.
@@ -92,6 +94,7 @@ impl KeyKind {
         Self::SpatialIndex,
         Self::VectorRecall,
         Self::SpatialRefinement,
+        Self::SearchTerm,
         Self::LogEntry,
         Self::FormatVersion,
         Self::AppliedPosition,
@@ -126,6 +129,7 @@ impl KeyKind {
             Self::SpatialIndex => 0x16,
             Self::VectorRecall => 0x17,
             Self::SpatialRefinement => 0x18,
+            Self::SearchTerm => 0x19,
             Self::LogEntry => 0x20,
             Self::FormatVersion => 0x30,
             Self::AppliedPosition => 0x31,
@@ -155,7 +159,8 @@ impl KeyKind {
             | Self::SearchStatistics
             | Self::SpatialIndex
             | Self::VectorRecall
-            | Self::SpatialRefinement => Keyspace::INDEX,
+            | Self::SpatialRefinement
+            | Self::SearchTerm => Keyspace::INDEX,
             Self::LogEntry => Keyspace::LOG,
             Self::FormatVersion
             | Self::AppliedPosition
@@ -189,6 +194,7 @@ impl KeyKind {
             Self::SpatialIndex => "spatial-index",
             Self::VectorRecall => "vector-recall",
             Self::SpatialRefinement => "spatial-refinement",
+            Self::SearchTerm => "search-term",
             Self::LogEntry => "log-entry",
             Self::FormatVersion => "format-version",
             Self::AppliedPosition => "applied-position",
@@ -271,6 +277,7 @@ mod tests {
             (KeyKind::SpatialIndex, 0x16),
             (KeyKind::VectorRecall, 0x17),
             (KeyKind::SpatialRefinement, 0x18),
+            (KeyKind::SearchTerm, 0x19),
             (KeyKind::LogEntry, 0x20),
             (KeyKind::FormatVersion, 0x30),
             (KeyKind::AppliedPosition, 0x31),
