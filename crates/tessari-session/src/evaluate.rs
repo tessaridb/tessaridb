@@ -9,7 +9,7 @@ use core::ops::Bound;
 use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_constants::ORDERED_FILTER_REACH;
-use tessari_encoding::Direction as AdjacencyDirection;
+use tessari_encoding::{Direction as AdjacencyDirection, Posting};
 use tessari_ql::{
     BinaryOp, DeleteBound, Direction, Expr, ExprKind, FieldPath, Function, Hop, JoinSide,
     Projected, Projection, RecordTarget, Select, Source, Span, TableRef, Using,
@@ -33,8 +33,8 @@ use crate::noticed::Noticed;
 use crate::outcome::{AccessPath, Note};
 use crate::plan;
 use crate::plan::Plan;
-use crate::rank::{Corpus, score};
-use crate::search::{Searched, matches_prefix_terms, matches_terms};
+use crate::rank::{Held, score};
+use crate::search::{Ranked, Searched, matches_prefix_terms, matches_terms};
 use crate::session::Session;
 
 /// How many of an index's leading values an index-served order compares.
@@ -370,8 +370,11 @@ impl Session<'_> {
             // Tested against the whole condition, exactly as a read is: the
             // index narrowed, and the condition decides. A delete that trusted
             // the narrowing would remove records the statement did not name.
-            let held =
-                self.evaluate_in(transaction, condition, Scope::searching(&record, &searched))?;
+            let held = self.evaluate_in(
+                transaction,
+                condition,
+                Scope::searching(&record, &searched).identified(&record_id),
+            )?;
             if !boolean(&held, condition.span)? {
                 continue;
             }
@@ -539,10 +542,9 @@ impl Session<'_> {
         } else if let Some(wanted) = self.shaped(transaction, select)? {
             let mut projected = Vec::with_capacity(records.len());
             for (id, record) in records {
-                projected.push((
-                    id,
-                    self.project(transaction, &record, &wanted, &searched, &noticed)?,
-                ));
+                let shaped =
+                    self.project(transaction, &id, &record, &wanted, &searched, &noticed)?;
+                projected.push((id, shaped));
             }
             projected
         } else {
@@ -676,6 +678,7 @@ impl Session<'_> {
     pub(crate) fn project(
         &self,
         transaction: &mut Transaction<'_>,
+        id: &RecordId,
         record: &Value,
         wanted: &Shaped,
         searched: &Searched,
@@ -736,7 +739,9 @@ impl Session<'_> {
             let held = self.evaluate_in(
                 transaction,
                 &value.value,
-                Scope::searching(record, searched).noticing(noticed),
+                Scope::searching(record, searched)
+                    .identified(id)
+                    .noticing(noticed),
             )?;
             if held.is_present() {
                 projected.insert(value.name.text.clone(), held);
@@ -757,7 +762,12 @@ impl Session<'_> {
         scope: Scope<'_>,
         span: Span,
     ) -> Result<Value> {
-        let (Some(first), Some(second)) = (arguments.first(), arguments.get(1)) else {
+        // The query is the second argument and it is deliberately **not**
+        // evaluated here. It was evaluated and analysed once, while the corpus
+        // was resolved, and doing it again per scored record is half of the cost
+        // this function used to carry. Its presence is still what makes the call
+        // a score rather than a mistake.
+        let (Some(first), Some(_query)) = (arguments.first(), arguments.get(1)) else {
             return Ok(Value::None);
         };
         let ExprKind::Path(field) = &first.kind else {
@@ -769,17 +779,68 @@ impl Session<'_> {
         // Refused before either argument is evaluated: there is nothing to
         // measure against, so evaluating them would be work done to reach a
         // conclusion already known.
-        let (Some(corpus), Some(analyzer)) =
-            (scope.corpus(&field.path), scope.analyzer(&field.path))
-        else {
+        //
+        // The record's identity is part of that. A row with none is a row no
+        // index holds — a join's pair, a fold's result — so there are no postings
+        // to read and no honest number to return, which is the same refusal for
+        // the same reason.
+        let (Some(ranked), Some(analyzer), Some(id)) = (
+            scope.ranked(&field.path),
+            scope.analyzer(&field.path),
+            scope.id,
+        ) else {
             return Err(Error::NoSearchIndex {
                 field: field.path.to_string(),
                 span,
             });
         };
+        let corpus = &ranked.corpus;
+
+        // The record's two numbers, read from the postings the writer already
+        // put them in. `None` is the term not posted against this record, which
+        // scores nothing — reached without touching the record at all.
+        //
+        // Every posting of one record carries the same length, written by one
+        // analysis in one batch, so the last one read is as good as any. A record
+        // holding none of the asked terms leaves it at zero, which changes
+        // nothing: with no occurrences there is no term for the length to divide.
+        let mut occurrences = BTreeMap::new();
+        let mut length = 0_u32;
+        let mut membership = false;
+        for term in corpus.frequencies.keys() {
+            match transaction.posting(&ranked.index, term, id)? {
+                None => {}
+                Some(Posting::Counted {
+                    frequency,
+                    length: tokens,
+                }) => {
+                    occurrences.insert(term.clone(), frequency);
+                    length = tokens;
+                }
+                // An index written before postings carried a payload. It knows
+                // the term is here and not how often, so the numbers come from
+                // the text — the old cost, paid only by an old index, exactly as
+                // `document_frequency` falls through to its count.
+                Some(Posting::Membership) => {
+                    membership = true;
+                    break;
+                }
+            }
+        }
+        if !membership {
+            return Ok(score(corpus, &Held::counted(occurrences, length)));
+        }
         let held = self.evaluate_in(transaction, first, scope)?;
-        let wanted = self.evaluate_in(transaction, second, scope)?;
-        Ok(score(corpus, analyzer, &held, &wanted))
+        let Value::String(text) = held else {
+            // Not text: it holds none of the words, which scores zero. The same
+            // answer a document of the wrong shape gets from `MATCHES`, in the
+            // ranking's own terms.
+            return Ok(score(corpus, &Held::default()));
+        };
+        Ok(score(
+            corpus,
+            &Held::analysed(analyzer, &text, &corpus.asked),
+        ))
     }
 
     /// What resolving a source establishes before it produces a record.
@@ -918,7 +979,9 @@ impl Session<'_> {
                     let held = self.evaluate_in(
                         transaction,
                         condition,
-                        Scope::searching(&record, &searched).noticing(reporting.noticed),
+                        Scope::searching(&record, &searched)
+                            .identified(&id)
+                            .noticing(reporting.noticed),
                     )?;
                     if boolean(&held, condition.span)? {
                         kept.push((id, record));
@@ -1126,7 +1189,9 @@ impl Session<'_> {
                     let held = self.evaluate_in(
                         transaction,
                         condition,
-                        Scope::searching(&record, searched).noticing(reporting.noticed),
+                        Scope::searching(&record, searched)
+                            .identified(&id)
+                            .noticing(reporting.noticed),
                     )?;
                     if boolean(&held, condition.span)?
                         && consumer.take(transaction, id, record)?.is_break()
@@ -1706,7 +1771,7 @@ impl Session<'_> {
             };
             let mut matched = Vec::new();
             for (id, record) in self.records_of(found, &visible)? {
-                let held = self.evaluate_in(transaction, condition, scope.with(&record))?;
+                let held = self.evaluate_in(transaction, condition, scope.with(&id, &record))?;
                 if boolean(&held, condition.span)? {
                     matched.push((id, record));
                 }
@@ -2797,6 +2862,19 @@ pub(crate) struct Reporting<'a> {
 pub(crate) struct Scope<'a> {
     /// The record being tested, when there is one.
     pub(crate) record: Option<&'a Value>,
+    /// Which record that is, when it is a stored one.
+    ///
+    /// A record's *value* answers `MATCHES`, because holding a word is a property
+    /// of the text alone. A **score** additionally needs what the index knows
+    /// about this record — how often it holds each asked term, and how long it is
+    /// — and an index is addressed by record id. So the id travels beside the
+    /// value rather than being recovered from it.
+    ///
+    /// Absent where there is no stored record to name: a joined row, a fold's
+    /// result, an expression in a value position. Such a row is in no index, and
+    /// a score against it is refused for the same reason a score without an index
+    /// is.
+    id: Option<&'a RecordId>,
     /// The analyzers and collection statistics the searched paths need.
     searched: Option<&'a Searched>,
     /// Where a comparison across two kinds is recorded, when this evaluation is
@@ -2817,6 +2895,7 @@ impl<'a> Scope<'a> {
     pub(crate) const fn none() -> Self {
         Self {
             record: None,
+            id: None,
             searched: None,
             noticed: None,
         }
@@ -2826,6 +2905,7 @@ impl<'a> Scope<'a> {
     pub(crate) const fn of(record: &'a Value) -> Self {
         Self {
             record: Some(record),
+            id: None,
             searched: None,
             noticed: None,
         }
@@ -2835,8 +2915,20 @@ impl<'a> Scope<'a> {
     pub(crate) const fn searching(record: &'a Value, searched: &'a Searched) -> Self {
         Self {
             record: Some(record),
+            id: None,
             searched: Some(searched),
             noticed: None,
+        }
+    }
+
+    /// The same scope, over a record the store can name.
+    ///
+    /// Left off where the value in scope is not a stored record, which is what
+    /// makes the absence meaningful rather than an omission somebody forgot.
+    pub(crate) const fn identified(self, id: &'a RecordId) -> Self {
+        Self {
+            id: Some(id),
+            ..self
         }
     }
 
@@ -2859,9 +2951,12 @@ impl<'a> Scope<'a> {
     /// per record is handed one of those and attaches each record in turn. It is
     /// one parameter where `searched` and `noticed` were two, and it stops the
     /// pair drifting apart at the call sites.
-    pub(crate) const fn with(self, record: &'a Value) -> Self {
+    /// It takes the id as well as the value, so that a scope carrying the
+    /// identity of the *previous* record is not a thing this type can hold.
+    pub(crate) const fn with(self, id: &'a RecordId, record: &'a Value) -> Self {
         Self {
             record: Some(record),
+            id: Some(id),
             ..self
         }
     }
@@ -2870,6 +2965,7 @@ impl<'a> Scope<'a> {
     pub(crate) const fn over(searched: &'a Searched, noticed: &'a Noticed) -> Self {
         Self {
             record: None,
+            id: None,
             searched: Some(searched),
             noticed: Some(noticed),
         }
@@ -2887,9 +2983,9 @@ impl<'a> Scope<'a> {
         self.searched.and_then(|held| held.analyzer(path))
     }
 
-    /// What this path's collection looks like, if it was ranked against.
-    fn corpus(self, path: &Path) -> Option<&'a Corpus> {
-        self.searched.and_then(|held| held.corpus(path))
+    /// What this path was ranked against, if it was ranked at all.
+    fn ranked(self, path: &Path) -> Option<&'a Ranked> {
+        self.searched.and_then(|held| held.ranked(path))
     }
 }
 

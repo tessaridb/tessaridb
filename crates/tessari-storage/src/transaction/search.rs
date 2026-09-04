@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{
-    IndexAddress, IndexTarget, IndexValues, KeyKind, PostingKey, SearchStatistics,
+    IndexAddress, IndexTarget, IndexValues, KeyKind, Posting, PostingKey, SearchStatistics,
     SearchStatisticsKey, SearchTermKey, SecondaryIndexKey, StoreKey, StoreValue, TermStatistics,
     UniqueIndexKey, decode_payload,
 };
@@ -261,6 +261,42 @@ impl Transaction<'_> {
             .store
             .backend()
             .count(PostingKey::keyspace(), &KeyRange::prefix(&prefix))?)
+    }
+
+    /// What this index says one term does in one record.
+    ///
+    /// A **point read** of the posting, and the two numbers a score needs about
+    /// the record it is scoring: how often the record holds the term, and how
+    /// long the record's analysed field is. The writer knew both, and wrote both
+    /// beside the membership they qualify (see [`Posting`]).
+    ///
+    /// `None` is the index not posting this record against this term — which for
+    /// a score is the term contributing nothing, the same answer re-reading the
+    /// record's text would reach by finding no occurrence of it.
+    ///
+    /// [`Posting::Membership`] is a posting written before the payload existed.
+    /// It says the term is in the record and no more, so a caller that needs the
+    /// numbers has to reach them another way; this method reports the distinction
+    /// rather than resolving it, because only the caller knows what it can fall
+    /// back to.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or the stored value cannot be
+    /// decoded.
+    pub fn posting(
+        &self,
+        index: &IndexDefinition,
+        term: &str,
+        id: &RecordId,
+    ) -> Result<Option<Posting>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let encoded = IndexValues::of(&[Value::from(term)]);
+        let key = PostingKey::new(address, encoded, id.clone()).encode();
+        match self.store.backend().get(PostingKey::keyspace(), &key)? {
+            Some(bytes) => Ok(Some(Posting::decode(bytes.as_slice())?)),
+            None => Ok(None),
+        }
     }
 
     /// The distinct terms this index holds that begin with `prefix`, at most

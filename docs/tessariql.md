@@ -3799,6 +3799,12 @@ too.
 answer rather than an absence standing in for one, and sorts where it belongs
 under the `DESC` a ranked read is written with.
 
+**A word written twice in the query weighs twice.** `search::score(body, 'lock
+lock')` is not the same order as `search::score(body, 'lock')` — it lifts the
+records that hold `lock` and leaves the rest where they were, which is a way of
+saying "this word matters more" without a boost syntax. Whether that is what you
+meant is worth checking when the query is assembled from parts.
+
 `k1 = 1.2` and `b = 0.75` — how fast repetition stops helping, and how much
 length is held against a document — are **constants of this implementation**, not
 options on the index. That has a cost worth stating plainly: changing them in a

@@ -62,7 +62,7 @@ use tessari_types::{Analyzer, Number, Value};
 /// The `frequencies` map holds only the terms the statement actually asks
 /// about — resolving them all would be reading the index to answer a question
 /// nobody put.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct Corpus {
     /// How many records hold at least one term.
     pub(crate) documents: u64,
@@ -70,42 +70,90 @@ pub(crate) struct Corpus {
     pub(crate) average_length: f64,
     /// How many documents hold each term the statement names.
     pub(crate) frequencies: BTreeMap<String, u64>,
+    /// The query's terms, **with repeats**, analysed once per read.
+    ///
+    /// A multiset rather than the `frequencies` keys, which are deduplicated. A
+    /// word written twice in a query weighs twice today, and it weighs twice for
+    /// the records that hold it and not at all for the ones that do not — so
+    /// deduplicating here would not rescale the scores, it would reorder them.
+    pub(crate) asked: Vec<String>,
 }
 
-/// The BM25 score of one record's text against one query.
+/// What one record holds of a query's terms, and how long it is.
 ///
-/// Both texts are analysed with the field's own analyzer, so the words being
-/// counted are the same words the index posted — the rule SGC.T1 exists for,
-/// applied one layer up.
-pub(crate) fn score(corpus: &Corpus, analyzer: &Analyzer, held: &Value, wanted: &Value) -> Value {
-    let (Value::String(text), Value::String(query)) = (held, wanted) else {
-        // Not text: it holds none of the words, which scores zero. The same
-        // answer a document of the wrong shape gets from `MATCHES`, in the
-        // ranking's own terms.
-        return zero();
-    };
-    let asked = analyzer.terms(query);
-    if asked.is_empty() || corpus.documents == 0 {
+/// The two numbers BM25 needs about the document being scored, as opposed to the
+/// two in [`Corpus`] that describe the collection it is scored against.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Held {
+    /// Occurrences of each asked term in this record, **with** repeats. A term
+    /// the record does not hold is absent rather than present at zero.
+    occurrences: BTreeMap<String, u32>,
+    /// Tokens in the record's analysed field, **with** repeats.
+    length: u32,
+}
+
+impl Held {
+    /// What the index says, read from the postings.
+    pub(crate) const fn counted(occurrences: BTreeMap<String, u32>, length: u32) -> Self {
+        Self {
+            occurrences,
+            length,
+        }
+    }
+
+    /// What the record's own text says, analysed here.
+    ///
+    /// The path an index written before postings carried a payload still takes,
+    /// and the only place on the scoring path that analyses anything. It reaches
+    /// the same two numbers the writer would have stored — `terms_of` counts the
+    /// same way — which is why the two paths can be asserted equal per record.
+    pub(crate) fn analysed(analyzer: &Analyzer, text: &str, asked: &[String]) -> Self {
+        let terms = analyzer.terms(text);
+        let mut occurrences = BTreeMap::new();
+        for term in asked {
+            if occurrences.contains_key(term) {
+                continue;
+            }
+            let counted = terms.iter().filter(|held| *held == term).count();
+            if counted > 0 {
+                occurrences.insert(term.clone(), count(counted));
+            }
+        }
+        Self {
+            occurrences,
+            length: count(terms.len()),
+        }
+    }
+}
+
+/// The BM25 score of what one record holds against one query.
+///
+/// The record's own two numbers arrive already resolved, because where they come
+/// from is the caller's decision and not the ranking's: from the postings for an
+/// index that carries them, from the text for one written before they existed.
+/// Either way the words being counted are the words the index posted — the rule
+/// SGC.T1 exists for, applied one layer up.
+pub(crate) fn score(corpus: &Corpus, held: &Held) -> Value {
+    if corpus.asked.is_empty() || corpus.documents == 0 {
         return zero();
     }
     let Some(average) = positive(corpus.average_length) else {
         return zero();
     };
 
-    let terms = analyzer.terms(text);
-    let length = size(terms.len());
+    let length = as_float(u64::from(held.length));
     let total = as_float(corpus.documents);
 
     let mut sum = 0.0_f64;
-    for term in asked {
-        let occurrences = size(terms.iter().filter(|held| **held == term).count());
-        if occurrences == 0.0 {
-            // A term the record does not hold contributes nothing, however rare
-            // it is — so a query word that is in no document at all cannot lift
-            // every score by the same amount and change nothing but the numbers.
+    for term in &corpus.asked {
+        // A term the record does not hold contributes nothing, however rare it
+        // is — so a query word that is in no document at all cannot lift every
+        // score by the same amount and change nothing but the numbers.
+        let Some(occurrences) = held.occurrences.get(term) else {
             continue;
-        }
-        let frequency = as_float(*corpus.frequencies.get(&term).unwrap_or(&0));
+        };
+        let occurrences = as_float(u64::from(*occurrences));
+        let frequency = as_float(*corpus.frequencies.get(term).unwrap_or(&0));
         sum +=
             inverse_document_frequency(total, frequency) * saturation(occurrences, length, average);
     }
@@ -137,9 +185,13 @@ fn zero() -> Value {
     Value::Number(Number::float(0.0))
 }
 
-/// A length as a float.
-fn size(value: usize) -> f64 {
-    as_float(u64::try_from(value).unwrap_or(u64::MAX))
+/// A count of tokens, in the width a posting stores it in.
+///
+/// Saturating rather than wrapping: a field with more than four billion tokens
+/// would be reported as a shorter one, and a length that is wrong in that
+/// direction makes every score computed from it wrong in the same direction.
+fn count(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 /// A count as a float, without an `as` cast.
@@ -164,11 +216,13 @@ fn positive(value: f64) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::panic)]
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
+    use std::collections::BTreeMap;
 
     use tessari_types::{Analyzer, Number, Value};
 
-    use super::{Corpus, score};
+    use super::{Corpus, Held, score};
 
     fn analyzer() -> Analyzer {
         Analyzer::default()
@@ -182,6 +236,7 @@ mod tests {
                 .iter()
                 .map(|(term, held)| ((*term).to_owned(), *held))
                 .collect(),
+            asked: Vec::new(),
         }
     }
 
@@ -192,13 +247,31 @@ mod tests {
         }
     }
 
+    /// Score this text against this query, the way a read with no index payload
+    /// does it: the query analysed once, the record's numbers taken from its own
+    /// text.
     fn scored(corpus: &Corpus, text: &str, query: &str) -> f64 {
-        number(&score(
-            corpus,
-            &analyzer(),
-            &Value::from(text),
-            &Value::from(query),
-        ))
+        let asked = analyzer().terms(query);
+        let held = Held::analysed(&analyzer(), text, &asked);
+        let corpus = Corpus {
+            asked,
+            ..corpus.clone()
+        };
+        number(&score(&corpus, &held))
+    }
+
+    /// The same score, with the record's two numbers supplied the way a posting
+    /// supplies them.
+    fn posted(corpus: &Corpus, occurrences: &[(&str, u32)], length: u32, query: &str) -> f64 {
+        let counted: BTreeMap<String, u32> = occurrences
+            .iter()
+            .map(|(term, held)| ((*term).to_owned(), *held))
+            .collect();
+        let corpus = Corpus {
+            asked: analyzer().terms(query),
+            ..corpus.clone()
+        };
+        number(&score(&corpus, &Held::counted(counted, length)))
     }
 
     #[test]
@@ -270,17 +343,51 @@ mod tests {
     }
 
     #[test]
-    fn a_value_that_is_not_text_scores_zero_rather_than_failing() {
+    fn a_record_the_index_posts_nothing_for_scores_zero() {
+        // Which is what a value that is not text reaches: nothing was analysed,
+        // so nothing was posted, so the query's words are held nowhere. The same
+        // answer re-reading the record would give, arrived at without reading it.
         let corpus = corpus(100, 10.0, &[("lock", 10)]);
-        let held = score(
+        assert_eq!(posted(&corpus, &[], 0, "lock"), 0.0);
+    }
+
+    #[test]
+    fn the_two_ways_of_supplying_a_records_numbers_agree() {
+        // F2's assertion at the smallest scale it can be made: the postings
+        // carry what the analysis would have counted, so a score computed from
+        // them is not merely close to the one computed from the text — it is the
+        // same float. A test asserting "roughly equal" here would pass on an
+        // implementation that had quietly changed the ranking.
+        let corpus = corpus(1_000, 12.0, &[("lock", 20), ("contention", 5)]);
+        let text = "lock contention and more lock contention in a long enough line";
+        let query = "lock contention";
+        let from_text = scored(&corpus, text, query);
+        let from_index = posted(
             &corpus,
-            &analyzer(),
-            &Value::Number(Number::from(7_i64)),
-            &Value::from("lock"),
+            &[("lock", 2), ("contention", 2)],
+            u32::try_from(analyzer().terms(text).len()).unwrap(),
+            query,
         );
-        assert_eq!(number(&held), 0.0);
-        let absent = score(&corpus, &analyzer(), &Value::None, &Value::from("lock"));
-        assert_eq!(number(&absent), 0.0);
+        assert!(from_text > 0.0, "{from_text}");
+        assert!(
+            (from_text - from_index).abs() < f64::EPSILON,
+            "{from_text} vs {from_index}"
+        );
+    }
+
+    #[test]
+    fn a_word_written_twice_in_a_query_weighs_twice() {
+        // The reason the asked terms travel as a multiset. Deduplicating them
+        // would not rescale the answers: it would lower the records holding the
+        // repeated word and leave the others where they are, which is a
+        // reordering wearing a simplification's clothes.
+        let corpus = corpus(100, 10.0, &[("lock", 10)]);
+        let once = scored(&corpus, "lock and other prose", "lock");
+        let twice = scored(&corpus, "lock and other prose", "lock lock");
+        assert!(
+            (twice - 2.0 * once).abs() < f64::EPSILON,
+            "{twice} vs {once}"
+        );
     }
 
     #[test]

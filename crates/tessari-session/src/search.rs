@@ -24,7 +24,7 @@
 use std::collections::BTreeMap;
 
 use tessari_ql::{BinaryOp, Expr, ExprKind, Function};
-use tessari_storage::{Catalog, Transaction};
+use tessari_storage::{Catalog, IndexDefinition, Transaction};
 use tessari_types::{Analyzer, Path, TableId, Value};
 
 use tessari_constants::SEARCH_PREFIX_MINIMUM;
@@ -33,11 +33,24 @@ use crate::error::{Error, Result};
 use crate::rank::Corpus;
 use crate::session::Session;
 
+/// What one ranked path was resolved against.
+///
+/// The collection's numbers and the index they were read from, kept together
+/// because they are established at the same moment and used at the same one: the
+/// index is where the *record's* two numbers come from, once there is a record.
+#[derive(Debug, Clone)]
+pub(crate) struct Ranked {
+    /// What the collection looks like.
+    pub(crate) corpus: Corpus,
+    /// The search index this path's statistics were read from.
+    pub(crate) index: IndexDefinition,
+}
+
 /// What the searched fields of one read need, resolved before any record is.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Searched {
     analyzers: BTreeMap<Path, Analyzer>,
-    corpora: BTreeMap<Path, Corpus>,
+    corpora: BTreeMap<Path, Ranked>,
 }
 
 impl Searched {
@@ -46,8 +59,8 @@ impl Searched {
         self.analyzers.get(path)
     }
 
-    /// What this path's collection looks like, if it was ranked against.
-    pub(crate) fn corpus(&self, path: &Path) -> Option<&Corpus> {
+    /// What this path was ranked against, if it was ranked at all.
+    pub(crate) fn ranked(&self, path: &Path) -> Option<&Ranked> {
         self.corpora.get(path)
     }
 }
@@ -148,19 +161,23 @@ impl Session<'_> {
             };
             let statistics = transaction.search_statistics(&index)?;
             let mut frequencies = BTreeMap::new();
-            for term in asked {
-                if frequencies.contains_key(&term) {
+            for term in &asked {
+                if frequencies.contains_key(term) {
                     continue;
                 }
-                let held = transaction.document_frequency(&index, &term)?;
-                frequencies.insert(term, held);
+                let held = transaction.document_frequency(&index, term)?;
+                frequencies.insert(term.clone(), held);
             }
             corpora.insert(
                 path.clone(),
-                Corpus {
-                    documents: statistics.documents,
-                    average_length: statistics.average_length().unwrap_or_default(),
-                    frequencies,
+                Ranked {
+                    corpus: Corpus {
+                        documents: statistics.documents,
+                        average_length: statistics.average_length().unwrap_or_default(),
+                        frequencies,
+                        asked,
+                    },
+                    index,
                 },
             );
         }
