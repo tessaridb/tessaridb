@@ -21,7 +21,7 @@
 
 use std::io::{BufRead, Write};
 
-use tessari_wire::Answer;
+use tessari_wire::{Answer, Exact};
 
 use crate::render;
 use crate::store::Store;
@@ -257,6 +257,7 @@ fn report(out: &mut impl Write, answer: &Answer, shape: Shape) -> std::io::Resul
             names,
             notes,
             only: _,
+            exact,
         } => {
             // The trailer is the same either way, and deliberately so: how many
             // and by which path is the part an operator reads for the answer
@@ -269,7 +270,20 @@ fn report(out: &mut impl Write, answer: &Answer, shape: Shape) -> std::io::Resul
                     }
                 }
             }
-            writeln!(out, "({} record(s), via {path})", records.len())?;
+            // Silent when the answer is exact, which is nearly every read: a
+            // word printed on every line is a word nobody reads by the third
+            // one, and the trailer's job is to be worth reading. The two cases
+            // that carry something are both said — including the one the note
+            // channel cannot express at all, a node that never stated it.
+            let exactness = match exact {
+                Some(Exact::Yes) => "",
+                // The reason is not repeated here. It arrives on the next line
+                // as a note, and the trailer names the fact rather than
+                // explaining it twice in two shapes.
+                Some(Exact::No { .. }) => ", approximate",
+                None => ", exactness not stated",
+            };
+            writeln!(out, "({} record(s), via {path}{exactness})", records.len())?;
             // After the trailer, because a note is about the answer above it.
             // One line each and none at all for almost every read, which is what
             // makes a note worth reading when one appears.

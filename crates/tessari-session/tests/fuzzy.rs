@@ -229,3 +229,103 @@ fn the_index_serves_it_and_the_scan_answers_without_one() {
     );
     assert_eq!(path, AccessPath::Scan, "a table with no index used one");
 }
+
+/// **G022 S2 — an expanded term can never outrank the word that was actually
+/// typed.**
+///
+/// The corpus the criterion names: a stored misspelling, the intended word, and
+/// one record holding both. A fuzzy query for the correct spelling reaches all
+/// three, so the ranking is the only thing that separates them.
+///
+/// # Why this holds, and why saying so is not enough
+///
+/// `rank::Corpus.asked` is `analyzer.terms(<the query string>)` — the words that
+/// were **typed** — and `rank::score` skips any asked term the record does not
+/// hold. A record reached only through an expansion therefore holds none of them
+/// and scores zero, while a record holding the typed word scores strictly above
+/// zero: `idf` is positive under this store's `1 +` deviation and the saturation
+/// term is positive for a held term. So the expansion is a zero constant, which
+/// is the "constant-score expansion" the criterion allows.
+///
+/// That is a claim about the code, and S2 says in as many words that a summary
+/// verdict is not evidence. It is asserted here instead, on the corpus the
+/// criterion describes, so that a later change which gave an expanded term any
+/// weight at all would fail rather than merely read differently.
+///
+/// Indexed only, and not an omission: `search::score` refuses without an index
+/// rather than inventing collection statistics, so there is no scan-side ranking
+/// for a parity assertion to compare against.
+#[test]
+fn an_expanded_term_never_outranks_the_word_that_was_typed() {
+    let held = store();
+    let mut session = Session::new(&held);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
+             DEFINE COLLECTION notes;\n\
+             DEFINE FIELD body ON notes TYPE string ANALYZER english;\n\
+             CREATE notes:1 = { body: 'vector' };\n\
+             CREATE notes:2 = { body: 'vectr' };\n\
+             CREATE notes:3 = { body: 'vectr vector' };\n\
+             CREATE notes:4 = { body: 'compaction' };\n\
+             DEFINE INDEX by_body ON notes FIELDS body SEARCH;",
+        )
+        .unwrap();
+
+    let outcomes = session
+        .run(
+            "SELECT id, search::score(body, 'vector') AS relevance \
+             FROM notes WHERE body MATCHES FUZZY 'vector';",
+        )
+        .unwrap();
+    let Some(Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("a read answered with {:?}", outcomes.last());
+    };
+
+    let scored: Vec<(String, f64)> = records
+        .iter()
+        .map(|(id, held)| {
+            let tessari_types::Value::Object(fields) = held else {
+                panic!("a record projected as {held:?}");
+            };
+            let relevance = match fields.get("relevance") {
+                Some(tessari_types::Value::Number(number)) => number
+                    .as_float()
+                    .unwrap_or_else(|| panic!("relevance was not a float: {number:?}")),
+                other => panic!("relevance came back as {other:?}"),
+            };
+            (id.to_string(), relevance)
+        })
+        .collect();
+
+    // The expansion reached the misspelling: without this the test would pass on
+    // an engine that simply never matched it, which is the vacuous shape.
+    assert!(
+        scored.iter().any(|(id, _)| id.ends_with('2')),
+        "the expansion did not reach the stored misspelling: {scored:?}",
+    );
+    // `notes:1` holds only the typed word, `notes:2` only the misspelling,
+    // `notes:3` both — the record the criterion names.
+    let relevance = |which: char| {
+        scored
+            .iter()
+            .find(|(id, _)| id.ends_with(which))
+            .unwrap_or_else(|| panic!("notes:{which} was not answered: {scored:?}"))
+            .1
+    };
+
+    // A record reached only through the expansion scores nothing…
+    assert!(
+        relevance('2').abs() < f64::EPSILON,
+        "an expanded term carried weight: {scored:?}",
+    );
+    // …and every record holding the word that was actually typed outranks it.
+    for holder in ['1', '3'] {
+        assert!(
+            relevance(holder) > relevance('2'),
+            "notes:{holder} did not outrank the misspelling: {scored:?}",
+        );
+    }
+}

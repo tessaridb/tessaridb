@@ -2424,6 +2424,48 @@ nothing in the answer says so.
 
 The remedy is `REBUILD INDEX` — see §4.
 
+### Whether the answer is exact, on every answer
+
+Every read returns **`exact`** on its plan, and it is the only field of a plan
+that is written whether or not it is interesting. When it is `false` the plan
+also carries **`inexact`**, the reason in words.
+
+```
+EXPLAIN SELECT * FROM points ORDER BY vector::euclidean(at, [0,0]) LIMIT 2;
+-- { access: 'scan', exact: true, table: 'points' }
+
+EXPLAIN SELECT * FROM points ORDER BY vector::euclidean(at, [0,0]) LIMIT 2 APPROXIMATE;
+-- { access: 'approximate', exact: false, index: 'by_at',
+--   inexact: 'an approximate index answered this, so a nearer record may exist',
+--   table: 'points' }
+```
+
+**Why it is there when it is `true`.** Every other field of a plan is absent when
+the read had no answer for it, so a scan's plan is the two keys it knows rather
+than eight of which six say nothing. If `exact` followed that rule its absence
+would come to mean `true`, and a caller would be *inferring* the one property
+that exists so that nothing has to be inferred. An approximate answer and an
+exact one are otherwise the same shape, the same length, and — on any small
+dataset — the same records.
+
+**One read in this store answers approximately**, and it is the vector graph
+walk, only when the statement writes `APPROXIMATE`. Everything else is exact,
+including the two search operators that sound as though they would not be:
+
+- **`MATCHES PREFIX` and `MATCHES FUZZY` are exact.** A term expansion that grows
+  past its cap is not truncated — the candidate is simply not offered and the
+  scan answers the same question. So a wide expansion costs more and returns the
+  same records, which is the general rule this store holds everywhere: an index
+  changes what a read costs and never what it answers.
+- **A `LIMIT` is not an approximation.** A bounded read answers exactly the
+  question that was asked, and the question included the bound.
+
+**Over the wire the field is three-state**, and a client should treat it that
+way: the node said exact, the node said approximate and why, or *the node did not
+say* — which is what a node older than this field sends. The third is not the
+first. Reading silence as `true` puts a promise in the mouth of a node that never
+made one, on the one property whose whole purpose is that it is never guessed at.
+
 ### Following a reference
 
 A record reference is a value — `posts:1` may hold `author: users:1` — so a

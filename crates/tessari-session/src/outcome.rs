@@ -110,6 +110,66 @@ pub enum AccessPath {
     Materialised,
 }
 
+/// Why a walk over a proximity graph is not provably the best answer there is.
+///
+/// One string, reached by both channels that state the same fact — the note a
+/// caller may read and the exactness a caller cannot help reading. Two copies of
+/// a sentence like this drift, and the drift is invisible: each channel is
+/// individually correct and they disagree about the same read.
+const GRAPH_WALK_IS_APPROXIMATE: &str =
+    "an approximate index answered this, so a nearer record may exist";
+
+/// Whether an answer is provably the records the question names.
+///
+/// # Why this is a field and not a note
+///
+/// [`Note::Approximate`] already says this, and says it well. What it cannot do
+/// is make a caller *unable to miss it*, because a note is opt-in by
+/// construction: a caller that reads none of them gets exactly the records it
+/// would have got before notes existed. So an approximate answer and an exact
+/// one are the same shape, the same length, usually the same records — and, to
+/// a caller that never looks, the same claim.
+///
+/// The second failure is the one that outlives any single read. If exactness is
+/// something a path *adds* when it happens to be approximate, then a path added
+/// later that forgets reads as exact, because absence-means-exact is a default
+/// nobody chose and nobody can see. That is why this is derived from the access
+/// path by an exhaustive match in [`AccessPath::exactness`] rather than set at a
+/// construction site: a new path does not compile until somebody says where it
+/// sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exactness {
+    /// Provably the records the question names.
+    ///
+    /// Not "no approximation was detected" — the read had no step that could
+    /// answer with fewer or other records than the question asks for.
+    Exact,
+    /// Not provably, and why.
+    ///
+    /// The reason is carried rather than looked up from the path, because the
+    /// value of a returned `false` is entirely in what follows it: a caller told
+    /// only that an answer is inexact has learned that it cannot trust the
+    /// answer and nothing about what to do instead.
+    Approximate(&'static str),
+}
+
+impl Exactness {
+    /// Whether the answer is provably the one the question names.
+    #[must_use]
+    pub const fn is_exact(self) -> bool {
+        matches!(self, Self::Exact)
+    }
+
+    /// Why it is not, when it is not.
+    #[must_use]
+    pub const fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::Exact => None,
+            Self::Approximate(why) => Some(why),
+        }
+    }
+}
+
 /// Something the store did on the way to an answer that the answer does not say.
 ///
 /// A third channel, beside the records and the error. It exists because the two
@@ -214,9 +274,7 @@ impl Note {
                 from.name(),
                 to.name(),
             ),
-            Self::Approximate => {
-                "an approximate index answered this, so a nearer record may exist".to_owned()
-            }
+            Self::Approximate => GRAPH_WALK_IS_APPROXIMATE.to_owned(),
             Self::ComparedAcrossKinds { left, right } => format!(
                 "this read compared a {left} with a {right}, \
                  so it answered about the records whose kinds happened to line up",
@@ -274,6 +332,34 @@ impl AccessPath {
             .join(", ")
     }
 
+    /// Whether records reached this way are provably the ones the question
+    /// names.
+    ///
+    /// **Exhaustive on purpose.** A wildcard arm here would make every path
+    /// added afterwards exact by default, silently, which is exactly the claim
+    /// nobody would have made on its behalf. Written out, a new variant is a
+    /// compile error until somebody decides — and deciding is one line, while
+    /// discovering the wrong default is a caller trusting an answer it should
+    /// not have.
+    ///
+    /// Only one path is approximate today, and it is not the fuzzy one. A capped
+    /// term expansion is **not offered as a candidate** and the scan answers, so
+    /// `MATCHES PREFIX` and `MATCHES FUZZY` reach provably the records they name
+    /// however wide the expansion would have been.
+    #[must_use]
+    pub const fn exactness(self) -> Exactness {
+        match self {
+            Self::Approximate => Exactness::Approximate(GRAPH_WALK_IS_APPROXIMATE),
+            Self::Record
+            | Self::Index
+            | Self::Ordered
+            | Self::Scan
+            | Self::Graph
+            | Self::Join
+            | Self::Materialised => Exactness::Exact,
+        }
+    }
+
     /// A short stable name, for logs and for a client that shows the cost.
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -317,6 +403,20 @@ impl Outcome {
     pub const fn path(&self) -> Option<AccessPath> {
         match self {
             Self::Records { plan, .. } => Some(plan.access),
+            _ => None,
+        }
+    }
+
+    /// Whether the records are provably the ones the question names.
+    ///
+    /// Beside [`Self::path`] for the same reason that one exists — a caller that
+    /// wants the property and not the structure around it — and answering
+    /// `None` only for an outcome that carries no records at all, which is an
+    /// outcome that made no claim of this kind to begin with.
+    #[must_use]
+    pub const fn exactness(&self) -> Option<Exactness> {
+        match self {
+            Self::Records { plan, .. } => Some(plan.exact),
             _ => None,
         }
     }

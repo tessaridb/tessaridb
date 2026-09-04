@@ -247,6 +247,12 @@ fn encode_outcome_body(outcome: &Outcome, names: &Names) -> Vec<u8> {
             // about every read written by somebody who has never heard of
             // `ONLY`.
             body.push(u8::from(*only));
+            // And exactness last, where the newest field goes — but read the
+            // note on `Exact` before assuming the usual absent-means-default
+            // rule applies to it. It does not, and this is the one field on this
+            // wire for which it must not.
+            body.push(u8::from(!plan.exact.is_exact()));
+            put_text(&mut body, plan.exact.reason().unwrap_or_default());
         }
         Outcome::Value(held) => {
             body.push(tag::VALUE);
@@ -299,6 +305,14 @@ pub enum Answer {
         /// `false` from a node older than this client, which is what every read
         /// such a node serves actually is.
         only: bool,
+        /// Whether the node called the answer provably the one the question
+        /// names — and `None` when it did not say.
+        ///
+        /// The one field on this wire that does not follow the rule above.
+        /// Every other absent field reads as its default because the default is
+        /// what an older node's read actually was; here the default would be a
+        /// *claim*, and a node that predates the field made no claim at all.
+        exact: Option<Exact>,
     },
     /// One value, and the names of the tables it references.
     Value {
@@ -313,6 +327,24 @@ pub enum Answer {
     Removed(u64),
     /// Something this build does not know how to read.
     Unknown,
+}
+
+/// What a node said about whether its answer is exact.
+///
+/// Two states rather than a `bool` because there is a third, and it lives one
+/// level up as the `Option` around this: a node that never sent the field. That
+/// separation is the whole reason the type exists — a client holding
+/// `Option<bool>` writes `unwrap_or(true)` sooner or later, and the value it
+/// invents there is a promise nobody on the other end made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Exact {
+    /// The node called the answer provably the one the question names.
+    Yes,
+    /// It did not, and said why.
+    No {
+        /// The reason, in the node's own words.
+        reason: String,
+    },
 }
 
 /// One thing the store said about how it answered.
@@ -385,12 +417,31 @@ fn decode_outcome_body(body: &[u8]) -> Result<Answer> {
             // Same rule one field further along: absent means `false`, which is
             // what an older node's every read was.
             let only = body.get(at).copied().unwrap_or(0) != 0;
+            at = at.saturating_add(1);
+            // And here the rule stops. An absent exactness byte does **not**
+            // mean the answer was exact: it means the node never said, and
+            // reading it as `true` would put a claim in an older node's mouth on
+            // the one property that exists precisely so it is never inferred.
+            // `None` is a third answer and a caller has to handle it.
+            let exact = if at < body.len() {
+                let approximate = body.get(at).copied().ok_or(Error::Malformed)? != 0;
+                let (reason, next) = take_text(body, at.saturating_add(1))?;
+                at = next;
+                Some(if approximate {
+                    Exact::No { reason }
+                } else {
+                    Exact::Yes
+                })
+            } else {
+                None
+            };
             Answer::Records {
                 records,
                 path,
                 names,
                 notes,
                 only,
+                exact,
             }
         }
         tag::VALUE => {
@@ -515,7 +566,7 @@ mod tests {
     use tessari_session::{AccessPath, Outcome, Parameters, Plan};
     use tessari_types::{Number, RecordId, RecordRef, TableId, Value};
 
-    use super::{Answer, Names, Remark, Request, decode_outcome, encode_outcome};
+    use super::{Answer, Exact, Names, Remark, Request, decode_outcome, encode_outcome};
 
     /// No answer below carries a reference, so none of them needs a name.
     fn unnamed() -> Names {
@@ -742,15 +793,23 @@ mod tests {
             },
             &unnamed(),
         );
-        // Drop the tail the current encoder writes — the note count and the
-        // `ONLY` flag, five bytes — and shrink the declared length to match,
-        // which is exactly the body an older node would have produced. The
-        // count is written from the constants rather than as a literal, so the
-        // next field appended here fails to compile instead of quietly making
-        // this test assert about the wrong byte.
+        // Drop the tail the current encoder writes and shrink the declared
+        // length to match, which is exactly the body an older node would have
+        // produced.
+        //
+        // The constants are named rather than summed into a literal so that the
+        // *reason* for the number survives — but naming them does not make this
+        // safe on its own, and the exactness field proved it: appending a field
+        // and leaving this alone compiles perfectly and silently retargets the
+        // slice at the middle of the tail rather than its start. What actually
+        // catches that is the assertion below that the decoded answer has
+        // **none** of the appended fields, which fails the moment one of them
+        // survives the truncation.
         const NOTE_COUNT: usize = 4;
         const ONLY_FLAG: usize = 1;
-        let inner = &full[4..full.len() - NOTE_COUNT - ONLY_FLAG];
+        // A tag byte and the four-byte length of an empty reason.
+        const EXACTNESS: usize = 1 + 4;
+        let inner = &full[4..full.len() - NOTE_COUNT - ONLY_FLAG - EXACTNESS];
         let mut older = Vec::new();
         older.extend_from_slice(&u32::try_from(inner.len()).expect("small").to_be_bytes());
         older.extend_from_slice(inner);
@@ -760,6 +819,7 @@ mod tests {
             notes,
             records,
             only,
+            exact,
             ..
         } = answer
         else {
@@ -768,6 +828,50 @@ mod tests {
         assert_eq!(records.len(), 1, "an older body lost its records");
         assert!(notes.is_empty(), "notes appeared from nowhere");
         assert!(!only, "a body that ends early claimed to be an `ONLY` read");
+        // And the one field where absence is **not** its default. A node that
+        // predates exactness made no claim about it, and reading the silence as
+        // `true` would put a promise in its mouth on the one property whose
+        // whole purpose is that it is never inferred.
+        assert!(
+            exact.is_none(),
+            "a body that ends early claimed its answer was exact",
+        );
+    }
+
+    /// The three states, told apart.
+    ///
+    /// A `bool` would collapse the first two of these into each other at the
+    /// first `unwrap_or`, which is why the client's field is an `Option` around a
+    /// two-state type rather than an `Option<bool>` — and why this test asserts
+    /// all three rather than the interesting one.
+    #[test]
+    fn a_node_that_says_nothing_is_not_a_node_that_says_exact() {
+        let said = |access| {
+            let encoded = encode_outcome(
+                &Outcome::Records {
+                    records: vec![(RecordId::Int(7), Value::from("ada"))],
+                    plan: Plan::new(access),
+                    notes: Vec::new(),
+                    only: false,
+                },
+                &unnamed(),
+            );
+            let (answer, used) = decode_outcome(&encoded, 0).expect("an answer");
+            assert_eq!(used, encoded.len(), "exactness desynchronised the stream");
+            let Answer::Records { exact, .. } = answer else {
+                panic!("not records")
+            };
+            exact
+        };
+
+        assert_eq!(said(AccessPath::Scan), Some(Exact::Yes));
+        let Some(Exact::No { reason }) = said(AccessPath::Approximate) else {
+            panic!("the graph walk crossed the wire calling itself exact");
+        };
+        // The node's own words, carried rather than re-invented on this side: a
+        // client that had to phrase the reason itself would be describing a read
+        // it did not perform.
+        assert_eq!(reason, tessari_session::Note::Approximate.message());
     }
 
     #[test]

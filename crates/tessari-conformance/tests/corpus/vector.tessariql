@@ -54,6 +54,19 @@ SELECT * FROM points ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2 APPROXIM
 SELECT * FROM points ORDER BY vector::cosine(at, [0.0, 1.0]) LIMIT 2 APPROXIMATE;
 --- expect: rows 2
 
+# And the store says which of those it did, in the answer rather than only in a
+# note a caller may never read. An approximate answer and an exact one are the
+# same shape, the same length and — over any dataset this small — the same
+# records, so the returned `exact` is the only thing that tells them apart.
+
+--- case: the graph walk declares itself inexact, and says why
+EXPLAIN SELECT * FROM points ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2 APPROXIMATE;
+--- expect: value { access: 'approximate', exact: false, index: 'by_at', inexact: 'an approximate index answered this, so a nearer record may exist', table: 'points' }
+
+--- case: and the same read without the word declares itself exact
+EXPLAIN SELECT * FROM points ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2;
+--- expect: value { access: 'scan', exact: true, table: 'points' }
+
 --- case: a distance the engine does not have is refused by name
 SELECT * FROM points ORDER BY vector::manhattan(at, [0.0, 0.0]) LIMIT 1;
 --- expect: error NoSuchFunction

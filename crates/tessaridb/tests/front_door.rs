@@ -7,7 +7,7 @@
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
-use tessaridb::{AccessPath, Change, ChangeKind, Db, RecordId, Sequence, Value, Watch};
+use tessaridb::{AccessPath, Change, ChangeKind, Db, Exactness, RecordId, Sequence, Value, Watch};
 
 /// The script every test starts from, so each one says only what it is about.
 const READY: &str = "DEFINE NAMESPACE prod;\
@@ -37,6 +37,11 @@ fn opening_a_database_takes_one_line_and_names_nothing_internal() {
 
     let found = session.run("SELECT name FROM users:1;").unwrap();
     assert_eq!(found[0].path(), Some(AccessPath::Record));
+    // Beside the path, and for the same reason it is here: a caller of the front
+    // door can ask how the records were reached and whether they are provably
+    // the ones the question named, without unpacking the plan. The second is not
+    // an extra — a caller that cannot reach it is the caller G022's S7 is about.
+    assert_eq!(found[0].exactness(), Some(Exactness::Exact));
     let records = found[0].records().unwrap();
     assert_eq!(records[0].0, RecordId::Int(1));
     assert_eq!(name_of(&records[0].1), Some("ada"));
