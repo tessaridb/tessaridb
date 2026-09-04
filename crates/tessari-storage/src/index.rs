@@ -117,7 +117,7 @@ struct Pending {
     /// zero. A dictionary holding words no record contains would answer a prefix
     /// walk with terms whose posting lists are empty, which is the one thing the
     /// dictionary exists to stop.
-    terms: BTreeMap<IndexAddress, BTreeMap<IndexValues, i64>>,
+    terms: BTreeMap<IndexAddress, BTreeMap<IndexValues, Moved>>,
     /// Indexes [`build`] wrote whole in this record.
     ///
     /// Their statistics are a **total**, not a movement: the build counted every
@@ -125,6 +125,52 @@ struct Pending {
     /// document a second time. `settle` reads this to know which of the two it
     /// is holding.
     built: BTreeSet<IndexAddress>,
+}
+
+/// How one term's dictionary entry moves in this batch.
+///
+/// The count and the pruning bound travel together because they are two answers
+/// about one term derived from one pass over the same postings. Kept in separate
+/// maps they would be updated in separate loops, and the failure that follows is
+/// the one this store's rules single out: a bound that does not describe the
+/// postings the count describes is not a slow bound, it is an unsound one, and it
+/// removes records from an answer without anything being in an error state.
+#[derive(Debug, Clone, Copy, Default)]
+struct Moved {
+    /// How the document count moves — signed, because a record leaving the index
+    /// takes its terms with it.
+    delta: i64,
+    /// The most occurrences any posting **arriving** in this batch records.
+    ///
+    /// Zero when nothing arrived, which is the identity for a maximum.
+    frequency: u32,
+    /// The fewest tokens held by any record **arriving** in this batch.
+    ///
+    /// `None` rather than a sentinel: the identity for a minimum is not a value
+    /// this type can hold, and `u32::MAX` standing in for one would be a real
+    /// length as far as every comparison below is concerned.
+    length: Option<u32>,
+}
+
+impl Moved {
+    /// Record a posting arriving.
+    fn arrived(&mut self, frequency: u32, length: u32) {
+        self.delta = self.delta.saturating_add(1);
+        self.frequency = self.frequency.max(frequency);
+        self.length = Some(self.length.map_or(length, |held| held.min(length)));
+    }
+
+    /// Record a posting leaving.
+    ///
+    /// The extremes are deliberately untouched. An extreme cannot move inward
+    /// without knowing the second one, and reading the term's whole posting range
+    /// to find it would put an O(df) scan on every delete. So the bound stays
+    /// sound and grows loose, which is the compromise ADR-0050 states and the
+    /// direction it insists on: loose costs pruning efficiency, wrong costs
+    /// records.
+    fn left(&mut self) {
+        self.delta = self.delta.saturating_sub(1);
+    }
 }
 
 /// Add the index writes a log record implies to `batch`.
@@ -303,14 +349,16 @@ fn build(
         let declared = analyzers_on(view, definition.table)?;
         let analyzer = search_analyzer(definition, &declared);
         let mut counted = Delta::default();
-        let mut dictionary: BTreeMap<IndexValues, i64> = BTreeMap::new();
+        let mut dictionary: BTreeMap<IndexValues, Moved> = BTreeMap::new();
         for (id, payload) in &rows {
             let analysed = terms_of(definition, analyzer, &decode_payload(payload)?);
             counted.added(analysed.tokens);
             let length = analysed.length();
             for (term, frequency) in analysed.postings {
-                let held = dictionary.entry(term.clone()).or_default();
-                *held = held.saturating_add(1);
+                dictionary
+                    .entry(term.clone())
+                    .or_default()
+                    .arrived(frequency, length);
                 batch = batch.put(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, id.clone()).encode(),
@@ -473,8 +521,7 @@ fn apply_one(
             let analysed = terms_of(definition, analyzer, &decode_payload(bytes)?);
             counted.removed(analysed.tokens);
             for (term, _) in analysed.postings {
-                let held = dictionary.entry(term.clone()).or_default();
-                *held = held.saturating_sub(1);
+                dictionary.entry(term.clone()).or_default().left();
                 batch = batch.delete(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, mutation.id.clone()).encode(),
@@ -486,8 +533,10 @@ fn apply_one(
             counted.added(analysed.tokens);
             let length = analysed.length();
             for (term, frequency) in analysed.postings {
-                let held = dictionary.entry(term.clone()).or_default();
-                *held = held.saturating_add(1);
+                dictionary
+                    .entry(term.clone())
+                    .or_default()
+                    .arrived(frequency, length);
                 batch = batch.put(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, mutation.id.clone()).encode(),
@@ -894,8 +943,14 @@ fn settle_terms(store: &Store, mut batch: WriteBatch, pending: &Pending) -> Resu
     let keyspace = SearchTermKey::keyspace();
     for (address, moved) in &pending.terms {
         let rebuilt = pending.built.contains(address);
-        for (term, delta) in moved {
-            if *delta == 0 {
+        for (term, moved) in moved {
+            // A rewrite that keeps a word nets a delta of zero and is still not
+            // nothing: the word may now occur more often, or in a shorter
+            // record, and the bound has to rise to cover it. Skipping on the
+            // delta alone — which is what a count-only dictionary could do —
+            // would leave a bound below a posting that exists, which is the one
+            // direction ADR-0050 forbids.
+            if moved.delta == 0 && moved.length.is_none() {
                 continue;
             }
             let key = SearchTermKey::new(*address, term.clone()).encode();
@@ -907,11 +962,29 @@ fn settle_terms(store: &Store, mut batch: WriteBatch, pending: &Pending) -> Resu
                     None => TermStatistics::default(),
                 }
             };
-            let documents = shift(held.documents, *delta);
+            let documents = shift(held.documents, moved.delta);
             batch = if documents == 0 {
+                // The extremes leave with the entry, which is the one place they
+                // are allowed to move inward. A term no record holds has no
+                // postings to bound, so the next arrival starts from what it
+                // actually writes rather than inheriting a ceiling from a record
+                // that is gone.
                 batch.delete(keyspace, key)
             } else {
-                batch.put(keyspace, key, TermStatistics::new(documents).encode())
+                let frequency = held.max_frequency.max(moved.frequency);
+                // `min` is not enough on its own, because zero is this field's
+                // "never recorded" and would win every comparison — the sound
+                // direction for a maximum and exactly backwards for a minimum.
+                let length = match (held.min_length, moved.length) {
+                    (0, arrived) => arrived.unwrap_or(0),
+                    (held, Some(arrived)) => held.min(arrived),
+                    (held, None) => held,
+                };
+                batch.put(
+                    keyspace,
+                    key,
+                    TermStatistics::bounded(documents, frequency, length).encode(),
+                )
             };
         }
     }

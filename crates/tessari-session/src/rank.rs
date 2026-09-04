@@ -222,7 +222,7 @@ mod tests {
 
     use tessari_types::{Analyzer, Number, Value};
 
-    use super::{Corpus, Held, score};
+    use super::{Corpus, Held, saturation, score};
 
     fn analyzer() -> Analyzer {
         Analyzer::default()
@@ -404,5 +404,68 @@ mod tests {
         // if every document held it; an unlisted term is one no document holds.
         let corpus = corpus(100, 10.0, &[]);
         assert!(scored(&corpus, "lock", "lock") > 0.0);
+    }
+
+    /// **The property a pruning bound rests on** (ADR-0050): the saturation term
+    /// is increasing in occurrences and decreasing in length.
+    ///
+    /// Asserted here rather than assumed, for the reason the phrase tests assert
+    /// the filter chain is one token in and one token out — a later change to
+    /// the scoring function that broke either direction would not fail a scoring
+    /// test, because every score it produced would still be a perfectly ordinary
+    /// number. It would fail by removing records from a pruned answer, in a
+    /// completely different crate, with nothing in an error state.
+    ///
+    /// Both directions are needed and neither implies the other, because the
+    /// bound pairs the largest frequency with the smallest length — two numbers
+    /// that usually come from two different records.
+    #[test]
+    fn saturation_rises_with_occurrences_and_falls_with_length() {
+        for average in [0.5, 1.0, 5.0, 50.0, 500.0, 5000.0] {
+            for length in [1.0, 3.0, 17.0, 240.0] {
+                for occurrences in [1.0, 2.0, 9.0, 40.0] {
+                    assert!(
+                        saturation(occurrences + 1.0, length, average)
+                            > saturation(occurrences, length, average),
+                        "one more occurrence scored no higher at \
+                         length {length}, average {average}"
+                    );
+                    assert!(
+                        saturation(occurrences, length + 1.0, average)
+                            < saturation(occurrences, length, average),
+                        "a longer record scored no lower at \
+                         {occurrences} occurrences, average {average}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// And therefore the extremes dominate every posting, at any average.
+    ///
+    /// The composition of the two directions above, stated as the thing a
+    /// pruning evaluator will actually rely on: pairing the largest frequency
+    /// with the smallest length bounds a term's whole posting list, whatever the
+    /// collection's average length happens to be *now* — which is precisely what
+    /// a stored impact could not promise, because it was computed at one average
+    /// and read at another.
+    #[test]
+    fn the_extremes_bound_every_posting_at_every_average() {
+        let postings = [(3.0, 40.0), (12.0, 900.0), (1.0, 2.0), (7.0, 55.0)];
+        let most = postings.iter().fold(0.0_f64, |held, (f, _)| held.max(*f));
+        let fewest = postings
+            .iter()
+            .fold(f64::INFINITY, |held, (_, dl)| held.min(*dl));
+
+        for average in [0.5, 1.0, 5.0, 50.0, 500.0, 5000.0] {
+            let bound = saturation(most, fewest, average);
+            for (occurrences, length) in postings {
+                assert!(
+                    saturation(occurrences, length, average) <= bound,
+                    "a posting ({occurrences}, {length}) scored above the bound \
+                     at average {average}"
+                );
+            }
+        }
     }
 }

@@ -32,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use tessari_encoding::{
-    IndexAddress, IndexValues, KeyKind, PostingKey, SearchTermKey, StoreKey, StoreValue,
+    IndexAddress, IndexValues, KeyKind, Posting, PostingKey, SearchTermKey, StoreKey, StoreValue,
     TermStatistics, encode_payload,
 };
 use tessari_kv::{Key, KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest, WriteBatch};
@@ -234,8 +234,92 @@ impl Fixture {
             .collect()
     }
 
+    /// The extremes each term's **postings** actually exhibit.
+    ///
+    /// The independent statement the stored bound is checked against, derived
+    /// the same way `counted_from_postings` derives the count: from the postings
+    /// themselves, never from the entry that claims to summarise them.
+    fn extremes_from_postings(&self) -> BTreeMap<IndexValues, (u32, u32)> {
+        let request = ScanRequest {
+            keyspace: KeyKind::Posting.keyspace(),
+            range: KeyRange::prefix(&self.address().prefix(KeyKind::Posting)),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+        let mut found: BTreeMap<IndexValues, (u32, u32)> = BTreeMap::new();
+        for (key, value) in self.backend.scan(&request).unwrap() {
+            let term = PostingKey::decode(key.as_slice()).unwrap().term;
+            let Posting::Counted { frequency, length } = Posting::decode(value.as_slice()).unwrap()
+            else {
+                continue;
+            };
+            found
+                .entry(term)
+                .and_modify(|(most, fewest)| {
+                    *most = (*most).max(frequency);
+                    *fewest = (*fewest).min(length);
+                })
+                .or_insert((frequency, length));
+        }
+        found
+    }
+
+    /// What the dictionary claims each term's extremes are.
+    fn bounds(&self) -> BTreeMap<IndexValues, TermStatistics> {
+        let request = ScanRequest {
+            keyspace: KeyKind::SearchTerm.keyspace(),
+            range: KeyRange::prefix(&self.address().prefix(KeyKind::SearchTerm)),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+        self.backend
+            .scan(&request)
+            .unwrap()
+            .into_iter()
+            .map(|(key, value)| {
+                let term = SearchTermKey::decode(key.as_slice()).unwrap().term;
+                (term, TermStatistics::decode(value.as_slice()).unwrap())
+            })
+            .collect()
+    }
+
+    /// The bound covers every posting it is a bound over.
+    ///
+    /// **This is the soundness assertion and it is one-sided on purpose.** The
+    /// stored numbers are allowed to be looser than the postings warrant —
+    /// neither is relaxed when a posting leaves, because an extreme cannot move
+    /// inward without knowing the second one — so the test asserts domination
+    /// and never equality. Asserting equality would fail on correct behaviour;
+    /// asserting nothing would miss the only failure that matters.
+    ///
+    /// The direction is the whole point (ADR-0050). A bound too loose costs
+    /// pruning efficiency. A bound too tight removes records from an answer and
+    /// leaves nothing in an error state.
+    fn assert_bounds_dominate(&self, after: &str) {
+        let observed = self.extremes_from_postings();
+        for (term, held) in self.bounds() {
+            let Some((most, fewest)) = observed.get(&term) else {
+                continue;
+            };
+            let Some((frequency, length)) = held.bound() else {
+                panic!("{after}: a term with postings has no bound at all (seed {SEED:#x})");
+            };
+            assert!(
+                frequency >= *most,
+                "{after}: a bound's frequency {frequency} sits below a posting's {most} \
+                 — records this term would win are pruned away (seed {SEED:#x})"
+            );
+            assert!(
+                length <= *fewest,
+                "{after}: a bound's length {length} sits above a posting's {fewest} \
+                 — a shorter record scores higher than the bound allows (seed {SEED:#x})"
+            );
+        }
+    }
+
     /// Both directions at once, with the failing term named.
     fn assert_agrees(&self, after: &str) {
+        self.assert_bounds_dominate(after);
         let expected = self.counted_from_postings();
         let held = self.dictionary();
         for (term, count) in &expected {
@@ -448,4 +532,147 @@ fn dropping_the_index_leaves_no_dictionary_behind() {
         "the drop moved the dictionary without moving the postings"
     );
     assert!(!fixture.keys(KeyKind::Posting).is_empty());
+}
+
+/// A bound goes **loose** when a posting leaves, never wrong.
+///
+/// The deciding case for ADR-0050's maintenance rule, and the workload sweep
+/// above cannot distinguish it: that sweep asserts domination, which a bound
+/// that *did* fall back would still satisfy on most steps. Here the record
+/// carrying the extreme is deleted and the bound is asserted to have stayed
+/// where it was.
+///
+/// It stays because an extreme cannot move inward without knowing the second
+/// one, and finding that means reading the term's whole posting range on every
+/// delete — an O(df) scan on the write path to buy a tighter bound on the read
+/// path. The trade is deliberate and its cost is looseness, which a rebuild
+/// repairs.
+#[test]
+fn a_bound_survives_the_posting_that_set_it_leaving() {
+    let fixture = Fixture::new();
+    // One long record holding the word many times sets both extremes; one short
+    // record holding it once would set them very differently.
+    fixture.write(
+        0,
+        "vector vector vector vector index term graph walk edge node",
+    );
+    fixture.write(1, "vector index");
+    fixture.assert_agrees("with both records");
+
+    let word = IndexValues::of(&[Value::from("vector")]);
+    let before = fixture.bounds().get(&word).copied().unwrap();
+    assert_eq!(
+        before.bound(),
+        Some((4, 2)),
+        "the extremes are not the ones the two records imply"
+    );
+
+    fixture.delete(0);
+    fixture.assert_agrees("after the extreme's record left");
+
+    let after = fixture.bounds().get(&word).copied().unwrap();
+    assert_eq!(
+        after.documents, 1,
+        "the count did not follow the record out"
+    );
+    assert_eq!(
+        after.bound(),
+        Some((4, 2)),
+        "the bound tightened on a delete, which it cannot do soundly without \
+         knowing the second-largest posting"
+    );
+}
+
+/// A rebuild is where a loose bound is repaired.
+///
+/// This is the other half of the trade above: maintenance never tightens, so
+/// something has to, and it is the operation that already recomputes the count
+/// from the rows rather than adding to it. Without this the looseness is
+/// permanent and the pruning path decays for the life of the store.
+#[test]
+fn a_rebuild_recomputes_a_bound_that_maintenance_left_loose() {
+    let fixture = Fixture::new();
+    fixture.write(
+        0,
+        "vector vector vector vector index term graph walk edge node",
+    );
+    fixture.write(1, "vector index");
+    fixture.delete(0);
+
+    let word = IndexValues::of(&[Value::from("vector")]);
+    assert_eq!(
+        fixture.bounds().get(&word).unwrap().bound(),
+        Some((4, 2)),
+        "the loose bound this test exists to repair was not there to begin with"
+    );
+
+    let mut transaction = fixture.store.begin().unwrap();
+    Catalog::new(&mut transaction).rebuild_index(&fixture.index);
+    transaction.commit().unwrap();
+
+    fixture.assert_agrees("after the rebuild");
+    assert_eq!(
+        fixture.bounds().get(&word).unwrap().bound(),
+        Some((1, 2)),
+        "the rebuild left the departed record's extreme in place"
+    );
+}
+
+/// A rewrite that keeps a word still moves its bound.
+///
+/// The case a count-only dictionary is blind to. Rewriting a record that holds
+/// the word nets a document-count delta of **zero**, so a settle keyed on the
+/// delta alone skips the term entirely — and the word may now occur twice as
+/// often, in a record half as long. The bound would then sit below a posting
+/// that exists, which is the one direction ADR-0050 forbids.
+#[test]
+fn a_rewrite_that_changes_no_count_still_raises_the_bound() {
+    let fixture = Fixture::new();
+    fixture.write(0, "vector index term graph");
+    let word = IndexValues::of(&[Value::from("vector")]);
+    assert_eq!(fixture.bounds().get(&word).unwrap().bound(), Some((1, 4)));
+
+    // Same record, same word, still exactly one document holding it.
+    fixture.write(0, "vector vector vector");
+    assert_eq!(
+        fixture.bounds().get(&word).unwrap().documents,
+        1,
+        "the rewrite changed the count, so this is not the case under test"
+    );
+    assert_eq!(
+        fixture.bounds().get(&word).unwrap().bound(),
+        Some((3, 3)),
+        "a rewrite that left the count alone left the bound behind with it"
+    );
+    fixture.assert_agrees("after the rewrite");
+}
+
+/// An entry written before the bound existed reads as *no bound*, not as zero.
+///
+/// The difference decides whether an older index is readable. A zero pair read
+/// as a bound is an upper bound of zero — every term contributes nothing, so
+/// every term is prunable, so a pruning read over an index written by an earlier
+/// build answers with nothing at all. Read as *no bound* it obliges the caller to
+/// score the postings, which is exactly what that build already did.
+#[test]
+fn an_entry_from_before_the_bound_says_it_has_none() {
+    // The shorter payload an earlier build wrote: the count and nothing after it.
+    let older = TermStatistics::new(12).encode();
+    let read = TermStatistics::decode(older.as_slice()).unwrap();
+    assert_eq!(
+        read.documents, 12,
+        "the count did not survive the shorter form"
+    );
+    assert_eq!(
+        read.bound(),
+        None,
+        "an entry with no extremes offered a bound of zero, which prunes everything"
+    );
+
+    // And a current entry that genuinely has extremes is not confused with it.
+    let current = TermStatistics::bounded(12, 3, 40).encode();
+    assert_eq!(
+        TermStatistics::decode(current.as_slice()).unwrap().bound(),
+        Some((3, 40))
+    );
 }
