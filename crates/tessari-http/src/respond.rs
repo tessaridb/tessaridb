@@ -577,6 +577,7 @@ fn encode(body: &mut String, outcome: &Outcome, names: &json::Names) {
             records,
             plan,
             notes,
+            suggestion,
             only,
         } => {
             body.push_str(r#"{"kind":"records","path":"#);
@@ -605,6 +606,31 @@ fn encode(body: &mut String, outcome: &Outcome, names: &json::Names) {
                     body.push('}');
                 }
                 body.push(']');
+            }
+            // Three states in two JSON facts, which is what lets this key stay
+            // absent from the responses that never asked the question — every
+            // read without a `MATCHES` over an indexed field, which is nearly
+            // all of them.
+            //
+            // Absent means no term dictionary was consulted, and that is not a
+            // claim about the collection: nothing was looked for. PRESENT AND
+            // EMPTY is the claim — a dictionary was asked and holds every term
+            // the query named. The two must not collapse, because a client that
+            // reads an absent key as "nothing is near" is reporting a negative
+            // the server never checked.
+            if let Some(suggestion) = suggestion {
+                body.push_str(r#","suggestion":{"corrections":["#);
+                for (position, correction) in suggestion.corrections().iter().enumerate() {
+                    if position > 0 {
+                        body.push(',');
+                    }
+                    body.push_str(r#"{"typed":"#);
+                    json::string(body, &correction.typed);
+                    body.push_str(r#","instead":"#);
+                    json::string(body, &correction.instead);
+                    body.push('}');
+                }
+                body.push_str("]}");
             }
             // Written only when true, for the same reason the notes are written
             // only when there are some: every response from a read that did not

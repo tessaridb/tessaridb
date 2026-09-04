@@ -30,7 +30,7 @@ use crate::consume::Consumer;
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::noticed::Noticed;
-use crate::outcome::{AccessPath, Note};
+use crate::outcome::{AccessPath, Note, Suggestion};
 use crate::plan;
 use crate::plan::Plan;
 use crate::rank::{Held, score};
@@ -500,6 +500,7 @@ impl Session<'_> {
                 records,
                 plan,
                 notes,
+                suggestion: searched.suggestion(),
             });
         }
 
@@ -604,6 +605,7 @@ impl Session<'_> {
             records,
             plan,
             notes,
+            suggestion: searched.suggestion(),
         })
     }
 
@@ -2462,6 +2464,13 @@ pub(crate) struct Answered {
     pub plan: Plan,
     /// What the read did that the records do not show.
     pub notes: Vec<Note>,
+    /// What the query might have meant, when it named a term nothing holds.
+    ///
+    /// Carried from the searched context rather than computed here, because it
+    /// is a fact about the query and the collection and not about the read: it
+    /// is resolved before an access path exists, so that planning a read
+    /// differently cannot give it a different suggestion.
+    pub suggestion: Option<Suggestion>,
 }
 
 /// The note a materialised read owes, when it reached the ceiling it stated.

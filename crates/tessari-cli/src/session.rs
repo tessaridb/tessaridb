@@ -21,7 +21,7 @@
 
 use std::io::{BufRead, Write};
 
-use tessari_wire::{Answer, Exact};
+use tessari_wire::{Answer, Exact, Suggested};
 
 use crate::render;
 use crate::store::Store;
@@ -258,6 +258,7 @@ fn report(out: &mut impl Write, answer: &Answer, shape: Shape) -> std::io::Resul
             notes,
             only: _,
             exact,
+            suggestion,
         } => {
             // The trailer is the same either way, and deliberately so: how many
             // and by which path is the part an operator reads for the answer
@@ -289,6 +290,21 @@ fn report(out: &mut impl Write, answer: &Answer, shape: Shape) -> std::io::Resul
             // makes a note worth reading when one appears.
             for note in notes {
                 writeln!(out, "note: {}", note.message)?;
+            }
+            // Silent for both of the states that have nothing to offer, on the
+            // same footing as an exact answer printing no word about exactness.
+            // The console prints the correction and does NOT re-run anything
+            // with it: what a reader does with "did you mean" is a decision only
+            // the reader can take, and a shell that quietly answers a different
+            // question is the failure this whole field exists to prevent.
+            if let Some(Suggested::DidYouMean(corrections)) = suggestion {
+                for correction in corrections {
+                    writeln!(
+                        out,
+                        "did you mean: {} -> {}",
+                        correction.typed, correction.instead
+                    )?;
+                }
             }
             Ok(())
         }

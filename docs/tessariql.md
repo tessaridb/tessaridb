@@ -1835,6 +1835,59 @@ what a record does *not* hold — so the index narrows to a superset and the
 condition finishes the job. `EXPLAIN` reports `any-terms` for a query using `OR`,
 and keeps reporting `terms` for one without it.
 
+#### "Did you mean" — a suggestion, never a substitution
+
+A read answers with a `suggestion` beside its records when a term the query
+named is one the collection does not hold:
+
+```
+SELECT * FROM notes WHERE body MATCHES 'vecter';
+-- 0 record(s), via index
+-- did you mean: vecter -> vector
+```
+
+**The suggestion never enters the executed query.** `'vecter'` answers with the
+records holding `vecter`, which is none of them, and it answers with exactly
+those whether or not a suggestion was found. That is a rule and not an
+implementation detail: a store that quietly re-ran the query with the corrected
+word would answer a question nobody asked, and the answer would *look* right.
+This store already knows how that failure ends — giving a term nothing holds any
+weight in the ranking does not tie the order, it inverts it, so the shortest
+document arrives first wearing a plausible score.
+
+**The trigger is a term, not an empty answer.** A query with one word misspelled
+usually still returns records — the conjunction fails but a disjunction does not
+— so a suggestion that waited for an empty answer would stay silent in the
+common case and speak only in the rare one. A term the collection does not hold
+contributed nothing to the answer, whatever else did:
+
+```
+SELECT * FROM notes WHERE body MATCHES 'engine OR vecter';
+-- the records holding `engine`, and a suggestion for `vecter`
+```
+
+An **excluded** term is left alone. `NOT vecter` asks for the records without
+that word and gets exactly them; correcting an exclusion is the one direction of
+error that removes records the reader wanted.
+
+**Three states, and the difference between two of them matters.** A suggestion
+needs a term dictionary, and only a `SEARCH` index has one. So a read over an
+unindexed field reports **no suggestion at all** — not "nothing is near", which
+would be a confident negative nobody checked. Over the wire the three are three
+distinct values; in JSON the key is absent when nothing was consulted, present
+with an empty `corrections` list when a dictionary held every term, and present
+with entries otherwise.
+
+**The bound it inherits.** Finding a near term is the same dictionary walk
+`MATCHES FUZZY` runs, so it carries the same mandatory non-fuzzy prefix: a word
+misspelled in its first three characters has no candidate and earns no
+suggestion. Reusing that bound is deliberate. Two walks over one dictionary with
+two notions of "near" would eventually disagree, and the disagreement would show
+up as a suggestion for a word `MATCHES FUZZY` refuses to match.
+
+Where two held terms are equally near, the one **more records hold** is offered:
+at equal distance the useful correction is the word people actually wrote.
+
 #### `MATCHES PREFIX` — the words a reader has started typing
 
 ```

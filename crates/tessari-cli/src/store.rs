@@ -20,8 +20,8 @@
 //! scripts — so they belong to the embedded path alone, and asking for one over
 //! an address is refused in `main` rather than quietly ignored.
 
-use tessari_wire::{Answer, Client, Exact, Names, Remark};
-use tessaridb::{Db, Outcome, Parameters, Session};
+use tessari_wire::{Answer, Client, Correction, Exact, Names, Remark, Suggested};
+use tessaridb::{Db, Outcome, Parameters, Session, Suggestion};
 
 /// Somewhere statements can be run.
 ///
@@ -156,6 +156,7 @@ fn into_answer(outcome: &Outcome, names: Names) -> Answer {
             records,
             plan,
             notes,
+            suggestion,
             only,
         } => Answer::Records {
             records: records
@@ -177,6 +178,23 @@ fn into_answer(outcome: &Outcome, names: Names) -> Answer {
                     reason: reason.to_owned(),
                 },
                 None => Exact::Yes,
+            }),
+            // Always `Some`, because an embedded store is never a node too old
+            // to have been asked. Which of the three it is still says what it
+            // says: `NotSought` here means this read had no dictionary, not that
+            // this build has no suggestions.
+            suggestion: Some(match suggestion {
+                None => Suggested::NotSought,
+                Some(Suggestion::NothingNearer) => Suggested::NothingNearer,
+                Some(Suggestion::DidYouMean(nearest)) => Suggested::DidYouMean(
+                    nearest
+                        .iter()
+                        .map(|correction| Correction {
+                            typed: correction.typed.clone(),
+                            instead: correction.instead.clone(),
+                        })
+                        .collect(),
+                ),
             }),
         },
         Outcome::Value(held) => Answer::Value {

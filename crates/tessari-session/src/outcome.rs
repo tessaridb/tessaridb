@@ -31,6 +31,12 @@ pub enum Outcome {
         /// Empty for almost every read, which is the point: a note is worth
         /// reading because it is rare.
         notes: Vec<Note>,
+        /// What the query might have meant, when a term nothing holds says it
+        /// probably meant something else.
+        ///
+        /// `None` when no term dictionary was consulted — see [`Suggestion`],
+        /// where the three states and the reason for them are set out.
+        suggestion: Option<Suggestion>,
         /// Whether the read said `ONLY`, and so answers with the record rather
         /// than a list holding it.
         ///
@@ -166,6 +172,78 @@ impl Exactness {
         match self {
             Self::Exact => None,
             Self::Approximate(why) => Some(why),
+        }
+    }
+}
+
+/// A term the query named that nothing holds, and the nearest term that is held.
+///
+/// Both spellings are **analyzed** terms rather than the words as typed, because
+/// the near one has to be: it came out of the term dictionary, which holds what
+/// the analyzer produced. Reporting the typed word beside a stored stem would
+/// invite a caller to compare two things that were never the same kind, so the
+/// typed side is the analyzed form of what the caller wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Nearest {
+    /// The term as the query asked for it, analyzed.
+    pub typed: String,
+    /// The nearest term the dictionary holds.
+    pub instead: String,
+}
+
+/// What the store would have looked for, had the query asked for something the
+/// collection holds.
+///
+/// # Why this is a field and not a note, and not the records
+///
+/// Not the records, because a suggestion is advice about a **different question**
+/// than the one that was asked. Substituting it would answer a query nobody
+/// wrote, and the store already knows why that is worse than useless here: a
+/// term the records do not hold does not tie a BM25 ranking, it inverts it, so
+/// the shortest document arrives first wearing a plausible score. The executed
+/// query is byte-for-byte what the caller wrote, always.
+///
+/// Not a note, because [`Note`] crosses the wire as prose. A caller reading
+/// "did you mean vector" has to parse English to recover the term, and a caller
+/// that cannot cheaply read a suggestion as data is a caller that will glue it
+/// into the next query by hand — the exact substitution this exists to prevent.
+///
+/// # The absence is three states, not two
+///
+/// This type is carried as an `Option`, and the `None` is load-bearing. A
+/// suggestion needs a term dictionary, and only a `SEARCH` index has one, so a
+/// query over an unindexed field cannot be asked this question at all. If
+/// absence meant "nothing is near", that read would report a confident negative
+/// it never checked. So `None` is *no dictionary was consulted*,
+/// [`Self::NothingNearer`] is *one was, and every term is held*, and
+/// [`Self::DidYouMean`] is *these were not*. It is the same shape, and the same
+/// reason, as [`Exactness`] being written even when the answer is exact.
+///
+/// That a suggestion appears only where an index does is not a breach of the
+/// rule that an index changes what a read costs and never what it answers. The
+/// records are identical either way. A suggestion is not an answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Suggestion {
+    /// The dictionary was consulted and holds every term the query named.
+    ///
+    /// Reported rather than left absent for the reason above: a caller has to be
+    /// able to tell this from a read that never had a dictionary to ask.
+    NothingNearer,
+    /// Terms the dictionary does not hold, each with the nearest one it does.
+    ///
+    /// Never empty — a query with nothing to suggest reports
+    /// [`Self::NothingNearer`] instead, so an empty list cannot come to mean two
+    /// things.
+    DidYouMean(Vec<Nearest>),
+}
+
+impl Suggestion {
+    /// The corrections, when there are any.
+    #[must_use]
+    pub fn corrections(&self) -> &[Nearest] {
+        match self {
+            Self::NothingNearer => &[],
+            Self::DidYouMean(nearest) => nearest,
         }
     }
 }
@@ -417,6 +495,21 @@ impl Outcome {
     pub const fn exactness(&self) -> Option<Exactness> {
         match self {
             Self::Records { plan, .. } => Some(plan.exact),
+            _ => None,
+        }
+    }
+
+    /// What the query might have meant, when it named a term nothing holds.
+    ///
+    /// Two nestings of absence, and they say different things. The outer `None`
+    /// is an outcome carrying no records, which asked nothing of a dictionary
+    /// because it ran no query. The inner one is a read that ran but had no
+    /// dictionary to ask. Flattening them would let a `Removed` count and a
+    /// scan over an unindexed field answer this question the same way.
+    #[must_use]
+    pub const fn suggestion(&self) -> Option<&Option<Suggestion>> {
+        match self {
+            Self::Records { suggestion, .. } => Some(suggestion),
             _ => None,
         }
     }

@@ -86,7 +86,8 @@ pub mod feed;
 pub use tessari_lsm::{Durability, StoreConfig};
 pub use tessari_session::redact::{Visible, seen};
 pub use tessari_session::{
-    AccessPath, Error, Exactness, Note, Outcome, Parameters, Result, Session, Ticket,
+    AccessPath, Error, Exactness, Nearest, Note, Outcome, Parameters, Result, Session, Suggestion,
+    Ticket,
 };
 pub use tessari_storage::{BUILD_VERSION, Change, ChangeKind, Changes, Subscription, Watch};
 pub use tessari_types::{

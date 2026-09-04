@@ -361,3 +361,43 @@ SELECT * FROM boolean WHERE body MATCHES 'ada OR lovelace NOT babbage';
 --- case: and the refusal is raised before the index is consulted
 SELECT * FROM boolean WHERE body MATCHES 'NOT babbage';
 --- expect: error NegationWithoutTerm
+
+--- case: a collection where one spelling is held and a near one is not
+DEFINE COLLECTION spelled;
+--- expect: ok
+
+--- case: the field is analyzed so the terms exist
+DEFINE FIELD body ON spelled TYPE string ANALYZER simple;
+--- expect: ok
+
+--- case: three records hold the word
+CREATE spelled:1 = { body: 'the vector index walks a graph' };
+--- expect: ok
+
+--- case: a second
+CREATE spelled:2 = { body: 'a vector is a list of numbers' };
+--- expect: ok
+
+--- case: a third, beside a word the misspelling does not reach
+CREATE spelled:3 = { body: 'the engine stores every vector' };
+--- expect: ok
+
+--- case: a misspelled term finds nothing, and is not answered as the word it resembles
+SELECT * FROM spelled WHERE body MATCHES 'vecter';
+--- expect: rows 0
+
+--- case: the spelling that is held finds all three
+SELECT * FROM spelled WHERE body MATCHES 'vector';
+--- expect: rows 3
+
+--- case: an index is added, which changes what a read costs
+DEFINE INDEX by_spelled ON spelled FIELDS body SEARCH;
+--- expect: ok
+
+--- case: and the misspelled term still finds nothing, suggestion or no suggestion
+SELECT * FROM spelled WHERE body MATCHES 'vecter';
+--- expect: rows 0
+
+--- case: while a query mixing a held word and a misspelled one answers on the held one alone
+SELECT * FROM spelled WHERE body MATCHES 'engine OR vecter';
+--- expect: rows 1

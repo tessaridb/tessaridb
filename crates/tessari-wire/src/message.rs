@@ -20,7 +20,7 @@ use tessari_ql::Parameters;
 // `AccessPath` and `Outcome` are what the node encodes *from*; a client only
 // ever decodes into `Answer`, so neither name reaches the client half.
 #[cfg(feature = "server")]
-use tessari_session::{AccessPath, Outcome};
+use tessari_session::{AccessPath, Outcome, Suggestion};
 use tessari_types::{RecordId, TableId, Value};
 
 use crate::error::{Error, Result};
@@ -223,6 +223,7 @@ fn encode_outcome_body(outcome: &Outcome, names: &Names) -> Vec<u8> {
             records,
             plan,
             notes,
+            suggestion,
             only,
         } => {
             body.push(tag::RECORDS);
@@ -253,6 +254,30 @@ fn encode_outcome_body(outcome: &Outcome, names: &Names) -> Vec<u8> {
             // wire for which it must not.
             body.push(u8::from(!plan.exact.is_exact()));
             put_text(&mut body, plan.exact.reason().unwrap_or_default());
+            // The suggestion last, as the newest field. Its three states get
+            // three distinct byte values rather than a flag plus an empty list,
+            // because the difference this field exists to carry is exactly the
+            // one a flag would lose: `0` is *no dictionary was asked*, `1` is *a
+            // dictionary was asked and holds every term*, and `2` is *these
+            // terms it does not*. A client that reads `0` where it meant `1`
+            // reports a confident negative nobody checked.
+            //
+            // Which also decides what an older client's silence means. It stops
+            // before this byte and so reads no suggestion at all — the honest
+            // outcome, and the reason absent is `0` rather than any of the three
+            // being the implicit default.
+            match suggestion {
+                None => body.push(0),
+                Some(Suggestion::NothingNearer) => body.push(1),
+                Some(Suggestion::DidYouMean(nearest)) => {
+                    body.push(2);
+                    put_u32(&mut body, u32::try_from(nearest.len()).unwrap_or(u32::MAX));
+                    for correction in nearest {
+                        put_text(&mut body, &correction.typed);
+                        put_text(&mut body, &correction.instead);
+                    }
+                }
+            }
         }
         Outcome::Value(held) => {
             body.push(tag::VALUE);
@@ -313,6 +338,14 @@ pub enum Answer {
         /// what an older node's read actually was; here the default would be a
         /// *claim*, and a node that predates the field made no claim at all.
         exact: Option<Exact>,
+        /// What the node suggested the query might have meant — and `None` when
+        /// it did not say, which is every node older than the field.
+        ///
+        /// The same shape as `exact` and for the same reason. A node that never
+        /// asked a dictionary and a node too old to have the question are not
+        /// the same fact, and collapsing them would let a client report "nothing
+        /// is near" on behalf of a node that never looked.
+        suggestion: Option<Suggested>,
     },
     /// One value, and the names of the tables it references.
     Value {
@@ -345,6 +378,37 @@ pub enum Exact {
         /// The reason, in the node's own words.
         reason: String,
     },
+}
+
+/// One term a query asked for that nothing holds, and the nearest that is held.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Correction {
+    /// The term as the query asked for it, analyzed.
+    pub typed: String,
+    /// The nearest term the collection holds.
+    pub instead: String,
+}
+
+/// What a node said the query might have meant.
+///
+/// Three states, and the `Option` around this carries a fourth. They are kept
+/// apart for the reason [`Exact`] gives: the difference between *asked and found
+/// nothing* and *never asked* is the whole value of the field, and a client
+/// holding one flag invents the distinction back with a default nobody promised.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Suggested {
+    /// No term dictionary was consulted — the read had no search index to ask.
+    ///
+    /// Not a statement that nothing is near. Nothing was looked for.
+    NotSought,
+    /// A dictionary was consulted and holds every term the query named.
+    NothingNearer,
+    /// Terms it does not hold, each with the nearest one it does.
+    ///
+    /// Never empty from a node that follows the protocol; a node sending an
+    /// empty list here has said [`Self::NothingNearer`] the long way, and a
+    /// client is entitled to read it as that rather than as a correction.
+    DidYouMean(Vec<Correction>),
 }
 
 /// One thing the store said about how it answered.
@@ -435,6 +499,37 @@ fn decode_outcome_body(body: &[u8]) -> Result<Answer> {
             } else {
                 None
             };
+            // And the same rule again, one field further along, because the
+            // reason for it is the same: silence here is a node that never had
+            // the question, not a node reporting that nothing was near.
+            let suggestion = if at < body.len() {
+                let state = body.get(at).copied().ok_or(Error::Malformed)?;
+                at = at.saturating_add(1);
+                match state {
+                    0 => Some(Suggested::NotSought),
+                    1 => Some(Suggested::NothingNearer),
+                    2 => {
+                        let (count, next) = take_u32(body, at)?;
+                        at = next;
+                        let mut corrections = Vec::new();
+                        for _ in 0..count {
+                            let (typed, next) = take_text(body, at)?;
+                            let (instead, next) = take_text(body, next)?;
+                            at = next;
+                            corrections.push(Correction { typed, instead });
+                        }
+                        Some(Suggested::DidYouMean(corrections))
+                    }
+                    // A state this build does not know is not a malformed
+                    // answer — it is a newer node saying something in a
+                    // vocabulary this client lacks, and the honest reading of
+                    // that is the same as silence. The length prefix already
+                    // carries the reader past whatever followed.
+                    _ => None,
+                }
+            } else {
+                None
+            };
             Answer::Records {
                 records,
                 path,
@@ -442,6 +537,7 @@ fn decode_outcome_body(body: &[u8]) -> Result<Answer> {
                 notes,
                 only,
                 exact,
+                suggestion,
             }
         }
         tag::VALUE => {
@@ -566,7 +662,10 @@ mod tests {
     use tessari_session::{AccessPath, Outcome, Parameters, Plan};
     use tessari_types::{Number, RecordId, RecordRef, TableId, Value};
 
-    use super::{Answer, Exact, Names, Remark, Request, decode_outcome, encode_outcome};
+    use super::{
+        Answer, Correction, Exact, Names, Remark, Request, Suggested, decode_outcome,
+        encode_outcome,
+    };
 
     /// No answer below carries a reference, so none of them needs a name.
     fn unnamed() -> Names {
@@ -630,6 +729,7 @@ mod tests {
                 records: vec![(RecordId::Int(7), Value::from("ada"))],
                 plan: Plan::new(AccessPath::Index),
                 notes: Vec::new(),
+                suggestion: None,
                 only: false,
             },
         ];
@@ -682,6 +782,7 @@ mod tests {
             )],
             plan: Plan::new(AccessPath::Record),
             notes: Vec::new(),
+            suggestion: None,
             only: false,
         };
         let (answer, used) = decode_outcome(&encode_outcome(&held, &names), 0).expect("an answer");
@@ -725,6 +826,7 @@ mod tests {
             records: vec![(RecordId::Int(7), Value::from("ada"))],
             plan: Plan::new(AccessPath::Scan),
             notes: vec![tessari_session::Note::Approximate],
+            suggestion: None,
             only: false,
         }
     }
@@ -760,6 +862,7 @@ mod tests {
                 records: vec![(RecordId::Int(7), Value::from("ada"))],
                 plan: Plan::new(AccessPath::Scan),
                 notes: Vec::new(),
+                suggestion: None,
                 only: false,
             },
             &unnamed(),
@@ -789,6 +892,7 @@ mod tests {
                 records: vec![(RecordId::Int(7), Value::from("ada"))],
                 plan: Plan::new(AccessPath::Scan),
                 notes: Vec::new(),
+                suggestion: None,
                 only: false,
             },
             &unnamed(),
@@ -809,7 +913,10 @@ mod tests {
         const ONLY_FLAG: usize = 1;
         // A tag byte and the four-byte length of an empty reason.
         const EXACTNESS: usize = 1 + 4;
-        let inner = &full[4..full.len() - NOTE_COUNT - ONLY_FLAG - EXACTNESS];
+        // One state byte. `None` writes nothing after it, so this is the whole
+        // of the field for a read that consulted no dictionary.
+        const SUGGESTION: usize = 1;
+        let inner = &full[4..full.len() - NOTE_COUNT - ONLY_FLAG - EXACTNESS - SUGGESTION];
         let mut older = Vec::new();
         older.extend_from_slice(&u32::try_from(inner.len()).expect("small").to_be_bytes());
         older.extend_from_slice(inner);
@@ -820,6 +927,7 @@ mod tests {
             records,
             only,
             exact,
+            suggestion,
             ..
         } = answer
         else {
@@ -835,6 +943,66 @@ mod tests {
         assert!(
             exact.is_none(),
             "a body that ends early claimed its answer was exact",
+        );
+        // And the same again for the newest field, where the mistake would be
+        // worse: reading silence as `NotSought` is nearly right and completely
+        // unfounded, and reading it as `NothingNearer` would have this client
+        // report on a dictionary the older node never had.
+        assert!(
+            suggestion.is_none(),
+            "a body that ends early said something about a suggestion",
+        );
+    }
+
+    /// The suggestion's three states survive the wire as three states.
+    ///
+    /// The encoding gives each its own byte rather than a flag plus a possibly
+    /// empty list, and this is what holds it to that: an implementation that
+    /// wrote `NothingNearer` as an empty `DidYouMean` would pass every test
+    /// about corrections and fail here, which is the right place for it to fail
+    /// because the difference is the whole point of the field.
+    #[test]
+    fn a_suggestion_crosses_the_wire_as_three_states_and_not_two() {
+        let crossed = |suggestion| {
+            let encoded = encode_outcome(
+                &Outcome::Records {
+                    records: vec![(RecordId::Int(7), Value::from("ada"))],
+                    plan: Plan::new(AccessPath::Scan),
+                    notes: Vec::new(),
+                    suggestion,
+                    only: false,
+                },
+                &unnamed(),
+            );
+            let (answer, used) = decode_outcome(&encoded, 0).expect("a suggestion");
+            assert_eq!(
+                used,
+                encoded.len(),
+                "the suggestion desynchronised the stream"
+            );
+            let Answer::Records { suggestion, .. } = answer else {
+                panic!("not records")
+            };
+            suggestion
+        };
+
+        assert_eq!(crossed(None), Some(Suggested::NotSought));
+        assert_eq!(
+            crossed(Some(tessari_session::Suggestion::NothingNearer)),
+            Some(Suggested::NothingNearer),
+            "a dictionary that was asked crossed as one that was not"
+        );
+        assert_eq!(
+            crossed(Some(tessari_session::Suggestion::DidYouMean(vec![
+                tessari_session::Nearest {
+                    typed: "vecter".to_owned(),
+                    instead: "vector".to_owned(),
+                }
+            ]))),
+            Some(Suggested::DidYouMean(vec![Correction {
+                typed: "vecter".to_owned(),
+                instead: "vector".to_owned(),
+            }])),
         );
     }
 
@@ -852,6 +1020,7 @@ mod tests {
                     records: vec![(RecordId::Int(7), Value::from("ada"))],
                     plan: Plan::new(access),
                     notes: Vec::new(),
+                    suggestion: None,
                     only: false,
                 },
                 &unnamed(),
@@ -881,6 +1050,7 @@ mod tests {
                 records: vec![(RecordId::Int(7), Value::from("ada"))],
                 plan: Plan::new(AccessPath::Record),
                 notes: Vec::new(),
+                suggestion: None,
                 only: true,
             },
             &unnamed(),

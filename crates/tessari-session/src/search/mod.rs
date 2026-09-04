@@ -33,6 +33,7 @@
 mod matching;
 mod query;
 mod resolve;
+mod suggest;
 
 pub(crate) use matching::{matches_fuzzy_terms, matches_prefix_terms, matches_terms};
 pub(crate) use query::{Asked, asked};

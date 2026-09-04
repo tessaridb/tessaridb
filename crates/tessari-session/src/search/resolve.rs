@@ -15,10 +15,12 @@ use tessari_types::{Analyzer, Path, TableId, Value};
 use tessari_constants::{SEARCH_FUZZY_PREFIX, SEARCH_PREFIX_MINIMUM};
 
 use crate::error::{Error, Result};
+use crate::outcome::Suggestion;
 use crate::rank::Corpus;
 use crate::session::Session;
 
 use super::query::{malformed_slop, negation_without_term};
+use super::suggest::suggested;
 
 /// What one ranked path was resolved against.
 ///
@@ -38,6 +40,7 @@ pub(crate) struct Ranked {
 pub(crate) struct Searched {
     analyzers: BTreeMap<Path, Analyzer>,
     corpora: BTreeMap<Path, Ranked>,
+    suggestion: Option<Suggestion>,
 }
 
 impl Searched {
@@ -49,6 +52,14 @@ impl Searched {
     /// What this path was ranked against, if it was ranked at all.
     pub(crate) fn ranked(&self, path: &Path) -> Option<&Ranked> {
         self.corpora.get(path)
+    }
+
+    /// What the query might have meant, resolved here because this is the one
+    /// place a read has both the analyzer and the dictionary in hand — and
+    /// resolved *before* any access path is chosen, so that a suggestion cannot
+    /// come to depend on which candidate the planner picked.
+    pub(crate) fn suggestion(&self) -> Option<Suggestion> {
+        self.suggestion.clone()
     }
 }
 
@@ -71,7 +82,7 @@ impl Session<'_> {
         let mut wanted = Vec::new();
         let mut ranked: Vec<(&Path, &Expr)> = Vec::new();
         let mut prefixed: Vec<(&Path, &Expr, BinaryOp)> = Vec::new();
-        let mut phrased: Vec<&Expr> = Vec::new();
+        let mut phrased: Vec<(&Path, &Expr)> = Vec::new();
         for expr in expressions {
             searched_paths(expr, &mut wanted, &mut ranked, &mut prefixed, &mut phrased);
         }
@@ -82,7 +93,13 @@ impl Session<'_> {
         // requiring are both mistakes in the query rather than questions about
         // the data, so nothing about the table, the field or the indexes may
         // change whether they are refused.
-        for query in phrased {
+        //
+        // The evaluated text is KEPT rather than dropped, because the suggestion
+        // at the end of this function asks about the same strings. Evaluating
+        // them a second time would let a query built from an expression be
+        // checked as one thing and suggested against as another.
+        let mut matched: Vec<(Path, String)> = Vec::with_capacity(phrased.len());
+        for (path, query) in phrased {
             let Value::String(text) = self.evaluate(transaction, query)? else {
                 continue;
             };
@@ -95,6 +112,7 @@ impl Session<'_> {
             if negation_without_term(&text) {
                 return Err(Error::NegationWithoutTerm { span: query.span });
             }
+            matched.push((path.clone(), text));
         }
 
         if wanted.is_empty() {
@@ -200,7 +218,20 @@ impl Session<'_> {
             );
         }
 
-        Ok(Searched { analyzers, corpora })
+        // Last, because it is the only thing here that reads the term dictionary
+        // rather than the catalog, and because it needs the analyzers the loops
+        // above resolved. Still before any access path exists, which is the
+        // property that matters: the suggestion is a fact about the query and
+        // the collection, so a read must not be able to earn a different one by
+        // being planned differently.
+        let indexes = Catalog::new(transaction).indexes_on(table)?;
+        let suggestion = suggested(transaction, &indexes, &analyzers, &matched)?;
+
+        Ok(Searched {
+            analyzers,
+            corpora,
+            suggestion,
+        })
     }
 }
 
@@ -213,7 +244,7 @@ fn searched_paths<'a>(
     into: &mut Vec<&'a Path>,
     ranked: &mut Vec<(&'a Path, &'a Expr)>,
     prefixed: &mut Vec<(&'a Path, &'a Expr, BinaryOp)>,
-    phrased: &mut Vec<&'a Expr>,
+    phrased: &mut Vec<(&'a Path, &'a Expr)>,
 ) {
     match &expr.kind {
         ExprKind::Binary {
@@ -223,7 +254,7 @@ fn searched_paths<'a>(
         } => {
             if let ExprKind::Path(field) = &left.kind {
                 into.push(&field.path);
-                phrased.push(right);
+                phrased.push((&field.path, right));
             }
         }
         ExprKind::Binary {
