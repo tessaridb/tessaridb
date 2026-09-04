@@ -12,9 +12,20 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
-## 0.0.2-alpha — 2026-08-27
+## 0.0.2-alpha — 2026-09-02
 
-Unreleased. 1035 conformance cases define the language and run in the build.
+**Released.** Tagged `v0.0.2-alpha` on `main`, and published as
+[`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb) —
+`0.0.2-alpha` and `latest`, `linux/amd64` and `linux/arm64`. The image carries
+the binary and nothing else: no source, no toolchain, 108 MB.
+
+This is the first version anybody can obtain without access to this repository.
+
+1035 conformance cases define the language and run in the build.
+
+The dates above and below are the days the versions were released. Work on this
+one began on 2026-08-27, which is what this heading said while it was still
+unreleased.
 
 ### Breaking — a table is not a document
 
