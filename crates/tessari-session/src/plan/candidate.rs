@@ -28,6 +28,18 @@ pub(crate) enum Shape {
     /// structure with the same ceiling, where a value prefix walks an ordered
     /// index whose size is not knowable without doing the read.
     PrefixTerms,
+    /// `<path> MATCHES FUZZY '<text>'` — for each word, the postings of every
+    /// term within the edit budget that shares its mandatory prefix, unioned;
+    /// then those intersected across the words.
+    ///
+    /// Beside [`Shape::PrefixTerms`] rather than below it, because the two
+    /// promise the same thing by the same method: a union of posting lists per
+    /// word, intersected across words, with a ceiling computed from real
+    /// document frequencies. `Rows::AtMost` does the discriminating between
+    /// them. Ranking fuzzy lower because its walk *reads* more terms would be a
+    /// claim about how many rows it returns, which is a different quantity and
+    /// one this store keeps no statistics to support.
+    FuzzyTerms,
     /// `<path> LIKE '<literal>%'` — a range over the values beginning with it.
     Prefix,
     /// `<path> < <constant>`, and the other three orderings — a bounded scan.
@@ -92,6 +104,14 @@ pub(crate) enum Served {
     /// index can serve the read at all depends on how far the expansions reach:
     /// past the cap, this candidate is not offered and the scan answers.
     PrefixTerms(Vec<Vec<String>>),
+    /// The terms each fuzzy word reached — the same shape as
+    /// [`Served::PrefixTerms`], and deliberately a separate variant.
+    ///
+    /// The executor treats the two identically, because by the time a walk has
+    /// produced concrete terms there is nothing left to distinguish. `EXPLAIN`
+    /// does not, and must not: telling a reader `prefix-terms` when a fuzzy walk
+    /// ran would misreport which question the index answered.
+    FuzzyTerms(Vec<Vec<String>>),
     /// The two ends of an ordered scan, either of which may be absent.
     ///
     /// Both are carried as **values**, not as byte bounds, because the index
@@ -139,6 +159,7 @@ impl Served {
             Self::Prefix(_) => Shape::Prefix,
             Self::Terms(_) => Shape::Terms,
             Self::PrefixTerms(_) => Shape::PrefixTerms,
+            Self::FuzzyTerms(_) => Shape::FuzzyTerms,
             Self::Range { .. } => Shape::Range,
             Self::Region { .. } => Shape::Region,
         }
@@ -156,7 +177,11 @@ impl Served {
     pub(crate) fn fixed(&self) -> usize {
         match self {
             Self::Equality(values) => values.len(),
-            Self::Prefix(_) | Self::Terms(_) | Self::PrefixTerms(_) | Self::Region { .. } => 1,
+            Self::Prefix(_)
+            | Self::Terms(_)
+            | Self::PrefixTerms(_)
+            | Self::FuzzyTerms(_)
+            | Self::Region { .. } => 1,
             Self::Range { fixed, .. } => fixed.len().saturating_add(1),
         }
     }
@@ -243,6 +268,7 @@ impl Shape {
             Self::Region => "region",
             Self::Terms => "terms",
             Self::PrefixTerms => "prefix-terms",
+            Self::FuzzyTerms => "fuzzy-terms",
         }
     }
 }

@@ -34,7 +34,7 @@ use crate::outcome::{AccessPath, Note};
 use crate::plan;
 use crate::plan::Plan;
 use crate::rank::{Held, score};
-use crate::search::{Ranked, Searched, matches_prefix_terms, matches_terms};
+use crate::search::{Ranked, Searched, matches_fuzzy_terms, matches_prefix_terms, matches_terms};
 use crate::session::Session;
 
 /// How many of an index's leading values an index-served order compares.
@@ -189,6 +189,7 @@ impl Session<'_> {
                     return Ok(Value::Bool(held.into_iter().any(|value| match *op {
                         BinaryOp::Matches => matches_terms(analyzer, value, &other),
                         BinaryOp::MatchesPrefix => matches_prefix_terms(analyzer, value, &other),
+                        BinaryOp::MatchesFuzzy => matches_fuzzy_terms(analyzer, value, &other),
                         held_op => {
                             scope.compared(value, &other);
                             apply(held_op, value, &other)
@@ -200,15 +201,18 @@ impl Session<'_> {
                 // analyzer turns this field's text into terms is a property of
                 // the field, so that both a scan and an index ask the same
                 // question of it.
-                if matches!(*op, BinaryOp::Matches | BinaryOp::MatchesPrefix) {
+                if matches!(
+                    *op,
+                    BinaryOp::Matches | BinaryOp::MatchesPrefix | BinaryOp::MatchesFuzzy
+                ) {
                     let analyzer = match &left.kind {
                         ExprKind::Path(field) => scope.analyzer(&field.path),
                         _ => None,
                     };
-                    return Ok(Value::Bool(if *op == BinaryOp::Matches {
-                        matches_terms(analyzer, &held, &other)
-                    } else {
-                        matches_prefix_terms(analyzer, &held, &other)
+                    return Ok(Value::Bool(match *op {
+                        BinaryOp::MatchesPrefix => matches_prefix_terms(analyzer, &held, &other),
+                        BinaryOp::MatchesFuzzy => matches_fuzzy_terms(analyzer, &held, &other),
+                        _ => matches_terms(analyzer, &held, &other),
                     }));
                 }
                 // Beside the comparison rather than inside it: what an operator
@@ -1923,7 +1927,11 @@ impl Session<'_> {
                 }
                 Ok(rows)
             }
-            plan::Served::PrefixTerms(expansions) => {
+            // One arm for two variants: once a walk has produced concrete
+            // terms, a prefix expansion and a fuzzy one are the same object and
+            // are read the same way. They stay separate variants so `EXPLAIN`
+            // can still say which walk produced them.
+            plan::Served::PrefixTerms(expansions) | plan::Served::FuzzyTerms(expansions) => {
                 let mut rows = Vec::new();
                 for id in transaction.records_by_expansions(&chosen.index, expansions)? {
                     let at = RecordAddress::new(context.namespace, context.database, table, id);

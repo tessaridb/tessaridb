@@ -192,16 +192,19 @@ impl Parser<'_> {
                 return Some(op);
             }
         }
-        // `MATCHES` and `MATCHES PREFIX` are one operator with an optional
-        // second word rather than two entries above, because the second word
-        // only means anything after the first: a bare `PREFIX` in operator
-        // position would otherwise become a spelling nothing rejects.
+        // `MATCHES`, `MATCHES PREFIX` and `MATCHES FUZZY` are one operator with
+        // an optional second word rather than three entries above, because the
+        // second word only means anything after the first: a bare `PREFIX` or
+        // `FUZZY` in operator position would otherwise become a spelling nothing
+        // rejects.
         if self.eat_keyword(Keyword::Matches) {
-            return Some(if self.eat_keyword(Keyword::Prefix) {
-                BinaryOp::MatchesPrefix
-            } else {
-                BinaryOp::Matches
-            });
+            if self.eat_keyword(Keyword::Prefix) {
+                return Some(BinaryOp::MatchesPrefix);
+            }
+            if self.eat_keyword(Keyword::Fuzzy) {
+                return Some(BinaryOp::MatchesFuzzy);
+            }
+            return Some(BinaryOp::Matches);
         }
         None
     }

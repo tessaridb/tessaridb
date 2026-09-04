@@ -201,6 +201,14 @@ pub(super) enum Comparison {
     /// structure: the term dictionary is walked to find which words the query
     /// reaches, and only then are their posting lists read.
     PrefixTerms,
+    /// `<path> MATCHES FUZZY '<text>'`
+    ///
+    /// Served by the same structure as [`Comparison::PrefixTerms`] and kept
+    /// apart from it because the walk is not the same walk: it reads every term
+    /// sharing the query's mandatory prefix and keeps only those inside the edit
+    /// budget, so what it reads and what it returns are two numbers rather than
+    /// one.
+    FuzzyTerms,
     /// `<path> < <constant>`, and the other three orderings.
     Range,
 }
@@ -254,6 +262,7 @@ pub(super) fn seekable(condition: &Expr) -> Vec<Seek<'_>> {
                 BinaryOp::Like => Comparison::Prefix,
                 BinaryOp::Matches => Comparison::Terms,
                 BinaryOp::MatchesPrefix => Comparison::PrefixTerms,
+                BinaryOp::MatchesFuzzy => Comparison::FuzzyTerms,
                 // The four orderings are a bounded scan over the ordered index,
                 // which is safe because byte order **is** value order
                 // (`docs/key-grammar.md` §1).

@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use tessari_constants::SEARCH_PREFIX_EXPANSION_CAP;
+use tessari_constants::{
+    SEARCH_FUZZY_EXPANSION_CAP, SEARCH_FUZZY_MAX_EDITS, SEARCH_FUZZY_PREFIX,
+    SEARCH_PREFIX_EXPANSION_CAP,
+};
 use tessari_geo::{Cell, Shape as Geometry};
 use tessari_ql::{BinaryOp, Expr};
 use tessari_storage::{IndexDefinition, Transaction};
@@ -169,12 +172,13 @@ impl Session<'_> {
                         });
                     }
                 }
-                Comparison::PrefixTerms => {
+                Comparison::PrefixTerms | Comparison::FuzzyTerms => {
                     let (Value::String(query), Some(analyzer)) =
                         (bound, searched.analyzer(seek.path))
                     else {
                         continue;
                     };
+                    let fuzzy = seek.comparison == Comparison::FuzzyTerms;
                     let asked = analyzer.prefixes(query);
                     if asked.is_empty() {
                         continue;
@@ -197,12 +201,28 @@ impl Session<'_> {
                         let mut serviceable = true;
                         for alternatives in &asked {
                             let mut reached: BTreeSet<String> = BTreeSet::new();
-                            for prefix in alternatives {
-                                let found = transaction.terms_with_prefix(
-                                    index,
-                                    prefix,
-                                    SEARCH_PREFIX_EXPANSION_CAP,
-                                )?;
+                            for spelling in alternatives {
+                                // The two walks read the same dictionary and
+                                // differ in what they keep, which is why the cap
+                                // they answer to is a different number: a prefix
+                                // expansion's size is chosen by the reader
+                                // typing fewer letters, a fuzzy one's by the
+                                // corpus.
+                                let found = if fuzzy {
+                                    transaction.terms_within_distance(
+                                        index,
+                                        spelling,
+                                        SEARCH_FUZZY_MAX_EDITS,
+                                        SEARCH_FUZZY_PREFIX,
+                                        SEARCH_FUZZY_EXPANSION_CAP,
+                                    )?
+                                } else {
+                                    transaction.terms_with_prefix(
+                                        index,
+                                        spelling,
+                                        SEARCH_PREFIX_EXPANSION_CAP,
+                                    )?
+                                };
                                 if found.capped {
                                     serviceable = false;
                                     break;
@@ -215,7 +235,12 @@ impl Session<'_> {
                             // is judged by how many distinct terms it actually
                             // reaches rather than by how many times it was
                             // asked.
-                            if !serviceable || reached.len() > SEARCH_PREFIX_EXPANSION_CAP {
+                            let ceiling_terms = if fuzzy {
+                                SEARCH_FUZZY_EXPANSION_CAP
+                            } else {
+                                SEARCH_PREFIX_EXPANSION_CAP
+                            };
+                            if !serviceable || reached.len() > ceiling_terms {
                                 serviceable = false;
                                 break;
                             }
@@ -244,7 +269,11 @@ impl Session<'_> {
                             continue;
                         }
                         offered.push(Candidate {
-                            served: Served::PrefixTerms(expansions),
+                            served: if fuzzy {
+                                Served::FuzzyTerms(expansions)
+                            } else {
+                                Served::PrefixTerms(expansions)
+                            },
                             index: (*index).clone(),
                             rows: Rows::AtMost(ceiling),
                         });

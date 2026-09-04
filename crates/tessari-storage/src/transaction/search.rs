@@ -6,14 +6,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
+use tessari_constants::{RANGE_SCAN_BATCH_ENTRIES, SEARCH_FUZZY_EXAMINATION_CAP};
 use tessari_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, Posting, PostingKey, SearchStatistics,
     SearchStatisticsKey, SearchTermKey, SecondaryIndexKey, StoreKey, StoreValue, TermStatistics,
     UniqueIndexKey, decode_payload,
 };
 use tessari_kv::{Key, KeyRange, Keyspace, ScanDirection, ScanRequest, Value as KvValue};
-use tessari_types::{RecordId, Value};
+use tessari_types::{RecordId, Value, within_edits};
 
 use super::{RecordAddress, Transaction};
 use crate::catalog::IndexDefinition;
@@ -34,6 +34,16 @@ pub struct Expansion {
     pub terms: Vec<String>,
     /// Whether more terms matched than the cap allowed.
     pub capped: bool,
+    /// How many terms the dictionary walk **read** to find them.
+    ///
+    /// For a prefix walk this is the same number as `terms.len()`, because the
+    /// range *is* the answer and nothing read is discarded. For a fuzzy walk it
+    /// is not: the walk reads every term sharing the mandatory prefix and keeps
+    /// only those inside the edit budget. The two numbers are reported
+    /// separately because G022's S3 is a claim about the second one, and a
+    /// measurement that could not tell them apart would confirm a bound the
+    /// walk does not have.
+    pub examined: usize,
 }
 
 impl Transaction<'_> {
@@ -345,7 +355,84 @@ impl Transaction<'_> {
                 terms.push(text);
             }
         }
-        Ok(Expansion { terms, capped })
+        let examined = terms.len();
+        Ok(Expansion {
+            terms,
+            capped,
+            examined,
+        })
+    }
+
+    /// The terms within `edits` of `word` that share its first `prefix`
+    /// characters.
+    ///
+    /// # The prefix is the query's semantics, and this walk only exploits it
+    ///
+    /// The restriction to terms sharing a leading run is **not** an optimisation
+    /// this function is free to choose. It is part of what `MATCHES FUZZY`
+    /// means, the scan applies the identical rule, and the two paths are asserted
+    /// to agree record for record. That ordering matters: a bound that lived only
+    /// here would make the same statement return one set on a table with no index
+    /// and a smaller set once somebody declared one, which is the failure
+    /// ADR-0046 exists to prevent.
+    ///
+    /// What this function gets from the restriction is that the walk is a
+    /// **range read** — the terms sharing a prefix are contiguous in the
+    /// dictionary — rather than a pass over the whole vocabulary.
+    ///
+    /// # Two numbers, because they are two different claims
+    ///
+    /// [`Expansion::examined`] counts what the walk read; `terms.len()` counts
+    /// what survived the edit budget. For a prefix walk they are equal. Here they
+    /// are not, and the gap is the honest cost of intersecting an automaton with
+    /// a dictionary by walking a range instead of by seeking: a rarer word inside
+    /// a common three-letter beginning reads its neighbours to find out they are
+    /// not it.
+    ///
+    /// Both ceilings mark the expansion `capped` rather than raising, and a
+    /// capped expansion is simply not offered as a candidate — the scan answers
+    /// instead, with the identical result. A cap that refused would make a query
+    /// succeed without an index and fail once somebody added one.
+    pub fn terms_within_distance(
+        &self,
+        index: &IndexDefinition,
+        word: &str,
+        edits: usize,
+        prefix: usize,
+        cap: usize,
+    ) -> Result<Expansion> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let leading: String = word.chars().take(prefix).collect();
+        let bounds = SearchTermKey::term_prefix(&address, &leading);
+        let request = ScanRequest {
+            keyspace: SearchTermKey::keyspace(),
+            range: KeyRange::prefix(&bounds),
+            direction: ScanDirection::Forward,
+            limit: Some(SEARCH_FUZZY_EXAMINATION_CAP.saturating_add(1)),
+        };
+        let found = self.store.backend().scan(&request)?;
+        let mut capped = found.len() > SEARCH_FUZZY_EXAMINATION_CAP;
+        let mut examined = 0usize;
+        let mut terms = Vec::new();
+        for (key, _) in found.iter().take(SEARCH_FUZZY_EXAMINATION_CAP) {
+            let Some(text) = SearchTermKey::decode(key.as_slice())?.term.as_text() else {
+                continue;
+            };
+            examined = examined.saturating_add(1);
+            if !within_edits(word, &text, edits) {
+                continue;
+            }
+            if terms.len() >= cap {
+                capped = true;
+                break;
+            }
+            terms.push(text);
+        }
+        Ok(Expansion {
+            terms,
+            capped,
+            examined,
+        })
     }
 
     /// The records one term is posted against.

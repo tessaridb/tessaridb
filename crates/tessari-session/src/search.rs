@@ -25,9 +25,9 @@ use std::collections::BTreeMap;
 
 use tessari_ql::{BinaryOp, Expr, ExprKind, Function};
 use tessari_storage::{Catalog, IndexDefinition, Transaction};
-use tessari_types::{Analyzer, Path, TableId, Value};
+use tessari_types::{Analyzer, Path, TableId, Value, within_edits};
 
-use tessari_constants::SEARCH_PREFIX_MINIMUM;
+use tessari_constants::{SEARCH_FUZZY_MAX_EDITS, SEARCH_FUZZY_PREFIX, SEARCH_PREFIX_MINIMUM};
 
 use crate::error::{Error, Result};
 use crate::rank::Corpus;
@@ -83,7 +83,7 @@ impl Session<'_> {
     ) -> Result<Searched> {
         let mut wanted = Vec::new();
         let mut ranked: Vec<(&Path, &Expr)> = Vec::new();
-        let mut prefixed: Vec<(&Path, &Expr)> = Vec::new();
+        let mut prefixed: Vec<(&Path, &Expr, BinaryOp)> = Vec::new();
         for expr in expressions {
             searched_paths(expr, &mut wanted, &mut ranked, &mut prefixed);
         }
@@ -116,12 +116,20 @@ impl Session<'_> {
         // raised where the index is chosen would make the same statement run on
         // a table without an index and fail on one with it, which is the exact
         // failure this store's access-path rule exists to prevent.
-        for (path, query) in prefixed {
+        for (path, query, op) in prefixed {
             let Some(analyzer) = analyzers.get(path) else {
                 continue;
             };
             let Value::String(text) = self.evaluate(transaction, query)? else {
                 continue;
+            };
+            // Both operators bound the *front* of a typed word, and both are
+            // refused on the same footing — but the limits are different numbers
+            // for different reasons, so which one applies is decided here rather
+            // than by one shared constant standing in for two contracts.
+            let minimum = match op {
+                BinaryOp::MatchesFuzzy => SEARCH_FUZZY_PREFIX,
+                _ => SEARCH_PREFIX_MINIMUM,
             };
             for alternatives in analyzer.prefixes(&text) {
                 // The **typed** spelling decides, which is the first of the
@@ -132,10 +140,10 @@ impl Session<'_> {
                 let Some(prefix) = alternatives.first() else {
                     continue;
                 };
-                if prefix.chars().count() < SEARCH_PREFIX_MINIMUM {
+                if prefix.chars().count() < minimum {
                     return Err(Error::PrefixTooShort {
                         prefix: prefix.clone(),
-                        minimum: SEARCH_PREFIX_MINIMUM,
+                        minimum,
                         span: query.span,
                     });
                 }
@@ -194,7 +202,7 @@ fn searched_paths<'a>(
     expr: &'a Expr,
     into: &mut Vec<&'a Path>,
     ranked: &mut Vec<(&'a Path, &'a Expr)>,
-    prefixed: &mut Vec<(&'a Path, &'a Expr)>,
+    prefixed: &mut Vec<(&'a Path, &'a Expr, BinaryOp)>,
 ) {
     match &expr.kind {
         ExprKind::Binary {
@@ -207,13 +215,13 @@ fn searched_paths<'a>(
             }
         }
         ExprKind::Binary {
-            op: BinaryOp::MatchesPrefix,
+            op: op @ (BinaryOp::MatchesPrefix | BinaryOp::MatchesFuzzy),
             left,
             right,
         } => {
             if let ExprKind::Path(field) = &left.kind {
                 into.push(&field.path);
-                prefixed.push((&field.path, right));
+                prefixed.push((&field.path, right, *op));
             }
         }
         ExprKind::Call {
@@ -293,5 +301,56 @@ pub(crate) fn matches_prefix_terms(
             alternatives
                 .iter()
                 .any(|prefix| terms.iter().any(|term| term.starts_with(prefix)))
+        })
+}
+
+/// Whether analyzed text holds, for **every** word typed, a term within the edit
+/// budget that shares that word's mandatory non-fuzzy prefix.
+///
+/// The same two levels as the two operators above — a conjunction across the
+/// words, a disjunction within each — one level looser again.
+///
+/// # The prefix is here because it is meaning, not because it is fast
+///
+/// This function has no index and no dictionary to walk, so a leading run of
+/// characters buys it nothing at all. It applies the restriction anyway, and
+/// that is the point: `SEARCH_FUZZY_PREFIX` is part of what `MATCHES FUZZY`
+/// asks, so both access paths must apply it or the same statement answers
+/// differently depending on whether an index happens to exist (ADR-0046).
+///
+/// The visible consequence, which `docs/tessariql.md` states rather than leaving
+/// to be discovered: a mistake in the first `SEARCH_FUZZY_PREFIX` characters is
+/// not found. `xector` does not reach `vector`.
+///
+/// # Which spelling the distance is measured from
+///
+/// Both, and a term matching either satisfies the word. The dictionary holds
+/// stemmed terms, and a misspelling does not stem where its correct spelling
+/// does — `containr` and `container` need not land near each other once a
+/// stemmer has had them. Measuring only from the typed word would miss the
+/// stored stem; measuring only from the stem would measure a distance between
+/// two things the reader never wrote. [`Analyzer::prefixes`] already produces
+/// exactly this pair, which is why it is reused here rather than a third
+/// analysis being invented.
+pub(crate) fn matches_fuzzy_terms(
+    analyzer: Option<&Analyzer>,
+    held: &Value,
+    wanted: &Value,
+) -> bool {
+    let (Some(analyzer), Value::String(text), Value::String(query)) = (analyzer, held, wanted)
+    else {
+        return false;
+    };
+    let terms = analyzer.terms(text);
+    let asked = analyzer.prefixes(query);
+    !asked.is_empty()
+        && asked.iter().all(|alternatives| {
+            alternatives.iter().any(|spelling| {
+                let leading: String = spelling.chars().take(SEARCH_FUZZY_PREFIX).collect();
+                terms.iter().any(|term| {
+                    term.starts_with(&leading)
+                        && within_edits(spelling, term, SEARCH_FUZZY_MAX_EDITS)
+                })
+            })
         })
 }

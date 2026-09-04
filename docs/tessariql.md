@@ -1800,6 +1800,63 @@ thousand and one hundred thousand distinct terms, the same query reads three
 entries in one scan. Without an index the scan analyses each record and compares,
 and the two are asserted to agree record for record.
 
+#### `MATCHES FUZZY` — the word a reader meant rather than the one they typed
+
+```
+SELECT * FROM notes WHERE body MATCHES FUZZY 'vectr';
+SELECT * FROM notes WHERE body MATCHES FUZZY 'containr analyzr';
+```
+
+The analyzed text holds, for **every** word typed, a term within two edits of it.
+The same two levels as the operators above — a conjunction across the words, a
+disjunction within each — one step looser again.
+
+**It is declared, never automatic.** A query that finds nothing is never retried
+as a fuzzy one behind your back. A reader who asked for `vector` and was shown
+`vectors`, `vectr` and `victor` cannot tell which of the three the store decided
+they meant, and a store that guesses is worse than one that answers nothing.
+
+**Two edits, counted as insertions, deletions and substitutions.** A
+transposition therefore costs **two**, not one: `vectro` is two edits from
+`vector` and is reached. Three edits is not offered —
+past two the neighbourhood of a word is larger than most vocabularies, so every
+query would match something and the operator would have stopped discriminating
+rather than started being generous. `cat` and `dog` are three edits apart.
+
+**The first three characters are not fuzzy, and this is the cost worth knowing
+before you rely on it:**
+
+```
+SELECT * FROM notes WHERE body MATCHES FUZZY 'vectr';   -- reaches "vector"
+SELECT * FROM notes WHERE body MATCHES FUZZY 'xector';  -- reaches nothing
+```
+
+Both are one edit from `vector`. The second is not found, because the mistake is
+inside the part the operator does not vary. That is the price of not walking the
+whole term dictionary for every word of every query — a first letter is also the
+character people mistype least, having usually just read it.
+
+The restriction is part of what the operator **means**, not a trick the index
+plays. The scan applies exactly the same rule, so the answer does not change when
+somebody declares an index. A word shorter than three characters cannot carry
+that prefix and is refused by name, before any access path is chosen, exactly as
+a short `MATCHES PREFIX` is.
+
+**Neither expansion limit is a refusal.** A word whose near-spellings number more
+than sixteen, or whose three-character beginning is shared by more than a
+thousand terms, is answered by the scan instead. Only the index can see either
+number, so a cap that refused would make a statement succeed without an index and
+fail once somebody added one.
+
+**With a `SEARCH` index it is a bounded walk of the term dictionary**, and its
+two costs are different numbers. Terms *returned* is what the edit budget
+allowed; terms *read* is how many share the mandatory prefix — a property of your
+corpus rather than of the query. Measured at one thousand, ten thousand and one
+hundred thousand distinct terms, the same query reads three entries and returns
+one at every size. A deliberately popular beginning is declined rather than
+walked. Without an index the scan analyses each record and compares, and the two
+are asserted to agree record for record.
+
 **A field with no analyzer holds no terms**, so `MATCHES` over it finds nothing
 rather than failing. A schemaless table is allowed to hold text nobody has
 declared anything about, and refusing the query would make that a mistake. So

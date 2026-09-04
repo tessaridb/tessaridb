@@ -198,3 +198,49 @@ SELECT * FROM points ORDER BY vector::cosine(at, [0.1, 0.9]) LIMIT 2 APPROXIMATE
 CREATE points:4 = { approximate: true, vector: 'a field called vector' };
 SELECT approximate FROM points:4;
 --- expect: rows 1
+
+# `MATCHES FUZZY` — the word a reader meant rather than the one they typed. As
+# above, these run with the index in place; the scan's agreement with it is
+# asserted per record by the session suite, which can hold two stores at once.
+
+--- case: a table of its own, so these cases cannot move another case's count
+DEFINE TABLE mistyped SCHEMALESS;
+DEFINE FIELD body ON mistyped TYPE string ANALYZER simple;
+DEFINE INDEX by_mistyped ON mistyped FIELDS body SEARCH;
+CREATE mistyped:1 = { body: 'Vector search over a store' };
+CREATE mistyped:2 = { body: 'A container for the analyzer' };
+CREATE mistyped:3 = { body: 'Locking and contention' };
+CREATE mistyped:4 = { body: 'The doctor and the victor' };
+--- expect: ok
+
+--- case: a dropped letter still finds the word it was dropped from
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'vectr';
+--- expect: rows 1
+
+--- case: a word spelled correctly still matches itself
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'vector';
+--- expect: rows 1
+
+--- case: it is still a conjunction across the words that were typed
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'containr analyzr';
+--- expect: rows 1
+
+--- case: a word nothing comes near empties the conjunction
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'containr zzzqqq';
+--- expect: rows 0
+
+--- case: a mistake inside the first three characters is not found
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'xector';
+--- expect: rows 0
+
+--- case: too short to carry a non-fuzzy prefix, so it is refused
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 've';
+--- expect: error PrefixTooShort
+
+--- case: a transposition costs two edits and is still inside the budget
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'vectro';
+--- expect: rows 1
+
+--- case: but a transposition inside the first three characters is not found
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'vetcor';
+--- expect: rows 0

@@ -343,6 +343,9 @@ pub enum Keyword {
     /// `PREFIX` — follows `MATCHES`, and asks for words that begin with the
     /// query rather than words that equal it.
     Prefix,
+    /// `FUZZY` — follows `MATCHES`, and asks for words within a small number of
+    /// edits of the query rather than words that equal it.
+    Fuzzy,
     /// `SEARCH` — the index holds terms rather than whole values.
     Search,
     /// `USER` — declares who may talk to the store.
@@ -484,6 +487,7 @@ impl Keyword {
             Self::Filters => "FILTERS",
             Self::Matches => "MATCHES",
             Self::Prefix => "PREFIX",
+            Self::Fuzzy => "FUZZY",
             Self::Search => "SEARCH",
             Self::User => "USER",
             Self::Role => "ROLE",
@@ -573,6 +577,7 @@ impl Keyword {
         Self::Filters,
         Self::Matches,
         Self::Prefix,
+        Self::Fuzzy,
         Self::Search,
         Self::User,
         Self::Role,
