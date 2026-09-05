@@ -260,17 +260,59 @@ impl Transaction<'_> {
     /// Returns an error when the backend fails or a stored entry cannot be
     /// decoded.
     pub fn document_frequency(&self, index: &IndexDefinition, term: &str) -> Result<u64> {
+        Ok(self.term_statistics(index, term)?.documents)
+    }
+
+    /// The term's whole dictionary entry — its frequency and, when the entry
+    /// carries them, the extremes an upper bound is scored from.
+    ///
+    /// The same point read [`Transaction::document_frequency`] makes, reported
+    /// without discarding the rest of what it read. A caller that prunes needs
+    /// both, and reading the key twice to get them would spend the saving the
+    /// dictionary exists for.
+    ///
+    /// The fall-through is the same one and means the same thing: no entry is an
+    /// index written before the dictionary existed, and the count answers there.
+    /// What it cannot answer is the extremes, so the statistics come back
+    /// **unbounded** — which obliges a caller to score the term's postings
+    /// rather than prune them (see [`TermStatistics::bound`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a stored entry cannot be
+    /// decoded.
+    pub fn term_statistics(&self, index: &IndexDefinition, term: &str) -> Result<TermStatistics> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let encoded = IndexValues::of(&[Value::from(term)]);
         let key = SearchTermKey::new(address, encoded.clone()).encode();
         if let Some(bytes) = self.store.backend().get(SearchTermKey::keyspace(), &key)? {
-            return Ok(TermStatistics::decode(bytes.as_slice())?.documents);
+            return Ok(TermStatistics::decode(bytes.as_slice())?);
         }
         let prefix = PostingKey::term_prefix(&address, &encoded);
-        Ok(self
+        let counted = self
             .store
             .backend()
-            .count(PostingKey::keyspace(), &KeyRange::prefix(&prefix))?)
+            .count(PostingKey::keyspace(), &KeyRange::prefix(&prefix))?;
+        Ok(TermStatistics::new(counted))
+    }
+
+    /// The records one term is posted against.
+    ///
+    /// The candidate set a ranked read enumerates, one term at a time rather
+    /// than as a union, because which terms are worth enumerating is decided
+    /// between them — a term whose whole contribution cannot reach the answer's
+    /// running threshold is one whose postings are never read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a key cannot be decoded.
+    pub fn records_with_term(
+        &self,
+        index: &IndexDefinition,
+        term: &str,
+    ) -> Result<BTreeSet<RecordId>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        self.postings(&address, term)
     }
 
     /// What this index says one term does in one record.

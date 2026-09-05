@@ -196,13 +196,13 @@ impl Session<'_> {
                 _ => Vec::new(),
             };
             let statistics = transaction.search_statistics(&index)?;
-            let mut frequencies = BTreeMap::new();
+            let mut terms = BTreeMap::new();
             for term in &asked {
-                if frequencies.contains_key(term) {
+                if terms.contains_key(term) {
                     continue;
                 }
-                let held = transaction.document_frequency(&index, term)?;
-                frequencies.insert(term.clone(), held);
+                let held = transaction.term_statistics(&index, term)?;
+                terms.insert(term.clone(), held);
             }
             corpora.insert(
                 path.clone(),
@@ -210,7 +210,7 @@ impl Session<'_> {
                     corpus: Corpus {
                         documents: statistics.documents,
                         average_length: statistics.average_length().unwrap_or_default(),
-                        frequencies,
+                        terms,
                         asked,
                     },
                     index,

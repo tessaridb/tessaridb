@@ -7,7 +7,7 @@ use crate::session::Session;
 
 use super::rank::choose;
 use super::reported::Plan;
-use super::statement::{closest, nearest, ordered};
+use super::statement::{closest, nearest, ordered, scored};
 
 impl Session<'_> {
     /// The plan a read would take, without taking it.
@@ -91,6 +91,29 @@ impl Session<'_> {
                         index: Some(index.name.clone()),
                         ..Plan::new(AccessPath::Ordered).on(named)
                     });
+                }
+                // Named `scored` for `nearest`'s reason: the walk enumerates the
+                // postings of the query's own terms and prunes the rest of the
+                // table, which is a different read from taking entries in the
+                // order an index already holds. Same caveat again — whether the
+                // postings hold enough records to fill the bound is the read's
+                // own question, and one that finds too few answers `scan`.
+                if let Some(read) = scored(select)
+                    && read.wanted > 0
+                {
+                    let (context, id) = self.resolve_table(transaction, table)?;
+                    if let Some(index) = self.index_on_path(transaction, id, read.field)?
+                        && index.search
+                        && self
+                            .index_serving_score(transaction, context, id, read.field)?
+                            .is_some()
+                    {
+                        return Ok(Plan {
+                            shape: Some("scored"),
+                            index: Some(index.name.clone()),
+                            ..Plan::new(AccessPath::Ordered).on(named)
+                        });
+                    }
                 }
                 if let Some(bound) = ordered(select)
                     && let Some((index, _)) = {

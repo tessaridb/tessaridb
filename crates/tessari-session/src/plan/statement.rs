@@ -292,6 +292,108 @@ pub(crate) fn ordered(select: &Select) -> Option<Bounded<'_>> {
     })
 }
 
+/// A bounded **scored** read: the best `k` records for a search query.
+///
+/// # Why this is a sibling of [`ordered`] and not a widening of it
+///
+/// [`Bounded`] carries a `path`, and [`ordered`] refuses a computed sort key
+/// because "a computed key is not what any index holds". That reason is correct
+/// and is left standing: `search::score` is the one computed key an index *does*
+/// hold. Admitting a `Call` into the type written to refuse one would leave that
+/// doc block contradicted by the code beneath it, so this recognizer is its own
+/// function returning its own shape.
+///
+/// The refusals below are **re-stated rather than inherited** from [`ordered`].
+/// Sharing them would couple the two so that relaxing one silently relaxes the
+/// other, and they are refused here for reasons of their own.
+///
+/// # Why only descending
+///
+/// [`Bounded`] carries its direction because whether an ascending bound is
+/// servable is a question about the *schema*. Here it is a question about the
+/// read: a scored bound keeps the `k` **highest**-scoring records, and pruning
+/// works by refusing any term that cannot beat the weakest of them. Ascending
+/// asks for the `k` worst matches, which no bound of that shape reaches, and the
+/// records scoring lowest are overwhelmingly the ones holding none of the query's
+/// terms — which the index does not post at all. So ascending is refused
+/// outright rather than carried.
+pub(crate) struct Scored<'a> {
+    /// The field being searched.
+    ///
+    /// The query is deliberately not carried with it. Resolving a searched field
+    /// already evaluates the query once per read and keeps what it found — the
+    /// analysed terms and the collection they are weighed against — so a second
+    /// copy here would be a second chance for the walk and the score to disagree
+    /// about what was asked.
+    pub(crate) field: &'a Path,
+    /// How many records the bound needs, `START` included.
+    pub(crate) wanted: usize,
+}
+
+/// The bounded scored read this statement is, if it is one.
+pub(crate) fn scored(select: &Select) -> Option<Scored<'_>> {
+    if select.approximate.is_some()
+        || !select.group.is_empty()
+        || !select.fetch.is_empty()
+        || resumes(select)
+    {
+        return None;
+    }
+    // Refused for [`ordered`]'s reason, which holds unchanged here: the sort runs
+    // after the projection, so the field this key names may already have been
+    // replaced by whatever the projection produced. Conservative, and knowingly
+    // so — `SELECT title, search::score(body, 'x') AS score … ORDER BY
+    // search::score(body, 'x')` is an ordinary way to write this read and is
+    // refused a bound by this line. A missed optimisation is the safe half of the
+    // whitelist's asymmetry; the other half is a quietly short answer.
+    if !matches!(select.projection, Projection::All) {
+        return None;
+    }
+    let [ordering] = select.order.as_slice() else {
+        return None;
+    };
+    if !ordering.descending {
+        return None;
+    }
+    let ExprKind::Call {
+        function,
+        arguments,
+        ..
+    } = &ordering.key.kind
+    else {
+        return None;
+    };
+    if !matches!(function, Function::SearchScore) {
+        return None;
+    }
+    // Fixed order, and unlike `geo::distance` there is nothing symmetric to
+    // normalise: scoring a record's field against a query is not the same
+    // question as scoring the query against the field.
+    let [first, query] = arguments.as_slice() else {
+        return None;
+    };
+    let ExprKind::Path(field) = &first.kind else {
+        return None;
+    };
+    if field.path.is_several() {
+        return None;
+    }
+    // A query that reads the record being scored would make the collection the
+    // score is measured against depend on the record — a different query per
+    // record, and no term set to bound.
+    if reads_a_record(query) {
+        return None;
+    }
+    let limit = select.limit?;
+    // A `START` passes over records the read still has to find, so it is added to
+    // the bound rather than making the read unservable.
+    let wanted = limit.saturating_add(select.start.unwrap_or(0));
+    Some(Scored {
+        field: &field.path,
+        wanted: usize::try_from(wanted).unwrap_or(usize::MAX),
+    })
+}
+
 /// How many records the source may stop at, when the statement's shape lets a
 /// bound reach it at all (ADR-0013 mechanism 1).
 ///

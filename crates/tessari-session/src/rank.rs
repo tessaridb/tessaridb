@@ -55,24 +55,30 @@
 use std::collections::BTreeMap;
 
 use tessari_constants::{BM25_B, BM25_K1};
+use tessari_encoding::TermStatistics;
 use tessari_types::{Analyzer, Number, Value};
 
 /// What one searched field's collection looks like, resolved once per read.
 ///
-/// The `frequencies` map holds only the terms the statement actually asks
-/// about — resolving them all would be reading the index to answer a question
-/// nobody put.
+/// The `terms` map holds only the terms the statement actually asks about —
+/// resolving them all would be reading the index to answer a question nobody
+/// put.
 #[derive(Debug, Clone)]
 pub(crate) struct Corpus {
     /// How many records hold at least one term.
     pub(crate) documents: u64,
     /// The length of a typical document, in tokens.
     pub(crate) average_length: f64,
-    /// How many documents hold each term the statement names.
-    pub(crate) frequencies: BTreeMap<String, u64>,
+    /// What the dictionary says about each term the statement names.
+    ///
+    /// The whole entry rather than the frequency alone, because the same point
+    /// read that counts a term also carries the extremes [`bound`] scores an
+    /// upper bound from, and reading it twice would spend the saving the
+    /// dictionary exists for.
+    pub(crate) terms: BTreeMap<String, TermStatistics>,
     /// The query's terms, **with repeats**, analysed once per read.
     ///
-    /// A multiset rather than the `frequencies` keys, which are deduplicated. A
+    /// A multiset rather than the `terms` keys, which are deduplicated. A
     /// word written twice in a query weighs twice today, and it weighs twice for
     /// the records that hold it and not at all for the ones that do not — so
     /// deduplicating here would not rescale the scores, it would reorder them.
@@ -134,11 +140,25 @@ impl Held {
 /// Either way the words being counted are the words the index posted — the rule
 /// SGC.T1 exists for, applied one layer up.
 pub(crate) fn score(corpus: &Corpus, held: &Held) -> Value {
+    Value::Number(Number::float(scored(corpus, held)))
+}
+
+/// The same number before it becomes a value.
+///
+/// A pruning walk compares scores against each other rather than returning them,
+/// and going through [`Value`] to do that would put a number's *representation*
+/// in the way of a comparison the walk's correctness rests on.
+///
+/// Nothing scores `0`, and deliberately not `NONE`: a document holding none of
+/// the query's words scores zero, which is a computed answer rather than an
+/// absence standing in for one. It also sorts where it belongs under the `DESC`
+/// a ranked read is written with.
+pub(crate) fn scored(corpus: &Corpus, held: &Held) -> f64 {
     if corpus.asked.is_empty() || corpus.documents == 0 {
-        return zero();
+        return 0.0;
     }
     let Some(average) = positive(corpus.average_length) else {
-        return zero();
+        return 0.0;
     };
 
     let length = as_float(u64::from(held.length));
@@ -153,11 +173,57 @@ pub(crate) fn score(corpus: &Corpus, held: &Held) -> Value {
             continue;
         };
         let occurrences = as_float(u64::from(*occurrences));
-        let frequency = as_float(*corpus.frequencies.get(term).unwrap_or(&0));
+        let frequency = as_float(corpus.terms.get(term).map_or(0, |held| held.documents));
         sum +=
             inverse_document_frequency(total, frequency) * saturation(occurrences, length, average);
     }
-    Value::Number(Number::float(sum))
+    sum
+}
+
+/// The most this term can contribute to any one record's score.
+///
+/// `None` is **this term cannot be bounded**, which obliges a caller to score
+/// its postings rather than prune them. Three things reach it: an entry written
+/// before the extremes existed, a term nothing holds, and a collection with no
+/// documents or no length to normalise against. All three mean the same thing to
+/// a pruning read, and none of them mean a bound of zero — a term that can
+/// contribute nothing is precisely a term worth pruning, which is the opposite
+/// answer.
+///
+/// # Why the bound is computed here and not stored
+///
+/// A contribution is `idf × saturation(occurrences, length, average_length)`,
+/// and `average_length` belongs to the **collection**: it moves on every write,
+/// and when it grows the same posting scores higher. A stored impact is
+/// therefore an under-estimate of what its own postings score today, and an
+/// under-estimated upper bound is not loose but unsound — the term is pruned and
+/// the records it would have won go missing with nothing in an error state
+/// (measured at up to 34× in ADR-0050's framing).
+///
+/// So the entry stores only what belongs to the postings — the most occurrences
+/// any one of them records, and the fewest tokens any of their records holds —
+/// and the formula is evaluated where the collection's numbers are already in
+/// hand. That dominates every posting at **any** average, because `saturation`
+/// is increasing in occurrences and decreasing in length, so pairing the largest
+/// frequency with the shortest length can only over-estimate. The two usually
+/// come from different records, which is what makes the bound loose; loose costs
+/// pruning efficiency, and the other direction costs records.
+pub(crate) fn bound(corpus: &Corpus, term: &str) -> Option<f64> {
+    let held = corpus.terms.get(term)?;
+    let (max_frequency, min_length) = held.bound()?;
+    if corpus.documents == 0 {
+        return None;
+    }
+    let average = positive(corpus.average_length)?;
+    let weight = inverse_document_frequency(as_float(corpus.documents), as_float(held.documents));
+    Some(
+        weight
+            * saturation(
+                as_float(u64::from(max_frequency)),
+                as_float(u64::from(min_length)),
+                average,
+            ),
+    )
 }
 
 /// How much one occurrence of this term is worth.
@@ -173,16 +239,6 @@ fn inverse_document_frequency(documents: f64, holding: f64) -> f64 {
 fn saturation(occurrences: f64, length: f64, average: f64) -> f64 {
     let normalised = BM25_K1.mul_add(1.0 - BM25_B + BM25_B * (length / average), occurrences);
     occurrences * (BM25_K1 + 1.0) / normalised
-}
-
-/// A score of nothing.
-///
-/// `0`, and deliberately not `NONE`: a document holding none of the query's
-/// words scores zero, which is a computed answer rather than an absence standing
-/// in for one. It also sorts where it belongs under the `DESC` a ranked read is
-/// written with.
-fn zero() -> Value {
-    Value::Number(Number::float(0.0))
 }
 
 /// A count of tokens, in the width a posting stores it in.
@@ -222,7 +278,7 @@ mod tests {
 
     use tessari_types::{Analyzer, Number, Value};
 
-    use super::{Corpus, Held, saturation, score};
+    use super::{Corpus, Held, TermStatistics, bound, saturation, score};
 
     fn analyzer() -> Analyzer {
         Analyzer::default()
@@ -232,9 +288,9 @@ mod tests {
         Corpus {
             documents,
             average_length,
-            frequencies: frequencies
+            terms: frequencies
                 .iter()
-                .map(|(term, held)| ((*term).to_owned(), *held))
+                .map(|(term, held)| ((*term).to_owned(), TermStatistics::new(*held)))
                 .collect(),
             asked: Vec::new(),
         }
@@ -466,6 +522,47 @@ mod tests {
                      at average {average}"
                 );
             }
+        }
+    }
+
+    /// The distinction the whole pruning path rests on, asserted where a reader
+    /// will look for it.
+    ///
+    /// An entry written before the extremes existed reports **no bound**, and a
+    /// caller has to read that as *do not prune this term*. Reporting a bound of
+    /// zero instead would say the term can contribute nothing, which is exactly
+    /// the term a pruning walk discards first — so the two answers differ by the
+    /// whole result set.
+    #[test]
+    fn a_term_whose_entry_has_no_extremes_cannot_be_bounded() {
+        let mut corpus = corpus(100, 20.0, &[("lock", 4)]);
+        assert_eq!(bound(&corpus, "lock"), None);
+        assert_eq!(bound(&corpus, "never-asked"), None);
+
+        corpus
+            .terms
+            .insert("lock".to_owned(), TermStatistics::bounded(4, 9, 3));
+        let held = bound(&corpus, "lock").expect("an entry with extremes bounds");
+        assert!(held > 0.0);
+    }
+
+    /// The bound is an upper bound on the whole contribution and not only on its
+    /// saturation half, so the weight has to be in it.
+    #[test]
+    fn a_bound_sits_above_every_score_its_own_postings_can_reach() {
+        let mut corpus = corpus(500, 30.0, &[("quorum", 6)]);
+        corpus
+            .terms
+            .insert("quorum".to_owned(), TermStatistics::bounded(6, 11, 4));
+        corpus.asked = vec!["quorum".to_owned()];
+        let held = bound(&corpus, "quorum").expect("an entry with extremes bounds");
+
+        for (occurrences, length) in [(11, 4), (11, 900), (1, 4), (2, 37), (7, 12)] {
+            let posting = posted(&corpus, &[("quorum", occurrences)], length, "quorum");
+            assert!(
+                posting <= held,
+                "a posting ({occurrences}, {length}) scored {posting} above the bound {held}"
+            );
         }
     }
 }
