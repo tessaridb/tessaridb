@@ -305,7 +305,10 @@ pub(crate) fn ordered(select: &Select) -> Option<Bounded<'_>> {
 ///
 /// The refusals below are **re-stated rather than inherited** from [`ordered`].
 /// Sharing them would couple the two so that relaxing one silently relaxes the
-/// other, and they are refused here for reasons of their own.
+/// other, and they are refused here for reasons of their own. The projection is
+/// what that separation was for: [`ordered`] refuses every one and this
+/// recognizer refuses only the shadowing ones, for the reason [`shadowed`]
+/// gives.
 ///
 /// # Why only descending
 ///
@@ -330,6 +333,47 @@ pub(crate) struct Scored<'a> {
     pub(crate) wanted: usize,
 }
 
+/// Whether this projection puts something else under the name a score reads.
+///
+/// [`ordered`] refuses every projection, because a path key reads the *answer's*
+/// names and an alias shadowing a field is exactly what `SELECT address.city AS
+/// home … ORDER BY home` is for. A score reads a name too — the field it
+/// measures — so the same shadow is writable here: `SELECT decoy AS body …
+/// ORDER BY search::score(body, 'x')` names a field the answer carries and the
+/// index does not hold.
+///
+/// It is the only shape that has to be refused, and the reason is where the
+/// number comes from. A score over an index whose postings carry their payload
+/// is computed from those postings and the record's identity, so the record's
+/// text is not read at all and a projection has nothing in it to change. Where
+/// the record *is* read — an index written before postings had payloads — the
+/// ordering stage lays the source record beneath the projection precisely so a
+/// key can still reach a field the projection dropped (`consume::reach_past`,
+/// Q-143). What that overlay does not undo is a name the projection **offers**:
+/// there the projection wins, by design.
+///
+/// So a projection is admitted unless one of its written names is the root of
+/// the field being scored **and** answers with something other than that field.
+/// Writing the field out under its own name — `SELECT body, search::score(body,
+/// 'x') AS score`, which is how a caller gets the text it is about to
+/// highlight — shadows it with itself and changes nothing; refusing that would
+/// reproduce this question one step over, where adding the searched field to the
+/// answer silently costs the read its bound.
+///
+/// Q-384, measured in `tests/ranking.rs` rather than argued: a projection that
+/// shadows the searched field, and one that drops it, both answer in the indexed
+/// field's order.
+fn shadowed(projection: &Projection, root: &str) -> bool {
+    projection.written().iter().any(|one| {
+        one.name.text == root
+            && !matches!(
+                &one.value.kind,
+                ExprKind::Path(field)
+                    if field.path.root() == root && field.path.steps().is_empty()
+            )
+    })
+}
+
 /// The bounded scored read this statement is, if it is one.
 pub(crate) fn scored(select: &Select) -> Option<Scored<'_>> {
     if select.approximate.is_some()
@@ -337,16 +381,6 @@ pub(crate) fn scored(select: &Select) -> Option<Scored<'_>> {
         || !select.fetch.is_empty()
         || resumes(select)
     {
-        return None;
-    }
-    // Refused for [`ordered`]'s reason, which holds unchanged here: the sort runs
-    // after the projection, so the field this key names may already have been
-    // replaced by whatever the projection produced. Conservative, and knowingly
-    // so — `SELECT title, search::score(body, 'x') AS score … ORDER BY
-    // search::score(body, 'x')` is an ordinary way to write this read and is
-    // refused a bound by this line. A missed optimisation is the safe half of the
-    // whitelist's asymmetry; the other half is a quietly short answer.
-    if !matches!(select.projection, Projection::All) {
         return None;
     }
     let [ordering] = select.order.as_slice() else {
@@ -376,6 +410,9 @@ pub(crate) fn scored(select: &Select) -> Option<Scored<'_>> {
         return None;
     };
     if field.path.is_several() {
+        return None;
+    }
+    if shadowed(&select.projection, field.path.root()) {
         return None;
     }
     // A query that reads the record being scored would make the collection the

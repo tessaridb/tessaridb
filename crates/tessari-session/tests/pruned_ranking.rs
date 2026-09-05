@@ -466,3 +466,98 @@ fn the_plan_names_the_walk_rather_than_hiding_it_inside_ordered() {
     assert_eq!(access(&whole), "scan");
     assert_eq!(shape(&whole), None);
 }
+
+/// The projected spelling of the same read: a title, a score under a name, and
+/// the bound.
+///
+/// Q-384. The recognizer used to refuse every projection, inheriting the reason
+/// `plan::statement::ordered` gives — that a sort key may name what the
+/// projection produced. Measured (`tests/ranking.rs`), that reason does not
+/// reach a score: the number comes from the postings and the record's identity,
+/// and where a key does read the record the ordering stage lays the source
+/// beneath the projection. So the shape below is the one a caller actually
+/// writes, and it now takes the bound.
+const PROJECTED: &str = "SELECT title, search::score(body, 'alpha beta') AS score FROM pairs \
+                         ORDER BY search::score(body, 'alpha beta') DESC LIMIT 4";
+
+#[test]
+fn a_projected_ranked_read_takes_the_bound() {
+    let (store, _counting) = counted();
+    let mut session = contested(&store);
+
+    let projected = plan(&mut session, PROJECTED);
+    assert_eq!(access(&projected), "ordered");
+    assert_eq!(shape(&projected).as_deref(), Some("scored"));
+
+    // The half that catches a widening rather than a narrowing. An equality
+    // against the scan can only see the bound reading too few records; it passes
+    // unchanged if the walk quietly stops taking the bound at all (KB 294), and
+    // this is what would fail then.
+    let starred = plan(
+        &mut session,
+        "SELECT * FROM pairs ORDER BY search::score(body, 'alpha beta') DESC LIMIT 4",
+    );
+    assert_eq!(shape(&starred), shape(&projected));
+}
+
+#[test]
+fn a_projected_ranked_read_answers_what_the_scan_answers() {
+    let (store, _counting) = counted();
+    let mut session = contested(&store);
+
+    let brute = answer(
+        &mut session,
+        "SELECT * FROM pairs ORDER BY search::score(body, 'alpha beta') DESC;",
+    );
+    // The fixture has to contest the bound or the equality below passes on data
+    // where nothing could have gone wrong — the lesson this band has paid for
+    // twice. Both words' records belong in the top of the answer, so neither
+    // group can be pruned away without losing rows.
+    let leading: Vec<_> = brute[..4].iter().map(|(id, _)| id.clone()).collect();
+    let alphas = leading
+        .iter()
+        .filter(|id| matches!(id, RecordId::Int(n) if *n <= 10))
+        .count();
+    assert!(
+        alphas > 0 && alphas < leading.len(),
+        "the fixture does not contest the bound: {leading:?}"
+    );
+
+    // Ids rather than records: the two reads answer in different shapes on
+    // purpose, and which records the bound reached is the question.
+    let bounded: Vec<_> = answer(&mut session, &format!("{PROJECTED};"))
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(bounded, leading);
+}
+
+#[test]
+fn a_projection_shadowing_the_searched_field_is_refused_the_bound() {
+    // The narrowing that makes the relaxation safe, pinned as its own test. A
+    // projection answering under the searched field's name with something else
+    // replaces what the ordering stage reads, and the overlay does not undo it —
+    // the projection is meant to win on a name it offers. So this shape declines
+    // to the scan, and a later widening that admitted it would fail here rather
+    // than in a wrong answer nobody looks at.
+    let (store, _counting) = counted();
+    let mut session = contested(&store);
+
+    let shadowing = plan(
+        &mut session,
+        "SELECT 'x' AS body FROM pairs \
+         ORDER BY search::score(body, 'alpha beta') DESC LIMIT 4",
+    );
+    assert_eq!(access(&shadowing), "scan");
+    assert_eq!(shape(&shadowing), None);
+
+    // And the field written out under its own name is not a shadow: it is the
+    // same value the key would have read, so the read keeps its bound.
+    let keeping = plan(
+        &mut session,
+        "SELECT body, search::score(body, 'alpha beta') AS score FROM pairs \
+         ORDER BY search::score(body, 'alpha beta') DESC LIMIT 4",
+    );
+    assert_eq!(access(&keeping), "ordered");
+    assert_eq!(shape(&keeping).as_deref(), Some("scored"));
+}
