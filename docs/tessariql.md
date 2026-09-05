@@ -2015,6 +2015,71 @@ value is found, and a declaration is a statement about what a record may be.
 Making declarations reach into a path needs a rule for what declaring a leaf says
 about its parents, and §8 keeps that as its own row.
 
+#### `search::highlight` — where in the text the query matched
+
+```
+SELECT title, search::highlight(body) AS marks
+FROM notes WHERE body MATCHES FUZZY 'vectr';
+```
+
+Answers an array of `{ start, end }` **byte** ranges into the field's text: one
+per token the read's own query reached, ordered by position.
+
+**It takes the field alone, and that is the point.** The query is not repeated in
+the projection — it is whatever this statement asked of that field. A second copy
+could disagree with the `WHERE` in its spelling, in its slop, or, invisibly, in
+the operator it implies, since `MATCHES` and `MATCHES FUZZY` reach different
+terms from the same word. A highlight that disagrees with its own filter is worse
+than none: it says a record matched somewhere it did not.
+
+Several predicates on one field all contribute. `body MATCHES 'ada' AND body
+MATCHES PREFIX 'lovel'` marks what either reached, because a token either was
+reached or was not.
+
+**The marks cover the text that matched, not the characters that were typed.**
+That is what makes them worth having, and it is the case a naive
+search-for-the-query-string gets wrong in exactly the situations a reader needs
+it most:
+
+```text
+body MATCHES 'run'          over "He was Running fast"  ->  marks "Running"
+body MATCHES 'cafe'         over "un Café ici"          ->  marks "Café"
+body MATCHES FUZZY 'vectr'  over "a vector store"       ->  marks "vector"
+```
+
+None of `run`, `cafe` or `vectr` occurs in the text it marks. The offsets come
+from re-analysing the field's text with the analyzer that field declares — the
+same analyzer that decided it matched — so the marked token is by construction
+the token the operator reached.
+
+**A phrase marks the run it matched, not every occurrence of its words.**
+`MATCHES '"ada lovelace"'` over `lovelace ada, and ada lovelace` marks two
+tokens. The record answers the phrase once; marking all four would say it
+answered twice.
+
+**An excluded term is never marked.** It is the reason a record would have been
+rejected, and a record that was returned holds none of them.
+
+**Ranges are byte offsets, half-open.** `Café` occupies five bytes and its mark
+covers five, because `é` is two. A consumer slicing UTF-8 by byte — which is what
+`start` and `end` are for — gets the whole letter.
+
+**Three things answer no marks rather than refusing:** a field with no declared
+analyzer, a record holding no text there, and a field this statement did not ask
+about. A highlight decorates records some other clause already chose, so `[]` is
+the true answer in each case — unlike `search::score`, which refuses when it has
+nothing to measure against, because there is no honest number for it to return.
+
+**No index is needed and none changes the answer.** A highlight asks about one
+document rather than about a document relative to a collection, so it is
+answered from the record's text on either access path.
+
+**The store marks; it does not render.** There is no snippet, no fragment
+selection, no marker string and nothing to configure. How much surrounding text
+to show and what to wrap the marks in are the caller's decisions, and a database
+that inserted `<mark>` would have taken a position on somebody's markup — and
+could not un-take it for a text that contains the marker already.
+
 ### Edge tables
 
 `DEFINE TABLE follows EDGE` declares a table that holds **edges**: ordinary

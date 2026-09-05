@@ -174,7 +174,8 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::VectorCosine
         | Function::VectorEuclidean
         | Function::VectorDot
-        | Function::SearchScore => None,
+        | Function::SearchScore
+        | Function::SearchHighlight => None,
     }
 }
 

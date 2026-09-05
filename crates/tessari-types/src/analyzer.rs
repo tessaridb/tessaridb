@@ -22,6 +22,24 @@
 //! is in when the language cannot already say it.
 
 use core::fmt;
+use core::ops::Range;
+
+/// One token of a text: the bytes it occupied and the term it became.
+///
+/// The two travel together because a caller that has one and not the other
+/// cannot use either: a term without its bytes cannot be pointed at, and bytes
+/// without their term cannot be matched against a query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Token {
+    /// The half-open **byte** range this token occupies in the original text.
+    ///
+    /// Bytes rather than characters because that is what slices a `str`, and
+    /// because it is the unit the index format names for the offsets it does not
+    /// store — so a stored source could later answer identically.
+    pub bytes: Range<usize>,
+    /// What the filters turned the token into.
+    pub term: String,
+}
 
 /// One step applied to every token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -182,18 +200,70 @@ impl Analyzer {
             .collect()
     }
 
+    /// The tokens this text holds, each with the bytes it occupies.
+    ///
+    /// The offset source a highlight marks from. It is the field's own declared
+    /// analyzer that assigns these positions, which is what keeps a highlight
+    /// answerable without an index: the record's text is already in hand by the
+    /// time anything is being marked in it.
+    ///
+    /// A token whose filters leave it empty is dropped here exactly as it is in
+    /// [`terms`](Self::terms) — it became no term, so there is nothing to mark.
+    #[must_use]
+    pub fn spans(&self, text: &str) -> Vec<Token> {
+        self.walk(text, &self.filters)
+    }
+
     /// Split, then fold each token through `filters`.
+    ///
+    /// **Expressed through [`walk`](Self::walk) rather than beside it.** A second
+    /// tokenizer that agrees today is still a second tokenizer, and the drift
+    /// would be invisible in the worst way — a highlight a character off, on a
+    /// query that still matched. One walk, two projections of it.
     fn tokens(&self, text: &str, filters: &[Filter]) -> Vec<String> {
-        text.split(|character: char| !character.is_alphanumeric())
-            .filter(|token| !token.is_empty())
-            .map(|token| {
-                filters
-                    .iter()
-                    .fold(token.to_owned(), |held, filter| filter.apply(&held))
-            })
-            .filter(|token| !token.is_empty())
+        self.walk(text, filters)
+            .into_iter()
+            .map(|token| token.term)
             .collect()
     }
+
+    /// Split on anything that is not a letter or a digit, keeping where each
+    /// token was, then fold each through `filters`.
+    ///
+    /// The positions come from `char_indices`, so a multi-byte character
+    /// contributes its real byte width and every range falls on a character
+    /// boundary. `Café` occupies five bytes, and a highlight over it covers five.
+    fn walk(&self, text: &str, filters: &[Filter]) -> Vec<Token> {
+        let mut found = Vec::new();
+        let mut start = None;
+        for (at, character) in text.char_indices() {
+            if character.is_alphanumeric() {
+                start.get_or_insert(at);
+                continue;
+            }
+            if let Some(from) = start.take() {
+                push(&mut found, text, from..at, filters);
+            }
+        }
+        if let Some(from) = start {
+            push(&mut found, text, from..text.len(), filters);
+        }
+        found
+    }
+}
+
+/// Fold one token through `filters` and keep it if anything survives.
+fn push(into: &mut Vec<Token>, text: &str, bytes: Range<usize>, filters: &[Filter]) {
+    let Some(token) = text.get(bytes.clone()) else {
+        return;
+    };
+    let term = filters
+        .iter()
+        .fold(token.to_owned(), |held, filter| filter.apply(&held));
+    if term.is_empty() {
+        return;
+    }
+    into.push(Token { bytes, term });
 }
 
 /// One accented Latin letter, folded.
@@ -358,6 +428,69 @@ mod tests {
                 assert_eq!(alternatives, &vec![term.clone()], "{text}");
             }
         }
+    }
+
+    #[test]
+    fn the_spans_and_the_terms_are_two_readings_of_one_walk() {
+        // Asserted directly rather than inferred from a passing highlight,
+        // because this is the property the whole offset source rests on: a
+        // second tokenizer that agreed today would drift silently.
+        let full = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii, Filter::Stemmer]);
+        for text in [
+            "Ada Lovelace, 1843!",
+            "  ...  ",
+            "",
+            "Running quickly",
+            "Café au lait",
+            "日本語 and Łódź",
+            "trailing",
+            "1843",
+        ] {
+            let walked: Vec<String> = full.spans(text).into_iter().map(|t| t.term).collect();
+            assert_eq!(walked, full.terms(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_span_covers_the_bytes_the_token_occupied_and_not_the_term_it_became() {
+        // The criterion's deciding case in miniature: the reader typed three
+        // letters, the text holds seven, and the highlight is over the seven.
+        let full = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii, Filter::Stemmer]);
+        let text = "He was Running fast";
+        let spans = full.spans(text);
+        let running = spans
+            .iter()
+            .find(|token| token.term == "run")
+            .expect("the text holds a word that stems to run");
+        assert_eq!(running.bytes, 7..14);
+        assert_eq!(&text[running.bytes.clone()], "Running");
+    }
+
+    #[test]
+    fn a_multibyte_character_contributes_its_real_byte_width() {
+        // `é` is two bytes, so a span counted in characters would be short by
+        // one and the mark would stop mid-letter.
+        let folded = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii]);
+        let text = "un Café ici";
+        let spans = folded.spans(text);
+        let cafe = spans
+            .iter()
+            .find(|token| token.term == "cafe")
+            .expect("the text holds a folded café");
+        assert_eq!(cafe.bytes, 3..8);
+        assert_eq!(&text[cafe.bytes.clone()], "Café");
+        // Every range slices, which is the invariant `char_indices` buys.
+        for token in &spans {
+            assert!(text.get(token.bytes.clone()).is_some(), "{token:?}");
+        }
+    }
+
+    #[test]
+    fn punctuation_opens_no_token_and_so_leaves_no_span_to_mark() {
+        // Nothing became a term, so there is nothing a highlight could claim
+        // matched — and the spans agree with the terms about that.
+        assert!(simple().spans("  ...  ").is_empty());
+        assert!(simple().spans("").is_empty());
     }
 
     #[test]

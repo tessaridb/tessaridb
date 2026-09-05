@@ -28,7 +28,7 @@ mod text;
 mod time;
 mod value;
 
-pub use analyzer::{Analyzer, Filter};
+pub use analyzer::{Analyzer, Filter, Token};
 pub use assertion::{Assertion, Operand};
 pub use calendar::Civil;
 pub use condition::{BinaryOp, apply};

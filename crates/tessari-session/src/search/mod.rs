@@ -29,12 +29,18 @@
 //! holds it. The boundary is worth keeping because the first depends on the
 //! catalog, the second must never depend on it, and the third is the scan half
 //! of a pair whose index half has to agree with it record for record.
+//!
+//! [`highlight`] asks a fourth: which of one document's tokens the read reached.
+//! It is not a fourth rule — it defers to [`matching`] for every decision and
+//! owns only which tokens that decision is applied to.
 
+mod highlight;
 mod matching;
 mod query;
 mod resolve;
 mod suggest;
 
+pub(crate) use highlight::marked;
 pub(crate) use matching::{matches_fuzzy_terms, matches_prefix_terms, matches_terms};
 pub(crate) use query::{Asked, asked};
 pub(crate) use resolve::{Ranked, Searched};

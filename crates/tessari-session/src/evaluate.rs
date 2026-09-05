@@ -34,7 +34,9 @@ use crate::outcome::{AccessPath, Note, Suggestion};
 use crate::plan;
 use crate::plan::Plan;
 use crate::rank::{self, Held, score};
-use crate::search::{Ranked, Searched, matches_fuzzy_terms, matches_prefix_terms, matches_terms};
+use crate::search::{
+    Ranked, Searched, marked, matches_fuzzy_terms, matches_prefix_terms, matches_terms,
+};
 use crate::session::Session;
 
 /// How many of an index's leading values an index-served order compares.
@@ -157,6 +159,14 @@ impl Session<'_> {
                 // those is one, so it is answered here where the scope is.
                 if *function == Function::SearchScore {
                     return self.rank(transaction, arguments, scope, *span);
+                }
+                // And the third. A highlight needs the field's analyzer and what
+                // this read asked of that field — neither of which is a value,
+                // and the second of which is the whole point: the marks come
+                // from the query the statement ran, not from one the projection
+                // repeated.
+                if *function == Function::SearchHighlight {
+                    return self.highlight(transaction, arguments, scope);
                 }
                 let arguments = self.values(transaction, arguments, scope)?;
                 call(*function, &arguments, *span)
@@ -761,6 +771,57 @@ impl Session<'_> {
     /// The first argument must be a **path**: a score is measured against the
     /// statistics of one indexed field, and an arbitrary expression names no
     /// field to have statistics for. Refusing that is refusing to guess.
+    /// Where in this record's text the read's own query matched, as an ordered
+    /// array of `{ start, end }` byte ranges.
+    ///
+    /// # Everything here answers `[]` rather than refusing
+    ///
+    /// A highlight is a projection, not a filter: it decorates records some
+    /// other clause already chose. So a field with no declared analyzer, a
+    /// record holding no text there, and a field nobody asked about all answer
+    /// *no marks* — which is the true answer in each case, and is what lets one
+    /// `search::highlight(body)` be written over a table whose records do not
+    /// all carry a body.
+    ///
+    /// That is the opposite of [`rank`](Self::rank), which refuses, and the
+    /// difference is real rather than a style choice: a score with nothing to
+    /// measure against has no honest number, while a highlight with nothing to
+    /// mark has an honest answer and it is the empty one.
+    fn highlight(
+        &self,
+        transaction: &mut Transaction<'_>,
+        arguments: &[Expr],
+        scope: Scope<'_>,
+    ) -> Result<Value> {
+        let none = Ok(Value::Array(Vec::new()));
+        let Some(first) = arguments.first() else {
+            return none;
+        };
+        // The argument is the field, and the field is where both the analyzer
+        // and the recorded query are found — so an expression that is not a path
+        // names neither and marks nothing.
+        let ExprKind::Path(field) = &first.kind else {
+            return none;
+        };
+        let Some(analyzer) = scope.analyzer(&field.path) else {
+            return none;
+        };
+        let Value::String(text) = self.evaluate_in(transaction, first, scope)? else {
+            return none;
+        };
+        Ok(Value::Array(
+            marked(analyzer, &text, scope.wanted(&field.path))
+                .into_iter()
+                .map(|bytes| {
+                    Value::Object(BTreeMap::from([
+                        ("start".to_owned(), at(bytes.start)),
+                        ("end".to_owned(), at(bytes.end)),
+                    ]))
+                })
+                .collect(),
+        ))
+    }
+
     fn rank(
         &self,
         transaction: &mut Transaction<'_>,
@@ -3245,6 +3306,11 @@ impl<'a> Scope<'a> {
     fn ranked(self, path: &Path) -> Option<&'a Ranked> {
         self.searched.and_then(|held| held.ranked(path))
     }
+
+    /// What this read asked of this path, as the rewrite recorded it.
+    fn wanted(self, path: &Path) -> &'a [(BinaryOp, String)] {
+        self.searched.map_or(&[], |held| held.wanted(path))
+    }
 }
 
 /// The expressions a read evaluates besides its condition: what it projects,
@@ -3263,4 +3329,15 @@ fn shown(select: &Select) -> Vec<&Expr> {
         found.push(&ordering.key);
     }
     found
+}
+
+/// A byte offset as a value a caller can read.
+///
+/// `try_from` rather than a cast, which would wrap silently at a width the
+/// types no longer show. The saturation it guards is unreachable — a text long
+/// enough to overflow `i64` would need eight exabytes to hold it — and it is
+/// written anyway because a bound is a better answer than a panic in a
+/// projection over somebody's whole table.
+fn at(offset: usize) -> Value {
+    Value::Number(Number::Integer(i64::try_from(offset).unwrap_or(i64::MAX)))
 }

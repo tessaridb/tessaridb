@@ -40,6 +40,7 @@ pub(crate) struct Ranked {
 pub(crate) struct Searched {
     analyzers: BTreeMap<Path, Analyzer>,
     corpora: BTreeMap<Path, Ranked>,
+    wanted: BTreeMap<Path, Vec<(BinaryOp, String)>>,
     suggestion: Option<Suggestion>,
 }
 
@@ -47,6 +48,16 @@ impl Searched {
     /// The analyzer this path's field declares, if it declares one.
     pub(crate) fn analyzer(&self, path: &Path) -> Option<&Analyzer> {
         self.analyzers.get(path)
+    }
+
+    /// What this read asked of this path — every `MATCHES`, `MATCHES PREFIX` and
+    /// `MATCHES FUZZY` naming it, with the query text each was given.
+    ///
+    /// Recorded here because this is where the query expressions are evaluated,
+    /// and evaluated **once**: a highlight computed from a second evaluation
+    /// could mark a record against a query the filter never saw.
+    pub(crate) fn wanted(&self, path: &Path) -> &[(BinaryOp, String)] {
+        self.wanted.get(path).map_or(&[], Vec::as_slice)
     }
 
     /// What this path was ranked against, if it was ranked at all.
@@ -98,6 +109,7 @@ impl Session<'_> {
         // at the end of this function asks about the same strings. Evaluating
         // them a second time would let a query built from an expression be
         // checked as one thing and suggested against as another.
+        let mut asked_of: BTreeMap<Path, Vec<(BinaryOp, String)>> = BTreeMap::new();
         let mut matched: Vec<(Path, String)> = Vec::with_capacity(phrased.len());
         for (path, query) in phrased {
             let Value::String(text) = self.evaluate(transaction, query)? else {
@@ -151,6 +163,10 @@ impl Session<'_> {
             let Value::String(text) = self.evaluate(transaction, query)? else {
                 continue;
             };
+            asked_of
+                .entry(path.clone())
+                .or_default()
+                .push((op, text.clone()));
             // Both operators bound the *front* of a typed word, and both are
             // refused on the same footing — but the limits are different numbers
             // for different reasons, so which one applies is decided here rather
@@ -176,6 +192,18 @@ impl Session<'_> {
                     });
                 }
             }
+        }
+
+        // What each field was asked, kept so a highlight marks against the
+        // query this read actually ran rather than a copy of it. Built from the
+        // texts the two loops above already evaluated — the prefix loop records
+        // as it goes, because it is the only place that knows which of the two
+        // operators a query carried.
+        for (path, text) in &matched {
+            asked_of
+                .entry(path.clone())
+                .or_default()
+                .push((BinaryOp::Matches, text.clone()));
         }
 
         let mut corpora = BTreeMap::new();
@@ -230,6 +258,7 @@ impl Session<'_> {
         Ok(Searched {
             analyzers,
             corpora,
+            wanted: asked_of,
             suggestion,
         })
     }
@@ -278,6 +307,19 @@ fn searched_paths<'a>(
             if let ExprKind::Path(field) = &first.kind {
                 into.push(&field.path);
                 ranked.push((&field.path, second));
+            }
+        }
+        // A highlight names a searched field and asks nothing of its own: the
+        // query it marks against is whatever the rest of the statement asked of
+        // that same path. So it is registered as searched — which is what
+        // resolves the analyzer — and contributes no query.
+        ExprKind::Call {
+            function: Function::SearchHighlight,
+            arguments,
+            ..
+        } => {
+            if let Some(ExprKind::Path(field)) = arguments.first().map(|first| &first.kind) {
+                into.push(&field.path);
             }
         }
         ExprKind::Call { arguments, .. } => {

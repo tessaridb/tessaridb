@@ -11,7 +11,8 @@ use tessari_constants::{SEARCH_FUZZY_MAX_EDITS, SEARCH_FUZZY_PREFIX};
 
 use super::query::{Asked, asked};
 
-/// Whether `asked` appears in `held` in order, within `slop` extra tokens.
+/// The ordinals of the tokens that answer `asked`, in order, within `slop`
+/// extra tokens — or `None` when no run of them does.
 ///
 /// Order is the whole difference between a phrase and a conjunction, and the
 /// reason the fixture that tests it holds the same two terms in both orders:
@@ -26,27 +27,63 @@ use super::query::{Asked, asked};
 /// For a fixed start the *earliest* later occurrence of each term minimises the
 /// span, so a greedy walk decides the whole question and no backtracking is
 /// needed.
-fn holds_run(held: &[String], asked: &[String], slop: usize) -> bool {
-    let Some(first) = asked.first() else {
-        return false;
-    };
+///
+/// # Why this returns which tokens rather than whether there were any
+///
+/// A highlight marks the run and not every occurrence of the run's words: a
+/// record holding `lovelace ada … ada lovelace` answers the phrase
+/// `"ada lovelace"` **once**, and marking all four tokens would claim it
+/// answered twice. The walk already knows which ordinals it stepped through, so
+/// the alternative is a second walk computing the same thing — and one question
+/// computed in two places is precisely what this module exists to prevent.
+pub(super) fn run_of(held: &[String], asked: &[String], slop: usize) -> Option<Vec<usize>> {
+    let first = asked.first()?;
     let limit = asked.len().saturating_sub(1).saturating_add(slop);
-    held.iter().enumerate().any(|(start, token)| {
+    held.iter().enumerate().find_map(|(start, token)| {
         if token != first {
-            return false;
+            return None;
         }
         let mut at = start;
+        let mut walked = vec![start];
         for term in &asked[1..] {
-            let Some(found) = held
+            let found = held
                 .iter()
                 .skip(at.saturating_add(1))
-                .position(|held| held == term)
-            else {
-                return false;
-            };
+                .position(|held| held == term)?;
             at = at.saturating_add(1).saturating_add(found);
+            walked.push(at);
         }
-        at.saturating_sub(start) <= limit
+        (at.saturating_sub(start) <= limit).then_some(walked)
+    })
+}
+
+/// Whether `asked` appears in `held` in order, within `slop` extra tokens.
+fn holds_run(held: &[String], asked: &[String], slop: usize) -> bool {
+    run_of(held, asked, slop).is_some()
+}
+
+/// Whether one stored term answers one typed word under `MATCHES PREFIX`.
+///
+/// The disjunction within a word: the two spellings [`Analyzer::prefixes`]
+/// produces are alternatives, and a term beginning with either satisfies the
+/// word.
+pub(super) fn begins(alternatives: &[String], term: &str) -> bool {
+    alternatives
+        .iter()
+        .any(|prefix| term.starts_with(prefix.as_str()))
+}
+
+/// Whether one stored term answers one typed word under `MATCHES FUZZY`.
+///
+/// The mandatory non-fuzzy prefix is applied here rather than at the call site,
+/// so that every caller — the scan's predicate and the highlight alike — asks
+/// the same question. `SEARCH_FUZZY_PREFIX` is part of what the operator
+/// *means*, not an optimisation, so a caller that skipped it would mark a token
+/// the operator did not reach.
+pub(super) fn near(alternatives: &[String], term: &str) -> bool {
+    alternatives.iter().any(|spelling| {
+        let leading: String = spelling.chars().take(SEARCH_FUZZY_PREFIX).collect();
+        term.starts_with(&leading) && within_edits(spelling, term, SEARCH_FUZZY_MAX_EDITS)
     })
 }
 
@@ -121,11 +158,9 @@ pub(crate) fn matches_prefix_terms(
     let terms = analyzer.terms(text);
     let asked = analyzer.prefixes(query);
     !asked.is_empty()
-        && asked.iter().all(|alternatives| {
-            alternatives
-                .iter()
-                .any(|prefix| terms.iter().any(|term| term.starts_with(prefix)))
-        })
+        && asked
+            .iter()
+            .all(|alternatives| terms.iter().any(|term| begins(alternatives, term)))
 }
 
 /// Whether analyzed text holds, for **every** word typed, a term within the edit
@@ -168,13 +203,7 @@ pub(crate) fn matches_fuzzy_terms(
     let terms = analyzer.terms(text);
     let asked = analyzer.prefixes(query);
     !asked.is_empty()
-        && asked.iter().all(|alternatives| {
-            alternatives.iter().any(|spelling| {
-                let leading: String = spelling.chars().take(SEARCH_FUZZY_PREFIX).collect();
-                terms.iter().any(|term| {
-                    term.starts_with(&leading)
-                        && within_edits(spelling, term, SEARCH_FUZZY_MAX_EDITS)
-                })
-            })
-        })
+        && asked
+            .iter()
+            .all(|alternatives| terms.iter().any(|term| near(alternatives, term)))
 }
