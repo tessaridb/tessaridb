@@ -72,8 +72,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use tessari_constants::SPATIAL_INDEX_CELLS_PER_RECORD;
 use tessari_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, NoPayload, Posting,
-    PostingKey, RecordValue, SearchStatistics, SearchStatisticsKey, SecondaryIndexKey,
-    SpatialExtent, SpatialIndexKey, StoreKey, StoreValue, UniqueIndexKey, decode_payload,
+    PostingKey, RecordValue, SearchStatistics, SearchStatisticsKey, SearchTermKey,
+    SecondaryIndexKey, SpatialExtent, SpatialIndexKey, StoreKey, StoreValue, TermStatistics,
+    UniqueIndexKey, decode_payload,
 };
 use tessari_geo::{Bounds, Cell, Shape};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
@@ -104,6 +105,19 @@ struct Pending {
     claimed: BTreeSet<Vec<u8>>,
     /// How each search index's statistics move, written once at the end.
     moved: BTreeMap<IndexAddress, Delta>,
+    /// How each term's document count moves, per search index.
+    ///
+    /// Accumulated for the reason [`Self::moved`] is, and it matters more here:
+    /// a batch that rewrites a thousand records touching one common word would
+    /// otherwise read and write that word's entry a thousand times. Folded once
+    /// per term at the end, it is one read and one write.
+    ///
+    /// Signed, because a record leaving the index takes its terms with it — and
+    /// a term reaching zero has its entry **deleted** rather than written as
+    /// zero. A dictionary holding words no record contains would answer a prefix
+    /// walk with terms whose posting lists are empty, which is the one thing the
+    /// dictionary exists to stop.
+    terms: BTreeMap<IndexAddress, BTreeMap<IndexValues, Moved>>,
     /// Indexes [`build`] wrote whole in this record.
     ///
     /// Their statistics are a **total**, not a movement: the build counted every
@@ -111,6 +125,52 @@ struct Pending {
     /// document a second time. `settle` reads this to know which of the two it
     /// is holding.
     built: BTreeSet<IndexAddress>,
+}
+
+/// How one term's dictionary entry moves in this batch.
+///
+/// The count and the pruning bound travel together because they are two answers
+/// about one term derived from one pass over the same postings. Kept in separate
+/// maps they would be updated in separate loops, and the failure that follows is
+/// the one this store's rules single out: a bound that does not describe the
+/// postings the count describes is not a slow bound, it is an unsound one, and it
+/// removes records from an answer without anything being in an error state.
+#[derive(Debug, Clone, Copy, Default)]
+struct Moved {
+    /// How the document count moves — signed, because a record leaving the index
+    /// takes its terms with it.
+    delta: i64,
+    /// The most occurrences any posting **arriving** in this batch records.
+    ///
+    /// Zero when nothing arrived, which is the identity for a maximum.
+    frequency: u32,
+    /// The fewest tokens held by any record **arriving** in this batch.
+    ///
+    /// `None` rather than a sentinel: the identity for a minimum is not a value
+    /// this type can hold, and `u32::MAX` standing in for one would be a real
+    /// length as far as every comparison below is concerned.
+    length: Option<u32>,
+}
+
+impl Moved {
+    /// Record a posting arriving.
+    fn arrived(&mut self, frequency: u32, length: u32) {
+        self.delta = self.delta.saturating_add(1);
+        self.frequency = self.frequency.max(frequency);
+        self.length = Some(self.length.map_or(length, |held| held.min(length)));
+    }
+
+    /// Record a posting leaving.
+    ///
+    /// The extremes are deliberately untouched. An extreme cannot move inward
+    /// without knowing the second one, and reading the term's whole posting range
+    /// to find it would put an O(df) scan on every delete. So the bound stays
+    /// sound and grows loose, which is the compromise ADR-0050 states and the
+    /// direction it insists on: loose costs pruning efficiency, wrong costs
+    /// records.
+    fn left(&mut self) {
+        self.delta = self.delta.saturating_sub(1);
+    }
 }
 
 /// Add the index writes a log record implies to `batch`.
@@ -181,7 +241,7 @@ pub(crate) fn maintain(
             batch = build(store, batch, &mut view, record, &definition, &mut pending)?;
         }
     }
-    settle(store, batch, &pending.moved, &pending.built)
+    settle(store, batch, &pending)
 }
 
 /// Every entry an index implies, written into the commit that defines — or
@@ -226,6 +286,7 @@ fn build(
     // entries it described: the rows below include this record's own mutations,
     // so counting them again is counting them twice.
     pending.moved.insert(address, Delta::default());
+    pending.terms.insert(address, BTreeMap::new());
     let mut rows: BTreeMap<RecordId, Vec<u8>> = view
         .scan_table(definition.namespace, definition.database, definition.table)?
         .into_iter()
@@ -287,12 +348,17 @@ fn build(
     if definition.search {
         let declared = analyzers_on(view, definition.table)?;
         let analyzer = search_analyzer(definition, &declared);
-        let counted = pending.moved.entry(address).or_default();
+        let mut counted = Delta::default();
+        let mut dictionary: BTreeMap<IndexValues, Moved> = BTreeMap::new();
         for (id, payload) in &rows {
             let analysed = terms_of(definition, analyzer, &decode_payload(payload)?);
             counted.added(analysed.tokens);
             let length = analysed.length();
             for (term, frequency) in analysed.postings {
+                dictionary
+                    .entry(term.clone())
+                    .or_default()
+                    .arrived(frequency, length);
                 batch = batch.put(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, id.clone()).encode(),
@@ -300,6 +366,8 @@ fn build(
                 );
             }
         }
+        *pending.moved.entry(address).or_default() = counted;
+        pending.terms.insert(address, dictionary);
         return Ok(batch);
     }
 
@@ -351,6 +419,7 @@ fn clear(store: &Store, mut batch: WriteBatch, address: &IndexAddress) -> Result
         KeyKind::SpatialIndex,
         KeyKind::VectorRecall,
         KeyKind::SpatialRefinement,
+        KeyKind::SearchTerm,
     ] {
         let keyspace = kind.keyspace();
         let prefix = address.prefix(kind);
@@ -438,14 +507,21 @@ fn apply_one(
     if definition.search {
         let analyzer = search_analyzer(definition, analyzers);
         let counted = pending.moved.entry(address).or_default();
+        let dictionary = pending.terms.entry(address).or_default();
         // The old side first, and both sides of the same change: a record whose
         // text changed leaves the index at its former length and re-enters at
         // its new one, so a statistic that only counted arrivals would drift
         // upward by exactly the amount nobody ever looks at.
+        //
+        // The dictionary moves on the same two sides and by the same reasoning.
+        // A word the record kept is decremented and incremented, netting zero,
+        // so a rewrite that changed one sentence does not disturb the frequency
+        // of every other word in the document.
         if let Some(bytes) = previous {
             let analysed = terms_of(definition, analyzer, &decode_payload(bytes)?);
             counted.removed(analysed.tokens);
             for (term, _) in analysed.postings {
+                dictionary.entry(term.clone()).or_default().left();
                 batch = batch.delete(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, mutation.id.clone()).encode(),
@@ -457,6 +533,10 @@ fn apply_one(
             counted.added(analysed.tokens);
             let length = analysed.length();
             for (term, frequency) in analysed.postings {
+                dictionary
+                    .entry(term.clone())
+                    .or_default()
+                    .arrived(frequency, length);
                 batch = batch.put(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, mutation.id.clone()).encode(),
@@ -813,12 +893,8 @@ impl Delta {
 /// record values above were read at, so the two cannot describe different
 /// moments. A store with one writer (ADR-0007) makes that read-modify-write safe
 /// without a counter primitive.
-fn settle(
-    store: &Store,
-    mut batch: WriteBatch,
-    moved: &BTreeMap<IndexAddress, Delta>,
-    built: &BTreeSet<IndexAddress>,
-) -> Result<WriteBatch> {
+fn settle(store: &Store, mut batch: WriteBatch, pending: &Pending) -> Result<WriteBatch> {
+    let (moved, built) = (&pending.moved, &pending.built);
     let keyspace = SearchStatisticsKey::keyspace();
     for (address, delta) in moved {
         if delta.is_zero() {
@@ -843,6 +919,74 @@ fn settle(
             shift(held.terms, delta.tokens),
         );
         batch = batch.put(keyspace, key, updated.encode());
+    }
+    settle_terms(store, batch, pending)
+}
+
+/// Fold the accumulated per-term deltas into the dictionary, one write per term
+/// that moved.
+///
+/// # A term that reaches zero is deleted, not written as zero
+///
+/// The dictionary's whole purpose is that walking it enumerates the words the
+/// index actually holds. An entry left behind at zero is a word a prefix walk
+/// would return and whose posting list is empty — a suggestion nothing can
+/// answer, offered by the structure built to stop exactly that. It also grows
+/// without bound: every word ever written to the table stays in the dictionary
+/// for the life of the store.
+///
+/// The read of the stored figure is skipped for an index this record **built**,
+/// on the same reasoning [`settle`] gives for the collection statistics: a build
+/// counted every row the index has, so its figure is a total and starting from
+/// the stored one would count each document twice.
+fn settle_terms(store: &Store, mut batch: WriteBatch, pending: &Pending) -> Result<WriteBatch> {
+    let keyspace = SearchTermKey::keyspace();
+    for (address, moved) in &pending.terms {
+        let rebuilt = pending.built.contains(address);
+        for (term, moved) in moved {
+            // A rewrite that keeps a word nets a delta of zero and is still not
+            // nothing: the word may now occur more often, or in a shorter
+            // record, and the bound has to rise to cover it. Skipping on the
+            // delta alone — which is what a count-only dictionary could do —
+            // would leave a bound below a posting that exists, which is the one
+            // direction ADR-0050 forbids.
+            if moved.delta == 0 && moved.length.is_none() {
+                continue;
+            }
+            let key = SearchTermKey::new(*address, term.clone()).encode();
+            let held = if rebuilt {
+                TermStatistics::default()
+            } else {
+                match store.backend().get(keyspace, &key)? {
+                    Some(bytes) => TermStatistics::decode(bytes.as_slice())?,
+                    None => TermStatistics::default(),
+                }
+            };
+            let documents = shift(held.documents, moved.delta);
+            batch = if documents == 0 {
+                // The extremes leave with the entry, which is the one place they
+                // are allowed to move inward. A term no record holds has no
+                // postings to bound, so the next arrival starts from what it
+                // actually writes rather than inheriting a ceiling from a record
+                // that is gone.
+                batch.delete(keyspace, key)
+            } else {
+                let frequency = held.max_frequency.max(moved.frequency);
+                // `min` is not enough on its own, because zero is this field's
+                // "never recorded" and would win every comparison — the sound
+                // direction for a maximum and exactly backwards for a minimum.
+                let length = match (held.min_length, moved.length) {
+                    (0, arrived) => arrived.unwrap_or(0),
+                    (held, Some(arrived)) => held.min(arrived),
+                    (held, None) => held,
+                };
+                batch.put(
+                    keyspace,
+                    key,
+                    TermStatistics::bounded(documents, frequency, length).encode(),
+                )
+            };
+        }
     }
     Ok(batch)
 }

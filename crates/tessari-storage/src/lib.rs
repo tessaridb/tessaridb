@@ -57,4 +57,6 @@ pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
 pub use store::{Health, Store};
 pub use tessari_encoding::{BUILD_VERSION, Roles};
-pub use transaction::{Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction};
+pub use transaction::{
+    Expansion, Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction,
+};

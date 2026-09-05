@@ -15,6 +15,11 @@ thiserror.workspace = true
 rocksdb = { version = "0.25", default-features = false, features = ["lz4", "zstd", "bindgen-runtime"] }
 
 [dev-dependencies]
+# The index-format tests read an old index back through the language, so they
+# need the layer that speaks it and the codec that describes what is on disk.
+# Both are already in the tree; nothing new is fetched.
+tessari-encoding.workspace = true
+tessari-session.workspace = true
 tessari-storage.workspace = true
 tessari-types.workspace = true
 tempfile = "3"

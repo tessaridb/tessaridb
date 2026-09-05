@@ -10,10 +10,10 @@ A real-time multi-model database, written in Rust, built for AI agents and the
 products around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.0.2--alpha-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.0.3--alpha-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-1035%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-1105%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/TessariDB/TessariDB-protocol) ·
@@ -105,8 +105,8 @@ compares against expected answers, case by case. The counts are those cases.
 | **Graph** | edge tables, `RELATE`, properties on the edge, multi-hop traversal in both directions, an edge table that names the pair it joins and refuses every other, a declared graph that holds its own records with no table declared beside it and takes them with it when dropped, tables you already have joining it with `IN`, `DEFINE EDGE` writing adjacency beside the node so a hop is a range read, an edge removed by the pair it joins, and `DEPTH n` bounding a repeated hop | 71 | ✅ runs |
 | **Key–value** | `SPACE`s — one key, one whole value, ordered range scans with inclusive or exclusive bounds | 12 | ✅ runs |
 | **Objects & files** | `BUCKET`s — bytes addressed by path, byte-range reads, writes at an offset, metadata that is an ordinary record, and a declared ceiling on the largest file the bucket takes | 35 | ✅ runs |
-| **Full-text** | per-field analyzers, whole-term search, lowercase · ASCII folding · Porter2 stemming | 34 | ✅ runs |
-| **Vector** | cosine, Euclidean and dot distance, kNN ordering, a graph index that declares whether it answered exactly, and a field that declares how wide its vectors are so a write of any other width is refused where it happens, and a vector store declared as one so the width, the index and the requirement cannot come apart, and a read that says what it will spend on the walk, and a recall the store reports only once something has measured it | 48 | ✅ runs |
+| **Full-text** | per-field analyzers, whole-term search, prefix search a reader is served by while still typing, fuzzy search that survives a typo, lowercase · ASCII folding · Porter2 stemming, a quoted phrase with declared slop that widens the window without relaxing the order, `OR` and `NOT` inside a query, per-field weighting written as arithmetic, a `did you mean` suggestion that is a field beside the records and never a substitution into the query, and highlighting that marks the token the read actually reached rather than the characters that were typed | 100 | ✅ runs |
+| **Vector** | cosine, Euclidean and dot distance, kNN ordering, a graph index that declares whether it answered exactly, and a field that declares how wide its vectors are so a write of any other width is refused where it happens, and a vector store declared as one so the width, the index and the requirement cannot come apart, and a read that says what it will spend on the walk, and a recall the store reports only once something has measured it | 50 | ✅ runs |
 | **Time-series** | epoch-anchored windows every process agrees on, aggregates per window, retention as a statement that reports what it removed | 12 | ✅ runs |
 | **References** | `FETCH` — follow a reference, an array of them, or a nested route, without a join | 12 | ✅ runs |
 | **Geospatial** | a geometry type on an exact integer grid, eight predicates over whole shapes, geodesic distance and area, shapes written as literals, a spatial index seven of the eight predicates read through, a nearest-first read over positions, a geo store declared as one so the field, the index and the requirement cannot come apart, and a measured refinement ratio saying what that index's candidates cost | 65 | 🚧 partial — the nearest few is over positions rather than whole shapes |
@@ -130,7 +130,7 @@ possible rather than aspirational.
 
 ## Status
 
-**Stage: active development · `0.0.2-alpha` · not published to crates.io.** What
+**Stage: active development · `0.0.3-alpha` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -761,6 +761,51 @@ The `Dockerfile` builds from this working tree; the published image is
 [`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb). It is
 alpha, and `latest` moves — pin the version tag for anything you would mind
 losing.
+
+## Keeping one running on a Mac
+
+A node you use, rather than one you are testing, wants to be up without anybody
+remembering to start it. On macOS that is a `launchd` agent, and `ops/macos/`
+installs one:
+
+```sh
+ops/macos/install.sh --address 127.0.0.1:39500
+```
+
+It builds the node, puts it and `tessaridbctl` in `~/.local/bin`, writes
+`~/.tessaridb/config.env`, and loads the agent. Nothing needs privilege and
+nothing is written outside your home, so `ops/macos/uninstall.sh` undoes all of
+it. An **agent**, not a daemon: it runs as you and keeps its store under your
+home. A node serving a machine rather than a person belongs in
+`/Library/LaunchDaemons` and is a different file.
+
+```sh
+tessaridbctl start | stop | restart
+tessaridbctl status | health | logs
+```
+
+The settings live in one file that both `tessaridbctl` and the agent read, so
+there is nothing to keep in step — the plist carries no address and no store
+path. Change the port in `~/.tessaridb/config.env` and `tessaridbctl restart`.
+The variables are `TESSARIDB_STORE` and `TESSARIDB_ADDRESS`, the same ones the
+container path uses, because a node configured two different ways depending on
+where it runs is two things to learn.
+
+**A stop is the port coming free, not the command returning.** The staged
+shutdown below goes on serving for five seconds after it is asked to stop, so a
+check taken immediately finds a node that is both stopping and answering.
+`tessaridbctl stop` waits for the address to go quiet and says so, and kills the
+process if it is still held ten seconds later rather than reporting a stop that
+did not happen.
+
+`health` asks the node a question rather than asking the kernel whether a port is
+open — `/health` when the HTTP surface is on, and a statement over the wire when
+it is not. `--health` is neither of those: it speaks about a store the asking
+process opened, and a node reached over the wire was opened by somebody else.
+
+The agent restarts the node if it crashes and does **not** restart it after
+`tessaridbctl stop`. A service that comes back when it is asked to stop cannot be
+stopped.
 
 ## Stopping it
 

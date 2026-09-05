@@ -79,7 +79,22 @@ SELECT * FROM (SELECT * FROM users WHERE email = 'ada@example.com' LIMIT 1 USING
 
 --- case: EXPLAIN answers with the plan rather than the records
 EXPLAIN SELECT * FROM users WHERE email = 'ada@example.com';
---- expect: value { access: 'index', at_most: 1, columns: 1, index: 'by_email', shape: 'equality', table: 'users' }
+--- expect: value { access: 'index', at_most: 1, columns: 1, exact: true, index: 'by_email', shape: 'equality', table: 'users' }
+
+# Exactness is on every plan, and it is the one field that is written even when
+# it is dull. Every other key here appears only when the read had an answer for
+# it — a scan's plan is the two keys it knows rather than eight of which six say
+# nothing. If `exact` followed that rule, its absence would come to mean `true`,
+# and a caller would be inferring the one property that exists so that nothing
+# has to be inferred.
+
+--- case: a scan says it is exact, with nothing else to say
+EXPLAIN SELECT * FROM users;
+--- expect: value { access: 'scan', exact: true, table: 'users' }
+
+--- case: and a read reached by identity says the same
+EXPLAIN SELECT * FROM users:1;
+--- expect: value { access: 'record', exact: true, table: 'users' }
 
 --- case: an assertion changes nothing about what a read answers
 SELECT * FROM users WHERE city = 'Paris';

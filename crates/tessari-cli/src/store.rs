@@ -20,8 +20,8 @@
 //! scripts — so they belong to the embedded path alone, and asking for one over
 //! an address is refused in `main` rather than quietly ignored.
 
-use tessari_wire::{Answer, Client, Names, Remark};
-use tessaridb::{Db, Outcome, Parameters, Session};
+use tessari_wire::{Answer, Client, Correction, Exact, Names, Remark, Suggested};
+use tessaridb::{Db, Outcome, Parameters, Session, Suggestion};
 
 /// Somewhere statements can be run.
 ///
@@ -148,10 +148,15 @@ fn into_answer(outcome: &Outcome, names: Names) -> Answer {
         // surfaces disagree about what a client can see. The notes no longer
         // stop here: the wire carries them now, so reporting them from the
         // embedded path keeps the two identical rather than making them differ.
+        // Exactness arrives on the same terms and for a sharper reason — a
+        // property that is stated over the wire and silent when the store is
+        // embedded would make the same read exact in one deployment and
+        // unstated in the other.
         Outcome::Records {
             records,
             plan,
             notes,
+            suggestion,
             only,
         } => Answer::Records {
             records: records
@@ -168,6 +173,29 @@ fn into_answer(outcome: &Outcome, names: Names) -> Answer {
                 })
                 .collect(),
             only: *only,
+            exact: Some(match plan.exact.reason() {
+                Some(reason) => Exact::No {
+                    reason: reason.to_owned(),
+                },
+                None => Exact::Yes,
+            }),
+            // Always `Some`, because an embedded store is never a node too old
+            // to have been asked. Which of the three it is still says what it
+            // says: `NotSought` here means this read had no dictionary, not that
+            // this build has no suggestions.
+            suggestion: Some(match suggestion {
+                None => Suggested::NotSought,
+                Some(Suggestion::NothingNearer) => Suggested::NothingNearer,
+                Some(Suggestion::DidYouMean(nearest)) => Suggested::DidYouMean(
+                    nearest
+                        .iter()
+                        .map(|correction| Correction {
+                            typed: correction.typed.clone(),
+                            instead: correction.instead.clone(),
+                        })
+                        .collect(),
+                ),
+            }),
         },
         Outcome::Value(held) => Answer::Value {
             value: held.clone(),

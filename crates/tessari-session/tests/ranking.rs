@@ -324,3 +324,139 @@ fn a_term_test_inside_a_projection_now_reads_the_schema_too() {
     let records = outcomes[0].records().unwrap();
     assert_eq!(field(&records[0].1, "hit"), &Value::Bool(true));
 }
+
+/// Two analyzed and indexed fields, so a projection can put one field's text
+/// under the other field's name.
+///
+/// `searchable` gives one searchable field, and one field cannot shadow itself.
+fn two_searchable_fields(store: &Store) -> Session<'_> {
+    let mut session = Session::new(store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod;\n\
+             USE NAMESPACE prod;\n\
+             DEFINE DATABASE orders;\n\
+             USE DATABASE orders;\n\
+             DEFINE ANALYZER simple FILTERS lowercase;\n\
+             DEFINE TABLE notes SCHEMALESS;\n\
+             DEFINE FIELD body ON notes TYPE string ANALYZER simple;\n\
+             DEFINE FIELD decoy ON notes TYPE string ANALYZER simple;\n\
+             DEFINE INDEX by_body ON notes FIELDS body SEARCH;\n\
+             DEFINE INDEX by_decoy ON notes FIELDS decoy SEARCH;",
+        )
+        .unwrap();
+    // Record 1 holds the word in `body` and record 2 holds it in `decoy`, so the
+    // two fields order the same two records the opposite way round. That
+    // opposition is what makes the measurement below able to fail.
+    session
+        .run(
+            "CREATE notes:1 = { body: 'quorum quorum quorum', decoy: 'quiet', title: 'first' };\n\
+             CREATE notes:2 = { body: 'quiet', decoy: 'quorum quorum quorum', title: 'second' };",
+        )
+        .unwrap();
+    session
+}
+
+#[test]
+fn the_two_fields_order_the_records_opposite_ways() {
+    // The control for the two tests below, and the whole reason they are not
+    // vacuous. Each of them asserts that a read answers in `body`'s order while a
+    // projection offers `decoy`'s text; that assertion says nothing unless the
+    // two orders are actually different, which is asserted here rather than
+    // assumed from how the fixture was written.
+    let store = store();
+    let mut session = two_searchable_fields(&store);
+
+    assert_eq!(
+        ordered(
+            &mut session,
+            "SELECT * FROM notes ORDER BY search::score(body, 'quorum') DESC;",
+        ),
+        vec![RecordId::Int(1), RecordId::Int(2)],
+    );
+    assert_eq!(
+        ordered(
+            &mut session,
+            "SELECT * FROM notes ORDER BY search::score(decoy, 'quorum') DESC;",
+        ),
+        vec![RecordId::Int(2), RecordId::Int(1)],
+    );
+}
+
+#[test]
+fn a_projection_shadowing_the_searched_field_does_not_change_the_order() {
+    // Q-384. `plan::statement::ordered` refuses a projection because "the sort
+    // runs *after* it and may name what the projection produced rather than what
+    // the index holds", and `scored` copied that refusal — which is why the
+    // canonical ranked read, the one that projects a title and a score, gets no
+    // bound. The refusal's premise was never measured, so it is measured here,
+    // in the shape that discriminates: a projection that puts `decoy`'s text
+    // under the name `body`, which the sort key names.
+    //
+    // The answer is that a score does not read the projected value. It does not
+    // read the record's field at all on an index whose postings carry their
+    // payload: the number comes from the postings of the query's own terms and
+    // the record's identity, so there is nothing in it for a projection to
+    // change. Where a key *does* read the record — a path key, a `geo::distance`
+    // — the ordering stage overlays the source record beneath the projection for
+    // exactly this reason (Q-143).
+    let store = store();
+    let mut session = two_searchable_fields(&store);
+
+    let outcomes = session
+        .run("SELECT decoy AS body FROM notes ORDER BY search::score(body, 'quorum') DESC;")
+        .unwrap();
+    let records = outcomes[0].records().unwrap();
+
+    // The shadow is real: what the answer carries under `body` is `decoy`'s text
+    // and not the field the score was measured over. Without this the test could
+    // pass on a projection that quietly kept the original field.
+    assert_eq!(
+        field(&records[0].1, "body"),
+        &Value::String("quiet".to_owned()),
+    );
+    assert_eq!(
+        records.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+        vec![RecordId::Int(1), RecordId::Int(2)],
+        "the order followed the projected text rather than the indexed field",
+    );
+
+    // The same projection, ordered by the field whose text it offers, and the
+    // answer is the other way round. So the projection does not pin the order:
+    // this read is able to produce `[2, 1]`, and the assertion above is a
+    // statement about which field the key measured rather than about a fixture
+    // that could only ever answer one way.
+    assert_eq!(
+        ordered(
+            &mut session,
+            "SELECT decoy AS body FROM notes ORDER BY search::score(decoy, 'quorum') DESC;",
+        ),
+        vec![RecordId::Int(2), RecordId::Int(1)],
+    );
+}
+
+#[test]
+fn a_projection_dropping_the_searched_field_does_not_change_the_order() {
+    // The other half of the fixture the question named: a projection that drops
+    // the field the sort key reads, rather than replacing it. Same answer, and
+    // it is worth its own test because it fails through a different mechanism —
+    // a key evaluated against the projection alone would find nothing here, and
+    // an absence that scores as an absence makes every record tie, which is the
+    // silent reordering Q-143 was raised for.
+    let store = store();
+    let mut session = two_searchable_fields(&store);
+
+    let outcomes = session
+        .run("SELECT title FROM notes ORDER BY search::score(body, 'quorum') DESC;")
+        .unwrap();
+    let records = outcomes[0].records().unwrap();
+
+    let Value::Object(first) = &records[0].1 else {
+        panic!("not an object: {:?}", records[0].1);
+    };
+    assert!(!first.contains_key("body"), "the projection kept `body`");
+    assert_eq!(
+        records.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+        vec![RecordId::Int(1), RecordId::Int(2)],
+    );
+}

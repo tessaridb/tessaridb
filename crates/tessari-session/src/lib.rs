@@ -60,7 +60,7 @@ mod vector;
 
 pub use effect::{Effect, admits};
 pub use error::{Depended, Error, Result};
-pub use outcome::{AccessPath, Note, Outcome};
+pub use outcome::{AccessPath, Exactness, Nearest, Note, Outcome, Suggestion};
 pub use plan::Plan;
 pub use session::Session;
 pub use tessari_ql::Parameters;

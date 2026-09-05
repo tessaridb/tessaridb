@@ -597,6 +597,7 @@ impl Session<'_> {
                     records: answered.records,
                     plan: answered.plan,
                     notes: answered.notes,
+                    suggestion: answered.suggestion,
                     only: select.only.is_some(),
                 })
             }

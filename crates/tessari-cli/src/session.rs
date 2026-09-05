@@ -21,7 +21,7 @@
 
 use std::io::{BufRead, Write};
 
-use tessari_wire::Answer;
+use tessari_wire::{Answer, Exact, Suggested};
 
 use crate::render;
 use crate::store::Store;
@@ -257,6 +257,8 @@ fn report(out: &mut impl Write, answer: &Answer, shape: Shape) -> std::io::Resul
             names,
             notes,
             only: _,
+            exact,
+            suggestion,
         } => {
             // The trailer is the same either way, and deliberately so: how many
             // and by which path is the part an operator reads for the answer
@@ -269,12 +271,40 @@ fn report(out: &mut impl Write, answer: &Answer, shape: Shape) -> std::io::Resul
                     }
                 }
             }
-            writeln!(out, "({} record(s), via {path})", records.len())?;
+            // Silent when the answer is exact, which is nearly every read: a
+            // word printed on every line is a word nobody reads by the third
+            // one, and the trailer's job is to be worth reading. The two cases
+            // that carry something are both said — including the one the note
+            // channel cannot express at all, a node that never stated it.
+            let exactness = match exact {
+                Some(Exact::Yes) => "",
+                // The reason is not repeated here. It arrives on the next line
+                // as a note, and the trailer names the fact rather than
+                // explaining it twice in two shapes.
+                Some(Exact::No { .. }) => ", approximate",
+                None => ", exactness not stated",
+            };
+            writeln!(out, "({} record(s), via {path}{exactness})", records.len())?;
             // After the trailer, because a note is about the answer above it.
             // One line each and none at all for almost every read, which is what
             // makes a note worth reading when one appears.
             for note in notes {
                 writeln!(out, "note: {}", note.message)?;
+            }
+            // Silent for both of the states that have nothing to offer, on the
+            // same footing as an exact answer printing no word about exactness.
+            // The console prints the correction and does NOT re-run anything
+            // with it: what a reader does with "did you mean" is a decision only
+            // the reader can take, and a shell that quietly answers a different
+            // question is the failure this whole field exists to prevent.
+            if let Some(Suggested::DidYouMean(corrections)) = suggestion {
+                for correction in corrections {
+                    writeln!(
+                        out,
+                        "did you mean: {} -> {}",
+                        correction.typed, correction.instead
+                    )?;
+                }
             }
             Ok(())
         }

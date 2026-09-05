@@ -174,7 +174,8 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::VectorCosine
         | Function::VectorEuclidean
         | Function::VectorDot
-        | Function::SearchScore => None,
+        | Function::SearchScore
+        | Function::SearchHighlight => None,
     }
 }
 
@@ -195,6 +196,20 @@ pub(super) enum Comparison {
     Prefix,
     /// `<path> MATCHES '<text>'`
     Terms,
+    /// `<path> MATCHES PREFIX '<text>'`
+    ///
+    /// Separate from [`Comparison::Terms`] because it is served by a different
+    /// structure: the term dictionary is walked to find which words the query
+    /// reaches, and only then are their posting lists read.
+    PrefixTerms,
+    /// `<path> MATCHES FUZZY '<text>'`
+    ///
+    /// Served by the same structure as [`Comparison::PrefixTerms`] and kept
+    /// apart from it because the walk is not the same walk: it reads every term
+    /// sharing the query's mandatory prefix and keeps only those inside the edit
+    /// budget, so what it reads and what it returns are two numbers rather than
+    /// one.
+    FuzzyTerms,
     /// `<path> < <constant>`, and the other three orderings.
     Range,
 }
@@ -247,6 +262,8 @@ pub(super) fn seekable(condition: &Expr) -> Vec<Seek<'_>> {
                 BinaryOp::Equal => Comparison::Equality,
                 BinaryOp::Like => Comparison::Prefix,
                 BinaryOp::Matches => Comparison::Terms,
+                BinaryOp::MatchesPrefix => Comparison::PrefixTerms,
+                BinaryOp::MatchesFuzzy => Comparison::FuzzyTerms,
                 // The four orderings are a bounded scan over the ordered index,
                 // which is safe because byte order **is** value order
                 // (`docs/key-grammar.md` §1).

@@ -75,6 +75,9 @@ mod tests {
             Shape::Equality => Served::Equality(vec![Value::from("x")]),
             Shape::Prefix => Served::Prefix("x".to_owned()),
             Shape::Terms => Served::Terms(vec!["x".to_owned()]),
+            Shape::PrefixTerms => Served::PrefixTerms(vec![vec!["x".to_owned()]]),
+            Shape::FuzzyTerms => Served::FuzzyTerms(vec![vec!["x".to_owned()]]),
+            Shape::AnyTerms => Served::AnyTerms(vec![vec!["x".to_owned()]]),
             Shape::Range => Served::Range {
                 fixed: Vec::new(),
                 lower: Some(Value::from("a")),
@@ -93,7 +96,10 @@ mod tests {
             index: index(
                 name,
                 shape == Shape::Equality && rows != Rows::Unknown,
-                shape == Shape::Terms,
+                matches!(
+                    shape,
+                    Shape::Terms | Shape::PrefixTerms | Shape::FuzzyTerms | Shape::AnyTerms
+                ),
             ),
             rows,
         }

@@ -87,6 +87,27 @@ const BOUND_UNBOUNDED: u8 = 0;
 const BOUND_INCLUDED: u8 = 1;
 const BOUND_EXCLUDED: u8 = 2;
 
+/// The text of a lone encoded string, when that is what these bytes are.
+///
+/// The one direction of this encoding that **is** reversible, and the asymmetry
+/// is worth stating because the type around it is documented as opaque. What
+/// destroys reversibility is the number encoding: `1`, `1.0` and decimal `1.00`
+/// are normalised to the same bytes, so no reader can say which was written. A
+/// string is written as its own bytes under a byte-local escape and comes back
+/// exactly — nothing is normalised away.
+///
+/// `None` for anything else, including a string followed by a second value: a
+/// caller wanting the term of a search index is asking about a lone string, and
+/// answering with the first of several would hand back a term nobody stored.
+pub(crate) fn lone_string(bytes: &[u8]) -> Option<String> {
+    let mut reader = KeyReader::new(crate::kind::KeyKind::SearchTerm, bytes);
+    if reader.take_u8().ok()? != TAG_STRING {
+        return None;
+    }
+    let text = String::from_utf8(reader.take_variable().ok()?).ok()?;
+    (reader.take_u8().ok()? == END && reader.finish().is_ok()).then_some(text)
+}
+
 /// Append the bytes every encoded string beginning with `prefix` starts with.
 ///
 /// The tag and the escaped body, and nothing else: no terminator, no end

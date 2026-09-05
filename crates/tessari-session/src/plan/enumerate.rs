@@ -1,5 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use tessari_constants::{
+    SEARCH_FUZZY_EXPANSION_CAP, SEARCH_FUZZY_MAX_EDITS, SEARCH_FUZZY_PREFIX,
+    SEARCH_PREFIX_EXPANSION_CAP,
+};
 use tessari_geo::{Cell, Shape as Geometry};
 use tessari_ql::{BinaryOp, Expr};
 use tessari_storage::{IndexDefinition, Transaction};
@@ -145,26 +149,166 @@ impl Session<'_> {
                     else {
                         continue;
                     };
-                    let terms = analyzer.terms(query);
-                    if terms.is_empty() {
+                    // Not `analyzer.terms(query)`: a phrase's wrapper, its slop
+                    // marker and the boolean operators are not terms, and asking
+                    // the dictionary for them returns an empty candidate set for
+                    // a query the scan answers. The index and the predicate must
+                    // ask the same question of the same string, so both call the
+                    // one function that reads the query's shape.
+                    let groups = match crate::search::asked(analyzer, query) {
+                        // A phrase's terms all have to be present before their
+                        // order can matter, so the candidate set is the same
+                        // intersection an unquoted conjunction asks for and the
+                        // predicate settles the order.
+                        crate::search::Asked::Phrase { terms, .. } => {
+                            terms.into_iter().map(|term| vec![term]).collect()
+                        }
+                        // The excluded terms are dropped here on purpose: an
+                        // index enumerates presence, so what it can produce is
+                        // the records the required groups reach — a superset,
+                        // which the condition then refines as it does every
+                        // other candidate.
+                        crate::search::Asked::Boolean { required, .. } => required,
+                    };
+                    if groups.is_empty() {
+                        continue;
+                    }
+                    // A query with no `OR` is a conjunction of single terms, and
+                    // saying so keeps `EXPLAIN` reporting `terms` for every query
+                    // that could be written before this one could.
+                    let plain = groups.iter().all(|group| group.len() == 1);
+                    for index in serving(declared, seek.path, true) {
+                        // The intersection cannot be larger than the smallest of
+                        // the groups, and a group is no larger than the sum of
+                        // its terms' postings. A document frequency is a count of
+                        // keys rather than a set of decoded ids, so this ceiling
+                        // is real and cheap. Were it expensive, a search
+                        // candidate would have to rank by shape like the others.
+                        let mut smallest = u64::MAX;
+                        for group in &groups {
+                            let mut reach: u64 = 0;
+                            for term in group {
+                                let held = transaction.document_frequency(index, term)?;
+                                reach = reach.saturating_add(held);
+                            }
+                            smallest = smallest.min(reach);
+                        }
+                        let served = if plain {
+                            Served::Terms(groups.iter().flatten().cloned().collect())
+                        } else {
+                            Served::AnyTerms(groups.clone())
+                        };
+                        offered.push(Candidate {
+                            served,
+                            index: (*index).clone(),
+                            rows: Rows::AtMost(smallest),
+                        });
+                    }
+                }
+                Comparison::PrefixTerms | Comparison::FuzzyTerms => {
+                    let (Value::String(query), Some(analyzer)) =
+                        (bound, searched.analyzer(seek.path))
+                    else {
+                        continue;
+                    };
+                    let fuzzy = seek.comparison == Comparison::FuzzyTerms;
+                    let asked = analyzer.prefixes(query);
+                    if asked.is_empty() {
                         continue;
                     }
                     for index in serving(declared, seek.path, true) {
-                        // The intersection of the postings cannot be larger than
-                        // the smallest of them, and a document frequency is a
-                        // count of keys rather than a set of decoded ids — so
-                        // this ceiling is real and cheap. Were it expensive, a
-                        // search candidate would have to rank by shape like the
-                        // others.
-                        let mut smallest = u64::MAX;
-                        for term in &terms {
-                            let held = transaction.document_frequency(index, term)?;
-                            smallest = smallest.min(held);
+                        // Every word is expanded before any candidate is
+                        // offered, because one word reaching past the cap
+                        // decides the whole read: the answer is a conjunction,
+                        // so an index that cannot enumerate one of its parts
+                        // cannot serve it at all.
+                        //
+                        // Past the cap the candidate is **not offered** and the
+                        // scan answers. It is not a refusal, deliberately: a cap
+                        // that refused would make a statement run on a table
+                        // with no index and fail on the same table once somebody
+                        // added one, which is the failure the access-path rule
+                        // exists to prevent.
+                        let mut expansions = Vec::with_capacity(asked.len());
+                        let mut ceiling: u64 = u64::MAX;
+                        let mut serviceable = true;
+                        for alternatives in &asked {
+                            let mut reached: BTreeSet<String> = BTreeSet::new();
+                            for spelling in alternatives {
+                                // The two walks read the same dictionary and
+                                // differ in what they keep, which is why the cap
+                                // they answer to is a different number: a prefix
+                                // expansion's size is chosen by the reader
+                                // typing fewer letters, a fuzzy one's by the
+                                // corpus.
+                                let found = if fuzzy {
+                                    transaction.terms_within_distance(
+                                        index,
+                                        spelling,
+                                        SEARCH_FUZZY_MAX_EDITS,
+                                        SEARCH_FUZZY_PREFIX,
+                                        SEARCH_FUZZY_EXPANSION_CAP,
+                                    )?
+                                } else {
+                                    transaction.terms_with_prefix(
+                                        index,
+                                        spelling,
+                                        SEARCH_PREFIX_EXPANSION_CAP,
+                                    )?
+                                };
+                                if found.capped {
+                                    serviceable = false;
+                                    break;
+                                }
+                                reached.extend(found.terms);
+                            }
+                            // The alternatives overlap — a word and its stem
+                            // share a beginning — so the union is deduplicated
+                            // before it is measured against the cap, and a word
+                            // is judged by how many distinct terms it actually
+                            // reaches rather than by how many times it was
+                            // asked.
+                            let ceiling_terms = if fuzzy {
+                                SEARCH_FUZZY_EXPANSION_CAP
+                            } else {
+                                SEARCH_PREFIX_EXPANSION_CAP
+                            };
+                            if !serviceable || reached.len() > ceiling_terms {
+                                serviceable = false;
+                                break;
+                            }
+                            if reached.is_empty() {
+                                // A word nothing begins with makes the whole
+                                // conjunction empty, and the index can say so
+                                // without reading a single posting.
+                                expansions.clear();
+                                expansions.push(Vec::new());
+                                ceiling = 0;
+                                break;
+                            }
+                            // The union of these postings is at most their sum,
+                            // and the intersection across words is at most the
+                            // smallest union. Both are counts of keys rather
+                            // than sets of ids, so the ceiling stays cheap.
+                            let mut union: u64 = 0;
+                            for term in &reached {
+                                union = union
+                                    .saturating_add(transaction.document_frequency(index, term)?);
+                            }
+                            ceiling = ceiling.min(union);
+                            expansions.push(reached.into_iter().collect());
+                        }
+                        if !serviceable {
+                            continue;
                         }
                         offered.push(Candidate {
-                            served: Served::Terms(terms.clone()),
+                            served: if fuzzy {
+                                Served::FuzzyTerms(expansions)
+                            } else {
+                                Served::PrefixTerms(expansions)
+                            },
                             index: (*index).clone(),
-                            rows: Rows::AtMost(smallest),
+                            rows: Rows::AtMost(ceiling),
                         });
                     }
                 }

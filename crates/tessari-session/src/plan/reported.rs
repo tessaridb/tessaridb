@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 
 use tessari_types::{Number, Value};
 
-use crate::outcome::AccessPath;
+use crate::outcome::{AccessPath, Exactness};
 
 /// What a read does, or what it would do.
 ///
@@ -63,6 +63,12 @@ pub struct Plan {
     pub cells: Option<u64>,
     /// The ceiling the choice promises, where it promises one.
     pub at_most: Option<u64>,
+    /// Whether the records are provably the ones the question names.
+    ///
+    /// Derived from [`Self::access`] rather than set here, so that `EXPLAIN` and
+    /// the read cannot disagree about it and a path added later cannot forget
+    /// it. See [`AccessPath::exactness`].
+    pub exact: Exactness,
 }
 
 impl Plan {
@@ -78,6 +84,7 @@ impl Plan {
             columns: None,
             cells: None,
             at_most: None,
+            exact: access.exactness(),
         }
     }
 
@@ -96,10 +103,25 @@ impl Plan {
     /// Absent rather than null for a field this read had no answer for, so the
     /// object a scan produces is the two keys it actually knows rather than
     /// eight keys of which six say nothing.
+    ///
+    /// **`exact` is the one exception and the exception is the point.** It is
+    /// written on every plan, including — especially — when it is `true`. A
+    /// field that appears only when it is interesting teaches a reader that its
+    /// absence means the dull value, and here the dull value is a claim: that
+    /// the answer is provably the one the question names. That inference is
+    /// exactly what a returned exactness exists to make unnecessary, so the
+    /// field is never absent and never has to be inferred.
+    ///
+    /// `inexact` follows the ordinary rule, because it genuinely is absent
+    /// rather than dull: an exact answer has no reason to give.
     #[must_use]
     pub fn to_value(&self) -> Value {
         let mut plan = BTreeMap::new();
         plan.insert("access".to_owned(), Value::from(self.access.name()));
+        plan.insert("exact".to_owned(), Value::Bool(self.exact.is_exact()));
+        if let Some(why) = self.exact.reason() {
+            plan.insert("inexact".to_owned(), Value::from(why));
+        }
         if let Some(source) = self.source {
             plan.insert("source".to_owned(), Value::from(source));
         }

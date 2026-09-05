@@ -9,7 +9,7 @@ use core::ops::Bound;
 use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_constants::ORDERED_FILTER_REACH;
-use tessari_encoding::Direction as AdjacencyDirection;
+use tessari_encoding::{Direction as AdjacencyDirection, Posting};
 use tessari_ql::{
     BinaryOp, DeleteBound, Direction, Expr, ExprKind, FieldPath, Function, Hop, JoinSide,
     Projected, Projection, RecordTarget, Select, Source, Span, TableRef, Using,
@@ -30,11 +30,13 @@ use crate::consume::Consumer;
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::noticed::Noticed;
-use crate::outcome::{AccessPath, Note};
+use crate::outcome::{AccessPath, Note, Suggestion};
 use crate::plan;
 use crate::plan::Plan;
-use crate::rank::{Corpus, score};
-use crate::search::{Searched, matches_terms};
+use crate::rank::{self, Held, score};
+use crate::search::{
+    Ranked, Searched, marked, matches_fuzzy_terms, matches_prefix_terms, matches_terms,
+};
 use crate::session::Session;
 
 /// How many of an index's leading values an index-served order compares.
@@ -158,6 +160,14 @@ impl Session<'_> {
                 if *function == Function::SearchScore {
                     return self.rank(transaction, arguments, scope, *span);
                 }
+                // And the third. A highlight needs the field's analyzer and what
+                // this read asked of that field — neither of which is a value,
+                // and the second of which is the whole point: the marks come
+                // from the query the statement ran, not from one the projection
+                // repeated.
+                if *function == Function::SearchHighlight {
+                    return self.highlight(transaction, arguments, scope);
+                }
                 let arguments = self.values(transaction, arguments, scope)?;
                 call(*function, &arguments, *span)
             }
@@ -186,12 +196,13 @@ impl Session<'_> {
                     };
                     let analyzer = scope.analyzer(&field.path);
                     let held = field.path.reach(record);
-                    return Ok(Value::Bool(held.into_iter().any(|value| {
-                        if *op == BinaryOp::Matches {
-                            matches_terms(analyzer, value, &other)
-                        } else {
+                    return Ok(Value::Bool(held.into_iter().any(|value| match *op {
+                        BinaryOp::Matches => matches_terms(analyzer, value, &other),
+                        BinaryOp::MatchesPrefix => matches_prefix_terms(analyzer, value, &other),
+                        BinaryOp::MatchesFuzzy => matches_fuzzy_terms(analyzer, value, &other),
+                        held_op => {
                             scope.compared(value, &other);
-                            apply(*op, value, &other)
+                            apply(held_op, value, &other)
                         }
                     })));
                 }
@@ -200,12 +211,19 @@ impl Session<'_> {
                 // analyzer turns this field's text into terms is a property of
                 // the field, so that both a scan and an index ask the same
                 // question of it.
-                if *op == BinaryOp::Matches {
+                if matches!(
+                    *op,
+                    BinaryOp::Matches | BinaryOp::MatchesPrefix | BinaryOp::MatchesFuzzy
+                ) {
                     let analyzer = match &left.kind {
                         ExprKind::Path(field) => scope.analyzer(&field.path),
                         _ => None,
                     };
-                    return Ok(Value::Bool(matches_terms(analyzer, &held, &other)));
+                    return Ok(Value::Bool(match *op {
+                        BinaryOp::MatchesPrefix => matches_prefix_terms(analyzer, &held, &other),
+                        BinaryOp::MatchesFuzzy => matches_fuzzy_terms(analyzer, &held, &other),
+                        _ => matches_terms(analyzer, &held, &other),
+                    }));
                 }
                 // Beside the comparison rather than inside it: what an operator
                 // means once both sides are values belongs to `tessari_types`,
@@ -366,8 +384,11 @@ impl Session<'_> {
             // Tested against the whole condition, exactly as a read is: the
             // index narrowed, and the condition decides. A delete that trusted
             // the narrowing would remove records the statement did not name.
-            let held =
-                self.evaluate_in(transaction, condition, Scope::searching(&record, &searched))?;
+            let held = self.evaluate_in(
+                transaction,
+                condition,
+                Scope::searching(&record, &searched).identified(&record_id),
+            )?;
             if !boolean(&held, condition.span)? {
                 continue;
             }
@@ -489,6 +510,7 @@ impl Session<'_> {
                 records,
                 plan,
                 notes,
+                suggestion: searched.suggestion(),
             });
         }
 
@@ -535,10 +557,9 @@ impl Session<'_> {
         } else if let Some(wanted) = self.shaped(transaction, select)? {
             let mut projected = Vec::with_capacity(records.len());
             for (id, record) in records {
-                projected.push((
-                    id,
-                    self.project(transaction, &record, &wanted, &searched, &noticed)?,
-                ));
+                let shaped =
+                    self.project(transaction, &id, &record, &wanted, &searched, &noticed)?;
+                projected.push((id, shaped));
             }
             projected
         } else {
@@ -594,6 +615,7 @@ impl Session<'_> {
             records,
             plan,
             notes,
+            suggestion: searched.suggestion(),
         })
     }
 
@@ -672,6 +694,7 @@ impl Session<'_> {
     pub(crate) fn project(
         &self,
         transaction: &mut Transaction<'_>,
+        id: &RecordId,
         record: &Value,
         wanted: &Shaped,
         searched: &Searched,
@@ -732,7 +755,9 @@ impl Session<'_> {
             let held = self.evaluate_in(
                 transaction,
                 &value.value,
-                Scope::searching(record, searched).noticing(noticed),
+                Scope::searching(record, searched)
+                    .identified(id)
+                    .noticing(noticed),
             )?;
             if held.is_present() {
                 projected.insert(value.name.text.clone(), held);
@@ -746,6 +771,57 @@ impl Session<'_> {
     /// The first argument must be a **path**: a score is measured against the
     /// statistics of one indexed field, and an arbitrary expression names no
     /// field to have statistics for. Refusing that is refusing to guess.
+    /// Where in this record's text the read's own query matched, as an ordered
+    /// array of `{ start, end }` byte ranges.
+    ///
+    /// # Everything here answers `[]` rather than refusing
+    ///
+    /// A highlight is a projection, not a filter: it decorates records some
+    /// other clause already chose. So a field with no declared analyzer, a
+    /// record holding no text there, and a field nobody asked about all answer
+    /// *no marks* — which is the true answer in each case, and is what lets one
+    /// `search::highlight(body)` be written over a table whose records do not
+    /// all carry a body.
+    ///
+    /// That is the opposite of [`rank`](Self::rank), which refuses, and the
+    /// difference is real rather than a style choice: a score with nothing to
+    /// measure against has no honest number, while a highlight with nothing to
+    /// mark has an honest answer and it is the empty one.
+    fn highlight(
+        &self,
+        transaction: &mut Transaction<'_>,
+        arguments: &[Expr],
+        scope: Scope<'_>,
+    ) -> Result<Value> {
+        let none = Ok(Value::Array(Vec::new()));
+        let Some(first) = arguments.first() else {
+            return none;
+        };
+        // The argument is the field, and the field is where both the analyzer
+        // and the recorded query are found — so an expression that is not a path
+        // names neither and marks nothing.
+        let ExprKind::Path(field) = &first.kind else {
+            return none;
+        };
+        let Some(analyzer) = scope.analyzer(&field.path) else {
+            return none;
+        };
+        let Value::String(text) = self.evaluate_in(transaction, first, scope)? else {
+            return none;
+        };
+        Ok(Value::Array(
+            marked(analyzer, &text, scope.wanted(&field.path))
+                .into_iter()
+                .map(|bytes| {
+                    Value::Object(BTreeMap::from([
+                        ("start".to_owned(), at(bytes.start)),
+                        ("end".to_owned(), at(bytes.end)),
+                    ]))
+                })
+                .collect(),
+        ))
+    }
+
     fn rank(
         &self,
         transaction: &mut Transaction<'_>,
@@ -753,7 +829,12 @@ impl Session<'_> {
         scope: Scope<'_>,
         span: Span,
     ) -> Result<Value> {
-        let (Some(first), Some(second)) = (arguments.first(), arguments.get(1)) else {
+        // The query is the second argument and it is deliberately **not**
+        // evaluated here. It was evaluated and analysed once, while the corpus
+        // was resolved, and doing it again per scored record is half of the cost
+        // this function used to carry. Its presence is still what makes the call
+        // a score rather than a mistake.
+        let (Some(first), Some(_query)) = (arguments.first(), arguments.get(1)) else {
             return Ok(Value::None);
         };
         let ExprKind::Path(field) = &first.kind else {
@@ -765,17 +846,68 @@ impl Session<'_> {
         // Refused before either argument is evaluated: there is nothing to
         // measure against, so evaluating them would be work done to reach a
         // conclusion already known.
-        let (Some(corpus), Some(analyzer)) =
-            (scope.corpus(&field.path), scope.analyzer(&field.path))
-        else {
+        //
+        // The record's identity is part of that. A row with none is a row no
+        // index holds — a join's pair, a fold's result — so there are no postings
+        // to read and no honest number to return, which is the same refusal for
+        // the same reason.
+        let (Some(ranked), Some(analyzer), Some(id)) = (
+            scope.ranked(&field.path),
+            scope.analyzer(&field.path),
+            scope.id,
+        ) else {
             return Err(Error::NoSearchIndex {
                 field: field.path.to_string(),
                 span,
             });
         };
+        let corpus = &ranked.corpus;
+
+        // The record's two numbers, read from the postings the writer already
+        // put them in. `None` is the term not posted against this record, which
+        // scores nothing — reached without touching the record at all.
+        //
+        // Every posting of one record carries the same length, written by one
+        // analysis in one batch, so the last one read is as good as any. A record
+        // holding none of the asked terms leaves it at zero, which changes
+        // nothing: with no occurrences there is no term for the length to divide.
+        let mut occurrences = BTreeMap::new();
+        let mut length = 0_u32;
+        let mut membership = false;
+        for term in corpus.terms.keys() {
+            match transaction.posting(&ranked.index, term, id)? {
+                None => {}
+                Some(Posting::Counted {
+                    frequency,
+                    length: tokens,
+                }) => {
+                    occurrences.insert(term.clone(), frequency);
+                    length = tokens;
+                }
+                // An index written before postings carried a payload. It knows
+                // the term is here and not how often, so the numbers come from
+                // the text — the old cost, paid only by an old index, exactly as
+                // `document_frequency` falls through to its count.
+                Some(Posting::Membership) => {
+                    membership = true;
+                    break;
+                }
+            }
+        }
+        if !membership {
+            return Ok(score(corpus, &Held::counted(occurrences, length)));
+        }
         let held = self.evaluate_in(transaction, first, scope)?;
-        let wanted = self.evaluate_in(transaction, second, scope)?;
-        Ok(score(corpus, analyzer, &held, &wanted))
+        let Value::String(text) = held else {
+            // Not text: it holds none of the words, which scores zero. The same
+            // answer a document of the wrong shape gets from `MATCHES`, in the
+            // ranking's own terms.
+            return Ok(score(corpus, &Held::default()));
+        };
+        Ok(score(
+            corpus,
+            &Held::analysed(analyzer, &text, &corpus.asked),
+        ))
     }
 
     /// What resolving a source establishes before it produces a record.
@@ -914,7 +1046,9 @@ impl Session<'_> {
                     let held = self.evaluate_in(
                         transaction,
                         condition,
-                        Scope::searching(&record, &searched).noticing(reporting.noticed),
+                        Scope::searching(&record, &searched)
+                            .identified(&id)
+                            .noticing(reporting.noticed),
                     )?;
                     if boolean(&held, condition.span)? {
                         kept.push((id, record));
@@ -983,6 +1117,27 @@ impl Session<'_> {
                             hand_over(found, transaction, consumer)?;
                             return Ok(Plan {
                                 shape: Some("nearest"),
+                                index: Some(index),
+                                ..over(AccessPath::Ordered)
+                            });
+                        }
+                        Walked::Declined => reporting.collected.push(Note::FellBack {
+                            from: AccessPath::Ordered,
+                            to: AccessPath::Scan,
+                        }),
+                        Walked::NotServed => {}
+                    }
+                }
+                // A bounded order by how well a record answers a query, over a
+                // field carrying a search index. Exact, and for the same reason
+                // the walk above is: the records it does not read are records it
+                // has shown cannot reach the answer.
+                if let Some(scored) = plan::scored(select) {
+                    match self.walk_scored(transaction, context, id, &scored, searched)? {
+                        Walked::Served { found, index } => {
+                            hand_over(found, transaction, consumer)?;
+                            return Ok(Plan {
+                                shape: Some("scored"),
                                 index: Some(index),
                                 ..over(AccessPath::Ordered)
                             });
@@ -1122,7 +1277,9 @@ impl Session<'_> {
                     let held = self.evaluate_in(
                         transaction,
                         condition,
-                        Scope::searching(&record, searched).noticing(reporting.noticed),
+                        Scope::searching(&record, searched)
+                            .identified(&id)
+                            .noticing(reporting.noticed),
                     )?;
                     if boolean(&held, condition.span)?
                         && consumer.take(transaction, id, record)?.is_break()
@@ -1504,6 +1661,201 @@ impl Session<'_> {
         })
     }
 
+    /// A bounded read ordered by how well a record answers a query.
+    ///
+    /// # The candidate set is the answer's, and the rest of the table is pruned
+    ///
+    /// A record holding none of the query's words scores zero, so the records
+    /// that can fill a `LIMIT k` are the ones the index posts against at least
+    /// one of those words. The scan reaches the same answer by scoring every
+    /// record in the table and discarding the zeros.
+    ///
+    /// Which terms are worth enumerating is then decided between them, and this
+    /// is where the stored extremes earn their keep. The terms are taken in
+    /// descending order of the most they can contribute, and the remaining
+    /// suffix is abandoned once its **combined** bound falls below the score
+    /// already held in `k`th place: a record holding only those terms cannot
+    /// score above that suffix's sum, so it cannot reach the answer, so its
+    /// postings are never read. On a query pairing a rare word with a common one
+    /// that is the common word's whole posting list.
+    ///
+    /// The threshold is strict — `sum < kth` rather than `<=` — so a record the
+    /// suffix excludes scores strictly below the `k`th, and cannot tie with it
+    /// either.
+    ///
+    /// # What it hands back, and why not the top `k`
+    ///
+    /// The whole candidate set, for the ordering stage to sort exactly as it
+    /// sorts a scan's. Selecting the `k` best here would mean implementing that
+    /// stage's comparison a second time — and it is a **total** order, ties
+    /// broken by record id (see [`crate::shape`]), precisely so that which access
+    /// path ran cannot reorder equal rows. A second copy of it would agree until
+    /// somebody edited one of them.
+    ///
+    /// Which is also why the order these candidates are produced in does not
+    /// matter, and why nothing here sorts them.
+    ///
+    /// # Declining
+    ///
+    /// Fewer candidates than the read wants means the answer is filled out with
+    /// records that hold none of the query's words. Their order among themselves
+    /// is the scan's, so the scan is the read that can produce it.
+    fn walk_scored(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: crate::context::Context,
+        table: TableId,
+        wanted: &plan::Scored<'_>,
+        searched: &crate::search::Searched,
+    ) -> Result<Walked> {
+        // A read wanting nothing has nothing to prune against — `best[0]` below
+        // is the score in last place, and there is no last place in an empty
+        // answer.
+        if wanted.wanted == 0 {
+            return Ok(Walked::NotServed);
+        }
+        let Some(ranked) = searched.ranked(wanted.field) else {
+            return Ok(Walked::NotServed);
+        };
+        let Some(visible) = self.index_serving_score(transaction, context, table, wanted.field)?
+        else {
+            return Ok(Walked::NotServed);
+        };
+        let corpus = &ranked.corpus;
+
+        // A term written twice in a query weighs twice, so its bound is twice as
+        // large. Counting the multiset here rather than deduplicating it keeps
+        // the bound above the score it bounds.
+        let mut terms = Vec::new();
+        for term in corpus.terms.keys() {
+            let repeats = corpus.asked.iter().filter(|asked| *asked == term).count();
+            // A term this build cannot bound is a term the walk may not prune,
+            // and no suffix containing it is bounded either. Handing the read
+            // back rather than walking the postings unpruned is not caution: a
+            // union of posting lists is read one record at a time, and over a
+            // word most of the table holds that is measurably **more** work than
+            // the scan it was standing in for.
+            let Some(one) = rank::bound(corpus, term) else {
+                return Ok(Walked::NotServed);
+            };
+            terms.push((term, one * as_count(repeats)));
+        }
+        terms.sort_by(|left, right| right.1.total_cmp(&left.1));
+        // `suffix[at]` is the most everything from `at` onward could contribute,
+        // accumulated from the back so the walk can ask, at each term, what the
+        // whole remaining tail is worth.
+        let mut suffix = Vec::with_capacity(terms.len().saturating_add(1));
+        let mut running = 0.0_f64;
+        suffix.push(running);
+        for (_, one) in terms.iter().rev() {
+            running += one;
+            suffix.push(running);
+        }
+        suffix.reverse();
+
+        let mut candidates = BTreeMap::new();
+        let mut best: Vec<f64> = Vec::new();
+        for (at, (term, _)) in terms.iter().enumerate() {
+            if best.len() >= wanted.wanted && suffix[at] < best[0] {
+                break;
+            }
+            for id in transaction.records_with_term(&ranked.index, term)? {
+                let address = RecordAddress::new(context.namespace, context.database, table, id);
+                let Some(payload) = transaction.get(&address)? else {
+                    continue;
+                };
+                if candidates.insert(address.id.clone(), payload).is_some() {
+                    continue;
+                }
+                // A posting written before it carried a payload. Its numbers are
+                // in the record's text, and re-analysing it here would be the
+                // scan's own work paid inside the walk that exists to avoid it —
+                // so the read goes back to the scan rather than losing its
+                // threshold and finishing as an unpruned union.
+                let Some(held) =
+                    self.scored_from_postings(transaction, ranked, corpus, &address.id)?
+                else {
+                    return Ok(Walked::NotServed);
+                };
+                keep_best(&mut best, rank::scored(corpus, &held), wanted.wanted);
+            }
+        }
+        if candidates.len() < wanted.wanted {
+            return Ok(Walked::Declined);
+        }
+        Ok(Walked::Served {
+            found: self.records_of(candidates.into_iter().collect(), &visible)?,
+            index: ranked.index.name.clone(),
+        })
+    }
+
+    /// One candidate's score, read from the postings alone.
+    ///
+    /// `None` is a posting that predates the payload, which says the term is
+    /// there and not how often. Only the record's own text answers then, and
+    /// re-analysing it here would be the scan's cost paid inside the walk that
+    /// exists to avoid it — so the caller stops pruning instead.
+    fn scored_from_postings(
+        &self,
+        transaction: &mut Transaction<'_>,
+        ranked: &crate::search::Ranked,
+        corpus: &rank::Corpus,
+        id: &RecordId,
+    ) -> Result<Option<rank::Held>> {
+        let mut occurrences = BTreeMap::new();
+        let mut length = 0_u32;
+        for term in corpus.terms.keys() {
+            match transaction.posting(&ranked.index, term, id)? {
+                None => {}
+                Some(Posting::Counted {
+                    frequency,
+                    length: tokens,
+                }) => {
+                    occurrences.insert(term.clone(), frequency);
+                    length = tokens;
+                }
+                Some(Posting::Membership) => return Ok(None),
+            }
+        }
+        Ok(Some(rank::Held::counted(occurrences, length)))
+    }
+
+    /// Whether a search index can serve a ranked read of this field, and what
+    /// the caller may see of the table.
+    ///
+    /// The corpus resolution already found the index — this asks the questions
+    /// that are about the *read* rather than about the field, and it asks them
+    /// in one place so the executor and `EXPLAIN` cannot come to disagree, the
+    /// same reason [`Evaluator::index_serving_place`] gathers its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read.
+    pub(crate) fn index_serving_score(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: crate::context::Context,
+        table: TableId,
+        path: &tessari_types::Path,
+    ) -> Result<Option<crate::redact::Visible>> {
+        let visible = self.visible_in(transaction, table)?;
+        if visible
+            .as_ref()
+            .is_some_and(|fields| !fields.contains(path.root()))
+        {
+            return Ok(None);
+        }
+        // Uncommitted writes are not in the postings, so a walk over them would
+        // answer without the records this transaction itself just wrote.
+        if transaction.writes_in(context.namespace, context.database, table) {
+            return Ok(None);
+        }
+        if !transaction.indexes_are_current()? {
+            return Ok(None);
+        }
+        Ok(Some(visible))
+    }
+
     /// The spatial index that may serve an order by distance from this field,
     /// with the caller's field visibility.
     ///
@@ -1702,7 +2054,7 @@ impl Session<'_> {
             };
             let mut matched = Vec::new();
             for (id, record) in self.records_of(found, &visible)? {
-                let held = self.evaluate_in(transaction, condition, scope.with(&record))?;
+                let held = self.evaluate_in(transaction, condition, scope.with(&id, &record))?;
                 if boolean(&held, condition.span)? {
                     matched.push((id, record));
                 }
@@ -1847,6 +2199,23 @@ impl Session<'_> {
             plan::Served::Terms(terms) => {
                 let mut rows = Vec::new();
                 for id in transaction.records_by_terms(&chosen.index, terms)? {
+                    let at = RecordAddress::new(context.namespace, context.database, table, id);
+                    if let Some(payload) = transaction.get(&at)? {
+                        rows.push((at.id, payload));
+                    }
+                }
+                Ok(rows)
+            }
+            // One arm for three variants: a union of posting lists per group,
+            // intersected across groups, is one read however the groups were
+            // arrived at — a prefix walk, a fuzzy walk, or the `OR`s somebody
+            // wrote. They stay separate variants so `EXPLAIN` can still say
+            // which question produced them.
+            plan::Served::PrefixTerms(expansions)
+            | plan::Served::FuzzyTerms(expansions)
+            | plan::Served::AnyTerms(expansions) => {
+                let mut rows = Vec::new();
+                for id in transaction.records_by_expansions(&chosen.index, expansions)? {
                     let at = RecordAddress::new(context.namespace, context.database, table, id);
                     if let Some(payload) = transaction.get(&at)? {
                         rows.push((at.id, payload));
@@ -2372,6 +2741,13 @@ pub(crate) struct Answered {
     pub plan: Plan,
     /// What the read did that the records do not show.
     pub notes: Vec<Note>,
+    /// What the query might have meant, when it named a term nothing holds.
+    ///
+    /// Carried from the searched context rather than computed here, because it
+    /// is a fact about the query and the collection and not about the read: it
+    /// is resolved before an access path exists, so that planning a read
+    /// differently cannot give it a different suggestion.
+    pub suggestion: Option<Suggestion>,
 }
 
 /// The note a materialised read owes, when it reached the ceiling it stated.
@@ -2667,6 +3043,28 @@ fn hand_over(
     Ok(())
 }
 
+/// Remember one score if it is among the best `wanted` seen so far.
+///
+/// Kept ascending and capped, so `best[0]` is the score in last place — the
+/// threshold a pruning walk compares a term suffix against. A shorter list is a
+/// read that has not yet seen enough records to have a last place, which is why
+/// the caller checks the length before reading the front.
+fn keep_best(best: &mut Vec<f64>, score: f64, wanted: usize) {
+    if best.len() >= wanted && score <= best[0] {
+        return;
+    }
+    let at = best.partition_point(|seen| *seen < score);
+    best.insert(at, score);
+    if best.len() > wanted {
+        best.remove(0);
+    }
+}
+
+/// A count of repeats as a weight, without an `as` cast.
+fn as_count(repeats: usize) -> f64 {
+    f64::from(u32::try_from(repeats).unwrap_or(u32::MAX))
+}
+
 /// Whether the stages left between the source and the answer are all per-record.
 ///
 /// Two are not, and both keep the collecting path: a `FETCH` batches every
@@ -2783,6 +3181,19 @@ pub(crate) struct Reporting<'a> {
 pub(crate) struct Scope<'a> {
     /// The record being tested, when there is one.
     pub(crate) record: Option<&'a Value>,
+    /// Which record that is, when it is a stored one.
+    ///
+    /// A record's *value* answers `MATCHES`, because holding a word is a property
+    /// of the text alone. A **score** additionally needs what the index knows
+    /// about this record — how often it holds each asked term, and how long it is
+    /// — and an index is addressed by record id. So the id travels beside the
+    /// value rather than being recovered from it.
+    ///
+    /// Absent where there is no stored record to name: a joined row, a fold's
+    /// result, an expression in a value position. Such a row is in no index, and
+    /// a score against it is refused for the same reason a score without an index
+    /// is.
+    id: Option<&'a RecordId>,
     /// The analyzers and collection statistics the searched paths need.
     searched: Option<&'a Searched>,
     /// Where a comparison across two kinds is recorded, when this evaluation is
@@ -2803,6 +3214,7 @@ impl<'a> Scope<'a> {
     pub(crate) const fn none() -> Self {
         Self {
             record: None,
+            id: None,
             searched: None,
             noticed: None,
         }
@@ -2812,6 +3224,7 @@ impl<'a> Scope<'a> {
     pub(crate) const fn of(record: &'a Value) -> Self {
         Self {
             record: Some(record),
+            id: None,
             searched: None,
             noticed: None,
         }
@@ -2821,8 +3234,20 @@ impl<'a> Scope<'a> {
     pub(crate) const fn searching(record: &'a Value, searched: &'a Searched) -> Self {
         Self {
             record: Some(record),
+            id: None,
             searched: Some(searched),
             noticed: None,
+        }
+    }
+
+    /// The same scope, over a record the store can name.
+    ///
+    /// Left off where the value in scope is not a stored record, which is what
+    /// makes the absence meaningful rather than an omission somebody forgot.
+    pub(crate) const fn identified(self, id: &'a RecordId) -> Self {
+        Self {
+            id: Some(id),
+            ..self
         }
     }
 
@@ -2845,9 +3270,12 @@ impl<'a> Scope<'a> {
     /// per record is handed one of those and attaches each record in turn. It is
     /// one parameter where `searched` and `noticed` were two, and it stops the
     /// pair drifting apart at the call sites.
-    pub(crate) const fn with(self, record: &'a Value) -> Self {
+    /// It takes the id as well as the value, so that a scope carrying the
+    /// identity of the *previous* record is not a thing this type can hold.
+    pub(crate) const fn with(self, id: &'a RecordId, record: &'a Value) -> Self {
         Self {
             record: Some(record),
+            id: Some(id),
             ..self
         }
     }
@@ -2856,6 +3284,7 @@ impl<'a> Scope<'a> {
     pub(crate) const fn over(searched: &'a Searched, noticed: &'a Noticed) -> Self {
         Self {
             record: None,
+            id: None,
             searched: Some(searched),
             noticed: Some(noticed),
         }
@@ -2873,9 +3302,14 @@ impl<'a> Scope<'a> {
         self.searched.and_then(|held| held.analyzer(path))
     }
 
-    /// What this path's collection looks like, if it was ranked against.
-    fn corpus(self, path: &Path) -> Option<&'a Corpus> {
-        self.searched.and_then(|held| held.corpus(path))
+    /// What this path was ranked against, if it was ranked at all.
+    fn ranked(self, path: &Path) -> Option<&'a Ranked> {
+        self.searched.and_then(|held| held.ranked(path))
+    }
+
+    /// What this read asked of this path, as the rewrite recorded it.
+    fn wanted(self, path: &Path) -> &'a [(BinaryOp, String)] {
+        self.searched.map_or(&[], |held| held.wanted(path))
     }
 }
 
@@ -2895,4 +3329,15 @@ fn shown(select: &Select) -> Vec<&Expr> {
         found.push(&ordering.key);
     }
     found
+}
+
+/// A byte offset as a value a caller can read.
+///
+/// `try_from` rather than a cast, which would wrap silently at a width the
+/// types no longer show. The saturation it guards is unreachable — a text long
+/// enough to overflow `i64` would need eight exabytes to hold it — and it is
+/// written anyway because a bound is a better answer than a panic in a
+/// projection over somebody's whole table.
+fn at(offset: usize) -> Value {
+    Value::Number(Number::Integer(i64::try_from(offset).unwrap_or(i64::MAX)))
 }

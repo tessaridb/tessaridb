@@ -22,6 +22,24 @@
 //! is in when the language cannot already say it.
 
 use core::fmt;
+use core::ops::Range;
+
+/// One token of a text: the bytes it occupied and the term it became.
+///
+/// The two travel together because a caller that has one and not the other
+/// cannot use either: a term without its bytes cannot be pointed at, and bytes
+/// without their term cannot be matched against a query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Token {
+    /// The half-open **byte** range this token occupies in the original text.
+    ///
+    /// Bytes rather than characters because that is what slices a `str`, and
+    /// because it is the unit the index format names for the offsets it does not
+    /// store — so a stored source could later answer identically.
+    pub bytes: Range<usize>,
+    /// What the filters turned the token into.
+    pub term: String,
+}
 
 /// One step applied to every token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -119,16 +137,133 @@ impl Analyzer {
     /// tokens never survive, so punctuation contributes nothing.
     #[must_use]
     pub fn terms(&self, text: &str) -> Vec<String> {
-        text.split(|character: char| !character.is_alphanumeric())
-            .filter(|token| !token.is_empty())
-            .map(|token| {
-                self.filters
-                    .iter()
-                    .fold(token.to_owned(), |held, filter| filter.apply(&held))
+        self.tokens(text, &self.filters)
+    }
+
+    /// The **prefixes** this text holds: for each word typed, the spellings a
+    /// stored term may begin with.
+    ///
+    /// One entry per word, and each entry is a small set of alternatives, so a
+    /// caller asks *does some stored term begin with any of these*.
+    ///
+    /// # Why a prefix is analysed differently, and why it needs two spellings
+    ///
+    /// This module's opening argument is that index-time and query-time analysis
+    /// must be identical, and they still are — for a *term*. A prefix is not a
+    /// term. It is the beginning of one, and the beginning of a word cannot be
+    /// stemmed: `runni` stemmed is `runni`, which is the beginning of nothing,
+    /// while the field stores `running` as `run`. Applying the whole chain would
+    /// be consistent and would find nothing.
+    ///
+    /// So the **unstemmed** spelling is one alternative. It is not enough on its
+    /// own, and the case that shows why is the one a reader hits first: typing
+    /// the *complete* word. `contention` is stored as `content`, and `content`
+    /// does not begin with `contention` — so a reader who typed six letters
+    /// would find the record and a reader who typed all ten would not. The
+    /// **stemmed** spelling is therefore the second alternative, and with it a
+    /// complete word is always a prefix of itself.
+    ///
+    /// That is the property worth stating plainly: `MATCHES PREFIX 'w'` always
+    /// reaches at least what `MATCHES 'w'` reaches. Without the second spelling
+    /// it does not, and a prefix operator that can find *less* than an exact one
+    /// is not something to offer a reader as they type.
+    ///
+    /// The lowercasing and folding apply to both, because those make two
+    /// spellings one and the dictionary holds the folded form.
+    ///
+    /// One honest limit remains: a prefix longer than the stem and not a word in
+    /// its own right reaches nothing. `runni` finds no `running`, because the
+    /// store holds `run` and neither spelling of the query begins it. The letters
+    /// were never stored, and inventing a match for them would be guessing.
+    ///
+    /// On a chain with no stemmer the two alternatives coincide and each entry
+    /// holds exactly one spelling.
+    #[must_use]
+    pub fn prefixes(&self, text: &str) -> Vec<Vec<String>> {
+        let unstemmed: Vec<Filter> = self
+            .filters
+            .iter()
+            .copied()
+            .filter(|filter| *filter != Filter::Stemmer)
+            .collect();
+        let raw = self.tokens(text, &unstemmed);
+        let stemmed = self.tokens(text, &self.filters);
+        raw.into_iter()
+            .zip(stemmed)
+            .map(|(plain, stem)| {
+                if plain == stem {
+                    vec![plain]
+                } else {
+                    vec![plain, stem]
+                }
             })
-            .filter(|token| !token.is_empty())
             .collect()
     }
+
+    /// The tokens this text holds, each with the bytes it occupies.
+    ///
+    /// The offset source a highlight marks from. It is the field's own declared
+    /// analyzer that assigns these positions, which is what keeps a highlight
+    /// answerable without an index: the record's text is already in hand by the
+    /// time anything is being marked in it.
+    ///
+    /// A token whose filters leave it empty is dropped here exactly as it is in
+    /// [`terms`](Self::terms) — it became no term, so there is nothing to mark.
+    #[must_use]
+    pub fn spans(&self, text: &str) -> Vec<Token> {
+        self.walk(text, &self.filters)
+    }
+
+    /// Split, then fold each token through `filters`.
+    ///
+    /// **Expressed through [`walk`](Self::walk) rather than beside it.** A second
+    /// tokenizer that agrees today is still a second tokenizer, and the drift
+    /// would be invisible in the worst way — a highlight a character off, on a
+    /// query that still matched. One walk, two projections of it.
+    fn tokens(&self, text: &str, filters: &[Filter]) -> Vec<String> {
+        self.walk(text, filters)
+            .into_iter()
+            .map(|token| token.term)
+            .collect()
+    }
+
+    /// Split on anything that is not a letter or a digit, keeping where each
+    /// token was, then fold each through `filters`.
+    ///
+    /// The positions come from `char_indices`, so a multi-byte character
+    /// contributes its real byte width and every range falls on a character
+    /// boundary. `Café` occupies five bytes, and a highlight over it covers five.
+    fn walk(&self, text: &str, filters: &[Filter]) -> Vec<Token> {
+        let mut found = Vec::new();
+        let mut start = None;
+        for (at, character) in text.char_indices() {
+            if character.is_alphanumeric() {
+                start.get_or_insert(at);
+                continue;
+            }
+            if let Some(from) = start.take() {
+                push(&mut found, text, from..at, filters);
+            }
+        }
+        if let Some(from) = start {
+            push(&mut found, text, from..text.len(), filters);
+        }
+        found
+    }
+}
+
+/// Fold one token through `filters` and keep it if anything survives.
+fn push(into: &mut Vec<Token>, text: &str, bytes: Range<usize>, filters: &[Filter]) {
+    let Some(token) = text.get(bytes.clone()) else {
+        return;
+    };
+    let term = filters
+        .iter()
+        .fold(token.to_owned(), |held, filter| filter.apply(&held));
+    if term.is_empty() {
+        return;
+    }
+    into.push(Token { bytes, term });
 }
 
 /// One accented Latin letter, folded.
@@ -226,6 +361,136 @@ mod tests {
         // reason the filter exists.
         assert_ne!(simple().terms("running"), simple().terms("runs"));
         assert_eq!(full.terms("running"), full.terms("runs"));
+    }
+
+    /// Whether any stored term begins with any spelling of any typed word.
+    ///
+    /// The matching rule `MATCHES PREFIX` applies, written here so the tests
+    /// assert the rule rather than a re-derivation of it.
+    fn reaches(analyzer: &Analyzer, stored: &str, typed: &str) -> bool {
+        let terms = analyzer.terms(stored);
+        let asked = analyzer.prefixes(typed);
+        !asked.is_empty()
+            && asked.iter().all(|alternatives| {
+                alternatives
+                    .iter()
+                    .any(|prefix| terms.iter().any(|term| term.starts_with(prefix)))
+            })
+    }
+
+    #[test]
+    fn a_prefix_is_folded_but_never_stemmed() {
+        let full = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii, Filter::Stemmer]);
+        // The folding applies: a prefix of a lower-cased, unaccented word is
+        // what the dictionary holds.
+        assert_eq!(full.prefixes("VECto"), vec![vec!["vecto".to_owned()]]);
+        assert_eq!(full.prefixes("Café"), vec![vec!["cafe".to_owned()]]);
+        // The stemming does not remove the typed spelling — it adds one beside
+        // it. `runni` stems to itself, so there is only the one.
+        assert_eq!(full.prefixes("runni"), vec![vec!["runni".to_owned()]]);
+        assert_eq!(full.terms("running"), vec!["run"]);
+        // A prefix longer than the stem and not a word of its own reaches
+        // nothing, because the store never held those letters.
+        assert!(!reaches(&full, "running", "runni"));
+        // A prefix at or below the stem does reach it.
+        assert!(reaches(&full, "running", "ru"));
+    }
+
+    #[test]
+    fn a_complete_word_is_a_prefix_of_itself_even_when_it_stems_to_something_shorter() {
+        // The case that makes the second spelling necessary, and the one a
+        // reader hits first: typing all of a word rather than most of it.
+        let full = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii, Filter::Stemmer]);
+        assert_eq!(full.terms("contention"), vec!["content"]);
+        assert!(reaches(&full, "Locking and contention", "conten"));
+        assert!(reaches(&full, "Locking and contention", "contention"));
+        assert!(reaches(&full, "Running a compaction", "running"));
+        // Which is the property in general: a prefix reaches at least what an
+        // exact term match reaches.
+        for word in ["contention", "running", "locking", "compaction"] {
+            let stored = "Locking and contention while running a compaction";
+            let terms = full.terms(stored);
+            let exact = full.terms(word);
+            assert!(exact.iter().all(|term| terms.contains(term)), "{word}");
+            assert!(reaches(&full, stored, word), "{word}");
+        }
+    }
+
+    #[test]
+    fn a_chain_with_no_stemmer_offers_one_spelling_per_word() {
+        // The two alternatives coincide, so on a field that does not stem there
+        // is no asymmetry and no second walk to pay for.
+        for text in ["Ada Lovelace", "Café au lait", "1843"] {
+            let asked = simple().prefixes(text);
+            let terms = simple().terms(text);
+            assert_eq!(asked.len(), terms.len(), "{text}");
+            for (alternatives, term) in asked.iter().zip(&terms) {
+                assert_eq!(alternatives, &vec![term.clone()], "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_spans_and_the_terms_are_two_readings_of_one_walk() {
+        // Asserted directly rather than inferred from a passing highlight,
+        // because this is the property the whole offset source rests on: a
+        // second tokenizer that agreed today would drift silently.
+        let full = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii, Filter::Stemmer]);
+        for text in [
+            "Ada Lovelace, 1843!",
+            "  ...  ",
+            "",
+            "Running quickly",
+            "Café au lait",
+            "日本語 and Łódź",
+            "trailing",
+            "1843",
+        ] {
+            let walked: Vec<String> = full.spans(text).into_iter().map(|t| t.term).collect();
+            assert_eq!(walked, full.terms(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_span_covers_the_bytes_the_token_occupied_and_not_the_term_it_became() {
+        // The criterion's deciding case in miniature: the reader typed three
+        // letters, the text holds seven, and the highlight is over the seven.
+        let full = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii, Filter::Stemmer]);
+        let text = "He was Running fast";
+        let spans = full.spans(text);
+        let running = spans
+            .iter()
+            .find(|token| token.term == "run")
+            .expect("the text holds a word that stems to run");
+        assert_eq!(running.bytes, 7..14);
+        assert_eq!(&text[running.bytes.clone()], "Running");
+    }
+
+    #[test]
+    fn a_multibyte_character_contributes_its_real_byte_width() {
+        // `é` is two bytes, so a span counted in characters would be short by
+        // one and the mark would stop mid-letter.
+        let folded = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii]);
+        let text = "un Café ici";
+        let spans = folded.spans(text);
+        let cafe = spans
+            .iter()
+            .find(|token| token.term == "cafe")
+            .expect("the text holds a folded café");
+        assert_eq!(cafe.bytes, 3..8);
+        assert_eq!(&text[cafe.bytes.clone()], "Café");
+        // Every range slices, which is the invariant `char_indices` buys.
+        for token in &spans {
+            assert!(text.get(token.bytes.clone()).is_some(), "{token:?}");
+        }
+    }
+
+    #[test]
+    fn punctuation_opens_no_token_and_so_leaves_no_span_to_mark() {
+        // Nothing became a term, so there is nothing a highlight could claim
+        // matched — and the spans agree with the terms about that.
+        assert!(simple().spans("  ...  ").is_empty());
+        assert!(simple().spans("").is_empty());
     }
 
     #[test]

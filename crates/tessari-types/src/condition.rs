@@ -87,6 +87,37 @@ pub enum BinaryOp {
     /// pattern over the whole value and `CONTAINS` is membership in a
     /// collection, and neither can ask whether text holds a *word*.
     Matches,
+    /// `MATCHES PREFIX` — the analyzed text holds a word **beginning with**
+    /// every term of the query.
+    ///
+    /// The operator a reader is served by while still typing, and a separate
+    /// operator rather than a flag on [`BinaryOp::Matches`] for the reason
+    /// `LIKE` and `CONTAINS` are separate: it asks a different question, and it
+    /// is answered by a different structure — a bounded walk of the term
+    /// dictionary rather than a lookup of one term.
+    ///
+    /// It is deliberately **not** spelled with a wildcard inside the query
+    /// string. `'vecto*'` would make every query a parse of the caller's own
+    /// data, and a reader searching for a literal asterisk would have to know
+    /// that before they could ask for one.
+    MatchesPrefix,
+    /// `MATCHES FUZZY` — the analyzed text holds, for every term of the query, a
+    /// word within a small number of edits of it.
+    ///
+    /// A third operator rather than a setting on the other two, for the reason
+    /// that keeps recurring here: it asks a different question and is answered by
+    /// a different walk. It is also **declared** rather than automatic — the
+    /// store never retries a query that found nothing as a fuzzy one, because a
+    /// reader who asked for `vector` and was silently shown `vectors`, `vectr`
+    /// and `victor` cannot tell which of the three the store thought they meant.
+    ///
+    /// Two limits are part of the operator and not tuning behind it. At most
+    /// `SEARCH_FUZZY_MAX_EDITS` edits, refused by name above that. And the first
+    /// `SEARCH_FUZZY_PREFIX` characters are **not** fuzzy, which is why `xector`
+    /// does not reach `vector` — a cost stated in `docs/tessariql.md` rather
+    /// than discovered, and the price of not walking a whole dictionary per
+    /// word.
+    MatchesFuzzy,
 }
 
 impl BinaryOp {
@@ -105,6 +136,8 @@ impl BinaryOp {
             Self::Like => "LIKE",
             Self::Ilike => "ILIKE",
             Self::Matches => "MATCHES",
+            Self::MatchesPrefix => "MATCHES PREFIX",
+            Self::MatchesFuzzy => "MATCHES FUZZY",
         }
     }
 
@@ -128,6 +161,8 @@ impl BinaryOp {
             Self::Like,
             Self::Ilike,
             Self::Matches,
+            Self::MatchesPrefix,
+            Self::MatchesFuzzy,
         ]
         .into_iter()
         .find(|held| held.spelling() == spelling)
@@ -175,7 +210,7 @@ pub fn apply(op: BinaryOp, left: &Value, right: &Value) -> bool {
         // stated `false` rather than an `unreachable!()`: this project has none,
         // and "no analyzer, no terms, no match" is the same answer a field with
         // no analyzer gets anyway.
-        BinaryOp::Matches => false,
+        BinaryOp::Matches | BinaryOp::MatchesPrefix | BinaryOp::MatchesFuzzy => false,
     }
 }
 

@@ -19,6 +19,37 @@ pub(crate) enum Shape {
     Equality,
     /// `<path> MATCHES '<text>'` — the postings of every term, intersected.
     Terms,
+    /// `<path> MATCHES PREFIX '<text>'` — for each word, the postings of every
+    /// term it reaches, unioned; then those intersected across the words.
+    ///
+    /// Below [`Shape::Terms`] and above a value prefix, which is where the work
+    /// puts it. It reads more posting lists than an exact term match — one per
+    /// expanded term rather than one per word — but it reads them from the same
+    /// structure with the same ceiling, where a value prefix walks an ordered
+    /// index whose size is not knowable without doing the read.
+    PrefixTerms,
+    /// `<path> MATCHES FUZZY '<text>'` — for each word, the postings of every
+    /// term within the edit budget that shares its mandatory prefix, unioned;
+    /// then those intersected across the words.
+    ///
+    /// Beside [`Shape::PrefixTerms`] rather than below it, because the two
+    /// promise the same thing by the same method: a union of posting lists per
+    /// word, intersected across words, with a ceiling computed from real
+    /// document frequencies. `Rows::AtMost` does the discriminating between
+    /// them. Ranking fuzzy lower because its walk *reads* more terms would be a
+    /// claim about how many rows it returns, which is a different quantity and
+    /// one this store keeps no statistics to support.
+    FuzzyTerms,
+    /// `<path> MATCHES '<a> OR <b> <c>'` — for each `OR`-joined group, the
+    /// postings of its terms, unioned; then those intersected across the groups.
+    ///
+    /// Beside the two above, and for the third time the same reason: the read is
+    /// a union per group intersected across groups, with a ceiling computed from
+    /// real document frequencies. What differs is only where the alternatives
+    /// came from — a dictionary walk there, the query itself here — and that
+    /// difference is in the name so `EXPLAIN` does not report a walk that never
+    /// ran.
+    AnyTerms,
     /// `<path> LIKE '<literal>%'` — a range over the values beginning with it.
     Prefix,
     /// `<path> < <constant>`, and the other three orderings — a bounded scan.
@@ -70,6 +101,36 @@ pub(crate) enum Served {
     Prefix(String),
     /// The terms whose postings are intersected.
     Terms(Vec<String>),
+    /// The **expansions** whose postings are unioned and then intersected: one
+    /// set of terms per word the query typed.
+    ///
+    /// Two levels deep because the question is two levels deep — every typed
+    /// word must be matched by *some* term beginning with it. Flattening the
+    /// sets into one list would lose which word each term came from and turn a
+    /// conjunction of disjunctions into a single disjunction, which answers with
+    /// every record holding any of the words.
+    ///
+    /// Resolved by the planner rather than at execution, because whether the
+    /// index can serve the read at all depends on how far the expansions reach:
+    /// past the cap, this candidate is not offered and the scan answers.
+    PrefixTerms(Vec<Vec<String>>),
+    /// The terms each fuzzy word reached — the same shape as
+    /// [`Served::PrefixTerms`], and deliberately a separate variant.
+    ///
+    /// The executor treats the two identically, because by the time a walk has
+    /// produced concrete terms there is nothing left to distinguish. `EXPLAIN`
+    /// does not, and must not: telling a reader `prefix-terms` when a fuzzy walk
+    /// ran would misreport which question the index answered.
+    FuzzyTerms(Vec<Vec<String>>),
+    /// The terms of each `OR`-joined group — the same shape again, and again a
+    /// separate variant so `EXPLAIN` reports which question the index answered.
+    ///
+    /// A query's **excluded** terms are deliberately not here. Removing them
+    /// would need the complement of a posting list, which the index cannot
+    /// enumerate; what it can do is produce the records the positive groups
+    /// reach, which is a superset of the answer, and let the condition drop the
+    /// rest — the refinement every candidate on this path already gets.
+    AnyTerms(Vec<Vec<String>>),
     /// The two ends of an ordered scan, either of which may be absent.
     ///
     /// Both are carried as **values**, not as byte bounds, because the index
@@ -116,6 +177,9 @@ impl Served {
             Self::Equality(_) => Shape::Equality,
             Self::Prefix(_) => Shape::Prefix,
             Self::Terms(_) => Shape::Terms,
+            Self::PrefixTerms(_) => Shape::PrefixTerms,
+            Self::FuzzyTerms(_) => Shape::FuzzyTerms,
+            Self::AnyTerms(_) => Shape::AnyTerms,
             Self::Range { .. } => Shape::Range,
             Self::Region { .. } => Shape::Region,
         }
@@ -133,7 +197,12 @@ impl Served {
     pub(crate) fn fixed(&self) -> usize {
         match self {
             Self::Equality(values) => values.len(),
-            Self::Prefix(_) | Self::Terms(_) | Self::Region { .. } => 1,
+            Self::Prefix(_)
+            | Self::Terms(_)
+            | Self::PrefixTerms(_)
+            | Self::FuzzyTerms(_)
+            | Self::AnyTerms(_)
+            | Self::Region { .. } => 1,
             Self::Range { fixed, .. } => fixed.len().saturating_add(1),
         }
     }
@@ -219,6 +288,9 @@ impl Shape {
             Self::Range => "range",
             Self::Region => "region",
             Self::Terms => "terms",
+            Self::PrefixTerms => "prefix-terms",
+            Self::FuzzyTerms => "fuzzy-terms",
+            Self::AnyTerms => "any-terms",
         }
     }
 }

@@ -83,6 +83,7 @@ because renumbering after data exists is a full rebuild.
 | `0x16` | `SpatialIndex` | `index` | implemented — see §3c |
 | `0x17` | `VectorRecall` | `index` | implemented — see §3d |
 | `0x18` | `SpatialRefinement` | `index` | implemented — see §3e |
+| `0x19` | `SearchTerm` (the term dictionary) | `index` | implemented — see §6.2b-4 |
 | `0x20` | `LogEntry` | `log` | implemented |
 | `0x30` | `FormatVersion` | `meta` | implemented |
 | `0x31` | `AppliedPosition` | `meta` | implemented |
@@ -547,6 +548,51 @@ counted. `terms` is the token count **with repeats**, because it exists to be
 divided by `documents` and yield an average document *length*. The postings
 deduplicate and this does not; both come from one analyzer pass over the same
 text, so they cannot drift apart.
+
+### 6.2b-4 `SearchTerm` — keyspace `index`
+
+```
+key    <0x19> <namespace:u32> <database:u32> <table:u32> <index:u32> <term> <0x00>
+value  <documents:u64>
+```
+
+The **term dictionary**: one entry per distinct term the index holds, and no
+record suffix, so a term has exactly one entry and reading it is a point read.
+
+The term is encoded exactly as it is in the posting key (§6.2a) and terminated
+the same way. That is load-bearing rather than tidy: a prefix walk of this
+keyspace finds the terms whose posting lists a lookup then reads, and two
+encodings would be two vocabularies — the walk would reach words the lookup could
+not.
+
+It exists because the set of terms is *derivable* from the postings and deriving
+it costs the wrong thing. Enumerating the words under `vect` by walking postings
+costs one step per **record** holding each such word, to answer a question about
+**words**. One entry per term makes three things bounded that are otherwise not:
+a prefix is a range read over distinct terms, a fuzzy match is an automaton
+intersected with an ordered walk of them, and a term's document frequency is a
+point read where it was a count of its whole posting range — once per query term,
+per query, and already the dominant cost of a ranked read.
+
+`documents` is maintained by signed deltas accumulated across the batch and
+folded once per term, in the record's own write batch, exactly as `0x15` is. **A
+term whose count reaches zero has its entry deleted rather than written as
+zero**: an entry at zero is a word a prefix walk would offer and whose posting
+list is empty, and the dictionary would otherwise accumulate every word ever
+written to the table for the life of the store.
+
+An index written before this kind existed has postings and no entries. Such a
+term's frequency falls through to counting its posting range, so the index keeps
+ranking correctly at the old cost — the two paths cannot disagree, because the
+entry is written in the same batch as the postings it counts.
+
+The format specification places a second field here, `max_impact`: the largest
+contribution one posting of this term can make to a score, which is the bound
+safe top-k pruning prunes against. It is **not written yet** — nothing reads it
+until there is a pruning evaluator, and a maintained bound with no reader is a
+number free to drift. The value dispatches on its own length, so adding it is a
+value-codec bump under §8 rather than a redesign, and a payload longer than this
+build knows is refused rather than half-read.
 
 ### 6.2b-2 `VectorRecall` — keyspace `index`
 

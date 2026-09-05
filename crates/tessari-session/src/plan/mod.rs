@@ -108,4 +108,6 @@ pub(crate) use candidate::{Candidate, Served};
 pub(crate) use rank::choose;
 pub(crate) use reads::roots_read;
 pub use reported::Plan;
-pub(crate) use statement::{Bounded, Closest, Nearest, answers, bound, closest, nearest, ordered};
+pub(crate) use statement::{
+    Bounded, Closest, Nearest, Scored, answers, bound, closest, nearest, ordered, scored,
+};

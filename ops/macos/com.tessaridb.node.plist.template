@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The node, as a launchd agent.
+
+  It runs `tessaridbctl run`, which reads the settings file and replaces itself with the
+  engine. That indirection is why this file carries no address and no store path: the
+  settings live in one place, and changing one does not mean editing a plist and
+  reloading an agent to keep the two in step.
+
+  KeepAlive is SuccessfulExit=false, so a crash brings the node back and `tessaridbctl
+  stop` does not. A service that respawns when it is asked to stop cannot be stopped.
+
+  An agent rather than a daemon: it runs as the person who installed it, holds their
+  store under their home, and needs no privilege to install or remove. A node serving a
+  machine rather than a person belongs in /Library/LaunchDaemons and is a different file.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.tessaridb.node</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>@CTL@</string>
+		<string>run</string>
+	</array>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+
+	<key>WorkingDirectory</key>
+	<string>@HOME_DIR@</string>
+
+	<key>StandardOutPath</key>
+	<string>@LOG_DIR@/node.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>@LOG_DIR@/node.err</string>
+
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>

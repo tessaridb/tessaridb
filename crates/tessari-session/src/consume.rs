@@ -229,7 +229,7 @@ impl<'a, 's> Shaping<'a, 's> {
     ) -> Result<()> {
         let keys = match record {
             None => Vec::new(),
-            Some(record) => self.keyed(transaction, record)?.0,
+            Some(record) => self.keyed(transaction, &id, record)?.0,
         };
         self.topmost.after(keys, id);
         Ok(())
@@ -239,37 +239,54 @@ impl<'a, 's> Shaping<'a, 's> {
     fn keyed(
         &self,
         transaction: &mut Transaction<'_>,
+        id: &RecordId,
         record: Value,
     ) -> Result<(Vec<Value>, Value)> {
         let Some(wanted) = &self.wanted else {
             // Already projected by a barrier stage above, so there is no source
             // left to overlay and nothing was dropped that a key could want.
-            let keys = self.keys_against(transaction, &record)?;
+            let keys = self.keys_against(transaction, id, &record)?;
             return Ok((keys, record));
         };
-        let projected =
-            self.session
-                .project(transaction, &record, wanted, self.searched, self.noticed)?;
+        let projected = self.session.project(
+            transaction,
+            id,
+            &record,
+            wanted,
+            self.searched,
+            self.noticed,
+        )?;
         let keys = if self.keys_reach_past_the_projection {
-            self.keys_against(transaction, &overlaid(record, &projected))?
+            self.keys_against(transaction, id, &overlaid(record, &projected))?
         } else {
-            self.keys_against(transaction, &projected)?
+            self.keys_against(transaction, id, &projected)?
         };
         Ok((keys, projected))
     }
 
+    /// The order's keys, evaluated over one record.
+    ///
+    /// A sort key is an expression like any other, so a `search::score` in one
+    /// has to reach the same numbers it reaches in the `WHERE` that produced the
+    /// record — which is why the identity travels here too and not only into the
+    /// projection.
     fn keys_against(
         &self,
         transaction: &mut Transaction<'_>,
+        id: &RecordId,
         record: &Value,
     ) -> Result<Vec<Value>> {
         let mut keys = Vec::with_capacity(self.keys.len());
         for key in &self.keys {
-            keys.push(self.session.evaluate_in(
-                transaction,
-                key,
-                Scope::searching(record, self.searched).noticing(self.noticed),
-            )?);
+            keys.push(
+                self.session.evaluate_in(
+                    transaction,
+                    key,
+                    Scope::searching(record, self.searched)
+                        .identified(id)
+                        .noticing(self.noticed),
+                )?,
+            );
         }
         Ok(keys)
     }
@@ -330,7 +347,7 @@ impl Consumer for Shaping<'_, '_> {
         record: Value,
     ) -> Result<ControlFlow<()>> {
         self.budget.spend()?;
-        let (keys, record) = self.keyed(transaction, record)?;
+        let (keys, record) = self.keyed(transaction, &id, record)?;
         self.topmost.offer(keys, id, record);
         Ok(ControlFlow::Continue(()))
     }

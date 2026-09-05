@@ -515,3 +515,119 @@ pub const PASSWORD_HASH_PASSES: u32 = 2;
 /// point of the cost is that it is paid, and a node under an authentication
 /// flood would multiply its own load by the lane count. Recorded in ADR-0043.
 pub const PASSWORD_HASH_LANES: u32 = 1;
+
+/// The shortest prefix `MATCHES PREFIX` will accept.
+///
+/// Unit: characters, after the field's non-stemming filters have been applied.
+///
+/// **Contract, not tuning.** A prefix below this is refused by name and the
+/// refusal states the limit; it is not merely served slowly. The reason is that
+/// the cost of a prefix is the size of its expansion, and the expansion of a
+/// short prefix is a large fraction of the whole vocabulary — `a` reaches every
+/// word beginning with `a`, which on English prose is roughly one word in
+/// fourteen. A reader gains nothing from that answer and the store pays for all
+/// of it, on the query a frustrated reader retries.
+///
+/// Three rather than two, because two is where the fraction stops being small:
+/// `th` alone reaches a tenth of an English vocabulary. Three is also the
+/// conventional floor in the engines that offer this, which matters less than
+/// the reason but is worth not contradicting without one.
+pub const SEARCH_PREFIX_MINIMUM: usize = 3;
+
+/// How many distinct terms one prefix may expand to before the index declines
+/// to serve it.
+///
+/// Unit: terms.
+///
+/// **Not a refusal.** A prefix expanding past this is answered by the scan
+/// instead, and `EXPLAIN` reports `scan` — the answer is identical either way,
+/// which is the rule this store holds everywhere: *which access path runs is
+/// decided by what exists; the answer is not.* A cap that refused would make a
+/// query succeed without an index and fail once somebody added one.
+///
+/// What the cap protects is the **index** path, where an expansion is a union of
+/// that many posting lists. Sixty-four is enough for every prefix a person
+/// actually types at three characters or more and small enough that the union
+/// stays cheaper than the scan it replaces.
+pub const SEARCH_PREFIX_EXPANSION_CAP: usize = 64;
+
+/// The most edits `MATCHES FUZZY` will look through.
+///
+/// Unit: single-character insertions, deletions and substitutions — Levenshtein,
+/// not Damerau: a transposition costs two.
+///
+/// **Contract, not tuning.** A query asking for more is refused by name and the
+/// refusal states the limit. Two is the number because the candidate set grows
+/// with the alphabet raised to the edit count: at one edit a word of length `n`
+/// has about `53n` neighbours over lowercase letters and digits, at two about
+/// `1400n`, and at three the neighbourhood is larger than most vocabularies —
+/// at which point every query matches something and the operator has stopped
+/// discriminating rather than started being generous.
+///
+/// It is also the point where a match stops being a plausible reading of what
+/// somebody meant. `cat` and `dog` are three edits apart.
+pub const SEARCH_FUZZY_MAX_EDITS: usize = 2;
+
+/// How many leading characters of a fuzzy query are **not** fuzzy.
+///
+/// Unit: characters, after the field's non-stemming filters have been applied —
+/// the same footing as [`SEARCH_PREFIX_MINIMUM`].
+///
+/// **Semantics, not an index-side bound**, and this is the distinction that
+/// matters. A stored term satisfies a typed word only if it is within
+/// [`SEARCH_FUZZY_MAX_EDITS`] edits **and** shares this many first characters,
+/// and the scan applies exactly that rule. Implementing the prefix only as a
+/// dictionary-walk bound would be cheaper to write and would break the rule this
+/// store holds everywhere: *which access path runs is decided by what exists;
+/// the answer is not.* The same statement would return one set on a table with
+/// no index and a smaller set once somebody added one (ADR-0046).
+///
+/// The cost is real and belongs in the documentation rather than in a surprise:
+/// a mistake inside the first `SEARCH_FUZZY_PREFIX` characters is not found.
+/// `xector` does not reach `vector`. That is accepted because the alternative is
+/// a walk of the whole term dictionary per word, which is the denial of service
+/// this operator would otherwise be — and because a first letter is the part of
+/// a word people mistype least, having usually just read it.
+pub const SEARCH_FUZZY_PREFIX: usize = 3;
+
+/// How many distinct terms one fuzzy word may match before the index declines to
+/// serve it.
+///
+/// Unit: terms **matched**, not terms examined — the two differ here, which they
+/// do not for a prefix walk, and the difference is what G022's S3 measures.
+///
+/// **Not a refusal**, for the same reason [`SEARCH_PREFIX_EXPANSION_CAP`] is not
+/// one: only the index can evaluate it, so a cap that refused would make a
+/// statement succeed without an index and fail once somebody added one. Past it
+/// the candidate is not offered and the scan answers, which is the identical
+/// answer by a different path.
+///
+/// Sixteen rather than the prefix cap's sixty-four. A prefix expansion is a set
+/// a reader chose the size of by typing fewer letters; a fuzzy expansion is a
+/// set the *store* chose, and a word with sixteen near-spellings in the corpus
+/// is one where the union has stopped being cheaper than reading the records.
+pub const SEARCH_FUZZY_EXPANSION_CAP: usize = 16;
+
+/// How many terms one fuzzy word's dictionary walk may **read** before the index
+/// declines to serve it.
+///
+/// Unit: terms examined — the other side of [`SEARCH_FUZZY_EXPANSION_CAP`], and
+/// the reason the two exist separately.
+///
+/// This ceiling is what the design did not have and the implementation needed.
+/// Intersecting an edit-distance automaton with a dictionary by **walking a
+/// range** reads every term sharing the mandatory prefix and keeps the few
+/// inside the budget, so the work is bounded by the popularity of a three-letter
+/// beginning rather than by the number of matches. Without a ceiling, a common
+/// beginning in a large vocabulary is a denial of service costing the caller one
+/// request — which is precisely the failure G022's S3 exists to catch.
+///
+/// **Not a refusal**, on the same reasoning as the two caps above: past it the
+/// candidate is not offered and the scan answers with the identical result.
+///
+/// A thousand and twenty-four, because a term read is a key decode and a bounded
+/// character comparison while the alternative it defers to is a record decode —
+/// perhaps two orders of magnitude more work. Examining a thousand terms to
+/// avoid reading tens of records is the trade this number makes, and it stops
+/// being a good one somewhere past here.
+pub const SEARCH_FUZZY_EXAMINATION_CAP: usize = 1024;

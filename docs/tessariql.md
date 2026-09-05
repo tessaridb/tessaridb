@@ -1707,9 +1707,25 @@ nobody should have to read about. The filters are the part that differs:
 |---|---|
 | `lowercase` | folds case, so `Lovelace` and `lovelace` are one term |
 | `ascii` | folds the common accented Latin letters, so `café` and `cafe` are one term |
+| `stemmer` | reduces an English word to the form its relatives share, so `running`, `runs` and `run` are one term |
 
 A letter the fold does not know passes through rather than being dropped — a
 letter it has no opinion about is still a letter.
+
+The first two make two **spellings** of a word meet. `stemmer` is the one that
+makes two **words** meet, which is what a person usually means by search: without
+it, a collection answers `backup` with the documents that happen to spell it that
+way and silently omits the ones that say `backups`. It is Porter2 (English
+Snowball) and it stems only lower-case ASCII words, so a chain that wants it
+writes `lowercase` first — `FILTERS stemmer, lowercase` compiles, runs, and does
+nothing, because the stemmer declines a word it does not recognise as one rather
+than half-stemming it.
+
+**A chain is part of the analyzer's identity, and an analyzer cannot be
+redefined.** A name already declared is refused — the postings on disk were
+written by the chain that was in force, and changing it under them would make
+stored terms and query terms disagree with nothing in an error state. Changing a
+chain therefore means a new analyzer name, a field that binds it, and a reindex.
 
 **An index makes it fast and cannot make it different:**
 
@@ -1727,6 +1743,265 @@ equality or a prefix and nothing else. Asking the wrong one would return the
 wrong rows rather than none, so the shape of the test is checked against the
 index before either is used.
 
+#### A quoted phrase — the words in that order
+
+```
+SELECT * FROM notes WHERE body MATCHES '"ada lovelace"';
+SELECT * FROM notes WHERE body MATCHES '"ada wrote"~1';
+```
+
+Quoting a query makes it a **phrase**: the words in the order written, adjacent.
+`'ada lovelace'` finds every record holding both words anywhere; `'"ada
+lovelace"'` finds only the ones holding them side by side, in that order. A
+record reading `lovelace ada` answers the first and not the second, which is the
+whole of the difference — the two hold the same words with the same frequencies,
+so nothing but order separates them.
+
+A trailing `~n` declares **slop**: how many extra words the run may absorb while
+staying in order.
+
+```
+SELECT * FROM notes WHERE body MATCHES '"ada wrote"~0';  -- adjacent only
+SELECT * FROM notes WHERE body MATCHES '"ada wrote"~1';  -- one word may sit between
+```
+
+`~0` and no marker at all are the same query, so an exact phrase is slop 0 rather
+than a separate rule. **Slop widens the window and never relaxes the order** — no
+value of `n` makes `'"wrote ada"'` match text reading `ada … wrote`.
+
+A phrase needs no index and no special declaration. The analyzer belongs to the
+field rather than to an index, so the words are already in order wherever they
+are read from, and a phrase means the same thing with an index and without one.
+
+A marker that is not a whole number is **refused by name** rather than answered:
+
+```
+SELECT * FROM notes WHERE body MATCHES '"ada lovelace"~x';
+```
+
+The refusal reads *"~x" is not a slop marker; write `~` followed by a whole
+number, as in "a phrase"~2, or leave it off for an exact phrase*.
+
+Reading `~x` as an exact phrase would answer a question nobody asked, and
+letting the characters fall through to the analyzer makes `x` a word of its own
+that no record holds — so the query would answer nothing, which looks exactly
+like "no matches" and means something else entirely. The refusal is raised before
+any index is consulted, so whether a query is refused never depends on what
+happens to be indexed.
+
+One quote is not a phrase. `'"ada lovelace'` is the two words, unquoted, because
+guessing which quote was meant would make the query depend on a typo.
+
+#### `OR` and `NOT` inside a query
+
+An unquoted query is a conjunction — every word must be held. `OR` unions the
+word beside it into the one before, and `NOT` excludes the word after it:
+
+```
+SELECT * FROM notes WHERE body MATCHES 'ada OR lovelace';       -- either name
+SELECT * FROM notes WHERE body MATCHES 'ada NOT babbage';       -- ada, without babbage
+SELECT * FROM notes WHERE body MATCHES 'ada OR lovelace NOT babbage';
+```
+
+`OR` binds tighter than the space between words, so the last query requires
+*either* name and excludes `babbage`.
+
+**The operators are uppercase, and that is load-bearing rather than a style
+choice.** They are recognised on the query as written, before analysis, because
+the analyzer keeps only alphanumerics and stems what is left — by the time terms
+exist an operator would be a word like any other. Requiring them uppercase is
+what keeps `salt or pepper` meaning three words, so a query written before these
+operators existed still asks what it asked.
+
+**A query that excludes without requiring is refused by name:**
+
+```
+SELECT * FROM notes WHERE body MATCHES 'NOT babbage';
+```
+
+The refusal reads *a search query cannot exclude terms without requiring one*.
+A search index enumerates the records that **hold** a word, so `NOT babbage`
+names the complement of a posting list — every record in the table, which the
+index cannot produce. The two honest answers are reading the whole table or
+refusing, and this store refuses, exactly as it refuses a score over a field with
+no search index. Add a word to match and the exclusion applies to it. Like the
+slop refusal, this one is raised before any index is consulted.
+
+**A query answers the same with an index and without one.** With a search index
+each `OR`-group is read as the union of its terms' postings and the groups are
+intersected; without one every record is read and tested. The exclusions are
+applied when each record is tested either way, because an index cannot enumerate
+what a record does *not* hold — so the index narrows to a superset and the
+condition finishes the job. `EXPLAIN` reports `any-terms` for a query using `OR`,
+and keeps reporting `terms` for one without it.
+
+#### "Did you mean" — a suggestion, never a substitution
+
+A read answers with a `suggestion` beside its records when a term the query
+named is one the collection does not hold:
+
+```
+SELECT * FROM notes WHERE body MATCHES 'vecter';
+-- 0 record(s), via index
+-- did you mean: vecter -> vector
+```
+
+**The suggestion never enters the executed query.** `'vecter'` answers with the
+records holding `vecter`, which is none of them, and it answers with exactly
+those whether or not a suggestion was found. That is a rule and not an
+implementation detail: a store that quietly re-ran the query with the corrected
+word would answer a question nobody asked, and the answer would *look* right.
+This store already knows how that failure ends — giving a term nothing holds any
+weight in the ranking does not tie the order, it inverts it, so the shortest
+document arrives first wearing a plausible score.
+
+**The trigger is a term, not an empty answer.** A query with one word misspelled
+usually still returns records — the conjunction fails but a disjunction does not
+— so a suggestion that waited for an empty answer would stay silent in the
+common case and speak only in the rare one. A term the collection does not hold
+contributed nothing to the answer, whatever else did:
+
+```
+SELECT * FROM notes WHERE body MATCHES 'engine OR vecter';
+-- the records holding `engine`, and a suggestion for `vecter`
+```
+
+An **excluded** term is left alone. `NOT vecter` asks for the records without
+that word and gets exactly them; correcting an exclusion is the one direction of
+error that removes records the reader wanted.
+
+**Three states, and the difference between two of them matters.** A suggestion
+needs a term dictionary, and only a `SEARCH` index has one. So a read over an
+unindexed field reports **no suggestion at all** — not "nothing is near", which
+would be a confident negative nobody checked. Over the wire the three are three
+distinct values; in JSON the key is absent when nothing was consulted, present
+with an empty `corrections` list when a dictionary held every term, and present
+with entries otherwise.
+
+**The bound it inherits.** Finding a near term is the same dictionary walk
+`MATCHES FUZZY` runs, so it carries the same mandatory non-fuzzy prefix: a word
+misspelled in its first three characters has no candidate and earns no
+suggestion. Reusing that bound is deliberate. Two walks over one dictionary with
+two notions of "near" would eventually disagree, and the disagreement would show
+up as a suggestion for a word `MATCHES FUZZY` refuses to match.
+
+Where two held terms are equally near, the one **more records hold** is offered:
+at equal distance the useful correction is the word people actually wrote.
+
+#### `MATCHES PREFIX` — the words a reader has started typing
+
+```
+SELECT * FROM notes WHERE body MATCHES PREFIX 'vecto';
+SELECT * FROM notes WHERE body MATCHES PREFIX 'vecto sea';
+```
+
+It asks whether the text holds a word **beginning with** each of the query's
+words: a conjunction across what was typed, a disjunction within each word. So
+`'vecto'` reaches `vector`, `vectors` and `vectorised`, and `'vecto sea'` reaches
+only the documents that hold something from each.
+
+A separate operator rather than a wildcard inside the string. `'vecto*'` would
+make every query a parse of the caller's own data, and a reader searching for a
+literal asterisk would have to know that before they could ask for one.
+
+**A prefix is folded but not stemmed — and the query is tried both ways.** The
+beginning of a word cannot be stemmed: `runni` stems to `runni`, which is the
+beginning of nothing, while the field stores `running` as `run`. So the typed
+spelling is one candidate. It is not enough alone, because typing the *whole*
+word would then fail: `contention` is stored as `content`, and `content` does not
+begin with `contention`. The stemmed spelling is the second candidate, and with
+it a complete word is always a prefix of itself — `MATCHES PREFIX 'w'` always
+reaches at least what `MATCHES 'w'` reaches.
+
+One limit is left and it is honest: a prefix longer than the stem and not a word
+in its own right reaches nothing. `runni` finds no `running`, because the store
+holds `run` and neither spelling of the query begins it. Those letters were never
+stored.
+
+**The minimum is three characters and it is a refusal**, not a slow answer:
+
+```
+SELECT * FROM notes WHERE body MATCHES PREFIX 've';
+-- the prefix "ve" is shorter than 3 characters, which is the shortest this
+-- store will expand
+```
+
+The cost of a prefix is the size of its expansion, and two characters reach a
+large fraction of an English vocabulary — an answer nobody can use, paid for in
+full, on the query a frustrated reader retries. The refusal is raised **before
+any access path is chosen**, so adding an index can never change whether the
+statement runs.
+
+**The expansion cap is not a refusal.** A prefix reaching more than sixty-four
+distinct terms is answered by the scan instead, and `EXPLAIN` reports `scan`. The
+answer is identical either way — a cap that refused would make a statement
+succeed on a table with no index and fail on the same table once somebody added
+one, which is exactly what the access-path rule exists to prevent.
+
+**With a `SEARCH` index it is a bounded walk of the term dictionary.** The index
+keeps one entry per distinct term, so finding which words a prefix reaches costs
+what it *matches* rather than what the index holds: measured at one thousand, ten
+thousand and one hundred thousand distinct terms, the same query reads three
+entries in one scan. Without an index the scan analyses each record and compares,
+and the two are asserted to agree record for record.
+
+#### `MATCHES FUZZY` — the word a reader meant rather than the one they typed
+
+```
+SELECT * FROM notes WHERE body MATCHES FUZZY 'vectr';
+SELECT * FROM notes WHERE body MATCHES FUZZY 'containr analyzr';
+```
+
+The analyzed text holds, for **every** word typed, a term within two edits of it.
+The same two levels as the operators above — a conjunction across the words, a
+disjunction within each — one step looser again.
+
+**It is declared, never automatic.** A query that finds nothing is never retried
+as a fuzzy one behind your back. A reader who asked for `vector` and was shown
+`vectors`, `vectr` and `victor` cannot tell which of the three the store decided
+they meant, and a store that guesses is worse than one that answers nothing.
+
+**Two edits, counted as insertions, deletions and substitutions.** A
+transposition therefore costs **two**, not one: `vectro` is two edits from
+`vector` and is reached. Three edits is not offered —
+past two the neighbourhood of a word is larger than most vocabularies, so every
+query would match something and the operator would have stopped discriminating
+rather than started being generous. `cat` and `dog` are three edits apart.
+
+**The first three characters are not fuzzy, and this is the cost worth knowing
+before you rely on it:**
+
+```
+SELECT * FROM notes WHERE body MATCHES FUZZY 'vectr';   -- reaches "vector"
+SELECT * FROM notes WHERE body MATCHES FUZZY 'xector';  -- reaches nothing
+```
+
+Both are one edit from `vector`. The second is not found, because the mistake is
+inside the part the operator does not vary. That is the price of not walking the
+whole term dictionary for every word of every query — a first letter is also the
+character people mistype least, having usually just read it.
+
+The restriction is part of what the operator **means**, not a trick the index
+plays. The scan applies exactly the same rule, so the answer does not change when
+somebody declares an index. A word shorter than three characters cannot carry
+that prefix and is refused by name, before any access path is chosen, exactly as
+a short `MATCHES PREFIX` is.
+
+**Neither expansion limit is a refusal.** A word whose near-spellings number more
+than sixteen, or whose three-character beginning is shared by more than a
+thousand terms, is answered by the scan instead. Only the index can see either
+number, so a cap that refused would make a statement succeed without an index and
+fail once somebody added one.
+
+**With a `SEARCH` index it is a bounded walk of the term dictionary**, and its
+two costs are different numbers. Terms *returned* is what the edit budget
+allowed; terms *read* is how many share the mandatory prefix — a property of your
+corpus rather than of the query. Measured at one thousand, ten thousand and one
+hundred thousand distinct terms, the same query reads three entries and returns
+one at every size. A deliberately popular beginning is declined rather than
+walked. Without an index the scan analyses each record and compares, and the two
+are asserted to agree record for record.
+
 **A field with no analyzer holds no terms**, so `MATCHES` over it finds nothing
 rather than failing. A schemaless table is allowed to hold text nobody has
 declared anything about, and refusing the query would make that a mistake. So
@@ -1739,6 +2014,71 @@ deeper than declaring, which is deliberate: an index is a statement about how a
 value is found, and a declaration is a statement about what a record may be.
 Making declarations reach into a path needs a rule for what declaring a leaf says
 about its parents, and §8 keeps that as its own row.
+
+#### `search::highlight` — where in the text the query matched
+
+```
+SELECT title, search::highlight(body) AS marks
+FROM notes WHERE body MATCHES FUZZY 'vectr';
+```
+
+Answers an array of `{ start, end }` **byte** ranges into the field's text: one
+per token the read's own query reached, ordered by position.
+
+**It takes the field alone, and that is the point.** The query is not repeated in
+the projection — it is whatever this statement asked of that field. A second copy
+could disagree with the `WHERE` in its spelling, in its slop, or, invisibly, in
+the operator it implies, since `MATCHES` and `MATCHES FUZZY` reach different
+terms from the same word. A highlight that disagrees with its own filter is worse
+than none: it says a record matched somewhere it did not.
+
+Several predicates on one field all contribute. `body MATCHES 'ada' AND body
+MATCHES PREFIX 'lovel'` marks what either reached, because a token either was
+reached or was not.
+
+**The marks cover the text that matched, not the characters that were typed.**
+That is what makes them worth having, and it is the case a naive
+search-for-the-query-string gets wrong in exactly the situations a reader needs
+it most:
+
+```text
+body MATCHES 'run'          over "He was Running fast"  ->  marks "Running"
+body MATCHES 'cafe'         over "un Café ici"          ->  marks "Café"
+body MATCHES FUZZY 'vectr'  over "a vector store"       ->  marks "vector"
+```
+
+None of `run`, `cafe` or `vectr` occurs in the text it marks. The offsets come
+from re-analysing the field's text with the analyzer that field declares — the
+same analyzer that decided it matched — so the marked token is by construction
+the token the operator reached.
+
+**A phrase marks the run it matched, not every occurrence of its words.**
+`MATCHES '"ada lovelace"'` over `lovelace ada, and ada lovelace` marks two
+tokens. The record answers the phrase once; marking all four would say it
+answered twice.
+
+**An excluded term is never marked.** It is the reason a record would have been
+rejected, and a record that was returned holds none of them.
+
+**Ranges are byte offsets, half-open.** `Café` occupies five bytes and its mark
+covers five, because `é` is two. A consumer slicing UTF-8 by byte — which is what
+`start` and `end` are for — gets the whole letter.
+
+**Three things answer no marks rather than refusing:** a field with no declared
+analyzer, a record holding no text there, and a field this statement did not ask
+about. A highlight decorates records some other clause already chose, so `[]` is
+the true answer in each case — unlike `search::score`, which refuses when it has
+nothing to measure against, because there is no honest number for it to return.
+
+**No index is needed and none changes the answer.** A highlight asks about one
+document rather than about a document relative to a collection, so it is
+answered from the record's text on either access path.
+
+**The store marks; it does not render.** There is no snippet, no fragment
+selection, no marker string and nothing to configure. How much surrounding text
+to show and what to wrap the marks in are the caller's decisions, and a database
+that inserted `<mark>` would have taken a position on somebody's markup — and
+could not un-take it for a text that contains the marker already.
 
 ### Edge tables
 
@@ -2293,6 +2633,48 @@ removing half of them takes recall of the true ten from **100% to 42%**, and
 nothing in the answer says so.
 
 The remedy is `REBUILD INDEX` — see §4.
+
+### Whether the answer is exact, on every answer
+
+Every read returns **`exact`** on its plan, and it is the only field of a plan
+that is written whether or not it is interesting. When it is `false` the plan
+also carries **`inexact`**, the reason in words.
+
+```
+EXPLAIN SELECT * FROM points ORDER BY vector::euclidean(at, [0,0]) LIMIT 2;
+-- { access: 'scan', exact: true, table: 'points' }
+
+EXPLAIN SELECT * FROM points ORDER BY vector::euclidean(at, [0,0]) LIMIT 2 APPROXIMATE;
+-- { access: 'approximate', exact: false, index: 'by_at',
+--   inexact: 'an approximate index answered this, so a nearer record may exist',
+--   table: 'points' }
+```
+
+**Why it is there when it is `true`.** Every other field of a plan is absent when
+the read had no answer for it, so a scan's plan is the two keys it knows rather
+than eight of which six say nothing. If `exact` followed that rule its absence
+would come to mean `true`, and a caller would be *inferring* the one property
+that exists so that nothing has to be inferred. An approximate answer and an
+exact one are otherwise the same shape, the same length, and — on any small
+dataset — the same records.
+
+**One read in this store answers approximately**, and it is the vector graph
+walk, only when the statement writes `APPROXIMATE`. Everything else is exact,
+including the two search operators that sound as though they would not be:
+
+- **`MATCHES PREFIX` and `MATCHES FUZZY` are exact.** A term expansion that grows
+  past its cap is not truncated — the candidate is simply not offered and the
+  scan answers the same question. So a wide expansion costs more and returns the
+  same records, which is the general rule this store holds everywhere: an index
+  changes what a read costs and never what it answers.
+- **A `LIMIT` is not an approximation.** A bounded read answers exactly the
+  question that was asked, and the question included the bound.
+
+**Over the wire the field is three-state**, and a client should treat it that
+way: the node said exact, the node said approximate and why, or *the node did not
+say* — which is what a node older than this field sends. The third is not the
+first. Reading silence as `true` puts a promise in the mouth of a node that never
+made one, on the one property whose whole purpose is that it is never guessed at.
 
 ### Following a reference
 
@@ -3726,12 +4108,87 @@ too.
 answer rather than an absence standing in for one, and sorts where it belongs
 under the `DESC` a ranked read is written with.
 
+**A word written twice in the query weighs twice.** `search::score(body, 'lock
+lock')` is not the same order as `search::score(body, 'lock')` — it lifts the
+records that hold `lock` and leaves the rest where they were. Whether that is
+what you meant is worth checking when the query is assembled from parts.
+
+**Weighting a whole field is multiplication**, because a score is an ordinary
+expression:
+
+```
+SELECT title, search::score(title, 'lock') * 3
+            + search::score(body,  'lock') AS relevance
+  FROM notes
+ ORDER BY relevance DESC;
+```
+
+The two are different tools and neither replaces the other: repetition weights a
+**word** inside one field's score, the multiplier weights a **field** against
+the others. There is no `^3` syntax because there is nothing for it to do that
+arithmetic does not already do, with precedence and composition a reader already
+knows.
+
+**A boost multiplies a score the record earned, and can never manufacture one.**
+A field the record does not match contributes exactly `0`, so `0 × 1000` is
+still `0`. That is worth stating because the alternative is not a tie: BM25
+divides by document length, so a record given any weight for a word it does not
+hold arrives *first*, and the resulting order looks like a strong opinion rather
+than a bug.
+
 `k1 = 1.2` and `b = 0.75` — how fast repetition stops helping, and how much
 length is held against a document — are **constants of this implementation**, not
 options on the index. That has a cost worth stating plainly: changing them in a
 release changes the order results come back in, without any statement changing.
 They become part of `DEFINE INDEX` when there is a measurement to justify a
 different value.
+
+#### The best few, without scoring the rest
+
+A ranked read with a `LIMIT` does **not** score every record in the table:
+
+```
+SELECT title, search::score(body, 'lock contention') AS relevance
+FROM notes ORDER BY search::score(body, 'lock contention') DESC LIMIT 10;
+```
+
+The read enumerates the postings of the query's own terms and stops enumerating a
+term once the most that term and everything after it could still contribute falls
+below the score already sitting in tenth place. `EXPLAIN` reports it as access
+`ordered` with shape `scored`.
+
+**It is exact**, and that word is doing real work here — this is a bound, not a
+sample. The records it declines to read are records it has *shown* cannot reach
+the answer, so it answers with the first `LIMIT` records of the order scoring the
+whole table produces — the same records, in the same order. Records scoring
+equally are ordered by identity, so the cut at the limit falls in the same place
+for both. Nothing is traded and no keyword accepts anything; the read is faster
+and the answer is the same one.
+
+Everything else is the scan, and answers identically: a second sort key, an
+**ascending** order (a bound of this shape keeps the highest-scoring records, and
+the lowest-scoring ones are overwhelmingly the records the index does not post at
+all), no `LIMIT`, a `GROUP BY`, a `FETCH`, a resumed page, `APPROXIMATE`, a `[*]`
+route into the searched field, and a query argument that reads the record being
+scored — which would make the collection the score is measured against depend on
+the record, so there is no one term set to bound.
+
+**A projection keeps the bound**, unlike the orders above, because a score is not
+read out of the record: it is computed from the postings of the query's terms and
+the record's identity. The single exception is a projection answering under the
+searched field's **own name** with something else — `SELECT other AS body …
+ORDER BY search::score(body, 'x')` — where the answer carries a field the index
+does not hold. Writing the field out under its own name is not that, so `SELECT
+body, search::score(body, 'x') AS relevance …` keeps its bound, which is the
+shape a caller wanting the text to highlight actually writes.
+
+The walk also hands the read back to the scan when the field carries no search
+index, when the field is not visible to the caller, when this transaction has
+written to the table, when the read is at an older snapshot than the committed
+tail, and when the postings run out before the bound is filled — a shortfall means
+the answer is filled out with records holding none of the query's words, and
+their order among themselves is the scan's. **The path reported is always the one
+that ran.**
 
 ### Nearest neighbours
 
@@ -4620,7 +5077,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.0.2", "build": "0.0.2-alpha", "endpoints": ["db-1.internal:9000"],
+ "version": "0.0.3", "build": "0.0.3-alpha", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000"}]}}
 ```
 
@@ -4795,13 +5252,11 @@ be, because it is confined to the run its fixed values name.
 | a traversal whose arrows change direction | `a->follows->users<-follows<-users` — "who follows somebody ada follows" — is a real question, and a useful one. It needs a rule for what each step's anchor *is* when the direction turns, and a chain where every arrow reads the same way is the one a reader can follow without one |
 | a traversal that answers with the path rather than its end | the answer would be a list of records rather than a record, which is a shape for rows and not for records — the same wall the join met, and the same milestone |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |
-| stemming | a filter, and one could be added under the rule above; a correct stemmer is a language-specific artefact rather than a hundred lines, and a bad one is worse than none |
 | n-grams, so `MATCHES` never answers a substring question | index size proportional to text length × (max − min), paid on every write; Q-31 holds the measurement that would decide it |
-| phrase queries (`'"ada lovelace"'`) | they need positions in the postings and a second matching rule |
 | layers in the vector index | a hierarchical graph assigns each node a random level, and a random level is what a store whose index entries are *derived rather than logged* cannot have — two replicas would build different graphs from one log. A level derived from a hash of the record id is the right shape when the layers earn their cost; the key already reserves the byte. |
 | a filtered nearest-neighbour read | the graph answers a distance question and knows nothing of a `WHERE`, so combining them needs either over-fetching by an unknown factor or a filtered walk |
-| highlighting, fuzzy matching, phrase and proximity queries | each needs postings to carry more than membership — offsets for a highlight or a phrase, an edit automaton for fuzziness — which is a different index rather than a bigger one. Ranking itself is built: see [Ranking](#ranking) |
-| per-index `k1` / `b`, per-field weighting | tuning knobs nobody can yet turn responsibly: this project has no labelled relevance set to measure a different value against, and a knob chosen without one is a guess with a syntax |
+| highlighting | it needs the postings to carry byte offsets, which is a different index rather than a bigger one, and a rule for which of the matched terms a fragment is chosen around. Fuzzy matching, phrase and proximity queries were listed here until they were built: each turned out to need no index change at all, because the analyzer is a property of the *schema* and so the ordered token list is already in hand wherever text is read — see `MATCHES FUZZY` and the quoted-phrase form of `MATCHES` above. Ranking itself is built: see [Ranking](#ranking) |
+| per-index `k1` / `b` | tuning knobs nobody can yet turn responsibly: this project has no labelled relevance set to measure a different value against, and a knob chosen without one is a guess with a syntax. Per-field weighting was listed here until it turned out to need no knob at all — a score is an expression, so weighting a field is multiplying it, and the only thing the wave had to prove was that a field the record does not match contributes exactly `0`. See [Ranking](#ranking) |
 | a **function applied to each reached value** | `array::len(tags[*])` is refused because it has two answers — the function over the collected values, or the function applied to each of them. The second is a mapping operator and deserves its own spelling rather than being what a parenthesis happens to mean. §3 |
 | a **`UNIQUE` multikey index** | two readings — no two records sharing an element, or a record's own elements being distinct — which refuse different writes. It needs a spelling that says which, not a default. §4 |
 | a **multikey index over two multi-valued routes** | the entries would be one per pair of elements, paid on every write. Worth building when somebody has the query that needs it, so the cost is paid for a reason. §4 |

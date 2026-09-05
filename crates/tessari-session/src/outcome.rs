@@ -31,6 +31,12 @@ pub enum Outcome {
         /// Empty for almost every read, which is the point: a note is worth
         /// reading because it is rare.
         notes: Vec<Note>,
+        /// What the query might have meant, when a term nothing holds says it
+        /// probably meant something else.
+        ///
+        /// `None` when no term dictionary was consulted — see [`Suggestion`],
+        /// where the three states and the reason for them are set out.
+        suggestion: Option<Suggestion>,
         /// Whether the read said `ONLY`, and so answers with the record rather
         /// than a list holding it.
         ///
@@ -108,6 +114,138 @@ pub enum AccessPath {
     /// folded in here — a nested plan is its own feature and inventing one field
     /// for it would describe only the shallowest case.
     Materialised,
+}
+
+/// Why a walk over a proximity graph is not provably the best answer there is.
+///
+/// One string, reached by both channels that state the same fact — the note a
+/// caller may read and the exactness a caller cannot help reading. Two copies of
+/// a sentence like this drift, and the drift is invisible: each channel is
+/// individually correct and they disagree about the same read.
+const GRAPH_WALK_IS_APPROXIMATE: &str =
+    "an approximate index answered this, so a nearer record may exist";
+
+/// Whether an answer is provably the records the question names.
+///
+/// # Why this is a field and not a note
+///
+/// [`Note::Approximate`] already says this, and says it well. What it cannot do
+/// is make a caller *unable to miss it*, because a note is opt-in by
+/// construction: a caller that reads none of them gets exactly the records it
+/// would have got before notes existed. So an approximate answer and an exact
+/// one are the same shape, the same length, usually the same records — and, to
+/// a caller that never looks, the same claim.
+///
+/// The second failure is the one that outlives any single read. If exactness is
+/// something a path *adds* when it happens to be approximate, then a path added
+/// later that forgets reads as exact, because absence-means-exact is a default
+/// nobody chose and nobody can see. That is why this is derived from the access
+/// path by an exhaustive match in [`AccessPath::exactness`] rather than set at a
+/// construction site: a new path does not compile until somebody says where it
+/// sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exactness {
+    /// Provably the records the question names.
+    ///
+    /// Not "no approximation was detected" — the read had no step that could
+    /// answer with fewer or other records than the question asks for.
+    Exact,
+    /// Not provably, and why.
+    ///
+    /// The reason is carried rather than looked up from the path, because the
+    /// value of a returned `false` is entirely in what follows it: a caller told
+    /// only that an answer is inexact has learned that it cannot trust the
+    /// answer and nothing about what to do instead.
+    Approximate(&'static str),
+}
+
+impl Exactness {
+    /// Whether the answer is provably the one the question names.
+    #[must_use]
+    pub const fn is_exact(self) -> bool {
+        matches!(self, Self::Exact)
+    }
+
+    /// Why it is not, when it is not.
+    #[must_use]
+    pub const fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::Exact => None,
+            Self::Approximate(why) => Some(why),
+        }
+    }
+}
+
+/// A term the query named that nothing holds, and the nearest term that is held.
+///
+/// Both spellings are **analyzed** terms rather than the words as typed, because
+/// the near one has to be: it came out of the term dictionary, which holds what
+/// the analyzer produced. Reporting the typed word beside a stored stem would
+/// invite a caller to compare two things that were never the same kind, so the
+/// typed side is the analyzed form of what the caller wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Nearest {
+    /// The term as the query asked for it, analyzed.
+    pub typed: String,
+    /// The nearest term the dictionary holds.
+    pub instead: String,
+}
+
+/// What the store would have looked for, had the query asked for something the
+/// collection holds.
+///
+/// # Why this is a field and not a note, and not the records
+///
+/// Not the records, because a suggestion is advice about a **different question**
+/// than the one that was asked. Substituting it would answer a query nobody
+/// wrote, and the store already knows why that is worse than useless here: a
+/// term the records do not hold does not tie a BM25 ranking, it inverts it, so
+/// the shortest document arrives first wearing a plausible score. The executed
+/// query is byte-for-byte what the caller wrote, always.
+///
+/// Not a note, because [`Note`] crosses the wire as prose. A caller reading
+/// "did you mean vector" has to parse English to recover the term, and a caller
+/// that cannot cheaply read a suggestion as data is a caller that will glue it
+/// into the next query by hand — the exact substitution this exists to prevent.
+///
+/// # The absence is three states, not two
+///
+/// This type is carried as an `Option`, and the `None` is load-bearing. A
+/// suggestion needs a term dictionary, and only a `SEARCH` index has one, so a
+/// query over an unindexed field cannot be asked this question at all. If
+/// absence meant "nothing is near", that read would report a confident negative
+/// it never checked. So `None` is *no dictionary was consulted*,
+/// [`Self::NothingNearer`] is *one was, and every term is held*, and
+/// [`Self::DidYouMean`] is *these were not*. It is the same shape, and the same
+/// reason, as [`Exactness`] being written even when the answer is exact.
+///
+/// That a suggestion appears only where an index does is not a breach of the
+/// rule that an index changes what a read costs and never what it answers. The
+/// records are identical either way. A suggestion is not an answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Suggestion {
+    /// The dictionary was consulted and holds every term the query named.
+    ///
+    /// Reported rather than left absent for the reason above: a caller has to be
+    /// able to tell this from a read that never had a dictionary to ask.
+    NothingNearer,
+    /// Terms the dictionary does not hold, each with the nearest one it does.
+    ///
+    /// Never empty — a query with nothing to suggest reports
+    /// [`Self::NothingNearer`] instead, so an empty list cannot come to mean two
+    /// things.
+    DidYouMean(Vec<Nearest>),
+}
+
+impl Suggestion {
+    /// The corrections, when there are any.
+    #[must_use]
+    pub fn corrections(&self) -> &[Nearest] {
+        match self {
+            Self::NothingNearer => &[],
+            Self::DidYouMean(nearest) => nearest,
+        }
+    }
 }
 
 /// Something the store did on the way to an answer that the answer does not say.
@@ -214,9 +352,7 @@ impl Note {
                 from.name(),
                 to.name(),
             ),
-            Self::Approximate => {
-                "an approximate index answered this, so a nearer record may exist".to_owned()
-            }
+            Self::Approximate => GRAPH_WALK_IS_APPROXIMATE.to_owned(),
             Self::ComparedAcrossKinds { left, right } => format!(
                 "this read compared a {left} with a {right}, \
                  so it answered about the records whose kinds happened to line up",
@@ -274,6 +410,34 @@ impl AccessPath {
             .join(", ")
     }
 
+    /// Whether records reached this way are provably the ones the question
+    /// names.
+    ///
+    /// **Exhaustive on purpose.** A wildcard arm here would make every path
+    /// added afterwards exact by default, silently, which is exactly the claim
+    /// nobody would have made on its behalf. Written out, a new variant is a
+    /// compile error until somebody decides — and deciding is one line, while
+    /// discovering the wrong default is a caller trusting an answer it should
+    /// not have.
+    ///
+    /// Only one path is approximate today, and it is not the fuzzy one. A capped
+    /// term expansion is **not offered as a candidate** and the scan answers, so
+    /// `MATCHES PREFIX` and `MATCHES FUZZY` reach provably the records they name
+    /// however wide the expansion would have been.
+    #[must_use]
+    pub const fn exactness(self) -> Exactness {
+        match self {
+            Self::Approximate => Exactness::Approximate(GRAPH_WALK_IS_APPROXIMATE),
+            Self::Record
+            | Self::Index
+            | Self::Ordered
+            | Self::Scan
+            | Self::Graph
+            | Self::Join
+            | Self::Materialised => Exactness::Exact,
+        }
+    }
+
     /// A short stable name, for logs and for a client that shows the cost.
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -317,6 +481,35 @@ impl Outcome {
     pub const fn path(&self) -> Option<AccessPath> {
         match self {
             Self::Records { plan, .. } => Some(plan.access),
+            _ => None,
+        }
+    }
+
+    /// Whether the records are provably the ones the question names.
+    ///
+    /// Beside [`Self::path`] for the same reason that one exists — a caller that
+    /// wants the property and not the structure around it — and answering
+    /// `None` only for an outcome that carries no records at all, which is an
+    /// outcome that made no claim of this kind to begin with.
+    #[must_use]
+    pub const fn exactness(&self) -> Option<Exactness> {
+        match self {
+            Self::Records { plan, .. } => Some(plan.exact),
+            _ => None,
+        }
+    }
+
+    /// What the query might have meant, when it named a term nothing holds.
+    ///
+    /// Two nestings of absence, and they say different things. The outer `None`
+    /// is an outcome carrying no records, which asked nothing of a dictionary
+    /// because it ran no query. The inner one is a read that ran but had no
+    /// dictionary to ask. Flattening them would let a `Removed` count and a
+    /// scan over an unindexed field answer this question the same way.
+    #[must_use]
+    pub const fn suggestion(&self) -> Option<&Option<Suggestion>> {
+        match self {
+            Self::Records { suggestion, .. } => Some(suggestion),
             _ => None,
         }
     }

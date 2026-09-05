@@ -186,6 +186,14 @@ pub enum Function {
     /// `search::score(field, 'query')` — how well this record answers the query,
     /// measured against the collection the field's search index summarises.
     SearchScore,
+    /// `search::highlight(field)` — where in this record's text the read's own
+    /// query matched, as `{ start, end }` byte ranges.
+    ///
+    /// It takes the **field alone**. The query comes from what the statement
+    /// asked of that field, so a highlight cannot disagree with the filter that
+    /// selected the record — see the session's `search::highlight` for why a
+    /// second copy of the query is the failure this signature avoids.
+    SearchHighlight,
     /// `time::bucket(instant, 1h)` — the start of the window that instant is in.
     TimeBucket,
     /// `geo::intersects(a, b)` — whether the two shapes share any position,
@@ -286,6 +294,7 @@ impl Function {
         Self::VectorEuclidean,
         Self::VectorDot,
         Self::SearchScore,
+        Self::SearchHighlight,
         Self::TimeBucket,
         Self::GeoIntersects,
         Self::GeoDisjoint,
@@ -353,6 +362,7 @@ impl Function {
             Self::VectorEuclidean => "vector::euclidean",
             Self::VectorDot => "vector::dot",
             Self::SearchScore => "search::score",
+            Self::SearchHighlight => "search::highlight",
             Self::TimeBucket => "time::bucket",
             Self::GeoIntersects => "geo::intersects",
             Self::GeoDisjoint => "geo::disjoint",
@@ -422,6 +432,7 @@ impl Function {
             | Self::TypeUuid
             | Self::GeoArea
             | Self::CryptoSha256
+            | Self::SearchHighlight
             | Self::CryptoSha512 => 1,
             Self::StringConcat
             | Self::StringSplit
@@ -528,6 +539,7 @@ impl Function {
             | Self::GeoDistance
             | Self::GeoArea
             | Self::CryptoSha256
+            | Self::SearchHighlight
             | Self::CryptoSha512 => Purity::Pure,
         }
     }
@@ -572,6 +584,7 @@ impl Function {
                 | Self::VectorEuclidean
                 | Self::VectorDot
                 | Self::SearchScore
+                | Self::SearchHighlight
                 | Self::GeoDistance
         )
     }

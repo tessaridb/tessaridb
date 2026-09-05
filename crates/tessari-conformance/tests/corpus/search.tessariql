@@ -77,6 +77,48 @@ SELECT * FROM notes WHERE body MATCHES 'ada program';
 SELECT * FROM notes WHERE body MATCHES 'CAFE';
 --- expect: rows 1
 
+# `MATCHES PREFIX` — the words a reader has started typing. Every case is run
+# here with the index in place; the scan's agreement with it is asserted per
+# record by the session suite, which can hold two stores at once.
+
+--- case: a table of its own, so these cases cannot move another case's count
+DEFINE TABLE typed SCHEMALESS;
+DEFINE FIELD body ON typed TYPE string ANALYZER simple;
+DEFINE INDEX by_typed ON typed FIELDS body SEARCH;
+CREATE typed:1 = { body: 'Vector search over a store', title: 'one' };
+CREATE typed:2 = { body: 'Vectors and their distances' };
+CREATE typed:3 = { body: 'A vectorised inner loop' };
+CREATE typed:4 = { body: 'Locking and contention' };
+--- expect: ok
+
+--- case: a prefix reaches every word that begins with it
+SELECT * FROM typed WHERE body MATCHES PREFIX 'vecto';
+--- expect: rows 3
+
+--- case: it is still a conjunction across the words that were typed
+SELECT * FROM typed WHERE body MATCHES PREFIX 'vecto sea';
+--- expect: rows 1
+
+--- case: a word nothing begins with empties the conjunction
+SELECT * FROM typed WHERE body MATCHES PREFIX 'vecto zzz';
+--- expect: rows 0
+
+--- case: a complete word is a prefix of itself
+SELECT * FROM typed WHERE body MATCHES PREFIX 'vectorised';
+--- expect: rows 1
+
+--- case: below the minimum it is refused rather than answered slowly
+SELECT * FROM typed WHERE body MATCHES PREFIX 've';
+--- expect: error PrefixTooShort
+
+--- case: and at the minimum it is served
+SELECT * FROM typed WHERE body MATCHES PREFIX 'vec';
+--- expect: rows 3
+
+--- case: a field with no analyzer holds no terms to begin with either
+SELECT * FROM typed WHERE title MATCHES PREFIX 'one';
+--- expect: rows 0
+
 --- case: an update takes back the postings the record no longer earns
 UPDATE notes:1 = { body: 'Grace Hopper wrote a compiler', title: 'Ada' };
 SELECT * FROM notes WHERE body MATCHES 'lovelace';
@@ -155,4 +197,261 @@ SELECT * FROM points ORDER BY vector::cosine(at, [0.1, 0.9]) LIMIT 2 APPROXIMATE
 --- case: approximate is contextual, so a field may be called it
 CREATE points:4 = { approximate: true, vector: 'a field called vector' };
 SELECT approximate FROM points:4;
+--- expect: rows 1
+
+# `MATCHES FUZZY` — the word a reader meant rather than the one they typed. As
+# above, these run with the index in place; the scan's agreement with it is
+# asserted per record by the session suite, which can hold two stores at once.
+
+--- case: a table of its own, so these cases cannot move another case's count
+DEFINE TABLE mistyped SCHEMALESS;
+DEFINE FIELD body ON mistyped TYPE string ANALYZER simple;
+DEFINE INDEX by_mistyped ON mistyped FIELDS body SEARCH;
+CREATE mistyped:1 = { body: 'Vector search over a store' };
+CREATE mistyped:2 = { body: 'A container for the analyzer' };
+CREATE mistyped:3 = { body: 'Locking and contention' };
+CREATE mistyped:4 = { body: 'The doctor and the victor' };
+--- expect: ok
+
+--- case: a dropped letter still finds the word it was dropped from
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'vectr';
+--- expect: rows 1
+
+--- case: a word spelled correctly still matches itself
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'vector';
+--- expect: rows 1
+
+--- case: it is still a conjunction across the words that were typed
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'containr analyzr';
+--- expect: rows 1
+
+--- case: a word nothing comes near empties the conjunction
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'containr zzzqqq';
+--- expect: rows 0
+
+--- case: a mistake inside the first three characters is not found
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'xector';
+--- expect: rows 0
+
+--- case: too short to carry a non-fuzzy prefix, so it is refused
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 've';
+--- expect: error PrefixTooShort
+
+--- case: a transposition costs two edits and is still inside the budget
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'vectro';
+--- expect: rows 1
+
+--- case: but a transposition inside the first three characters is not found
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'vetcor';
+--- expect: rows 0
+
+--- case: a collection holding the same two words in both orders
+DEFINE COLLECTION phrased;
+DEFINE FIELD body ON phrased TYPE string ANALYZER simple;
+CREATE phrased:1 = { body: 'ada lovelace wrote the first program' };
+CREATE phrased:2 = { body: 'lovelace ada, reversed on purpose' };
+CREATE phrased:3 = { body: 'ada alone without the surname' };
+--- expect: ok
+
+--- case: unquoted is a conjunction, so word order does not matter
+SELECT * FROM phrased WHERE body MATCHES 'ada lovelace';
+--- expect: rows 2
+
+--- case: quoted is a phrase, so word order is the whole question
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"';
+--- expect: rows 1
+
+--- case: and the reversed phrase finds the reversed record
+SELECT * FROM phrased WHERE body MATCHES '"lovelace ada"';
+--- expect: rows 1
+
+--- case: a phrase of one word is that word
+SELECT * FROM phrased WHERE body MATCHES '"ada"';
+--- expect: rows 3
+
+--- case: slop zero is contiguity, and one word sits between these two
+SELECT * FROM phrased WHERE body MATCHES '"ada wrote"~0';
+--- expect: rows 0
+
+--- case: one token of slop absorbs exactly one token
+SELECT * FROM phrased WHERE body MATCHES '"ada wrote"~1';
+--- expect: rows 1
+
+--- case: slop widens the window and never relaxes the order
+SELECT * FROM phrased WHERE body MATCHES '"wrote ada"~9';
+--- expect: rows 0
+
+--- case: an explicit zero is the bare phrase
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"~0';
+--- expect: rows 1
+
+--- case: one quote is not a phrase, so it is the words it holds
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace';
+--- expect: rows 2
+
+--- case: a slop marker that is not a number is refused by name
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"~x';
+--- expect: error MalformedSlop
+
+--- case: a slop marker with no number is the same refusal
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"~';
+--- expect: error MalformedSlop
+
+--- case: a negative slop is refused rather than clamped to zero
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"~-1';
+--- expect: error MalformedSlop
+
+--- case: an index does not change what a phrase means
+DEFINE INDEX by_phrased ON phrased FIELDS body SEARCH;
+--- expect: ok
+
+--- case: the same phrase, now served from the index
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"';
+--- expect: rows 1
+
+--- case: and the refusal is raised before the index is consulted
+SELECT * FROM phrased WHERE body MATCHES '"ada lovelace"~x';
+--- expect: error MalformedSlop
+
+--- case: a collection for the boolean forms, with a record only OR reaches
+DEFINE COLLECTION boolean;
+DEFINE FIELD body ON boolean TYPE string ANALYZER simple;
+CREATE boolean:1 = { body: 'ada worked with babbage on the engine' };
+CREATE boolean:2 = { body: 'ada wrote the first program' };
+CREATE boolean:3 = { body: 'lovelace is the surname' };
+CREATE boolean:4 = { body: 'nothing to do with either of them' };
+--- expect: ok
+
+--- case: an unquoted query is still the conjunction it always was
+SELECT * FROM boolean WHERE body MATCHES 'ada babbage';
+--- expect: rows 1
+
+--- case: OR unions the terms, reaching a record the conjunction drops
+SELECT * FROM boolean WHERE body MATCHES 'ada OR lovelace';
+--- expect: rows 3
+
+--- case: NOT removes a record the required terms reached
+SELECT * FROM boolean WHERE body MATCHES 'ada NOT babbage';
+--- expect: rows 1
+
+--- case: the three forms compose in one query
+SELECT * FROM boolean WHERE body MATCHES 'ada OR lovelace NOT babbage';
+--- expect: rows 2
+
+--- case: a lowercase or is a word, so a query written before the operators is unchanged
+SELECT * FROM boolean WHERE body MATCHES 'ada or lovelace';
+--- expect: rows 0
+
+--- case: excluding without requiring is refused by name
+SELECT * FROM boolean WHERE body MATCHES 'NOT babbage';
+--- expect: error NegationWithoutTerm
+
+--- case: an index does not change what the boolean forms mean
+DEFINE INDEX by_boolean ON boolean FIELDS body SEARCH;
+--- expect: ok
+
+--- case: the same disjunction, now served from the index
+SELECT * FROM boolean WHERE body MATCHES 'ada OR lovelace';
+--- expect: rows 3
+
+--- case: and the same composition
+SELECT * FROM boolean WHERE body MATCHES 'ada OR lovelace NOT babbage';
+--- expect: rows 2
+
+--- case: and the refusal is raised before the index is consulted
+SELECT * FROM boolean WHERE body MATCHES 'NOT babbage';
+--- expect: error NegationWithoutTerm
+
+--- case: a collection where one spelling is held and a near one is not
+DEFINE COLLECTION spelled;
+--- expect: ok
+
+--- case: the field is analyzed so the terms exist
+DEFINE FIELD body ON spelled TYPE string ANALYZER simple;
+--- expect: ok
+
+--- case: three records hold the word
+CREATE spelled:1 = { body: 'the vector index walks a graph' };
+--- expect: ok
+
+--- case: a second
+CREATE spelled:2 = { body: 'a vector is a list of numbers' };
+--- expect: ok
+
+--- case: a third, beside a word the misspelling does not reach
+CREATE spelled:3 = { body: 'the engine stores every vector' };
+--- expect: ok
+
+--- case: a misspelled term finds nothing, and is not answered as the word it resembles
+SELECT * FROM spelled WHERE body MATCHES 'vecter';
+--- expect: rows 0
+
+--- case: the spelling that is held finds all three
+SELECT * FROM spelled WHERE body MATCHES 'vector';
+--- expect: rows 3
+
+--- case: an index is added, which changes what a read costs
+DEFINE INDEX by_spelled ON spelled FIELDS body SEARCH;
+--- expect: ok
+
+--- case: and the misspelled term still finds nothing, suggestion or no suggestion
+SELECT * FROM spelled WHERE body MATCHES 'vecter';
+--- expect: rows 0
+
+--- case: while a query mixing a held word and a misspelled one answers on the held one alone
+SELECT * FROM spelled WHERE body MATCHES 'engine OR vecter';
+--- expect: rows 1
+
+# Highlighting. The unit tests assert the byte ranges themselves; what belongs
+# here is the surface — that the form is accepted where it should be, refused
+# where it should be, and that the three states which answer no marks answer a
+# record rather than an error.
+
+--- case: a collection to mark up
+DEFINE COLLECTION marked;
+--- expect: ok
+
+--- case: a chain that changes what a word becomes, so a match need not be the word typed
+DEFINE ANALYZER marking FILTERS lowercase, ascii, stemmer;
+--- expect: ok
+
+--- case: and it attaches to the field, not to an index
+DEFINE FIELD body ON marked TYPE string ANALYZER marking;
+--- expect: ok
+
+--- case: a record whose text holds the word in another form, and one that folds
+CREATE marked:1 = { body: 'He was Running fast', note: 'no analyzer here' };
+CREATE marked:2 = { body: 'un Café ici' };
+--- expect: ok
+
+--- case: a record holding no text in the analyzed field at all
+CREATE marked:3 = { note: 'nothing to mark' };
+--- expect: ok
+
+--- case: the marks follow the token that matched, not the characters typed
+SELECT search::highlight(body) AS marks FROM marked WHERE body MATCHES 'run';
+--- expect: rows 1
+
+--- case: and the same for a folded one
+SELECT search::highlight(body) AS marks FROM marked WHERE body MATCHES 'cafe';
+--- expect: rows 1
+
+--- case: the query is not repeated in the projection, so a second argument is refused
+SELECT search::highlight(body, 'run') AS marks FROM marked WHERE body MATCHES 'run';
+--- expect: error WrongArity
+
+--- case: a field with no declared analyzer answers no marks rather than refusing
+SELECT search::highlight(note) AS marks FROM marked WHERE body MATCHES 'run';
+--- expect: rows 1
+
+--- case: and so does a field this statement never asked about
+SELECT search::highlight(body) AS marks FROM marked;
+--- expect: rows 3
+
+--- case: no index is needed, and adding one does not change the answer
+DEFINE INDEX by_marked ON marked FIELDS body SEARCH;
+--- expect: ok
+
+--- case: the same read, now with an index under it
+SELECT search::highlight(body) AS marks FROM marked WHERE body MATCHES 'run';
 --- expect: rows 1

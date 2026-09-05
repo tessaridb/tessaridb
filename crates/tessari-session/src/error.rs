@@ -824,6 +824,77 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `MATCHES PREFIX` whose prefix is shorter than the store will serve.
+    ///
+    /// Refused rather than answered slowly, and refused **before any access path
+    /// is chosen**, so an index cannot change whether the query runs. The cost
+    /// of a prefix is the size of its expansion, and a one- or two-character
+    /// prefix expands to a large fraction of the vocabulary — an answer nobody
+    /// can use, paid for in full, on the query a frustrated reader retries.
+    ///
+    /// The limit is stated in the message because a refusal that does not say
+    /// what would have worked leaves the caller guessing at it.
+    #[error(
+        "the prefix {prefix:?} is shorter than {minimum} characters, \
+         which is the shortest this store will expand (at {span})"
+    )]
+    PrefixTooShort {
+        /// The prefix as it was analysed, not as it was typed.
+        prefix: String,
+        /// The shortest prefix that would have been served.
+        minimum: usize,
+        /// Where the query was written.
+        span: Span,
+    },
+
+    /// A quoted phrase whose trailing slop marker does not parse.
+    ///
+    /// Refused rather than answered, and refused **before any access path is
+    /// chosen**, for the same reason [`Error::PrefixTooShort`] is: whether a
+    /// query runs must not depend on whether an index happens to exist.
+    ///
+    /// The alternative is what this store did before phrases existed, and it is
+    /// the failure the whole operator was built to remove. `~x` is not a slop
+    /// marker, so the characters fall through to the analyzer, `x` becomes a
+    /// term of its own, no record holds it, and the query answers `[]` — an
+    /// empty answer that looks exactly like "nothing matched" and is really
+    /// "you typed something I did not understand". A caller cannot tell those
+    /// apart, and nothing in the answer invites them to look.
+    ///
+    /// Reading it as slop 0 would be the same mistake wearing a helpful face: it
+    /// answers a question the caller did not ask, and it does so silently.
+    #[error(
+        "{marker:?} is not a slop marker; write `~` followed by a whole number, \
+         as in \"a phrase\"~2, or leave it off for an exact phrase (at {span})"
+    )]
+    MalformedSlop {
+        /// The tail as written, after the phrase's closing quote.
+        marker: String,
+        /// Where the query was written.
+        span: Span,
+    },
+
+    /// A search query that excludes terms and requires none.
+    ///
+    /// An inverted index enumerates **presence**, so `NOT babbage` names the
+    /// complement of a posting list — every record in the table, which the index
+    /// cannot produce. The two honest answers are a full scan and a refusal, and
+    /// this store refuses, exactly as it refuses a score over a field with no
+    /// search index: a statement that did not run beats one that quietly read the
+    /// whole table because a word was spelled `NOT`.
+    ///
+    /// Raised **before any access path is chosen**, and before the catalog is
+    /// read at all, so the refusal cannot come to depend on whether an index
+    /// exists (ADR-0046, extended to errors).
+    #[error(
+        "a search query cannot exclude terms without requiring one; write at \
+         least one word to match, as in `ada NOT babbage` (at {span})"
+    )]
+    NegationWithoutTerm {
+        /// Where the query was written.
+        span: Span,
+    },
+
     /// A vector distance this store does not have.
     ///
     /// The distance is declared rather than defaulted, because a default would
