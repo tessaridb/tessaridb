@@ -12,6 +12,106 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.0.3-alpha — 2026-09-05
+
+**Released.** Tagged `v0.0.3-alpha` on `main`, and published as
+[`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb) —
+`0.0.3-alpha` and `latest`, `linux/amd64` and `linux/arm64`.
+
+This release is full-text search. `MATCHES` could ask for a whole word and score
+it; it can now ask for the word a reader has started typing, the word they meant
+rather than the one they typed, a phrase, either of two words, and not a third —
+and it can say where in the text it matched. 1105 conformance cases define the
+language and run in the build, up from 1035.
+
+Nothing here changes an answer a `0.0.2-alpha` statement already gave. Every
+operator below is new surface, and the on-disk index format changed to carry it —
+so, as ever before 1.0, **a store written by `0.0.2-alpha` is not promised to
+open under this one.**
+
+### The words a reader has started typing
+
+`MATCHES PREFIX 'vecto'` asks for a word **beginning with** each word typed: a
+conjunction across the query, a disjunction inside each word. A separate operator
+rather than a `*` inside the string, because a wildcard would make every query a
+parse of the caller's own data.
+
+The minimum is three characters and it is a refusal (`PrefixTooShort`), raised
+before an access path is chosen — so adding an index can never change whether the
+statement runs. The expansion cap is *not* a refusal: a prefix reaching more than
+sixty-four terms is answered by the scan instead, because a cap that refused would
+make a statement succeed on a table with no index and fail once somebody added
+one.
+
+### The word they meant
+
+`MATCHES FUZZY 'vectr'` asks for a term within two edits. It is declared, never
+automatic: a query that finds nothing is not retried as a fuzzy one behind your
+back, because a reader shown three candidate spellings cannot tell which the
+store decided they meant.
+
+The first three characters are not fuzzy, and that is part of what the operator
+**means** rather than a trick the index plays — the scan applies the same rule, so
+the answer does not change when somebody declares an index.
+
+### Phrases, either, and not
+
+A quoted `MATCHES '"ada lovelace"'` is a phrase, and `~n` after the closing quote
+declares its slop. A tail that is not `~` and a whole number is refused
+(`MalformedSlop`) rather than read as an exact phrase.
+
+`OR` unions the word beside it and `NOT` excludes the word after it. The operators
+are uppercase and that is load-bearing: they are recognised on the query as
+written, before analysis, which is what keeps `salt or pepper` meaning three
+words. A query that excludes without requiring is refused
+(`NegationWithoutTerm`) — it names the complement of a posting list, which is the
+one thing an inverted index cannot enumerate.
+
+Weighting a field is multiplication over two scores. There is no `^3` form,
+because arithmetic already does it with precedence a reader knows.
+
+### Did you mean
+
+A read answers with a `suggestion` beside its records when a term the query named
+is one the collection does not hold. **It never enters the executed query** — the
+records returned are exactly the ones the statement asked for, whether or not a
+correction was found.
+
+The trigger is a term the collection does not hold rather than an empty answer,
+because a query with one word misspelled usually still returns records. An
+excluded term is left alone: correcting an exclusion is the one direction of error
+that removes records the reader wanted.
+
+### Where the text matched
+
+`search::highlight(body)` answers an array of `{ start, end }` byte ranges, one
+per token this read's own query reached. It takes the field **alone** — the terms
+are whatever the statement already asked of that field, so a second copy of the
+query cannot disagree with the `WHERE` about what matched.
+
+The marks cover the text that matched rather than the characters typed: a search
+for `cafe` marks `Café`, and a fuzzy search for `vectr` marks `vector`.
+
+### The best few, without scoring the rest
+
+A ranked read carrying a `LIMIT` no longer scores every record. It walks the
+postings of the query's own terms and stops walking a term once the most it could
+still contribute falls below the score already in last place. `EXPLAIN` reports
+access `ordered` with shape `scored`.
+
+The result is **exact** — the same rows scoring the whole table would have put
+first — and exactness is now a returned property on every plan rather than
+something a caller has to infer from the access path.
+
+### Also
+
+- A term dictionary, with a term's frequency as a point read rather than a walk.
+- A score's per-record numbers are read from the posting itself.
+- A projected ranked read takes the bound too: `SELECT title, search::score(…) AS
+  score … LIMIT 10` was refused the bound that `SELECT *` received, for a reason
+  inherited from a sibling recognizer and measured away.
+- The node runs as a launchd agent on macOS.
+
 ## 0.0.2-alpha — 2026-09-02
 
 **Released.** Tagged `v0.0.2-alpha` on `main`, and published as
@@ -21,7 +121,7 @@ the binary and nothing else: no source, no toolchain, 108 MB.
 
 This is the first version anybody can obtain without access to this repository.
 
-1105 conformance cases define the language and run in the build.
+1035 conformance cases define the language and run in the build.
 
 The dates above and below are the days the versions were released. Work on this
 one began on 2026-08-27, which is what this heading said while it was still
