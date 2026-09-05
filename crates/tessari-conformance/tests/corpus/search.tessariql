@@ -401,3 +401,57 @@ SELECT * FROM spelled WHERE body MATCHES 'vecter';
 --- case: while a query mixing a held word and a misspelled one answers on the held one alone
 SELECT * FROM spelled WHERE body MATCHES 'engine OR vecter';
 --- expect: rows 1
+
+# Highlighting. The unit tests assert the byte ranges themselves; what belongs
+# here is the surface — that the form is accepted where it should be, refused
+# where it should be, and that the three states which answer no marks answer a
+# record rather than an error.
+
+--- case: a collection to mark up
+DEFINE COLLECTION marked;
+--- expect: ok
+
+--- case: a chain that changes what a word becomes, so a match need not be the word typed
+DEFINE ANALYZER marking FILTERS lowercase, ascii, stemmer;
+--- expect: ok
+
+--- case: and it attaches to the field, not to an index
+DEFINE FIELD body ON marked TYPE string ANALYZER marking;
+--- expect: ok
+
+--- case: a record whose text holds the word in another form, and one that folds
+CREATE marked:1 = { body: 'He was Running fast', note: 'no analyzer here' };
+CREATE marked:2 = { body: 'un Café ici' };
+--- expect: ok
+
+--- case: a record holding no text in the analyzed field at all
+CREATE marked:3 = { note: 'nothing to mark' };
+--- expect: ok
+
+--- case: the marks follow the token that matched, not the characters typed
+SELECT search::highlight(body) AS marks FROM marked WHERE body MATCHES 'run';
+--- expect: rows 1
+
+--- case: and the same for a folded one
+SELECT search::highlight(body) AS marks FROM marked WHERE body MATCHES 'cafe';
+--- expect: rows 1
+
+--- case: the query is not repeated in the projection, so a second argument is refused
+SELECT search::highlight(body, 'run') AS marks FROM marked WHERE body MATCHES 'run';
+--- expect: error WrongArity
+
+--- case: a field with no declared analyzer answers no marks rather than refusing
+SELECT search::highlight(note) AS marks FROM marked WHERE body MATCHES 'run';
+--- expect: rows 1
+
+--- case: and so does a field this statement never asked about
+SELECT search::highlight(body) AS marks FROM marked;
+--- expect: rows 3
+
+--- case: no index is needed, and adding one does not change the answer
+DEFINE INDEX by_marked ON marked FIELDS body SEARCH;
+--- expect: ok
+
+--- case: the same read, now with an index under it
+SELECT search::highlight(body) AS marks FROM marked WHERE body MATCHES 'run';
+--- expect: rows 1

@@ -21,7 +21,7 @@ the binary and nothing else: no source, no toolchain, 108 MB.
 
 This is the first version anybody can obtain without access to this repository.
 
-1093 conformance cases define the language and run in the build.
+1105 conformance cases define the language and run in the build.
 
 The dates above and below are the days the versions were released. Work on this
 one began on 2026-08-27, which is what this heading said while it was still
