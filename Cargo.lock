@@ -1215,7 +1215,9 @@ version = "0.0.2-alpha"
 dependencies = [
  "rocksdb",
  "tempfile",
+ "tessari-encoding",
  "tessari-kv",
+ "tessari-session",
  "tessari-storage",
  "tessari-types",
  "thiserror",
