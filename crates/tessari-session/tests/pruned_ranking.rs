@@ -425,6 +425,26 @@ fn records_that_score_the_same_are_ordered_by_the_answer_and_not_by_the_walk() {
 }
 
 #[test]
+fn a_pruned_read_calls_itself_exact_and_is_entitled_to() {
+    // ADR-0049: a path that cannot prove itself has to say so. This one can, and
+    // the entitlement is the equivalence asserted above rather than the match arm
+    // that happens to map `ordered` to exact — so the claim is pinned here, where
+    // the proof is, and a walk that stopped being equivalent would leave a test
+    // asserting `exact: true` beside tests showing it is not.
+    let (store, _counting) = counted();
+    let mut session = searchable(&store);
+
+    let outcomes = session
+        .run("SELECT * FROM notes ORDER BY search::score(body, 'quorum note') DESC LIMIT 2;")
+        .unwrap();
+    let Some(tessari_session::Outcome::Records { plan, .. }) = outcomes.last() else {
+        panic!("a read answered with {:?}", outcomes.last());
+    };
+    assert_eq!(plan.exact, tessari_session::Exactness::Exact);
+    assert_eq!(plan.shape, Some("scored"));
+}
+
+#[test]
 fn the_plan_names_the_walk_rather_than_hiding_it_inside_ordered() {
     let (store, _counting) = counted();
     let mut session = searchable(&store);
