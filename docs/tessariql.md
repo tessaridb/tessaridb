@@ -4143,6 +4143,53 @@ release changes the order results come back in, without any statement changing.
 They become part of `DEFINE INDEX` when there is a measurement to justify a
 different value.
 
+#### The best few, without scoring the rest
+
+A ranked read with a `LIMIT` does **not** score every record in the table:
+
+```
+SELECT title, search::score(body, 'lock contention') AS relevance
+FROM notes ORDER BY search::score(body, 'lock contention') DESC LIMIT 10;
+```
+
+The read enumerates the postings of the query's own terms and stops enumerating a
+term once the most that term and everything after it could still contribute falls
+below the score already sitting in tenth place. `EXPLAIN` reports it as access
+`ordered` with shape `scored`.
+
+**It is exact**, and that word is doing real work here — this is a bound, not a
+sample. The records it declines to read are records it has *shown* cannot reach
+the answer, so it answers with the first `LIMIT` records of the order scoring the
+whole table produces — the same records, in the same order. Records scoring
+equally are ordered by identity, so the cut at the limit falls in the same place
+for both. Nothing is traded and no keyword accepts anything; the read is faster
+and the answer is the same one.
+
+Everything else is the scan, and answers identically: a second sort key, an
+**ascending** order (a bound of this shape keeps the highest-scoring records, and
+the lowest-scoring ones are overwhelmingly the records the index does not post at
+all), no `LIMIT`, a `GROUP BY`, a `FETCH`, a resumed page, `APPROXIMATE`, a `[*]`
+route into the searched field, and a query argument that reads the record being
+scored — which would make the collection the score is measured against depend on
+the record, so there is no one term set to bound.
+
+**A projection keeps the bound**, unlike the orders above, because a score is not
+read out of the record: it is computed from the postings of the query's terms and
+the record's identity. The single exception is a projection answering under the
+searched field's **own name** with something else — `SELECT other AS body …
+ORDER BY search::score(body, 'x')` — where the answer carries a field the index
+does not hold. Writing the field out under its own name is not that, so `SELECT
+body, search::score(body, 'x') AS relevance …` keeps its bound, which is the
+shape a caller wanting the text to highlight actually writes.
+
+The walk also hands the read back to the scan when the field carries no search
+index, when the field is not visible to the caller, when this transaction has
+written to the table, when the read is at an older snapshot than the committed
+tail, and when the postings run out before the bound is filled — a shortfall means
+the answer is filled out with records holding none of the query's words, and
+their order among themselves is the scan's. **The path reported is always the one
+that ran.**
+
 ### Nearest neighbours
 
 This language needs no operator for k-nearest-neighbour, because **"the ten most
