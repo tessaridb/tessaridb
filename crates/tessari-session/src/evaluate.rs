@@ -7,6 +7,7 @@
 
 use core::ops::Bound;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::ControlFlow;
 
 use tessari_constants::ORDERED_FILTER_REACH;
 use tessari_encoding::{Direction as AdjacencyDirection, Posting};
@@ -379,9 +380,24 @@ impl Session<'_> {
         // re-test as a delete's cost — what a delete spends is in the writes
         // that follow — and a statement that removes records is the last place
         // to take an untested shortcut.
-        let candidates = self
-            .candidates(transaction, id, context, condition, &searched, None)?
-            .records;
+        //
+        // And where no index serves the condition this reads the table whole
+        // rather than walking it, which a read no longer does. Deliberate: the
+        // walk hands records over while the transaction is being written to, and
+        // a statement that removes records is the last place to find out what
+        // that means. The read's saving does not arise here in any case — a
+        // delete has no `LIMIT` that stops the source, it has a ceiling on how
+        // many it removes, and it must see every candidate to know it is done.
+        let candidates =
+            match self.candidates(transaction, id, context, condition, &searched, None)? {
+                Some(reached) => reached.records,
+                None => {
+                    let visible = self.visible_in(transaction, id)?;
+                    let scanned =
+                        transaction.scan_table(context.namespace, context.database, id)?;
+                    self.records_of(scanned, &visible)?
+                }
+            };
 
         let mut removed = 0_u64;
         for (record_id, record) in candidates {
@@ -521,7 +537,7 @@ impl Session<'_> {
             });
         }
 
-        let mut collecting = crate::consume::Collecting::new(&mut budget);
+        let mut collecting = crate::consume::Collecting::new(&mut budget, held_bound(select));
         let plan = self.produce_source(
             transaction,
             select,
@@ -1262,11 +1278,44 @@ impl Session<'_> {
                         Walked::NotServed => {}
                     }
                 }
-                let Reached {
+                let Some(Reached {
                     records: candidates,
                     plan,
                     answered,
-                } = self.candidates(transaction, id, context, condition, searched, named)?;
+                }) = self.candidates(transaction, id, context, condition, searched, named)?
+                else {
+                    // No index serves this condition, so the scan does — and it
+                    // is *walked* rather than read whole, because this is the
+                    // one source shape whose bound cannot be pushed down. A
+                    // `LIMIT` behind a `WHERE` counts records that match and the
+                    // source counts records that exist, so the only thing that
+                    // can stop it is the `Break` the consumer already returns.
+                    // Read whole, that break saved the decode and nothing else:
+                    // a match found at the third of a hundred thousand records
+                    // cost 83.3 ms and a match at the last cost 82.9 (Q-72).
+                    let plan = Plan {
+                        table: named.map(ToOwned::to_owned),
+                        ..Plan::new(AccessPath::Scan)
+                    };
+                    if declined {
+                        reporting.collected.push(Note::FellBack {
+                            from: AccessPath::Ordered,
+                            to: plan.access,
+                        });
+                    }
+                    self.scan_matching(
+                        transaction,
+                        context,
+                        id,
+                        Testing {
+                            condition,
+                            searched,
+                            noticed: reporting.noticed,
+                        },
+                        consumer,
+                    )?;
+                    return Ok(plan);
+                };
                 if declined {
                     reporting.collected.push(Note::FellBack {
                         from: AccessPath::Ordered,
@@ -1559,7 +1608,7 @@ impl Session<'_> {
         condition: &Expr,
         searched: &Searched,
         named: Option<&str>,
-    ) -> Result<Reached> {
+    ) -> Result<Option<Reached>> {
         // Once for the statement rather than once per conjunct: which indexes a
         // table carries is one question, and it used to be asked as many times
         // as the condition had clauses.
@@ -1596,23 +1645,69 @@ impl Session<'_> {
                 .first()
                 .and_then(|path| searched.analyzer(path));
             let found = self.serve(transaction, context, table, &chosen, analyzer)?;
-            return Ok(Reached {
+            return Ok(Some(Reached {
                 records: self.records_of(found, &visible)?,
                 plan,
                 answered,
-            });
+            }));
         }
-        let scanned = transaction.scan_table(context.namespace, context.database, table)?;
-        Ok(Reached {
-            records: self.records_of(scanned, &visible)?,
-            plan: Plan {
-                table: named.map(ToOwned::to_owned),
-                ..Plan::new(AccessPath::Scan)
+        // Nothing serves the condition. The caller scans, and it walks the table
+        // rather than reading it — see `Session::scan_matching`, which is where
+        // the records would otherwise have been materialised before the first
+        // one could be tested.
+        Ok(None)
+    }
+
+    /// Every record of a table that the condition accepts, walked.
+    ///
+    /// The scan an unserved condition falls back to, and the one source in this
+    /// store that hands records over **as it finds them**. A read whose answer
+    /// count is its `LIMIT` pushes that bound into the source (ADR-0013); a read
+    /// with a `WHERE` cannot, because the bound counts records that match and
+    /// the source counts records that exist. What stops this one is the `Break`
+    /// the consumer already returns — the same mechanism, reaching the same
+    /// place, by the only route a condition leaves open.
+    ///
+    /// The answer is still materialised above, so ADR-0013's refusal of
+    /// streaming is untouched: no value is handed to a caller while a snapshot
+    /// is open, and the snapshot's life is shorter because the walk stops.
+    ///
+    /// The record is redacted before the condition sees it, which is what makes
+    /// a scan and an index-served read answer the same records: a field this
+    /// session may not read resolves to `NONE` for both.
+    fn scan_matching(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: crate::context::Context,
+        table: TableId,
+        testing: Testing<'_>,
+        consumer: &mut dyn Consumer,
+    ) -> Result<()> {
+        let Testing {
+            condition,
+            searched,
+            noticed,
+        } = testing;
+        let visible = self.visible_in(transaction, table)?;
+        transaction.walk_table(
+            context.namespace,
+            context.database,
+            table,
+            |transaction, id, payload| {
+                let record = self.record_of(&payload, &visible)?;
+                let held = self.evaluate_in(
+                    transaction,
+                    condition,
+                    Scope::searching(&record, searched)
+                        .identified(&id)
+                        .noticing(noticed),
+                )?;
+                if !boolean(&held, condition.span)? {
+                    return Ok(ControlFlow::Continue(()));
+                }
+                consumer.take(transaction, id, record)
             },
-            // A scan reads every record and tests each one, which is what the
-            // condition would have done anyway.
-            answered: false,
-        })
+        )
     }
 
     /// Whether this read may be believed instead of re-tested.
@@ -3229,6 +3324,39 @@ pub(crate) fn groups(select: &Select) -> bool {
     }
 }
 
+/// How many records a collecting read may stop at, when it may stop at all.
+///
+/// A `LIMIT` bounds the **answer**. It becomes a bound on the **source** exactly
+/// when the records the source produces are, in order, the records the answer
+/// holds — and this is the read that has no ordering stage between the two, so
+/// for it that is a question about the statement's shape and nothing else.
+///
+/// Stated as a whitelist, for ADR-0013's reason: a blacklist makes every clause
+/// somebody adds later a silent short answer until they remember this function.
+/// Each condition names a way the two sets differ. An `ORDER BY` decides which
+/// records the answer holds after the source has produced them. An `AFTER`
+/// cursor drops records at the front, so a count taken here is not the page's.
+/// A `SPLIT` changes how many records there are. A grouping or a fold makes the
+/// bound count groups, and stopping the source would cut a group's input instead
+/// of the answer. A `FETCH` is excluded because it holds the whole set to batch
+/// its references, which is what put this read on the collecting path to begin
+/// with.
+///
+/// Where none of those hold, the answer is a prefix of what the source produced,
+/// the rest of the table cannot change it, and reading it cost 83.3 ms to answer
+/// with one record found third of a hundred thousand (Q-72).
+fn held_bound(select: &Select) -> Option<usize> {
+    if !select.order.is_empty()
+        || select.after.is_some()
+        || !select.fetch.is_empty()
+        || select.split.is_some()
+        || groups(select)
+    {
+        return None;
+    }
+    order_bound(select)
+}
+
 /// How many records the ordering stage may keep.
 ///
 /// The start is added because `bounded` skips before it truncates, so a record
@@ -3296,6 +3424,22 @@ pub(crate) struct Shaped {
 /// because they were being added to the same signatures one at a time and were
 /// drifting apart at the call sites.
 #[derive(Debug)]
+/// What a walk needs to test a condition against each record it finds.
+///
+/// The three travel together because they are one question asked once per
+/// record — does this record satisfy the statement's `WHERE` — and each is
+/// meaningless to the walk without the other two: the condition to evaluate, the
+/// analyzers its searched fields are read with, and where a comparison across
+/// two kinds is recorded so the answer can say it happened.
+struct Testing<'a> {
+    /// The statement's whole condition.
+    condition: &'a Expr,
+    /// The analyzers the condition's searched fields were resolved with.
+    searched: &'a Searched,
+    /// Where the evaluator records a comparison across two kinds.
+    noticed: &'a Noticed,
+}
+
 pub(crate) struct Reporting<'a> {
     /// Notes the source raised.
     pub(crate) collected: &'a mut Vec<Note>,

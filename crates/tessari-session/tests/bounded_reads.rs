@@ -429,3 +429,133 @@ fn a_bounded_read_still_answers_a_materialised_value() {
         Some(Outcome::Records { records, .. }) if records.len() == LIMIT
     ));
 }
+
+// ------------------------------------------ the bound behind a `WHERE` (Q-72)
+
+/// A table larger than one scan batch.
+///
+/// The bound behind a condition reaches the source as the consumer's `Break`,
+/// and a walk stops at a batch boundary — so on a table smaller than one batch
+/// there is nothing to observe, and a test written at `RECORDS` would pass with
+/// the whole change removed.
+const WALKED: u64 = 4_000;
+
+/// The wide table, written in one script rather than four thousand.
+fn walked(store: &Store) -> Session<'_> {
+    let mut session = Session::new(store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE COLLECTION spans;",
+        )
+        .unwrap();
+    let mut script = String::new();
+    for n in 1..=WALKED {
+        script.push_str(&format!(
+            "CREATE spans:{n:06} = {{ n: {n}, rank: {}, city: 'city {}' }};\n",
+            WALKED.saturating_sub(n),
+            n % 4
+        ));
+    }
+    session.run(&script).unwrap();
+    session
+}
+
+/// A `LIMIT` behind a `WHERE` stops the source, which no bound can be pushed to.
+///
+/// The bound cannot be handed to the source as a number — it counts records that
+/// **match** and the source counts records that **exist** — so it arrives as the
+/// consumer's `Break` once the answer is full. Every fourth record matches, so
+/// ten of them are found in the first forty and the remaining thousands are
+/// never read.
+///
+/// The number that fails this is the unbounded one: before the walk, a match
+/// found at the third of a hundred thousand records cost the same as a match at
+/// the last (Q-72).
+#[test]
+fn a_limited_read_under_a_condition_stops_at_its_bound() {
+    let (store, counting) = counted();
+    let mut session = walked(&store);
+
+    let bounded = cost(
+        &mut session,
+        &counting,
+        &format!("SELECT * FROM spans WHERE city = 'city 1' LIMIT {LIMIT};"),
+    );
+    let whole = cost(
+        &mut session,
+        &counting,
+        "SELECT * FROM spans WHERE city = 'city 1';",
+    );
+
+    assert!(
+        bounded.saturating_mul(3) < whole,
+        "a bounded read cost {bounded} entries against {whole} for the same \
+         condition unbounded — that is not a bound"
+    );
+}
+
+/// Stopping early answers exactly what reading everything and truncating did.
+///
+/// The property the optimisation is only allowed to have. Asserted against the
+/// unbounded read of the same condition rather than against a written-out list,
+/// because the claim is an equality between two paths and a hand-written
+/// expectation would only test the corpus somebody thought to write down.
+#[test]
+fn stopping_early_answers_what_reading_everything_and_bounding_answers() {
+    let (store, _counting) = counted();
+    let mut session = ready(&store);
+
+    let bounded = answer(
+        &mut session,
+        &format!("SELECT * FROM spans WHERE city = 'city 1' LIMIT {LIMIT};"),
+    );
+    let whole = answer(&mut session, "SELECT * FROM spans WHERE city = 'city 1';");
+    assert!(
+        whole.len() > LIMIT,
+        "the condition must match more than the bound"
+    );
+    assert_eq!(bounded, whole[..LIMIT].to_vec());
+}
+
+/// An order under the condition takes the bound away from the source again.
+///
+/// The refusal half, and it is the half that matters: an `ORDER BY` decides
+/// which records the answer holds **after** the source has produced them, so a
+/// source stopped at ten would answer with the first ten the walk reached and
+/// call them the smallest. `rank` counts down while the identity counts up, so
+/// the two orders disagree and a wrong answer here is visible rather than
+/// coincidentally right.
+#[test]
+fn an_order_under_the_condition_still_reads_everything() {
+    let (store, counting) = counted();
+    let mut session = walked(&store);
+
+    let ordered = cost(
+        &mut session,
+        &counting,
+        &format!("SELECT * FROM spans WHERE city = 'city 1' ORDER BY rank LIMIT {LIMIT};"),
+    );
+    let whole = cost(
+        &mut session,
+        &counting,
+        "SELECT * FROM spans WHERE city = 'city 1';",
+    );
+    assert!(
+        ordered >= whole,
+        "an ordered read cost {ordered} entries against {whole} unbounded — \
+         the bound reached a source it must not reach"
+    );
+
+    // And the answer is the true smallest ten, not the first ten walked.
+    let top = ids(
+        &mut session,
+        &format!("SELECT * FROM spans WHERE city = 'city 1' ORDER BY rank LIMIT {LIMIT};"),
+    );
+    let every = ids(
+        &mut session,
+        "SELECT * FROM spans WHERE city = 'city 1' ORDER BY rank;",
+    );
+    assert_eq!(top, every[..LIMIT].to_vec());
+}

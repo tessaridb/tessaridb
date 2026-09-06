@@ -2676,6 +2676,20 @@ including the two search operators that sound as though they would not be:
 - **A `LIMIT` is not an approximation.** A bounded read answers exactly the
   question that was asked, and the question included the bound.
 
+**What a `LIMIT` costs, since it is a cost and not an answer.** A bound stops the
+read where the answer fills, including behind a `WHERE`: `SELECT id FROM notes
+WHERE city = 'oslo' LIMIT 5` reads until it has five, not until the table ends.
+So a bounded read over a common value is cheap and a bounded read over a rare one
+is not — and one that matches nothing costs the whole table, because finding out
+that nothing matches *is* reading the table.
+
+Three clauses take that back, each because it decides which records the answer
+holds only after they have all been produced: an `ORDER BY` the store does not
+already hold the order for, a `SPLIT`, and a grouping or a fold — whose bound
+counts groups rather than records. `AFTER` and `FETCH` also read to the end.
+Where an index serves the order, §5's bounded walk applies instead and costs the
+bound.
+
 **Over the wire the field is three-state**, and a client should treat it that
 way: the node said exact, the node said approximate and why, or *the node did not
 say* — which is what a node older than this field sends. The third is not the

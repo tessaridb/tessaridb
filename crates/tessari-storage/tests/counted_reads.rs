@@ -38,6 +38,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::collections::BTreeMap;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -719,5 +720,91 @@ fn a_hop_costs_one_ask_however_many_neighbours_the_node_has() {
     assert_eq!(
         wide_entries, 400,
         "the wide hop read something other than its answer"
+    );
+}
+
+// ------------------------------------------------------------- the table walk
+
+/// A walk the caller stops examines a batch, not the table.
+///
+/// This is the whole claim of `walk_table` stated as a cost. A read with a
+/// `WHERE` cannot push its `LIMIT` into the source — the bound counts records
+/// that match and the source counts records that exist — so what stops it is
+/// the caller's `Break`. `scan_table` cannot hear one: it returns a `Vec`, and
+/// the number that fails this test is `RECORDS`, which is what a table read
+/// whole costs whether the caller wanted ten records or one.
+///
+/// Counted at the backend rather than by the walk, for the reason this file
+/// exists: a walk that reported its own cost would agree with itself.
+#[test]
+fn a_walk_the_caller_stops_examines_a_batch_and_not_the_table() {
+    let fixture = Fixture::new();
+    fixture.write(RECORDS);
+    let mut transaction = fixture.store.begin().unwrap();
+    fixture.counting.reset();
+
+    let mut handed = 0_usize;
+    transaction
+        .walk_table(
+            fixture.namespace,
+            fixture.database,
+            fixture.table,
+            |_, _, _| {
+                handed += 1;
+                Ok::<_, tessari_storage::Error>(if handed == WANTED {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                })
+            },
+        )
+        .unwrap();
+    assert_eq!(handed, WANTED);
+
+    let examined = fixture.counting.entries();
+    assert!(
+        examined <= RANGE_SCAN_BATCH_ENTRIES,
+        "examined {examined} entries to hand over {WANTED} \
+         (one batch is {RANGE_SCAN_BATCH_ENTRIES}, table {RECORDS})"
+    );
+    // And it is a bound rather than a small table: the walk stopped inside the
+    // first batch of a table four times that size.
+    assert!(
+        examined * 4 < usize::try_from(RECORDS).unwrap(),
+        "examined {examined} of {RECORDS} — that is not a bound"
+    );
+}
+
+/// A walk over the whole table still holds one batch at a time.
+///
+/// The other half, and it is a different quantity: a walk that reads everything
+/// legitimately *examines* everything, and what must not grow with the table is
+/// how much of it is in hand at once. `scan_table` fails this by construction —
+/// it asks the backend for the table in a single request — which is the memory
+/// half of the same finding (Q-72).
+#[test]
+fn a_walk_over_the_whole_table_holds_one_batch_at_a_time() {
+    let fixture = Fixture::new();
+    fixture.write(RECORDS);
+    let mut transaction = fixture.store.begin().unwrap();
+    fixture.counting.reset();
+
+    let mut handed = 0_usize;
+    transaction
+        .walk_table(
+            fixture.namespace,
+            fixture.database,
+            fixture.table,
+            |_, _, _| {
+                handed += 1;
+                Ok::<_, tessari_storage::Error>(ControlFlow::Continue(()))
+            },
+        )
+        .unwrap();
+    assert_eq!(handed, usize::try_from(RECORDS).unwrap());
+    assert!(
+        fixture.counting.largest_fetch() <= RANGE_SCAN_BATCH_ENTRIES,
+        "one fetch handed back {} of {RECORDS} records",
+        fixture.counting.largest_fetch()
     );
 }

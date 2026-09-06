@@ -275,16 +275,22 @@ fn a_condition_too_thin_for_the_order_gives_it_up_and_scans() {
     // bound, and every doubling restarts from the top — so the read that
     // eventually scans would first have read the index several times over. The
     // number that would fail this is the one a ceiling-less version produces.
+    //
+    // The yardstick is **one pass** over the same condition, and it carries no
+    // bound of its own. It used to ask for ten, which was the same thing until a
+    // `LIMIT` behind a `WHERE` learned to stop the source: a bounded read of
+    // `rare = 0` now leaves at its tenth match a quarter of the way in, so it
+    // measures that ceiling rather than the pass this read is compared against.
     counting.reset();
     ids(&mut with, READS[3]);
     let thin = counting.rows();
     counting.reset();
-    ids(&mut with, "SELECT * FROM events WHERE rare = 0 LIMIT 10;");
+    ids(&mut with, "SELECT * FROM events WHERE rare = 0;");
     let plain = counting.rows();
     assert!(
         thin < plain.saturating_mul(2),
-        "giving the order up cost {thin} rows against {plain} for the same \
-         condition with no order at all"
+        "giving the order up cost {thin} rows against {plain} for one pass over \
+         the same condition with no order at all"
     );
 }
 
