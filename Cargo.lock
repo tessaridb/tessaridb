@@ -1094,7 +1094,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-backup"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "tempfile",
  "tessari-encoding",
@@ -1108,7 +1108,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-bench"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "tessari-backup",
  "tessari-types",
@@ -1117,7 +1117,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-cli"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "libc",
  "log",
@@ -1138,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-conformance"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "tessari-kv",
  "tessari-ql",
@@ -1149,11 +1149,11 @@ dependencies = [
 
 [[package]]
 name = "tessari-constants"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 
 [[package]]
 name = "tessari-encoding"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "proptest",
  "rust_decimal",
@@ -1165,7 +1165,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-geo"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "proptest",
  "tessari-types",
@@ -1174,7 +1174,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-http"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "log",
  "tessari-backup",
@@ -1192,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-ingest"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "log",
  "rdkafka",
@@ -1204,14 +1204,14 @@ dependencies = [
 
 [[package]]
 name = "tessari-kv"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "tessari-lsm"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "rocksdb",
  "tempfile",
@@ -1225,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-ql"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "rust_decimal",
  "tessari-types",
@@ -1234,7 +1234,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-query"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "tessari-ql",
  "tessari-types",
@@ -1243,11 +1243,11 @@ dependencies = [
 
 [[package]]
 name = "tessari-serve"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 
 [[package]]
 name = "tessari-session"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "argon2",
  "log",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-storage"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "log",
  "tessari-constants",
@@ -1280,7 +1280,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-types"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "rust_decimal",
  "serde",
@@ -1289,7 +1289,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-wire"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "log",
  "rust_decimal",
@@ -1307,7 +1307,7 @@ dependencies = [
 
 [[package]]
 name = "tessaridb"
-version = "0.0.3-alpha"
+version = "0.0.4-alpha"
 dependencies = [
  "tempfile",
  "tessari-kv",

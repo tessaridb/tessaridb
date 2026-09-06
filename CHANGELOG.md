@@ -12,6 +12,43 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.0.4-alpha — 2026-09-06
+
+**Released.** Tagged `v0.0.4-alpha` on `main`, and published as
+[`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb) —
+`0.0.4-alpha` and `latest`, `linux/amd64` and `linux/arm64`.
+
+**This release changes no answer, no grammar and no on-disk format.** It is one
+performance fix, and it is the first release since `0.0.1-alpha` for which a
+store written by the previous version opens and reads identically — the index in
+the corpus this was measured against was written by the old build and answers the
+same records under the new one.
+
+### Faster
+
+- **Full-text search is 5.6× faster on every path — index, scan, ingest and
+  highlighting alike.** They all run the field's declared analyzer, and the
+  analyzer's cost was almost entirely the stemmer: measured over 404 documents
+  and 58 350 words, tokenising and lower-casing took 4.3 ms, adding the ASCII
+  fold 6.1 ms, and adding the stemmer **121.6 ms**.
+
+  The stemmer was bound by the allocator rather than by the algorithm. Testing
+  whether a word ends in a suffix built that suffix as a vector of characters
+  first, and Porter2 tests sixty-odd suffixes per word — twenty-five in step 2
+  alone — so a word cost sixty-odd heap allocations before any letter was
+  compared. Two more places rebuilt the whole word as a string per call for the
+  same reason.
+
+  Comparing letter by letter instead: stemming fell from **1.98 µs to 0.27 µs per
+  word**, the full analyzer chain over that corpus from **121.6 ms to 21.8 ms**,
+  a selective indexed `MATCHES` from **9.7 ms to 1.8 ms**, and loading the corpus
+  — which stems every word again to build the index — from 0.30 s to 0.20 s.
+
+  The stems themselves are unchanged, which is the property that matters: the
+  published Porter2 worked examples and exception tables pass as before, and the
+  records returned for the same queries are byte-identical against the previous
+  build.
+
 ## 0.0.3-alpha — 2026-09-05
 
 **Released.** Tagged `v0.0.3-alpha` on `main`, and published as
