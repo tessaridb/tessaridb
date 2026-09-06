@@ -493,8 +493,14 @@ at a time. Instead the record the condition runs against does not contain the
 field: the path resolves to `NONE`, the comparison is false by the missing-field
 rule the language already has, and the count is zero. The projection then omits
 it for the same reason rather than for a second one. An index on a hidden field
-changes nothing, because the candidates it offers are re-tested against that same
-record — an index narrows and never answers. A join hides it on whichever side
+changes nothing, and this is the one place where that needs a sentence of its
+own. An index ordinarily *narrows*: what it offers is re-tested against the
+record above, which is the redacted one, so the hidden field is as absent to the
+index path as to the scan. A **search** index on a plain conjunction of terms is
+the exception — its postings answer the clause exactly, so the read may skip that
+re-test — and it is therefore not taken when the indexed field is one this
+session may not read. The permission decides before the optimisation does. A
+join hides it on whichever side
 declared it, `FETCH` hides it in the table it lands on, and the change feed hides
 it too.
 

@@ -1,5 +1,5 @@
 use tessari_geo::Relation;
-use tessari_ql::{BinaryOp, Expr, ExprKind, Function};
+use tessari_ql::{BinaryOp, Expr, ExprKind, Function, Span};
 use tessari_types::Path;
 
 use super::reads::reads_a_record;
@@ -222,6 +222,14 @@ pub(super) struct Seek<'a> {
     /// Which comparison it was, which a range needs and the others do not: the
     /// direction and whether the end is inclusive both live here.
     pub(super) op: BinaryOp,
+    /// Where this clause is in the statement.
+    ///
+    /// Carried so that a candidate can say **which** conjunct it answers, and
+    /// the read can then ask whether that conjunct is the whole condition. A
+    /// span is the identity the walk already has: `seekable` descends into
+    /// `AND`, so a clause under one has a span strictly inside the condition's
+    /// and a lone clause has the condition's own.
+    pub(super) span: Span,
 }
 
 /// The conjuncts of a condition an index could serve, outermost first.
@@ -276,6 +284,7 @@ pub(super) fn seekable(condition: &Expr) -> Vec<Seek<'_>> {
                 value: right,
                 comparison,
                 op: *op,
+                span: condition.span,
             }]
         }
         _ => Vec::new(),

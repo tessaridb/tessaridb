@@ -106,6 +106,7 @@ impl Session<'_> {
                             served: Served::Equality(values),
                             index: (*index).clone(),
                             rows,
+                            answers: None,
                         });
                     }
                 }
@@ -121,6 +122,7 @@ impl Session<'_> {
                             served: Served::Prefix(prefix.clone()),
                             index: (*index).clone(),
                             rows: Rows::Unknown,
+                            answers: None,
                         });
                     }
                 }
@@ -155,7 +157,20 @@ impl Session<'_> {
                     // a query the scan answers. The index and the predicate must
                     // ask the same question of the same string, so both call the
                     // one function that reads the query's shape.
-                    let groups = match crate::search::asked(analyzer, query) {
+                    let asked = crate::search::asked(analyzer, query);
+                    // Whether the postings answer this clause or merely narrow
+                    // it, decided here because this is where the query's shape
+                    // is known. A phrase's terms reach every record holding
+                    // them in any order and the predicate is what settles the
+                    // order; an excluded term names a complement an inverted
+                    // index cannot enumerate, so it is dropped from the read and
+                    // left to the predicate. Both are supersets, and a superset
+                    // is a candidate set.
+                    let complete = matches!(
+                        &asked,
+                        crate::search::Asked::Boolean { excluded, .. } if excluded.is_empty()
+                    );
+                    let groups = match asked {
                         // A phrase's terms all have to be present before their
                         // order can matter, so the candidate set is the same
                         // intersection an unquoted conjunction asks for and the
@@ -202,6 +217,14 @@ impl Session<'_> {
                             served,
                             index: (*index).clone(),
                             rows: Rows::AtMost(smallest),
+                            // `plain` is doing double duty and both are the
+                            // same fact: one term per group is what makes the
+                            // read an intersection rather than a union of
+                            // unions, and it is what makes that intersection
+                            // exactly "holds all of these terms" — the
+                            // predicate's own question, asked of the same
+                            // analyzer over the same field.
+                            answers: (plain && complete).then_some(seek.span),
                         });
                     }
                 }
@@ -309,6 +332,10 @@ impl Session<'_> {
                             },
                             index: (*index).clone(),
                             rows: Rows::AtMost(ceiling),
+                            // The expansions are capped, so what this read
+                            // produces is bounded rather than complete and the
+                            // predicate is still the answer.
+                            answers: None,
                         });
                     }
                 }
@@ -329,6 +356,7 @@ impl Session<'_> {
                     // prefix gives. What it narrows is carried by `Served::fixed`
                     // instead, where it is a proof rather than a guess.
                     rows: Rows::Unknown,
+                    answers: None,
                 });
             }
         }
@@ -382,6 +410,9 @@ impl Session<'_> {
                     // knowable without the read — the same answer a prefix and a
                     // range give, and for the same reason.
                     rows: Rows::Unknown,
+                    // Cells are coarser than boxes and boxes are coarser than
+                    // shapes, so this read is candidates by construction.
+                    answers: None,
                 });
             }
         }

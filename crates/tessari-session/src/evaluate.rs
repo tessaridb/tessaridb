@@ -373,8 +373,15 @@ impl Session<'_> {
         let searched = self.searched_for(transaction, id, &[condition])?;
         // No plan is reported: a delete answers with a count and has no plan to
         // carry one on, so the table it would name is not asked for.
-        let (candidates, _) =
-            self.candidates(transaction, id, context, condition, &searched, None)?;
+        //
+        // Nor is the read's own verdict on whether it answered the condition.
+        // The same argument would hold here, but nothing has measured the
+        // re-test as a delete's cost — what a delete spends is in the writes
+        // that follow — and a statement that removes records is the last place
+        // to take an untested shortcut.
+        let candidates = self
+            .candidates(transaction, id, context, condition, &searched, None)?
+            .records;
 
         let mut removed = 0_u64;
         for (record_id, record) in candidates {
@@ -1255,8 +1262,11 @@ impl Session<'_> {
                         Walked::NotServed => {}
                     }
                 }
-                let (candidates, plan) =
-                    self.candidates(transaction, id, context, condition, searched, named)?;
+                let Reached {
+                    records: candidates,
+                    plan,
+                    answered,
+                } = self.candidates(transaction, id, context, condition, searched, named)?;
                 if declined {
                     reporting.collected.push(Note::FellBack {
                         from: AccessPath::Ordered,
@@ -1273,17 +1283,36 @@ impl Session<'_> {
                 // only the conjunct the index answered. That is what makes an
                 // index a narrowing device rather than an answer, and it is why
                 // adding one still cannot change what a query returns.
+                //
+                // `answered` is the one read that is not a narrowing: a search
+                // index's postings are derived by the same `analyzer.terms` over
+                // the same field that the predicate calls, so their intersection
+                // *is* "holds all of these terms" rather than an approximation
+                // of it, and `Session::trusts` has established that this clause
+                // is the whole condition, that the field is not redacted for
+                // this session, and that no uncommitted write is missing from
+                // the index. Re-testing there re-analyses the record's entire
+                // text to reach a verdict already reached — which on a common
+                // word is the whole cost of the query.
+                //
+                // The invariant is unchanged and this is why it survives:
+                // believing the read is only permitted where believing it and
+                // re-testing it answer the same records, and the tests assert
+                // that per operator rather than trusting this paragraph.
                 for (id, record) in candidates {
-                    let held = self.evaluate_in(
-                        transaction,
-                        condition,
-                        Scope::searching(&record, searched)
-                            .identified(&id)
-                            .noticing(reporting.noticed),
-                    )?;
-                    if boolean(&held, condition.span)?
-                        && consumer.take(transaction, id, record)?.is_break()
-                    {
+                    if !answered {
+                        let held = self.evaluate_in(
+                            transaction,
+                            condition,
+                            Scope::searching(&record, searched)
+                                .identified(&id)
+                                .noticing(reporting.noticed),
+                        )?;
+                        if !boolean(&held, condition.span)? {
+                            continue;
+                        }
+                    }
+                    if consumer.take(transaction, id, record)?.is_break() {
                         break;
                     }
                 }
@@ -1514,6 +1543,14 @@ impl Session<'_> {
     /// Which one runs is still decided by what exists and never by how the query
     /// was written; that now includes not being decided by the *order* it was
     /// written in.
+    ///
+    /// # The third value is whether the condition has already been answered
+    ///
+    /// `Reached::answered` is `false` for every read this store has ever done:
+    /// the records are candidates and the condition decides. `true` is the
+    /// narrow case where the read *is* the answer — see [`Session::trusts`] for
+    /// what has to hold before it can be said, and `plan::Candidate::answers`
+    /// for the part of it the planner contributes.
     fn candidates(
         &self,
         transaction: &mut Transaction<'_>,
@@ -1522,7 +1559,7 @@ impl Session<'_> {
         condition: &Expr,
         searched: &Searched,
         named: Option<&str>,
-    ) -> Result<(Vec<(RecordId, Value)>, Plan)> {
+    ) -> Result<Reached> {
         // Once for the statement rather than once per conjunct: which indexes a
         // table carries is one question, and it used to be asked as many times
         // as the condition had clauses.
@@ -1533,7 +1570,29 @@ impl Session<'_> {
         // keeps the reason in the one place that asks the catalog rather than
         // spread across every candidate that could have been built from it.
         let declared = if transaction.indexes_are_current()? {
-            Catalog::new(transaction).indexes_on(table)?
+            // A search index is withheld while this transaction is holding
+            // writes on the table, and the reason is a hole rather than a
+            // policy. Entries are derived at commit, so a pending write has no
+            // posting yet — and the equality, string-prefix and region reads all
+            // answer that by asking each pending record directly after the walk,
+            // which is what lets a writer find what it just wrote. The term
+            // reads do not, so a record updated *into* a match inside the
+            // transaction is missed: the posting does not exist, so there is no
+            // candidate, and no re-test can add one back. Measured, on the
+            // released engine: `UPDATE` a record to hold a word, then ask for it
+            // in the same transaction, and the index answers without it.
+            //
+            // Falling back to the scan answers correctly here and costs only
+            // inside a write transaction on the same table. The better fix is
+            // for the term reads to merge pending writes as their three
+            // siblings do — Q-405 — which needs the field's analyzer down in
+            // storage and is a change to that layer rather than to this one.
+            let writing = transaction.writes_in(context.namespace, context.database, table);
+            Catalog::new(transaction)
+                .indexes_on(table)?
+                .into_iter()
+                .filter(|index| !(writing && index.search))
+                .collect()
         } else {
             Vec::new()
         };
@@ -1548,17 +1607,73 @@ impl Session<'_> {
             // `EXPLAIN` calls on the candidate its own `choose` returned. The
             // two report one structure because one function writes it.
             let plan = chosen.plan(named);
+            let answered = self.trusts(condition, &chosen, &visible);
             let found = self.serve(transaction, context, table, &chosen)?;
-            return Ok((self.records_of(found, &visible)?, plan));
+            return Ok(Reached {
+                records: self.records_of(found, &visible)?,
+                plan,
+                answered,
+            });
         }
         let scanned = transaction.scan_table(context.namespace, context.database, table)?;
-        Ok((
-            self.records_of(scanned, &visible)?,
-            Plan {
+        Ok(Reached {
+            records: self.records_of(scanned, &visible)?,
+            plan: Plan {
                 table: named.map(ToOwned::to_owned),
                 ..Plan::new(AccessPath::Scan)
             },
-        ))
+            // A scan reads every record and tests each one, which is what the
+            // condition would have done anyway.
+            answered: false,
+        })
+    }
+
+    /// Whether this read may be believed instead of re-tested.
+    ///
+    /// The planner said what a candidate *can* promise about one clause
+    /// (`plan::Candidate::answers`). Two things it cannot know are decided
+    /// here, and each of them is a way the re-test is load-bearing today.
+    ///
+    /// **The clause has to be the whole condition.** A candidate answers one
+    /// conjunct; anything joined to it with `AND` still has to be evaluated, and
+    /// evaluating it re-analyses the same text anyway. Span equality is the
+    /// test because `plan::conjunct::seekable` descends into `AND`: a clause
+    /// under one has a span strictly inside the condition's, and a lone clause
+    /// has the condition's own. It is a comparison rather than a re-parse, so
+    /// the two sides cannot drift.
+    ///
+    /// **The field has to be one this session may read.** Field-level redaction
+    /// on an index-served read is enforced *by the re-test* — the record the
+    /// candidate is re-tested against is the redacted one, so a field nobody
+    /// granted resolves to `NONE` and the comparison is false (`crate::redact`).
+    /// Believing the index instead would let a reader search a field they cannot
+    /// see, and learn its contents one query at a time. This is the condition
+    /// that makes the change a security decision rather than a timing one.
+    ///
+    /// Two more are already true wherever this is reached, and are enforced
+    /// where the indexes are enumerated rather than repeated here. An index is
+    /// only offered when `Transaction::indexes_are_current` holds — entries
+    /// carry no version, so at an older snapshot a posting could describe a
+    /// newer value than the reader is entitled to see. And a **search** index is
+    /// withheld entirely while this transaction holds writes on the table, so a
+    /// candidate reaching this point cannot be answering from a posting the
+    /// transaction has already written past.
+    fn trusts(
+        &self,
+        condition: &Expr,
+        chosen: &plan::Candidate,
+        visible: &crate::redact::Visible,
+    ) -> bool {
+        chosen.answers == Some(condition.span)
+            && chosen.index.fields.first().is_some_and(|path| {
+                // Top-level, because a redaction is: a grant names a field of a
+                // table, and what is removed is the whole field. A route into an
+                // object this session may read reaches an object nothing took
+                // anything out of.
+                visible
+                    .as_ref()
+                    .is_none_or(|fields| fields.contains(path.root()))
+            })
     }
 
     /// Walk a vector index, when there is one that answers this read.
@@ -2720,6 +2835,27 @@ type Joined = (Vec<(RecordId, Value)>, Plan, Searched);
 /// is empty whenever the step named no node — so they are named rather than left
 /// as a tuple two `Vec`s wide that a caller could read in either order.
 type Hopped = (Vec<(RecordId, Value)>, Vec<RecordRef>);
+
+/// The records a read reached, how it reached them, and whether reaching them
+/// settled the condition.
+///
+/// A struct rather than a triple for the reason `Answered` is one: the last
+/// field is a bare `bool` that a caller could silently drop or, worse, read the
+/// wrong way round. Naming it makes `answered: false` — which is what a scan and
+/// every ordinary index read say — a statement rather than a position.
+struct Reached {
+    /// The records to test, or to answer with when `answered`.
+    records: Vec<(RecordId, Value)>,
+    /// How they were reached, as `EXPLAIN` would report it.
+    plan: Plan,
+    /// Whether the read has already settled the whole condition.
+    ///
+    /// `false` unless a search index answered a plain conjunction that was the
+    /// entire `WHERE`, over a field this session may read — see
+    /// [`Session::trusts`]. A caller that ignores this is correct and slower,
+    /// which is the right way round for a field of this kind.
+    answered: bool,
+}
 
 /// What a vector walk came back with, and the index that answered it.
 ///
