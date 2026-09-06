@@ -2690,6 +2690,25 @@ counts groups rather than records. `AFTER` and `FETCH` also read to the end.
 Where an index serves the order, §5's bounded walk applies instead and costs the
 bound.
 
+**An index changes that cost by half, and the half it does not change is the
+interesting one.** When an index serves the condition, the read does two things:
+it walks the index entries to learn which records are candidates, and it reads
+those records. A bound stops the second and never the first.
+
+The reason is the answer rather than the implementation. A bounded read returns
+**the same records whether or not an index exists** — adding an index makes a
+query faster and never makes it answer differently — and those records are the
+first by identity. Which of the candidates hold the lowest identities is not
+known until all of them have been named, so the entry walk always runs to the
+end. What the bound saves is reading the records it does not need:
+`SELECT * FROM notes WHERE at > '2026-01-01' LIMIT 10` reads ten records, not
+every record after that date.
+
+So the practical shape is: a bounded index-served read costs one pass over the
+matching index entries plus its answer. An index that matches most of a table
+still costs that pass, which is why a very unselective index can be slower than
+no index at all.
+
 **Over the wire the field is three-state**, and a client should treat it that
 way: the node said exact, the node said approximate and why, or *the node did not
 say* — which is what a node older than this field sends. The third is not the

@@ -16,7 +16,7 @@ use tessari_ql::{
     Projected, Projection, RecordTarget, Select, Source, Span, TableRef, Using,
 };
 use tessari_storage::{
-    BUILD_VERSION, Catalog, EDGE_IN, EDGE_OUT, RecordAddress, Store, Transaction,
+    BUILD_VERSION, Catalog, EDGE_IN, EDGE_OUT, IndexDefinition, RecordAddress, Store, Transaction,
 };
 use tessari_types::{
     Analyzer, Number, Path, RecordId, RecordRef, Step, TableId, Value, ValueRange, apply,
@@ -390,7 +390,28 @@ impl Session<'_> {
         // many it removes, and it must see every candidate to know it is done.
         let candidates =
             match self.candidates(transaction, id, context, condition, &searched, None)? {
-                Some(reached) => reached.records,
+                Some(reached) => match reached.records {
+                    Candidates::Held(held) => held,
+                    // Read whole here, deliberately, for the reason the scan
+                    // above is read whole: a delete has no bound that stops the
+                    // source, and it must see every candidate to know it is
+                    // done. The walk exists for a read that can stop.
+                    Candidates::Range {
+                        index,
+                        fixed,
+                        lower,
+                        upper,
+                    } => {
+                        let visible = self.visible_in(transaction, id)?;
+                        let found = transaction.records_in_range(
+                            &index,
+                            &fixed,
+                            lower.as_ref(),
+                            upper.as_ref(),
+                        )?;
+                        self.records_of(found, &visible)?
+                    }
+                },
                 None => {
                     let visible = self.visible_in(transaction, id)?;
                     let scanned =
@@ -1348,21 +1369,62 @@ impl Session<'_> {
                 // believing the read is only permitted where believing it and
                 // re-testing it answer the same records, and the tests assert
                 // that per operator rather than trusting this paragraph.
-                for (id, record) in candidates {
-                    if !answered {
-                        let held = self.evaluate_in(
-                            transaction,
-                            condition,
-                            Scope::searching(&record, searched)
-                                .identified(&id)
-                                .noticing(reporting.noticed),
-                        )?;
-                        if !boolean(&held, condition.span)? {
-                            continue;
+                match candidates {
+                    Candidates::Held(held) => {
+                        for (id, record) in held {
+                            if !answered {
+                                let passed = self.evaluate_in(
+                                    transaction,
+                                    condition,
+                                    Scope::searching(&record, searched)
+                                        .identified(&id)
+                                        .noticing(reporting.noticed),
+                                )?;
+                                if !boolean(&passed, condition.span)? {
+                                    continue;
+                                }
+                            }
+                            if consumer.take(transaction, id, record)?.is_break() {
+                                break;
+                            }
                         }
                     }
-                    if consumer.take(transaction, id, record)?.is_break() {
-                        break;
+                    // The same loop over a source that hands its records over as
+                    // it reads them, so a filled bound stops the batch after it
+                    // rather than being applied to a set already built. The
+                    // condition is re-tested here exactly as above: an index
+                    // narrows and never answers, and a record redacted for this
+                    // session must fail the test on both paths or the two
+                    // answer differently.
+                    Candidates::Range {
+                        index,
+                        fixed,
+                        lower,
+                        upper,
+                    } => {
+                        let visible = self.visible_in(transaction, id)?;
+                        transaction.walk_records_in_range(
+                            &index,
+                            &fixed,
+                            lower.as_ref(),
+                            upper.as_ref(),
+                            |transaction, id, payload| {
+                                let record = self.record_of(&payload, &visible)?;
+                                if !answered {
+                                    let passed = self.evaluate_in(
+                                        transaction,
+                                        condition,
+                                        Scope::searching(&record, searched)
+                                            .identified(&id)
+                                            .noticing(reporting.noticed),
+                                    )?;
+                                    if !boolean(&passed, condition.span)? {
+                                        return Ok(ControlFlow::Continue(()));
+                                    }
+                                }
+                                consumer.take(transaction, id, record)
+                            },
+                        )?;
                     }
                 }
                 Ok(plan)
@@ -1644,9 +1706,28 @@ impl Session<'_> {
                 .fields
                 .first()
                 .and_then(|path| searched.analyzer(path));
-            let found = self.serve(transaction, context, table, &chosen, analyzer)?;
+            // A range is handed back as the range itself rather than as its
+            // records, so the caller's `Break` can reach the fetch. Every other
+            // shape is served here and built whole — see [`Candidates`] for why
+            // the entry walk is never the half that stops.
+            let records = if let plan::Served::Range {
+                fixed,
+                lower,
+                upper,
+            } = &chosen.served
+            {
+                Candidates::Range {
+                    index: Box::new(chosen.index.clone()),
+                    fixed: fixed.clone(),
+                    lower: lower.clone(),
+                    upper: upper.clone(),
+                }
+            } else {
+                let found = self.serve(transaction, context, table, &chosen, analyzer)?;
+                Candidates::Held(self.records_of(found, &visible)?)
+            };
             return Ok(Some(Reached {
-                records: self.records_of(found, &visible)?,
+                records,
                 plan,
                 answered,
             }));
@@ -2935,7 +3016,7 @@ type Hopped = (Vec<(RecordId, Value)>, Vec<RecordRef>);
 /// every ordinary index read say — a statement rather than a position.
 struct Reached {
     /// The records to test, or to answer with when `answered`.
-    records: Vec<(RecordId, Value)>,
+    records: Candidates,
     /// How they were reached, as `EXPLAIN` would report it.
     plan: Plan,
     /// Whether the read has already settled the whole condition.
@@ -2945,6 +3026,35 @@ struct Reached {
     /// [`Session::trusts`]. A caller that ignores this is correct and slower,
     /// which is the right way round for a field of this kind.
     answered: bool,
+}
+
+/// How an index-served read's candidates are available to the caller.
+///
+/// Every index read produces a **candidate set** the condition then refines, and
+/// for most of them that set is built before the first record can be tested.
+/// A range is the exception: its entries can be named in one pass and its
+/// records read afterwards, so a caller that fills its bound can stop the fetch
+/// it has not reached yet.
+///
+/// Why only the fetch, and not the entry walk: the answer is in record order —
+/// a bounded read answers the records a scan of the same predicate answers, and
+/// nothing else, which the tests in `bounded_index_reads.rs` pin — and the
+/// lowest identity among the candidates is not known until every candidate has
+/// been named. A walk that stopped early would answer with whichever records the
+/// index reached first, which for an index whose order is not identity order is
+/// a different set of records. So the entry walk runs to the end by
+/// construction, and what the bound reaches is the half whose cost grows with
+/// the answer.
+enum Candidates {
+    /// Built whole before the first one can be tested.
+    Held(Vec<(RecordId, Value)>),
+    /// A range the caller can walk, stopping where its answer fills.
+    Range {
+        index: Box<IndexDefinition>,
+        fixed: Vec<Value>,
+        lower: Option<Value>,
+        upper: Option<Value>,
+    },
 }
 
 /// What a vector walk came back with, and the index that answered it.
