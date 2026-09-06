@@ -120,11 +120,11 @@ fn is_invariant(word: &str) -> bool {
 /// Each ends in `ing`, `ed` or `eed` that is part of the word rather than an
 /// ending on it — `inning` is not the act of inn-ing.
 fn stops_after_1a(letters: &[char]) -> bool {
-    let word: String = letters.iter().collect();
-    matches!(
-        word.as_str(),
-        "inning" | "outing" | "canning" | "herring" | "earring" | "proceed" | "exceed" | "succeed"
-    )
+    [
+        "inning", "outing", "canning", "herring", "earring", "proceed", "exceed", "succeed",
+    ]
+    .iter()
+    .any(|word| is_word(letters, word))
 }
 
 const VOWELS: [char; 6] = ['a', 'e', 'i', 'o', 'u', 'y'];
@@ -171,10 +171,9 @@ fn restore_y(letters: &[char]) -> String {
 /// The three prefixes are the published exception: `gener`, `commun` and `arsen`
 /// would otherwise put R1 so early that `generate` and `general` collapse.
 fn regions(letters: &[char]) -> (usize, usize) {
-    let word: String = letters.iter().collect();
     let r1 = ["gener", "commun", "arsen"]
         .iter()
-        .find(|prefix| word.starts_with(*prefix))
+        .find(|prefix| starts_with(letters, prefix))
         .map_or_else(|| region_after(letters, 0), |prefix| prefix.len());
     let r2 = region_after(letters, r1);
     (r1, r2)
@@ -223,9 +222,30 @@ fn ends_in_short_syllable(letters: &[char]) -> bool {
     }
 }
 
+/// Whether the word ends in `suffix`.
+///
+/// Compared letter by letter against the tail rather than by building the
+/// suffix as a `Vec<char>` first. The steps below test a suffix table per word —
+/// twenty-five in [`step_2`] alone, nineteen in [`step_4`], nine doubles in
+/// [`ends_in_double`] — so a suffix collected here is a heap allocation per
+/// *test*, sixty-odd per word, and the allocator rather than the algorithm
+/// became the cost of stemming a corpus.
 fn ends_with(letters: &[char], suffix: &str) -> bool {
-    let suffix: Vec<char> = suffix.chars().collect();
-    letters.len() >= suffix.len() && letters[letters.len().saturating_sub(suffix.len())..] == suffix
+    let Some(from) = letters.len().checked_sub(suffix.chars().count()) else {
+        return false;
+    };
+    letters[from..].iter().copied().eq(suffix.chars())
+}
+
+/// Whether the word begins with `prefix`, on the same terms as [`ends_with`].
+fn starts_with(letters: &[char], prefix: &str) -> bool {
+    let length = prefix.chars().count();
+    letters.len() >= length && letters[..length].iter().copied().eq(prefix.chars())
+}
+
+/// Whether the word is exactly `other`, on the same terms as [`ends_with`].
+fn is_word(letters: &[char], other: &str) -> bool {
+    letters.len() == other.chars().count() && letters.iter().copied().eq(other.chars())
 }
 
 /// Whether a suffix of this length lies entirely inside a region.
