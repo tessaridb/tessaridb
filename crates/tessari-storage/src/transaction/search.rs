@@ -13,7 +13,7 @@ use tessari_encoding::{
     UniqueIndexKey, decode_payload,
 };
 use tessari_kv::{Key, KeyRange, Keyspace, ScanDirection, ScanRequest, Value as KvValue};
-use tessari_types::{RecordId, Value, within_edits};
+use tessari_types::{Analyzer, RecordId, Value, within_edits};
 
 use super::{RecordAddress, Transaction};
 use crate::catalog::IndexDefinition;
@@ -133,6 +133,7 @@ impl Transaction<'_> {
     pub fn records_by_terms(
         &self,
         index: &IndexDefinition,
+        analyzer: Option<&Analyzer>,
         terms: &[String],
     ) -> Result<Vec<RecordId>> {
         let Some(first) = terms.first() else {
@@ -147,6 +148,9 @@ impl Transaction<'_> {
             let next = self.postings(&address, term)?;
             holding.retain(|id| next.contains(id));
         }
+        self.settle_pending(index, analyzer, &mut holding, |held| {
+            terms.iter().all(|term| held.contains(term))
+        })?;
         Ok(holding.into_iter().collect())
     }
 
@@ -177,6 +181,7 @@ impl Transaction<'_> {
     pub fn records_by_expansions(
         &self,
         index: &IndexDefinition,
+        analyzer: Option<&Analyzer>,
         expansions: &[Vec<String>],
     ) -> Result<Vec<RecordId>> {
         let Some(first) = expansions.first() else {
@@ -194,7 +199,84 @@ impl Transaction<'_> {
             let next = self.union(&address, expansion)?;
             holding.retain(|id| next.contains(id));
         }
+        // The expansions were resolved from the term dictionary, which a pending
+        // write has not reached — so a record written in this transaction is
+        // judged against the terms the walk found, not against the walk. A word
+        // this record alone would have contributed is therefore not expanded to,
+        // which is the same subset the cap already makes possible and is why
+        // this read declares itself bounded rather than exact.
+        self.settle_pending(index, analyzer, &mut holding, |held| {
+            expansions
+                .iter()
+                .all(|expansion| expansion.iter().any(|term| held.contains(term)))
+        })?;
         Ok(holding.into_iter().collect())
+    }
+
+    /// Bring this transaction's own writes into a set the postings produced.
+    ///
+    /// Index entries are derived at commit, so a record written here has no
+    /// posting yet and one it changed still has the postings of the text it
+    /// replaced. Both are settled the way the equality, string-prefix and region
+    /// reads settle them: by asking the record rather than the index, at this
+    /// reader's own snapshot.
+    ///
+    /// Without this a writer could not find what it just wrote — and, worse, the
+    /// failure was silent and one-directional: a record updated *into* a match
+    /// simply had no candidate, and no re-test above could add one back.
+    ///
+    /// `analyzer` is the field's, the same one that produced the query's terms,
+    /// so the two sides ask one question. `None` means the field declares none,
+    /// in which case it contributes no terms and no pending record can match —
+    /// the answer a scan gives for the same record.
+    fn settle_pending(
+        &self,
+        index: &IndexDefinition,
+        analyzer: Option<&Analyzer>,
+        holding: &mut BTreeSet<RecordId>,
+        holds: impl Fn(&[String]) -> bool,
+    ) -> Result<()> {
+        for pending in self.writes.keys() {
+            if pending.namespace != index.namespace
+                || pending.database != index.database
+                || pending.table != index.table
+            {
+                continue;
+            }
+            let held = self.terms_now(index, analyzer, pending)?;
+            if held.as_deref().is_some_and(&holds) {
+                holding.insert(pending.id.clone());
+            } else {
+                holding.remove(&pending.id);
+            }
+        }
+        Ok(())
+    }
+
+    /// The terms a record contributes to this index **now** — derived from the
+    /// record at the reader's snapshot rather than read from the index.
+    ///
+    /// `None` for a record that is not there, does not hold the indexed path, or
+    /// holds something that is not text: the same three ways a record
+    /// contributes nothing at write time, asked in the same order so the two
+    /// cannot answer differently.
+    fn terms_now(
+        &self,
+        index: &IndexDefinition,
+        analyzer: Option<&Analyzer>,
+        address: &RecordAddress,
+    ) -> Result<Option<Vec<String>>> {
+        let (Some(analyzer), Some(path)) = (analyzer, index.fields.first()) else {
+            return Ok(None);
+        };
+        let Some(payload) = self.get(address)? else {
+            return Ok(None);
+        };
+        let record = decode_payload(&payload)?;
+        let Some(Value::String(text)) = path.resolve(&record) else {
+            return Ok(None);
+        };
+        Ok(Some(analyzer.terms(text)))
     }
 
     /// The records any one of these terms is posted against.

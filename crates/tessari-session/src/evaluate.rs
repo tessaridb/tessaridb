@@ -1570,29 +1570,7 @@ impl Session<'_> {
         // keeps the reason in the one place that asks the catalog rather than
         // spread across every candidate that could have been built from it.
         let declared = if transaction.indexes_are_current()? {
-            // A search index is withheld while this transaction is holding
-            // writes on the table, and the reason is a hole rather than a
-            // policy. Entries are derived at commit, so a pending write has no
-            // posting yet — and the equality, string-prefix and region reads all
-            // answer that by asking each pending record directly after the walk,
-            // which is what lets a writer find what it just wrote. The term
-            // reads do not, so a record updated *into* a match inside the
-            // transaction is missed: the posting does not exist, so there is no
-            // candidate, and no re-test can add one back. Measured, on the
-            // released engine: `UPDATE` a record to hold a word, then ask for it
-            // in the same transaction, and the index answers without it.
-            //
-            // Falling back to the scan answers correctly here and costs only
-            // inside a write transaction on the same table. The better fix is
-            // for the term reads to merge pending writes as their three
-            // siblings do — Q-405 — which needs the field's analyzer down in
-            // storage and is a change to that layer rather than to this one.
-            let writing = transaction.writes_in(context.namespace, context.database, table);
-            Catalog::new(transaction)
-                .indexes_on(table)?
-                .into_iter()
-                .filter(|index| !(writing && index.search))
-                .collect()
+            Catalog::new(transaction).indexes_on(table)?
         } else {
             Vec::new()
         };
@@ -1608,7 +1586,16 @@ impl Session<'_> {
             // two report one structure because one function writes it.
             let plan = chosen.plan(named);
             let answered = self.trusts(condition, &chosen, &visible);
-            let found = self.serve(transaction, context, table, &chosen)?;
+            // The field's, resolved once for the statement while the analyzers
+            // were being read — the same value the query's terms were built
+            // from, which is what keeps the index's half of a search and the
+            // predicate's half asking one question.
+            let analyzer = chosen
+                .index
+                .fields
+                .first()
+                .and_then(|path| searched.analyzer(path));
+            let found = self.serve(transaction, context, table, &chosen, analyzer)?;
             return Ok(Reached {
                 records: self.records_of(found, &visible)?,
                 plan,
@@ -2274,12 +2261,20 @@ impl Session<'_> {
     /// literal prefix, the analysed terms — because [`crate::plan`] computed
     /// them while ranking. There is nothing here to recompute and no shape that
     /// can arrive without its argument.
+    ///
+    /// The one thing that does not travel on the candidate is the field's
+    /// analyzer, and the two term reads need it: they settle this transaction's
+    /// own writes by re-deriving each pending record's terms, and re-deriving
+    /// them with a different analyzer than the query was built with would make
+    /// the two halves of one read disagree. It is passed rather than looked up
+    /// again for exactly that reason.
     fn serve(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
         table: TableId,
         chosen: &plan::Candidate,
+        analyzer: Option<&tessari_types::Analyzer>,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
         match &chosen.served {
             plan::Served::Equality(values) => transaction.records_by_index(&chosen.index, values),
@@ -2313,7 +2308,7 @@ impl Session<'_> {
             }
             plan::Served::Terms(terms) => {
                 let mut rows = Vec::new();
-                for id in transaction.records_by_terms(&chosen.index, terms)? {
+                for id in transaction.records_by_terms(&chosen.index, analyzer, terms)? {
                     let at = RecordAddress::new(context.namespace, context.database, table, id);
                     if let Some(payload) = transaction.get(&at)? {
                         rows.push((at.id, payload));
@@ -2330,7 +2325,7 @@ impl Session<'_> {
             | plan::Served::FuzzyTerms(expansions)
             | plan::Served::AnyTerms(expansions) => {
                 let mut rows = Vec::new();
-                for id in transaction.records_by_expansions(&chosen.index, expansions)? {
+                for id in transaction.records_by_expansions(&chosen.index, analyzer, expansions)? {
                     let at = RecordAddress::new(context.namespace, context.database, table, id);
                     if let Some(payload) = transaction.get(&at)? {
                         rows.push((at.id, payload));

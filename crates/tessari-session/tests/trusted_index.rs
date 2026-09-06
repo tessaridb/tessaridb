@@ -1,5 +1,5 @@
-//! When a search index is believed instead of re-tested, and the three things
-//! that have to hold first.
+//! When a search index is believed instead of re-tested, and what has to hold
+//! first.
 //!
 //! # What changed, and why it needs tests of its own
 //!
@@ -13,9 +13,8 @@
 //! re-analysis is the entire cost of the query.
 //!
 //! Believing the read is therefore permitted, and only where believing it and
-//! re-testing it produce the same records. Three of those conditions are checked
-//! at the point of use, and each one is a way the re-test was carrying something
-//! other than the predicate:
+//! re-testing it produce the same records. Each condition below is a way the
+//! re-test was carrying something other than the predicate:
 //!
 //! **The clause has to be the whole condition** — anything joined with `AND`
 //! still has to be evaluated. Covered by the store's existing scan/index pair
@@ -29,14 +28,20 @@
 //! reader learning the contents of a field they were never granted, one query at
 //! a time, from which rows come back.
 //!
-//! **The transaction must not hold writes on the table.** Index entries are
-//! derived at commit, so a pending write has no posting at all. That turned out
-//! to be a wrong answer already, before any of this: the equality, string-prefix
-//! and region reads each ask every pending record directly after the walk, and
-//! the term reads never did, so a record updated *into* a match inside the
-//! transaction was missed — no posting, no candidate, and nothing a re-test can
-//! add back. A search index is now withheld while the transaction is writing to
-//! the table, and the scan answers. Both directions are asserted here.
+//! **The read has to account for the transaction's own writes**, and this one
+//! was a wrong answer already, before any of the above. Index entries are
+//! derived at commit, so a pending write has no posting at all. The equality,
+//! string-prefix and region reads each settle that by asking every pending
+//! record directly after the walk; the two term reads never did. A record
+//! updated *into* a match inside its own transaction was therefore missed — no
+//! posting, no candidate, and nothing a re-test could add back — from a read
+//! that reported itself served by an index.
+//!
+//! The term reads now settle pending writes the same way, so both directions
+//! are asserted here **and** the access path is asserted with them: answering
+//! correctly by quietly falling back to a scan and answering correctly through
+//! the index are the same answer, and only one of them is what these tests are
+//! about.
 //!
 //! The semantic conditions — a phrase is not a conjunction, an excluded term
 //! names a complement an index cannot enumerate — are asserted where they
@@ -49,7 +54,7 @@
 use std::sync::Arc;
 
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_session::{Outcome, Session};
+use tessari_session::{AccessPath, Outcome, Session};
 use tessari_storage::Store;
 
 const PASSWORD: &str = "correct horse battery";
@@ -102,14 +107,26 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
 /// end is exactly right — nothing is left behind for the next assertion to
 /// stand on by accident.
 fn ids(session: &mut Session<'_>, statement: &str) -> Vec<String> {
+    read(session, statement).0
+}
+
+/// The record ids, and the access path the read took.
+///
+/// The second half matters in the transaction tests: answering correctly by
+/// falling back to a scan and answering correctly through the index are the same
+/// answer, and only one of them is the thing being asserted.
+fn read(session: &mut Session<'_>, statement: &str) -> (Vec<String>, AccessPath) {
     let answered = session.run(statement).unwrap();
     let mut found = answered.iter().filter_map(|outcome| match outcome {
-        Outcome::Records { records, .. } => Some(records),
+        Outcome::Records { records, plan, .. } => Some((records, plan)),
         _ => None,
     });
-    let records = found.next().expect("one read in the script");
+    let (records, plan) = found.next().expect("one read in the script");
     assert!(found.next().is_none(), "one read in the script");
-    records.iter().map(|(id, _)| id.to_string()).collect()
+    (
+        records.iter().map(|(id, _)| id.to_string()).collect(),
+        plan.access,
+    )
 }
 
 #[test]
@@ -171,12 +188,17 @@ fn a_record_rewritten_inside_the_transaction_is_read_from_its_new_text() {
     let held = store();
     peopled(&held);
     let mut root = signed_in(&held, "root");
-    let answered = ids(
+    let (answered, access) = read(
         &mut root,
         "BEGIN;\n\
          UPDATE notes:1 = { title: 'first', text: 'a graph of vectors' };\n\
          SELECT id FROM notes WHERE text MATCHES 'analyzer';\n\
          VERIFY;",
+    );
+    assert_eq!(
+        access,
+        AccessPath::Index,
+        "through the index, not around it"
     );
     assert!(
         answered.is_empty(),
@@ -186,19 +208,25 @@ fn a_record_rewritten_inside_the_transaction_is_read_from_its_new_text() {
 
 #[test]
 fn a_record_written_into_the_match_inside_the_transaction_is_found() {
-    // The same seam from the other side. This record has no posting at all for
-    // the word yet — entries are derived at commit — so the read cannot be
-    // served from the index and has to fall back to the scan rather than answer
-    // with fewer records.
+    // The same seam from the other side, and the direction that was silently
+    // wrong: this record has no posting for the word yet — entries are derived
+    // at commit — so before the term reads settled pending writes there was no
+    // candidate to produce and no re-test that could add one back. A missing
+    // row, from a read that reported itself served by an index.
     let held = store();
     peopled(&held);
     let mut root = signed_in(&held, "root");
-    let answered = ids(
+    let (answered, access) = read(
         &mut root,
         "BEGIN;\n\
          UPDATE notes:2 = { title: 'second', text: 'the analyzer folds accents' };\n\
          SELECT id FROM notes WHERE text MATCHES 'analyzer';\n\
          VERIFY;",
+    );
+    assert_eq!(
+        access,
+        AccessPath::Index,
+        "through the index, not around it"
     );
     assert_eq!(answered.len(), 2, "both records hold the word now");
 }
