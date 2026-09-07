@@ -1222,14 +1222,26 @@ question worth answering somewhere else in your design:
 DROP VAULT team;
 ```
 
-This destroys the vault's key along with its records, and the key is the only
-copy. Every record of this vault in every backup, snapshot and replica that will
-ever be restored becomes ciphertext under a key that exists nowhere.
+This destroys the vault's key along with its records. In **this store** the key
+is gone permanently, and every copy taken from this point on — backup, snapshot,
+replica — is ciphertext under a key that exists nowhere.
 
 That is what makes it a **deletion** rather than a removal, and it is the only
 deletion claim a store can honestly make: deleting rows is a statement about the
-live table and says nothing about the data. It is also why it cannot be undone by
-restoring a backup.
+live table and says nothing about the data.
+
+**Where the deletion stops, stated plainly because it is the part that matters
+operationally.** A vault's key lives in its declaration, the declaration travels
+in the log, and a backup *is* the log — so a backup taken **before** the drop
+restores a vault that opens, given the passphrase. This is the same mechanism
+that lets a replica serve a vault at all, and it cannot be removed from one side
+without removing it from the other.
+
+So destroying a secret is two acts, not one: drop the vault, and **expire the
+copies that predate the drop**. A retention policy that keeps ninety days of
+nightly backups keeps ninety days of the secret you just destroyed. The store
+cannot do the second act for you — it does not know what copies exist — and a
+claim that it did would be the most dangerous sentence in this document.
 
 ### A collection, for records that carry fields nobody declared
 
