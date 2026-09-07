@@ -155,6 +155,7 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Node
             | InfoSubject::Consumers => {}
             InfoSubject::Table(table) | InfoSubject::Access(table) => erase_table(table),
+            InfoSubject::Recipients(target) => erase_record(target),
             InfoSubject::User(name)
             | InfoSubject::Consumer(name)
             | InfoSubject::Graph(name)
@@ -319,6 +320,28 @@ fn erase_statement(statement: &mut Statement) {
         }
         // `REVEAL` names one record, so its target is erased the way every
         // other single-record statement's is.
+        // Both recipient statements name one record; the material is an
+        // expression and is erased as one.
+        StatementKind::AddRecipient {
+            target,
+            recipient,
+            material,
+            span,
+        } => {
+            erase_record(target);
+            erase_expr(recipient);
+            erase_expr(material);
+            *span = CANONICAL;
+        }
+        StatementKind::RemoveRecipient {
+            target,
+            recipient,
+            span,
+        } => {
+            erase_record(target);
+            erase_expr(recipient);
+            *span = CANONICAL;
+        }
         StatementKind::Reveal {
             target,
             fields,

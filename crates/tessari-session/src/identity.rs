@@ -546,6 +546,15 @@ impl Needs {
                 ..
             }
             | StatementKind::Update { .. }
+            // Both recipient statements refuse on a claim about prior state —
+            // *that name is already a recipient*, *that name is not one* — so
+            // each answers a question about the set before it changed it, which
+            // is the property this class is measured on rather than reasoned
+            // about. The refusals are deliberate (a silent revocation is the
+            // worst answer `REMOVE RECIPIENT` could give), and the reading half
+            // is what they cost.
+            | StatementKind::AddRecipient { .. }
+            | StatementKind::RemoveRecipient { .. }
             | StatementKind::DeleteWhere { .. } => Self::READ_WRITE,
             // **The six that are measurably silent about prior state.** Every
             // one of them answers `ok` against an absent or conflicting record,

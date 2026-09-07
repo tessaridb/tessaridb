@@ -136,6 +136,14 @@ impl Effect {
             | StatementKind::AlterField { .. }
             | StatementKind::RebuildIndex { .. } => Self::Write,
 
+            // A recipient set changes a record, so both statements are writes
+            // and go to the leader like every other. Neither needs the store
+            // unsealed: nothing here is unwrapped and nothing is decrypted, and
+            // that is what lets a revocation happen on a sealed store.
+            StatementKind::AddRecipient { .. } | StatementKind::RemoveRecipient { .. } => {
+                Self::Write
+            }
+
             // Who may reach it. Administering in `Needs`, and a write here:
             // a grant is a record like any other and must be decided in one
             // place, which is the leader.

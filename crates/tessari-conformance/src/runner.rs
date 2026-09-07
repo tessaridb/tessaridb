@@ -260,6 +260,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::NotIndexable { .. } => "NotIndexable",
         Error::SecretNeedsVault { .. } => "SecretNeedsVault",
         Error::NotASecret { .. } => "NotASecret",
+        Error::RecipientIsNotAName { .. } => "RecipientIsNotAName",
         _ => "Unnamed",
     }
 }
@@ -343,6 +344,9 @@ fn store_kind(error: &tessari_storage::Error) -> &'static str {
         tessari_storage::Error::VaultReservedField { .. } => "VaultReservedField",
         tessari_storage::Error::VaultNotAnObject { .. } => "VaultNotAnObject",
         tessari_storage::Error::VaultNoKey { .. } => "VaultNoKey",
+        tessari_storage::Error::VaultReservedRecipient { .. } => "VaultReservedRecipient",
+        tessari_storage::Error::VaultRecipientExists { .. } => "VaultRecipientExists",
+        tessari_storage::Error::VaultNoRecipient { .. } => "VaultNoRecipient",
         _ => "Unnamed",
     }
 }

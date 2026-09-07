@@ -55,6 +55,8 @@ forms! {
     DefineVault => "DEFINE VAULT",
     DropVault => "DROP VAULT",
     Reveal => "REVEAL",
+    AddRecipient => "ADD RECIPIENT",
+    RemoveRecipient => "REMOVE RECIPIENT",
     UnsealVault => "UNSEAL VAULT",
     SealVault => "SEAL VAULT",
     DefineGraph => "DEFINE GRAPH",
@@ -160,6 +162,8 @@ mod tests {
              UNSEAL VAULT WITH 'x';\
              DEFINE VAULT v;\
              REVEAL a FROM v:1;\
+             ADD RECIPIENT 'r' TO v:1 KEY 0x00;\
+             REMOVE RECIPIENT 'r' FROM v:1;\
              SEAL VAULT;\
              DROP VAULT v;\
              DEFINE GRAPH gr;\

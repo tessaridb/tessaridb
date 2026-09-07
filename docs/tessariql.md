@@ -1102,6 +1102,58 @@ Each declared field, its type, and whether it is `SECRET`. It carries no length,
 no fingerprint and no key identifier for a sealed field — each would be an oracle
 that answers slowly rather than not at all.
 
+#### Who else may open a record
+
+A record in a vault carries a set of **recipients** — the parties that may one
+day open it. Adding one is a write:
+
+```
+ADD RECIPIENT 'ada@example.com' TO team:'github' KEY 0xdeadbeef;
+REMOVE RECIPIENT 'ada@example.com' FROM team:'github';
+INFO FOR RECIPIENTS OF team:'github';
+```
+
+**The store interprets neither half.** The name is text it keeps and hands back;
+the material is a value it keeps and hands back. What a recipient's material
+*is* — a data key wrapped under somebody's public key, a handle into your own key
+service, a capability your application issued — is a question this store
+deliberately cannot answer, because answering it would mean holding the second
+key hierarchy that decides it. The set is the foundation; the sharing scheme is
+yours.
+
+The material is an expression, so a client that did its wrapping elsewhere binds
+the bytes rather than formatting them into the statement:
+
+```
+ADD RECIPIENT $who TO team:'github' KEY $wrapped;
+```
+
+Four things this pair does, each for a reason worth knowing before you rely on
+it:
+
+- **Neither statement needs an unsealed store.** Nothing here unwraps a key or
+  decrypts anything, and revoking is the operation you least want to depend on an
+  operator being present to perform.
+- **Adding or removing a recipient changes nothing else.** Every sealed field
+  keeps the exact bytes it had. A write through the ordinary path would re-seal
+  the record under a fresh key, which is why this is its own statement rather
+  than an `UPDATE` of a field.
+- **A name already in the set is refused, not replaced.** Overwriting would
+  destroy the only copy of whatever that entry held, silently and in one
+  statement.
+- **Removing a name that is not there is refused, not answered `ok`.** A
+  revocation that matches nothing and reports success leaves you believing a
+  party was removed while their entry is still on the record — and nothing
+  anywhere is in an error state afterwards.
+
+`#vault` is the store's own entry, holding the record's data key wrapped under
+the vault's. It is not a recipient: it cannot be added, it cannot be removed, and
+it is not among the names `INFO` reports.
+
+Reading the set needs the same grant as reading the vault. Holding a grant and
+holding a key remain separate powers — the set says who could open a record, not
+who may address it.
+
 #### Removing a vault
 
 ```

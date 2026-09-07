@@ -33,6 +33,8 @@
 //! independent envelopes with two identifiers, and matching on the identifier
 //! would work for exactly as long as there was one recipient.
 
+use std::collections::BTreeMap;
+
 use tessari_types::{DatabaseId, NamespaceId, Value};
 use tessari_vault::{Binding, Level, SecretBytes, Wrapped, keys};
 
@@ -359,4 +361,112 @@ pub fn initialise_root(store: &Store, passphrase: &str) -> Result<crate::catalog
     let (root, master) = tessari_vault::Root::create(passphrase)?;
     store.vault().adopt(master)?;
     Ok(crate::catalog::VaultRoot(root))
+}
+
+/// Add a recipient to a record's key set.
+///
+/// # Why this takes a decoded payload and not a transaction
+///
+/// Because it must be provable at a glance that adding a recipient touches no
+/// key, opens no envelope and needs no unsealed store. A function holding a
+/// `Transaction` could reach the master key; this one cannot reach anything.
+/// The property is structural rather than asserted, which matters most for the
+/// removal below: revoking a recipient is the operation you least want to
+/// depend on an operator being present to unseal.
+///
+/// The engine branches on exactly one name — [`VAULT_RECIPIENT`], its own — and
+/// on nothing else about either half. The name is text it stores and returns,
+/// the material is a value it stores and returns.
+///
+/// # Errors
+///
+/// - [`Error::VaultReservedRecipient`] when the name is the store's own entry.
+/// - [`Error::VaultRecipientExists`] when the name is already on the record.
+/// - [`Error::VaultNoKey`] when the record carries no key set at all, which is
+///   what a record written before its table became a vault looks like.
+pub fn add_recipient(
+    fields: &mut BTreeMap<String, Value>,
+    table: &str,
+    recipient: &str,
+    material: Value,
+) -> Result<()> {
+    let entries = key_set_of(fields, table)?;
+    if recipient == VAULT_RECIPIENT {
+        return Err(Error::VaultReservedRecipient {
+            recipient: recipient.to_owned(),
+        });
+    }
+    if entries.contains_key(recipient) {
+        return Err(Error::VaultRecipientExists {
+            recipient: recipient.to_owned(),
+        });
+    }
+    entries.insert(recipient.to_owned(), material);
+    Ok(())
+}
+
+/// Remove a recipient from a record's key set.
+///
+/// # Errors
+///
+/// - [`Error::VaultReservedRecipient`] when the name is the store's own entry —
+///   removing it would leave a record nothing can ever open, which is a
+///   crypto-shred and has its own statement.
+/// - [`Error::VaultNoRecipient`] when no recipient of that name is there.
+/// - [`Error::VaultNoKey`] when the record carries no key set at all.
+pub fn remove_recipient(
+    fields: &mut BTreeMap<String, Value>,
+    table: &str,
+    recipient: &str,
+) -> Result<()> {
+    let entries = key_set_of(fields, table)?;
+    if recipient == VAULT_RECIPIENT {
+        return Err(Error::VaultReservedRecipient {
+            recipient: recipient.to_owned(),
+        });
+    }
+    if entries.remove(recipient).is_none() {
+        return Err(Error::VaultNoRecipient {
+            recipient: recipient.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// The recipients of a record, without the store's own entry.
+///
+/// `#vault` is excluded and that is a decision rather than tidiness: it is not a
+/// recipient anybody added, and putting it in a list beside the ones that can be
+/// removed invites an attempt to remove the one entry that must never go.
+///
+/// # Errors
+///
+/// Returns [`Error::VaultNoKey`] when the record carries no key set.
+pub fn recipients(
+    fields: &BTreeMap<String, Value>,
+    table: &str,
+) -> Result<BTreeMap<String, Value>> {
+    let Some(Value::Object(entries)) = fields.get(KEYS_FIELD) else {
+        return Err(Error::VaultNoKey {
+            table: table.to_owned(),
+        });
+    };
+    Ok(entries
+        .iter()
+        .filter(|(name, _)| name.as_str() != VAULT_RECIPIENT)
+        .map(|(name, material)| (name.clone(), material.clone()))
+        .collect())
+}
+
+/// The mutable key set of a record, refusing a record that carries none.
+fn key_set_of<'a>(
+    fields: &'a mut BTreeMap<String, Value>,
+    table: &str,
+) -> Result<&'a mut BTreeMap<String, Value>> {
+    match fields.get_mut(KEYS_FIELD) {
+        Some(Value::Object(entries)) => Ok(entries),
+        _ => Err(Error::VaultNoKey {
+            table: table.to_owned(),
+        }),
+    }
 }

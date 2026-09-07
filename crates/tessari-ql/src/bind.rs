@@ -203,6 +203,26 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // `REVEAL` binds its target like every other statement that names one
         // record. Its field list is names, and its passphrase sibling below is
         // deliberately not a parameter at all.
+        // The material a recipient carries binds like any other value, and
+        // that is the point of accepting an expression there: a client that
+        // wrapped a key locally sends the bytes as a parameter rather than
+        // formatting them into the statement text.
+        StatementKind::AddRecipient {
+            target,
+            recipient,
+            material,
+            ..
+        } => {
+            bind_target(target, binding)?;
+            bind_expr(recipient, binding)?;
+            bind_expr(material, binding)
+        }
+        StatementKind::RemoveRecipient {
+            target, recipient, ..
+        } => {
+            bind_target(target, binding)?;
+            bind_expr(recipient, binding)
+        }
         StatementKind::Reveal { target, .. }
         | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }

@@ -868,6 +868,55 @@ pub enum StatementKind {
         /// Where the statement sits.
         span: Span,
     },
+    /// `ADD RECIPIENT 'ops-escrow' TO team:github KEY $wrapped`
+    ///
+    /// A record's recipients are the parties that may one day open it, and this
+    /// adds one. **The engine interprets neither half.** The name is text it
+    /// stores and returns; the material is a value it stores and returns.
+    /// Exactly one name means anything here — `#vault`, the store's own entry —
+    /// and that name is refused, so nothing a caller writes can collide with it.
+    ///
+    /// The opacity is the feature rather than a shortcut. What a recipient's
+    /// material *is* — a data key wrapped under somebody's public key, a handle
+    /// into an application's own key service, a capability — is a question this
+    /// store deliberately cannot answer, because answering it would mean holding
+    /// the second key hierarchy that decides it. The application owns the
+    /// sharing scheme; the record carries the set.
+    ///
+    /// It does **not** need an unsealed store. Nothing is unwrapped and nothing
+    /// is decrypted, which matters most for its counterpart below: revocation is
+    /// the one operation you least want to depend on an operator being present.
+    AddRecipient {
+        /// The record whose recipient set is added to.
+        target: RecordTarget,
+        /// The recipient's name. Text the store never reads.
+        ///
+        /// An expression rather than a literal, and the reason is the same one
+        /// the material has: a name usually comes from somewhere — a directory,
+        /// a form, another table — and a statement that could only take a
+        /// literal would make every caller build one by formatting text into a
+        /// script, which is the shape a query builder exists to avoid.
+        recipient: Expr,
+        /// The material stored under that name, unread.
+        material: Expr,
+        /// Where the statement sits.
+        span: Span,
+    },
+    /// `REMOVE RECIPIENT 'ops-escrow' FROM team:github`
+    ///
+    /// The counterpart, and it **refuses a name that is not there** rather than
+    /// reporting success. A revocation that silently matches nothing is the
+    /// worst answer this statement could give: the operator reads `ok`, closes
+    /// the ticket, and the recipient they meant to remove still holds whatever
+    /// their entry gave them.
+    RemoveRecipient {
+        /// The record whose recipient set is removed from.
+        target: RecordTarget,
+        /// The recipient's name, bound like the one above.
+        recipient: Expr,
+        /// Where the statement sits.
+        span: Span,
+    },
     /// `UNSEAL VAULT WITH '…'` — the master key enters this process's memory.
     ///
     /// Store-wide, not per vault: the key it unwraps is the one every vault's
@@ -1157,6 +1206,18 @@ pub enum InfoSubject {
     /// length, a fingerprint or a key identifier would be a slower oracle rather
     /// than none, and a reader would have no way to tell it was one.
     Vault(Name),
+    /// `INFO FOR RECIPIENTS OF team:github` — who may one day open this record.
+    ///
+    /// The read half of the recipient set, and the reason the set is worth
+    /// carrying at all: a set nothing can enumerate is write-only, and an
+    /// application cannot answer *who can open this* by adding to it.
+    ///
+    /// It reports the names **and** their material, because the material is the
+    /// application's own ciphertext and withholding it would make the round trip
+    /// F1 asks for impossible. The store's own `#vault` entry is not among them:
+    /// it is not a recipient anybody added, and listing it would invite an
+    /// attempt to remove the one entry that must never go.
+    Recipients(RecordTarget),
     /// `INFO FOR USER ada` — one user's role, tenancy and grants.
     ///
     /// The one subject that refuses rather than filters, because its content

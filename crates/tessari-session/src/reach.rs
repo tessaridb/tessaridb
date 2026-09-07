@@ -126,6 +126,16 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             subject: InfoSubject::Table(table) | InfoSubject::Access(table),
         } => vec![table],
 
+        // Listing a record's recipients names the vault it lives in, and this
+        // arm is not optional: the `Info` subjects that name no table fall
+        // through to an empty list, and an empty list passes the grant loop
+        // vacuously. Forgotten here, `INFO FOR RECIPIENTS OF` would answer any
+        // caller about any record — the `BACKUP` hole, in a statement that
+        // reports who may open a secret.
+        StatementKind::Info {
+            subject: InfoSubject::Recipients(target),
+        } => vec![&target.table],
+
         // A consumer names the table it will write into, and that is the whole
         // reason it appears here at all: without it the grant loop would pass
         // over `DEFINE CONSUMER` vacuously, and a caller could point a
@@ -233,7 +243,13 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // two things it needs. The second is the key, and holding one is not
         // holding the other — which is criterion F3, and is why this arm looks
         // exactly like every other single-record statement rather than special.
-        StatementKind::Reveal { target, .. }
+        // Both recipient statements name their vault, and the grant on it is
+        // the reach half of F3 applied to the set: a caller who may not address
+        // the vault may not learn who can open its records, and may not add
+        // themselves to the list.
+        StatementKind::AddRecipient { target, .. }
+        | StatementKind::RemoveRecipient { target, .. }
+        | StatementKind::Reveal { target, .. }
         | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }
         | StatementKind::Del { target }

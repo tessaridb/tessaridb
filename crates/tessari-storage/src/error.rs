@@ -59,6 +59,41 @@ pub enum Error {
         table: String,
     },
 
+    /// A caller named the store's own entry as a recipient.
+    ///
+    /// `#vault` is the entry the engine wraps the record's data key into, and it
+    /// is the one name in the set that means something here. Letting a caller
+    /// write it would let them choose what a later read opens with; letting them
+    /// remove it would crypto-shred the record while reporting success.
+    #[error("`{recipient}` is the vault's own entry and is not a recipient")]
+    VaultReservedRecipient {
+        /// The reserved name that was named.
+        recipient: String,
+    },
+
+    /// A recipient of that name is already on the record.
+    ///
+    /// Refused rather than replaced. Overwriting would destroy the only copy of
+    /// whatever the existing entry held, silently and in one statement; a caller
+    /// who means to replace says so in two.
+    #[error("`{recipient}` is already a recipient of this record")]
+    VaultRecipientExists {
+        /// The name that was already there.
+        recipient: String,
+    },
+
+    /// No recipient of that name is on the record.
+    ///
+    /// The important refusal of the pair. A revocation that matched nothing and
+    /// answered `ok` would leave the operator believing a party was removed
+    /// while their entry is still on the record — the one failure mode where
+    /// silence is worse than an error by a wide margin.
+    #[error("`{recipient}` is not a recipient of this record")]
+    VaultNoRecipient {
+        /// The name that was not there.
+        recipient: String,
+    },
+
     /// A key that must be there is not.
     ///
     /// Two shapes reach here and both are structural rather than cryptographic:
@@ -474,6 +509,9 @@ impl Error {
             // it now sits in.
             Self::VaultReservedField { .. }
             | Self::VaultNotAnObject { .. }
+            | Self::VaultReservedRecipient { .. }
+            | Self::VaultRecipientExists { .. }
+            | Self::VaultNoRecipient { .. }
             | Self::VaultNoKey { .. } => ErrorCategory::Validation,
             Self::Kv(inner) => inner.category(),
             Self::Encoding(inner) => inner.category(),

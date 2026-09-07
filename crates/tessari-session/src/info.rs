@@ -80,6 +80,7 @@ impl Session<'_> {
             InfoSubject::Vector(name) => self.info_vector(transaction, name, span)?,
             InfoSubject::Geo(name) => self.info_geo(transaction, name, span)?,
             InfoSubject::Vault(name) => self.info_vault(transaction, name, span)?,
+            InfoSubject::Recipients(target) => self.info_recipients(transaction, target, span)?,
             InfoSubject::User(name) => self.info_user(transaction, name, span)?,
             InfoSubject::Users => self.info_users(transaction)?,
             InfoSubject::Access(table) => self.info_access(transaction, table, span)?,
@@ -281,6 +282,31 @@ impl Session<'_> {
     /// It does not report whether the store is sealed either. That is a property
     /// of this *process*, not of this vault, and answering it here would make a
     /// per-vault question out of a store-wide one.
+    /// `INFO FOR RECIPIENTS OF team:github` — who may one day open this record.
+    ///
+    /// **Nothing here is filtered**, which is what keeps it safe to answer at
+    /// all: the caller either holds the grant on the vault and sees the whole
+    /// set, or is refused before this runs. A listing narrowed per caller would
+    /// disclose by its size what it withheld by its contents, and this one has
+    /// no size to read anything from.
+    ///
+    /// The material comes back with the names because it is the application's
+    /// own ciphertext and the store never read it. What the store's own entry
+    /// holds is not in the answer — see `tessari_storage::recipients`.
+    fn info_recipients(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let (_, definition, held) = self.vault_record(transaction, target, span)?;
+        let entries = tessari_storage::recipients(&held, &definition.name)?;
+        Ok(BTreeMap::from([(
+            "recipients".to_owned(),
+            Value::Object(entries),
+        )]))
+    }
+
     fn info_vault(
         &self,
         transaction: &mut Transaction<'_>,

@@ -230,6 +230,8 @@ impl Parser<'_> {
             // but a verb can stand at the head of a statement, so nothing is
             // ambiguous, and each arm has already consumed its word.
             _ if self.eat_word("reveal") => self.reveal_statement(start)?,
+            _ if self.eat_word("add") => self.add_recipient_statement(start)?,
+            _ if self.eat_word("remove") => self.remove_recipient_statement(start)?,
             _ if self.eat_word("unseal") => self.unseal_statement(start)?,
             _ if self.eat_word("seal") => {
                 self.expect_vault_word("`VAULT`")?;
@@ -269,6 +271,50 @@ impl Parser<'_> {
             fields,
             span: start.to(self.span_behind()),
         })
+    }
+
+    /// `ADD RECIPIENT 'ops-escrow' TO team:github KEY $wrapped`
+    ///
+    /// The material is an **expression** where the passphrase below is a bare
+    /// literal, and the difference is deliberate rather than inconsistent. A
+    /// passphrase is a secret this store must never let through the evaluator; a
+    /// recipient's material is the caller's own ciphertext, and the caller that
+    /// computed it client-side needs to hand it over as a parameter rather than
+    /// format it into a statement as hex.
+    fn add_recipient_statement(&mut self, start: Span) -> Result<StatementKind> {
+        self.expect_word("recipient", "`RECIPIENT`")?;
+        let recipient = self.expression()?;
+        self.expect_keyword(Keyword::To, "`TO` and the record")?;
+        let target = self.record_target()?;
+        self.expect_word("key", "`KEY` and the material to store")?;
+        let material = self.expression()?;
+        Ok(StatementKind::AddRecipient {
+            target,
+            recipient,
+            material,
+            span: start.to(self.span_behind()),
+        })
+    }
+
+    /// `REMOVE RECIPIENT 'ops-escrow' FROM team:github`
+    fn remove_recipient_statement(&mut self, start: Span) -> Result<StatementKind> {
+        self.expect_word("recipient", "`RECIPIENT`")?;
+        let recipient = self.expression()?;
+        self.expect_keyword(Keyword::From, "`FROM` and the record")?;
+        let target = self.record_target()?;
+        Ok(StatementKind::RemoveRecipient {
+            target,
+            recipient,
+            span: start.to(self.span_behind()),
+        })
+    }
+
+    /// A contextual word this statement requires.
+    fn expect_word(&mut self, word: &str, expected: &'static str) -> Result<()> {
+        if self.eat_word(word) {
+            return Ok(());
+        }
+        Err(self.error_here(expected))
     }
 
     /// `UNSEAL VAULT WITH '…'`
@@ -372,6 +418,10 @@ impl Parser<'_> {
             _ if self.eat_word("vector") => InfoSubject::Vector(self.name()?),
             _ if self.eat_word("geo") => InfoSubject::Geo(self.name()?),
             _ if self.eat_word("vault") => InfoSubject::Vault(self.name()?),
+            _ if self.eat_word("recipients") => {
+                self.expect_word("of", "`OF` and the record")?;
+                InfoSubject::Recipients(self.record_target()?)
+            }
             _ => {
                 return Err(self.error_here(
                     "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR`, `GEO` or `VAULT`",

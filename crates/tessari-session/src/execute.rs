@@ -8,8 +8,9 @@ use tessari_ql::{
 };
 use tessari_storage::{
     Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeOrder, FieldShape,
-    GEO_FIELD, IndexDefinition, IndexShape, Mapped, OnFailure, RecordAddress, TableKind,
-    TableShape, Transaction, VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance,
+    GEO_FIELD, IndexDefinition, IndexShape, Mapped, OnFailure, RecordAddress, TableDefinition,
+    TableKind, TableShape, Transaction, VECTOR_FIELD, VaultDeclaration, VectorDeclaration,
+    VectorDistance,
 };
 
 use tessari_types::{
@@ -568,6 +569,30 @@ impl Session<'_> {
                 fields,
                 span,
             } => self.reveal(transaction, target, fields, *span),
+            StatementKind::AddRecipient {
+                target,
+                recipient,
+                material,
+                span,
+            } => {
+                // Both evaluated before the record is read, so an expression
+                // that refuses does so without having touched it.
+                let recipient = self.recipient_name(transaction, recipient, *span)?;
+                let material = self.evaluate(transaction, material)?;
+                self.change_recipients(transaction, target, *span, move |fields, table| {
+                    tessari_storage::add_recipient(fields, table, &recipient, material)
+                })
+            }
+            StatementKind::RemoveRecipient {
+                target,
+                recipient,
+                span,
+            } => {
+                let recipient = self.recipient_name(transaction, recipient, *span)?;
+                self.change_recipients(transaction, target, *span, move |fields, table| {
+                    tessari_storage::remove_recipient(fields, table, &recipient)
+                })
+            }
             StatementKind::UnsealVault { passphrase, span } => {
                 self.unseal_vault(transaction, passphrase, *span)
             }
@@ -2008,6 +2033,97 @@ impl Session<'_> {
     ///
     /// A table that is not a vault is refused for the same reason: `REVEAL` over
     /// an ordinary table would be a `SELECT` wearing a word that promises more.
+    /// Resolve a record in a vault, for the three statements that name one.
+    ///
+    /// A table that is not a vault is reported as **no such vault** rather than
+    /// as a wrong kind, which is the same answer `REVEAL` gives: a caller who
+    /// may not reach a table learns nothing from these verbs that `SELECT`
+    /// would not have told them, and one who may reach it gets a message naming
+    /// the word they should have used.
+    pub(crate) fn vault_record(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+        span: Span,
+    ) -> Result<(RecordAddress, TableDefinition, BTreeMap<String, Value>)> {
+        let missing = || Error::Unknown {
+            entity: "vault",
+            name: target.table.name.text.clone(),
+            span,
+        };
+        let (_context, address) = self.address(transaction, target)?;
+        let definition = Catalog::new(transaction)
+            .table(address.table)?
+            .ok_or_else(missing)?;
+        if !definition.is_vault() {
+            return Err(missing());
+        }
+        let Some(stored) = transaction.get(&address)? else {
+            return Err(Error::NoSuchRecord {
+                id: address.id.to_string(),
+                span,
+            });
+        };
+        let Value::Object(held) = decode_payload(&stored)? else {
+            return Err(missing());
+        };
+        Ok((address, definition, held))
+    }
+
+    /// A recipient's name, which must be text.
+    ///
+    /// Anything else is refused by **type** — never by value. A caller who wrote
+    /// a field reference here would otherwise have the store quote whatever that
+    /// field holds back at them, and on a vault's record that is the one thing
+    /// this feature exists to keep unquoted.
+    fn recipient_name(
+        &self,
+        transaction: &mut Transaction<'_>,
+        expression: &tessari_ql::Expr,
+        span: Span,
+    ) -> Result<String> {
+        match self.evaluate(transaction, expression)? {
+            Value::String(name) => Ok(name),
+            other => Err(Error::RecipientIsNotAName {
+                found: other.type_name(),
+                span,
+            }),
+        }
+    }
+
+    /// Add or remove one entry in a record's recipient set.
+    ///
+    /// # Why this does not go through `put_record`
+    ///
+    /// Two reasons, and both are structural rather than stylistic. The write
+    /// path **refuses** a payload carrying the reserved key set at all, so this
+    /// change cannot be expressed as an ordinary write. And a write through it
+    /// re-seals: a fresh data key and fresh nonces for every secret field, so
+    /// every ciphertext on the record would change — which is precisely what
+    /// criterion F2 forbids, and what would make an added recipient
+    /// indistinguishable from a rewritten secret in a backup diff.
+    ///
+    /// Nothing is re-indexed, and that is correct rather than an omission: the
+    /// only field this touches is the key set, an index over a secret field is
+    /// refused at declaration, and no indexed value changes. The test that
+    /// holds this true reads through an index on a plain field after a
+    /// recipient is added.
+    fn change_recipients(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+        span: Span,
+        change: impl FnOnce(
+            &mut BTreeMap<String, Value>,
+            &str,
+        ) -> std::result::Result<(), tessari_storage::Error>,
+    ) -> Result<Outcome> {
+        let (address, definition, mut held) = self.vault_record(transaction, target, span)?;
+        change(&mut held, &definition.name)?;
+        transaction.put(address, encode_payload(&Value::Object(held)).into_bytes());
+        Ok(Outcome::Done)
+    }
+
     fn reveal(
         &self,
         transaction: &mut Transaction<'_>,

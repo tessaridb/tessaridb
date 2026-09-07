@@ -463,6 +463,21 @@ pub enum Error {
         span: Span,
     },
 
+    /// A recipient name that did not evaluate to text.
+    ///
+    /// Reports the **type** and never the value. Every neighbouring variant
+    /// renders what it found; this one cannot, because a caller who wrote a
+    /// field reference here would have the store quote whatever that field
+    /// holds — and on a vault's record that is the one thing this feature
+    /// exists to keep unquoted.
+    #[error("a recipient is named by text, and this is {found} (at {span})")]
+    RecipientIsNotAName {
+        /// The type that was supplied.
+        found: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
     /// `UPDATE` over a record that is not there.
     #[error("no record {id} (at {span}) — say `CREATE` to write a new one")]
     NoSuchRecord {

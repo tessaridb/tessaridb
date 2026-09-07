@@ -148,3 +148,71 @@ DROP VAULT team;
 --- case: and the name is gone with it
 INFO FOR VAULT team;
 --- expect: error Unknown
+
+# # The recipient set
+#
+# A record's recipients are the parties that may one day open it. The engine
+# stores a name and some material and **interprets neither**: what a recipient's
+# material is — a data key wrapped under somebody's public key, a handle into an
+# application's own key service — is a question this store deliberately cannot
+# answer, because answering it would mean holding the second key hierarchy that
+# decides it.
+#
+# One name means something here, and it is the store's own: `#vault` is the entry
+# the record's data key is wrapped into. It is refused in both directions.
+# Writing it would let a caller choose what a later read opens with; removing it
+# would crypto-shred the record while reporting success.
+#
+# Neither statement needs an unsealed store, and that is the property worth
+# keeping: revoking a recipient is the operation you least want to depend on an
+# operator being present to perform.
+
+--- case: a vault to hold a recipient set, since the one above was destroyed
+DEFINE VAULT shared;
+DEFINE FIELD token ON shared TYPE string SECRET;
+CREATE shared:'github' = { token: 'hunter2' };
+--- expect: ok
+
+--- case: a recipient is added under a name the store never reads
+ADD RECIPIENT 'urn:acme:kms:key/42' TO shared:'github' KEY 0xdeadbeef;
+--- expect: ok
+
+--- case: and comes back exactly as it went in
+INFO FOR RECIPIENTS OF shared:'github';
+--- expect: ok
+
+--- case: a second recipient joins the set rather than replacing it
+ADD RECIPIENT 'ada@example.com' TO shared:'github' KEY 0x0102;
+--- expect: ok
+
+--- case: a duplicate is refused rather than overwriting the material there
+ADD RECIPIENT 'ada@example.com' TO shared:'github' KEY 0x0304;
+--- expect: error VaultRecipientExists
+
+--- case: the store's own entry is not a recipient anyone may add
+ADD RECIPIENT '#vault' TO shared:'github' KEY 0x00;
+--- expect: error VaultReservedRecipient
+
+--- case: nor one anyone may remove
+REMOVE RECIPIENT '#vault' FROM shared:'github';
+--- expect: error VaultReservedRecipient
+
+--- case: removing a name that is not there is refused, never answered ok
+REMOVE RECIPIENT 'nobody' FROM shared:'github';
+--- expect: error VaultNoRecipient
+
+--- case: and removing one that is there succeeds
+REMOVE RECIPIENT 'ada@example.com' FROM shared:'github';
+--- expect: ok
+
+--- case: a recipient is named by text, and anything else is refused by its type
+ADD RECIPIENT 7 TO shared:'github' KEY 0x00;
+--- expect: error RecipientIsNotAName
+
+--- case: a table that is not a vault has no recipients to add to
+ADD RECIPIENT 'ops' TO staff:'1' KEY 0x00;
+--- expect: error Unknown
+
+--- case: nor any to report
+INFO FOR RECIPIENTS OF staff:'1';
+--- expect: error Unknown

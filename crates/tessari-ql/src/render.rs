@@ -76,6 +76,8 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DefineVault { .. } => Err(unrenderable("DEFINE VAULT", span)),
         StatementKind::DropVault { .. } => Err(unrenderable("DROP VAULT", span)),
         StatementKind::Reveal { .. } => Err(unrenderable("REVEAL", span)),
+        StatementKind::AddRecipient { .. } => Err(unrenderable("ADD RECIPIENT", span)),
+        StatementKind::RemoveRecipient { .. } => Err(unrenderable("REMOVE RECIPIENT", span)),
         // Unrenderable like its neighbours, and here the consequence is worth
         // saying out loud: rendering this statement would put a passphrase into
         // a string, and a string is a thing that gets logged.

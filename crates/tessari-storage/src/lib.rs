@@ -59,8 +59,8 @@ pub use graph::vector_of;
 pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
 pub use sealing::{
-    KEYS_FIELD, VAULT_RECIPIENT, initialise_root, mint_vault_key, open_data_key, open_field,
-    seal_secrets, vault_key_scope,
+    KEYS_FIELD, VAULT_RECIPIENT, add_recipient, initialise_root, mint_vault_key, open_data_key,
+    open_field, recipients, remove_recipient, seal_secrets, vault_key_scope,
 };
 pub use store::{Health, Store};
 pub use tessari_encoding::{BUILD_VERSION, Roles};
