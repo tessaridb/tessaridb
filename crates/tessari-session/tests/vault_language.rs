@@ -367,3 +367,143 @@ fn define_vault_needs_an_unsealed_store() {
     // reported it ready.
     refusal(&mut session, "DEFINE VAULT team;");
 }
+
+/// A vault is strict, and cannot be talked out of it.
+///
+/// Criterion W2 says strictness is not optional here, and the reason is one
+/// sentence: the marker that seals a field is `SECRET` on its declaration, so a
+/// field nobody declared is a field nothing seals. A schemaless vault writes it
+/// in the clear beside the sealed ones.
+///
+/// Two halves, because the default alone is one statement deep. The declaration
+/// refuses the undeclared field; the `ALTER` refuses to remove that refusal.
+#[test]
+fn a_vault_is_strict_and_cannot_be_made_schemaless() {
+    let store = store();
+    let mut session = holding(&store);
+
+    // Declared fields are accepted, so the refusal below is about the field and
+    // not about vaults refusing writes.
+    write_one(&mut session);
+
+    let said = refusal(
+        &mut session,
+        "CREATE team:'gitlab' = { login: 'boog', recovery: 'not-declared' };",
+    );
+    assert!(said.contains("recovery"), "{said}");
+
+    let said = refusal(&mut session, "ALTER TABLE team SET SCHEMALESS;");
+    assert!(said.contains("cannot be made schemaless"), "{said}");
+
+    // And the refusal held: the field is still refused afterwards, which is what
+    // distinguishes a refused `ALTER` from one that errored after taking effect.
+    let said = refusal(
+        &mut session,
+        "CREATE team:'gitlab' = { login: 'boog', recovery: 'not-declared' };",
+    );
+    assert!(said.contains("recovery"), "{said}");
+
+    // The control: an ordinary table is still free to be schemaless, so the
+    // refusal is about vaults and not about `ALTER` losing the ability.
+    session.run("DEFINE TABLE staff SCHEMAFULL;").unwrap();
+    session.run("ALTER TABLE staff SET SCHEMALESS;").unwrap();
+}
+
+/// The filter and the ordering the design names as oracles have no shape on a
+/// `REVEAL` to hang off.
+///
+/// `select_over_a_vault_is_refused_and_names_reveal` covers them on a `SELECT`,
+/// where they are refused. On the statement that *does* return plaintext they
+/// are refused earlier and harder: `REVEAL` takes a record target and nothing
+/// else, so `WHERE` and `ORDER BY` do not parse.
+///
+/// Asserted rather than left to the grammar, because the grammar is where
+/// somebody would add them: a `WHERE` on `REVEAL` reads like a convenience and
+/// is an oracle that answers one bit of a secret at a time.
+#[test]
+fn reveal_has_no_filter_and_no_ordering_to_hang_an_oracle_on() {
+    let store = store();
+    let mut session = holding(&store);
+    write_one(&mut session);
+
+    for statement in [
+        "REVEAL token FROM team WHERE token = 'guess';",
+        "REVEAL token FROM team ORDER BY token;",
+        "REVEAL * FROM team:'github' WHERE login = 'boog';",
+    ] {
+        let said = refusal(&mut session, statement);
+        assert!(
+            !said.contains(PLANTED),
+            "{statement} quoted a secret: {said}"
+        );
+    }
+
+    // The control: the form without the clause is accepted, so the refusals
+    // above are about the clause and not about the statement.
+    session.run("REVEAL token FROM team:'github';").unwrap();
+}
+
+/// Criterion W1's `INFO` clause, in the shape the collection precedent set:
+/// the report carries the flag **and** the rendered declaration carries the
+/// word.
+///
+/// Both halves, because either alone leaves the hole. A report without the flag
+/// describes a vault and an ordinary table identically — and one of the two
+/// refuses `SELECT`, seals its `SECRET` fields and cannot be made schemaless. A
+/// flag that never reaches the text leaves a declaration which, re-executed,
+/// restores a plain table: the `SECRET` fields would then be refused outright,
+/// because there would be no key to seal them with.
+#[test]
+fn a_vault_is_declared_back_as_a_vault_and_not_as_a_strict_table() {
+    let store = store();
+    let mut session = holding(&store);
+
+    let Value::Object(report) = value(&mut session, "INFO FOR TABLE team;") else {
+        panic!("INFO answers with an object")
+    };
+    assert_eq!(report.get("vault"), Some(&Value::Bool(true)));
+    // The control: the marker distinguishes, rather than being true of tables.
+    session.run("DEFINE TABLE staff SCHEMAFULL;").unwrap();
+    let Value::Object(ordinary) = value(&mut session, "INFO FOR TABLE staff;") else {
+        panic!("INFO answers with an object")
+    };
+    assert_eq!(ordinary.get("vault"), Some(&Value::Bool(false)));
+
+    let Some(Value::String(script)) = report.get("definition") else {
+        panic!("the report carries a definition")
+    };
+    assert!(
+        script.contains("DEFINE VAULT team"),
+        "a vault was declared back as something else:\n{script}"
+    );
+
+    // And it re-reads as what it claims to be: run in a fresh store it produces
+    // a vault, not a table that would refuse the first `SECRET` field.
+    let second = store_second();
+    let mut fresh = Session::new(&second);
+    fresh
+        .run(&format!(
+            "{TENANCY} UNSEAL VAULT WITH 'another passphrase'; {script}"
+        ))
+        .unwrap();
+    // The restored store answers `INFO FOR VAULT` — a statement an ordinary
+    // table has no answer to — and reports the sealed field as sealed. Against a
+    // script that had said `DEFINE TABLE`, the `SECRET` field in it would have
+    // been refused for want of a key and this would never have been reached.
+    let Value::Object(restored) = value(&mut fresh, "INFO FOR VAULT team;") else {
+        panic!("INFO answers with an object")
+    };
+    let Some(Value::Object(fields)) = restored.get("fields") else {
+        panic!("the report carries its fields")
+    };
+    let Some(Value::Object(token)) = fields.get("token") else {
+        panic!("the secret field came back")
+    };
+    assert_eq!(token.get("secret"), Some(&Value::Bool(true)));
+}
+
+/// A second store, named through a function because `store` is shadowed by the
+/// local binding wherever this is used.
+fn store_second() -> Store {
+    store()
+}

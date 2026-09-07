@@ -77,6 +77,14 @@ DEFINE FIELD token ON staff TYPE string SECRET;
 CREATE team:'github' = { login: 'boog', token: 'hunter2' };
 --- expect: ok
 
+--- case: a field nobody declared is a field nothing seals, so a vault refuses it
+CREATE team:'gitlab' = { login: 'boog', recovery: 'hunter2' };
+--- expect: error UndeclaredField
+
+--- case: and the strictness that refuses it cannot be turned off
+ALTER TABLE team SET SCHEMALESS;
+--- expect: error VaultIsStrict
+
 --- case: SELECT over a vault is refused, and the message names the word that reads one
 SELECT * FROM team;
 --- expect: error NotReadBySelect

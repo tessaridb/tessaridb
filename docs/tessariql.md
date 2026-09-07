@@ -1032,6 +1032,22 @@ That is why it is the one declaration that needs the store unsealed. A vault
 whose key was left for later would refuse every write while `INFO` reported it
 ready.
 
+A vault is also the one store that is **strict** without being asked. Every other
+declared store is schemaless unless you say otherwise; a vault refuses a field
+nobody declared, and refuses to be made schemaless afterwards. The reason is that
+what seals a field is the `SECRET` marker on its declaration, so a field nobody
+declared is a field nothing seals — it would be accepted and written in the
+clear, beside the sealed ones, in the store whose whole promise is that it holds
+nothing readable.
+
+```
+CREATE team:'gitlab' = { login: 'boog', recovery: 'hunter2' };
+-- refused: `recovery` is not declared on `team`
+
+ALTER TABLE team SET SCHEMALESS;
+-- refused: a field nobody declared is a field nothing seals
+```
+
 #### Unsealing, and what it means
 
 ```
@@ -1087,10 +1103,16 @@ entries were ever sealed.
 | `DEFINE INDEX … ON team FIELDS token` | an index over a secret field is a searchable copy of it |
 | `DEFINE FIELD … SECRET` on an ordinary table | there is no key to seal it with, so the value would be written in the clear |
 | `ALTER FIELD … SECRET` | turning the marker on leaves existing records in the clear and turning it off leaves them unreadable |
+| a field nobody declared, on a write | there is no declaration to carry the `SECRET` marker, so the value would be stored in the clear |
+| `ALTER TABLE … SET SCHEMALESS` | it would remove the refusal above, one statement after the vault was declared |
 
-Only the second is a confidentiality control. A `SELECT` that reached the records
-would answer with the sealed envelopes, since the envelope *is* the stored value;
-it is refused so the language means something rather than to keep a secret.
+Three of these are confidentiality controls and the first is not. A `SELECT` that
+reached the records would answer with the sealed envelopes, since the envelope
+*is* the stored value; it is refused so the language means something rather than
+to keep a secret. The index refusal, the undeclared-field refusal and the
+schemaless refusal each stop a real plaintext from being written: an index over a
+secret field is a searchable copy of it, and the last two are the same hole
+approached from two directions.
 
 #### What `INFO` reports
 
@@ -1101,6 +1123,14 @@ INFO FOR VAULT team;
 Each declared field, its type, and whether it is `SECRET`. It carries no length,
 no fingerprint and no key identifier for a sealed field — each would be an oracle
 that answers slowly rather than not at all.
+
+`INFO FOR TABLE team` answers too, and reports `vault: true` beside the other
+markers. It matters because the declaration it renders back says `DEFINE VAULT`
+and keeps the `SECRET` word on every field that carries it — a declaration
+missing either would restore a plain table, and a schema round trip would unseal
+what it was describing. The key is not in it: re-running the declaration mints a
+fresh one, so what comes back is an empty vault rather than a second way into
+the first.
 
 #### Who else may open a record
 

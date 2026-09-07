@@ -2604,8 +2604,10 @@ pub enum TableChange {
     Schemafull,
     /// `SET SCHEMALESS` — a record may carry a field nobody declared.
     ///
-    /// Never refused: it only widens what is admissible, so no stored row can
-    /// contradict it.
+    /// Refused on a **vault** and nowhere else. Everywhere else it only widens
+    /// what is admissible, so no stored row can contradict it; on a vault the
+    /// widening is the hole, because the marker that seals a field is `SECRET`
+    /// on its declaration and a field nobody declared carries no marker.
     Schemaless,
 }
 

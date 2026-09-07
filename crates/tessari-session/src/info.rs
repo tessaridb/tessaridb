@@ -1211,6 +1211,13 @@ fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> {
             "collection".to_owned(),
             Value::Bool(definition.is_collection()),
         ),
+        // Reported for the same reason and one stronger: a vault and a plain
+        // table accept the same declarations to look at, so a report omitting
+        // this describes them identically — and the one the report is about
+        // refuses `SELECT`, seals its `SECRET` fields and cannot be made
+        // schemaless. A declaration rebuilt from a report without it loses the
+        // word `VAULT`, which is the word that mints the key.
+        ("vault".to_owned(), Value::Bool(definition.is_vault())),
         // Reported for the same reason, and one more: it decides what the *next*
         // unnamed write is called, so a table read back without it looks like
         // every other table right up until a record is created under a scheme

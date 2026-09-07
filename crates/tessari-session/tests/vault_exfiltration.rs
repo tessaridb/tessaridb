@@ -232,3 +232,54 @@ fn the_secret_survives_a_seal_and_comes_back_after_unsealing() {
         Some(&Value::String(PLANTED.to_owned()))
     );
 }
+
+/// Criterion W2's last clause, asserted rather than assumed: *an undeclared
+/// field is an unencrypted field by accident*.
+///
+/// A vault is declared `schemafull: false`, like every other store this engine
+/// makes. That is the right default for a table and it is the wrong one here,
+/// because the marker that seals a field is `SECRET` **on a declaration**, and a
+/// field nobody declared carries no marker. So the question this test asks is
+/// not whether the engine encrypts what it was told to — the other tests in this
+/// file establish that — but what it does with a field it was never told about.
+///
+/// Written to fail if the answer is "stores it in the clear beside the sealed
+/// one", which is the accident the criterion names.
+#[test]
+fn a_field_nobody_declared_does_not_land_in_a_vault_in_the_clear() {
+    const UNDECLARED: &str = "undeclared-field-secret-4d81";
+
+    let (backend, store) = planted();
+    {
+        let mut session = Session::new(&store);
+        session.run(USE).unwrap();
+        // `recovery` is not declared on `team`. A caller writing it is doing the
+        // most ordinary thing in a schemaless store, and believes it is inside a
+        // vault because the record is.
+        let written = session.run(&format!(
+            "CREATE team:'gitlab' = {{ login: '{CONTROL}', recovery: '{UNDECLARED}' }};"
+        ));
+
+        // Either outcome is defensible and they are not equally safe, so the
+        // test records which one this store gives rather than accepting both.
+        if written.is_err() {
+            // Strict: the write is refused, and nothing reached the backend.
+            assert!(
+                !holds(&everything(&backend), UNDECLARED),
+                "the write was refused and the value is in the backend anyway"
+            );
+            return;
+        }
+    }
+
+    let stored = everything(&backend);
+    assert!(
+        holds(&stored, CONTROL),
+        "the control is absent, so nothing was written and this proves nothing"
+    );
+    assert!(
+        !holds(&stored, UNDECLARED),
+        "a field nobody declared was accepted into a vault and stored in the \
+         clear — the vault holds a plaintext beside its sealed fields"
+    );
+}

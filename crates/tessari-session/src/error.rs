@@ -737,6 +737,26 @@ pub enum Error {
         span: Span,
     },
 
+    /// A vault was asked to become schemaless.
+    ///
+    /// Refused, because strictness is the only thing that makes *declared* and
+    /// *sealed* the same set. The marker that seals a field is `SECRET` on its
+    /// declaration; a field nobody declared carries no marker, so a schemaless
+    /// vault writes it in the clear beside the sealed ones — inside the store
+    /// whose promise is that it holds nothing readable.
+    ///
+    /// Refusing the *transition* rather than only choosing the right default is
+    /// the point: a default is one statement deep, and this is the statement.
+    #[error(
+        "vault `{table}` cannot be made schemaless: a field nobody declared is a field nothing seals (at {span})"
+    )]
+    VaultIsStrict {
+        /// The vault named.
+        table: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// `REVEAL` was asked for a field that is not declared `SECRET`.
     ///
     /// Refused rather than answered in the clear. `REVEAL` returns plaintext, so

@@ -170,6 +170,26 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         let _ = writeln!(script, "DEFINE GEO {name};");
         return Ok(());
     }
+    if definition.is_vault() {
+        // `DEFINE VAULT` takes no flags, and a vault is strict by construction
+        // rather than by a word anybody wrote — so a stored vault saying
+        // otherwise was reached by a route this module does not know about, and
+        // is refused rather than written out as a statement that would restore
+        // something weaker than what was described.
+        if !definition.schemafull || definition.is_edge() {
+            return Err(Unwritable::at(format!(
+                "vault `{name}` carries flags its declaring word cannot say"
+            )));
+        }
+        // Written without a key, because a key is not a declaration: re-running
+        // this mints a fresh one, and the vault it restores is an empty vault
+        // rather than a second way into the first. That is the same promise
+        // every other word here makes — the schema comes back, the data does
+        // not — and it is worth stating because for this word a reader might
+        // hope for more.
+        let _ = writeln!(script, "DEFINE VAULT {name};");
+        return Ok(());
+    }
     if definition.is_bucket() || definition.is_collection() {
         // Neither word takes a flag, so neither can express a table that has
         // one. `DEFINE BUCKET` and `DEFINE COLLECTION` both store
@@ -249,6 +269,14 @@ fn write_field(
         "DEFINE FIELD {name} ON {table} TYPE {}",
         field.kind.name()
     );
+    // First among the options and never omitted. A field declared `SECRET` and
+    // written back without the word restores as an ordinary field, so a schema
+    // round trip through this module would un-seal every secret a vault holds —
+    // silently, because the restored store is in no error state and the field
+    // still carries the name, the type and the value the caller expects.
+    if field.secret {
+        script.push_str(" SECRET");
+    }
     if field.required {
         script.push_str(" REQUIRED");
     }

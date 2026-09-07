@@ -365,6 +365,21 @@ impl Session<'_> {
             }
             StatementKind::AlterTable { table, change } => {
                 let (_, id) = self.resolve_table(transaction, table)?;
+                // A vault is declared strict and cannot be talked out of it.
+                // Without this the protection above is one statement deep: a
+                // caller who may alter the table turns the vault schemaless and
+                // every field written afterwards is stored in the clear, with no
+                // refusal anywhere and the vault still reporting as a vault.
+                if matches!(change, TableChange::Schemaless)
+                    && Catalog::new(transaction)
+                        .table(id)?
+                        .is_some_and(|definition| definition.is_vault())
+                {
+                    return Err(Error::VaultIsStrict {
+                        table: table.name.text.clone(),
+                        span: table.span,
+                    });
+                }
                 Catalog::new(transaction)
                     .set_schemafull(id, matches!(change, TableChange::Schemafull))?;
                 Ok(Outcome::Done)
@@ -1934,11 +1949,22 @@ impl Session<'_> {
             transaction,
             name,
             TableShape {
-                // Schemaless, like every other declared store. A vault's fields
-                // are declared one at a time and the `SECRET` marker is what
-                // matters about them; requiring `SCHEMAFULL` as well would be a
+                // **Strict**, unlike every other declared store, and this is the
+                // one place the default is wrong rather than merely different.
+                //
+                // What seals a field is the `SECRET` marker on its declaration.
+                // A field nobody declared carries no marker, so in a schemaless
+                // vault it is accepted and written in the clear — beside the
+                // sealed fields, inside the store whose whole promise is that it
+                // holds nothing readable. The caller doing it is doing the most
+                // ordinary thing a schemaless store allows, and believes the
+                // record is protected because the record is in a vault.
+                //
+                // An earlier comment here argued that `SCHEMAFULL` would be a
                 // second thing to remember for a property it does not provide.
-                schemafull: false,
+                // It provides exactly one property and this is it: strictness is
+                // what makes *declared* and *sealed* the same set.
+                schemafull: true,
                 kind: TableKind::Vault(VaultDeclaration { key }),
                 identity: IdentityKind::default(),
                 graph: None,

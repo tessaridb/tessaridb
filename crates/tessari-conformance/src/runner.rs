@@ -260,6 +260,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::NotIndexable { .. } => "NotIndexable",
         Error::SecretNeedsVault { .. } => "SecretNeedsVault",
         Error::NotASecret { .. } => "NotASecret",
+        Error::VaultIsStrict { .. } => "VaultIsStrict",
         Error::RecipientIsNotAName { .. } => "RecipientIsNotAName",
         _ => "Unnamed",
     }
