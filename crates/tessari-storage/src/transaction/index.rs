@@ -4,7 +4,8 @@
 //! walk. The vector read is the only approximate one in the module, and says so
 //! where it is declared.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ops::ControlFlow;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{
@@ -175,6 +176,184 @@ impl Transaction<'_> {
             }
         }
         Ok(found.into_iter().collect())
+    }
+
+    /// The identities an ordered index holds between two bounds, in record
+    /// order, with this transaction's own writes folded in.
+    ///
+    /// [`Self::records_in_range`] without the payloads. The entry walk and the
+    /// pending-write fold are the same; what is left out is the `get_each` per
+    /// batch, which is the half whose cost grows with the answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or an index entry cannot be
+    /// decoded.
+    pub fn ids_in_range(
+        &self,
+        index: &IndexDefinition,
+        fixed: &[Value],
+        lower: Option<&Value>,
+        upper: Option<&Value>,
+    ) -> Result<BTreeSet<RecordId>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let kind = if index.unique {
+            KeyKind::UniqueIndex
+        } else {
+            KeyKind::SecondaryIndex
+        };
+        let prefix = address.prefix(kind);
+        let within = |bound: Option<&Value>| {
+            let mut values = fixed.to_vec();
+            if let Some(held) = bound {
+                values.push(held.clone());
+            }
+            let mut bytes = prefix.clone();
+            bytes.extend_from_slice(&IndexValues::leading(&values));
+            bytes
+        };
+        let start = within(lower);
+        let end = after(within(upper));
+
+        let mut found: BTreeSet<RecordId> = BTreeSet::new();
+        let mut from = start;
+        loop {
+            let request = ScanRequest {
+                keyspace: kind.keyspace(),
+                range: KeyRange::between(Key::from(from), Key::from(end.clone())),
+                direction: ScanDirection::Forward,
+                limit: Some(RANGE_SCAN_BATCH_ENTRIES),
+            };
+            let batch = self.store.backend().scan(&request)?;
+            let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
+            for (key, value) in &batch {
+                let id = if index.unique {
+                    IndexTarget::decode(value.as_slice())?.id
+                } else {
+                    SecondaryIndexKey::decode(key.as_slice())?.id
+                };
+                found.insert(id);
+            }
+            let Some(last) = last.filter(|_| batch.len() >= RANGE_SCAN_BATCH_ENTRIES) else {
+                break;
+            };
+            from = resuming_after(last);
+        }
+        // A record this transaction wrote but has not committed has no index
+        // entry yet, so it is folded in the way every other index read folds it.
+        for (address, held) in &self.writes {
+            if address.namespace != index.namespace
+                || address.database != index.database
+                || address.table != index.table
+            {
+                continue;
+            }
+            match held {
+                RecordValue::Present(_) => {
+                    found.insert(address.id.clone());
+                }
+                RecordValue::Tombstone => {
+                    found.remove(&address.id);
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    /// The records an ordered index names between two bounds, handed over one at
+    /// a time in record order, stopping where the caller says to stop.
+    ///
+    /// The streaming twin of [`Self::records_in_range`], and it streams **half**
+    /// of that read rather than all of it. The entry walk still runs to the end,
+    /// because the answer is in record order and the lowest identity among the
+    /// candidates cannot be known until every candidate has been named — so a
+    /// walk that stopped early would answer with whichever records the index
+    /// happened to reach first, which is a different answer from the one a scan
+    /// gives for the same predicate. That equality is the invariant an index
+    /// exists under: it narrows, and it never changes what a query returns.
+    ///
+    /// What the bound does reach is the **fetch**, which is the half whose cost
+    /// grows with the answer: entries are named in one pass, then records are
+    /// read in identity order a batch at a time, and a caller that has filled
+    /// its bound stops the next batch from being read at all. Batched rather
+    /// than one at a time because a point get per record is a backend round trip
+    /// per record, which is the cost `get_each` exists to avoid.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails, an entry cannot be decoded, or
+    /// `hand` returns one.
+    pub fn walk_records_in_range<F, E>(
+        &mut self,
+        index: &IndexDefinition,
+        fixed: &[Value],
+        lower: Option<&Value>,
+        upper: Option<&Value>,
+        mut hand: F,
+    ) -> std::result::Result<(), E>
+    where
+        F: FnMut(&mut Self, RecordId, Vec<u8>) -> std::result::Result<ControlFlow<()>, E>,
+        E: From<crate::error::Error>,
+    {
+        let ids = self.ids_in_range(index, fixed, lower, upper)?;
+        // Copied out before the walk rather than read in step with it: `hand`
+        // takes the transaction, so nothing may hold a borrow of it across the
+        // call. A pending write's payload is the one this transaction wrote, and
+        // it wins over whatever the store still holds for that identity.
+        let pending: BTreeMap<RecordId, Vec<u8>> = self
+            .writes
+            .iter()
+            .filter(|(address, _)| {
+                address.namespace == index.namespace
+                    && address.database == index.database
+                    && address.table == index.table
+            })
+            .filter_map(|(address, held)| match held {
+                RecordValue::Present(payload) => Some((address.id.clone(), payload.clone())),
+                RecordValue::Tombstone => None,
+            })
+            .collect();
+
+        // The fetch batch **ramps**, and a fixed one would have made this walk
+        // pointless. Records are read a batch at a time so that a wide answer
+        // costs one round trip per batch rather than one per record; but a batch
+        // of `RANGE_SCAN_BATCH_ENTRIES` is read in full before its first record
+        // is handed over, so a caller wanting ten of four hundred candidates
+        // still paid for four hundred and the walk saved nothing.
+        //
+        // Doubling from a small first batch settles it in both directions. A
+        // bound that fills early pays one short batch; a read that wants
+        // everything reaches the full batch size after seven of them and from
+        // there costs what it always did — reaching a hundred thousand records
+        // takes about five more round trips than a fixed batch would.
+        const FIRST_FETCH_BATCH: usize = 8;
+
+        let ids: Vec<RecordId> = ids.into_iter().collect();
+        let mut taken = 0_usize;
+        let mut batch = FIRST_FETCH_BATCH;
+        while taken < ids.len() {
+            let upto = ids.len().min(taken.saturating_add(batch));
+            let addresses = ids
+                .get(taken..upto)
+                .unwrap_or_default()
+                .iter()
+                .map(|id| {
+                    RecordAddress::new(index.namespace, index.database, index.table, id.clone())
+                })
+                .collect::<Vec<_>>();
+            let payloads = self.get_each(&addresses)?;
+            for (address, stored) in addresses.into_iter().zip(payloads) {
+                let Some(payload) = pending.get(&address.id).cloned().or(stored) else {
+                    continue;
+                };
+                if hand(self, address.id, payload)?.is_break() {
+                    return Ok(());
+                }
+            }
+            taken = upto;
+            batch = batch.saturating_mul(2).min(RANGE_SCAN_BATCH_ENTRIES);
+        }
+        Ok(())
     }
 
     /// The records a vector index says are nearest, nearest first.

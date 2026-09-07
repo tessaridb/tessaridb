@@ -493,8 +493,14 @@ at a time. Instead the record the condition runs against does not contain the
 field: the path resolves to `NONE`, the comparison is false by the missing-field
 rule the language already has, and the count is zero. The projection then omits
 it for the same reason rather than for a second one. An index on a hidden field
-changes nothing, because the candidates it offers are re-tested against that same
-record — an index narrows and never answers. A join hides it on whichever side
+changes nothing, and this is the one place where that needs a sentence of its
+own. An index ordinarily *narrows*: what it offers is re-tested against the
+record above, which is the redacted one, so the hidden field is as absent to the
+index path as to the scan. A **search** index on a plain conjunction of terms is
+the exception — its postings answer the clause exactly, so the read may skip that
+re-test — and it is therefore not taken when the indexed field is one this
+session may not read. The permission decides before the optimisation does. A
+join hides it on whichever side
 declared it, `FETCH` hides it in the table it lands on, and the change feed hides
 it too.
 
@@ -2669,6 +2675,39 @@ including the two search operators that sound as though they would not be:
   changes what a read costs and never what it answers.
 - **A `LIMIT` is not an approximation.** A bounded read answers exactly the
   question that was asked, and the question included the bound.
+
+**What a `LIMIT` costs, since it is a cost and not an answer.** A bound stops the
+read where the answer fills, including behind a `WHERE`: `SELECT id FROM notes
+WHERE city = 'oslo' LIMIT 5` reads until it has five, not until the table ends.
+So a bounded read over a common value is cheap and a bounded read over a rare one
+is not — and one that matches nothing costs the whole table, because finding out
+that nothing matches *is* reading the table.
+
+Three clauses take that back, each because it decides which records the answer
+holds only after they have all been produced: an `ORDER BY` the store does not
+already hold the order for, a `SPLIT`, and a grouping or a fold — whose bound
+counts groups rather than records. `AFTER` and `FETCH` also read to the end.
+Where an index serves the order, §5's bounded walk applies instead and costs the
+bound.
+
+**An index changes that cost by half, and the half it does not change is the
+interesting one.** When an index serves the condition, the read does two things:
+it walks the index entries to learn which records are candidates, and it reads
+those records. A bound stops the second and never the first.
+
+The reason is the answer rather than the implementation. A bounded read returns
+**the same records whether or not an index exists** — adding an index makes a
+query faster and never makes it answer differently — and those records are the
+first by identity. Which of the candidates hold the lowest identities is not
+known until all of them have been named, so the entry walk always runs to the
+end. What the bound saves is reading the records it does not need:
+`SELECT * FROM notes WHERE at > '2026-01-01' LIMIT 10` reads ten records, not
+every record after that date.
+
+So the practical shape is: a bounded index-served read costs one pass over the
+matching index entries plus its answer. An index that matches most of a table
+still costs that pass, which is why a very unselective index can be slower than
+no index at all.
 
 **Over the wire the field is three-state**, and a client should treat it that
 way: the node said exact, the node said approximate and why, or *the node did not
@@ -5077,7 +5116,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.0.4", "build": "0.0.4-alpha", "endpoints": ["db-1.internal:9000"],
+ "version": "0.0.5", "build": "0.0.5-alpha", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000"}]}}
 ```
 

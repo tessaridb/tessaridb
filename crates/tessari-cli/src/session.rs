@@ -112,6 +112,9 @@ pub fn run(
     mode: Mode,
 ) -> std::io::Result<Ended> {
     let mut pending = String::new();
+    // Walks `pending` once as it grows, rather than from the start after every
+    // line — see [`Scanner`] for the cost that made this necessary.
+    let mut scanner = Scanner::default();
     let mut ended = Ended::Fine;
     let mut timing = false;
     // A table cannot be pasted back into a statement, and this program prints
@@ -137,6 +140,7 @@ pub fn run(
             // anything unfinished for it to continue.
             Given::Abandon => {
                 pending.clear();
+                scanner = Scanner::default();
                 continue;
             }
             Given::Ended => break,
@@ -174,9 +178,11 @@ pub fn run(
             }
         } else {
             pending.push_str(&line);
-            if !closed(&pending) {
+            scanner.feed(&line);
+            if !scanner.state().closed {
                 continue;
             }
+            scanner = Scanner::default();
             core::mem::take(&mut pending)
         };
         if script.trim().is_empty() {
@@ -213,7 +219,7 @@ pub fn run(
 
     // Input that ran out mid-statement is worth saying: silently discarding it
     // looks exactly like a statement that ran and answered nothing.
-    let remainder = scan(&pending);
+    let remainder = scanner.state();
     if remainder.open_transaction {
         // Hand it over rather than describing it. The store is what discards
         // the work of a transaction nobody closed, so the store's own wording
@@ -336,6 +342,11 @@ fn report(out: &mut impl Write, answer: &Answer, shape: Shape) -> std::io::Resul
 ///
 /// A `;` inside a string does not, which is the whole reason this is a walk
 /// rather than a `contains`.
+///
+/// The session itself no longer asks this — it feeds a [`Scanner`] line by line
+/// instead — but the tests below assert the single-pass answer, which is the
+/// behaviour the incremental scan has to reproduce.
+#[cfg(test)]
 fn closed(text: &str) -> bool {
     scan(text).closed
 }
@@ -379,78 +390,180 @@ fn boundary(word: &str, open: &mut bool) {
 ///   record. Nothing reported a fault about the answer, because as far as
 ///   everything below here was concerned there was no fault: the wrong question
 ///   was asked correctly.
+///
+/// Kept as a single-pass entry point for the tests below: they state the
+/// behaviour in terms of a whole text, and the incremental scan the session
+/// runs has to agree with it however the text is cut up.
+#[cfg(test)]
 fn scan(text: &str) -> Scan {
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    let mut commented = false;
-    let mut substantial = false;
-    let mut open_transaction = false;
-    let mut closed = false;
-    // The first word of a statement is the only place a keyword is a keyword.
-    let mut at_statement_start = true;
-    let mut word = String::new();
-    let mut characters = text.chars().peekable();
-    while let Some(character) = characters.next() {
-        // A word ends at anything that cannot be inside one.
-        if !character.is_alphanumeric() && character != '_' && !word.is_empty() {
-            if at_statement_start {
-                boundary(&word, &mut open_transaction);
-                at_statement_start = false;
-            }
-            word.clear();
-        }
+    let mut scanner = Scanner::default();
+    scanner.feed(text);
+    scanner.state()
+}
 
-        if commented {
-            commented = character != '\n';
-            continue;
+/// A scan that can be handed the next piece of input instead of the whole
+/// buffer again.
+///
+/// # Why this is not one function over the accumulated text
+///
+/// It was, and outside a transaction that is free: the walk stops at the first
+/// `;`, so the text it examines is one statement however long the session runs.
+/// Inside a transaction the walk deliberately does **not** stop at `;` — a `;`
+/// there ends a statement and not the group that has to be submitted together —
+/// so the accumulated block is what gets examined, and examining it again after
+/// every appended line is quadratic in the number of statements.
+///
+/// Measured before this existed, loading `CREATE`s through the console: 76 µs
+/// per statement at 500 of them inside one transaction, 589 µs at 8 000, the
+/// cost doubling each time the count did. The same statements through the node's
+/// HTTP surface, which does not go through here, cost 15-23 µs and got *cheaper*
+/// with batching — so this was the console's own cost and not the store's.
+///
+/// The state below is exactly the set of local variables the walk used to keep
+/// between characters. Keeping them across calls is the whole change.
+#[derive(Default)]
+struct Scanner {
+    quote: Option<char>,
+    escaped: bool,
+    commented: bool,
+    substantial: bool,
+    open_transaction: bool,
+    closed: bool,
+    /// A `-` that has been read while the character after it has not.
+    ///
+    /// Only a doubled dash opens a comment, so a `-` at the very end of a piece
+    /// of input cannot be resolved until the next piece arrives. Holding it is
+    /// what keeps a comment split across two lines reading as a comment.
+    held_dash: bool,
+    /// The first word of a statement is the only place a keyword is a keyword.
+    at_statement_start: bool,
+    word: String,
+    /// Whether anything has been fed yet, which is what `at_statement_start`
+    /// means before the first character.
+    started: bool,
+}
+
+impl Scanner {
+    /// What the scan has found so far.
+    ///
+    /// A word still being read and a dash still being held are both answered
+    /// **provisionally**: the single-pass walk resolved them at end of input,
+    /// and here the input may not have ended, so they are applied to the answer
+    /// without being consumed. Feeding the rest and asking again gives the same
+    /// result the single pass would have.
+    fn state(&self) -> Scan {
+        let mut open_transaction = self.open_transaction;
+        if self.at_statement_start && !self.word.is_empty() {
+            boundary(&self.word, &mut open_transaction);
         }
-        if escaped {
-            escaped = false;
-            continue;
+        Scan {
+            closed: self.closed,
+            substantial: self.substantial || self.held_dash,
+            open_transaction,
         }
-        match (quote, character) {
-            (Some(_), '\\') => escaped = true,
-            (Some(open), held) if held == open => quote = None,
-            (Some(_), _) => {}
-            (None, '\'' | '"') => {
-                substantial = true;
-                at_statement_start = false;
-                quote = Some(character);
-            }
-            // Only a doubled dash opens a comment. A single one is arithmetic,
-            // and `-1` is a number — the lexer draws the same line.
-            (None, '-') if characters.peek() == Some(&'-') => {
+    }
+
+    /// Read the next piece of input, continuing where the last one stopped.
+    ///
+    /// Stops early once a statement has closed, exactly as the single-pass walk
+    /// did: everything after that `;` belongs to the next statement and is not
+    /// this scan's business.
+    fn feed(&mut self, text: &str) {
+        if !self.started {
+            self.started = true;
+            self.at_statement_start = true;
+        }
+        if self.closed {
+            return;
+        }
+        let mut quote = self.quote;
+        let mut escaped = self.escaped;
+        let mut commented = self.commented;
+        let mut substantial = self.substantial;
+        let mut open_transaction = self.open_transaction;
+        let mut closed = false;
+        let mut at_statement_start = self.at_statement_start;
+        let mut word = core::mem::take(&mut self.word);
+        let mut characters = text.chars().peekable();
+        // A dash held from the previous piece is resolved against this one's
+        // first character before anything else looks at it.
+        if self.held_dash {
+            self.held_dash = false;
+            if characters.peek() == Some(&'-') {
                 let _ = characters.next();
                 commented = true;
-            }
-            (None, ';') => {
+            } else {
                 substantial = true;
-                at_statement_start = true;
-                // A `;` inside a transaction ends a statement and not the group
-                // that has to be submitted together. Closing here is what made a
-                // `BEGIN;` in a file arrive on its own, be discarded for ending
-                // with a transaction open, and leave every statement after it
-                // to commit by itself.
-                if !open_transaction {
-                    closed = true;
-                    break;
-                }
             }
-            (None, held) if held.is_alphanumeric() || held == '_' => {
-                substantial = true;
-                word.push(held);
-            }
-            (None, held) => substantial = substantial || !held.is_whitespace(),
         }
-    }
-    // A word running up to the end of the text was never terminated above.
-    if at_statement_start && !word.is_empty() {
-        boundary(&word, &mut open_transaction);
-    }
-    Scan {
-        closed,
-        substantial,
-        open_transaction,
+        while let Some(character) = characters.next() {
+            // A word ends at anything that cannot be inside one.
+            if !character.is_alphanumeric() && character != '_' && !word.is_empty() {
+                if at_statement_start {
+                    boundary(&word, &mut open_transaction);
+                    at_statement_start = false;
+                }
+                word.clear();
+            }
+
+            if commented {
+                commented = character != '\n';
+                continue;
+            }
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match (quote, character) {
+                (Some(_), '\\') => escaped = true,
+                (Some(open), held) if held == open => quote = None,
+                (Some(_), _) => {}
+                (None, '\'' | '"') => {
+                    substantial = true;
+                    at_statement_start = false;
+                    quote = Some(character);
+                }
+                // Only a doubled dash opens a comment. A single one is arithmetic,
+                // and `-1` is a number — the lexer draws the same line.
+                (None, '-') if characters.peek() == Some(&'-') => {
+                    let _ = characters.next();
+                    commented = true;
+                }
+                // A `-` at the very end of this piece cannot be judged yet: whether
+                // it opens a comment depends on a character that has not arrived.
+                (None, '-') if characters.peek().is_none() => self.held_dash = true,
+                (None, ';') => {
+                    substantial = true;
+                    at_statement_start = true;
+                    // A `;` inside a transaction ends a statement and not the group
+                    // that has to be submitted together. Closing here is what made a
+                    // `BEGIN;` in a file arrive on its own, be discarded for ending
+                    // with a transaction open, and leave every statement after it
+                    // to commit by itself.
+                    if !open_transaction {
+                        closed = true;
+                        break;
+                    }
+                }
+                (None, held) if held.is_alphanumeric() || held == '_' => {
+                    substantial = true;
+                    word.push(held);
+                }
+                (None, held) => substantial = substantial || !held.is_whitespace(),
+            }
+        }
+        self.quote = quote;
+        self.escaped = escaped;
+        self.commented = commented;
+        self.substantial = substantial;
+        self.open_transaction = open_transaction;
+        self.closed = closed;
+        self.at_statement_start = at_statement_start;
+        // The word is NOT terminated here — it may continue into the next piece.
+        // Its effect on a transaction boundary is applied provisionally by
+        // [`Scanner::state`] instead, which is what the single-pass walk did at
+        // end of input.
+        self.word = word;
     }
 }
 
@@ -504,7 +617,9 @@ mod tests {
 
     use tessaridb::{Db, Parameters};
 
-    use super::{Ended, Given, HELP, Lines, Mode, Piped, Write, closed, run, shorthand};
+    use super::{
+        Ended, Given, HELP, Lines, Mode, Piped, Scanner, Write, closed, run, scan, shorthand,
+    };
     use crate::store::Embedded;
 
     /// A reader that hands over exactly what a test says, in order.
@@ -771,6 +886,54 @@ DEFINE COLLECTION sessions IDENTITY uuid;
         );
         assert_eq!(ended, Ended::Fine, "{out}");
         assert!(!out.contains("error:"), "{out}");
+    }
+
+    #[test]
+    fn feeding_the_text_in_pieces_answers_what_one_pass_over_it_answers() {
+        // The property the incremental scan exists to preserve, asserted
+        // directly rather than inferred from the session tests passing. The
+        // session feeds one line at a time; this feeds EVERY cut of the text,
+        // including cuts that land between the two dashes of a comment and
+        // inside a quoted string, because those are the places a resumed scan
+        // can disagree with a single pass and nothing else would notice.
+        let texts = [
+            "SELECT * FROM users;",
+            "SET k:1 = 'a;b';",
+            "SET k:1 = 'it\\'s;';",
+            "SELECT * FROM users -- oops; a note\nWHERE name = 'ada';",
+            "-- a whole line of comment\n",
+            "BEGIN; CREATE a:1 = { n: 1 }; COMMIT;",
+            "BEGIN; CREATE a:1 = { n: 1 };",
+            "BEGIN",
+            "COMMIT",
+            "SELECT 1 - 1;",
+            "SELECT 1 -- 1;\n;",
+            "CREATE users:1 = {",
+            "",
+            "   \n  \n",
+            "SELECT * FROM t WHERE s = \"a;b\";",
+        ];
+        for text in texts {
+            let once = scan(text);
+            for cut in 0..=text.len() {
+                if !text.is_char_boundary(cut) {
+                    continue;
+                }
+                let mut scanner = Scanner::default();
+                scanner.feed(&text[..cut]);
+                scanner.feed(&text[cut..]);
+                let piecewise = scanner.state();
+                assert_eq!(
+                    (
+                        piecewise.closed,
+                        piecewise.substantial,
+                        piecewise.open_transaction
+                    ),
+                    (once.closed, once.substantial, once.open_transaction),
+                    "{text:?} cut at {cut}"
+                );
+            }
+        }
     }
 
     #[test]

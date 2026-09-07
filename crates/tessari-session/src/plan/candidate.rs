@@ -1,6 +1,7 @@
 use core::cmp::Ordering;
 
 use tessari_geo::{Bounds, Cell, Relation};
+use tessari_ql::Span;
 use tessari_storage::IndexDefinition;
 use tessari_types::Value;
 
@@ -249,6 +250,32 @@ pub(crate) struct Candidate {
     pub(crate) index: IndexDefinition,
     /// How many records it can produce.
     pub(crate) rows: Rows,
+    /// The conjunct this candidate answers **exactly**, when it answers one.
+    ///
+    /// `None` — the default, and what every other shape says — means the read
+    /// produces *candidates*: a superset the condition then refines, which is
+    /// what makes an index a narrowing device rather than an answer.
+    ///
+    /// `Some(span)` is a stronger claim about one clause: every record this
+    /// read produces satisfies the clause at `span`, and every record it omits
+    /// fails it. A search index can make that claim because its postings are
+    /// derived by the same function the predicate calls on the same field —
+    /// `analyzer.terms` over a `Value::String` — so an intersection of posting
+    /// lists *is* "holds all of these terms" rather than an approximation of it.
+    ///
+    /// Only [`Served::Terms`] built from a plain conjunction claims it. A
+    /// phrase does not: its candidate set is the same intersection and the
+    /// predicate is what settles the order. A query with excluded terms does
+    /// not: the index enumerates presence and cannot name a complement. A
+    /// prefix or fuzzy walk does not: its expansions are capped, so what it
+    /// produces is bounded rather than complete.
+    ///
+    /// The claim is about the clause alone and never about the read. What is
+    /// still owed at the point of use — that the clause is the whole condition,
+    /// that this session may see the field, and that no uncommitted write of
+    /// this transaction is missing from the index — is not knowable here and is
+    /// checked where the candidates are spent.
+    pub(crate) answers: Option<Span>,
 }
 
 impl Candidate {

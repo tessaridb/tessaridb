@@ -68,16 +68,30 @@ pub(crate) trait Consumer {
 pub(crate) struct Collecting<'b> {
     records: Vec<(RecordId, Value)>,
     budget: &'b mut Budget,
+    /// How many records the answer can hold, where the caller has established
+    /// that these records *are* the answer.
+    ///
+    /// `None` is every read whose answer is not simply a prefix of what the
+    /// source produced — one that re-orders, resumes after a cursor, splits, or
+    /// folds. Then the source has to finish, because which records the answer
+    /// holds is not known until it has.
+    ceiling: Option<usize>,
 }
 
 impl<'b> Collecting<'b> {
-    pub(crate) fn new(budget: &'b mut Budget) -> Self {
+    /// A collector that holds everything, or the first `ceiling` records.
+    ///
+    /// The ceiling is the caller's to establish and never this stage's to guess:
+    /// it is a claim about what sits between here and the answer, which is a
+    /// property of the statement.
+    pub(crate) fn new(budget: &'b mut Budget, ceiling: Option<usize>) -> Self {
         // A stage of the read begins here, which is what the held ceiling counts
         // — see `Budget::stage`.
         budget.stage();
         Self {
             records: Vec::new(),
             budget,
+            ceiling,
         }
     }
 
@@ -100,6 +114,16 @@ impl Consumer for Collecting<'_> {
     ) -> Result<ControlFlow<()>> {
         self.budget.spend()?;
         self.records.push((id, record));
+        // The one place a `LIMIT` behind a `WHERE` can stop a source. It cannot
+        // be pushed down as a bound — it counts records that **match** and the
+        // source counts records that **exist** — so it reaches the source as the
+        // break this trait already carries, once the answer is full.
+        if self
+            .ceiling
+            .is_some_and(|ceiling| self.records.len() >= ceiling)
+        {
+            return Ok(ControlFlow::Break(()));
+        }
         Ok(ControlFlow::Continue(()))
     }
 }

@@ -102,6 +102,10 @@ mod tests {
                 ),
             ),
             rows,
+            // Ranking is about how much a candidate narrows, never about
+            // whether it answers, so every candidate this builder makes is the
+            // ordinary kind.
+            answers: None,
         }
     }
 

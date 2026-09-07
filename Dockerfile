@@ -117,4 +117,4 @@ LABEL org.opencontainers.image.title="TessariDB" \
       org.opencontainers.image.documentation="https://docs.tessaridb.com" \
       org.opencontainers.image.url="https://tessaridb.com" \
       org.opencontainers.image.licenses="BUSL-1.1" \
-      org.opencontainers.image.version="0.0.4-alpha"
+      org.opencontainers.image.version="0.0.5-alpha"
