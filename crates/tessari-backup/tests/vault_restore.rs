@@ -27,14 +27,59 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use tessari_kv::{KvBackend, MemoryBackend};
+use tessari_kv::{KeyRange, Keyspace, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
 use tessari_session::{Outcome, Session};
 use tessari_storage::Store;
 use tessari_types::Value;
 
 const PLANTED: &str = "correct-horse-battery-staple-9f2b";
+
+/// An ordinary field's value, equally distinctive and **not** secret.
+///
+/// Its job is to fail the scan below if the scan is broken: a search that cannot
+/// find a string written in the clear proves nothing by not finding one that was
+/// sealed.
+const CONTROL: &str = "ordinary-value-8c4d-not-a-secret";
 const PASSPHRASE: &str = "an operator passphrase, held by a person";
 const USING: &str = "USE NAMESPACE prod; USE DATABASE work;";
+
+fn holds(haystack: &[u8], needle: &str) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle.as_bytes())
+}
+
+/// Everything the backend holds, across every keyspace it has.
+///
+/// Enumerated rather than named, so a keyspace added later is covered without
+/// anybody remembering to come back here.
+fn everything(backend: &Arc<dyn KvBackend>) -> Vec<u8> {
+    let mut held = Vec::new();
+    for keyspace in Keyspace::ALL {
+        let request = ScanRequest {
+            keyspace: *keyspace,
+            range: KeyRange::all(),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+        for (key, value) in backend.scan(&request).unwrap() {
+            held.extend_from_slice(key.as_slice());
+            held.extend_from_slice(value.as_slice());
+        }
+    }
+    held
+}
+
+/// How many entries one keyspace holds.
+fn entries_in(backend: &Arc<dyn KvBackend>, keyspace: Keyspace) -> usize {
+    let request = ScanRequest {
+        keyspace,
+        range: KeyRange::all(),
+        direction: ScanDirection::Forward,
+        limit: None,
+    };
+    backend.scan(&request).unwrap().len()
+}
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
@@ -56,7 +101,8 @@ fn a_vault_survives_a_backup_and_opens_again_with_only_the_passphrase() {
                  DEFINE VAULT team;
                  DEFINE FIELD login ON team TYPE string;
                  DEFINE FIELD token ON team TYPE string SECRET;
-                 CREATE team:'github' = {{ login: 'boog', token: '{PLANTED}' }};"
+                 DEFINE INDEX by_login ON team FIELDS login;
+                 CREATE team:'github' = {{ login: '{CONTROL}', token: '{PLANTED}' }};"
             ))
             .unwrap();
     }
@@ -70,7 +116,7 @@ fn a_vault_survives_a_backup_and_opens_again_with_only_the_passphrase() {
     // A restored node is a *new process*: nothing has been unsealed, which is
     // the state an operator actually finds after a restore rather than the one
     // a test would arrive at by reusing the source store.
-    let (_restored_backend, restored) = store();
+    let (restored_backend, restored) = store();
     let restore_started = Instant::now();
     let brought_up = tessari_backup::bootstrap(&restored, &mut artifact.as_slice()).unwrap();
     let restore_took = restore_started.elapsed();
@@ -124,6 +170,36 @@ fn a_vault_survives_a_backup_and_opens_again_with_only_the_passphrase() {
         fields.get("token"),
         Some(&Value::String(PLANTED.to_owned())),
         "the restored secret is not the one that was written"
+    );
+
+    // Row 34 of the negative matrix: what the follower's own store holds.
+    //
+    // This is not the same question the exfiltration tests answered about the
+    // leader, and it is not redundant with them, because a follower does not
+    // copy bytes — it replays log records through the apply path, which drives
+    // the same index writer the leader's writes drive. `by_login` exists on this
+    // vault precisely so that path runs here. The claim that a follower's index
+    // holds ciphertext rests on the payload being ciphertext before it reaches
+    // the writer, and that is the step nothing had ever observed.
+    let held = everything(&restored_backend);
+    assert!(
+        !holds(&held, PLANTED),
+        "the restored store holds the secret in the clear"
+    );
+    assert!(
+        holds(&held, CONTROL),
+        "the scan found neither the secret nor the control, so it is looking at \
+         an empty store and proves nothing"
+    );
+
+    // And the index keyspace is not empty, which the control above does not
+    // establish: `login` is an ordinary field, so its value is in the record
+    // whether or not an index was ever written. Without this line the scan
+    // covers the index path in principle and possibly over nothing.
+    assert!(
+        entries_in(&restored_backend, Keyspace::INDEX) > 0,
+        "the follower wrote no index entries, so scanning its index keyspace \
+         proves nothing about what an index writer does with a sealed record"
     );
 
     // The numbers R4 asks for. Printed rather than asserted: a threshold here
