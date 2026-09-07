@@ -92,6 +92,23 @@ pub const GRAPHS: TableId = TableId::new(14);
 /// index, so nothing about it fits the shape [`TABLES`] describes.
 pub const EDGE_KINDS: TableId = TableId::new(15);
 
+/// The store's vault root record: the salt and the master key sealed under the
+/// operator's passphrase.
+///
+/// One record, at [`VAULT_ROOT_ID`]. Catalog state rather than a `META` key, on
+/// the same reading as [`REPLICAS`]: it must reach every node and survive a
+/// restore, because a follower promoted to leader that could not be unsealed
+/// would hold every secret and open none of them.
+///
+/// Nothing in it is a secret. The salt is public by design and the wrapped key
+/// is ciphertext under a key nobody has stored, so replicating it and backing it
+/// up gives an attacker holding the backup an offline guessing problem against
+/// Argon2id and nothing else.
+pub const VAULT_ROOT: TableId = TableId::new(16);
+
+/// The one record [`VAULT_ROOT`] holds.
+pub const VAULT_ROOT_ID: u32 = 1;
+
 /// The first id handed out at any level. Zero belongs to the system.
 pub const FIRST_ID: u32 = 1;
 

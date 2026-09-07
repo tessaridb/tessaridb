@@ -127,6 +127,7 @@ impl Session<'_> {
                 kind.clone(),
                 FieldShape {
                     required: *required,
+                    secret: false,
                     default: default.as_ref().map(|written| written.text.clone()),
                     analyzer: analyzer.as_ref().map(|named| named.text.clone()),
                     assert: assert.clone(),
@@ -352,6 +353,7 @@ impl Session<'_> {
                     kind.clone(),
                     FieldShape {
                         required: *required,
+                        secret: false,
                         default: default.as_ref().map(|written| written.text.clone()),
                         analyzer: analyzer.as_ref().map(|named| named.text.clone()),
                         assert: assert.clone(),
@@ -1604,6 +1606,7 @@ impl Session<'_> {
                 column.kind.clone(),
                 FieldShape {
                     required: column.required,
+                    secret: false,
                     default: column.default.as_ref().map(|written| written.text.clone()),
                     analyzer: column.analyzer.as_ref().map(|named| named.text.clone()),
                     assert: column.assert.clone(),
@@ -1702,6 +1705,7 @@ impl Session<'_> {
                 // record with no vector at all is legal in a table — and is not
                 // a record of a vector store.
                 required: true,
+                secret: false,
                 default: None,
                 analyzer: None,
                 assert: None,
@@ -1814,6 +1818,7 @@ impl Session<'_> {
                 // the field optional, and a record with no geometry is legal in
                 // a table while being a record a place store cannot answer for.
                 required: true,
+                secret: false,
                 default: None,
                 analyzer: None,
                 assert: None,

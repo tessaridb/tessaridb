@@ -20,6 +20,22 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// A sealed value, a key or the keyring refused.
+    ///
+    /// Carried through rather than flattened, because the distinctions the
+    /// vault draws are the ones an operator needs: sealed is not the same
+    /// answer as wrong key, and neither is the same as a format this build does
+    /// not know. None of them names a value.
+    #[error("{0}")]
+    Vault(#[from] tessari_vault::Error),
+
+    /// The keyring cannot be read because a thread panicked while holding it.
+    ///
+    /// Reported rather than recovered from. The safe answer to "can you open
+    /// secrets" when this process cannot say what it holds is no.
+    #[error("the keyring is unavailable in this process")]
+    VaultUnavailable,
+
     /// Another transaction committed to a record this one wrote.
     ///
     /// Under snapshot isolation the first committer wins. Nothing was written.
@@ -397,6 +413,24 @@ impl Error {
             // identity was written, and a key that has since gone is the
             // substrate having lost something it acknowledged.
             Self::NoIdentity => ErrorCategory::Corruption,
+            // Split by what the caller can do about it, which is the whole
+            // job of a category. A sealed store, a wrong passphrase and a
+            // second unseal are all things the caller got wrong. Bytes that do
+            // not parse as a sealed value were written by something that knew a
+            // format this build does not, which is corruption from here. And a
+            // refused entropy source is a dependency being unreachable, the
+            // same reading `NoEntropy` already takes.
+            Self::Vault(inner) => match inner {
+                tessari_vault::Error::Entropy => ErrorCategory::Unavailable,
+                tessari_vault::Error::NotSealed
+                | tessari_vault::Error::UnknownVersion(_)
+                | tessari_vault::Error::UnknownAlgorithm(_) => ErrorCategory::Corruption,
+                tessari_vault::Error::WrongKey
+                | tessari_vault::Error::Sealed
+                | tessari_vault::Error::AlreadyUnsealed
+                | tessari_vault::Error::Derivation => ErrorCategory::Validation,
+            },
+            Self::VaultUnavailable => ErrorCategory::Unavailable,
             Self::Kv(inner) => inner.category(),
             Self::Encoding(inner) => inner.category(),
         }

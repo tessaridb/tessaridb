@@ -36,6 +36,7 @@ mod schema;
 mod snapshots;
 mod store;
 mod transaction;
+mod vault;
 
 pub use catalog::{
     AnalyzerDefinition, Authority, Catalog, ConsumerDefinition, DatabaseDefinition, EDGE_IN,
@@ -47,6 +48,7 @@ pub use catalog::{
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
+pub use catalog::VaultRoot;
 pub use covering::MEASURED_RELATION;
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
@@ -60,3 +62,4 @@ pub use tessari_encoding::{BUILD_VERSION, Roles};
 pub use transaction::{
     Expansion, Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction,
 };
+pub use vault::OpenVault;

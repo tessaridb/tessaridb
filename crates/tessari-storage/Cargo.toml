@@ -15,6 +15,7 @@ tessari-encoding.workspace = true
 tessari-geo.workspace = true
 tessari-kv.workspace = true
 tessari-types.workspace = true
+tessari-vault.workspace = true
 log.workspace = true
 thiserror.workspace = true
 

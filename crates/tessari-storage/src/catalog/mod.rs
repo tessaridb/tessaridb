@@ -31,6 +31,7 @@ mod graph;
 mod replica;
 mod system;
 mod user;
+mod vault;
 
 use tessari_encoding::{decode_payload, encode_payload};
 use tessari_types::{DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId, TableId, Value};
@@ -51,6 +52,7 @@ pub use graph::GraphDefinition;
 pub use replica::ReplicaDefinition;
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 pub use user::{Role, UserDefinition, Verb};
+pub use vault::VaultRoot;
 
 use crate::error::{Error, Result};
 use crate::transaction::{RecordAddress, Transaction};
@@ -712,6 +714,35 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             return Ok(None);
         };
         definition::id_of(&decode_payload(&bytes)?, "name", "id").map(Some)
+    }
+
+    /// The store's vault root record, when one has been created.
+    ///
+    /// `None` is a store that has never had a vault, which is every store until
+    /// somebody unseals one for the first time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when the record is present but does
+    /// not decode. Refused rather than treated as absent: a store whose root
+    /// record is unreadable still holds sealed records, and reporting "no vault
+    /// here" would invite an operator to initialise a second one over the top
+    /// and lose every secret behind the first.
+    pub fn vault_root(&self) -> Result<Option<VaultRoot>> {
+        match self.read(system::VAULT_ROOT, system::VAULT_ROOT_ID)? {
+            Some(value) => VaultRoot::from_value(&value).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Write the store's vault root record.
+    ///
+    /// Called once, when the first vault is created. There is deliberately no
+    /// path that replaces one: replacing the root record would leave every
+    /// wrapped key in the store sealed under a master key nobody can recover,
+    /// which reads as an empty vault rather than as an error.
+    pub fn set_vault_root(&mut self, root: &VaultRoot) {
+        self.write(system::VAULT_ROOT, system::VAULT_ROOT_ID, &root.to_value());
     }
 
     fn write(&mut self, table: TableId, id: u32, value: &Value) {

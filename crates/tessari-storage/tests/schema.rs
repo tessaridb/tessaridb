@@ -84,6 +84,7 @@ impl Fixture {
             kind,
             FieldShape {
                 required: true,
+                secret: false,
                 default: None,
                 analyzer: None,
                 assert: None,
