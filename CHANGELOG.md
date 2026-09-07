@@ -12,6 +12,69 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.0.5-alpha — 2026-09-07
+
+**Released.** Tagged `v0.0.5-alpha` on `main`, and published as
+[`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb) —
+`0.0.5-alpha` and `latest`, `linux/amd64` and `linux/arm64`.
+
+**This release changes no grammar and no on-disk format**, and a store written by
+`0.0.4-alpha` opens and reads under it unchanged. It changes one **answer**, and
+that change is a fix: a record updated into a match inside its own transaction
+was missing from a full-text read that reported itself served by an index.
+
+Everything else here is about what a read **costs**. Three of the four are the
+same fault in different places — work done to produce records nobody asked for.
+
+### Fixed
+
+- **A record this transaction just wrote is now found by a full-text match in the
+  same transaction.** Every index read settles the transaction's own writes after
+  its walk; the two term reads were the exception, so `MATCHES` could miss a
+  record the same transaction had just updated into matching. Reproducible on
+  `0.0.4-alpha`. The field's analyzer is now passed down from the session rather
+  than resolved a second time in storage — computing it in two places is what
+  once let a query tokenise differently on the index side and answer correctly
+  with nothing.
+
+### Faster
+
+- **A `LIMIT` behind a `WHERE` no longer reads the whole table.** The bound
+  cannot be pushed into the source, because it counts records that *match* while
+  the source counts records that *exist*; it now arrives as the break the
+  consumer already returned. A match found at the third of 100 000 records went
+  **83.3 ms → 1.2 ms**, `LIMIT 5` over 12 435 matches 86.8 → 1.1, `LIMIT 10` over
+  everything 94.3 → 1.1.
+
+  A read whose bound is never filled still costs the table, correctly — finding
+  out that nothing matches *is* reading the table. `ORDER BY`, `AFTER`, `SPLIT`,
+  `FETCH` and grouping each take the bound away rather than answering short.
+
+- **A bounded index-served read stops fetching where its answer fills.** Every
+  candidate record used to be built before the caller could stop, so a bound
+  bought nothing: `WHERE n > 0 LIMIT 10` over 100 000 candidates cost **141.8 ms
+  → 27.7 ms**, `LIMIT 1` 144.6 → 27.6, and 10 000 candidates 15.2 → 3.5.
+
+  The **entry walk** deliberately still runs to the end. A bounded read answers
+  the records a scan of the same predicate answers, so which candidates hold the
+  lowest identities is not known until all of them are named — an index narrows
+  a read and never changes what it returns.
+
+- **An index-served `MATCHES` no longer re-analyses each candidate's whole text**
+  to re-test the clause the index answered exactly. On a common word the re-test
+  *was* the query: `MATCHES 'the'` **22.6 ms → 1.7 ms**, and a scored search
+  23.4 → 2.4. It is skipped only where believing the index and re-testing it
+  answer the same records — a plain conjunction of terms, no phrase, no `NOT`,
+  no capped expansion — because that re-test also enforces field-level redaction,
+  the reader's snapshot and the transaction's own writes. `PREFIX` and `FUZZY`
+  keep it.
+
+- **The command line no longer re-scans a script from the beginning for every
+  statement.** Inside an open transaction the statement scanner restarted at the
+  start of the buffer each time, so loading a script looked quadratic — 76 µs per
+  write at 500 records and 589 µs at 8 000. That cost was the client's, not the
+  engine's.
+
 ## 0.0.4-alpha — 2026-09-06
 
 **Released.** Tagged `v0.0.4-alpha` on `main`, and published as
