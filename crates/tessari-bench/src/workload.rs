@@ -50,6 +50,14 @@ const CAPACITY_BATCHES: u64 = 100;
 const CAPACITY_BATCH: u64 = 2_500;
 
 /// How many nearest-neighbour queries the index workload asks.
+/// How many secrets the vault workload writes and reads back.
+///
+/// Smaller than `RECORDS` on purpose: every one of these does an Argon2id-free
+/// but still real key unwrap and an AEAD open, and a `REVEAL` additionally
+/// commits its own transaction — so five hundred is already thousands of engine
+/// operations, and a larger number would buy precision this row does not need.
+const SECRETS: u64 = 500;
+
 const QUERIES: usize = 100;
 
 /// The dimension of the vectors the nearest-neighbour workload writes.
@@ -105,6 +113,11 @@ pub const ALL: &[Workload] = &[
         name: "capacity",
         about: "sustained writes in escalating batches, with p99 and resident memory per batch",
         run: capacity,
+    },
+    Workload {
+        name: "vault",
+        about: "a sealed write and a REVEAL against the same operations without a vault — what the audit's committed transaction costs a read",
+        run: vault,
     },
     Workload {
         name: "restore",
@@ -609,4 +622,80 @@ fn clustered(n: u64) -> String {
 #[must_use]
 pub const fn records() -> u64 {
     RECORDS
+}
+
+/// What a secret costs to write and to read, beside the same shapes with no
+/// vault under them.
+///
+/// # Why four phases and not one number
+///
+/// `REVEAL` does three things a point read does not: it unwraps two keys, it
+/// opens an AEAD envelope, and it writes an audit record **in its own committed
+/// transaction** before the answer leaves. The third is a write on a read path.
+/// It was a deliberate choice and it has never been measured, and the readiness
+/// checklist asks the question directly: is one committed transaction per read
+/// the ceiling?
+///
+/// A run with the trail switched off would answer it in one line and is not
+/// available — the built-in device is unconditional, and adding a switch to
+/// measure it would be a feature nobody asked for. So the cost is attributed
+/// instead: if `vault-reveal` lands near `plain-read` plus `plain-write`, the
+/// commit dominates and the answer is yes. If the remainder dominates, it is the
+/// cryptography, and the audit write is not the ceiling. Both results are worth
+/// having, which is the test of whether a measurement was worth taking.
+fn vault(db: &Db) -> Failable<Vec<Report>> {
+    prepared(db)?;
+    let mut session = db.session();
+    session.run(
+        "USE NAMESPACE bench; USE DATABASE bench;\n\
+         UNSEAL VAULT WITH 'a benchmark passphrase';\n\
+         DEFINE VAULT credentials;\n\
+         DEFINE FIELD login ON credentials TYPE string;\n\
+         DEFINE FIELD token ON credentials TYPE string SECRET;\n\
+         DEFINE COLLECTION plain;",
+    )?;
+
+    let held = usize::try_from(SECRETS).unwrap_or(0);
+
+    let mut sealed = Samples::with_capacity(held);
+    for n in 0..SECRETS {
+        timed!(
+            sealed,
+            session.run(&format!(
+                "CREATE credentials:{n} = {{ login: 'user {n}', token: 'ghp_{n}_0123456789abcdef' }};"
+            ))?
+        );
+    }
+
+    // The same record, the same statement shape, no vault beneath it. The
+    // difference between this and the phase above is the sealing.
+    let mut unsealed = Samples::with_capacity(held);
+    for n in 0..SECRETS {
+        timed!(
+            unsealed,
+            session.run(&format!(
+                "CREATE plain:{n} = {{ login: 'user {n}', token: 'ghp_{n}_0123456789abcdef' }};"
+            ))?
+        );
+    }
+
+    let mut revealed = Samples::with_capacity(held);
+    for n in 0..SECRETS {
+        timed!(
+            revealed,
+            session.run(&format!("REVEAL token FROM credentials:{n};"))?
+        );
+    }
+
+    let mut read = Samples::with_capacity(held);
+    for n in 0..SECRETS {
+        timed!(read, session.run(&format!("SELECT * FROM plain:{n};"))?);
+    }
+
+    Ok(vec![
+        sealed.summarise("vault-write"),
+        unsealed.summarise("plain-write"),
+        revealed.summarise("vault-reveal"),
+        read.summarise("plain-read"),
+    ])
 }
