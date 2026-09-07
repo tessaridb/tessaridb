@@ -64,6 +64,24 @@ pub trait Lines {
     ///
     /// Returns an error only when reading or writing fails.
     fn next(&mut self, prompt: &str, out: &mut dyn Write) -> std::io::Result<Given>;
+
+    /// The next line, drawn without showing what was typed and remembered
+    /// nowhere.
+    ///
+    /// Answers [`Given::Abandon`] when this reader cannot hide the input, which
+    /// is the honest failure: reading a passphrase onto a visible screen while
+    /// the caller believes it is hidden is worse than not offering the prompt.
+    ///
+    /// The default reads an ordinary line, which is right for a pipe — there is
+    /// no terminal echoing anything, and a script feeding a passphrase in has
+    /// already decided where it keeps one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when reading or writing fails.
+    fn secret(&mut self, prompt: &str, out: &mut dyn Write) -> std::io::Result<Given> {
+        self.next(prompt, out)
+    }
 }
 
 /// Lines from anything that reads: a file, a pipe, a string.
@@ -149,7 +167,31 @@ pub fn run(
 
         // Dot-commands are read only at the start of a statement, so a `.exit`
         // pasted inside an unfinished object is data rather than a command.
-        let script = if pending.is_empty() && trimmed.starts_with('.') {
+        let script = if pending.is_empty() && trimmed == ".unseal" {
+            // The one command that builds a statement out of something typed
+            // afterwards rather than out of the line itself. It exists because
+            // `UNSEAL VAULT WITH '…'` puts a passphrase on the screen and into
+            // this session's history, and the two together mean the next person
+            // at the terminal presses the up arrow and reads it.
+            match input.secret("passphrase: ", out)? {
+                Given::Line(text) => {
+                    let held = text.trim_end_matches(['\r', '\n']).to_owned();
+                    if held.is_empty() {
+                        continue;
+                    }
+                    format!("UNSEAL VAULT WITH '{}';", quoted(&held))
+                }
+                Given::Abandon => {
+                    writeln!(
+                        out,
+                        "this terminal cannot hide what is typed; write the \
+                         statement in full if that is acceptable"
+                    )?;
+                    continue;
+                }
+                Given::Ended => break,
+            }
+        } else if pending.is_empty() && trimmed.starts_with('.') {
             match shorthand(trimmed) {
                 Some(statement) => statement,
                 None => {
@@ -573,6 +615,16 @@ impl Scanner {
 /// statement beside the shorthand so that using one teaches the language rather
 /// than hiding it. That is the line this file will not cross: a shorthand saves
 /// keystrokes, and never reaches anything a statement could not.
+/// Make text safe to stand inside a single-quoted literal.
+///
+/// The same two characters `bootstrap.rs` escapes, and for the same reason: a
+/// passphrase holding a quote would otherwise end the literal and the rest of it
+/// would be parsed as statement text. A person choosing a passphrase is exactly
+/// the person most likely to put a quote in one.
+fn quoted(text: &str) -> String {
+    text.replace('\\', r"\\").replace('\'', r"\'")
+}
+
 fn shorthand(command: &str) -> Option<String> {
     let (word, named) = command.split_once(' ').unwrap_or((command, ""));
     let named = named.trim();
@@ -584,6 +636,8 @@ fn shorthand(command: &str) -> Option<String> {
         (".d", false) => format!("INFO FOR TABLE {named};"),
         (".users", true) => "INFO FOR USERS;".to_owned(),
         (".user", false) => format!("INFO FOR USER {named};"),
+        (".vault", false) => format!("INFO FOR VAULT {named};"),
+        (".seal", true) => "SEAL VAULT;".to_owned(),
         _ => return None,
     })
 }
@@ -593,6 +647,9 @@ statements end with `;` and may span lines
   .help   this
   .mode   how records are drawn: auto (the default), table, document
   .timing print how long each script took
+  .unseal ask for the vault passphrase without showing it, and unseal this
+          session — it is drawn as dots and is not remembered, unlike the
+          statement typed in full
   .exit   leave (so does Ctrl-D on an empty line)
 
 shorthands — each runs the statement beside it, and nothing a statement cannot:
@@ -602,6 +659,8 @@ shorthands — each runs the statement beside it, and nothing a statement cannot
   .d <table>      INFO FOR TABLE <table>;
   .users          INFO FOR USERS;
   .user <name>    INFO FOR USER <name>;
+  .vault <name>   INFO FOR VAULT <name>;
+  .seal           SEAL VAULT;
   .node           INFO FOR NODE;
 
 editing:  ← → Home End Delete, and Ctrl-A E B F K U W L
@@ -1013,6 +1072,31 @@ SELECT * FROM users:1;\n";
     }
 
     #[test]
+    fn dot_unseal_reads_the_passphrase_from_the_next_line_and_never_echoes_it() {
+        // Through `Piped`, whose `secret` is the ordinary `next` — there is no
+        // terminal echoing anything into a pipe, and the masking that matters is
+        // `Edited`'s. What this asserts is the half a pipe *can* show: the
+        // passphrase becomes a statement, and the program never prints it back.
+        let (out, _) = ran(
+            &format!(
+                "{READY}.unseal\nan operator passphrase\nDEFINE VAULT team;\n\
+                 DEFINE FIELD token ON team TYPE string SECRET;\n\
+                 CREATE team:'github' = {{ token: 'hunter2' }};\n\
+                 REVEAL token FROM team:'github';\n"
+            ),
+            Mode::Script,
+        );
+
+        assert!(
+            !out.contains("an operator passphrase"),
+            "the passphrase was printed back:\n{out}"
+        );
+        // The control: the flow actually worked, so the assertion above is not
+        // passing because nothing happened.
+        assert!(out.contains("hunter2"), "the reveal did not run:\n{out}");
+    }
+
+    #[test]
     fn a_shorthand_runs_the_statement_the_help_says_it_runs() {
         // The obligation runs this way round on purpose: `.help` is the contract
         // and the table has to satisfy it. Reading the table and checking the
@@ -1025,7 +1109,7 @@ SELECT * FROM users:1;\n";
             .map(|(left, right)| (left.trim(), right.trim()))
             .filter(|(left, _)| left.starts_with('.'))
             .collect();
-        assert_eq!(promised.len(), 7, "the help lists {promised:?}");
+        assert_eq!(promised.len(), 9, "the help lists {promised:?}");
 
         for (spelling, statement) in promised {
             // `.d <table>` in the help is `.d users` at a prompt.
