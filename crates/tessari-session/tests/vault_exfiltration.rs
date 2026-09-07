@@ -283,3 +283,67 @@ fn a_field_nobody_declared_does_not_land_in_a_vault_in_the_clear() {
          clear — the vault holds a plaintext beside its sealed fields"
     );
 }
+
+/// The two read paths that reach a vault record without passing the refusal.
+///
+/// # Why this test exists at all
+///
+/// `refuse_reading_a_vault` is called from the three `prepare_source` arms that
+/// name a table — `Record`, `Table`, `Where`. A graph traversal and a `FETCH`
+/// land on a vault record through neither, so `SELECT * FROM users:1->owns->team`
+/// and `SELECT * FROM users:2 FETCH at` answer where `SELECT * FROM team` is
+/// refused. Q-416 recorded that and argued it costs no secrecy, because what
+/// such a path returns is the stored value and the stored value is ciphertext.
+///
+/// The argument was sound and it was still an argument. W128 had just shown what
+/// that is worth: `EXPLAIN` was argued blind on the same reasoning and turned out
+/// to answer a scan plan for a read the store refuses. So this observes it.
+///
+/// # What it pins
+///
+/// The session is **unsealed** when it asks. That is the load-bearing part: it
+/// means decryption is bound to `REVEAL` naming a record, not to the store's
+/// seal state, so a path that never learned about vaults cannot leak a secret by
+/// being reached from a session that happens to hold the master key. A future
+/// change that resolved sealed fields anywhere other than `REVEAL` would fail
+/// here rather than in production.
+#[test]
+fn a_traversal_and_a_fetch_reach_a_vault_record_and_still_carry_only_ciphertext() {
+    let (_backend, store) = planted();
+    let mut session = Session::new(&store);
+    session
+        .run(&format!(
+            "{USE}
+             DEFINE TABLE users SCHEMALESS;
+             DEFINE TABLE owns EDGE;
+             CREATE users:1 = {{ name: 'ada' }};
+             RELATE users:1 -> owns -> team:'github';
+             CREATE users:2 = {{ name: 'grace', at: team:'github' }};"
+        ))
+        .expect("the graph would not set up");
+
+    // Both shapes, and the answer rendered the way a caller would see it.
+    for (shape, statement) in [
+        ("a traversal", "SELECT * FROM users:1->owns->team;"),
+        ("a fetch", "SELECT * FROM users:2 FETCH at;"),
+    ] {
+        let answered = format!(
+            "{:?}",
+            session
+                .run(&format!("{USE} {statement}"))
+                .unwrap_or_else(|refusal| panic!("{shape} was refused: {refusal}"))
+        );
+
+        // The control first: without it an answer that returned nothing at all
+        // would pass every assertion below and prove none of them.
+        assert!(
+            answered.contains(CONTROL),
+            "{shape} returned no vault record, so this test is asserting about \
+             an empty answer: {answered}"
+        );
+        assert!(
+            !answered.contains(PLANTED),
+            "{shape} returned the secret in the clear: {answered}"
+        );
+    }
+}
