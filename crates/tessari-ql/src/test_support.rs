@@ -91,6 +91,11 @@ fn erase_statement(statement: &mut Statement) {
         | StatementKind::DropEdge { name }
         | StatementKind::DropVector { name }
         | StatementKind::DropGeo { name }
+        // The name-only list for the same reason `DEFINE GEO` is there: a vault
+        // declares no clause either, and its key is minted at execution rather
+        // than written in the statement.
+        | StatementKind::DefineVault { name, .. }
+        | StatementKind::DropVault { name }
         | StatementKind::DropGraph { name }
         | StatementKind::DropUser { name }
         | StatementKind::DropAnalyzer { name }
@@ -154,7 +159,8 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Consumer(name)
             | InfoSubject::Graph(name)
             | InfoSubject::Vector(name)
-            | InfoSubject::Geo(name) => {
+            | InfoSubject::Geo(name)
+            | InfoSubject::Vault(name) => {
                 erase_name(name);
             }
         },
@@ -310,6 +316,25 @@ fn erase_statement(statement: &mut Statement) {
                 erase_expr(&mut range.start);
                 erase_expr(&mut range.end);
             }
+        }
+        // `REVEAL` names one record, so its target is erased the way every
+        // other single-record statement's is.
+        StatementKind::Reveal {
+            target,
+            fields,
+            span,
+        } => {
+            erase_record(target);
+            for field in fields {
+                erase_name(field);
+            }
+            *span = CANONICAL;
+        }
+        // The passphrase is not erased because it is not a span — and it is not
+        // compared either: two `UNSEAL`s differing only in their passphrase are
+        // two different statements, which is the right answer.
+        StatementKind::UnsealVault { span, .. } | StatementKind::SealVault { span } => {
+            *span = CANONICAL;
         }
         StatementKind::Backup { .. }
         | StatementKind::Begin

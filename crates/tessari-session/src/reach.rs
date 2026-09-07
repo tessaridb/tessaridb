@@ -38,6 +38,17 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DropVector { .. }
         | StatementKind::DefineGeo { .. }
         | StatementKind::DropGeo { .. }
+        // A vault is a table too, and declaring or dropping one is decided by
+        // the caller's tenancy level like the four words above. `DROP VAULT`
+        // destroys a key rather than rows, and that makes it more consequential
+        // without making it reach differently.
+        | StatementKind::DefineVault { .. }
+        | StatementKind::DropVault { .. }
+        // Sealing is not about a table. It changes whether this process holds a
+        // key, so it is answered at the store by `Needs`, and there is no table
+        // here for a grant to be asked about.
+        | StatementKind::SealVault { .. }
+        | StatementKind::UnsealVault { .. }
         // A graph is a container, so declaring or dropping one touches no row
         // in any table: it is the caller's tenancy level that decides, exactly
         // as it is for the four words above.
@@ -218,7 +229,12 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             found
         }
 
-        StatementKind::Get { target }
+        // `REVEAL` names its vault, and the grant on it is the **first** of the
+        // two things it needs. The second is the key, and holding one is not
+        // holding the other — which is criterion F3, and is why this arm looks
+        // exactly like every other single-record statement rather than special.
+        StatementKind::Reveal { target, .. }
+        | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }
         | StatementKind::Del { target }
         // A file is a record in the bucket, so the bucket is the table a grant

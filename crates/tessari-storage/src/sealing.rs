@@ -38,6 +38,7 @@ use tessari_vault::{Binding, Level, SecretBytes, Wrapped, keys};
 
 use crate::catalog::{Catalog, TableDefinition};
 use crate::error::{Error, Result};
+use crate::store::Store;
 use crate::transaction::{RecordAddress, Transaction};
 
 /// The reserved entry holding a record's wrapped data keys.
@@ -104,14 +105,37 @@ fn seal_into_vault(
     // actually carries. A declared secret field the write omits is simply
     // absent — sealing has nothing to do, and inventing a value here would
     // write a secret nobody supplied.
-    let secrets: Vec<String> = Catalog::new(transaction)
+    let secrets: Vec<(String, tessari_types::FieldKind)> = Catalog::new(transaction)
         .fields_on(definition.id)?
         .into_iter()
         .filter(|field| field.secret && fields.contains_key(&field.name))
-        .map(|field| field.name)
+        .map(|field| (field.name, field.kind))
         .collect();
     if secrets.is_empty() {
         return Ok(Value::Object(fields));
+    }
+
+    // The declared type is checked HERE and nowhere else, because here is the
+    // last moment the value exists as itself. The store's own schema check runs
+    // at commit over the encoded payload, where a sealed field is bytes whatever
+    // it was declared to hold — and a follower applying the same record holds
+    // only ciphertext, so a check down there would be one the leader passes and
+    // every replica fails. A declared type on a secret field would otherwise be
+    // decoration, which is worse than not offering one.
+    for (name, kind) in &secrets {
+        let held = fields.get(name).unwrap_or(&Value::None);
+        if !kind.accepts(held) {
+            return Err(Error::SchemaViolation {
+                table: Box::from(definition.name.as_str()),
+                record: Box::from(address.id.to_string()),
+                field: Box::from(name.as_str()),
+                declared: Box::from(kind.name().as_ref()),
+                // The **type** and never the value. Every other caller of this
+                // variant renders what was found; this one cannot, because what
+                // was found is the secret.
+                found: Box::from(held.type_name()),
+            });
+        }
     }
 
     let Some(vault_key) = definition.vault_key() else {
@@ -125,7 +149,7 @@ fn seal_into_vault(
     transaction.store().vault().with_master(|master| {
         let vault_key = keys::unwrap(master, Level::Vault, &table_scope, vault_key)?;
         let (wrapped, data_key) = keys::wrap_fresh(&vault_key, Level::Data, &record_scope)?;
-        for name in &secrets {
+        for (name, _) in &secrets {
             let plaintext = fields
                 .get(name)
                 .map(|value| tessari_encoding::encode_payload(value).into_bytes())
@@ -291,4 +315,48 @@ pub fn open_field(
         sealed,
     )?;
     Ok(tessari_encoding::decode_payload(&plaintext)?)
+}
+
+/// Mint a vault's own key, wrapped under the store's master key.
+///
+/// Here rather than in the session for the reason [`vault_key_scope`] is public:
+/// the binding must be computed in one place, and the layer above has no
+/// business holding an unwrapped key even for the length of a call. `DEFINE
+/// VAULT` asks for a wrapped key and receives one.
+///
+/// # Errors
+///
+/// Returns [`Error::Vault`] carrying `Sealed` when the store is sealed. That is
+/// what makes `DEFINE VAULT` the one declaration needing an unsealed store:
+/// there is no way to defer the key without creating a vault that refuses every
+/// write while reporting itself ready.
+pub fn mint_vault_key(
+    store: &Store,
+    namespace: NamespaceId,
+    database: DatabaseId,
+    name: &str,
+) -> Result<Wrapped> {
+    let scope = vault_key_scope(namespace, database, name);
+    store
+        .vault()
+        .with_master(|master| Ok(keys::wrap_fresh(master, Level::Vault, &scope)?.0))
+}
+
+/// Create the store's root record and unseal this process with it.
+///
+/// The two halves are one act deliberately. A root written without unsealing
+/// leaves a store nobody can use until somebody re-presents a passphrase they
+/// have just proven they know, and a process unsealed without a written root
+/// holds a key that vanishes at restart with every secret sealed under it.
+///
+/// # Errors
+///
+/// Returns [`Error::Vault`] when the key derivation fails or when this process
+/// is already unsealed — the second is the important one, because initialising
+/// over a live keyring would strand every secret the running process can
+/// currently open.
+pub fn initialise_root(store: &Store, passphrase: &str) -> Result<crate::catalog::VaultRoot> {
+    let (root, master) = tessari_vault::Root::create(passphrase)?;
+    store.vault().adopt(master)?;
+    Ok(crate::catalog::VaultRoot(root))
 }

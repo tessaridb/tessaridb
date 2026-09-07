@@ -75,6 +75,17 @@ impl Effect {
             | StatementKind::Keys { .. }
             | StatementKind::Read { .. }
             | StatementKind::Info { .. }
+            // `REVEAL` writes nothing to the store and is the heaviest read in
+            // the language by consequence rather than by cost. It is routed as a
+            // read, which means a follower may serve it — deliberately: the
+            // follower holds the ciphertext and, if it has been unsealed, the
+            // master key, and forwarding it to the leader would concentrate
+            // every plaintext in the language on one node for no gain.
+            //
+            // W120's audit row is a write, and when it lands this arm is the one
+            // that has to be revisited rather than the audit writer bolted onto
+            // a statement classified as reading nothing.
+            | StatementKind::Reveal { .. }
             | StatementKind::Backup { .. } => Self::Read,
 
             // `USE` and the transaction verbs change what the *next* statement
@@ -106,6 +117,8 @@ impl Effect {
             | StatementKind::DropVector { .. }
             | StatementKind::DefineGeo { .. }
             | StatementKind::DropGeo { .. }
+            | StatementKind::DefineVault { .. }
+            | StatementKind::DropVault { .. }
             | StatementKind::DefineGraph { .. }
             | StatementKind::DropGraph { .. }
             | StatementKind::DefineEdge { .. }
@@ -150,6 +163,13 @@ impl Effect {
             // routable: `META` is not replicated, so this cannot diverge two
             // stores.
             StatementKind::DefineNode { .. } => Self::Read,
+            // Sealing and unsealing change **this process's memory** and nothing
+            // on disk, so they are local exactly as `DEFINE NODE` is, and for a
+            // sharper version of the same reason: forwarding an `UNSEAL` would
+            // unseal the leader on behalf of a caller talking to a follower, and
+            // leave the follower they were actually using still sealed. The
+            // operator would then have unsealed a node they never named.
+            StatementKind::SealVault { .. } | StatementKind::UnsealVault { .. } => Self::Read,
             // `DEFINE REPLICA` is the opposite half and stays a write: it is a
             // catalog record, commits in the transaction that issued it, and
             // reaches every node through the ordinary apply path (ADR-0009).

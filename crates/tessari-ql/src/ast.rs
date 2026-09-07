@@ -272,6 +272,25 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `DEFINE VAULT team` — a store whose fields can be sealed.
+    ///
+    /// A name and nothing else, like [`StatementKind::DefineGeo`]: what makes a
+    /// vault a vault is the key it is created with, and a key is not something
+    /// a caller supplies or chooses. The statement generates one, wraps it under
+    /// the store's master key, and puts the wrapped bytes on the declaration —
+    /// which is why it is the one declaration that **requires an unsealed
+    /// store**, and refuses rather than creating a vault whose key would have to
+    /// be invented later.
+    ///
+    /// Dropping it destroys that key, and destroying the key is the deletion:
+    /// every record in the vault becomes unopenable in every backup, snapshot
+    /// and replica that will ever be restored. See [`StatementKind::DropVault`].
+    DefineVault {
+        /// The name to create.
+        name: Name,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
     /// `DEFINE INDEX by_email ON users FIELDS email UNIQUE`
     DefineIndex {
         /// The index's name, unique within its table.
@@ -306,6 +325,20 @@ pub enum StatementKind {
         kind: FieldKind,
         /// Whether the field must hold a value: present, and not `null`.
         required: bool,
+        /// Whether the value is sealed before the record is encoded.
+        ///
+        /// Legal only on a vault, and refused everywhere else at execution
+        /// rather than in the grammar — the parser does not know what kind of
+        /// table a name refers to, and a refusal that depends on the catalog
+        /// belongs where the catalog is. A secret field on an ordinary table
+        /// would be sealed under a key nothing holds.
+        ///
+        /// There is no `ALTER FIELD … SECRET`, deliberately. Turning the marker
+        /// on leaves every existing record in the clear and turning it off
+        /// leaves every existing record unreadable; both are a table that is
+        /// half one thing, and neither is a state a single statement should be
+        /// able to produce.
+        secret: bool,
         /// The analyzer this field's text becomes terms by, when it has one.
         analyzer: Option<Name>,
         /// What a write supplying no value uses instead.
@@ -683,6 +716,21 @@ pub enum StatementKind {
         /// The store to undefine.
         name: Name,
     },
+    /// `DROP VAULT team` — the vault, its records, and the key that opened them.
+    ///
+    /// The one drop in this language that is a **crypto-shred** rather than a
+    /// delete, and the distinction is the whole reason the per-vault key level
+    /// exists. Deleting the rows is a statement about the live table; destroying
+    /// the wrapped key is a statement about the data, because every copy of
+    /// those records in every backup, snapshot and replica that will ever be
+    /// restored is ciphertext under a key that no longer exists anywhere.
+    ///
+    /// It is therefore not undoable by restoring a backup, which is exactly what
+    /// makes the claim worth making and exactly what makes it dangerous.
+    DropVault {
+        /// The vault to undefine.
+        name: Name,
+    },
     /// `ALTER TABLE users ALTER FIELD email TYPE string REQUIRED`
     ///
     /// Redeclares a field that already exists, which a second `DEFINE FIELD`
@@ -792,6 +840,61 @@ pub enum StatementKind {
     /// variant, so unboxed it made every `COMMIT` and every `USE` in a parsed
     /// script cost what a `SELECT` costs.
     Select(Box<Select>),
+    /// `REVEAL password FROM team:github` · `REVEAL * FROM team:github`
+    ///
+    /// The **only** statement that turns a sealed value back into a plaintext,
+    /// and it exists as a separate verb rather than as a clause on `SELECT` for
+    /// one reason: a read that could return a secret by accident eventually
+    /// does. `SELECT` over a vault is refused outright and its message names
+    /// this word, so the path to a plaintext is one a caller had to type.
+    ///
+    /// It names **one record** and takes no `WHERE`. That is not a simplification
+    /// to be relaxed later — a filter over a secret is an oracle that answers one
+    /// bit per statement, and an ordering is the same oracle more slowly. Both
+    /// are refused, and a verb with no place to put them is the cheapest way to
+    /// keep refusing them.
+    ///
+    /// Naming exactly one record is also what makes the audit row meaningful:
+    /// *who opened what, and when* is a sentence only if *what* is a record.
+    Reveal {
+        /// The record to open.
+        target: RecordTarget,
+        /// The secret fields to open, or all of them when empty (`*`).
+        ///
+        /// A named field that is not secret is refused rather than returned in
+        /// the clear: `REVEAL` answers with plaintext, and a caller reading its
+        /// answer has no way to tell which entries were ever sealed.
+        fields: Vec<Name>,
+        /// Where the statement sits.
+        span: Span,
+    },
+    /// `UNSEAL VAULT WITH '…'` — the master key enters this process's memory.
+    ///
+    /// Store-wide, not per vault: the key it unwraps is the one every vault's
+    /// own key is wrapped under. It affects **this process only** and survives
+    /// no restart, which is the property that makes a restart safe and an
+    /// unattended restart impossible — a real operational cost, written down
+    /// rather than discovered.
+    ///
+    /// The passphrase arrives **in the statement** and never in an environment
+    /// variable or an argument vector, both of which are readable by anything
+    /// that can list a process. That is decision 3 of the design.
+    UnsealVault {
+        /// The passphrase, as written.
+        passphrase: String,
+        /// Where the statement sits, so a refusal can point at it without
+        /// quoting what stands there.
+        span: Span,
+    },
+    /// `SEAL VAULT` — and the master key leaves it.
+    ///
+    /// Takes no passphrase, because sealing is not an act that needs proving:
+    /// the worst a caller can do by sealing is stop this process opening
+    /// secrets, which is the safe direction and is undone by unsealing again.
+    SealVault {
+        /// Where the statement sits.
+        span: Span,
+    },
     /// `UPDATE users:1 = { … }` — the value is replaced, never merged.
     Update {
         /// The record to change.
@@ -1042,6 +1145,18 @@ pub enum InfoSubject {
     /// measurement settles; a spatial index answers exactly, so there is nothing
     /// about it a number could report that the declaration does not already say.
     Geo(Name),
+    /// `INFO FOR VAULT team` — one vault's fields, and which of them are sealed.
+    ///
+    /// Distinct from `INFO FOR TABLE` for the reason [`InfoSubject::Geo`] is:
+    /// the answer must carry the word that created the thing, or a round trip
+    /// re-executes as a table and the store stops being one — and here that is
+    /// not a cosmetic loss, because a table has no `SECRET` to re-declare.
+    ///
+    /// It reports **which fields are sealed and nothing about what they hold**.
+    /// That is the line this subject has to hold: an `INFO` that answered with a
+    /// length, a fingerprint or a key identifier would be a slower oracle rather
+    /// than none, and a reader would have no way to tell it was one.
+    Vault(Name),
     /// `INFO FOR USER ada` — one user's role, tenancy and grants.
     ///
     /// The one subject that refuses rather than filters, because its content

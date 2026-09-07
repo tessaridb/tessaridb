@@ -673,6 +673,75 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `SELECT` named a vault as its source.
+    ///
+    /// Refused rather than answered, and what it would have answered is worth
+    /// saying: **ciphertext**, because the sealed envelope is the stored value.
+    /// So this refusal protects nothing — the confidentiality is already closed
+    /// by where the sealing happens — and exists because a read that quietly
+    /// returns opaque bytes teaches a caller that the vault is broken, while a
+    /// refusal naming `REVEAL` teaches them the language.
+    #[error("`{table}` is a vault: read it with `REVEAL … FROM {table}:…` (at {span})")]
+    NotReadBySelect {
+        /// The vault named.
+        table: String,
+        /// Where it was named.
+        span: Span,
+    },
+
+    /// An index was declared over a field the vault seals.
+    ///
+    /// This one **does** protect something. An index over a secret field is a
+    /// searchable copy of it: the term dictionary holds the analysed value, the
+    /// postings say which records share it, and a caller who may not read the
+    /// field can still ask whether any record holds a given one, a term at a
+    /// time. That is the whole plaintext, obtained through a structure nobody
+    /// thinks of as a read.
+    #[error("`{field}` is a secret field of vault `{table}` and cannot be indexed (at {span})")]
+    NotIndexable {
+        /// The field named.
+        field: String,
+        /// The vault it is on.
+        table: String,
+        /// Where the declaration is.
+        span: Span,
+    },
+
+    /// `SECRET` was declared on a field of something that is not a vault.
+    ///
+    /// Refused rather than honoured, because there would be no key to honour it
+    /// with: the hierarchy that seals a field hangs off the vault's own key, and
+    /// an ordinary table has none. Accepting the word would produce a field the
+    /// store believes is sealed and writes in the clear — which is the exact
+    /// failure the marker exists to prevent, wearing the marker's own name.
+    #[error("`SECRET` needs a vault: `{table}` is not one (at {span})")]
+    SecretNeedsVault {
+        /// The table named.
+        table: String,
+        /// Where the declaration is.
+        span: Span,
+    },
+
+    /// `REVEAL` was asked for a field that is not declared `SECRET`.
+    ///
+    /// Refused rather than answered in the clear. `REVEAL` returns plaintext, so
+    /// a caller reading its answer cannot tell which entries were ever sealed —
+    /// and a verb that sometimes returns a secret and sometimes returns whatever
+    /// happened to be beside it is one whose output nobody can reason about.
+    ///
+    /// The field name is named and **the value is not**, which is the rule every
+    /// refusal from a vault statement keeps: a name is what the caller already
+    /// typed, and a value is what they were asking to be told.
+    #[error("`{field}` is not a secret field of vault `{vault}` (at {span})")]
+    NotASecret {
+        /// The field asked for.
+        field: String,
+        /// The vault it was asked of.
+        vault: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A value the cast asked for cannot hold.
     ///
     /// Distinct from [`Error::WrongArgument`], because the argument's *type* is
@@ -689,6 +758,23 @@ pub enum Error {
     /// something, and that something is not what you asked for". A caller who
     /// wants the lenient reading can say so with `IF`; a caller who gets it by
     /// default has no way back.
+    ///
+    /// # The one refusal in this file that quotes a value, and what that costs
+    ///
+    /// Every other value-bearing variant here carries a `found: &'static str` —
+    /// a type name. This one carries the value, deliberately and for the reason
+    /// above. That makes it the single place where a **sealed** value could
+    /// reach a message, which is criterion W4 of the vault goal.
+    ///
+    /// It cannot happen through `REVEAL`, which returns plaintext to its caller
+    /// and casts nothing. It cannot happen through any generic read, because
+    /// what those read is ciphertext. The route that would exist is a cast
+    /// applied to a plaintext a script had already revealed into a binding — at
+    /// which point the caller holds the value and the message tells them nothing
+    /// they did not have. **That is the argument, and an argument is not a
+    /// test**; the assertion that submits a known secret and greps the whole
+    /// refusal for it is a W122 row, and until it runs W4 is unproven rather
+    /// than passing.
     #[error("{function} cannot read {value} as {target} (at {span})")]
     NotCastable {
         /// The cast called.

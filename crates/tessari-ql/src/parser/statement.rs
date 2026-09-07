@@ -11,7 +11,7 @@ use crate::ast::{
     UserGrant, Written,
 };
 use crate::error::{Error, Result};
-use crate::token::{Keyword, Punct, Token};
+use crate::token::{Keyword, Punct, Span, Token};
 
 /// What a field declaration says after its type.
 ///
@@ -21,6 +21,7 @@ use crate::token::{Keyword, Punct, Token};
 #[derive(Default)]
 struct FieldOptions {
     required: bool,
+    secret: bool,
     default: Option<Written>,
     analyzer: Option<Name>,
     assert: Option<Assertion>,
@@ -222,12 +223,86 @@ impl Parser<'_> {
                 self.advance();
                 StatementKind::Verify
             }
+            // Three contextual verbs, for the reason `DEFINE VAULT` is
+            // contextual: `reveal`, `seal` and `unseal` are ordinary column
+            // names, and reserving them here would reserve them everywhere —
+            // including in the vault whose fields somebody is declaring. Nothing
+            // but a verb can stand at the head of a statement, so nothing is
+            // ambiguous, and each arm has already consumed its word.
+            _ if self.eat_word("reveal") => self.reveal_statement(start)?,
+            _ if self.eat_word("unseal") => self.unseal_statement(start)?,
+            _ if self.eat_word("seal") => {
+                self.expect_vault_word("`VAULT`")?;
+                StatementKind::SealVault {
+                    span: start.to(self.span_behind()),
+                }
+            }
             _ => return Err(self.error_here("a statement")),
         };
         Ok(Statement {
             kind,
             span: start.to(self.span_behind()),
         })
+    }
+
+    /// `REVEAL password FROM team:github` · `REVEAL * FROM team:github`
+    ///
+    /// A field list or `*`, then one record. There is no `WHERE` and no `ORDER
+    /// BY`, and their absence is the feature: a filter over a secret is an
+    /// oracle answering one bit per statement, and a verb with nowhere to put
+    /// one cannot be talked into accepting one later by a clause somebody adds
+    /// for a different reason.
+    fn reveal_statement(&mut self, start: Span) -> Result<StatementKind> {
+        let mut fields = Vec::new();
+        if !self.eat_punct(Punct::Star) {
+            loop {
+                fields.push(self.name()?);
+                if !self.eat_punct(Punct::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect_keyword(Keyword::From, "`FROM` and the record to open")?;
+        let target = self.record_target()?;
+        Ok(StatementKind::Reveal {
+            target,
+            fields,
+            span: start.to(self.span_behind()),
+        })
+    }
+
+    /// `UNSEAL VAULT WITH '…'`
+    ///
+    /// The passphrase is a **string literal** and nothing else — not an
+    /// expression, not a parameter, not a name. An expression here would put a
+    /// secret through the evaluator, where it could be concatenated into a
+    /// message, compared with `=`, or returned by the very statement that read
+    /// it; a literal goes from the lexer to the key derivation and nowhere else.
+    fn unseal_statement(&mut self, start: Span) -> Result<StatementKind> {
+        self.expect_vault_word("`VAULT`")?;
+        if !self.eat_word("with") {
+            return Err(self.error_here("`WITH` and the passphrase"));
+        }
+        let Some(Token::Str(passphrase)) = self.peek() else {
+            // The expectation names the shape and never what stands there. Every
+            // other parse error in this file quotes the token it found, and this
+            // is the one position where the token is the secret.
+            return Err(self.error_here("a quoted passphrase"));
+        };
+        let passphrase = passphrase.clone();
+        self.advance();
+        Ok(StatementKind::UnsealVault {
+            passphrase,
+            span: start.to(self.span_behind()),
+        })
+    }
+
+    /// The word `VAULT` after `SEAL` or `UNSEAL`, which is contextual too.
+    fn expect_vault_word(&mut self, expected: &'static str) -> Result<()> {
+        if self.eat_word("vault") {
+            return Ok(());
+        }
+        Err(self.error_here(expected))
     }
 
     /// `INFO FOR STORE` / `NAMESPACE` / `DATABASE` / `TABLE users` / `USER ada`
@@ -296,9 +371,10 @@ impl Parser<'_> {
             _ if self.eat_word("consumer") => InfoSubject::Consumer(self.name()?),
             _ if self.eat_word("vector") => InfoSubject::Vector(self.name()?),
             _ if self.eat_word("geo") => InfoSubject::Geo(self.name()?),
+            _ if self.eat_word("vault") => InfoSubject::Vault(self.name()?),
             _ => {
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR` or `GEO`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR`, `GEO` or `VAULT`",
                 ));
             }
         };
@@ -543,8 +619,13 @@ impl Parser<'_> {
             // perfectly ordinary column name, and reserving it here would
             // reserve it everywhere.
             _ if self.eat_word("geo") => self.define_geo(),
+            // Contextual for the same reason again, and here the reason is
+            // strongest: `vault` is a perfectly ordinary table name in a
+            // password manager's own schema, which is precisely the kind of
+            // application this word exists for.
+            _ if self.eat_word("vault") => self.define_vault(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `CONSUMER`, `VECTOR` or `GEO`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `CONSUMER`, `VECTOR`, `GEO` or `VAULT`",
             )),
         }
     }
@@ -587,6 +668,21 @@ impl Parser<'_> {
     fn define_geo(&mut self) -> Result<StatementKind> {
         let if_not_exists = self.eat_if_not_exists()?;
         Ok(StatementKind::DefineGeo {
+            name: self.name()?,
+            if_not_exists,
+        })
+    }
+
+    /// `DEFINE VAULT team`
+    ///
+    /// A name and nothing else, for the reason `DEFINE GEO` gives: what makes a
+    /// vault a vault is a key, and a key is not a clause a caller writes. The
+    /// statement mints one, which is why this is the one declaration that
+    /// requires the store to be unsealed — enforced where the keyring is, not
+    /// here.
+    fn define_vault(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        Ok(StatementKind::DefineVault {
             name: self.name()?,
             if_not_exists,
         })
@@ -1146,13 +1242,27 @@ impl Parser<'_> {
     ) -> Result<StatementKind> {
         self.expect_keyword(Keyword::Type, "`TYPE` and what the field may hold")?;
         let kind = self.field_kind()?;
+        let marker = self.span_here();
         let FieldOptions {
             required,
+            secret,
             default,
             analyzer,
             assert,
         } = self.field_options()?;
         if replacing {
+            if secret {
+                // There is no `ALTER FIELD … SECRET`. Turning the marker on
+                // leaves every record already written in the clear; turning it
+                // off leaves every record already written unreadable. Both are a
+                // field that is half sealed, and a statement that produced
+                // either would report success.
+                return Err(Error::Unsupported {
+                    feature: "altering a field to or from `SECRET` — declare it \
+                              `SECRET` when the vault's field is defined",
+                    span: marker,
+                });
+            }
             return Ok(StatementKind::AlterField {
                 name,
                 table,
@@ -1168,6 +1278,7 @@ impl Parser<'_> {
             table,
             kind,
             required,
+            secret,
             default,
             analyzer,
             assert,
@@ -1192,6 +1303,12 @@ impl Parser<'_> {
                 options.required = true;
             } else if options.default.is_none() && self.eat_keyword(Keyword::Default) {
                 options.default = Some(self.written_expression()?);
+            } else if !options.secret && self.eat_word("secret") {
+                // Contextual, like `assert` and `vector` above. `secret` is an
+                // ordinary column name in plenty of schemas and reserving it
+                // here would reserve it in every position, including as the name
+                // of the very field somebody is trying to declare.
+                options.secret = true;
             } else if options.analyzer.is_none() && self.eat_keyword(Keyword::Analyzer) {
                 options.analyzer = Some(self.name()?);
             } else if options.assert.is_none() && self.eat_word("assert") {
@@ -1219,12 +1336,25 @@ impl Parser<'_> {
         loop {
             let name = self.name()?;
             let kind = self.field_kind()?;
+            let marker = self.span_here();
             let FieldOptions {
                 required,
+                secret,
                 default,
                 analyzer,
                 assert,
             } = self.field_options()?;
+            if secret {
+                // A columnar `DEFINE TABLE` is not a vault and cannot become
+                // one, so a `SECRET` here has nowhere to be honoured. Refused
+                // rather than parsed and dropped: a marker silently ignored is
+                // the failure this whole feature exists to prevent.
+                return Err(Error::Unsupported {
+                    feature: "`SECRET` in a columnar table declaration — a \
+                              secret field belongs on a `DEFINE VAULT`",
+                    span: marker,
+                });
+            }
             columns.push(ColumnDeclaration {
                 name,
                 kind,
@@ -1468,6 +1598,7 @@ impl Parser<'_> {
             // Contextual, as the word is everywhere else it appears.
             _ if self.eat_word("vector") => Ok(StatementKind::DropVector { name: self.name()? }),
             _ if self.eat_word("geo") => Ok(StatementKind::DropGeo { name: self.name()? }),
+            _ if self.eat_word("vault") => Ok(StatementKind::DropVault { name: self.name()? }),
             // Declined rather than missing, and it says so. `DEFINE NODE` writes
             // this process's own configuration outside the transaction, so its
             // inverse is an edit to a config file rather than a statement — and

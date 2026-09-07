@@ -313,6 +313,13 @@ impl Needs {
             | StatementKind::Throw { .. }
             | StatementKind::Select(_)
             | StatementKind::Get { .. }
+            // Reading a secret is reading, and demanding more here would be the
+            // wrong kind of caution: it would make the grant the second lock,
+            // when the key already is. A caller who may read the vault and holds
+            // no key is refused at decryption; a caller who holds the key and
+            // may not read the vault is refused here. Neither passes by the
+            // other's route (F3).
+            | StatementKind::Reveal { .. }
             | StatementKind::Keys { .. }
             // Reading a file is reading. Named rather than left to the
             // catch-all, which reads as `Write` — the default that is right for
@@ -337,6 +344,13 @@ impl Needs {
             // named container resolved, which is not what the session's tenancy
             // holds at the moment `USE` runs, so it is its own slice (Q-252).
             // A scoped user is still refused by `within_tenancy`.
+            // Unsealing is running the node. It is store-wide because the key
+            // it unwraps is store-wide, and it is `Operate` rather than `Manage`
+            // for the same reason `DEFINE NODE` is: it changes what this process
+            // can do, not what the store contains.
+            StatementKind::SealVault { .. } | StatementKind::UnsealVault { .. } => {
+                Self::OPERATE_STORE
+            }
             StatementKind::Use { .. }
             | StatementKind::Begin
             | StatementKind::Commit
@@ -495,6 +509,8 @@ impl Needs {
             | StatementKind::DropVector { .. }
             | StatementKind::DefineGeo { .. }
             | StatementKind::DropGeo { .. }
+            | StatementKind::DefineVault { .. }
+            | StatementKind::DropVault { .. }
             | StatementKind::DefineGraph { .. }
             | StatementKind::DropGraph { .. }
             | StatementKind::DefineEdge { .. }

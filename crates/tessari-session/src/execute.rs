@@ -9,7 +9,7 @@ use tessari_ql::{
 use tessari_storage::{
     Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeOrder, FieldShape,
     GEO_FIELD, IndexDefinition, IndexShape, Mapped, OnFailure, RecordAddress, TableKind,
-    TableShape, Transaction, VECTOR_FIELD, VectorDeclaration, VectorDistance,
+    TableShape, Transaction, VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance,
 };
 
 use tessari_types::{
@@ -116,6 +116,7 @@ impl Session<'_> {
                 table,
                 kind,
                 required,
+                secret,
                 default,
                 analyzer,
                 assert,
@@ -127,7 +128,7 @@ impl Session<'_> {
                 kind.clone(),
                 FieldShape {
                     required: *required,
-                    secret: false,
+                    secret: *secret,
                     default: default.as_ref().map(|written| written.text.clone()),
                     analyzer: analyzer.as_ref().map(|named| named.text.clone()),
                     assert: assert.clone(),
@@ -557,6 +558,23 @@ impl Session<'_> {
                 if_not_exists,
             } => self.define_geo(transaction, name, *if_not_exists, span),
             StatementKind::DropGeo { name } => self.drop_geo(transaction, name, span),
+            StatementKind::DefineVault {
+                name,
+                if_not_exists,
+            } => self.define_vault(transaction, name, *if_not_exists, span),
+            StatementKind::DropVault { name } => self.drop_vault(transaction, name, span),
+            StatementKind::Reveal {
+                target,
+                fields,
+                span,
+            } => self.reveal(transaction, target, fields, *span),
+            StatementKind::UnsealVault { passphrase, span } => {
+                self.unseal_vault(transaction, passphrase, *span)
+            }
+            StatementKind::SealVault { .. } => {
+                self.store.vault().seal()?;
+                Ok(Outcome::Done)
+            }
             StatementKind::Put {
                 target,
                 start,
@@ -1555,6 +1573,7 @@ impl Session<'_> {
         if if_not_exists && self.index_named(transaction, id, name).is_ok() {
             return Ok(Outcome::Done);
         }
+        self.refuse_indexing_a_secret(transaction, id, table, fields)?;
         let fields = fields.iter().map(|field| field.path.clone()).collect();
         Catalog::new(transaction).create_index(id, &name.text, fields, shape)?;
         Ok(Outcome::Done)
@@ -1859,6 +1878,247 @@ impl Session<'_> {
     /// does: the words name different things even where they would remove the
     /// same rows, and a `DROP GEO` that quietly removed an ordinary table would
     /// be a typo with the blast radius of a table.
+    /// `DEFINE VAULT team`
+    ///
+    /// A table of the vault kind, carrying a key minted here and wrapped under
+    /// the store's master key. That is why this is the **one** declaration that
+    /// needs an unsealed store: there is no way to defer the key without
+    /// creating a vault nothing can ever write to, and a declaration that
+    /// succeeded and left the key for later would be a vault that refuses every
+    /// write while `INFO` reports it as ready.
+    fn define_vault(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        if_not_exists: bool,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        // The scope is computed by the storage layer's own function, not
+        // rebuilt here. The write path recomputes the same binding from the
+        // stored definition, and two implementations of one binding produce a
+        // vault that accepts every write and opens nothing, with both halves
+        // looking correct in isolation.
+        let key = tessari_storage::mint_vault_key(
+            self.store,
+            context.namespace,
+            context.database,
+            &name.text,
+        )?;
+        self.define_table(
+            transaction,
+            name,
+            TableShape {
+                // Schemaless, like every other declared store. A vault's fields
+                // are declared one at a time and the `SECRET` marker is what
+                // matters about them; requiring `SCHEMAFULL` as well would be a
+                // second thing to remember for a property it does not provide.
+                schemafull: false,
+                kind: TableKind::Vault(VaultDeclaration { key }),
+                identity: IdentityKind::default(),
+                graph: None,
+            },
+            if_not_exists,
+            span,
+        )
+    }
+
+    /// `DROP VAULT team` — the crypto-shred.
+    ///
+    /// Dropping the definition destroys the wrapped key with it, and the key is
+    /// the only copy: every record of this vault in every backup, snapshot and
+    /// replica that will ever be restored becomes ciphertext under a key that
+    /// exists nowhere. That is the deletion claim, and it is the only one a
+    /// store like this can honestly make — a row delete says something about the
+    /// live table and nothing about the data.
+    ///
+    /// It does **not** require an unsealed store. Destroying a key needs no key,
+    /// and demanding one would mean a store that cannot be unsealed can never be
+    /// cleaned up — which is exactly the store an operator most wants to shred.
+    fn drop_vault(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        let missing = || Error::Unknown {
+            entity: "vault",
+            name: name.text.clone(),
+            span,
+        };
+        let id = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(missing)?;
+        let is_vault = Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|definition| definition.is_vault());
+        if !is_vault {
+            return Err(missing());
+        }
+        Catalog::new(transaction).drop_table(id)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `UNSEAL VAULT WITH '…'` — the master key enters this process.
+    ///
+    /// # The first unseal creates the store's root, and says so
+    ///
+    /// A store that has never held a secret has no root record, and something
+    /// has to make one. Rather than add a second statement for a once-in-a-store
+    /// act, this one initialises when there is nothing to unlock — and the
+    /// outcome says **which** of the two happened, because the hazard here is
+    /// that a mistyped passphrase on an empty store becomes the passphrase, and
+    /// there is deliberately no path that replaces a root once written.
+    ///
+    /// Saying which happened is what makes that hazard survivable: an operator
+    /// who expected *unsealed* and reads *initialised* knows immediately, while
+    /// the store still holds nothing. Q-415 carries the open question of whether
+    /// initialisation should be its own statement anyway.
+    fn unseal_vault(
+        &self,
+        transaction: &mut Transaction<'_>,
+        passphrase: &str,
+        span: Span,
+    ) -> Result<Outcome> {
+        let _ = span;
+        if let Some(root) = Catalog::new(transaction).vault_root()? {
+            self.store.vault().unseal(&root.0, passphrase)?;
+            return Ok(Outcome::Value(Value::from("unsealed")));
+        }
+        let root = tessari_storage::initialise_root(self.store, passphrase)?;
+        Catalog::new(transaction).set_vault_root(&root);
+        Ok(Outcome::Value(Value::from("initialised")))
+    }
+
+    /// `REVEAL password FROM team:github` — the only path to a plaintext.
+    ///
+    /// Reads the stored record, opens the record's data key, and opens each
+    /// named secret field under it. Every other read path in this store sees
+    /// what is on disk, which is ciphertext.
+    ///
+    /// # What it refuses, and why each refusal is here rather than in the parser
+    ///
+    /// A field that is not declared `SECRET` is refused rather than returned in
+    /// the clear. `REVEAL` answers with plaintext, so a caller reading its answer
+    /// has no way to tell which entries were ever sealed — and a verb that
+    /// sometimes returns a secret and sometimes returns whatever was lying about
+    /// is one whose output nobody can reason about. The parser cannot make this
+    /// refusal because it does not know what any name refers to.
+    ///
+    /// A table that is not a vault is refused for the same reason: `REVEAL` over
+    /// an ordinary table would be a `SELECT` wearing a word that promises more.
+    fn reveal(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+        fields: &[Name],
+        span: Span,
+    ) -> Result<Outcome> {
+        let missing = || Error::Unknown {
+            entity: "vault",
+            name: target.table.name.text.clone(),
+            span,
+        };
+        let (_context, address) = self.address(transaction, target)?;
+        let id = address.table;
+        let definition = Catalog::new(transaction).table(id)?.ok_or_else(missing)?;
+        if !definition.is_vault() {
+            return Err(missing());
+        }
+
+        let secrets: BTreeMap<String, ()> = Catalog::new(transaction)
+            .fields_on(id)?
+            .into_iter()
+            .filter(|field| field.secret)
+            .map(|field| (field.name, ()))
+            .collect();
+
+        // Named fields are checked against the declaration BEFORE the record is
+        // read, so a caller cannot use the difference between "no such field"
+        // and "no such record" to learn which records exist.
+        let wanted: Vec<String> = if fields.is_empty() {
+            secrets.keys().cloned().collect()
+        } else {
+            for field in fields {
+                if !secrets.contains_key(&field.text) {
+                    return Err(Error::NotASecret {
+                        field: field.text.clone(),
+                        vault: target.table.name.text.clone(),
+                        span,
+                    });
+                }
+            }
+            fields.iter().map(|field| field.text.clone()).collect()
+        };
+
+        let Some(stored) = transaction.get(&address)? else {
+            return Ok(Outcome::Value(Value::None));
+        };
+        let Value::Object(held) = decode_payload(&stored)? else {
+            return Err(missing());
+        };
+
+        let data_key = tessari_storage::open_data_key(transaction, &address, &definition, &held)?;
+        let mut opened = BTreeMap::new();
+        for name in wanted {
+            let Some(Value::Bytes(envelope)) = held.get(&name) else {
+                // Declared secret, absent from this record. Reported as absent
+                // rather than skipped: a caller who asked for three fields and
+                // got two has no way to tell which one was missing.
+                opened.insert(name, Value::None);
+                continue;
+            };
+            let value =
+                tessari_storage::open_field(&data_key, &address, &definition, &name, envelope)?;
+            opened.insert(name, value);
+        }
+        Ok(Outcome::Value(Value::Object(opened)))
+    }
+
+    /// Refuse an index whose fields include one the vault seals.
+    ///
+    /// Checked against the **declaration** rather than against any record, so a
+    /// vault with no rows yet refuses exactly as one with a million does. The
+    /// alternative — noticing at index-build time — would accept the statement
+    /// and fail later, by which point the declaration is in the catalog and the
+    /// failure looks like the data's fault.
+    fn refuse_indexing_a_secret(
+        &self,
+        transaction: &mut Transaction<'_>,
+        id: TableId,
+        table: &TableRef,
+        fields: &[tessari_ql::FieldPath],
+    ) -> Result<()> {
+        if !Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|definition| definition.is_vault())
+        {
+            return Ok(());
+        }
+        let secrets: Vec<String> = Catalog::new(transaction)
+            .fields_on(id)?
+            .into_iter()
+            .filter(|field| field.secret)
+            .map(|field| field.name)
+            .collect();
+        for field in fields {
+            // The **root** of the path, because indexing `password.length` is
+            // indexing the secret just as surely as indexing `password` is — it
+            // is a projection of the plaintext, and a projection of a plaintext
+            // is a plaintext somebody derived.
+            let root = field.path.root();
+            if secrets.iter().any(|secret| secret == root) {
+                return Err(Error::NotIndexable {
+                    field: root.to_owned(),
+                    table: table.name.text.clone(),
+                    span: table.span,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn drop_geo(
         &self,
         transaction: &mut Transaction<'_>,
@@ -1899,6 +2159,16 @@ impl Session<'_> {
         let (_, id) = self.resolve_table(transaction, table)?;
         if if_not_exists && self.field_named(transaction, id, name).is_ok() {
             return Ok(Outcome::Done);
+        }
+        if shape.secret
+            && !Catalog::new(transaction)
+                .table(id)?
+                .is_some_and(|definition| definition.is_vault())
+        {
+            return Err(Error::SecretNeedsVault {
+                table: table.name.text.clone(),
+                span: table.span,
+            });
         }
         // The default is stored as the text it was written as, so it is read
         // back by parsing rather than by decoding a syntax tree — and a

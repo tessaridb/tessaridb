@@ -1014,6 +1014,109 @@ two words name different things even where they would remove the same rows — a
 a `DROP GEO` that quietly removed an ordinary table would be a typo with the
 blast radius of a table.
 
+### A vault, when the values must not be readable from the store
+
+```
+DEFINE VAULT team;
+DEFINE FIELD login ON team TYPE string;
+DEFINE FIELD token ON team TYPE string SECRET;
+```
+
+A vault is a table whose fields marked `SECRET` are encrypted before the record
+is written. Unlike the other declared stores, it is not a desugaring: there is no
+combination of `DEFINE TABLE` and clauses that produces one, because what makes a
+vault a vault is a **key**, minted when the vault is declared and wrapped under
+the store's master key.
+
+That is why it is the one declaration that needs the store unsealed. A vault
+whose key was left for later would refuse every write while `INFO` reported it
+ready.
+
+#### Unsealing, and what it means
+
+```
+UNSEAL VAULT WITH 'the operator passphrase';
+SEAL VAULT;
+```
+
+The master key exists in memory between those two statements and nowhere else. It
+is never written to disk unwrapped, never replicated, and never included in a
+backup — so a second node holding every byte of this one's log holds nothing that
+opens a secret.
+
+It is also **per process**. A restart seals the store: nothing here survives it,
+and a node that comes back cannot open anything, for anybody, until a passphrase
+is presented again. That makes an unattended restart impossible, which is a real
+operational cost and is stated rather than discovered.
+
+The passphrase arrives **in the statement**, as a quoted string. It is not an
+expression, not a parameter and not a name — an expression would put a secret
+through the evaluator, where it could be concatenated into a message or returned
+by the very statement that read it.
+
+On a store that has never held a vault there is no root record, and the first
+`UNSEAL` creates one. It answers `initialised` rather than `unsealed` when it
+does, and the difference matters: there is no statement that replaces a root once
+written, so a mistyped passphrase on the first unseal is the passphrase.
+
+#### Reading a secret
+
+```
+REVEAL token FROM team:'github';
+REVEAL * FROM team:'github';
+```
+
+`REVEAL` is the only statement that turns a sealed value back into a plaintext.
+It names one record, takes no `WHERE` and no `ORDER BY`, and answers with the
+secret fields it was asked for — `*` meaning every sealed field, and never the
+ordinary ones beside them.
+
+The absent clauses are the feature rather than a simplification. A filter over a
+secret is an oracle that answers one bit per statement, and an ordering is the
+same oracle more slowly.
+
+A field that is not declared `SECRET` is refused rather than returned in the
+clear, because a caller reading `REVEAL`'s answer has no way to tell which
+entries were ever sealed.
+
+#### What a vault refuses
+
+| statement | refused because |
+|---|---|
+| `SELECT … FROM team` | a vault is not read by `SELECT`; the message names `REVEAL` |
+| `DEFINE INDEX … ON team FIELDS token` | an index over a secret field is a searchable copy of it |
+| `DEFINE FIELD … SECRET` on an ordinary table | there is no key to seal it with, so the value would be written in the clear |
+| `ALTER FIELD … SECRET` | turning the marker on leaves existing records in the clear and turning it off leaves them unreadable |
+
+Only the second is a confidentiality control. A `SELECT` that reached the records
+would answer with the sealed envelopes, since the envelope *is* the stored value;
+it is refused so the language means something rather than to keep a secret.
+
+#### What `INFO` reports
+
+```
+INFO FOR VAULT team;
+```
+
+Each declared field, its type, and whether it is `SECRET`. It carries no length,
+no fingerprint and no key identifier for a sealed field — each would be an oracle
+that answers slowly rather than not at all.
+
+#### Removing a vault
+
+```
+DROP VAULT team;
+```
+
+This destroys the vault's key along with its records, and the key is the only
+copy. Every record of this vault in every backup, snapshot and replica that will
+ever be restored becomes ciphertext under a key that exists nowhere.
+
+That is what makes it a **deletion** rather than a removal, and it is the only
+deletion claim a store can honestly make: deleting rows is a statement about the
+live table and says nothing about the data. It is also why it cannot be undone by
+restoring a backup.
+
 ### A collection, for records that carry fields nobody declared
 
 ```

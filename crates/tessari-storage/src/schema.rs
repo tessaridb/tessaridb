@@ -101,6 +101,8 @@ struct Declared {
     kind: FieldKind,
     /// Whether it must hold something: present, and not `null`.
     required: bool,
+    /// Whether the stored value is sealed, and so is bytes whatever it declares.
+    secret: bool,
     /// What it must satisfy beyond its type, when it holds anything.
     ///
     /// Already lowered by the language, so checking it here is a comparison and
@@ -274,6 +276,15 @@ fn check(schema: &TableSchema, value: &Value, id: &RecordId) -> Option<Error> {
     };
     for (name, held) in fields {
         match schema.fields.get(name.as_str()) {
+            // A sealed field's stored form is always bytes, whatever it was
+            // declared to hold, so this check cannot see the value its
+            // declaration is about. That is not a hole: the type and the
+            // assertion are enforced against the **plaintext** before sealing,
+            // which is the only place either is knowable. It has to be that way
+            // round — a replica applying this record holds ciphertext and could
+            // not check even if it wanted to, so a check here would be one the
+            // leader passes and every follower fails.
+            Some(declared) if declared.secret => {}
             Some(declared) if !declared.kind.accepts(held) => {
                 return Some(Error::SchemaViolation {
                     table: Box::from(schema.name.as_str()),
@@ -362,6 +373,7 @@ fn build_schema(
                 Declared {
                     kind: declared.kind,
                     required: declared.required,
+                    secret: declared.secret,
                     assert: declared.assert.clone(),
                 },
             )
@@ -380,6 +392,7 @@ fn build_schema(
                     Declared {
                         kind: declared.kind,
                         required: declared.required,
+                        secret: declared.secret,
                         assert: declared.assert.clone(),
                     },
                 );
