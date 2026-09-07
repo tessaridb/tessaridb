@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 mod adjacency;
+mod audit;
 mod catalog;
 mod covering;
 mod error;
@@ -53,6 +54,7 @@ pub use catalog::VaultRoot;
 pub use covering::MEASURED_RELATION;
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
+pub use audit::{AuditDevice, AuditTrail, VaultRead, entries as audit_entries, reads_by};
 pub use error::{Error, Result};
 pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use graph::vector_of;

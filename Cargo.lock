@@ -1383,6 +1383,7 @@ dependencies = [
 name = "tessari-storage"
 version = "0.0.5-alpha"
 dependencies = [
+ "getrandom 0.4.3",
  "log",
  "tessari-constants",
  "tessari-encoding",

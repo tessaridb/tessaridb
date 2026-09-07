@@ -29,7 +29,7 @@ mod field;
 mod grant;
 mod graph;
 mod replica;
-mod system;
+pub(crate) mod system;
 mod user;
 mod vault;
 

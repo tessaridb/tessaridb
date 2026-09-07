@@ -90,6 +90,11 @@ pub struct Store {
     /// nowhere, so a follower holding every byte of the leader's log holds
     /// nothing that opens a secret.
     vault: Arc<crate::vault::OpenVault>,
+    /// Where a read of a vault is recorded before its answer leaves.
+    ///
+    /// Beside the vault rather than inside it: the trail outlives any one
+    /// unsealing, and a sealed store still records the reads it refused.
+    audit: Arc<crate::audit::AuditTrail>,
 }
 
 impl Store {
@@ -119,6 +124,7 @@ impl Store {
             // Sealed. A store that opened unsealed would be one that opens
             // secrets for whoever restarted it.
             vault: Arc::new(crate::vault::OpenVault::sealed()),
+            audit: Arc::new(crate::audit::AuditTrail::default()),
         })
     }
 
@@ -158,6 +164,16 @@ impl Store {
     #[must_use]
     pub fn running(&self) -> &Arc<crate::running::Running> {
         &self.running
+    }
+
+    /// Where a read of a vault is recorded before its answer leaves.
+    ///
+    /// Handing this out is safe in a way handing out a key is not: what a caller
+    /// can do with it is add a device that must also succeed for a read to be
+    /// served. There is no way through it to make a read unrecorded.
+    #[must_use]
+    pub fn audit(&self) -> &Arc<crate::audit::AuditTrail> {
+        &self.audit
     }
 
     /// Whether this process can open what the store's vaults hold.

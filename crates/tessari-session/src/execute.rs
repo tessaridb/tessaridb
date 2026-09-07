@@ -2124,7 +2124,56 @@ impl Session<'_> {
         Ok(Outcome::Done)
     }
 
+    /// `REVEAL` — and the record of it, written before the answer leaves.
+    ///
+    /// # Why the audit is here and not inside the opening
+    ///
+    /// Because the property is about ORDER, and order is only visible from the
+    /// place that owns both events. Written afterwards, every crash, kill,
+    /// timeout and partial write between the decryption and the log produces a
+    /// secret release with no record — and the two orderings are
+    /// indistinguishable whenever nothing fails, which is why the defect
+    /// survives review.
+    ///
+    /// The refusal is recorded too. A denial is the reconnaissance signal: the
+    /// first evidence of somebody probing what exists and what they can reach,
+    /// and without it the earliest thing the trail shows is a successful read,
+    /// which is the point at which the damage is already done.
+    ///
+    /// A trail that cannot be written **refuses**, including refusing to report
+    /// the refusal it was trying to record. That is deliberate: the alternative
+    /// leaks whether a record exists to a caller who has disabled the trail.
     fn reveal(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+        fields: &[Name],
+        span: Span,
+    ) -> Result<Outcome> {
+        let (_context, address) = self.address(transaction, target)?;
+        let opened = self.open_secrets(transaction, target, fields, span);
+        let asked: Vec<String> = fields.iter().map(|field| field.text.clone()).collect();
+        let record = address.id.to_literal();
+        self.store.audit().record(
+            self.store,
+            &tessari_storage::VaultRead {
+                actor: self
+                    .identity
+                    .user()
+                    .map_or("anonymous", |user| user.name.as_str()),
+                namespace: address.namespace,
+                database: address.database,
+                vault: &target.table.name.text,
+                record: &record,
+                fields: &asked,
+                served: opened.is_ok(),
+            },
+        )?;
+        opened
+    }
+
+    /// The opening itself, with no knowledge that it is being recorded.
+    fn open_secrets(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,

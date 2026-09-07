@@ -1154,6 +1154,37 @@ Reading the set needs the same grant as reading the vault. Holding a grant and
 holding a key remain separate powers — the set says who could open a record, not
 who may address it.
 
+#### Every read is recorded, or refused
+
+`REVEAL` writes a record of itself **before** its answer leaves, and a read that
+cannot be recorded is **refused** rather than served. Both halves matter, and
+neither is visible when things are working:
+
+- Recorded afterwards, any crash, timeout or partial write between the
+  decryption and the log produces a secret release with no trace — and the two
+  orderings look identical whenever nothing fails.
+- Served when the trail is broken, the store's accountability becomes something
+  an attacker switches off first. The cost of the other choice is real and worth
+  planning for: a broken trail is an outage of every `REVEAL`.
+
+The record carries **who asked, which vault, which record, which field names,
+and whether it was served** — never a value, a fragment of one, or a length that
+discloses one. Refusals are recorded too, because a denial is the first sign of
+somebody probing what exists.
+
+Three limits, stated rather than discovered later:
+
+- **The built-in trail lives in this store**, so it shares a failure domain and
+  an access path with the thing it audits. An independent device is what a
+  deployment adds; the engine exposes the seam for one, and every installed
+  device must also succeed for a read to be served.
+- **There is no tamper-evident chain.** Chaining would serialise every read
+  through one key, and what it buys is evidence against an attacker who already
+  holds the backend — which is outside what a vault defends against anyway.
+- **There is no statement that reads the trail yet.** The forensic question —
+  *this credential was compromised; what did it read?* — is answered through the
+  embedded API, not through TessariQL.
+
 #### Removing a vault
 
 ```

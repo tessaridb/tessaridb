@@ -10,6 +10,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+getrandom.workspace = true
 tessari-constants.workspace = true
 tessari-encoding.workspace = true
 tessari-geo.workspace = true

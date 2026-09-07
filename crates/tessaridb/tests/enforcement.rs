@@ -165,7 +165,16 @@ const TABLES: &[Table] = &[
         // separate, and neither passes by the other's route. What it hands out
         // is the `OpenVault` itself and never the key inside it; `with_master`
         // lends the key for one call and no caller can keep it.
-        expected: 15,
+        //
+        // 16 since the audit trail: `Store::audit` hands out where a read of a
+        // vault is recorded. Classified **exempt, and safe by construction
+        // rather than by a boundary** — the only thing a caller can do with it
+        // is install a device that must ALSO succeed for a read to be served.
+        // There is no method on it that makes a read unrecorded, and the
+        // built-in device is not in the list it exposes, so nothing reachable
+        // through this can weaken the property it belongs to. That asymmetry is
+        // the classification: a handle that can only tighten needs no gate.
+        expected: 16,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -224,7 +233,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 61, "the counted tables no longer sum to 61");
+    assert_eq!(total, 62, "the counted tables no longer sum to 62");
 }
 
 /// Every `.rs` file under a directory.

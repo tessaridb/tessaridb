@@ -106,6 +106,18 @@ pub const EDGE_KINDS: TableId = TableId::new(15);
 /// Argon2id and nothing else.
 pub const VAULT_ROOT: TableId = TableId::new(16);
 
+/// Reads of a vault, one record per read.
+///
+/// Catalog state rather than a `META` key, and the reading is the same as
+/// [`REPLICAS`]: an audit trail that stayed on the node that wrote it would be
+/// lost with that node, and a follower promoted to leader would carry no record
+/// of what the old one served. It travels in the log and survives a restore.
+///
+/// Nothing in it is a secret. It holds who asked, which record, which field
+/// **names**, and whether the read was served — never a value, a fragment or a
+/// length that discloses one.
+pub const VAULT_AUDIT: TableId = TableId::new(17);
+
 /// The one record [`VAULT_ROOT`] holds.
 pub const VAULT_ROOT_ID: u32 = 1;
 

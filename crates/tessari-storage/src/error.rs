@@ -59,6 +59,20 @@ pub enum Error {
         table: String,
     },
 
+    /// A read of a vault could not be recorded, so it is refused.
+    ///
+    /// The refusal is the mechanism and not a side effect. A store that serves
+    /// when it cannot record is a store whose audit trail an attacker disables
+    /// first, after which their reads leave no trace while every dashboard
+    /// reports health. The cost — a broken trail is an outage of every read —
+    /// is real, and is engineered around with a second device rather than by
+    /// making the trail best-effort.
+    #[error("this read cannot be recorded and so is refused: {reason}")]
+    AuditUnavailable {
+        /// Why the trail could not be written.
+        reason: String,
+    },
+
     /// A caller named the store's own entry as a recipient.
     ///
     /// `#vault` is the entry the engine wraps the record's data key into, and it
@@ -502,7 +516,7 @@ impl Error {
                 | tessari_vault::Error::AlreadyUnsealed
                 | tessari_vault::Error::Derivation => ErrorCategory::Validation,
             },
-            Self::VaultUnavailable => ErrorCategory::Unavailable,
+            Self::VaultUnavailable | Self::AuditUnavailable { .. } => ErrorCategory::Unavailable,
             // All three are the caller's statement being wrong about the store,
             // not the store being broken: a reserved name it may not write, a
             // shape a vault does not hold, or a record that predates the vault
