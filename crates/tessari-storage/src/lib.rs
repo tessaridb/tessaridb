@@ -33,6 +33,7 @@ mod node;
 mod reclaim;
 mod running;
 mod schema;
+mod sealing;
 mod snapshots;
 mod store;
 mod transaction;
@@ -43,8 +44,8 @@ pub use catalog::{
     EDGE_OUT, EdgeDeclaration, EdgeKindDefinition, EdgeOrder, FieldDefinition, FieldShape,
     GEO_FIELD, GrantDefinition, GraphDefinition, Held, IndexDefinition, IndexShape, Kind, Mapped,
     NamespaceDefinition, OnFailure, RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE,
-    SYSTEM_NAMESPACE, TableDefinition, TableKind, TableShape, UserDefinition, VECTOR_FIELD,
-    VectorDeclaration, VectorDistance, Verb,
+    SYSTEM_NAMESPACE, StoredKind, TableDefinition, TableKind, TableShape, UserDefinition,
+    VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance, Verb,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
@@ -57,6 +58,9 @@ pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use graph::vector_of;
 pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
+pub use sealing::{
+    KEYS_FIELD, VAULT_RECIPIENT, open_data_key, open_field, seal_secrets, vault_key_scope,
+};
 pub use store::{Health, Store};
 pub use tessari_encoding::{BUILD_VERSION, Roles};
 pub use transaction::{

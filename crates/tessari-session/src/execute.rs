@@ -649,6 +649,13 @@ impl Session<'_> {
         span: Span,
     ) -> Result<()> {
         let payload = on_the_grid(payload, span)?;
+        // Sealing sits between the geometry boundary and the encoder, and the
+        // order is the point: `on_the_grid` transforms values, sealing replaces
+        // them with ciphertext, and nothing downstream of the encoder can tell
+        // the difference — which is what closes the index, the feed, the log and
+        // the backup in one move. A vault write reaching the encoder unsealed is
+        // the failure this placement exists to make unreachable.
+        let payload = tessari_storage::seal_secrets(transaction, &address, payload)?;
         transaction.put(address, encode_payload(&payload).into_bytes());
         Ok(())
     }

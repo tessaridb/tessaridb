@@ -42,8 +42,8 @@ pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{
     DatabaseDefinition, EdgeDeclaration, EdgeOrder, GEO_FIELD, IndexDefinition, IndexShape,
-    NamespaceDefinition, RECORD_LEVEL, TableDefinition, TableKind, TableShape, VECTOR_FIELD,
-    VectorDeclaration, VectorDistance,
+    NamespaceDefinition, RECORD_LEVEL, StoredKind, TableDefinition, TableKind, TableShape,
+    VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance,
 };
 pub use edge_kind::EdgeKindDefinition;
 pub use field::{FieldDefinition, FieldShape};

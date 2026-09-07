@@ -345,25 +345,25 @@ impl TableDefinition {
             database: DatabaseId::new(field_id(fields, FIELD_DATABASE, "table")?),
             name: field_name(fields, "table")?,
             schemafull: flag(fields, FIELD_SCHEMAFULL, "table")?,
-            kind: TableKind::from_parts(
-                flag(fields, FIELD_EDGE, "table")?,
-                flag(fields, FIELD_BUCKET, "table")?,
-                flag(fields, FIELD_COLLECTION, "table")?,
-                flag(fields, FIELD_GEO, "table")?,
-                match fields.get(FIELD_ENDPOINTS) {
+            kind: TableKind::from_parts(StoredKind {
+                edge: flag(fields, FIELD_EDGE, "table")?,
+                bucket: flag(fields, FIELD_BUCKET, "table")?,
+                collection: flag(fields, FIELD_COLLECTION, "table")?,
+                geo: flag(fields, FIELD_GEO, "table")?,
+                endpoints: match fields.get(FIELD_ENDPOINTS) {
                     Some(value) => Some(EdgeDeclaration::from_value(value)?),
                     None => None,
                 },
-                match fields.get(FIELD_VECTOR) {
+                vector: match fields.get(FIELD_VECTOR) {
                     Some(value) => Some(VectorDeclaration::from_value(value)?),
                     None => None,
                 },
-                match fields.get(FIELD_VAULT) {
+                vault: match fields.get(FIELD_VAULT) {
                     Some(value) => Some(VaultDeclaration::from_value(value)?),
                     None => None,
                 },
-                ceiling(fields)?,
-            )?,
+                ceiling: ceiling(fields)?,
+            })?,
             identity: identity_kind(fields, "table")?,
             graph: match fields.get(FIELD_GRAPH) {
                 Some(_) => Some(GraphId::new(field_id(fields, FIELD_GRAPH, "table")?)),
@@ -649,6 +649,33 @@ pub struct EdgeOrder {
     pub descending: bool,
 }
 
+/// The parts of a stored table entry that together name its kind.
+///
+/// Grouped rather than passed as eight arguments, for the reason `TableShape`
+/// already exists a few types above: four of them are `bool`, so the compiler
+/// cannot tell one from another and a transposition produces a table of the
+/// wrong kind with nothing anywhere in an error state. Reading these out of a
+/// catalog record is the one place they all appear together.
+#[derive(Debug, Clone, Default)]
+pub struct StoredKind {
+    /// The `edge` flag.
+    pub edge: bool,
+    /// The `bucket` flag.
+    pub bucket: bool,
+    /// The `collection` flag.
+    pub collection: bool,
+    /// The `geo` flag.
+    pub geo: bool,
+    /// An edge table's declared endpoints.
+    pub endpoints: Option<EdgeDeclaration>,
+    /// A vector store's declaration.
+    pub vector: Option<VectorDeclaration>,
+    /// A vault's wrapped key.
+    pub vault: Option<VaultDeclaration>,
+    /// A bucket's size ceiling.
+    pub ceiling: Option<u64>,
+}
+
 impl TableKind {
     /// The kind a stored definition's three flags describe.
     ///
@@ -667,16 +694,17 @@ impl TableKind {
     /// # Errors
     ///
     /// Returns [`Error::CatalogMalformed`] when more than one kind is claimed.
-    pub fn from_parts(
-        edge: bool,
-        bucket: bool,
-        collection: bool,
-        geo: bool,
-        endpoints: Option<EdgeDeclaration>,
-        vector: Option<VectorDeclaration>,
-        vault: Option<VaultDeclaration>,
-        ceiling: Option<u64>,
-    ) -> Result<Self> {
+    pub fn from_parts(stored: StoredKind) -> Result<Self> {
+        let StoredKind {
+            edge,
+            bucket,
+            collection,
+            geo,
+            endpoints,
+            vector,
+            vault,
+            ceiling,
+        } = stored;
         // A vault is read first and alone. Every other arm below distinguishes
         // kinds that differ in what a caller may do; this one differs in
         // whether the records can be read at all, so a definition that both

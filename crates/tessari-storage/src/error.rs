@@ -36,6 +36,43 @@ pub enum Error {
     #[error("the keyring is unavailable in this process")]
     VaultUnavailable,
 
+    /// A write to a vault carried the entry that holds its wrapped keys.
+    ///
+    /// The name is not one the grammar produces as a bare identifier, but a
+    /// quoted field name accepts any text, so the collision is refused here
+    /// rather than assumed impossible. Accepting it would let a caller supply
+    /// its own key set and choose which key a later read opens with.
+    #[error("`{field}` is reserved: a vault holds its wrapped keys under that name")]
+    VaultReservedField {
+        /// The reserved name.
+        field: &'static str,
+    },
+
+    /// A vault was written a record that is not an object.
+    ///
+    /// A vault's records have fields, because a secret is a field and the
+    /// wrapped key set is a field beside it. There is nowhere to put either in
+    /// a bare value.
+    #[error("a record in vault `{table}` must be an object")]
+    VaultNotAnObject {
+        /// The vault's name.
+        table: String,
+    },
+
+    /// A key that must be there is not.
+    ///
+    /// Two shapes reach here and both are structural rather than cryptographic:
+    /// a table declared a vault with no wrapped key on its declaration, which
+    /// the catalog refuses to build in the first place, and a record with no
+    /// wrapped key set — what a record written before its table became a vault
+    /// looks like. Neither names a value, and neither says whether a passphrase
+    /// was right.
+    #[error("no key for vault `{table}`: this record cannot be opened")]
+    VaultNoKey {
+        /// The vault's name.
+        table: String,
+    },
+
     /// Another transaction committed to a record this one wrote.
     ///
     /// Under snapshot isolation the first committer wins. Nothing was written.
@@ -431,6 +468,13 @@ impl Error {
                 | tessari_vault::Error::Derivation => ErrorCategory::Validation,
             },
             Self::VaultUnavailable => ErrorCategory::Unavailable,
+            // All three are the caller's statement being wrong about the store,
+            // not the store being broken: a reserved name it may not write, a
+            // shape a vault does not hold, or a record that predates the vault
+            // it now sits in.
+            Self::VaultReservedField { .. }
+            | Self::VaultNotAnObject { .. }
+            | Self::VaultNoKey { .. } => ErrorCategory::Validation,
             Self::Kv(inner) => inner.category(),
             Self::Encoding(inner) => inner.category(),
         }
