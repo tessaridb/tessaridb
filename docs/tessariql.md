@@ -1105,6 +1105,7 @@ entries were ever sealed.
 | `ALTER FIELD … SECRET` | turning the marker on leaves existing records in the clear and turning it off leaves them unreadable |
 | a field nobody declared, on a write | there is no declaration to carry the `SECRET` marker, so the value would be stored in the clear |
 | `ALTER TABLE … SET SCHEMALESS` | it would remove the refusal above, one statement after the vault was declared |
+| `EXPLAIN SELECT … FROM team` | `EXPLAIN` describes a read; a read the store refuses has no plan, and printing one would describe a walk that could never start |
 
 Three of these are confidentiality controls and the first is not. A `SELECT` that
 reached the records would answer with the sealed envelopes, since the envelope

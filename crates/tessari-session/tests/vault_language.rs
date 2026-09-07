@@ -507,3 +507,48 @@ fn a_vault_is_declared_back_as_a_vault_and_not_as_a_strict_table() {
 fn store_second() -> Store {
     store()
 }
+
+/// Survey row 15 — the planner, and what `EXPLAIN` says about a vault.
+///
+/// `EXPLAIN` takes a `SELECT`, and a `SELECT` over a vault is refused, so the
+/// honest expectation is that there is no plan to print. Asserted rather than
+/// assumed, because the refusal has to come from the vault gate and not from
+/// `EXPLAIN` failing for some unrelated reason — and because a plan is a
+/// description of which keys a read would probe, which is exactly the shape of
+/// thing that leaks without returning a value.
+///
+/// The control is an ordinary table beside it: `EXPLAIN` does produce a plan
+/// when there is one to produce, so the refusal below is about vaults.
+#[test]
+fn a_vault_has_no_plan_to_explain_and_the_refusal_carries_nothing() {
+    let store = store();
+    let mut session = holding(&store);
+    write_one(&mut session);
+    session.run("DEFINE TABLE notes SCHEMALESS;").unwrap();
+    session
+        .run("CREATE notes:1 = { text: 'ordinary' };")
+        .unwrap();
+
+    // The control: a plan exists for a table that can be read.
+    let planned = format!("{:?}", value(&mut session, "EXPLAIN SELECT * FROM notes;"));
+    assert!(
+        planned.contains("scan") || planned.contains("notes"),
+        "`EXPLAIN` produced no plan for an ordinary table: {planned}"
+    );
+
+    for statement in [
+        "EXPLAIN SELECT * FROM team;",
+        "EXPLAIN SELECT * FROM team:'github';",
+        "EXPLAIN SELECT token FROM team;",
+        "EXPLAIN SELECT * FROM team WHERE token = 'guess';",
+    ] {
+        let said = refusal(&mut session, statement);
+        // It is refused by the vault gate — the same refusal a bare `SELECT`
+        // gets — rather than by `EXPLAIN` tripping over something else.
+        assert!(said.contains("REVEAL"), "{statement}: {said}");
+        assert!(
+            !said.contains(PLANTED),
+            "{statement} quoted a secret: {said}"
+        );
+    }
+}

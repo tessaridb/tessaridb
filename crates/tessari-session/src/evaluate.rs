@@ -994,7 +994,7 @@ impl Session<'_> {
     /// remembering to call it is the shape of thing this whole feature avoids,
     /// and the mechanical enumeration of read paths belongs to the negative
     /// matrix in W122, where it can be derived rather than recalled.
-    fn refuse_reading_a_vault(
+    pub(crate) fn refuse_reading_a_vault(
         &self,
         transaction: &mut Transaction<'_>,
         id: TableId,

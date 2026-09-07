@@ -101,6 +101,14 @@ SELECT * FROM team ORDER BY token;
 SELECT * FROM team:'github';
 --- expect: error NotReadBySelect
 
+--- case: there is no plan to show for a read the store refuses
+EXPLAIN SELECT * FROM team;
+--- expect: error NotReadBySelect
+
+--- case: and none for the conditioned shape either, which reaches a different planner arm
+EXPLAIN SELECT * FROM team WHERE token = 'hunter2';
+--- expect: error NotReadBySelect
+
 --- case: an index over a secret field would be a searchable copy of it
 DEFINE INDEX by_token ON team FIELDS token;
 --- expect: error NotIndexable
