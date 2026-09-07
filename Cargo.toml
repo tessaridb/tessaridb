@@ -28,6 +28,7 @@ tessari-wire = { path = "crates/tessari-wire", version = "0.0.5-alpha" }
 tessari-http = { path = "crates/tessari-http", version = "0.0.5-alpha" }
 tessari-ingest = { path = "crates/tessari-ingest", version = "0.0.5-alpha" }
 tessari-serve = { path = "crates/tessari-serve", version = "0.0.5-alpha" }
+tessari-vault = { path = "crates/tessari-vault", version = "0.0.5-alpha" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
@@ -38,6 +39,19 @@ argon2 = { version = "0.5", features = ["std"] }
 # than adding a parallel stack, and a database is the last place to keep its
 # own two hundred lines of unaudited bit manipulation.
 sha2 = { version = "0.10", default-features = false }
+# The AEAD every sealed value is encrypted under. ChaCha20-Poly1305 rather than
+# AES-GCM because it is constant-time in pure Rust with no hardware dependency,
+# and one source tree here produces both an arm64 and an amd64 image — an AES
+# implementation without AES-NI is either slow or timing-variable, and neither is
+# acceptable on the one surface whose whole purpose is to keep a secret.
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
+# The operating system's entropy. A database is the last place to carry its own
+# entropy pool, and every key in the hierarchy starts here.
+getrandom = "0.4"
+# Key material erased at a named end of life. The crate exists because the
+# compiler is entitled to delete a wipe that nothing afterwards observes, and a
+# hand-written `for b in buf { *b = 0 }` is exactly that wipe.
+zeroize = { version = "1.9", features = ["zeroize_derive"] }
 # Facade only. The binary picks the implementation, so a library caller keeps
 # control of whether anything is emitted at all, and `log` pulls in nothing.
 log = { version = "0.4", features = ["std"] }

@@ -1,0 +1,20 @@
+[package]
+name = "tessari-vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "The sealed-value core for TessariDB: envelope encryption, the key hierarchy, and key material that erases itself"
+
+[dependencies]
+argon2.workspace = true
+chacha20poly1305.workspace = true
+getrandom.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true
