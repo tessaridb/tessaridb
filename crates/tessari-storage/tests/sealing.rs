@@ -359,3 +359,161 @@ fn the_stored_record_still_decodes_as_an_ordinary_payload() {
     assert!(matches!(fields.get(KEYS_FIELD), Some(Value::Object(_))));
     assert_eq!(fields.get("name"), Some(&Value::String("Ada".to_owned())));
 }
+
+/// Four vaults, all called `credentials`, in four tenancies of one store.
+///
+/// Two of them carry a key that was minted for somebody else's qualified name —
+/// literally the same wrapped bytes, lifted out of `prod.people`'s declaration
+/// and pasted into theirs, which is what an operator with catalog access can do
+/// and what a bug in scope construction would do by accident.
+struct Crossing {
+    store: Store,
+    /// `prod.people.credentials`, minted for its own name.
+    own: TableDefinition,
+    /// `prod.payroll.credentials`, carrying `prod.people`'s key.
+    across_databases: TableDefinition,
+    /// `staging.people.credentials`, carrying `prod.people`'s key.
+    across_namespaces: TableDefinition,
+    /// `prod.finance.credentials`, minted for itself. The control.
+    control: TableDefinition,
+}
+
+fn crossing() -> Crossing {
+    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let store = Store::open(backend).unwrap();
+    let (_root, master) = Root::create(PASSPHRASE).unwrap();
+    store.vault().adopt(master).unwrap();
+
+    // The tenancies first, because the scope is built from their ids and the
+    // ids do not exist until the catalog allocates them.
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let prod = catalog.create_namespace("prod").unwrap().id;
+    let staging = catalog.create_namespace("staging").unwrap().id;
+    let people = catalog.create_database(prod, "people").unwrap().id;
+    let payroll = catalog.create_database(prod, "payroll").unwrap().id;
+    let finance = catalog.create_database(prod, "finance").unwrap().id;
+    let other_people = catalog.create_database(staging, "people").unwrap().id;
+    transaction.commit().unwrap();
+
+    let mint = |namespace, database| {
+        let scope = vault_key_scope(namespace, database, "credentials");
+        store
+            .vault()
+            .with_master(|master| Ok(keys::wrap_fresh(master, Level::Vault, &scope)?.0))
+            .unwrap()
+    };
+    let prod_people_key = mint(prod, people);
+    let finance_key = mint(prod, finance);
+
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let mut declared = Vec::new();
+    for (namespace, database, key) in [
+        (prod, people, prod_people_key.clone()),
+        (prod, payroll, prod_people_key.clone()),
+        (staging, other_people, prod_people_key),
+        (prod, finance, finance_key),
+    ] {
+        let table = catalog
+            .create_table(
+                namespace,
+                database,
+                "credentials",
+                TableShape {
+                    kind: TableKind::Vault(VaultDeclaration { key }),
+                    ..TableShape::default()
+                },
+            )
+            .unwrap();
+        catalog
+            .create_field(
+                table.id,
+                "password",
+                FieldKind::Any,
+                FieldShape {
+                    secret: true,
+                    ..FieldShape::default()
+                },
+            )
+            .unwrap();
+        declared.push(table);
+    }
+    transaction.commit().unwrap();
+
+    let control = declared.pop().unwrap();
+    let across_namespaces = declared.pop().unwrap();
+    let across_databases = declared.pop().unwrap();
+    let own = declared.pop().unwrap();
+    Crossing {
+        store,
+        own,
+        across_databases,
+        across_namespaces,
+        control,
+    }
+}
+
+/// Seal and write one record into `vault`, returning whatever the store said.
+///
+/// Not `?`-shaped: a failing seal leaves the transaction open, and every other
+/// test in this file ends one explicitly rather than trusting a drop.
+fn attempt_write(store: &Store, vault: &TableDefinition) -> Result<(), Error> {
+    let mut transaction = store.begin().unwrap();
+    let address = RecordAddress::new(
+        vault.namespace,
+        vault.database,
+        vault.id,
+        RecordId::Text("ada".to_owned()),
+    );
+    match seal_secrets(&mut transaction, &address, Fixture::record()) {
+        Ok(sealed) => {
+            transaction.put(address, encode_payload(&sealed).into_bytes());
+            transaction.commit().map(|_| ())
+        }
+        Err(error) => {
+            transaction.rollback();
+            Err(error)
+        }
+    }
+}
+
+/// Row 16 of the negative matrix — the tenancy crossing.
+///
+/// A vault's key is wrapped under the store's master key with the vault's
+/// **qualified name** as its associated data, so a key minted for
+/// `prod.people.credentials` is not a key for `prod.payroll.credentials` even
+/// though both vaults carry the same name, sit in the same store and are
+/// wrapped under the same master key. Until this test the property was
+/// structural and unobserved — `vault_key_scope` is the one function that
+/// computes the binding, so the whole argument for it was a code reading, and a
+/// code reading is exactly what this class of bug survives.
+///
+/// Both axes are crossed, because they would be broken by different mistakes —
+/// dropping the database from the binding, and dropping the namespace — and a
+/// test of one says nothing about the other. The control writes with a key
+/// minted correctly, so a refusal produced by the fixture rather than by the
+/// binding cannot pass as this property.
+#[test]
+fn a_vault_key_from_another_tenancy_does_not_open_this_vault() {
+    let crossing = crossing();
+
+    let own = attempt_write(&crossing.store, &crossing.own);
+    assert!(own.is_ok(), "{own:?}");
+    let control = attempt_write(&crossing.store, &crossing.control);
+    assert!(control.is_ok(), "{control:?}");
+
+    let across_databases = attempt_write(&crossing.store, &crossing.across_databases);
+    assert!(
+        matches!(across_databases, Err(Error::Vault(_))),
+        "a key minted for another database in the same namespace opened this one: \
+         {across_databases:?}"
+    );
+
+    let across_namespaces = attempt_write(&crossing.store, &crossing.across_namespaces);
+    assert!(
+        matches!(across_namespaces, Err(Error::Vault(_))),
+        "a key minted for a database of the same name in another namespace opened \
+         this one: {across_namespaces:?}"
+    );
+}
