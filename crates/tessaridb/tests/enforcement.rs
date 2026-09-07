@@ -18,7 +18,21 @@
 //!
 //! # What is counted, and what is not
 //!
-//! Seven tables, carrying **60** of the derivation's 69 paths. The nine that are
+//! Seven tables, carrying **61** of the derivation's 70 paths.
+//!
+//! # The path added by the vault, and how it was classified
+//!
+//! `Store::vault` is the sixty-first, and it is the one path here that is not
+//! reached by a grant. Classified **enforced, by a second and independent
+//! mechanism**: what it hands out is the `OpenVault`, and the key inside it is
+//! lent for the duration of one call by `with_master` and cannot be kept. A
+//! caller holding every grant the system offers and no passphrase is refused at
+//! decryption; a caller holding the passphrase and no grant is refused at the
+//! door by the ordinary reach check. Neither passes by the other's route, which
+//! is criterion F3 of the vault goal stated as a coverage decision.
+//!
+//! The classification is recorded here rather than only in the count, because
+//! the count is a reminder and the classification is the work. The nine that are
 //! not counted, named rather than quietly dropped, because a check that narrows
 //! its own scope in silence is worse than one that never ran:
 //!
@@ -144,7 +158,14 @@ const TABLES: &[Table] = &[
     Table {
         file: "crates/tessari-storage/src/store.rs",
         what: "public methods on `Store` — the substrate below the facade",
-        expected: 14,
+        // 15 since the vault: `Store::vault` hands out the per-process keyring.
+        // Classified **enforced**, and by a different mechanism from every other
+        // method here — the keyring is not reached by a grant but by holding a
+        // passphrase, which is the point of criterion F3: reach and open are
+        // separate, and neither passes by the other's route. What it hands out
+        // is the `OpenVault` itself and never the key inside it; `with_master`
+        // lends the key for one call and no caller can keep it.
+        expected: 15,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -203,7 +224,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 60, "the counted tables no longer sum to 60");
+    assert_eq!(total, 61, "the counted tables no longer sum to 61");
 }
 
 /// Every `.rs` file under a directory.

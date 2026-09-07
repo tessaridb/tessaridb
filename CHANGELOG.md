@@ -121,7 +121,7 @@ same records under the new one.
 This release is full-text search. `MATCHES` could ask for a whole word and score
 it; it can now ask for the word a reader has started typing, the word they meant
 rather than the one they typed, a phrase, either of two words, and not a third —
-and it can say where in the text it matched. 1105 conformance cases define the
+and it can say where in the text it matched. 1130 conformance cases define the
 language and run in the build, up from 1035.
 
 Nothing here changes an answer a `0.0.2-alpha` statement already gave. Every
