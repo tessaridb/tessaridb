@@ -1185,6 +1185,37 @@ Three limits, stated rather than discovered later:
   *this credential was compromised; what did it read?* — is answered through the
   embedded API, not through TessariQL.
 
+#### What a vault does not defend against
+
+A boundary nobody states is a boundary everybody assumes is covered, so here is
+this one. A vault defends the **stored bytes**: an attacker who obtains the whole
+storage backend, a backup file, a snapshot or a replica gains no secret material,
+a sealed or restarted node opens nothing, a ciphertext moved to another field or
+record fails its binding, and a dropped vault is unopenable in every copy that
+will ever be restored.
+
+Seven things it does not defend against, listed because each of them is a
+question worth answering somewhere else in your design:
+
+1. **The memory of a running, unsealed node.** The server decrypts, so while it
+   is unsealed the key and the plaintext are in its address space. This is the
+   direct cost of having the store do the decryption at all.
+2. **Privileged code on the host.** Anything that can read that process can read
+   what it holds.
+3. **A malicious operator** — the party who performs the unseal is the party who
+   can open what the unsealing opens.
+4. **A client already holding a valid credential** for a vault it may reach. The
+   store cannot distinguish that client from the person it belongs to.
+5. **Existence, size, count and access patterns.** Record identities are keys and
+   keys are not encrypted, so a vault holding one record named `aws-root` has
+   said something without a byte being decrypted.
+6. **Timing.**
+7. **Issuing secrets.** A vault holds material you put there. It does not mint
+   short-lived credentials, sign certificates, or encrypt on your behalf as a
+   service, and it is not going to — those are a different product living behind
+   a different threat model, and building them here would quietly turn a store
+   that can refuse to answer into infrastructure that must always answer.
+
 #### Removing a vault
 
 ```
