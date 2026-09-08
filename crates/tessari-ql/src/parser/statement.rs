@@ -254,6 +254,16 @@ impl Parser<'_> {
             // including in the vault whose fields somebody is declaring. Nothing
             // but a verb can stand at the head of a statement, so nothing is
             // ambiguous, and each arm has already consumed its word.
+            // Two more contextual verbs, and here the reason is the strongest
+            // it gets: `claim` and `release` are ordinary column names in
+            // exactly the kind of application that wants a queue — a task
+            // tracker's own table has a `claim` on it — so reserving them here
+            // would take them away from the schema the word exists to serve.
+            _ if self.eat_word("claim") => self.claim_statement(start)?,
+            _ if self.eat_word("release") => StatementKind::Release {
+                target: self.record_target()?,
+                span: start.to(self.span_behind()),
+            },
             _ if self.eat_word("reveal") => self.reveal_statement(start)?,
             _ if self.eat_word("add") => self.add_recipient_statement(start)?,
             _ if self.eat_word("remove") => self.remove_recipient_statement(start)?,
@@ -729,8 +739,12 @@ impl Parser<'_> {
             // password manager's own schema, which is precisely the kind of
             // application this word exists for.
             _ if self.eat_word("vault") => self.define_vault(),
+            // Contextual for the same reason as the rest of this run: `queue` is
+            // an ordinary table name, and a store that had one before this word
+            // existed keeps it.
+            _ if self.eat_word("queue") => self.define_queue(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `CONSUMER`, `VECTOR`, `GEO` or `VAULT`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `CONSUMER`, `VECTOR`, `GEO`, `VAULT` or `QUEUE`",
             )),
         }
     }
@@ -762,6 +776,115 @@ impl Parser<'_> {
             distance: self.name()?,
             if_not_exists,
         })
+    }
+
+    /// `DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5`
+    ///
+    /// One required clause and one optional one, read in a fixed order for the
+    /// reason `DEFINE VECTOR`'s two are: two clauses is too few to be worth an
+    /// order-free reader, and a fixed order is what makes the statement read the
+    /// same way in every store that has one.
+    ///
+    /// The timeout is a literal duration rather than an expression, the rule the
+    /// query timeout already keeps: a budget a bound value could set is a budget
+    /// a caller could raise, and this one is meant to be readable in the
+    /// statement that declared it rather than in a bindings map somewhere else.
+    fn define_queue(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        if !self.eat_word("timeout") {
+            return Err(self.error_here("`TIMEOUT` and how long a claim holds a record"));
+        }
+        let expected = "a duration, like `30s` or `5m`";
+        let Some(Token::Duration(written)) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let timeout = *written;
+        let at = self.span_here();
+        self.advance();
+        // Refused here rather than at the claim, for the reason the query
+        // timeout gives about its own zero: a hold of no length is not a hold,
+        // so the declaration could only ever produce a queue that hands one
+        // record to every worker at once — which is a mistake in the statement,
+        // and the statement is where it is worth saying so.
+        if timeout.seconds() < 0 || (timeout.seconds() == 0 && timeout.nanos() == 0) {
+            return Err(Error::EmptyTimeout {
+                written: timeout.to_literal(),
+                span: at,
+            });
+        }
+        let attempts = if self.eat_word("attempts") {
+            Some(self.attempt_ceiling()?)
+        } else {
+            None
+        };
+        Ok(StatementKind::DefineQueue {
+            name,
+            timeout,
+            attempts,
+            if_not_exists,
+        })
+    }
+
+    /// The whole number after `ATTEMPTS`, which must be one and must be at least one.
+    ///
+    /// Zero is refused rather than read as unlimited. Unlimited already has a
+    /// spelling — leaving the clause out — and a second one that looks like
+    /// "never hand this out" would be the one somebody writes by accident.
+    fn attempt_ceiling(&mut self) -> Result<u32> {
+        let expected = "how many times a record may be handed out, like `5`";
+        let Some(Token::Number(Number::Integer(written))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        // Read before advancing, so the refusal points at the number rather than
+        // at whatever follows it.
+        let Some(ceiling) = u32::try_from(*written).ok().filter(|held| *held > 0) else {
+            return Err(self.error_here(expected));
+        };
+        self.advance();
+        Ok(ceiling)
+    }
+
+    /// `CLAIM FROM jobs` · `CLAIM 10 FROM jobs`
+    ///
+    /// The count sits before `FROM` rather than in a `LIMIT` after the table,
+    /// because it is not a ceiling on an answer that was going to be produced
+    /// anyway — it is how much work this statement takes, and a `LIMIT` that
+    /// decided how many records got written would be the one clause in the
+    /// language that changes the store rather than the answer.
+    fn claim_statement(&mut self, start: Span) -> Result<StatementKind> {
+        let count = if matches!(self.peek(), Some(Token::Number(_))) {
+            self.claim_count()?
+        } else {
+            1
+        };
+        self.expect_keyword(Keyword::From, "`FROM` and the queue to take from")?;
+        let table = self.table_ref()?;
+        Ok(StatementKind::Claim {
+            table,
+            count,
+            span: start.to(self.span_behind()),
+        })
+    }
+
+    /// The whole number after `CLAIM`.
+    ///
+    /// Zero is refused here because it is a **shape** mistake — a statement that
+    /// asks for no records is not a claim — while the upper bound is refused by
+    /// the store rather than by the grammar. That split is the one
+    /// `DEFINE VECTOR` already makes about its distance: how much a store is
+    /// willing to hand out in one statement is the store's question, and a
+    /// ceiling compiled into the parser would be a second place holding it.
+    fn claim_count(&mut self) -> Result<u64> {
+        let expected = "how many records to claim, like `10`";
+        let Some(Token::Number(Number::Integer(written))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let Some(count) = u64::try_from(*written).ok().filter(|held| *held > 0) else {
+            return Err(self.error_here(expected));
+        };
+        self.advance();
+        Ok(count)
     }
 
     /// `DEFINE GEO places`
@@ -1745,6 +1868,7 @@ impl Parser<'_> {
             _ if self.eat_word("vector") => Ok(StatementKind::DropVector { name: self.name()? }),
             _ if self.eat_word("geo") => Ok(StatementKind::DropGeo { name: self.name()? }),
             _ if self.eat_word("vault") => Ok(StatementKind::DropVault { name: self.name()? }),
+            _ if self.eat_word("queue") => Ok(StatementKind::DropQueue { name: self.name()? }),
             // Declined rather than missing, and it says so. `DEFINE NODE` writes
             // this process's own configuration outside the transaction, so its
             // inverse is an edit to a config file rather than a statement — and

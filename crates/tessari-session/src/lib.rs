@@ -47,6 +47,7 @@ mod info;
 mod noticed;
 mod outcome;
 mod plan;
+mod queue;
 mod rank;
 mod reach;
 pub mod redact;

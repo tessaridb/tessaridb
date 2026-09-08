@@ -227,6 +227,9 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }
         | StatementKind::Del { target }
+        // A release names one record, and a record's identity may be a
+        // parameter wherever a record's identity may be one.
+        | StatementKind::Release { target, .. }
         | StatementKind::Read { target, .. } => bind_target(target, binding),
         StatementKind::Relate {
             from, to, value, ..
@@ -277,6 +280,13 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::DropGeo { .. }
         | StatementKind::DefineVault { .. }
         | StatementKind::DropVault { .. }
+        // `DEFINE QUEUE`'s timeout is a literal duration and its ceiling a
+        // literal number, for the reason the query timeout's is: a budget a
+        // bound value could set is a budget a caller could raise. `CLAIM` names
+        // a table and a count, and neither is an expression.
+        | StatementKind::DefineQueue { .. }
+        | StatementKind::DropQueue { .. }
+        | StatementKind::Claim { .. }
         // `UNSEAL` takes a string literal and never a parameter, so there is
         // nothing here to substitute into. That is the grammar's decision and
         // this arm is where it shows: a passphrase that could arrive as `$p`

@@ -8,9 +8,9 @@ use tessari_ql::{
 };
 use tessari_storage::{
     Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeOrder, FieldShape,
-    GEO_FIELD, IndexDefinition, IndexShape, Mapped, OnFailure, RecordAddress, TableDefinition,
-    TableKind, TableShape, Transaction, VECTOR_FIELD, VaultDeclaration, VectorDeclaration,
-    VectorDistance, Violation, violations,
+    GEO_FIELD, IndexDefinition, IndexShape, Mapped, OnFailure, QueueDeclaration, RecordAddress,
+    TableDefinition, TableKind, TableShape, Transaction, VECTOR_FIELD, VaultDeclaration,
+    VectorDeclaration, VectorDistance, Violation, violations,
 };
 
 use tessari_types::{
@@ -625,6 +625,31 @@ impl Session<'_> {
                 if_not_exists,
             } => self.define_vault(transaction, name, *if_not_exists, span),
             StatementKind::DropVault { name } => self.drop_vault(transaction, name, span),
+            StatementKind::DefineQueue {
+                name,
+                timeout,
+                attempts,
+                if_not_exists,
+            } => self.define_table(
+                transaction,
+                name,
+                TableShape {
+                    schemafull: false,
+                    kind: TableKind::Queue(QueueDeclaration {
+                        timeout: *timeout,
+                        attempts: *attempts,
+                    }),
+                    identity: IdentityKind::default(),
+                    graph: None,
+                },
+                *if_not_exists,
+                span,
+            ),
+            StatementKind::DropQueue { name } => self.drop_queue(transaction, name, span),
+            StatementKind::Claim { table, count, span } => {
+                self.claim(transaction, table, *count, *span)
+            }
+            StatementKind::Release { target, span } => self.release(transaction, target, *span),
             StatementKind::Reveal {
                 target,
                 fields,
@@ -755,6 +780,23 @@ impl Session<'_> {
         self.put_record_sealing(transaction, address, payload, None, span)
     }
 
+    /// The same write, made by the engine rather than by a caller.
+    ///
+    /// The **only** two callers are `CLAIM` and `RELEASE`, and they exist
+    /// because the fields they set are exactly the fields [`Session::put_record`]
+    /// refuses. A named path rather than a flag, so that "this write may set the
+    /// engine's fields" is a thing the reader can see at the call site instead of
+    /// a `true` in an argument list.
+    pub(crate) fn put_engine_record(
+        &self,
+        transaction: &mut Transaction<'_>,
+        address: RecordAddress,
+        payload: Value,
+        span: Span,
+    ) -> Result<()> {
+        self.write_record(transaction, address, payload, None, span)
+    }
+
     /// The same write, told which fields a partial vault edit supplied.
     ///
     /// `None` is every caller but the two edit paths, and means "seal this
@@ -764,6 +806,32 @@ impl Session<'_> {
     /// data key and key set are reused — which is what keeps a recipient's wrap
     /// valid across an edit.
     fn put_record_sealing(
+        &self,
+        transaction: &mut Transaction<'_>,
+        address: RecordAddress,
+        payload: Value,
+        partial: Option<&PartialSeal>,
+        span: Span,
+    ) -> Result<()> {
+        // Every **caller-driven** record write passes through here — the two
+        // creates, the insert, the update, the upsert, the set and both vault
+        // edits — which is why the queue's engine-field refusal sits here rather
+        // than in each of them. One rule in one place, and a write path added
+        // later inherits it instead of having to remember it. This placement was
+        // not the first one tried: the guard sat one level up, in `put_record`,
+        // and `UPDATE` reached the write without passing it.
+        crate::queue::refuse_engine_fields(transaction, &address, &payload, span)?;
+        self.write_record(transaction, address, payload, partial, span)
+    }
+
+    /// The write itself, with no question asked about who is making it.
+    ///
+    /// Split from [`Session::put_record_sealing`] so that the engine's own two
+    /// writes — the claim and the release, which set exactly the fields that
+    /// funnel refuses — have a path that is *named* rather than a flag passed
+    /// into a shared one. A reader at the call site can see which kind of write
+    /// it is without following an argument.
+    fn write_record(
         &self,
         transaction: &mut Transaction<'_>,
         address: RecordAddress,
@@ -1885,6 +1953,37 @@ impl Session<'_> {
     /// name different things even where they would remove the same rows, and a
     /// `DROP VECTOR` that quietly removed an ordinary table would be a typo with
     /// the blast radius of a table.
+    /// `DROP QUEUE jobs`
+    ///
+    /// Refuses a table that is not a queue by reporting it as unknown, the shape
+    /// `DROP VECTOR` already uses: a word that removed a table of another kind
+    /// would make `DROP QUEUE` a second spelling of `DROP TABLE`, and the two
+    /// answer to different grants for different reasons.
+    fn drop_queue(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        let unknown = || Error::Unknown {
+            entity: "queue",
+            name: name.text.clone(),
+            span,
+        };
+        let id = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(unknown)?;
+        let is_queue = Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|definition| matches!(definition.kind, TableKind::Queue(_)));
+        if !is_queue {
+            return Err(unknown());
+        }
+        Catalog::new(transaction).drop_table(id)?;
+        Ok(Outcome::Done)
+    }
+
     fn drop_vector(
         &self,
         transaction: &mut Transaction<'_>,

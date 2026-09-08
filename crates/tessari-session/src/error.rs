@@ -1399,6 +1399,63 @@ pub enum Error {
         span: Span,
     },
 
+    /// A statement that only a queue answers, aimed at another kind of table.
+    ///
+    /// Refused rather than answered as an ordinary read, because `CLAIM` writes:
+    /// a table that gained holds because somebody used the wrong verb would
+    /// carry two fields nothing maintains and nothing would ever notice.
+    #[error("{table} is not a queue (at {span}) — define it with `DEFINE QUEUE`")]
+    NotAQueue {
+        /// The table as written.
+        table: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A caller's write setting a field only the queue engine may set.
+    ///
+    /// The bucket's rule in a second place and for the identical reason: engine
+    /// metadata a caller can write is metadata that can lie, and a hold whose
+    /// deadline the holder chose is not a hold. Named rather than silently
+    /// dropped, so a payload that happens to use the name is told what happened.
+    #[error(
+        "`{field}` on a queue is written by the store (at {span}) — `CLAIM` and `RELEASE` set it"
+    )]
+    QueueFieldIsTheEngines {
+        /// The field the write named.
+        field: &'static str,
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// A claim for more records than one statement may take.
+    ///
+    /// A bound rather than a tuning knob: without one, a single statement holds
+    /// the whole queue for the whole timeout and every other worker waits, with
+    /// nothing anywhere in an error state.
+    #[error("a claim takes at most {ceiling} records, not {asked} (at {span})")]
+    ClaimAboveCeiling {
+        /// How many were asked for.
+        asked: u64,
+        /// How many one statement may take.
+        ceiling: u64,
+        /// Where the claim was written.
+        span: Span,
+    },
+
+    /// A claim whose deadline falls outside the range an instant can hold.
+    ///
+    /// Only reachable from a timeout so long that adding it to now overflows,
+    /// which the declaration allows because refusing a long timeout would need a
+    /// ceiling nobody has a reason for. Refused here rather than saturated: a
+    /// deadline clamped to the end of time is a hold that never lapses, which is
+    /// the one thing this engine exists to prevent.
+    #[error("this queue\'s timeout puts the claim past the end of time (at {span})")]
+    ClaimDeadlineUnreachable {
+        /// Where the claim was written.
+        span: Span,
+    },
+
     /// A record written by hand into a bucket.
     ///
     /// A bucket's records describe bytes the store holds. One a caller can write

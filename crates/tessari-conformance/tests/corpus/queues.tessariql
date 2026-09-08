@@ -1,0 +1,121 @@
+# Work handed out under a hold that lapses — `DEFINE QUEUE`.
+#
+# The cases below are the guarantees stated as assertions, in the order the
+# design states them: a claim holds, a hold lapses, an attempt is counted at the
+# hand-out, a spent record stops being handed out while staying readable, and
+# the two fields the engine writes are refused to a caller.
+#
+# Expiry is observed with a hold of one nanosecond rather than by waiting. That
+# is not a shortcut around the mechanism — it *is* the mechanism: a deadline is a
+# stored instant and a hold lapses because a later reader finds that instant in
+# the past, so a hold of one nanosecond reaches the same comparison a thirty
+# second one reaches thirty seconds later.
+#
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE work;
+USE DATABASE work;
+--- expect: ok
+
+--- case: a queue is declared with the timeout that is its whole capability
+DEFINE QUEUE jobs TIMEOUT 30s;
+CREATE jobs:1 = { url: 'a' };
+CREATE jobs:2 = { url: 'b' };
+CREATE jobs:3 = { url: 'c' };
+--- expect: ok
+
+--- case: a claim takes the head of the queue
+CLAIM FROM jobs;
+--- expect: rows 1
+
+--- case: the held record is passed over rather than handed out twice
+CLAIM FROM jobs;
+--- expect: rows 1
+
+--- case: two claims took two different records
+SELECT id FROM jobs WHERE claimed_until != NONE;
+--- expect: rows 2
+
+--- case: a claim asks for several and takes at most that many
+CLAIM 5 FROM jobs;
+--- expect: rows 1
+
+--- case: nothing claimable answers no records and is not an error
+CLAIM FROM jobs;
+--- expect: rows 0
+
+--- case: a release hands a record back before its deadline
+RELEASE jobs:1;
+--- expect: ok
+
+--- case: the released record is claimable again
+CLAIM FROM jobs;
+--- expect: rows 1
+
+--- case: a claim above the store's ceiling is refused
+CLAIM 501 FROM jobs;
+--- expect: error ClaimAboveCeiling
+
+--- case: a claim of nothing is not a claim, and the grammar says so
+CLAIM 0 FROM jobs;
+--- expect: error UnexpectedToken
+
+--- case: the two fields the engine writes are refused to a caller
+CREATE jobs:9 = { url: 'd', claimed_until: 1 };
+--- expect: error QueueFieldIsTheEngines
+
+--- case: and refused on an update as well as on a create
+UPDATE jobs:2 SET attempts = 0;
+--- expect: error QueueFieldIsTheEngines
+
+--- case: a queue that lapses at once, to watch the comparison that is the expiry
+DEFINE QUEUE fast TIMEOUT 1ns ATTEMPTS 2;
+CREATE fast:1 = { url: 'x' };
+CREATE fast:2 = { url: 'y' };
+--- expect: ok
+
+--- case: the first hand-out
+CLAIM FROM fast;
+--- expect: rows 1
+
+--- case: the hold has already lapsed, so the same record is handed out again
+CLAIM FROM fast;
+--- expect: rows 1
+
+--- case: two hand-outs are counted, whatever the worker did with them
+SELECT id FROM fast WHERE attempts = 2;
+--- expect: rows 1
+
+--- case: the ceiling is reached, so the record behind it is next
+CLAIM FROM fast;
+--- expect: rows 1
+
+--- case: and the record that was next is the second one
+SELECT id FROM fast WHERE attempts = 1;
+--- expect: rows 1
+
+--- case: the dead letter is a predicate rather than a second table
+SELECT url FROM fast WHERE attempts >= 2;
+--- expect: rows 1
+
+--- case: claiming from a table that is not a queue is refused
+DEFINE COLLECTION notes;
+CREATE notes:1 = { a: 1 };
+CLAIM FROM notes;
+--- expect: error NotAQueue
+
+--- case: the same field names stay ordinary on a table that is not a queue
+CREATE notes:2 = { attempts: 3, claimed_until: 'whenever' };
+--- expect: ok
+
+--- case: dropping a queue takes its held records with it
+DROP QUEUE fast;
+SELECT * FROM fast;
+--- expect: error Unknown
+
+--- case: and `DROP QUEUE` refuses a table of another kind
+DROP QUEUE notes;
+--- expect: error Unknown

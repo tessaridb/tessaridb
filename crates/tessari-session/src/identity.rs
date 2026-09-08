@@ -532,6 +532,12 @@ impl Needs {
             | StatementKind::DropGeo { .. }
             | StatementKind::DefineVault { .. }
             | StatementKind::DropVault { .. }
+            // Declaring a queue is declaring a table, so it sits with the rest
+            // of the structure statements. `CLAIM` and `RELEASE` are not here:
+            // they write records, and they are classified below with the other
+            // statements that do.
+            | StatementKind::DefineQueue { .. }
+            | StatementKind::DropQueue { .. }
             | StatementKind::DefineGraph { .. }
             | StatementKind::DropGraph { .. }
             | StatementKind::DefineEdge { .. }
@@ -586,7 +592,18 @@ impl Needs {
             // identity ranges and a binary search away from naming them, which
             // is the same argument the addressed `CREATE` above is classified
             // by.
-            | StatementKind::DeleteSpan { .. } => Self::READ_WRITE,
+            | StatementKind::DeleteSpan { .. }
+            // A claim writes the hold **and** answers with the record, so it
+            // discloses everything a `SELECT` of the same records would. The
+            // class is measured on what the answer discloses, which is the same
+            // argument that puts a span delete on this line.
+            | StatementKind::Claim { .. }
+            // A release clears a hold and answers nothing about the record, so
+            // it is the write half alone — and it is listed here rather than as
+            // a write-only statement because the class it would otherwise take
+            // is decided by a catch-all arm, and a catch-all over a statement
+            // family is how the next member added gets mis-permissioned.
+            | StatementKind::Release { .. } => Self::READ_WRITE,
             // **The six that are measurably silent about prior state.** Every
             // one of them answers `ok` against an absent or conflicting record,
             // so a holder of `write` alone can run them and learn nothing —

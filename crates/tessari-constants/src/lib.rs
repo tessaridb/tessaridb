@@ -654,3 +654,25 @@ pub const SEARCH_FUZZY_EXPANSION_CAP: usize = 16;
 /// avoid reading tens of records is the trade this number makes, and it stops
 /// being a good one somewhere past here.
 pub const SEARCH_FUZZY_EXAMINATION_CAP: usize = 1024;
+
+/// How many records one `CLAIM` may take.
+///
+/// Unit: records held by a single statement.
+///
+/// A bound rather than a tuning knob, and the reason is the one the consumer's
+/// own batch already gave: without a ceiling, one statement holds the whole
+/// queue for the whole timeout and every other worker waits — with nothing
+/// anywhere in an error state, because a claim that takes everything is doing
+/// exactly what it was asked to do.
+///
+/// Five hundred, which is not a fresh guess: it is the ingest consumer's
+/// `BATCH`, chosen there against the same question — how many records is it
+/// reasonable to move in one transaction — and answering one question twice with
+/// two numbers is how a store ends up with two answers nobody can tell apart.
+///
+/// Unlike the search caps above, this one **refuses**. They decline to serve a
+/// candidate and fall back to a path that returns the identical result; there is
+/// no cheaper path that answers `CLAIM 100000` correctly, so the honest response
+/// is to name the ceiling rather than to quietly hand back fewer records than
+/// were asked for.
+pub const MAX_CLAIM_RECORDS: u64 = 500;

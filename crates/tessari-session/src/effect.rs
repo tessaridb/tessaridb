@@ -125,6 +125,8 @@ impl Effect {
             | StatementKind::DropGeo { .. }
             | StatementKind::DefineVault { .. }
             | StatementKind::DropVault { .. }
+            | StatementKind::DefineQueue { .. }
+            | StatementKind::DropQueue { .. }
             | StatementKind::DefineGraph { .. }
             | StatementKind::DropGraph { .. }
             | StatementKind::DefineEdge { .. }
@@ -212,6 +214,11 @@ impl Effect {
             | StatementKind::Delete { .. }
             | StatementKind::DeleteWhere { .. }
             | StatementKind::DeleteSpan { .. }
+            // A claim writes the hold it hands out, and a release clears one.
+            // Both change records, so both are writes however much the first one
+            // also reads.
+            | StatementKind::Claim { .. }
+            | StatementKind::Release { .. }
             | StatementKind::Relate { .. }
             | StatementKind::DeleteEdge { .. }
             | StatementKind::Set { .. }

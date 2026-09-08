@@ -42,6 +42,10 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // the caller's tenancy level like the four words above. `DROP VAULT`
         // destroys a key rather than rows, and that makes it more consequential
         // without making it reach differently.
+        // A queue is a table too, and both halves of its lifecycle reach the
+        // same way the four words above do.
+        | StatementKind::DefineQueue { .. }
+        | StatementKind::DropQueue { .. }
         | StatementKind::DefineVault { .. }
         | StatementKind::DropVault { .. }
         // Sealing is not about a table. It changes whether this process holds a
@@ -186,6 +190,10 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // statement and the table it names is the only table it reaches.
         StatementKind::DeleteSpan { table, .. } => vec![table],
 
+        // A claim names one table and takes no condition, so nothing can hide a
+        // read of a second one inside it.
+        StatementKind::Claim { table, .. } => vec![table],
+
         StatementKind::Keys { space, .. } => vec![space],
 
         // A written value may hold a read — `CREATE audit:1 = { copy: (SELECT
@@ -258,6 +266,9 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }
         | StatementKind::Del { target }
+        // A release names one record in one queue, so the queue is the table the
+        // grant is asked about.
+        | StatementKind::Release { target, .. }
         // A file is a record in the bucket, so the bucket is the table a grant
         // is asked about. The chunks live in a table nothing can name, and are
         // reached only through these two statements — which is what keeps a

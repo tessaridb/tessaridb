@@ -1699,6 +1699,7 @@ Every catalog object this language can declare can be undeclared, except one:
 | `DEFINE USER` | `DROP USER` |
 | `DEFINE REPLICA` | `DROP REPLICA` |
 | `DEFINE CONSUMER` | `DROP CONSUMER` |
+| `DEFINE QUEUE` | `DROP QUEUE` |
 | `DEFINE NODE` | **nothing — see below** |
 
 **A drop removes its own definition and nothing beneath it**, and refuses while
@@ -5082,6 +5083,163 @@ A file is named by a **path**, so its identity is text: `media:1` is refused.
 That is not an aesthetic rule. A chunk's identity is the path followed by its
 ordinal, and an integer identity and the text of that integer would produce the
 same chunk — two files sharing bytes, which is not a defect anybody finds twice.
+
+## 6c. Work waiting to be done
+
+```tessariql
+DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5;
+
+CREATE jobs = { url: 'https://example.test/report' };
+
+CLAIM FROM jobs;
+CLAIM 10 FROM jobs;
+
+DELETE jobs:7;
+RELEASE jobs:7;
+
+DROP QUEUE jobs;
+```
+
+A queue is a table whose records are handed out **one holder at a time**, under
+a hold that lapses. Enqueueing is `CREATE` and finishing is `DELETE`, because
+the store already has both words: a record that should stop existing is deleted,
+and a second verb meaning *delete, but for a queue* would give one act two
+spellings.
+
+**`CLAIM` takes the first claimable records in identity order**, which is arrival
+order — both identity kinds this store issues are time-ordered, so the queue is
+first-in-first-out with no ordering state of its own. It answers with the records
+so the worker can do the work, and **an empty queue answers no records rather
+than failing**: a worker polls, and being caught up is the ordinary case.
+
+**`RELEASE` hands a record back before its deadline**, for a worker that knows it
+has failed or is shutting down. It does not touch the attempt count — that was
+taken at the claim, and a record that was handed out was handed out whatever
+happened next.
+
+### What the guarantees are, in the same words the consumer's are
+
+```text
+CREATE       — the record is in the queue when the commit returns
+CLAIM        — a write; the record is held until its stored deadline passes
+DELETE       — the work is done and the record is gone
+a crash      — nothing written past the last commit; the deadline passes; redelivered
+```
+
+**Delivery is at-least-once.** A worker that finishes the work and dies before
+`DELETE` has its record handed out again. Exactly-once would need the work and
+its acknowledgement in one transaction, and the work is outside this store.
+
+**Exclusivity is at most one claimant at a time**, and it needs no machinery of
+its own: two workers that pick one record both *write* that record, which the
+store's snapshot isolation already resolves — the first committer wins and the
+loser writes nothing at all, then re-selects and takes the next record. A worker
+that **overruns** its deadline is not stopped, because nothing here can stop it,
+so the whole sentence is: *at most one claimant at a time; a worker that exceeds
+its timeout may find its work handed to somebody else.*
+
+**`CLAIM` is not idempotent.** A worker whose reply is lost and which asks again
+receives a *different* record; the first stays held until its deadline passes.
+Nothing is lost, and a claim retry is not free.
+
+**Nothing is lost short of losing the store.** A record leaves a queue only by
+`DELETE`, and a `DELETE` is a commit.
+
+### The hold is a value, not a lease
+
+There is no lease manager, no reaper and no timer. A claim is an ordinary write,
+so it is sequenced into the log and replicated by the mechanism every other write
+uses. The instant it lapses is computed **once**, by the session taking it, and
+written into the record — the rule `time::now()` already follows, so a replica
+applies what was written rather than asking its own clock. And a hold lapses
+because a later reader finds that instant in the past: the comparison *is* the
+expiry.
+
+That is why **nothing happens when a claimant dies**. There is no liveness
+detection and no heartbeat; the deadline passes and the record becomes claimable.
+A worker that dies holding a thirty-second claim delays that record by up to
+thirty seconds, which is what choosing a timeout means — and the timeout is on
+the declaration so that it can be chosen.
+
+The comparison is against a **wall clock**, because a monotonic clock is
+meaningful only inside one process and so cannot be a value in a log. A clock
+stepped forward passes every jumped deadline at once and redelivers the held set;
+a clock stepped backward stalls the queue until it catches up, which is the worse
+of the two because a stalled queue looks exactly like an idle one. The
+diagnostic is one statement — `SELECT id, claimed_until FROM jobs ORDER BY
+claimed_until LIMIT 1` beside `time::now()` — and a deadline further ahead than
+one `TIMEOUT` is the signature.
+
+### Two fields the store writes and you do not
+
+| field | meaning |
+|---|---|
+| `claimed_until` | the instant the current hold lapses; absent when nothing holds it |
+| `attempts` | how many times this record has been handed out |
+
+A `CREATE` or `UPDATE` that sets either is **refused, naming the field**. This is
+the bucket's rule in a second place and for the identical reason: engine metadata
+a caller can write is metadata that can lie, and a hold whose deadline the holder
+chose is not a hold. The names are ordinary and visible, so a table that is not a
+queue may use them freely; on a queue they collide, and the refusal says so
+rather than silently dropping the field.
+
+**A lapsed record is not rewritten**, so a read meaning *unclaimed* compares
+rather than testing for absence:
+
+```tessariql
+SELECT * FROM jobs WHERE claimed_until = NONE OR claimed_until < time::now();
+```
+
+The shorter spelling looks right and hides every record whose worker has already
+gone.
+
+**There is deliberately no field naming the holder.** A session here carries a
+user identity and nothing finer, and every worker in a deployment signs in as one
+user — so a field claiming to name the holder would name the wrong thing exactly
+when somebody is debugging.
+
+### Retry, and the dead letter that is not a second table
+
+`ATTEMPTS n` is the ceiling on hand-outs. The count is taken at the **claim**,
+because how many times a record was handed out is a fact the store can observe
+while how many times the work failed is a fact only the worker holds.
+
+A record that reaches the ceiling stops being handed out and **stays where it
+is**, keeping its payload and its count:
+
+```tessariql
+SELECT * FROM jobs WHERE attempts >= 5;
+```
+
+That is the dead letter. Moving it would need a destination table, a schema for
+it, a rule for when it does not exist and a permission story — all to answer a
+question a `WHERE` already answers. Reviving one is `DELETE` then `CREATE`: a
+record that exhausted its declared budget and is being put back is new work, and
+it goes to the back of the queue.
+
+Leaving `ATTEMPTS` out means unlimited, which is a legitimate choice for work
+that cannot poison. `ATTEMPTS 0` is refused rather than read as unlimited —
+unlimited already has a spelling, and a second one that looks like *never hand
+this out* is the one somebody writes by accident.
+
+### What it costs, said plainly
+
+`CLAIM` walks the table from the head, so it steps over records that are held —
+and over records whose attempts are spent, which never become claimable again.
+The held half heals itself when the deadlines pass; the dead half does not, so a
+queue that accumulates dead records pays for them on every claim. The retention
+statement is the answer, and it is the same one every growing table here already
+needs:
+
+```tessariql
+DELETE FROM jobs WHERE attempts >= 5 LIMIT ALL;
+```
+
+One statement takes at most **500** records, and asking for more is refused
+naming the ceiling. Without a bound, one statement holds the whole queue for the
+whole timeout while every other worker waits — with nothing anywhere in an error
+state, because a claim that takes everything is doing what it was asked to do.
 
 ## 7. Transactions
 

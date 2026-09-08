@@ -96,6 +96,10 @@ fn erase_statement(statement: &mut Statement) {
         // than written in the statement.
         | StatementKind::DefineVault { name, .. }
         | StatementKind::DropVault { name }
+        // The name-only list, because a queue's two clauses are literals with no
+        // span of their own to erase.
+        | StatementKind::DefineQueue { name, .. }
+        | StatementKind::DropQueue { name }
         | StatementKind::DropGraph { name }
         | StatementKind::DropUser { name }
         | StatementKind::DropAnalyzer { name }
@@ -322,6 +326,14 @@ fn erase_statement(statement: &mut Statement) {
         }
         StatementKind::DeleteSpan { table, span, .. } => {
             erase_table(table);
+            *span = CANONICAL;
+        }
+        StatementKind::Claim { table, span, .. } => {
+            erase_table(table);
+            *span = CANONICAL;
+        }
+        StatementKind::Release { target, span } => {
+            erase_record(target);
             *span = CANONICAL;
         }
         StatementKind::Keys { space, range } => {

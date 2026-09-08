@@ -14,6 +14,51 @@ compares carries no pre-release suffix.
 
 ## 0.0.6-beta — 2026-09-08
 
+### Since the release
+
+Work landed after the tag was cut, and recorded here because this file's top
+section must name the version this package carries — so there is nowhere else
+for it to go until the next version is opened.
+
+**An engine was added.** A **queue** is a table whose records are handed out one
+holder at a time under a hold that lapses — `DEFINE QUEUE jobs TIMEOUT 30s
+ATTEMPTS 5`, then `CLAIM FROM jobs`, `DELETE jobs:7` when the work is done and
+`RELEASE jobs:7` to hand it back early. That makes ten engines over one substrate
+rather than nine. **1261 conformance cases** define the language and run in the
+build, up from 1237.
+
+The design is the part worth reading, because a queue is normally where a store
+grows a lease manager and this one does not. A claim is an ordinary **write**, so
+it is sequenced into the log and replicated by the mechanism every other write
+uses. The instant it lapses is computed once by the session taking it and
+**written into the record** — the rule `time::now()` already follows, so a
+replica applies what was written rather than asking its own clock. And a hold
+lapses because a later reader finds that instant in the past: the comparison is
+the expiry, so there is no reaper, no timer and no state outside the log to
+rebuild after a restart.
+
+Exclusivity needed no new machinery either. Two workers that pick one record both
+write that record, which the store's snapshot isolation already resolves — the
+first committer wins, the loser writes nothing and re-selects.
+
+Delivery is **at-least-once**, the same guarantee `DEFINE CONSUMER` states, and
+`CLAIM` is **not idempotent**: a worker whose reply is lost and which asks again
+gets a different record while the first stays held until its deadline. Both are
+written into the reference rather than left to be derived.
+
+The on-disk format changes only by a field on a table definition that did not
+exist. A definition written by `0.0.6-beta` reads back unchanged, and a store
+holding a queue opened by `0.0.6-beta` reads that table as a plain table —
+records intact, and every refusal the word carries gone.
+
+**The `0.0.3-alpha` section below says 1105 again**, which is what its own tag
+carries. Successive waves had been raising that number to the corpus's current
+size so that the check requiring the CHANGELOG to state the badge's figure would
+pass, which quietly made a released section describe a release it is not about.
+The count above satisfies that check instead.
+
+### The release itself
+
 **Released.** Tagged `v0.0.6-beta` on `main`, and published as
 [`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb) —
 `0.0.6-beta` and `latest`, `linux/amd64` and `linux/arm64`.
@@ -224,7 +269,7 @@ same records under the new one.
 This release is full-text search. `MATCHES` could ask for a whole word and score
 it; it can now ask for the word a reader has started typing, the word they meant
 rather than the one they typed, a phrase, either of two words, and not a third —
-and it can say where in the text it matched. 1237 conformance cases define the
+and it can say where in the text it matched. 1105 conformance cases define the
 language and run in the build, up from 1035.
 
 Nothing here changes an answer a `0.0.2-alpha` statement already gave. Every

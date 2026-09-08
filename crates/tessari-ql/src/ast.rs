@@ -731,6 +731,98 @@ pub enum StatementKind {
         /// The vault to undefine.
         name: Name,
     },
+    /// `DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5`
+    ///
+    /// The eighth word in the row, and the first one whose whole capability is
+    /// a **hold that lapses**. Written out as what it stands for, a queue is an
+    /// ordinary table plus two rules the store enforces and a caller cannot:
+    /// a claim writes a deadline, and a record whose deadline has passed is
+    /// claimable again.
+    ///
+    /// Unlike [`StatementKind::DefineVector`] and [`StatementKind::DefineGeo`]
+    /// it does **not** desugar into fields and an index, because there is
+    /// nothing to declare that would produce the behaviour — a `claimed_until`
+    /// field on a plain table is a field, not a hold. What makes it a queue is
+    /// the kind, which is why the kind is what is stored.
+    DefineQueue {
+        /// The name to create.
+        name: Name,
+        /// How long a claim holds a record before it lapses.
+        ///
+        /// Required, with no default, for the reason `DEFINE VECTOR`'s width is:
+        /// declaring it is the whole capability. A queue whose holds never lapse
+        /// is a table with two extra fields, and a timeout the store guessed
+        /// would hand work to a second worker at a moment nobody chose.
+        timeout: Duration,
+        /// How many times one record may be handed out, when a ceiling was named.
+        ///
+        /// Absent is unlimited, which is a legitimate choice for work that
+        /// cannot poison — and a visible one, because leaving the clause out is
+        /// what says it.
+        attempts: Option<u32>,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DROP QUEUE jobs`
+    ///
+    /// Removes the table and everything in it, held records included. A hold is
+    /// a field on a record rather than a resource somebody else owns, so there
+    /// is nothing here to wait for and nothing to release first.
+    DropQueue {
+        /// The queue to undefine.
+        name: Name,
+    },
+    /// `CLAIM FROM jobs` · `CLAIM 10 FROM jobs`
+    ///
+    /// Takes the first claimable records in identity order and holds each of
+    /// them until the queue's declared timeout has passed, answering with the
+    /// records so the worker can do the work.
+    ///
+    /// **It is a statement rather than a clause on `SELECT`**, because it
+    /// writes, and a reading verb that wrote would be lying about what it does —
+    /// the same reason `RELATE` is its own statement rather than a flavour of
+    /// `CREATE`.
+    ///
+    /// **Nothing claimable answers zero records and is not an error.** A worker
+    /// polls; an empty queue is the ordinary case, not a fault.
+    ///
+    /// **It is not idempotent**, and that is worth knowing before relying on it:
+    /// a worker whose reply is lost and which asks again receives a *different*
+    /// record, while the first stays held until its deadline passes. Nothing is
+    /// lost — delivery is at-least-once — but a claim retry is not free.
+    Claim {
+        /// The queue to take from.
+        table: TableRef,
+        /// How many records at most.
+        ///
+        /// One when the statement named no number.
+        ///
+        /// Zero is refused by the grammar, because a claim for no records is not
+        /// a claim. The **upper** bound is the store's refusal rather than the
+        /// grammar's, on the split `DEFINE VECTOR` already makes about its
+        /// distance: how much a store will hand out in one statement is the
+        /// store's question, and unbounded it is one statement holding the whole
+        /// queue for the whole timeout while every other worker waits.
+        count: u64,
+        /// Where the statement sits.
+        span: Span,
+    },
+    /// `RELEASE jobs:7`
+    ///
+    /// Clears a hold now rather than at its deadline, so a worker that knows it
+    /// has failed — or that is shutting down — returns its work in milliseconds
+    /// instead of in `TIMEOUT`.
+    ///
+    /// It does **not** touch the attempt count. The count is taken at the claim,
+    /// and a record that was handed out was handed out whatever happened next;
+    /// moving it here would make a deliberate hand-back and a crash count
+    /// differently for no reason a caller could predict.
+    Release {
+        /// The record to release.
+        target: RecordTarget,
+        /// Where the statement sits.
+        span: Span,
+    },
     /// `ALTER TABLE users ALTER FIELD email TYPE string REQUIRED`
     ///
     /// Redeclares a field that already exists, which a second `DEFINE FIELD`

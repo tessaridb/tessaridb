@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 
 use tessari_types::{
-    DatabaseId, GraphId, IdentityKind, IndexId, NamespaceId, Number, Path, TableId, Value,
+    DatabaseId, Duration, GraphId, IdentityKind, IndexId, NamespaceId, Number, Path, TableId, Value,
 };
 
 use tessari_vault::{KeyId, Wrapped};
@@ -46,6 +46,9 @@ const FIELD_DESCENDING: &str = "descending";
 const FIELD_IDENTITY: &str = "identity";
 const FIELD_GRAPH: &str = "graph";
 const FIELD_CEILING: &str = "ceiling";
+const FIELD_QUEUE: &str = "queue";
+const FIELD_TIMEOUT: &str = "timeout";
+const FIELD_ATTEMPTS: &str = "attempts";
 const FIELD_DIMENSION: &str = "dimension";
 const FIELD_DISTANCE: &str = "distance";
 
@@ -324,6 +327,17 @@ impl TableDefinition {
         if let TableKind::Bucket(Some(max)) = self.kind {
             fields.insert(FIELD_CEILING.to_owned(), byte_count(max));
         }
+        // A queue is carried by its declaration for the reason a vector store
+        // and a vault are: a queue with no timeout is not a queue with a missing
+        // property, it is a table whose holds would never lapse. The downgrade
+        // case is milder than the vault's and is still worth stating: a build
+        // that predates queues finds no flag and no declaration and reads this
+        // entry as a plain **table**, so the records are readable, the claim
+        // fields are ordinary fields, and every refusal the word carries is
+        // gone — the same shape of loss, without the confidentiality.
+        if let TableKind::Queue(declared) = &self.kind {
+            fields.insert(FIELD_QUEUE.to_owned(), declared.to_value());
+        }
         Value::Object(fields)
     }
 
@@ -360,6 +374,10 @@ impl TableDefinition {
                 },
                 vault: match fields.get(FIELD_VAULT) {
                     Some(value) => Some(VaultDeclaration::from_value(value)?),
+                    None => None,
+                },
+                queue: match fields.get(FIELD_QUEUE) {
+                    Some(value) => Some(QueueDeclaration::from_value(value)?),
                     None => None,
                 },
                 ceiling: ceiling(fields)?,
@@ -521,7 +539,50 @@ pub enum TableKind {
     /// the only deletion claim a store like this can honestly make, since a row
     /// delete is a statement about the live table and not about the data.
     Vault(VaultDeclaration),
+    /// Work waiting to be done, handed out under a hold that lapses — `DEFINE
+    /// QUEUE`.
+    ///
+    /// The hold is not a lease and there is no lease manager, deliberately. A
+    /// claim is an ordinary **write**, so it is sequenced into the log and
+    /// replicated by the mechanism every other write uses; the instant it lapses
+    /// is computed once by the session that takes it and **written into the
+    /// record**, the same rule `time::now()` already follows so that a replica
+    /// applies what was written rather than asking its own clock; and expiry is
+    /// a comparison a later reader performs rather than an event anything
+    /// raises. Those three together are why the queue holds no state outside the
+    /// log and therefore asks nothing of a cluster that an ordinary write does
+    /// not already ask.
+    ///
+    /// It carries its declaration for the reason [`TableKind::Vector`] does: a
+    /// timeout in a field beside the kind would make "carries a timeout but is
+    /// not a queue" representable, which is the state this type abolishes.
+    Queue(QueueDeclaration),
 }
+
+/// What a queue calls the instant a record's current hold lapses.
+///
+/// Visible and ordinary, so `SELECT` can answer *what is held and until when* —
+/// which is the most common thing anybody does with a queue that has gone quiet.
+/// It could instead have been hidden behind a byte no identifier can spell, the
+/// way a bucket's chunk table is, and that was rejected for exactly that reason:
+/// a queue whose state cannot be read is a queue nobody can debug.
+///
+/// The cost of being visible is that a payload field of this name collides, and
+/// the collision is refused at the write naming the field rather than absorbed
+/// silently (Q-461).
+///
+/// A lapsed record is **not** rewritten — nothing sweeps a passed deadline away
+/// — so a reader asking for unclaimed records compares rather than testing for
+/// absence: `claimed_until IS NONE OR claimed_until < time::now()`.
+pub const QUEUE_CLAIMED_UNTIL: &str = "claimed_until";
+
+/// What a queue calls the number of times a record has been handed out.
+///
+/// Counted at the hand-out and not at a failure, because how many times a record
+/// was handed out is a fact the store can observe, while how many times the work
+/// failed is a fact only the worker holds — and a count the store cannot verify
+/// is a count that will eventually be wrong.
+pub const QUEUE_ATTEMPTS: &str = "attempts";
 
 /// What a vector store calls the field its vectors are in.
 ///
@@ -623,6 +684,73 @@ impl VectorDeclaration {
     }
 }
 
+/// How long a queue holds a claim, and how many times it hands a record out.
+///
+/// The timeout is the whole capability, which is why it has no default: a queue
+/// whose holds never lapse is a table with two extra fields, and a queue whose
+/// timeout the store guessed would hand work to a second worker at a moment
+/// nobody chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueDeclaration {
+    /// How long a claim holds a record before it lapses.
+    ///
+    /// Added to the instant the claiming session reads, once, and written into
+    /// the record — so the deadline in the log is a value every node agrees
+    /// about rather than a computation each one repeats against its own clock.
+    pub timeout: Duration,
+    /// How many times one record may be handed out, when a ceiling was declared.
+    ///
+    /// `None` is unlimited, which is a legitimate choice for a queue whose work
+    /// cannot poison and a visible one, because it is what leaving the clause
+    /// out says. A record that reaches the ceiling stops being claimable and
+    /// stays where it is: the dead letter is a predicate, not a second table.
+    pub attempts: Option<u32>,
+}
+
+impl QueueDeclaration {
+    /// The value written inside the table's catalog entry.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        let mut fields =
+            BTreeMap::from([(FIELD_TIMEOUT.to_owned(), Value::Duration(self.timeout))]);
+        // Written only when it was declared, on the bucket ceiling's contract
+        // rather than a flag's: an attempt ceiling nobody named is absent rather
+        // than zero, and zero is the one number that would have to mean
+        // "unlimited" while reading as "never hand this out".
+        if let Some(ceiling) = self.attempts {
+            fields.insert(FIELD_ATTEMPTS.to_owned(), number(ceiling));
+        }
+        Value::Object(fields)
+    }
+
+    /// Read a declaration back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when the timeout is missing or is not
+    /// a duration, or when the attempt ceiling is not a number.
+    pub fn from_value(value: &Value) -> Result<Self> {
+        const ENTITY: &str = "queue";
+        let fields = object(value, ENTITY)?;
+        let Some(Value::Duration(timeout)) = fields.get(FIELD_TIMEOUT) else {
+            return Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_TIMEOUT,
+                found: fields
+                    .get(FIELD_TIMEOUT)
+                    .map_or("none", tessari_types::Value::type_name),
+            });
+        };
+        Ok(Self {
+            timeout: *timeout,
+            attempts: match fields.get(FIELD_ATTEMPTS) {
+                Some(_) => Some(field_id(fields, FIELD_ATTEMPTS, ENTITY)?),
+                None => None,
+            },
+        })
+    }
+}
+
 /// The pair an edge table joins, and the order its edges are held in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeDeclaration {
@@ -672,6 +800,8 @@ pub struct StoredKind {
     pub vector: Option<VectorDeclaration>,
     /// A vault's wrapped key.
     pub vault: Option<VaultDeclaration>,
+    /// A queue's timeout and attempt ceiling.
+    pub queue: Option<QueueDeclaration>,
     /// A bucket's size ceiling.
     pub ceiling: Option<u64>,
 }
@@ -703,6 +833,7 @@ impl TableKind {
             endpoints,
             vector,
             vault,
+            queue,
             ceiling,
         } = stored;
         // A vault is read first and alone. Every other arm below distinguishes
@@ -712,8 +843,24 @@ impl TableKind {
         // resolve by precedence — it is a catalog entry that must not be
         // honoured in either direction.
         if let Some(declared) = vault {
+            return match (
+                edge, bucket, collection, geo, endpoints, vector, &queue, ceiling,
+            ) {
+                (false, false, false, false, None, None, None, None) => Ok(Self::Vault(declared)),
+                _ => Err(Error::CatalogMalformed {
+                    entity: "table",
+                    field: "kind",
+                    found: "more than one kind",
+                }),
+            };
+        }
+        // A queue sets no flag either, so it reaches the match below as a plain
+        // table carrying a declaration — and it is pulled out here rather than
+        // added as a ninth tuple element so that the arms already written keep
+        // reading as the exhaustive statement they are.
+        if let Some(declared) = queue {
             return match (edge, bucket, collection, geo, endpoints, vector, ceiling) {
-                (false, false, false, false, None, None, None) => Ok(Self::Vault(declared)),
+                (false, false, false, false, None, None, None) => Ok(Self::Queue(declared)),
                 _ => Err(Error::CatalogMalformed {
                     entity: "table",
                     field: "kind",

@@ -54,6 +54,10 @@ forms! {
     DropGeo => "DROP GEO",
     DefineVault => "DEFINE VAULT",
     DropVault => "DROP VAULT",
+    DefineQueue => "DEFINE QUEUE",
+    DropQueue => "DROP QUEUE",
+    Claim => "CLAIM",
+    Release => "RELEASE",
     Reveal => "REVEAL",
     AddRecipient => "ADD RECIPIENT",
     RemoveRecipient => "REMOVE RECIPIENT",
@@ -207,6 +211,10 @@ mod tests {
              DELETE t:1;\
              DELETE FROM t WHERE a = 1 LIMIT ALL;\
              DELETE FROM t:1..2 LIMIT ALL;\
+             DEFINE QUEUE q TIMEOUT 30s ATTEMPTS 5;\
+             CLAIM 2 FROM q;\
+             RELEASE q:1;\
+             DROP QUEUE q;\
              GET s:1;\
              SET s:1 = 1;\
              DEL s:1;\

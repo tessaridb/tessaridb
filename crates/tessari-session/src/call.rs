@@ -340,7 +340,7 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // Evaluated in the session, so the instant that reaches the log is a
         // value like any other — a replica applies what was written rather than
         // asking its own clock and reaching a different answer.
-        Function::TimeNow => now(function, span),
+        Function::TimeNow => Ok(Value::Datetime(instant(span)?)),
         // The six readings of a date, each named separately rather than sharing
         // one arm with a match inside it. A shared arm needs a fallback for the
         // function the outer match already excluded, and a fallback here is an
@@ -530,9 +530,20 @@ fn from_unix(function: Function, arguments: &[Value], span: Span) -> Result<Valu
     Ok(Value::Datetime(Datetime::from_seconds(seconds)))
 }
 
-fn now(function: Function, span: Span) -> Result<Value> {
+/// The instant this process's clock reads.
+///
+/// Shared with the queue engine, which needs the same instant for the same
+/// reason `time::now()` gives it to a statement: a claim's deadline is computed
+/// once here and **written**, so the value that reaches the log is one every
+/// node agrees about rather than a computation each of them repeats against its
+/// own clock.
+///
+/// It reports through [`Function::TimeNow`] whoever asks, because there is one
+/// clock and a caller reading a failure wants to know which one could not be
+/// read — not which internal path asked it.
+pub(crate) fn instant(span: Span) -> Result<Datetime> {
     let failed = |reason: &'static str| Error::CallFailed {
-        function,
+        function: Function::TimeNow,
         reason,
         span,
     };
@@ -540,9 +551,7 @@ fn now(function: Function, span: Span) -> Result<Value> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| failed("the clock is before the epoch"))?;
     let seconds = i64::try_from(since.as_secs()).map_err(|_| failed("the clock is unreadable"))?;
-    let instant = Datetime::new(seconds, since.subsec_nanos())
-        .ok_or_else(|| failed("the clock is unreadable"))?;
-    Ok(Value::Datetime(instant))
+    Datetime::new(seconds, since.subsec_nanos()).ok_or_else(|| failed("the clock is unreadable"))
 }
 
 /// An element count as a value, refusing one no integer can hold.
