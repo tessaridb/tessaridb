@@ -10,7 +10,7 @@ A real-time multi-model database, written in Rust, built for AI agents and the
 products around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.0.5--alpha-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.0.6--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
 [![conformance](https://img.shields.io/badge/conformance-1159%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
@@ -131,7 +131,7 @@ possible rather than aspirational.
 
 ## Status
 
-**Stage: active development · `0.0.5-alpha` · not published to crates.io.** What
+**Stage: active development · `0.0.6-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -760,7 +760,7 @@ credential precisely so that a supervisor does not have to hold one.
 
 The `Dockerfile` builds from this working tree; the published image is
 [`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb). It is
-alpha, and `latest` moves — pin the version tag for anything you would mind
+a beta, and `latest` moves — pin the version tag for anything you would mind
 losing.
 
 ## Keeping one running on a Mac
