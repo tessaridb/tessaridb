@@ -11,6 +11,7 @@ mod alter_user;
 mod analyzer_redefinition;
 mod ascending_order;
 mod assertions;
+mod assertions_over_dropped_declarations;
 mod audit;
 mod authorities;
 mod bindings;
