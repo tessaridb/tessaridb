@@ -306,6 +306,34 @@ thing every cursor buys: a page that does not shift when a record is inserted
 behind it. `Note::CursorWalked` is on those answers so nobody has to run this
 table to find out which case they are in.
 
+## What a claim costs, and the term the design did not name
+
+Recorded 2026-09-09, same machine, both backends
+(`2026-09-09-macos-aarch64-queue-claim.md`). The queue's design states the cost
+as *O(held + dead-lettered), and only the held half heals itself*, and said S5.5
+must measure it rather than estimate it.
+
+**The law holds and is linear.** In memory a claim costs 20 µs plus **0.368 µs
+per record it steps over**; on disk, 80 µs plus **0.543 µs**. Four widths, and
+the fit is within 2.5% at every one.
+
+**Held and dead-lettered cost the same** — 0.3% apart in memory, 1.0% on disk, so
+the walk does not care why a record is unclaimable. The design's asymmetry is
+entirely about what happens next: a held record's contribution expires by itself
+and a dead-lettered one's does not. That is worth stating plainly because the
+design invites the opposite reading.
+
+**A finished record goes on costing, which the design does not name.** A drain
+that deletes every record as it finishes still ramps — 0.25 µs per *deleted*
+record in memory and 0.55 µs on disk, the same slope a live one charges — because
+the walk steps the table's key range and a deleted record is still a key in it.
+Whether compaction returns that cost is unmeasured (Q-468), so the honest
+statement is that a retention `DELETE` does not act on the walk promptly.
+
+**A batch of a hundred is 47× cheaper per record than a hundred claims**, because
+the walk is paid once per statement: 0.58 ms against 27.2 ms in memory, 1.41 ms
+against 63.9 ms on disk. That is the figure behind the advice to claim a batch.
+
 ## What is deliberately not measured here
 
 - **Concurrency.** The store is single-writer (ADR-0007), so a concurrent write

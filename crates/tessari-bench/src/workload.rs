@@ -139,6 +139,11 @@ pub const ALL: &[Workload] = &[
         about: "a nearest-neighbour read over a scan — the number an HNSW index has to beat",
         run: vector,
     },
+    Workload {
+        name: "queue",
+        about: "what a claim costs behind a prefix of held and of dead-lettered records, and a drain taken one at a time against one taken in a batch",
+        run: crate::queue::queue,
+    },
 ];
 
 /// The workload of this name, if there is one.
