@@ -27,6 +27,7 @@ mod conditionals;
 mod configuration;
 mod consumers;
 mod descending;
+mod describing_kinds;
 mod differential;
 mod effect;
 mod exactness;
