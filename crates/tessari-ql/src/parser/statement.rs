@@ -428,8 +428,15 @@ impl Parser<'_> {
             }
             _ if self.eat_word("audit") => InfoSubject::Audit(self.audited_actor()?),
             _ => {
+                // Every subject the arms above accept, and in their order, so
+                // that adding an arm and forgetting this line is a visible
+                // omission rather than an invisible one. `GRAPH` and
+                // `RECIPIENTS` were missing from it for as long as they have
+                // parsed (Q-428): a message that lists its options and gets the
+                // list wrong is worse than one that lists none, because a caller
+                // reads it as the whole truth and stops looking.
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR`, `GEO`, `VAULT` or `AUDIT`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `RECIPIENTS OF` or `AUDIT`",
                 ));
             }
         };

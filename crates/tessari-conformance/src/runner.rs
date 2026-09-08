@@ -261,7 +261,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::SecretNeedsVault { .. } => "SecretNeedsVault",
         Error::NotASecret { .. } => "NotASecret",
         Error::VaultIsStrict { .. } => "VaultIsStrict",
-        Error::VaultEditNeedsWholeRecord { .. } => "VaultEditNeedsWholeRecord",
+        Error::VaultEditComputesFromTheRecord { .. } => "VaultEditComputesFromTheRecord",
         Error::RecipientIsNotAName { .. } => "RecipientIsNotAName",
         _ => "Unnamed",
     }

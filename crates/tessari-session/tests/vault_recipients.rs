@@ -554,3 +554,156 @@ fn a_concurrent_add_and_remove_leave_a_consistent_set() {
         Some(&Value::String(PLANTED.to_owned())),
     );
 }
+
+#[test]
+fn a_recipient_survives_the_rotation_of_the_secret_they_were_shared() {
+    let store = holding();
+    let mut session = session_on(&store);
+    session
+        .run("ADD RECIPIENT 'ops' TO team:'github' KEY 0xfeed;")
+        .unwrap();
+
+    // The control. A test that only looked afterwards would pass against an
+    // implementation where the add silently did nothing.
+    let Some(Value::Object(before)) = stored_record(&store).get(KEYS_FIELD).cloned() else {
+        panic!("no key set");
+    };
+    assert_eq!(before.len(), 2, "the recipient was not added: {before:?}");
+
+    session
+        .run("UPDATE team:'github' SET token = 'rotated-4d5e6f';")
+        .unwrap();
+
+    // The property. Before W135 a vault write minted a fresh data key and wrote
+    // a fresh key set holding only the store's own entry, so rotating a secret
+    // silently discarded everybody it had been shared with — an outcome with
+    // nothing anywhere in an error state, discovered only by a recipient who
+    // could no longer open what they were given.
+    let after_fields = stored_record(&store);
+    let Some(Value::Object(after)) = after_fields.get(KEYS_FIELD) else {
+        panic!("no key set after the rotation");
+    };
+    assert_eq!(
+        after, &before,
+        "the rotation rewrote the key set, so every recipient's wrap is now dead",
+    );
+
+    // And the rotation actually happened — the assertion above must not be
+    // satisfiable by an edit that wrote nothing.
+    let opened = format!(
+        "{:?}",
+        session.run("REVEAL token FROM team:'github';").unwrap()
+    );
+    assert!(opened.contains("rotated-4d5e6f"), "{opened}");
+    assert!(!opened.contains(PLANTED), "{opened}");
+}
+
+#[test]
+fn an_edit_seals_what_it_names_and_leaves_the_other_envelope_alone() {
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let mut session = Session::new(&store);
+    session
+        .run(&format!(
+            "{TENANCY}
+             UNSEAL VAULT WITH 'an operator passphrase';
+             DEFINE VAULT team;
+             DEFINE FIELD token ON team TYPE string SECRET;
+             DEFINE FIELD note ON team TYPE string SECRET;
+             CREATE team:'github' = {{ token: '{PLANTED}', note: 'left alone' }};"
+        ))
+        .unwrap();
+
+    let before = stored_record(&store);
+    let untouched = before.get("note").cloned();
+    assert!(
+        matches!(untouched, Some(Value::Bytes(_))),
+        "the second secret was not sealed to begin with: {untouched:?}",
+    );
+
+    session
+        .run("UPDATE team:'github' SET token = 'rotated';")
+        .unwrap();
+
+    // Byte-identity, asserted at the backend for the reason this file's header
+    // gives: through the language there is nothing to see, because `REVEAL`
+    // answers the same plaintext whether or not the envelope was rewritten.
+    let after = stored_record(&store);
+    assert_eq!(
+        after.get("note"),
+        untouched.as_ref(),
+        "an edit that named `token` re-sealed `note`, which it could only do by \
+         opening it — and opening a secret is `REVEAL`, which records itself",
+    );
+
+    // Both still open, so "untouched" means untouched and not broken.
+    let opened = format!(
+        "{:?}",
+        session
+            .run("REVEAL token, note FROM team:'github';")
+            .unwrap()
+    );
+    assert!(
+        opened.contains("rotated") && opened.contains("left alone"),
+        "{opened}"
+    );
+}
+
+#[test]
+fn replacing_the_whole_record_still_clears_the_recipients_and_that_is_the_contrast() {
+    let store = holding();
+    let mut session = session_on(&store);
+    session
+        .run("ADD RECIPIENT 'ops' TO team:'github' KEY 0xfeed;")
+        .unwrap();
+
+    session
+        .run("UPDATE team:'github' = { login: 'boog', token: 'replaced' };")
+        .unwrap();
+
+    let after_fields = stored_record(&store);
+    let Some(Value::Object(after)) = after_fields.get(KEYS_FIELD) else {
+        panic!("no key set");
+    };
+
+    // This is what makes the test beside it mean something. A field-by-field
+    // edit keeps the recipients *because it reuses the record's data key*; a
+    // whole-record write mints a fresh one, and a wrap of the old key is then
+    // a wrap of a key nothing uses. If both forms kept the set, the reason
+    // would not be the mechanism this wave built and the other test would be
+    // passing by accident.
+    assert_eq!(
+        after.keys().collect::<Vec<_>>(),
+        vec![VAULT_RECIPIENT],
+        "a whole-record write kept a recipient wrap that can no longer open it",
+    );
+}
+
+#[test]
+fn editing_a_field_that_is_not_secret_keeps_the_record_openable() {
+    let store = holding();
+    let mut session = session_on(&store);
+
+    // `login` is declared without `SECRET`, so this edit names nothing the
+    // sealer has work for. That is the path with the worst failure available in
+    // this file: the partial write still has to put the key set back, and a
+    // version that returned early without it would leave a record whose every
+    // secret is unopenable by anyone, forever, with the write reporting `ok`.
+    session
+        .run("UPDATE team:'github' SET login = 'renamed';")
+        .unwrap();
+
+    let fields = stored_record(&store);
+    assert!(
+        matches!(fields.get(KEYS_FIELD), Some(Value::Object(_))),
+        "the edit dropped the key set: {fields:?}",
+    );
+
+    let opened = format!(
+        "{:?}",
+        session.run("REVEAL token FROM team:'github';").unwrap()
+    );
+    assert!(
+        opened.contains(PLANTED),
+        "the secret stopped opening: {opened}"
+    );
+}

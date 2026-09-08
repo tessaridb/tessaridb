@@ -637,25 +637,26 @@ fn a_bare_keyword_is_still_not_a_field_name_and_a_missing_name_still_says_so() {
 
 /// Rotating a secret, and the two ways an edit could have been spelled.
 ///
-/// # What was wrong, and why nothing caught it
+/// # What is refused, and what stopped being refused
 ///
-/// A record read back for an edit carries `#keys` — the map of data keys
-/// wrapped once per recipient — and the *ciphertext* of every sealed field.
-/// `SET` and `MERGE` compute from that record, so they carried both into the
-/// write: sealing refused `#keys` by name, and a vault holding a second secret
-/// refused earlier still, with a schema violation saying a `string` field held
-/// bytes.
+/// W134 refused every `SET` and `MERGE` on a vault, because a record read back
+/// for an edit carries `#keys` and the *ciphertext* of every sealed field, and
+/// an edit computes from that record.
 ///
-/// Both messages were about the write and neither was about the cause, and the
-/// cause is not routable-around: computing from a sealed field means opening
-/// it, opening one is `REVEAL`, and `REVEAL` records itself before it answers.
-/// So the refusal now says what the language actually offers.
+/// W135 narrowed it to the part that was always the real problem. The fields an
+/// edit *names* are supplied by the caller, so they need nothing opened; every
+/// other envelope is carried through untouched. What remains impossible is an
+/// assignment whose **expression** reads the record — that cannot be answered
+/// without opening a sealed value, and opening one is `REVEAL`, which records
+/// itself before it answers.
 ///
-/// Every existing test wrote with `CREATE` or replaced records whole, which is
-/// why a suite of twenty vault tests was green over a store where a secret
-/// could not be rotated by the verb an operator reaches for first.
+/// The refusal is produced by evaluating the assignment against **no record at
+/// all**, so the evaluator is its own detector. That matters: the alternative is
+/// walking the expression tree looking for field references, which would be
+/// incomplete by construction, and whose incompleteness would silently evaluate
+/// a secret to its ciphertext rather than refusing.
 #[test]
-fn an_edit_that_computes_from_a_vault_record_says_what_to_write_instead() {
+fn an_assignment_that_reads_a_vault_record_is_refused_and_says_why() {
     let store = store();
     let mut session = holding(&store);
     session
@@ -665,27 +666,33 @@ fn an_edit_that_computes_from_a_vault_record_says_what_to_write_instead() {
         .unwrap();
 
     for statement in [
-        "UPDATE team:'github' SET token = 'rotated';",
-        "UPDATE team:'github' MERGE { token: 'rotated' };",
+        // Reading the secret it is about to overwrite.
+        "UPDATE team:'github' SET token = token;",
+        // And reading a field that is not secret at all — the read is the
+        // problem, not the sensitivity of what was read, because the evaluator
+        // is handed no record and cannot tell the two apart. Refusing both is
+        // the honest consequence of not writing a walker that could.
+        "UPDATE team:'github' SET login = login;",
     ] {
         let refused = refusal(&mut session, statement);
-        // Pinned to the words only this refusal produces. The two it replaced —
-        // one naming `#keys`, one naming a type mismatch — would both satisfy a
-        // check that only asserted an error came back.
+        // Pinned to the words only this refusal produces. The ones it replaced —
+        // one naming `#keys`, one naming a type mismatch, one saying the record
+        // must be written whole — would each satisfy a check that only asserted
+        // an error came back.
         assert!(
-            refused.contains("written whole") && refused.contains("UPDATE"),
+            refused.contains("may not compute from it"),
             "{statement} was refused for another reason: {refused}",
         );
         assert!(
-            !refused.contains("#keys"),
-            "the refusal still names the store's own field: {refused}",
+            !refused.contains("#keys") && !refused.contains("no record here"),
+            "the refusal leaks an internal spelling: {refused}",
         );
     }
 
-    // And the form it points at works, which is what makes the message worth
-    // trusting rather than a dead end.
+    // And the ordinary edit the refusal exists to permit does work, which is
+    // what stops this test passing against a store that refuses everything.
     session
-        .run("UPDATE team:'github' = { login: 'ada', token: 'rotated' };")
+        .run("UPDATE team:'github' SET token = 'rotated';")
         .unwrap();
     let opened = format!(
         "{:?}",
@@ -698,11 +705,11 @@ fn an_edit_that_computes_from_a_vault_record_says_what_to_write_instead() {
     );
 }
 
-/// The same refusal does not reach a table that is not a vault.
+/// An ordinary table still computes from its own record.
 ///
-/// The check keys on the record carrying the store's key map, which only a
-/// vault's does — so this is the control that says the condition is the vault
-/// rather than the verb.
+/// The control for the narrowing above: `SET body = body` is refused on a vault
+/// and must keep working everywhere else, or the change would have taken a
+/// capability away from every table in the store to give one to vaults.
 #[test]
 fn an_ordinary_table_is_still_edited_field_by_field() {
     let store = store();
@@ -711,6 +718,11 @@ fn an_ordinary_table_is_still_edited_field_by_field() {
         .run("DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { body: 'first' };")
         .unwrap();
     session.run("UPDATE notes:1 SET body = 'second';").unwrap();
-    let read = format!("{:?}", session.run("SELECT body FROM notes:1;").unwrap());
-    assert!(read.contains("second"), "{read}");
+    // The half that matters: reading the record inside the assignment.
+    session.run("UPDATE notes:1 SET copy = body;").unwrap();
+    let read = format!(
+        "{:?}",
+        session.run("SELECT body, copy FROM notes:1;").unwrap()
+    );
+    assert!(read.matches("second").count() == 2, "{read}");
 }

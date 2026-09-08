@@ -1115,7 +1115,7 @@ entries were ever sealed.
 | a field nobody declared, on a write | there is no declaration to carry the `SECRET` marker, so the value would be stored in the clear |
 | `ALTER TABLE … SET SCHEMALESS` | it would remove the refusal above, one statement after the vault was declared |
 | `EXPLAIN SELECT … FROM team` | `EXPLAIN` describes a read; a read the store refuses has no plan, and printing one would describe a walk that could never start |
-| `UPDATE team:'github' SET token = …` and `MERGE` | an edit computes from the record, and a vault's record is ciphertext — see below |
+| `UPDATE team:'github' SET token = token` | an assignment on a vault may not **read** the record; naming a field to write is fine, computing from one is not — see below |
 
 Three of these are confidentiality controls and the first is not. A `SELECT` that
 reached the records would answer with the sealed envelopes, since the envelope
@@ -1127,28 +1127,43 @@ approached from two directions.
 
 #### Writing a vault record
 
-The whole record is the unit of a vault write:
+A vault record is written like any other, field by field or whole:
 
 ```
 CREATE team:'github' = { login: 'ada', token: 'the secret' };
+UPDATE team:'github' SET token = 'the rotated secret';
+UPDATE team:'github' MERGE { token: 'the rotated secret' };
 UPDATE team:'github' = { login: 'ada', token: 'the rotated secret' };
 ```
 
-`UPDATE … SET` and `UPDATE … MERGE` are **refused**, and the message names the
-form above. Both compute from the record as it stands, and a vault's record as
-it stands is the sealed envelope of every secret field — so building on it would
-mean opening the fields the edit never mentioned. Opening a secret is `REVEAL`,
-and `REVEAL` writes its audit entry before it answers; an `UPDATE` that opened
-three secrets in order to re-seal them would put plaintext in the server with
-nothing anywhere recording that it had been there.
+**The two forms differ in what happens to the recipients, and the difference is
+the reason to prefer the edit.** A field-by-field edit seals only the fields it
+names, leaves every other envelope untouched, and reuses the record's own data
+key — so every wrap made by `ADD RECIPIENT` still opens. Replacing the record
+whole mints a **fresh** data key, and the recipient entries were wrapped under
+the key it replaces, so they are cleared. Re-state them after a whole-record
+write, or rotate with `SET` and avoid the question.
 
-**A write re-seals the record under a fresh data key**, which is worth knowing
-before you rotate one: the recipient entries were wrapped under the key it
-replaces, so they open nothing afterwards and are cleared. Re-state them after
-the write. This is the same reason `ADD RECIPIENT` and `REMOVE RECIPIENT` are
-their own statements rather than an `UPDATE` of a field — and it is why the
-whole-record form is the honest one, since a `SET` that quietly dropped a
-recipient set would be a loss nobody saw.
+One thing is refused, and it is narrow:
+
+```
+UPDATE team:'github' SET token = token;      -- refused
+UPDATE team:'github' SET login = login;      -- refused, and for the same reason
+```
+
+**An assignment on a vault may not read the record.** The fields an edit names
+are the fields you supplied, so writing them needs nothing opened; but an
+expression that reads the record would have to open a sealed value to answer,
+and opening a secret is `REVEAL`, which writes its audit entry before it answers.
+An `UPDATE` that quietly opened three secrets in order to compute with them would
+put plaintext in the server with nothing anywhere recording that it had been
+there.
+
+The refusal does not inspect *which* field you read — it is produced by
+evaluating the assignment against no record at all — so it covers `login` as well
+as `token`. That is deliberate: the alternative is a rule that tries to work out
+which references are safe, and a rule like that is wrong on the case nobody
+thought of, in the direction that returns a secret.
 
 #### What `INFO` reports
 

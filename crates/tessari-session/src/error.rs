@@ -1063,13 +1063,21 @@ pub enum Error {
     ///
     /// So the message names the form that works rather than only refusing. The
     /// whole record is the unit of a vault write, and it is not a limitation
-    /// dressed up: a write re-seals under a fresh data key, so restating the
-    /// record is also what makes the recipient set's loss visible instead of
-    /// silent.
+    /// dressed up: opening a field the edit never named is `REVEAL`, and `REVEAL`
+    /// records itself before it answers — so an edit that quietly opened three
+    /// secrets in order to re-seal them would put plaintext in this process with
+    /// nothing anywhere saying it had been there.
+    ///
+    /// **Narrowed in W135 from "written whole" to this.** A field-by-field edit
+    /// no longer needs the whole record, because the fields it names are the
+    /// fields it supplies and every other envelope is carried through untouched.
+    /// What is still refused is the part that was always the real problem: an
+    /// assignment whose *expression* reads the record, which cannot be answered
+    /// without opening a sealed value.
     #[error(
-        "a vault's record is written whole, not field by field; use `UPDATE … = {{ … }}` (at {span})"
+        "an edit of a vault's record may not compute from it — write the value, or replace the record with `UPDATE … = {{ … }}` (at {span})"
     )]
-    VaultEditNeedsWholeRecord {
+    VaultEditComputesFromTheRecord {
         /// Where the statement is.
         span: Span,
     },
@@ -1363,7 +1371,13 @@ pub enum Error {
     /// mechanisms hold the invariant — the parser only reads a bare name as a
     /// route inside a condition, and `seekable` refuses to use a right-hand side
     /// that reads the record as an index bound — and neither is expressed in a
-    /// type. The alternative to this failure is answering `none`, which would be
+    /// type.
+    ///
+    /// A vault edit evaluates its assignments against no record deliberately, to
+    /// use the evaluator as its own detector for "this expression reads the
+    /// record". That path catches this variant and answers
+    /// [`Self::VaultEditComputesFromTheRecord`] instead, so the invariant above
+    /// still holds for everything a caller can actually see. The alternative to this failure is answering `none`, which would be
     /// a wrong answer rather than a refusal, and a wrong answer from a filter is
     /// the failure mode this store spends most of its rules avoiding.
     #[error("there is no record here to read a path from (at {span})")]

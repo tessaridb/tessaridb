@@ -269,19 +269,28 @@ INFO FOR AUDIT BY ada;
 INFO FOR AUDIT BY;
 --- expect: error UnexpectedToken
 
---- case: a vault record is written whole, so SET is refused with the form that works
+--- case: a vault record is edited field by field, sealing only what the edit names
 DEFINE VAULT rotations;
 DEFINE FIELD token ON rotations TYPE string SECRET;
 CREATE rotations:'one' = { token: 'first' };
 UPDATE rotations:'one' SET token = 'second';
---- expect: error VaultEditNeedsWholeRecord
+--- expect: ok
 
---- case: and MERGE, which computes from the record the same way
-UPDATE rotations:'one' MERGE { token: 'second' };
---- expect: error VaultEditNeedsWholeRecord
+--- case: and MERGE, which never read the record in the first place
+UPDATE rotations:'one' MERGE { token: 'third' };
+--- expect: ok
 
---- case: the whole record is the unit, and it rotates the secret
-UPDATE rotations:'one' = { token: 'second' };
+--- case: what stays refused is an assignment that reads the record
+UPDATE rotations:'one' SET token = token;
+--- expect: error VaultEditComputesFromTheRecord
+
+--- case: refused for a field that is not even secret, because the read is the problem
+DEFINE FIELD label ON rotations TYPE string;
+UPDATE rotations:'one' SET label = token;
+--- expect: error VaultEditComputesFromTheRecord
+
+--- case: the whole record is still a unit, and it rotates the secret
+UPDATE rotations:'one' = { token: 'fourth' };
 --- expect: ok
 
 --- case: an ordinary table is still edited field by field

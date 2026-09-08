@@ -117,14 +117,176 @@ fn seal_into_vault(
         return Ok(Value::Object(fields));
     }
 
-    // The declared type is checked HERE and nowhere else, because here is the
-    // last moment the value exists as itself. The store's own schema check runs
-    // at commit over the encoded payload, where a sealed field is bytes whatever
-    // it was declared to hold — and a follower applying the same record holds
-    // only ciphertext, so a check down there would be one the leader passes and
-    // every replica fails. A declared type on a secret field would otherwise be
-    // decoration, which is worse than not offering one.
-    for (name, kind) in &secrets {
+    declared_types_hold(&fields, &secrets, definition, address)?;
+
+    let Some(vault_key) = definition.vault_key() else {
+        return Err(Error::VaultNoKey {
+            table: definition.name.clone(),
+        });
+    };
+    let table_scope = vault_scope(definition);
+    let record_scope = record_scope(address);
+
+    transaction.store().vault().with_master(|master| {
+        let vault_key = keys::unwrap(master, Level::Vault, &table_scope, vault_key)?;
+        let (wrapped, data_key) = keys::wrap_fresh(&vault_key, Level::Data, &record_scope)?;
+        seal_each(
+            &mut fields,
+            &secrets,
+            definition,
+            &record_scope,
+            &data_key,
+            wrapped.key_id,
+        )?;
+        fields.insert(KEYS_FIELD.to_owned(), key_set(&wrapped));
+        Ok(())
+    })?;
+
+    Ok(Value::Object(fields))
+}
+
+/// Seal the fields a partial edit named, under the key the record already has.
+///
+/// # What this is for, and what it is not
+///
+/// [`seal_secrets`] writes a record whole: it mints a fresh data key and a fresh
+/// key set, which is right for a create and for a replacement, and wrong for an
+/// edit — a fresh data key invalidates every wrap made for a recipient, so
+/// rotating one field with `seal_secrets` silently discards everybody the record
+/// was shared with.
+///
+/// This is the edit's path. The data key is the record's own, opened from the
+/// key set the caller read out of the store, and the key set is written back
+/// unchanged — so every recipient wrap stays valid, because the key those wraps
+/// wrap has not moved.
+///
+/// # Which fields are plaintext, and why nothing has to guess
+///
+/// `named` is the set the edit assigned. Everything else in `payload` is the
+/// stored envelope, carried through untouched. That is the whole reason this can
+/// exist without a format change: the sealing path never has to tell a sealed
+/// value from a plaintext one — a question with no sound answer, since a
+/// `TYPE bytes SECRET` field's plaintext is bytes — because the layer that knows
+/// says so.
+///
+/// # The key set is an argument and not a field of `payload`, deliberately
+///
+/// A payload carrying [`KEYS_FIELD`] is refused here exactly as it is on the
+/// whole-record path, because that refusal is the control that stops a caller
+/// injecting a key map. The key set therefore arrives as its own argument, read
+/// from the stored record — so there is no shape of this call in which caller
+/// input can reach the key set, rather than a comment asking the next caller to
+/// be careful.
+///
+/// # Errors
+///
+/// The errors of [`seal_secrets`], plus [`Error::VaultNoKey`] when `keys` is not
+/// a key set this store wrote.
+pub fn reseal_named(
+    transaction: &mut Transaction<'_>,
+    address: &RecordAddress,
+    payload: Value,
+    keys_of_record: &Value,
+    named: &std::collections::BTreeSet<String>,
+) -> Result<Value> {
+    let Some(definition) = Catalog::new(transaction).table(address.table)? else {
+        return Ok(payload);
+    };
+    if !definition.is_vault() {
+        return Ok(payload);
+    }
+    let Value::Object(mut fields) = payload else {
+        return Err(Error::VaultNotAnObject {
+            table: definition.name.clone(),
+        });
+    };
+    if fields.contains_key(KEYS_FIELD) {
+        return Err(Error::VaultReservedField { field: KEYS_FIELD });
+    }
+
+    // Declared secret, present in the write, AND named by the edit. The third
+    // term is what makes this partial: a secret field the edit left alone is
+    // already an envelope in `fields`, and sealing it again would seal the
+    // ciphertext.
+    let secrets: Vec<(String, tessari_types::FieldKind)> = Catalog::new(transaction)
+        .fields_on(definition.id)?
+        .into_iter()
+        .filter(|field| {
+            field.secret && named.contains(&field.name) && fields.contains_key(&field.name)
+        })
+        .map(|field| (field.name, field.kind))
+        .collect();
+
+    if secrets.is_empty() {
+        // Nothing to seal, but the key set still has to go back on — the record
+        // is a vault record and a write that dropped its key set would leave
+        // every sealed field it carries unopenable.
+        fields.insert(KEYS_FIELD.to_owned(), keys_of_record.clone());
+        return Ok(Value::Object(fields));
+    }
+    declared_types_hold(&fields, &secrets, &definition, address)?;
+
+    let record_scope = record_scope(address);
+    let (data_key, key_id) = data_key_of(transaction, address, &definition, keys_of_record)?;
+    seal_each(
+        &mut fields,
+        &secrets,
+        &definition,
+        &record_scope,
+        &data_key,
+        key_id,
+    )?;
+    fields.insert(KEYS_FIELD.to_owned(), keys_of_record.clone());
+    Ok(Value::Object(fields))
+}
+
+/// Replace each named field with its sealed envelope.
+///
+/// The nonce is drawn fresh per call by [`tessari_vault::envelope::seal`], which
+/// is what makes reusing one data key across a record's edits safe: the bound
+/// that matters is the number of nonces drawn under one key, and a record edited
+/// even millions of times stays astronomically short of the birthday bound for a
+/// ninety-six bit random nonce.
+fn seal_each(
+    fields: &mut BTreeMap<String, Value>,
+    secrets: &[(String, tessari_types::FieldKind)],
+    definition: &TableDefinition,
+    record_scope: &[u8],
+    data_key: &SecretBytes,
+    key_id: tessari_vault::KeyId,
+) -> Result<()> {
+    for (name, _) in secrets {
+        let plaintext = fields
+            .get(name)
+            .map(|value| tessari_encoding::encode_payload(value).into_bytes())
+            .unwrap_or_default();
+        let sealed = tessari_vault::envelope::seal(
+            data_key,
+            key_id,
+            &field_binding(definition, record_scope, name),
+            &plaintext,
+        )?;
+        fields.insert(name.clone(), Value::Bytes(sealed));
+    }
+    Ok(())
+}
+
+/// Check every secret field against the type it was declared to hold.
+///
+/// Checked HERE and nowhere else, because here is the last moment the value
+/// exists as itself. The store's own schema check runs at commit over the
+/// encoded payload, where a sealed field is bytes whatever it was declared to
+/// hold — and a follower applying the same record holds only ciphertext, so a
+/// check down there would be one the leader passes and every replica fails. A
+/// declared type on a secret field would otherwise be decoration, which is worse
+/// than not offering one.
+fn declared_types_hold(
+    fields: &BTreeMap<String, Value>,
+    secrets: &[(String, tessari_types::FieldKind)],
+    definition: &TableDefinition,
+    address: &RecordAddress,
+) -> Result<()> {
+    for (name, kind) in secrets {
         let held = fields.get(name).unwrap_or(&Value::None);
         if !kind.accepts(held) {
             return Err(Error::SchemaViolation {
@@ -139,36 +301,48 @@ fn seal_into_vault(
             });
         }
     }
+    Ok(())
+}
 
+/// Open a record's data key from a key set, answering the identifier with it.
+///
+/// The identifier is what [`seal_each`] needs and what [`open_data_key`] has no
+/// use for, which is why this sits underneath both rather than beside them.
+fn data_key_of(
+    transaction: &Transaction<'_>,
+    address: &RecordAddress,
+    definition: &TableDefinition,
+    keys_of_record: &Value,
+) -> Result<(SecretBytes, tessari_vault::KeyId)> {
     let Some(vault_key) = definition.vault_key() else {
         return Err(Error::VaultNoKey {
             table: definition.name.clone(),
         });
     };
+    let Value::Object(recipients) = keys_of_record else {
+        return Err(Error::VaultNoKey {
+            table: definition.name.clone(),
+        });
+    };
+    let Some(Value::Bytes(sealed)) = recipients.get(VAULT_RECIPIENT) else {
+        return Err(Error::VaultNoKey {
+            table: definition.name.clone(),
+        });
+    };
+
     let table_scope = vault_scope(definition);
     let record_scope = record_scope(address);
-
     transaction.store().vault().with_master(|master| {
         let vault_key = keys::unwrap(master, Level::Vault, &table_scope, vault_key)?;
-        let (wrapped, data_key) = keys::wrap_fresh(&vault_key, Level::Data, &record_scope)?;
-        for (name, _) in &secrets {
-            let plaintext = fields
-                .get(name)
-                .map(|value| tessari_encoding::encode_payload(value).into_bytes())
-                .unwrap_or_default();
-            let sealed = tessari_vault::envelope::seal(
-                &data_key,
-                wrapped.key_id,
-                &field_binding(definition, &record_scope, name),
-                &plaintext,
-            )?;
-            fields.insert(name.clone(), Value::Bytes(sealed));
-        }
-        fields.insert(KEYS_FIELD.to_owned(), key_set(&wrapped));
-        Ok(())
-    })?;
-
-    Ok(Value::Object(fields))
+        // The identifier in the header names the data key; `unwrap` proves it by
+        // opening, so the copy here is only what the type needs.
+        let wrapped = Wrapped {
+            key_id: tessari_vault::envelope::key_id_of(sealed)?,
+            sealed: sealed.clone(),
+        };
+        let opened = keys::unwrap(&vault_key, Level::Data, &record_scope, &wrapped)?;
+        Ok((opened, wrapped.key_id))
+    })
 }
 
 /// The recipient-keyed set of wrapped data keys a record carries.
@@ -259,41 +433,14 @@ pub fn open_data_key(
     transaction: &Transaction<'_>,
     address: &RecordAddress,
     definition: &TableDefinition,
-    fields: &std::collections::BTreeMap<String, Value>,
+    fields: &BTreeMap<String, Value>,
 ) -> Result<SecretBytes> {
-    let Some(vault_key) = definition.vault_key() else {
+    let Some(keys_of_record) = fields.get(KEYS_FIELD) else {
         return Err(Error::VaultNoKey {
             table: definition.name.clone(),
         });
     };
-    let Some(Value::Object(recipients)) = fields.get(KEYS_FIELD) else {
-        return Err(Error::VaultNoKey {
-            table: definition.name.clone(),
-        });
-    };
-    let Some(Value::Bytes(sealed)) = recipients.get(VAULT_RECIPIENT) else {
-        return Err(Error::VaultNoKey {
-            table: definition.name.clone(),
-        });
-    };
-
-    let table_scope = vault_scope(definition);
-    let record_scope = record_scope(address);
-    transaction.store().vault().with_master(|master| {
-        let vault_key = keys::unwrap(master, Level::Vault, &table_scope, vault_key)?;
-        // The identifier in the header names the data key; `unwrap` proves it by
-        // opening, so the copy here is only what the type needs.
-        let wrapped = Wrapped {
-            key_id: tessari_vault::envelope::key_id_of(sealed)?,
-            sealed: sealed.clone(),
-        };
-        Ok(keys::unwrap(
-            &vault_key,
-            Level::Data,
-            &record_scope,
-            &wrapped,
-        )?)
-    })
+    data_key_of(transaction, address, definition, keys_of_record).map(|(key, _)| key)
 }
 
 /// Open one sealed field, given the record's data key.

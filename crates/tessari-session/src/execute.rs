@@ -437,13 +437,21 @@ impl Session<'_> {
                     });
                 };
                 let before = decode_payload(&existing)?;
-                let payload = self.applied(transaction, edit, before.clone(), target.span)?;
+                let (payload, partial) =
+                    self.applied(transaction, edit, before.clone(), target.span)?;
                 // One rule rather than two: the result of either shape is a
                 // record being written, so `REQUIRED` + `DEFAULT` keeps meaning
                 // "this field always holds a value" even when a caller sets one
                 // to `none`.
-                let payload = self.with_defaults(transaction, address.table, payload)?;
-                self.put_record(transaction, address, payload.clone(), span)?;
+                let (payload, partial) =
+                    self.defaults_over(transaction, address.table, payload, partial)?;
+                self.put_record_sealing(
+                    transaction,
+                    address,
+                    payload.clone(),
+                    partial.as_ref(),
+                    span,
+                )?;
                 Ok(answered(*answer, before, payload))
             }
             // Neither `CREATE`'s "it must be absent" nor `UPDATE`'s "it must be
@@ -482,9 +490,16 @@ impl Session<'_> {
                     Some(held) => decode_payload(&held)?,
                     None => Value::Object(std::collections::BTreeMap::new()),
                 };
-                let payload = self.applied(transaction, edit, existing, target.span)?;
-                let payload = self.with_defaults(transaction, address.table, payload)?;
-                self.put_record(transaction, address, payload.clone(), span)?;
+                let (payload, partial) = self.applied(transaction, edit, existing, target.span)?;
+                let (payload, partial) =
+                    self.defaults_over(transaction, address.table, payload, partial)?;
+                self.put_record_sealing(
+                    transaction,
+                    address,
+                    payload.clone(),
+                    partial.as_ref(),
+                    span,
+                )?;
                 Ok(answered(*answer, before, payload))
             }
             // A key-value write replaces whatever was there, which is why it is
@@ -706,6 +721,25 @@ impl Session<'_> {
         payload: Value,
         span: Span,
     ) -> Result<()> {
+        self.put_record_sealing(transaction, address, payload, None, span)
+    }
+
+    /// The same write, told which fields a partial vault edit supplied.
+    ///
+    /// `None` is every caller but the two edit paths, and means "seal this
+    /// record whole": mint a data key, seal every secret field, write a fresh
+    /// key set. `Some` means the payload already carries the record's untouched
+    /// envelopes and only the named fields are plaintext, so the record's own
+    /// data key and key set are reused — which is what keeps a recipient's wrap
+    /// valid across an edit.
+    fn put_record_sealing(
+        &self,
+        transaction: &mut Transaction<'_>,
+        address: RecordAddress,
+        payload: Value,
+        partial: Option<&PartialSeal>,
+        span: Span,
+    ) -> Result<()> {
         let payload = on_the_grid(payload, span)?;
         // Sealing sits between the geometry boundary and the encoder, and the
         // order is the point: `on_the_grid` transforms values, sealing replaces
@@ -713,7 +747,16 @@ impl Session<'_> {
         // the difference — which is what closes the index, the feed, the log and
         // the backup in one move. A vault write reaching the encoder unsealed is
         // the failure this placement exists to make unreachable.
-        let payload = tessari_storage::seal_secrets(transaction, &address, payload)?;
+        let payload = match partial {
+            Some(edit) => tessari_storage::reseal_named(
+                transaction,
+                &address,
+                payload,
+                &edit.keys,
+                &edit.named,
+            )?,
+            None => tessari_storage::seal_secrets(transaction, &address, payload)?,
+        };
         transaction.put(address, encode_payload(&payload).into_bytes());
         Ok(())
     }
@@ -2718,6 +2761,44 @@ impl Session<'_> {
     /// Only fields the record leaves absent are filled. A record that supplies
     /// `null` supplied a value, and a default replacing it would make `null`
     /// unwritable on any field that has one.
+    /// Fold defaults in, and tell a partial vault edit about anything they added.
+    ///
+    /// A default fires only for a declared field the payload is missing, so on an
+    /// edit it fires only for a field declared *after* the record was written —
+    /// and the value it writes is plaintext. If such a field is a secret and the
+    /// reseal never hears its name, it is carried past the sealer and reaches the
+    /// encoder in the clear, which is the one outcome this whole module exists to
+    /// make unreachable.
+    ///
+    /// So the names the defaults introduce join the named set. That is sound for
+    /// the same reason the rest of the set is: they were produced here, not read
+    /// back out of the store, so they are plaintext by construction rather than
+    /// by inspection.
+    fn defaults_over(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: TableId,
+        payload: Value,
+        partial: Option<PartialSeal>,
+    ) -> Result<(Value, Option<PartialSeal>)> {
+        let before: Vec<String> = match (&partial, &payload) {
+            (Some(_), Value::Object(fields)) => fields.keys().cloned().collect(),
+            _ => Vec::new(),
+        };
+        let payload = self.with_defaults(transaction, table, payload)?;
+        let Some(mut edit) = partial else {
+            return Ok((payload, None));
+        };
+        if let Value::Object(fields) = &payload {
+            for name in fields.keys() {
+                if !before.contains(name) {
+                    edit.named.insert(name.clone());
+                }
+            }
+        }
+        Ok((payload, Some(edit)))
+    }
+
     fn with_defaults(
         &self,
         transaction: &mut Transaction<'_>,
@@ -2843,7 +2924,7 @@ impl Session<'_> {
         edit: &Edit,
         existing: Value,
         span: Span,
-    ) -> Result<Value> {
+    ) -> Result<(Value, Option<PartialSeal>)> {
         // An edit that computes from the record cannot compute from a vault's,
         // and this is where that is said. `SET` and `MERGE` build on `existing`;
         // in a vault `existing` holds the store's own `#keys` map and the
@@ -2861,27 +2942,47 @@ impl Session<'_> {
         //
         // So the whole record is the unit of a vault write, which is what
         // `UPDATE … = { … }` already is.
-        if matches!(edit, Edit::Fields(_) | Edit::Merge(_))
-            && matches!(&existing, Value::Object(fields) if fields.contains_key(tessari_storage::KEYS_FIELD))
-        {
-            return Err(Error::VaultEditNeedsWholeRecord { span });
-        }
+        let sealed_record = matches!(
+            &existing,
+            Value::Object(fields) if fields.contains_key(tessari_storage::KEYS_FIELD)
+        );
         match edit {
             // Replacing the whole record is a write like a create, so the
-            // defaults apply to it the same way.
-            Edit::Whole(value) => self.evaluate(transaction, value),
-            Edit::Fields(assignments) => self.edited(transaction, existing, assignments, span),
+            // defaults apply to it the same way — and so does the fresh data
+            // key, which is why `= { … }` still clears the recipient set while
+            // the two edits below no longer do.
+            Edit::Whole(value) => Ok((self.evaluate(transaction, value)?, None)),
+            Edit::Fields(assignments) if sealed_record => {
+                let (base, keys) = without_the_key_set(existing);
+                let named = assignments
+                    .iter()
+                    .map(|assignment| assignment.route.path.root().to_owned())
+                    .collect();
+                let payload = self.edited(transaction, base, assignments, span, true)?;
+                Ok((payload, Some(PartialSeal { keys, named })))
+            }
+            Edit::Fields(assignments) => Ok((
+                self.edited(transaction, existing, assignments, span, false)?,
+                None,
+            )),
             Edit::Merge(value) => {
                 // The value position, like every other object literal — see
-                // `Edit::Merge`. Computing from the record is `SET`'s job.
+                // `Edit::Merge`. Computing from the record is `SET`'s job, which
+                // is also why `MERGE` needs no restriction on a vault: it never
+                // reads the record in the first place.
                 let incoming = self.evaluate(transaction, value)?;
-                let Value::Object(_) = incoming else {
+                let Value::Object(supplied) = &incoming else {
                     return Err(Error::MergeIsNotAnObject {
                         found: incoming.type_name(),
                         span,
                     });
                 };
-                Ok(merged(existing, incoming))
+                if sealed_record {
+                    let named = supplied.keys().cloned().collect();
+                    let (base, keys) = without_the_key_set(existing);
+                    return Ok((merged(base, incoming), Some(PartialSeal { keys, named })));
+                }
+                Ok((merged(existing, incoming), None))
             }
         }
     }
@@ -2892,15 +2993,31 @@ impl Session<'_> {
         existing: Value,
         assignments: &[Assignment],
         span: Span,
+        sealed: bool,
     ) -> Result<Value> {
         let mut record = existing;
         let mut wanted = Vec::with_capacity(assignments.len());
         for assignment in assignments {
-            wanted.push(self.evaluate_in(
-                transaction,
-                &assignment.value,
-                crate::evaluate::Scope::of(&record),
-            )?);
+            // On a vault, the assignment is evaluated against **no record**, and
+            // the evaluator is then its own detector for an expression that
+            // reads one. The alternative — walking the expression looking for
+            // field references — is the piece that would be incomplete by
+            // construction, and its incompleteness would evaluate a secret to
+            // its ciphertext rather than refusing.
+            let scope = if sealed {
+                crate::evaluate::Scope::none()
+            } else {
+                crate::evaluate::Scope::of(&record)
+            };
+            let held = self
+                .evaluate_in(transaction, &assignment.value, scope)
+                .map_err(|error| match error {
+                    Error::NoRecordInScope { .. } if sealed => {
+                        Error::VaultEditComputesFromTheRecord { span }
+                    }
+                    other => other,
+                })?;
+            wanted.push(held);
         }
 
         if !matches!(record, Value::Object(_)) {
@@ -2994,6 +3111,34 @@ fn answered(answer: Answer, before: Value, after: Value) -> Outcome {
         Answer::Before => Outcome::Value(before),
         Answer::After => Outcome::Value(after),
     }
+}
+
+/// What a partial vault edit hands the sealer.
+///
+/// Two facts the storage layer cannot work out for itself: the record's own key
+/// set, read from the store rather than from anything a caller wrote, and the
+/// names the edit supplied. Everything not named is already an envelope.
+struct PartialSeal {
+    /// The record's `#keys`, exactly as it was stored.
+    keys: Value,
+    /// The fields this edit wrote, and therefore the only ones to seal.
+    named: std::collections::BTreeSet<String>,
+}
+
+/// Split a stored vault record into the part an edit works on and its key set.
+///
+/// The key set comes off because the payload an edit produces goes back through
+/// the sealer, and the sealer refuses a payload carrying one — that refusal is
+/// what stops a caller injecting a key map, and it is not weakened for the edit
+/// path. The set travels beside the payload instead, in [`PartialSeal`].
+fn without_the_key_set(record: Value) -> (Value, Value) {
+    let Value::Object(mut fields) = record else {
+        return (record, Value::None);
+    };
+    let keys = fields
+        .remove(tessari_storage::KEYS_FIELD)
+        .unwrap_or(Value::None);
+    (Value::Object(fields), keys)
 }
 
 /// Two records folded into one: `incoming` over `existing`.
