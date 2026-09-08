@@ -367,6 +367,15 @@ depends on context. A name that is not a word at all is written as text:
 `{ 'two words': 1 }`. Everywhere else — tables, spaces, indexes, databases — a
 reserved word is not available as a name.
 
+**A field is declared under that same quoted spelling.** `DEFINE FIELD
+'password' ON logins TYPE string SECRET` declares a field whose name is a
+reserved word, and `ALTER TABLE … ADD FIELD`, `ALTER FIELD`, `DROP FIELD` and
+`REVEAL` all accept it the same way. Without it a record could hold a field the
+schema could never declare — which matters most in a vault, because a vault is
+strict, so a field nobody can declare is a field it cannot hold at all. The
+**unquoted** form is still refused: `DEFINE FIELD password ON logins …` reads
+`PASSWORD` as the keyword it is.
+
 ## 4. Definition statements
 
 ```
@@ -1013,6 +1022,352 @@ It refuses a table that is not a geo store rather than dropping it, because the
 two words name different things even where they would remove the same rows — and
 a `DROP GEO` that quietly removed an ordinary table would be a typo with the
 blast radius of a table.
+
+### A vault, when the values must not be readable from the store
+
+```
+DEFINE VAULT team;
+DEFINE FIELD login ON team TYPE string;
+DEFINE FIELD token ON team TYPE string SECRET;
+```
+
+A vault is a table whose fields marked `SECRET` are encrypted before the record
+is written. Unlike the other declared stores, it is not a desugaring: there is no
+combination of `DEFINE TABLE` and clauses that produces one, because what makes a
+vault a vault is a **key**, minted when the vault is declared and wrapped under
+the store's master key.
+
+That is why it is the one declaration that needs the store unsealed. A vault
+whose key was left for later would refuse every write while `INFO` reported it
+ready.
+
+A vault is also the one store that is **strict** without being asked. Every other
+declared store is schemaless unless you say otherwise; a vault refuses a field
+nobody declared, and refuses to be made schemaless afterwards. The reason is that
+what seals a field is the `SECRET` marker on its declaration, so a field nobody
+declared is a field nothing seals — it would be accepted and written in the
+clear, beside the sealed ones, in the store whose whole promise is that it holds
+nothing readable.
+
+```
+CREATE team:'gitlab' = { login: 'boog', recovery: 'hunter2' };
+-- refused: `recovery` is not declared on `team`
+
+ALTER TABLE team SET SCHEMALESS;
+-- refused: a field nobody declared is a field nothing seals
+```
+
+#### Unsealing, and what it means
+
+```
+UNSEAL VAULT WITH 'the operator passphrase';
+SEAL VAULT;
+```
+
+The master key exists in memory between those two statements and nowhere else. It
+is never written to disk unwrapped, never replicated, and never included in a
+backup — so a second node holding every byte of this one's log holds nothing that
+opens a secret.
+
+It is also **per process**. A restart seals the store: nothing here survives it,
+and a node that comes back cannot open anything, for anybody, until a passphrase
+is presented again. That makes an unattended restart impossible, which is a real
+operational cost and is stated rather than discovered.
+
+The passphrase arrives **in the statement**, as a quoted string. It is not an
+expression, not a parameter and not a name — an expression would put a secret
+through the evaluator, where it could be concatenated into a message or returned
+by the very statement that read it.
+
+On a store that has never held a vault there is no root record, and the first
+`UNSEAL` creates one. It answers `initialised` rather than `unsealed` when it
+does, and the difference matters: there is no statement that replaces a root once
+written, so a mistyped passphrase on the first unseal is the passphrase.
+
+#### Reading a secret
+
+```
+REVEAL token FROM team:'github';
+REVEAL * FROM team:'github';
+```
+
+`REVEAL` is the only statement that turns a sealed value back into a plaintext.
+It names one record, takes no `WHERE` and no `ORDER BY`, and answers with the
+secret fields it was asked for — `*` meaning every sealed field, and never the
+ordinary ones beside them.
+
+The absent clauses are the feature rather than a simplification. A filter over a
+secret is an oracle that answers one bit per statement, and an ordering is the
+same oracle more slowly.
+
+A field that is not declared `SECRET` is refused rather than returned in the
+clear, because a caller reading `REVEAL`'s answer has no way to tell which
+entries were ever sealed.
+
+#### What a vault refuses
+
+| statement | refused because |
+|---|---|
+| `SELECT … FROM team` | a vault is not read by `SELECT`; the message names `REVEAL` |
+| `DEFINE INDEX … ON team FIELDS token` | an index over a secret field is a searchable copy of it |
+| `DEFINE FIELD … SECRET` on an ordinary table | there is no key to seal it with, so the value would be written in the clear |
+| `ALTER FIELD … SECRET` | turning the marker on leaves existing records in the clear and turning it off leaves them unreadable |
+| a field nobody declared, on a write | there is no declaration to carry the `SECRET` marker, so the value would be stored in the clear |
+| `ALTER TABLE … SET SCHEMALESS` | it would remove the refusal above, one statement after the vault was declared |
+| `EXPLAIN SELECT … FROM team` | `EXPLAIN` describes a read; a read the store refuses has no plan, and printing one would describe a walk that could never start |
+| `UPDATE team:'github' SET token = token` | an assignment on a vault may not **read** the record; naming a field to write is fine, computing from one is not — see below |
+
+Three of these are confidentiality controls and the first is not. A `SELECT` that
+reached the records would answer with the sealed envelopes, since the envelope
+*is* the stored value; it is refused so the language means something rather than
+to keep a secret. The index refusal, the undeclared-field refusal and the
+schemaless refusal each stop a real plaintext from being written: an index over a
+secret field is a searchable copy of it, and the last two are the same hole
+approached from two directions.
+
+#### Writing a vault record
+
+A vault record is written like any other, field by field or whole:
+
+```
+CREATE team:'github' = { login: 'ada', token: 'the secret' };
+UPDATE team:'github' SET token = 'the rotated secret';
+UPDATE team:'github' MERGE { token: 'the rotated secret' };
+UPDATE team:'github' = { login: 'ada', token: 'the rotated secret' };
+```
+
+**The two forms differ in what happens to the recipients, and the difference is
+the reason to prefer the edit.** A field-by-field edit seals only the fields it
+names, leaves every other envelope untouched, and reuses the record's own data
+key — so every wrap made by `ADD RECIPIENT` still opens. Replacing the record
+whole mints a **fresh** data key, and the recipient entries were wrapped under
+the key it replaces, so they are cleared. Re-state them after a whole-record
+write, or rotate with `SET` and avoid the question.
+
+One thing is refused, and it is narrow:
+
+```
+UPDATE team:'github' SET token = token;      -- refused
+UPDATE team:'github' SET login = login;      -- refused, and for the same reason
+```
+
+**An assignment on a vault may not read the record.** The fields an edit names
+are the fields you supplied, so writing them needs nothing opened; but an
+expression that reads the record would have to open a sealed value to answer,
+and opening a secret is `REVEAL`, which writes its audit entry before it answers.
+An `UPDATE` that quietly opened three secrets in order to compute with them would
+put plaintext in the server with nothing anywhere recording that it had been
+there.
+
+The refusal does not inspect *which* field you read — it is produced by
+evaluating the assignment against no record at all — so it covers `login` as well
+as `token`. That is deliberate: the alternative is a rule that tries to work out
+which references are safe, and a rule like that is wrong on the case nobody
+thought of, in the direction that returns a secret.
+
+#### What `INFO` reports
+
+```
+INFO FOR VAULT team;
+```
+
+Each declared field, its type, and whether it is `SECRET`. It carries no length,
+no fingerprint and no key identifier for a sealed field — each would be an oracle
+that answers slowly rather than not at all.
+
+`INFO FOR TABLE team` answers too, and reports `vault: true` beside the other
+markers. It matters because the declaration it renders back says `DEFINE VAULT`
+and keeps the `SECRET` word on every field that carries it — a declaration
+missing either would restore a plain table, and a schema round trip would unseal
+what it was describing. The key is not in it: re-running the declaration mints a
+fresh one, so what comes back is an empty vault rather than a second way into
+the first.
+
+#### Who else may open a record
+
+A record in a vault carries a set of **recipients** — the parties that may one
+day open it. Adding one is a write:
+
+```
+ADD RECIPIENT 'ada@example.com' TO team:'github' KEY 0xdeadbeef;
+REMOVE RECIPIENT 'ada@example.com' FROM team:'github';
+INFO FOR RECIPIENTS OF team:'github';
+```
+
+**The store interprets neither half.** The name is text it keeps and hands back;
+the material is a value it keeps and hands back. What a recipient's material
+*is* — a data key wrapped under somebody's public key, a handle into your own key
+service, a capability your application issued — is a question this store
+deliberately cannot answer, because answering it would mean holding the second
+key hierarchy that decides it. The set is the foundation; the sharing scheme is
+yours.
+
+The material is an expression, so a client that did its wrapping elsewhere binds
+the bytes rather than formatting them into the statement:
+
+```
+ADD RECIPIENT $who TO team:'github' KEY $wrapped;
+```
+
+Four things this pair does, each for a reason worth knowing before you rely on
+it:
+
+- **Neither statement needs an unsealed store.** Nothing here unwraps a key or
+  decrypts anything, and revoking is the operation you least want to depend on an
+  operator being present to perform.
+- **Adding or removing a recipient changes nothing else.** Every sealed field
+  keeps the exact bytes it had. A write through the ordinary path would re-seal
+  the record under a fresh key, which is why this is its own statement rather
+  than an `UPDATE` of a field.
+- **A name already in the set is refused, not replaced.** Overwriting would
+  destroy the only copy of whatever that entry held, silently and in one
+  statement.
+- **Removing a name that is not there is refused, not answered `ok`.** A
+  revocation that matches nothing and reports success leaves you believing a
+  party was removed while their entry is still on the record — and nothing
+  anywhere is in an error state afterwards.
+
+`#vault` is the store's own entry, holding the record's data key wrapped under
+the vault's. It is not a recipient: it cannot be added, it cannot be removed, and
+it is not among the names `INFO` reports.
+
+Reading the set needs the same grant as reading the vault. Holding a grant and
+holding a key remain separate powers — the set says who could open a record, not
+who may address it.
+
+#### Every read is recorded, or refused
+
+`REVEAL` writes a record of itself **before** its answer leaves, and a read that
+cannot be recorded is **refused** rather than served. Both halves matter, and
+neither is visible when things are working:
+
+- Recorded afterwards, any crash, timeout or partial write between the
+  decryption and the log produces a secret release with no trace — and the two
+  orderings look identical whenever nothing fails.
+- Served when the trail is broken, the store's accountability becomes something
+  an attacker switches off first. The cost of the other choice is real and worth
+  planning for: a broken trail is an outage of every `REVEAL`.
+
+The record carries **who asked, which vault, which record, which field names,
+and whether it was served** — never a value, a fragment of one, or a length that
+discloses one. Refusals are recorded too, because a denial is the first sign of
+somebody probing what exists.
+
+Three limits, stated rather than discovered later:
+
+- **The built-in trail lives in this store**, so it shares a failure domain and
+  an access path with the thing it audits. An independent device is what a
+  deployment adds; the engine exposes the seam for one, and every installed
+  device must also succeed for a read to be served.
+- **There is no tamper-evident chain.** Chaining would serialise every read
+  through one key, and what it buys is evidence against an attacker who already
+  holds the backend — which is outside what a vault defends against anyway.
+- **The trail is scanned, not indexed.** `INFO FOR AUDIT` reads it end to end,
+  which is the honest shape at this size and stops being one long before a busy
+  store's trail does. The limit is named rather than designed around: an index
+  over the trail is a later addition, and pretending the scan is a plan would be
+  worse than saying it is not.
+
+Reading the trail is a statement:
+
+```
+INFO FOR AUDIT;
+INFO FOR AUDIT BY 'ada';
+```
+
+The first answers with every recorded read, oldest first. The second narrows to
+one actor, which is the shape the question is actually asked in — *this
+credential was compromised; what did it open, and what has to be rotated now?*
+The name may be quoted or bare, so a credential named after a keyword is still
+one you can ask about.
+
+**It is answered only to a caller who administers the whole store**, and the
+reason is where the trail lives rather than how sensitive it is. A read is
+recorded before anybody knows whose tenancy it belonged to, so the trail is held
+store-wide and there is no tenancy to scope an answer by. The demand is
+therefore `govern` over the store itself — strictly narrower than any tenancy
+grant, and what stops one namespace's owner reading another namespace's reads.
+Like every other `INFO`, it reports what was read and never what was returned.
+
+#### What a vault does not defend against
+
+A boundary nobody states is a boundary everybody assumes is covered, so here is
+this one. A vault defends the **stored bytes**: an attacker who obtains the whole
+storage backend, a backup file, a snapshot or a replica gains no secret material,
+a sealed or restarted node opens nothing, a ciphertext moved to another field or
+record fails its binding, and a dropped vault is unopenable in every copy that
+will ever be restored.
+
+Eight things it does not defend against, listed because each of them is a
+question worth answering somewhere else in your design:
+
+1. **The memory of a running, unsealed node.** The server decrypts, so while it
+   is unsealed the key and the plaintext are in its address space. This is the
+   direct cost of having the store do the decryption at all.
+2. **Privileged code on the host.** Anything that can read that process can read
+   what it holds.
+3. **A malicious operator** — the party who performs the unseal is the party who
+   can open what the unsealing opens.
+4. **A client already holding a valid credential** for a vault it may reach. The
+   store cannot distinguish that client from the person it belongs to.
+5. **Existence, size, count and access patterns.** Record identities are keys and
+   keys are not encrypted, so a vault holding one record named `aws-root` has
+   said something without a byte being decrypted.
+6. **Timing.**
+7. **Issuing secrets.** A vault holds material you put there. It does not mint
+   short-lived credentials, sign certificates, or encrypt on your behalf as a
+   service, and it is not going to — those are a different product living behind
+   a different threat model, and building them here would quietly turn a store
+   that can refuse to answer into infrastructure that must always answer.
+8. **An attacker who can *write* to the storage backend.** Note the difference
+   from the paragraph above, which is about one who can *read* it: writing is
+   the stronger power and it buys a rollback. Restore one record's stored bytes
+   from an older copy and the secret that was rotated out is live again, because
+   the envelope binds the table, the record and the field — everything that
+   identifies *which* value this is, and nothing that identifies *when*.
+
+   A version bound into the envelope would not close it, and this is worth
+   stating because it is the fix that suggests itself: any version the opening
+   side can read from the record is restored along with the ciphertext it was
+   meant to police, so both sides of the comparison move together. Closing it
+   needs a counter the attacker cannot roll back, which means state outside the
+   store — and an embedded engine whose only durable state is the backend under
+   attack has none to offer. The store could serialise every sealed write
+   through one shared counter row instead, and will not: that trades the write
+   concurrency of every vault for a defence against an attacker who already
+   holds write access to the disk.
+
+   What follows for you operationally is short. **Rotate at the source**, not
+   only in the vault — a credential the issuing system has revoked is dead
+   whichever copy of the ciphertext comes back — and treat backend write access
+   as equivalent to holding the secrets.
+
+#### Removing a vault
+
+```
+DROP VAULT team;
+```
+
+This destroys the vault's key along with its records. In **this store** the key
+is gone permanently, and every copy taken from this point on — backup, snapshot,
+replica — is ciphertext under a key that exists nowhere.
+
+That is what makes it a **deletion** rather than a removal, and it is the only
+deletion claim a store can honestly make: deleting rows is a statement about the
+live table and says nothing about the data.
+
+**Where the deletion stops, stated plainly because it is the part that matters
+operationally.** A vault's key lives in its declaration, the declaration travels
+in the log, and a backup *is* the log — so a backup taken **before** the drop
+restores a vault that opens, given the passphrase. This is the same mechanism
+that lets a replica serve a vault at all, and it cannot be removed from one side
+without removing it from the other.
+
+So destroying a secret is two acts, not one: drop the vault, and **expire the
+copies that predate the drop**. A retention policy that keeps ninety days of
+nightly backups keeps ninety days of the secret you just destroyed. The store
+cannot do the second act for you — it does not know what copies exist — and a
+claim that it did would be the most dangerous sentence in this document.
 
 ### A collection, for records that carry fields nobody declared
 
@@ -5034,7 +5389,10 @@ report never carries the password hash, which the stored definition does hold.
 
 `INFO FOR ACCESS TO TABLE` asks the same question from the other end — *who
 reaches this object*, rather than *what does this person reach* — and refuses for
-`INFO FOR USER`'s reason, since it is made of the same material. It answers with
+`INFO FOR USER`'s reason, since it is made of the same material. `INFO FOR AUDIT`
+refuses for a third reason on top of both: it is the only report held **store-wide**
+rather than per tenancy, so an owner of one namespace is refused it — see
+§ *Every read is recorded, or refused*. It answers with
 one row per user the caller administers, each saying whether that user may read
 the table and whether they may write it:
 

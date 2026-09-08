@@ -463,6 +463,21 @@ pub enum Error {
         span: Span,
     },
 
+    /// A recipient name that did not evaluate to text.
+    ///
+    /// Reports the **type** and never the value. Every neighbouring variant
+    /// renders what it found; this one cannot, because a caller who wrote a
+    /// field reference here would have the store quote whatever that field
+    /// holds — and on a vault's record that is the one thing this feature
+    /// exists to keep unquoted.
+    #[error("a recipient is named by text, and this is {found} (at {span})")]
+    RecipientIsNotAName {
+        /// The type that was supplied.
+        found: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
     /// `UPDATE` over a record that is not there.
     #[error("no record {id} (at {span}) — say `CREATE` to write a new one")]
     NoSuchRecord {
@@ -673,6 +688,95 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `SELECT` named a vault as its source.
+    ///
+    /// Refused rather than answered, and what it would have answered is worth
+    /// saying: **ciphertext**, because the sealed envelope is the stored value.
+    /// So this refusal protects nothing — the confidentiality is already closed
+    /// by where the sealing happens — and exists because a read that quietly
+    /// returns opaque bytes teaches a caller that the vault is broken, while a
+    /// refusal naming `REVEAL` teaches them the language.
+    #[error("`{table}` is a vault: read it with `REVEAL … FROM {table}:…` (at {span})")]
+    NotReadBySelect {
+        /// The vault named.
+        table: String,
+        /// Where it was named.
+        span: Span,
+    },
+
+    /// An index was declared over a field the vault seals.
+    ///
+    /// This one **does** protect something. An index over a secret field is a
+    /// searchable copy of it: the term dictionary holds the analysed value, the
+    /// postings say which records share it, and a caller who may not read the
+    /// field can still ask whether any record holds a given one, a term at a
+    /// time. That is the whole plaintext, obtained through a structure nobody
+    /// thinks of as a read.
+    #[error("`{field}` is a secret field of vault `{table}` and cannot be indexed (at {span})")]
+    NotIndexable {
+        /// The field named.
+        field: String,
+        /// The vault it is on.
+        table: String,
+        /// Where the declaration is.
+        span: Span,
+    },
+
+    /// `SECRET` was declared on a field of something that is not a vault.
+    ///
+    /// Refused rather than honoured, because there would be no key to honour it
+    /// with: the hierarchy that seals a field hangs off the vault's own key, and
+    /// an ordinary table has none. Accepting the word would produce a field the
+    /// store believes is sealed and writes in the clear — which is the exact
+    /// failure the marker exists to prevent, wearing the marker's own name.
+    #[error("`SECRET` needs a vault: `{table}` is not one (at {span})")]
+    SecretNeedsVault {
+        /// The table named.
+        table: String,
+        /// Where the declaration is.
+        span: Span,
+    },
+
+    /// A vault was asked to become schemaless.
+    ///
+    /// Refused, because strictness is the only thing that makes *declared* and
+    /// *sealed* the same set. The marker that seals a field is `SECRET` on its
+    /// declaration; a field nobody declared carries no marker, so a schemaless
+    /// vault writes it in the clear beside the sealed ones — inside the store
+    /// whose promise is that it holds nothing readable.
+    ///
+    /// Refusing the *transition* rather than only choosing the right default is
+    /// the point: a default is one statement deep, and this is the statement.
+    #[error(
+        "vault `{table}` cannot be made schemaless: a field nobody declared is a field nothing seals (at {span})"
+    )]
+    VaultIsStrict {
+        /// The vault named.
+        table: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// `REVEAL` was asked for a field that is not declared `SECRET`.
+    ///
+    /// Refused rather than answered in the clear. `REVEAL` returns plaintext, so
+    /// a caller reading its answer cannot tell which entries were ever sealed —
+    /// and a verb that sometimes returns a secret and sometimes returns whatever
+    /// happened to be beside it is one whose output nobody can reason about.
+    ///
+    /// The field name is named and **the value is not**, which is the rule every
+    /// refusal from a vault statement keeps: a name is what the caller already
+    /// typed, and a value is what they were asking to be told.
+    #[error("`{field}` is not a secret field of vault `{vault}` (at {span})")]
+    NotASecret {
+        /// The field asked for.
+        field: String,
+        /// The vault it was asked of.
+        vault: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A value the cast asked for cannot hold.
     ///
     /// Distinct from [`Error::WrongArgument`], because the argument's *type* is
@@ -689,6 +793,23 @@ pub enum Error {
     /// something, and that something is not what you asked for". A caller who
     /// wants the lenient reading can say so with `IF`; a caller who gets it by
     /// default has no way back.
+    ///
+    /// # The one refusal in this file that quotes a value, and what that costs
+    ///
+    /// Every other value-bearing variant here carries a `found: &'static str` —
+    /// a type name. This one carries the value, deliberately and for the reason
+    /// above. That makes it the single place where a **sealed** value could
+    /// reach a message, which is criterion W4 of the vault goal.
+    ///
+    /// It cannot happen through `REVEAL`, which returns plaintext to its caller
+    /// and casts nothing. It cannot happen through any generic read, because
+    /// what those read is ciphertext. The route that would exist is a cast
+    /// applied to a plaintext a script had already revealed into a binding — at
+    /// which point the caller holds the value and the message tells them nothing
+    /// they did not have. **That is the argument, and an argument is not a
+    /// test**; the assertion that submits a known secret and greps the whole
+    /// refusal for it is a W122 row, and until it runs W4 is unproven rather
+    /// than passing.
     #[error("{function} cannot read {value} as {target} (at {span})")]
     NotCastable {
         /// The cast called.
@@ -926,6 +1047,37 @@ pub enum Error {
     NotYours {
         /// The user they named.
         user: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// An edit that computes from the record, applied to a vault's record.
+    ///
+    /// `SET` and `MERGE` start from the record as it stands, and a vault's
+    /// record as it stands is ciphertext plus the store's own key map. Building
+    /// on it would mean opening the sealed fields the edit does not name — and
+    /// opening a secret is `REVEAL`, which records itself before it answers. An
+    /// `UPDATE` that opened three secrets to re-seal them would materialise
+    /// plaintext with nothing to say it had been there, which is the one thing
+    /// the audit ordering exists to prevent.
+    ///
+    /// So the message names the form that works rather than only refusing. The
+    /// whole record is the unit of a vault write, and it is not a limitation
+    /// dressed up: opening a field the edit never named is `REVEAL`, and `REVEAL`
+    /// records itself before it answers — so an edit that quietly opened three
+    /// secrets in order to re-seal them would put plaintext in this process with
+    /// nothing anywhere saying it had been there.
+    ///
+    /// **Narrowed in W135 from "written whole" to this.** A field-by-field edit
+    /// no longer needs the whole record, because the fields it names are the
+    /// fields it supplies and every other envelope is carried through untouched.
+    /// What is still refused is the part that was always the real problem: an
+    /// assignment whose *expression* reads the record, which cannot be answered
+    /// without opening a sealed value.
+    #[error(
+        "an edit of a vault's record may not compute from it — write the value, or replace the record with `UPDATE … = {{ … }}` (at {span})"
+    )]
+    VaultEditComputesFromTheRecord {
         /// Where the statement is.
         span: Span,
     },
@@ -1219,7 +1371,13 @@ pub enum Error {
     /// mechanisms hold the invariant — the parser only reads a bare name as a
     /// route inside a condition, and `seekable` refuses to use a right-hand side
     /// that reads the record as an index bound — and neither is expressed in a
-    /// type. The alternative to this failure is answering `none`, which would be
+    /// type.
+    ///
+    /// A vault edit evaluates its assignments against no record deliberately, to
+    /// use the evaluator as its own detector for "this expression reads the
+    /// record". That path catches this variant and answers
+    /// [`Self::VaultEditComputesFromTheRecord`] instead, so the invariant above
+    /// still holds for everything a caller can actually see. The alternative to this failure is answering `none`, which would be
     /// a wrong answer rather than a refusal, and a wrong answer from a filter is
     /// the failure mode this store spends most of its rules avoiding.
     #[error("there is no record here to read a path from (at {span})")]

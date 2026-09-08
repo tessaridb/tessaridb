@@ -121,6 +121,7 @@ impl Fixture {
                 FieldKind::String,
                 FieldShape {
                     required: false,
+                    secret: false,
                     default: None,
                     analyzer: Some("plain".to_owned()),
                     assert: None,

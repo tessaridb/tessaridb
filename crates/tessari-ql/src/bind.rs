@@ -200,7 +200,31 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
                 }
             }
         }
-        StatementKind::Get { target }
+        // `REVEAL` binds its target like every other statement that names one
+        // record. Its field list is names, and its passphrase sibling below is
+        // deliberately not a parameter at all.
+        // The material a recipient carries binds like any other value, and
+        // that is the point of accepting an expression there: a client that
+        // wrapped a key locally sends the bytes as a parameter rather than
+        // formatting them into the statement text.
+        StatementKind::AddRecipient {
+            target,
+            recipient,
+            material,
+            ..
+        } => {
+            bind_target(target, binding)?;
+            bind_expr(recipient, binding)?;
+            bind_expr(material, binding)
+        }
+        StatementKind::RemoveRecipient {
+            target, recipient, ..
+        } => {
+            bind_target(target, binding)?;
+            bind_expr(recipient, binding)
+        }
+        StatementKind::Reveal { target, .. }
+        | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }
         | StatementKind::Del { target }
         | StatementKind::Read { target, .. } => bind_target(target, binding),
@@ -245,6 +269,15 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::DropVector { .. }
         | StatementKind::DefineGeo { .. }
         | StatementKind::DropGeo { .. }
+        | StatementKind::DefineVault { .. }
+        | StatementKind::DropVault { .. }
+        // `UNSEAL` takes a string literal and never a parameter, so there is
+        // nothing here to substitute into. That is the grammar's decision and
+        // this arm is where it shows: a passphrase that could arrive as `$p`
+        // would arrive through the same binding map every other value does, and
+        // would be as loggable as any of them.
+        | StatementKind::UnsealVault { .. }
+        | StatementKind::SealVault { .. }
         | StatementKind::DefineGraph { .. }
         | StatementKind::DropGraph { .. }
         | StatementKind::DefineEdge { .. }

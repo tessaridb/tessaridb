@@ -1,0 +1,300 @@
+# The vault: a store whose fields are sealed before anything else sees them.
+#
+# `DEFINE VAULT team` is the sixth word that declares a whole engine, and unlike
+# the other five it is not a desugaring. There is no spelling of `DEFINE TABLE`
+# plus clauses that produces one, because what makes a vault a vault is a **key**
+# — minted when the vault is declared, wrapped under the store's master key, and
+# carried on the declaration itself.
+#
+# That is why it is the one declaration that requires an unsealed store. A vault
+# created with its key left for later would refuse every write while `INFO`
+# reported it ready.
+#
+# # Where the encryption happens, and why it decides what these cases can assert
+#
+# The sealed envelope **is** the stored payload value: sealing happens before the
+# record is encoded, not on the way out of a session. So a `SELECT` over a vault
+# that reached the records would answer with opaque bytes rather than plaintext,
+# and every path below the session — the search index, the change feed, the
+# replication log, a backup file — carries ciphertext without having to know what
+# a vault is.
+#
+# This makes the four refusals below two different kinds of thing, and a reader
+# deciding to relax one needs to know which is which:
+#
+#   - `DEFINE INDEX` over a secret field is a **control**. An index is a
+#     searchable copy of the plaintext: the term dictionary holds the analysed
+#     value and the postings say which records share it, so a caller who may not
+#     read the field could still ask, one term at a time, whether any record
+#     holds a given value.
+#
+#   - `SELECT` over a vault protects nothing, because what it would return is
+#     already ciphertext. It is refused so the language means something: opaque
+#     bytes teach a caller that the vault is broken, while a refusal naming
+#     `REVEAL` teaches them the feature.
+#
+# The filter and the ordering the specification lists separately are subsumed by
+# the second: there is no `SELECT` shape over a vault for either to hang off, and
+# `REVEAL` has nowhere to put one by construction.
+#
+# # The field here is called `token` and not `password`
+#
+# `PASSWORD` is a reserved word, so `DEFINE FIELD password ON team …` does not
+# parse while `{ password: '…' }` in a record does. A vault is the one place
+# somebody will certainly try the first spelling. That asymmetry is a real defect
+# and is recorded rather than worked around silently.
+#
+# Half of it closed in W131: the **quoted** name is accepted in a declaration, so
+# a field called `password` can exist in a vault — see the three cases at the end
+# of this file. Before that no spelling worked at all, and a vault is strict, so
+# the design's own example was impossible rather than awkward. The bare keyword
+# is still refused, because accepting one there widens every field declaration in
+# the language (Q-417).
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE work;
+USE DATABASE work;
+--- expect: ok
+
+--- case: a vault cannot be declared while the store is sealed
+DEFINE VAULT team;
+--- expect: error Vault
+
+--- case: the first unseal creates the store's root
+UNSEAL VAULT WITH 'an operator passphrase';
+--- expect: ok
+
+--- case: and then one word declares the store
+DEFINE VAULT team;
+--- expect: ok
+
+--- case: its fields are declared one at a time, and one of them is sealed
+DEFINE FIELD login ON team TYPE string;
+DEFINE FIELD token ON team TYPE string SECRET;
+--- expect: ok
+
+--- case: SECRET needs a vault, because nothing else has a key to honour it with
+DEFINE TABLE staff SCHEMALESS;
+DEFINE FIELD token ON staff TYPE string SECRET;
+--- expect: error SecretNeedsVault
+
+--- case: a vault holds ordinary records, written the ordinary way
+CREATE team:'github' = { login: 'boog', token: 'hunter2' };
+--- expect: ok
+
+--- case: a field nobody declared is a field nothing seals, so a vault refuses it
+CREATE team:'gitlab' = { login: 'boog', recovery: 'hunter2' };
+--- expect: error UndeclaredField
+
+--- case: and the strictness that refuses it cannot be turned off
+ALTER TABLE team SET SCHEMALESS;
+--- expect: error VaultIsStrict
+
+--- case: SELECT over a vault is refused, and the message names the word that reads one
+SELECT * FROM team;
+--- expect: error NotReadBySelect
+
+--- case: a filter over a vault is refused for being a read of one
+SELECT * FROM team WHERE token = 'hunter2';
+--- expect: error NotReadBySelect
+
+--- case: an ordering over a vault is refused for the same reason
+SELECT * FROM team ORDER BY token;
+--- expect: error NotReadBySelect
+
+--- case: and so is naming the record directly
+SELECT * FROM team:'github';
+--- expect: error NotReadBySelect
+
+--- case: there is no plan to show for a read the store refuses
+EXPLAIN SELECT * FROM team;
+--- expect: error NotReadBySelect
+
+--- case: and none for the conditioned shape either, which reaches a different planner arm
+EXPLAIN SELECT * FROM team WHERE token = 'hunter2';
+--- expect: error NotReadBySelect
+
+--- case: an index over a secret field would be a searchable copy of it
+DEFINE INDEX by_token ON team FIELDS token;
+--- expect: error NotIndexable
+
+--- case: a projection of a secret is a secret somebody derived
+DEFINE INDEX by_part ON team FIELDS token.inner;
+--- expect: error NotIndexable
+
+--- case: an index over a field that is not sealed is fine
+DEFINE INDEX by_login ON team FIELDS login;
+--- expect: ok
+
+--- case: REVEAL is the one path to a plaintext
+REVEAL token FROM team:'github';
+--- expect: ok
+
+--- case: and a star opens every sealed field
+REVEAL * FROM team:'github';
+--- expect: ok
+
+--- case: a field that was never sealed is refused rather than answered in the clear
+REVEAL login FROM team:'github';
+--- expect: error NotASecret
+
+--- case: INFO reports the vault with the word that created it
+INFO FOR VAULT team;
+--- expect: ok
+
+--- case: sealing takes the key out of this process
+SEAL VAULT;
+--- expect: ok
+
+--- case: after which nothing opens, for anybody
+REVEAL token FROM team:'github';
+--- expect: error Vault
+
+--- case: and a write to a sealed vault is refused rather than written in the clear
+CREATE team:'second' = { token: 'hunter2' };
+--- expect: error Vault
+
+--- case: a wrong passphrase does not unseal
+UNSEAL VAULT WITH 'not the passphrase';
+--- expect: error Vault
+
+--- case: the right one does, and the store opens again
+UNSEAL VAULT WITH 'an operator passphrase';
+--- expect: ok
+
+--- case: dropping the vault destroys the key, which is the deletion
+DROP VAULT team;
+--- expect: ok
+
+--- case: and the name is gone with it
+INFO FOR VAULT team;
+--- expect: error Unknown
+
+# # The recipient set
+#
+# A record's recipients are the parties that may one day open it. The engine
+# stores a name and some material and **interprets neither**: what a recipient's
+# material is — a data key wrapped under somebody's public key, a handle into an
+# application's own key service — is a question this store deliberately cannot
+# answer, because answering it would mean holding the second key hierarchy that
+# decides it.
+#
+# One name means something here, and it is the store's own: `#vault` is the entry
+# the record's data key is wrapped into. It is refused in both directions.
+# Writing it would let a caller choose what a later read opens with; removing it
+# would crypto-shred the record while reporting success.
+#
+# Neither statement needs an unsealed store, and that is the property worth
+# keeping: revoking a recipient is the operation you least want to depend on an
+# operator being present to perform.
+
+--- case: a vault to hold a recipient set, since the one above was destroyed
+DEFINE VAULT shared;
+DEFINE FIELD token ON shared TYPE string SECRET;
+CREATE shared:'github' = { token: 'hunter2' };
+--- expect: ok
+
+--- case: a recipient is added under a name the store never reads
+ADD RECIPIENT 'urn:acme:kms:key/42' TO shared:'github' KEY 0xdeadbeef;
+--- expect: ok
+
+--- case: and comes back exactly as it went in
+INFO FOR RECIPIENTS OF shared:'github';
+--- expect: ok
+
+--- case: a second recipient joins the set rather than replacing it
+ADD RECIPIENT 'ada@example.com' TO shared:'github' KEY 0x0102;
+--- expect: ok
+
+--- case: a duplicate is refused rather than overwriting the material there
+ADD RECIPIENT 'ada@example.com' TO shared:'github' KEY 0x0304;
+--- expect: error VaultRecipientExists
+
+--- case: the store's own entry is not a recipient anyone may add
+ADD RECIPIENT '#vault' TO shared:'github' KEY 0x00;
+--- expect: error VaultReservedRecipient
+
+--- case: nor one anyone may remove
+REMOVE RECIPIENT '#vault' FROM shared:'github';
+--- expect: error VaultReservedRecipient
+
+--- case: removing a name that is not there is refused, never answered ok
+REMOVE RECIPIENT 'nobody' FROM shared:'github';
+--- expect: error VaultNoRecipient
+
+--- case: and removing one that is there succeeds
+REMOVE RECIPIENT 'ada@example.com' FROM shared:'github';
+--- expect: ok
+
+--- case: a recipient is named by text, and anything else is refused by its type
+ADD RECIPIENT 7 TO shared:'github' KEY 0x00;
+--- expect: error RecipientIsNotAName
+
+--- case: a table that is not a vault has no recipients to add to
+ADD RECIPIENT 'ops' TO staff:'1' KEY 0x00;
+--- expect: error Unknown
+
+--- case: nor any to report
+INFO FOR RECIPIENTS OF staff:'1';
+--- expect: error Unknown
+
+--- case: a field whose name is a keyword is declared by quoting it
+DEFINE VAULT logins;
+DEFINE FIELD 'password' ON logins TYPE string SECRET;
+--- expect: ok
+
+--- case: and a record writes it the way an object literal always could
+CREATE logins:'github' = { password: 'hunter2' };
+--- expect: ok
+
+--- case: and REVEAL opens it under the name it was declared with
+REVEAL 'password' FROM logins:'github';
+--- expect: ok
+
+--- case: the audit trail has a statement, and it answers on an open store
+INFO FOR AUDIT;
+--- expect: ok
+
+--- case: narrowed to one actor by a quoted name
+INFO FOR AUDIT BY 'ada';
+--- expect: ok
+
+--- case: or by a bare one, so a keyword-named credential is still askable
+INFO FOR AUDIT BY ada;
+--- expect: ok
+
+--- case: BY with nothing after it is a mistake rather than the whole trail
+INFO FOR AUDIT BY;
+--- expect: error UnexpectedToken
+
+--- case: a vault record is edited field by field, sealing only what the edit names
+DEFINE VAULT rotations;
+DEFINE FIELD token ON rotations TYPE string SECRET;
+CREATE rotations:'one' = { token: 'first' };
+UPDATE rotations:'one' SET token = 'second';
+--- expect: ok
+
+--- case: and MERGE, which never read the record in the first place
+UPDATE rotations:'one' MERGE { token: 'third' };
+--- expect: ok
+
+--- case: what stays refused is an assignment that reads the record
+UPDATE rotations:'one' SET token = token;
+--- expect: error VaultEditComputesFromTheRecord
+
+--- case: refused for a field that is not even secret, because the read is the problem
+DEFINE FIELD label ON rotations TYPE string;
+UPDATE rotations:'one' SET label = token;
+--- expect: error VaultEditComputesFromTheRecord
+
+--- case: the whole record is still a unit, and it rotates the secret
+UPDATE rotations:'one' = { token: 'fourth' };
+--- expect: ok
+
+--- case: an ordinary table is still edited field by field
+DEFINE TABLE rotation_notes SCHEMALESS;
+CREATE rotation_notes:1 = { body: 'first' };
+UPDATE rotation_notes:1 SET body = 'second';
+--- expect: ok

@@ -11,7 +11,7 @@ use crate::ast::{
     UserGrant, Written,
 };
 use crate::error::{Error, Result};
-use crate::token::{Keyword, Punct, Token};
+use crate::token::{Keyword, Punct, Span, Token};
 
 /// What a field declaration says after its type.
 ///
@@ -21,6 +21,7 @@ use crate::token::{Keyword, Punct, Token};
 #[derive(Default)]
 struct FieldOptions {
     required: bool,
+    secret: bool,
     default: Option<Written>,
     analyzer: Option<Name>,
     assert: Option<Assertion>,
@@ -222,12 +223,136 @@ impl Parser<'_> {
                 self.advance();
                 StatementKind::Verify
             }
+            // Three contextual verbs, for the reason `DEFINE VAULT` is
+            // contextual: `reveal`, `seal` and `unseal` are ordinary column
+            // names, and reserving them here would reserve them everywhere —
+            // including in the vault whose fields somebody is declaring. Nothing
+            // but a verb can stand at the head of a statement, so nothing is
+            // ambiguous, and each arm has already consumed its word.
+            _ if self.eat_word("reveal") => self.reveal_statement(start)?,
+            _ if self.eat_word("add") => self.add_recipient_statement(start)?,
+            _ if self.eat_word("remove") => self.remove_recipient_statement(start)?,
+            _ if self.eat_word("unseal") => self.unseal_statement(start)?,
+            _ if self.eat_word("seal") => {
+                self.expect_vault_word("`VAULT`")?;
+                StatementKind::SealVault {
+                    span: start.to(self.span_behind()),
+                }
+            }
             _ => return Err(self.error_here("a statement")),
         };
         Ok(Statement {
             kind,
             span: start.to(self.span_behind()),
         })
+    }
+
+    /// `REVEAL password FROM team:github` · `REVEAL * FROM team:github`
+    ///
+    /// A field list or `*`, then one record. There is no `WHERE` and no `ORDER
+    /// BY`, and their absence is the feature: a filter over a secret is an
+    /// oracle answering one bit per statement, and a verb with nowhere to put
+    /// one cannot be talked into accepting one later by a clause somebody adds
+    /// for a different reason.
+    fn reveal_statement(&mut self, start: Span) -> Result<StatementKind> {
+        let mut fields = Vec::new();
+        if !self.eat_punct(Punct::Star) {
+            loop {
+                // The same reader the declaration uses. A field that can only be
+                // declared by quoting its name has to be openable by quoting it
+                // too, or `REVEAL` is the one statement that cannot name what
+                // `DEFINE FIELD` just created.
+                fields.push(self.declared_field_name()?);
+                if !self.eat_punct(Punct::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect_keyword(Keyword::From, "`FROM` and the record to open")?;
+        let target = self.record_target()?;
+        Ok(StatementKind::Reveal {
+            target,
+            fields,
+            span: start.to(self.span_behind()),
+        })
+    }
+
+    /// `ADD RECIPIENT 'ops-escrow' TO team:github KEY $wrapped`
+    ///
+    /// The material is an **expression** where the passphrase below is a bare
+    /// literal, and the difference is deliberate rather than inconsistent. A
+    /// passphrase is a secret this store must never let through the evaluator; a
+    /// recipient's material is the caller's own ciphertext, and the caller that
+    /// computed it client-side needs to hand it over as a parameter rather than
+    /// format it into a statement as hex.
+    fn add_recipient_statement(&mut self, start: Span) -> Result<StatementKind> {
+        self.expect_word("recipient", "`RECIPIENT`")?;
+        let recipient = self.expression()?;
+        self.expect_keyword(Keyword::To, "`TO` and the record")?;
+        let target = self.record_target()?;
+        self.expect_word("key", "`KEY` and the material to store")?;
+        let material = self.expression()?;
+        Ok(StatementKind::AddRecipient {
+            target,
+            recipient,
+            material,
+            span: start.to(self.span_behind()),
+        })
+    }
+
+    /// `REMOVE RECIPIENT 'ops-escrow' FROM team:github`
+    fn remove_recipient_statement(&mut self, start: Span) -> Result<StatementKind> {
+        self.expect_word("recipient", "`RECIPIENT`")?;
+        let recipient = self.expression()?;
+        self.expect_keyword(Keyword::From, "`FROM` and the record")?;
+        let target = self.record_target()?;
+        Ok(StatementKind::RemoveRecipient {
+            target,
+            recipient,
+            span: start.to(self.span_behind()),
+        })
+    }
+
+    /// A contextual word this statement requires.
+    fn expect_word(&mut self, word: &str, expected: &'static str) -> Result<()> {
+        if self.eat_word(word) {
+            return Ok(());
+        }
+        Err(self.error_here(expected))
+    }
+
+    /// `UNSEAL VAULT WITH '…'`
+    ///
+    /// The passphrase is a **string literal** and nothing else — not an
+    /// expression, not a parameter, not a name. An expression here would put a
+    /// secret through the evaluator, where it could be concatenated into a
+    /// message, compared with `=`, or returned by the very statement that read
+    /// it; a literal goes from the lexer to the key derivation and nowhere else.
+    fn unseal_statement(&mut self, start: Span) -> Result<StatementKind> {
+        self.expect_vault_word("`VAULT`")?;
+        if !self.eat_word("with") {
+            return Err(self.error_here("`WITH` and the passphrase"));
+        }
+        let Some(Token::Str(passphrase)) = self.peek() else {
+            // The expectation names the shape and never what stands there. Every
+            // other parse error in this file quotes the token it found, and this
+            // is the one position where the token is the secret.
+            return Err(self.error_here("a quoted passphrase"));
+        };
+        let passphrase = passphrase.clone();
+        self.advance();
+        Ok(StatementKind::UnsealVault {
+            passphrase,
+            span: start.to(self.span_behind()),
+        })
+    }
+
+    /// The word `VAULT` after `SEAL` or `UNSEAL`, which is contextual too.
+    fn expect_vault_word(&mut self, expected: &'static str) -> Result<()> {
+        if self.eat_word("vault") {
+            return Ok(());
+        }
+        Err(self.error_here(expected))
     }
 
     /// `INFO FOR STORE` / `NAMESPACE` / `DATABASE` / `TABLE users` / `USER ada`
@@ -296,13 +421,44 @@ impl Parser<'_> {
             _ if self.eat_word("consumer") => InfoSubject::Consumer(self.name()?),
             _ if self.eat_word("vector") => InfoSubject::Vector(self.name()?),
             _ if self.eat_word("geo") => InfoSubject::Geo(self.name()?),
+            _ if self.eat_word("vault") => InfoSubject::Vault(self.name()?),
+            _ if self.eat_word("recipients") => {
+                self.expect_word("of", "`OF` and the record")?;
+                InfoSubject::Recipients(self.record_target()?)
+            }
+            _ if self.eat_word("audit") => InfoSubject::Audit(self.audited_actor()?),
             _ => {
+                // Every subject the arms above accept, and in their order, so
+                // that adding an arm and forgetting this line is a visible
+                // omission rather than an invisible one. `GRAPH` and
+                // `RECIPIENTS` were missing from it for as long as they have
+                // parsed (Q-428): a message that lists its options and gets the
+                // list wrong is worse than one that lists none, because a caller
+                // reads it as the whole truth and stops looking.
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR` or `GEO`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `RECIPIENTS OF` or `AUDIT`",
                 ));
             }
         };
         Ok(StatementKind::Info { subject })
+    }
+
+    /// The actor an `INFO FOR AUDIT BY …` narrows to, when one is named.
+    ///
+    /// Quoted or bare, for the reason a declared field name is: the trail holds
+    /// an actor as a string it was handed, so a user whose name is a keyword
+    /// would otherwise be the one credential the forensic question cannot be
+    /// asked about — and the credential somebody named `PASSWORD` is not the
+    /// one to lose.
+    fn audited_actor(&mut self) -> Result<Option<Name>> {
+        if !self.eat_word("by") {
+            return Ok(None);
+        }
+        if matches!(self.peek(), Some(Token::Str(_))) {
+            let (text, span) = self.quoted_field_name()?;
+            return Ok(Some(Name { text, span }));
+        }
+        self.name().map(Some)
     }
 
     /// `USE NAMESPACE prod DATABASE orders` — either part, in that order.
@@ -543,8 +699,13 @@ impl Parser<'_> {
             // perfectly ordinary column name, and reserving it here would
             // reserve it everywhere.
             _ if self.eat_word("geo") => self.define_geo(),
+            // Contextual for the same reason again, and here the reason is
+            // strongest: `vault` is a perfectly ordinary table name in a
+            // password manager's own schema, which is precisely the kind of
+            // application this word exists for.
+            _ if self.eat_word("vault") => self.define_vault(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `CONSUMER`, `VECTOR` or `GEO`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `CONSUMER`, `VECTOR`, `GEO` or `VAULT`",
             )),
         }
     }
@@ -587,6 +748,21 @@ impl Parser<'_> {
     fn define_geo(&mut self) -> Result<StatementKind> {
         let if_not_exists = self.eat_if_not_exists()?;
         Ok(StatementKind::DefineGeo {
+            name: self.name()?,
+            if_not_exists,
+        })
+    }
+
+    /// `DEFINE VAULT team`
+    ///
+    /// A name and nothing else, for the reason `DEFINE GEO` gives: what makes a
+    /// vault a vault is a key, and a key is not a clause a caller writes. The
+    /// statement mints one, which is why this is the one declaration that
+    /// requires the store to be unsealed — enforced where the keyring is, not
+    /// here.
+    fn define_vault(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        Ok(StatementKind::DefineVault {
             name: self.name()?,
             if_not_exists,
         })
@@ -1027,18 +1203,18 @@ impl Parser<'_> {
             // to something inside it.
             if self.eat_word("add") {
                 self.expect_keyword(Keyword::Field, "`FIELD` and the field to add")?;
-                let name = self.name()?;
+                let name = self.declared_field_name()?;
                 return self.field_declaration(name, table, false);
             }
             if self.eat_keyword(Keyword::Alter) {
                 self.expect_keyword(Keyword::Field, "`FIELD` and the field to change")?;
-                let name = self.name()?;
+                let name = self.declared_field_name()?;
                 return self.field_declaration(name, table, true);
             }
             if self.eat_keyword(Keyword::Drop) {
                 self.expect_keyword(Keyword::Field, "`FIELD` and the field to remove")?;
                 return Ok(StatementKind::DropField {
-                    name: self.name()?,
+                    name: self.declared_field_name()?,
                     table,
                 });
             }
@@ -1111,11 +1287,39 @@ impl Parser<'_> {
         Ok(filter)
     }
 
+    /// The name of a field being declared, altered or dropped.
+    ///
+    /// A field name in an object literal already reads with `field_name()`,
+    /// which takes a quoted name — so `{ 'password': '…' }` writes a field that
+    /// `DEFINE FIELD password …` could not declare, because `PASSWORD` is a
+    /// keyword and `name()` does not accept one. The write worked and the
+    /// declaration did not, and quoting did not help either: the two halves of
+    /// the language disagreed about what a field may be called.
+    ///
+    /// This accepts the quoted form here too, and **only** the quoted form. A
+    /// bare keyword is still refused, which keeps the wider question — whether
+    /// `DEFINE FIELD password` should read as a name — open and separate
+    /// (Q-417). The narrow version is worth having on its own because a string
+    /// literal in a name position cannot be anything else: no existing statement
+    /// changes meaning, only refusals become parses, and a statement that forgot
+    /// its name is still missing a name, because a missing name is not a string.
+    ///
+    /// It matters most in a vault, which is strict, so a field nobody can
+    /// declare is a field a vault cannot hold — and `password` is the first
+    /// thing a secret store will be asked for.
+    fn declared_field_name(&mut self) -> Result<Name> {
+        if matches!(self.peek(), Some(Token::Str(_))) {
+            let (text, span) = self.quoted_field_name()?;
+            return Ok(Name { text, span });
+        }
+        self.name()
+    }
+
     /// `DEFINE FIELD email ON users TYPE string`
     fn define_field(&mut self) -> Result<StatementKind> {
         self.advance();
         let if_not_exists = self.eat_if_not_exists()?;
-        let name = self.name()?;
+        let name = self.declared_field_name()?;
         self.expect_keyword(Keyword::On, "`ON` and the table the field is on")?;
         let table = self.table_ref()?;
         self.declaration_tail(name, table, if_not_exists, false)
@@ -1146,13 +1350,27 @@ impl Parser<'_> {
     ) -> Result<StatementKind> {
         self.expect_keyword(Keyword::Type, "`TYPE` and what the field may hold")?;
         let kind = self.field_kind()?;
+        let marker = self.span_here();
         let FieldOptions {
             required,
+            secret,
             default,
             analyzer,
             assert,
         } = self.field_options()?;
         if replacing {
+            if secret {
+                // There is no `ALTER FIELD … SECRET`. Turning the marker on
+                // leaves every record already written in the clear; turning it
+                // off leaves every record already written unreadable. Both are a
+                // field that is half sealed, and a statement that produced
+                // either would report success.
+                return Err(Error::Unsupported {
+                    feature: "altering a field to or from `SECRET` — declare it \
+                              `SECRET` when the vault's field is defined",
+                    span: marker,
+                });
+            }
             return Ok(StatementKind::AlterField {
                 name,
                 table,
@@ -1168,6 +1386,7 @@ impl Parser<'_> {
             table,
             kind,
             required,
+            secret,
             default,
             analyzer,
             assert,
@@ -1192,6 +1411,12 @@ impl Parser<'_> {
                 options.required = true;
             } else if options.default.is_none() && self.eat_keyword(Keyword::Default) {
                 options.default = Some(self.written_expression()?);
+            } else if !options.secret && self.eat_word("secret") {
+                // Contextual, like `assert` and `vector` above. `secret` is an
+                // ordinary column name in plenty of schemas and reserving it
+                // here would reserve it in every position, including as the name
+                // of the very field somebody is trying to declare.
+                options.secret = true;
             } else if options.analyzer.is_none() && self.eat_keyword(Keyword::Analyzer) {
                 options.analyzer = Some(self.name()?);
             } else if options.assert.is_none() && self.eat_word("assert") {
@@ -1219,12 +1444,25 @@ impl Parser<'_> {
         loop {
             let name = self.name()?;
             let kind = self.field_kind()?;
+            let marker = self.span_here();
             let FieldOptions {
                 required,
+                secret,
                 default,
                 analyzer,
                 assert,
             } = self.field_options()?;
+            if secret {
+                // A columnar `DEFINE TABLE` is not a vault and cannot become
+                // one, so a `SECRET` here has nowhere to be honoured. Refused
+                // rather than parsed and dropped: a marker silently ignored is
+                // the failure this whole feature exists to prevent.
+                return Err(Error::Unsupported {
+                    feature: "`SECRET` in a columnar table declaration — a \
+                              secret field belongs on a `DEFINE VAULT`",
+                    span: marker,
+                });
+            }
             columns.push(ColumnDeclaration {
                 name,
                 kind,
@@ -1468,6 +1706,7 @@ impl Parser<'_> {
             // Contextual, as the word is everywhere else it appears.
             _ if self.eat_word("vector") => Ok(StatementKind::DropVector { name: self.name()? }),
             _ if self.eat_word("geo") => Ok(StatementKind::DropGeo { name: self.name()? }),
+            _ if self.eat_word("vault") => Ok(StatementKind::DropVault { name: self.name()? }),
             // Declined rather than missing, and it says so. `DEFINE NODE` writes
             // this process's own configuration outside the transaction, so its
             // inverse is an edit to a config file rather than a statement — and

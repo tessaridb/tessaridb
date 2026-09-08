@@ -52,10 +52,20 @@ impl Session<'_> {
             }),
             // Straight to one record by its identity: there is nothing to choose.
             Source::Record(target) => {
+                let (_, id) = self.resolve_table(transaction, &target.table)?;
+                self.refuse_reading_a_vault(transaction, id, &target.table)?;
                 Ok(Plan::new(AccessPath::Record).on(target.table.name.text.as_str()))
             }
             Source::Table(table) => {
                 let named = table.name.text.as_str();
+                // The same gate the read itself passes through, for the reason
+                // in this module's own heading: a plan describing a read nobody
+                // runs is a wrong answer to the one question `EXPLAIN` exists to
+                // answer. A `SELECT` over a vault is refused, so there is no
+                // plan — and reporting `scan` for it said a read would walk the
+                // table when the store would not have let it start.
+                let (_, gated) = self.resolve_table(transaction, table)?;
+                self.refuse_reading_a_vault(transaction, gated, table)?;
                 // A read with no condition has nothing for an index to narrow —
                 // except the one shape an index answers differently from a scan,
                 // which says so by name rather than hiding inside "index".
@@ -142,6 +152,7 @@ impl Session<'_> {
             }
             Source::Where { table, condition } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
+                self.refuse_reading_a_vault(transaction, id, table)?;
                 let named = table.name.text.as_str();
                 // Asked before the candidates, because the read asks it before
                 // the candidates — and from the same function, so the two cannot
@@ -188,6 +199,7 @@ impl Session<'_> {
                     return Ok(Plan::new(AccessPath::Join));
                 };
                 let (_, id) = self.resolve_table(transaction, table)?;
+                self.refuse_reading_a_vault(transaction, id, table)?;
                 Ok(Plan {
                     index: crate::evaluate::ordered_index_on(transaction, id, right_key)?
                         .map(|index| index.name),

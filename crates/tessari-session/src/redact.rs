@@ -127,16 +127,45 @@ impl Session<'_> {
 /// Public because the change feed pushes records that never passed through a
 /// session's read path, and a second implementation of "what does this user see"
 /// is a second answer waiting to disagree with this one.
+///
+/// One field is removed for every caller regardless of grants: the vault's map
+/// of wrapped data keys, which is the store's own bookkeeping rather than
+/// anything a writer supplied. See the comment at the removal for why it is
+/// here and not at the read paths.
 #[must_use]
 pub fn seen(value: Value, visible: &Visible) -> Value {
-    let Some(allowed) = visible else {
-        return value;
-    };
-    let Value::Object(fields) = value else {
+    let Value::Object(mut fields) = value else {
         // A key-value record holds a bare value with no field to name, so a
         // field grant has nothing to say about it and the table grant already
         // decided whether it may be read at all.
         return value;
+    };
+
+    // The store's own bookkeeping, taken out before anything can see it.
+    //
+    // A sealed record carries one field its writer never supplied: the map of
+    // wrapped data keys. It holds no secret — the entries are ciphertext under
+    // the vault key — but it holds a COUNT, one entry per recipient, and its
+    // presence says the record is a vault record at all. A traversal or a
+    // `FETCH` reaches such a record without passing `refuse_reading_a_vault`,
+    // so without this those two paths publish both (Q-427).
+    //
+    // It goes here rather than at the read paths for the reason this module
+    // exists: `seen` is what every one of them and both change-feed surfaces
+    // already pass through, so a path added later cannot forget it. And it
+    // costs no catalog read — a vault record is identifiable by carrying the
+    // field, which is what makes this cheaper than the per-read table lookup
+    // the refusal itself was not given (Q-416).
+    //
+    // Above the grant check, because that check returns early whenever the
+    // session holds no field grant, which is the ordinary case and the one the
+    // leak was observed in. The vault's own paths — `REVEAL` and
+    // `INFO FOR RECIPIENTS` — decode the stored payload themselves and never
+    // come through here, so removing it cannot cost them the keys they open.
+    fields.remove(tessari_storage::KEYS_FIELD);
+
+    let Some(allowed) = visible else {
+        return Value::Object(fields);
     };
     Value::Object(
         fields
@@ -178,6 +207,30 @@ mod tests {
         };
         assert_eq!(held.len(), 1);
         assert!(!held.contains_key("salary"));
+    }
+
+    #[test]
+    fn the_stores_wrapped_key_map_is_never_part_of_what_is_seen() {
+        // With NO grant, which is the ordinary case and the one the leak was
+        // observed in: the grant check returns early, so a strip placed after
+        // it would do nothing here. Asserted through `seen` rather than through
+        // a read path because the change feed calls this function directly.
+        let mut fields = BTreeMap::from([("name".to_owned(), Value::from("ada"))]);
+        fields.insert(
+            tessari_storage::KEYS_FIELD.to_owned(),
+            Value::Object(BTreeMap::from([(
+                "#vault".to_owned(),
+                Value::Bytes(vec![1, 2, 3]),
+            )])),
+        );
+        let Value::Object(held) = seen(Value::Object(fields), &None) else {
+            panic!("not an object");
+        };
+        assert!(!held.contains_key(tessari_storage::KEYS_FIELD));
+        // And the record is otherwise untouched, so the strip is a removal and
+        // not a rebuild that could drop something else with it.
+        assert_eq!(held.get("name"), Some(&Value::from("ada")));
+        assert_eq!(held.len(), 1);
     }
 
     #[test]

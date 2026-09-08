@@ -16,6 +16,8 @@ use tessari_types::{
     DatabaseId, GraphId, IdentityKind, IndexId, NamespaceId, Number, Path, TableId, Value,
 };
 
+use tessari_vault::{KeyId, Wrapped};
+
 use crate::error::{Error, Result};
 
 const FIELD_ID: &str = "id";
@@ -33,6 +35,9 @@ const FIELD_EDGE: &str = "edge";
 const FIELD_BUCKET: &str = "bucket";
 const FIELD_COLLECTION: &str = "collection";
 const FIELD_GEO: &str = "geo";
+const FIELD_VAULT: &str = "vault";
+const FIELD_KEY_ID: &str = "key_id";
+const FIELD_WRAPPED: &str = "wrapped";
 const FIELD_ENDPOINTS: &str = "endpoints";
 const FIELD_FROM: &str = "from";
 const FIELD_TO: &str = "to";
@@ -137,6 +142,33 @@ impl TableDefinition {
     pub fn byte_ceiling(&self) -> Option<u64> {
         match self.kind {
             TableKind::Bucket(max) => max,
+            _ => None,
+        }
+    }
+
+    /// Whether this store holds secrets.
+    ///
+    /// The check every generic path asks before it does anything with these
+    /// records. It is a method on the definition rather than a rule written
+    /// down somewhere, because the survey that preceded this feature found that
+    /// **no** generic read path in this store consults the table kind at all —
+    /// so each refusal is a place that had to be given the question, and a
+    /// question spelled the same way everywhere is one a reviewer can find.
+    #[must_use]
+    pub fn is_vault(&self) -> bool {
+        matches!(self.kind, TableKind::Vault(_))
+    }
+
+    /// The vault's key, sealed under the store's master key.
+    ///
+    /// `None` for everything that is not a vault, which is the same answer a
+    /// vault gives if its declaration were ever absent — and that second case
+    /// cannot arise, because a declaration that will not parse is refused at
+    /// `from_value` rather than read as a vault with no key.
+    #[must_use]
+    pub fn vault_key(&self) -> Option<&Wrapped> {
+        match &self.kind {
+            TableKind::Vault(declared) => Some(&declared.key),
             _ => None,
         }
     }
@@ -271,6 +303,20 @@ impl TableDefinition {
         if let TableKind::Vector(declared) = &self.kind {
             fields.insert(FIELD_VECTOR.to_owned(), declared.to_value());
         }
+        // A vault is carried by its declaration for the reason a vector store
+        // is, and with more riding on it: presence is the whole statement,
+        // because a vault without its key is not a vault with a missing
+        // property — it is a store whose records are permanently unreadable.
+        // The downgrade case, stated because it is easy to assume the opposite:
+        // a build that predates vaults sets no flag, finds no vector, and reads
+        // this entry as a plain **table**. It would then let `SELECT` return the
+        // records. What it returns is ciphertext — the plaintext is not in the
+        // store to be served — so the secrets hold, but every refusal the word
+        // carries is gone. Opening a store with an older binary is therefore a
+        // real downgrade and not merely a loss of the word (Q-412).
+        if let TableKind::Vault(declared) = &self.kind {
+            fields.insert(FIELD_VAULT.to_owned(), declared.to_value());
+        }
         // Written only by the bucket that declared one, on the endpoint pair's
         // contract rather than the flags': a ceiling nobody declared is absent
         // rather than zero, and zero is the one value that would have to mean
@@ -299,21 +345,25 @@ impl TableDefinition {
             database: DatabaseId::new(field_id(fields, FIELD_DATABASE, "table")?),
             name: field_name(fields, "table")?,
             schemafull: flag(fields, FIELD_SCHEMAFULL, "table")?,
-            kind: TableKind::from_parts(
-                flag(fields, FIELD_EDGE, "table")?,
-                flag(fields, FIELD_BUCKET, "table")?,
-                flag(fields, FIELD_COLLECTION, "table")?,
-                flag(fields, FIELD_GEO, "table")?,
-                match fields.get(FIELD_ENDPOINTS) {
+            kind: TableKind::from_parts(StoredKind {
+                edge: flag(fields, FIELD_EDGE, "table")?,
+                bucket: flag(fields, FIELD_BUCKET, "table")?,
+                collection: flag(fields, FIELD_COLLECTION, "table")?,
+                geo: flag(fields, FIELD_GEO, "table")?,
+                endpoints: match fields.get(FIELD_ENDPOINTS) {
                     Some(value) => Some(EdgeDeclaration::from_value(value)?),
                     None => None,
                 },
-                match fields.get(FIELD_VECTOR) {
+                vector: match fields.get(FIELD_VECTOR) {
                     Some(value) => Some(VectorDeclaration::from_value(value)?),
                     None => None,
                 },
-                ceiling(fields)?,
-            )?,
+                vault: match fields.get(FIELD_VAULT) {
+                    Some(value) => Some(VaultDeclaration::from_value(value)?),
+                    None => None,
+                },
+                ceiling: ceiling(fields)?,
+            })?,
             identity: identity_kind(fields, "table")?,
             graph: match fields.get(FIELD_GRAPH) {
                 Some(_) => Some(GraphId::new(field_id(fields, FIELD_GRAPH, "table")?)),
@@ -448,6 +498,29 @@ pub enum TableKind {
     /// store narrowed to points could not express a table of regions — which
     /// `records_in_region` serves correctly today.
     Geo,
+    /// Secrets: records whose declared `SECRET` fields are stored sealed, and
+    /// which no generic read can reach — `DEFINE VAULT`.
+    ///
+    /// The seventh kind, and the first whose reason is not "`INFO` must answer
+    /// with the word that created the thing". That test is passed here too, but
+    /// it is not why the kind exists: a vault is the one store where the
+    /// *absence* of a capability is the capability. `SELECT` is refused, an
+    /// index on a secret field is refused, a filter and an ordering on one are
+    /// refused, and each refusal is reachable only because the kind is on the
+    /// definition where every path can see it.
+    ///
+    /// It carries the vault's key, sealed under the store's master key, for the
+    /// reason [`TableKind::Vector`] carries its declaration: a store that has
+    /// one is not the same object as a store that does not, and a key sitting
+    /// in a field beside the kind would make "carries a key but is not a vault"
+    /// representable — which is a table whose records nothing can ever open.
+    ///
+    /// Dropping the definition therefore destroys the key, and destroying the
+    /// key is the deletion. Every record in the vault becomes unopenable in
+    /// every backup, snapshot and replica that will ever be restored — which is
+    /// the only deletion claim a store like this can honestly make, since a row
+    /// delete is a statement about the live table and not about the data.
+    Vault(VaultDeclaration),
 }
 
 /// What a vector store calls the field its vectors are in.
@@ -468,6 +541,23 @@ pub const VECTOR_FIELD: &str = "vector";
 /// one the vector field states: the name is the whole of what the field is, and
 /// what it is is a geometry.
 pub const GEO_FIELD: &str = "geometry";
+
+/// The key a vault's records are sealed under, sealed itself.
+///
+/// On the kind rather than beside it, for the reason [`EdgeDeclaration`] rides
+/// on `Edge`: a field beside the kind would make "carries a key but is not a
+/// vault" representable, and that state is a table full of records nothing can
+/// ever open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultDeclaration {
+    /// The vault's own key, sealed under the store's master key.
+    ///
+    /// Every record in the vault has its data key wrapped under this one, so
+    /// this single value is what stands between a stolen backend and every
+    /// secret the vault holds — and it is itself unreadable without a
+    /// passphrase that is never stored anywhere.
+    pub key: Wrapped,
+}
 
 /// How wide a vector store's vectors are, and what distance searches them.
 ///
@@ -559,6 +649,33 @@ pub struct EdgeOrder {
     pub descending: bool,
 }
 
+/// The parts of a stored table entry that together name its kind.
+///
+/// Grouped rather than passed as eight arguments, for the reason `TableShape`
+/// already exists a few types above: four of them are `bool`, so the compiler
+/// cannot tell one from another and a transposition produces a table of the
+/// wrong kind with nothing anywhere in an error state. Reading these out of a
+/// catalog record is the one place they all appear together.
+#[derive(Debug, Clone, Default)]
+pub struct StoredKind {
+    /// The `edge` flag.
+    pub edge: bool,
+    /// The `bucket` flag.
+    pub bucket: bool,
+    /// The `collection` flag.
+    pub collection: bool,
+    /// The `geo` flag.
+    pub geo: bool,
+    /// An edge table's declared endpoints.
+    pub endpoints: Option<EdgeDeclaration>,
+    /// A vector store's declaration.
+    pub vector: Option<VectorDeclaration>,
+    /// A vault's wrapped key.
+    pub vault: Option<VaultDeclaration>,
+    /// A bucket's size ceiling.
+    pub ceiling: Option<u64>,
+}
+
 impl TableKind {
     /// The kind a stored definition's three flags describe.
     ///
@@ -577,15 +694,33 @@ impl TableKind {
     /// # Errors
     ///
     /// Returns [`Error::CatalogMalformed`] when more than one kind is claimed.
-    pub fn from_parts(
-        edge: bool,
-        bucket: bool,
-        collection: bool,
-        geo: bool,
-        endpoints: Option<EdgeDeclaration>,
-        vector: Option<VectorDeclaration>,
-        ceiling: Option<u64>,
-    ) -> Result<Self> {
+    pub fn from_parts(stored: StoredKind) -> Result<Self> {
+        let StoredKind {
+            edge,
+            bucket,
+            collection,
+            geo,
+            endpoints,
+            vector,
+            vault,
+            ceiling,
+        } = stored;
+        // A vault is read first and alone. Every other arm below distinguishes
+        // kinds that differ in what a caller may do; this one differs in
+        // whether the records can be read at all, so a definition that both
+        // carries a vault key and claims another kind is not a puzzle to
+        // resolve by precedence — it is a catalog entry that must not be
+        // honoured in either direction.
+        if let Some(declared) = vault {
+            return match (edge, bucket, collection, geo, endpoints, vector, ceiling) {
+                (false, false, false, false, None, None, None) => Ok(Self::Vault(declared)),
+                _ => Err(Error::CatalogMalformed {
+                    entity: "table",
+                    field: "kind",
+                    found: "more than one kind",
+                }),
+            };
+        }
         match (edge, bucket, collection, geo, endpoints, vector, ceiling) {
             (false, false, false, false, None, None, None) => Ok(Self::Table),
             (true, false, false, false, endpoints, None, None) => Ok(Self::Edge(endpoints)),
@@ -607,6 +742,69 @@ impl TableKind {
                 found: "more than one kind",
             }),
         }
+    }
+}
+
+impl VaultDeclaration {
+    /// The value written inside the table's catalog entry.
+    ///
+    /// Two opaque byte strings. Nothing here is a secret — the wrapped key is
+    /// ciphertext under the store's master key, and the identifier is a random
+    /// name rather than anything derived from key material — so the catalog can
+    /// hold them the way it holds any other declaration.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        Value::Object(BTreeMap::from([
+            (
+                FIELD_KEY_ID.to_owned(),
+                Value::Bytes(self.key.key_id.bytes().to_vec()),
+            ),
+            (
+                FIELD_WRAPPED.to_owned(),
+                Value::Bytes(self.key.sealed.clone()),
+            ),
+        ]))
+    }
+
+    /// Read a declaration back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when either part is missing or holds
+    /// the wrong type. A vault whose key cannot be read is refused rather than
+    /// treated as a vault with no key: the second reads as an empty store and
+    /// would let a caller declare fields on it and write records that nothing
+    /// could ever open.
+    pub fn from_value(value: &Value) -> Result<Self> {
+        const ENTITY: &str = "vault";
+        let fields = object(value, ENTITY)?;
+        let Some(Value::Bytes(key_id)) = fields.get(FIELD_KEY_ID) else {
+            return Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_KEY_ID,
+                found: "missing or not bytes",
+            });
+        };
+        let key_id = <[u8; KeyId::BYTES]>::try_from(key_id.as_slice()).map_err(|_| {
+            Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_KEY_ID,
+                found: "the wrong number of bytes",
+            }
+        })?;
+        let Some(Value::Bytes(sealed)) = fields.get(FIELD_WRAPPED) else {
+            return Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_WRAPPED,
+                found: "missing or not bytes",
+            });
+        };
+        Ok(Self {
+            key: Wrapped {
+                key_id: KeyId::adopt(key_id),
+                sealed: sealed.clone(),
+            },
+        })
     }
 }
 

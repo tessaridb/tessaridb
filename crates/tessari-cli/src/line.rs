@@ -98,7 +98,12 @@ impl Edited {
     }
 
     /// Gather one line, with the terminal in raw mode for the duration.
-    fn edit(&mut self, prompt: &str, out: &mut dyn Write) -> io::Result<Given> {
+    ///
+    /// `masked` draws nothing where the characters go and remembers nothing
+    /// afterwards. It is for a passphrase, and it is both halves or neither: a
+    /// value hidden on screen and then put in the history is readable by the
+    /// next person who presses the up arrow, which is the same room.
+    fn edit(&mut self, prompt: &str, out: &mut dyn Write, masked: bool) -> io::Result<Given> {
         let mut line: Vec<char> = Vec::new();
         let mut at = 0_usize;
         // Where in the history the arrows have walked to, and the line that was
@@ -108,7 +113,7 @@ impl Edited {
         let mut stashed: Vec<char> = Vec::new();
         let mut pending: Option<u8> = None;
 
-        draw(out, prompt, &line, at)?;
+        draw(out, prompt, &line, at, masked)?;
         loop {
             let byte = match pending.take() {
                 Some(byte) => byte,
@@ -126,7 +131,9 @@ impl Edited {
                     write!(out, "\r\n")?;
                     out.flush()?;
                     let text: String = line.iter().collect();
-                    self.remember(&text);
+                    if !masked {
+                        self.remember(&text);
+                    }
                     return Ok(Given::Line(text + "\n"));
                 }
                 // Ctrl-C — the half-typed statement goes, the session stays.
@@ -209,7 +216,7 @@ impl Edited {
                                 if at < line.len() {
                                     line.remove(at);
                                 }
-                                draw(out, prompt, &line, at)?;
+                                draw(out, prompt, &line, at, masked)?;
                                 continue;
                             }
                             _ => continue,
@@ -247,7 +254,7 @@ impl Edited {
                     }
                 }
             }
-            draw(out, prompt, &line, at)?;
+            draw(out, prompt, &line, at, masked)?;
         }
     }
 
@@ -292,7 +299,20 @@ impl Lines for Edited {
                 _ => Given::Line(text),
             });
         };
-        let gathered = self.edit(prompt, out);
+        let gathered = self.edit(prompt, out, false);
+        drop(settled);
+        gathered
+    }
+
+    fn secret(&mut self, prompt: &str, out: &mut dyn Write) -> io::Result<Given> {
+        let Some(settled) = raw::enter() else {
+            // No raw mode means no way to stop the terminal echoing, so this
+            // refuses rather than reading a passphrase onto the screen. The
+            // caller says so and the statement can still be typed in full by
+            // somebody who accepts that.
+            return Ok(Given::Abandon);
+        };
+        let gathered = self.edit(prompt, out, true);
         drop(settled);
         gathered
     }
@@ -304,7 +324,13 @@ impl Lines for Edited {
 /// Wrapping would be nicer to look at and would need this function to know how
 /// many rows it drew last time, which is a piece of state that goes wrong the
 /// first time the window is resized between two keystrokes.
-fn draw(out: &mut dyn Write, prompt: &str, line: &[char], at: usize) -> io::Result<()> {
+fn draw(
+    out: &mut dyn Write,
+    prompt: &str,
+    line: &[char],
+    at: usize,
+    masked: bool,
+) -> io::Result<()> {
     let width = prompt.chars().count();
     // One column is kept free at the right edge: writing into the last one makes
     // some terminals wrap and others not, and a redraw cannot tell which
@@ -315,7 +341,18 @@ fn draw(out: &mut dyn Write, prompt: &str, line: &[char], at: usize) -> io::Resu
         .max(1);
     let start = at.saturating_sub(room.saturating_sub(1)).min(line.len());
     let end = line.len().min(start.saturating_add(room));
-    let visible: String = line.get(start..end).unwrap_or_default().iter().collect();
+    let held = line.get(start..end).unwrap_or_default();
+    // A row of dots rather than the characters, and one per character rather
+    // than a fixed run: the editing keys still have to land where the caller
+    // thinks they are, so the drawn width has to match the real one. The length
+    // is disclosed and that is accepted — hiding it would mean the cursor and
+    // the text disagreeing, and a passphrase you cannot correct is one people
+    // paste from somewhere worse.
+    let visible: String = if masked {
+        "•".repeat(held.len())
+    } else {
+        held.iter().collect()
+    };
     write!(out, "\r{prompt}{visible}\x1b[K\r")?;
     let column = width.saturating_add(at.saturating_sub(start));
     if column > 0 {

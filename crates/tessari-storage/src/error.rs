@@ -20,6 +20,108 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// A sealed value, a key or the keyring refused.
+    ///
+    /// Carried through rather than flattened, because the distinctions the
+    /// vault draws are the ones an operator needs: sealed is not the same
+    /// answer as wrong key, and neither is the same as a format this build does
+    /// not know. None of them names a value.
+    #[error("{0}")]
+    Vault(#[from] tessari_vault::Error),
+
+    /// The keyring cannot be read because a thread panicked while holding it.
+    ///
+    /// Reported rather than recovered from. The safe answer to "can you open
+    /// secrets" when this process cannot say what it holds is no.
+    #[error("the keyring is unavailable in this process")]
+    VaultUnavailable,
+
+    /// A write to a vault carried the entry that holds its wrapped keys.
+    ///
+    /// The name is not one the grammar produces as a bare identifier, but a
+    /// quoted field name accepts any text, so the collision is refused here
+    /// rather than assumed impossible. Accepting it would let a caller supply
+    /// its own key set and choose which key a later read opens with.
+    #[error("`{field}` is reserved: a vault holds its wrapped keys under that name")]
+    VaultReservedField {
+        /// The reserved name.
+        field: &'static str,
+    },
+
+    /// A vault was written a record that is not an object.
+    ///
+    /// A vault's records have fields, because a secret is a field and the
+    /// wrapped key set is a field beside it. There is nowhere to put either in
+    /// a bare value.
+    #[error("a record in vault `{table}` must be an object")]
+    VaultNotAnObject {
+        /// The vault's name.
+        table: String,
+    },
+
+    /// A read of a vault could not be recorded, so it is refused.
+    ///
+    /// The refusal is the mechanism and not a side effect. A store that serves
+    /// when it cannot record is a store whose audit trail an attacker disables
+    /// first, after which their reads leave no trace while every dashboard
+    /// reports health. The cost — a broken trail is an outage of every read —
+    /// is real, and is engineered around with a second device rather than by
+    /// making the trail best-effort.
+    #[error("this read cannot be recorded and so is refused: {reason}")]
+    AuditUnavailable {
+        /// Why the trail could not be written.
+        reason: String,
+    },
+
+    /// A caller named the store's own entry as a recipient.
+    ///
+    /// `#vault` is the entry the engine wraps the record's data key into, and it
+    /// is the one name in the set that means something here. Letting a caller
+    /// write it would let them choose what a later read opens with; letting them
+    /// remove it would crypto-shred the record while reporting success.
+    #[error("`{recipient}` is the vault's own entry and is not a recipient")]
+    VaultReservedRecipient {
+        /// The reserved name that was named.
+        recipient: String,
+    },
+
+    /// A recipient of that name is already on the record.
+    ///
+    /// Refused rather than replaced. Overwriting would destroy the only copy of
+    /// whatever the existing entry held, silently and in one statement; a caller
+    /// who means to replace says so in two.
+    #[error("`{recipient}` is already a recipient of this record")]
+    VaultRecipientExists {
+        /// The name that was already there.
+        recipient: String,
+    },
+
+    /// No recipient of that name is on the record.
+    ///
+    /// The important refusal of the pair. A revocation that matched nothing and
+    /// answered `ok` would leave the operator believing a party was removed
+    /// while their entry is still on the record — the one failure mode where
+    /// silence is worse than an error by a wide margin.
+    #[error("`{recipient}` is not a recipient of this record")]
+    VaultNoRecipient {
+        /// The name that was not there.
+        recipient: String,
+    },
+
+    /// A key that must be there is not.
+    ///
+    /// Two shapes reach here and both are structural rather than cryptographic:
+    /// a table declared a vault with no wrapped key on its declaration, which
+    /// the catalog refuses to build in the first place, and a record with no
+    /// wrapped key set — what a record written before its table became a vault
+    /// looks like. Neither names a value, and neither says whether a passphrase
+    /// was right.
+    #[error("no key for vault `{table}`: this record cannot be opened")]
+    VaultNoKey {
+        /// The vault's name.
+        table: String,
+    },
+
     /// Another transaction committed to a record this one wrote.
     ///
     /// Under snapshot isolation the first committer wins. Nothing was written.
@@ -397,6 +499,34 @@ impl Error {
             // identity was written, and a key that has since gone is the
             // substrate having lost something it acknowledged.
             Self::NoIdentity => ErrorCategory::Corruption,
+            // Split by what the caller can do about it, which is the whole
+            // job of a category. A sealed store, a wrong passphrase and a
+            // second unseal are all things the caller got wrong. Bytes that do
+            // not parse as a sealed value were written by something that knew a
+            // format this build does not, which is corruption from here. And a
+            // refused entropy source is a dependency being unreachable, the
+            // same reading `NoEntropy` already takes.
+            Self::Vault(inner) => match inner {
+                tessari_vault::Error::Entropy => ErrorCategory::Unavailable,
+                tessari_vault::Error::NotSealed
+                | tessari_vault::Error::UnknownVersion(_)
+                | tessari_vault::Error::UnknownAlgorithm(_) => ErrorCategory::Corruption,
+                tessari_vault::Error::WrongKey
+                | tessari_vault::Error::Sealed
+                | tessari_vault::Error::AlreadyUnsealed
+                | tessari_vault::Error::Derivation => ErrorCategory::Validation,
+            },
+            Self::VaultUnavailable | Self::AuditUnavailable { .. } => ErrorCategory::Unavailable,
+            // All three are the caller's statement being wrong about the store,
+            // not the store being broken: a reserved name it may not write, a
+            // shape a vault does not hold, or a record that predates the vault
+            // it now sits in.
+            Self::VaultReservedField { .. }
+            | Self::VaultNotAnObject { .. }
+            | Self::VaultReservedRecipient { .. }
+            | Self::VaultRecipientExists { .. }
+            | Self::VaultNoRecipient { .. }
+            | Self::VaultNoKey { .. } => ErrorCategory::Validation,
             Self::Kv(inner) => inner.category(),
             Self::Encoding(inner) => inner.category(),
         }

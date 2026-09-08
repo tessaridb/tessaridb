@@ -38,6 +38,17 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DropVector { .. }
         | StatementKind::DefineGeo { .. }
         | StatementKind::DropGeo { .. }
+        // A vault is a table too, and declaring or dropping one is decided by
+        // the caller's tenancy level like the four words above. `DROP VAULT`
+        // destroys a key rather than rows, and that makes it more consequential
+        // without making it reach differently.
+        | StatementKind::DefineVault { .. }
+        | StatementKind::DropVault { .. }
+        // Sealing is not about a table. It changes whether this process holds a
+        // key, so it is answered at the store by `Needs`, and there is no table
+        // here for a grant to be asked about.
+        | StatementKind::SealVault { .. }
+        | StatementKind::UnsealVault { .. }
         // A graph is a container, so declaring or dropping one touches no row
         // in any table: it is the caller's tenancy level that decides, exactly
         // as it is for the four words above.
@@ -114,6 +125,16 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         StatementKind::Info {
             subject: InfoSubject::Table(table) | InfoSubject::Access(table),
         } => vec![table],
+
+        // Listing a record's recipients names the vault it lives in, and this
+        // arm is not optional: the `Info` subjects that name no table fall
+        // through to an empty list, and an empty list passes the grant loop
+        // vacuously. Forgotten here, `INFO FOR RECIPIENTS OF` would answer any
+        // caller about any record — the `BACKUP` hole, in a statement that
+        // reports who may open a secret.
+        StatementKind::Info {
+            subject: InfoSubject::Recipients(target),
+        } => vec![&target.table],
 
         // A consumer names the table it will write into, and that is the whole
         // reason it appears here at all: without it the grant loop would pass
@@ -218,7 +239,18 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             found
         }
 
-        StatementKind::Get { target }
+        // `REVEAL` names its vault, and the grant on it is the **first** of the
+        // two things it needs. The second is the key, and holding one is not
+        // holding the other — which is criterion F3, and is why this arm looks
+        // exactly like every other single-record statement rather than special.
+        // Both recipient statements name their vault, and the grant on it is
+        // the reach half of F3 applied to the set: a caller who may not address
+        // the vault may not learn who can open its records, and may not add
+        // themselves to the list.
+        StatementKind::AddRecipient { target, .. }
+        | StatementKind::RemoveRecipient { target, .. }
+        | StatementKind::Reveal { target, .. }
+        | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }
         | StatementKind::Del { target }
         // A file is a record in the bucket, so the bucket is the table a grant

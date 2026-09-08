@@ -64,6 +64,7 @@ use tessari_types::{Assertion, DatabaseId, FieldKind, NamespaceId, RecordId, Tab
 
 use crate::catalog::{Catalog, CatalogChange, catalog_change};
 use crate::error::{Error, Result};
+use crate::sealing::KEYS_FIELD;
 use crate::store::Store;
 use crate::transaction::Transaction;
 
@@ -81,6 +82,11 @@ struct TableSchema {
     fields: BTreeMap<String, Declared>,
     /// Whether an undeclared field is refused.
     schemafull: bool,
+    /// Whether this is a vault, which decides one thing only: that the reserved
+    /// key set the sealing writes is exempt from the check above **here and
+    /// nowhere else**. Without the flag the exemption is by name, and one field
+    /// name would escape strictness on every ordinary table too.
+    vault: bool,
 }
 
 impl TableSchema {
@@ -101,6 +107,8 @@ struct Declared {
     kind: FieldKind,
     /// Whether it must hold something: present, and not `null`.
     required: bool,
+    /// Whether the stored value is sealed, and so is bytes whatever it declares.
+    secret: bool,
     /// What it must satisfy beyond its type, when it holds anything.
     ///
     /// Already lowered by the language, so checking it here is a comparison and
@@ -274,6 +282,15 @@ fn check(schema: &TableSchema, value: &Value, id: &RecordId) -> Option<Error> {
     };
     for (name, held) in fields {
         match schema.fields.get(name.as_str()) {
+            // A sealed field's stored form is always bytes, whatever it was
+            // declared to hold, so this check cannot see the value its
+            // declaration is about. That is not a hole: the type and the
+            // assertion are enforced against the **plaintext** before sealing,
+            // which is the only place either is knowable. It has to be that way
+            // round — a replica applying this record holds ciphertext and could
+            // not check even if it wanted to, so a check here would be one the
+            // leader passes and every follower fails.
+            Some(declared) if declared.secret => {}
             Some(declared) if !declared.kind.accepts(held) => {
                 return Some(Error::SchemaViolation {
                     table: Box::from(schema.name.as_str()),
@@ -303,6 +320,13 @@ fn check(schema: &TableSchema, value: &Value, id: &RecordId) -> Option<Error> {
                 });
             }
             Some(_) => {}
+            // The vault's own key set is not a field anybody declares — it is
+            // written by the sealing itself, after this validation's caller
+            // handed the record over. A vault is strict, so without this the
+            // store refuses every write it just sealed. Conditioned on the kind,
+            // so the exemption does not hand one field name a way past strictness
+            // on every other table.
+            None if schema.vault && name == KEYS_FIELD => {}
             None if schema.schemafull => {
                 return Some(Error::UndeclaredField {
                     table: schema.name.clone(),
@@ -352,6 +376,7 @@ fn build_schema(
         .as_ref()
         .map(|found| found.name.clone())
         .unwrap_or_default();
+    let mut vault = defined.as_ref().is_some_and(|found| found.is_vault());
     let mut schemafull = defined.is_some_and(|found| found.schemafull);
     let mut fields: BTreeMap<String, Declared> = Catalog::new(view)
         .fields_on(table)?
@@ -362,6 +387,7 @@ fn build_schema(
                 Declared {
                     kind: declared.kind,
                     required: declared.required,
+                    secret: declared.secret,
                     assert: declared.assert.clone(),
                 },
             )
@@ -373,6 +399,7 @@ fn build_schema(
             Some(CatalogChange::TableDefined(declared)) if declared.id == table => {
                 name = declared.name.clone();
                 schemafull = declared.schemafull;
+                vault = declared.is_vault();
             }
             Some(CatalogChange::FieldDefined(declared)) if declared.table == table => {
                 fields.insert(
@@ -380,6 +407,7 @@ fn build_schema(
                     Declared {
                         kind: declared.kind,
                         required: declared.required,
+                        secret: declared.secret,
                         assert: declared.assert.clone(),
                     },
                 );
@@ -403,6 +431,7 @@ fn build_schema(
         name,
         fields,
         schemafull,
+        vault,
     })
 }
 

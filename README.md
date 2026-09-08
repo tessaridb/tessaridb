@@ -10,10 +10,10 @@ A real-time multi-model database, written in Rust, built for AI agents and the
 products around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.0.5--alpha-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.0.6--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-1105%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-1159%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/TessariDB/TessariDB-protocol) ·
@@ -107,6 +107,7 @@ compares against expected answers, case by case. The counts are those cases.
 | **Objects & files** | `BUCKET`s — bytes addressed by path, byte-range reads, writes at an offset, metadata that is an ordinary record, and a declared ceiling on the largest file the bucket takes | 35 | ✅ runs |
 | **Full-text** | per-field analyzers, whole-term search, prefix search a reader is served by while still typing, fuzzy search that survives a typo, lowercase · ASCII folding · Porter2 stemming, a quoted phrase with declared slop that widens the window without relaxing the order, `OR` and `NOT` inside a query, per-field weighting written as arithmetic, a `did you mean` suggestion that is a field beside the records and never a substitution into the query, and highlighting that marks the token the read actually reached rather than the characters that were typed | 100 | ✅ runs |
 | **Vector** | cosine, Euclidean and dot distance, kNN ordering, a graph index that declares whether it answered exactly, and a field that declares how wide its vectors are so a write of any other width is refused where it happens, and a vector store declared as one so the width, the index and the requirement cannot come apart, and a read that says what it will spend on the walk, and a recall the store reports only once something has measured it | 50 | ✅ runs |
+| **Vault** | a store whose declared fields can be `SECRET`, sealed under a per-record key before the record is encoded so the index, the change feed, the replication log and a backup all carry ciphertext, read only by `REVEAL` naming one record, sealed and unsealed by a passphrase that reaches memory and never disk, and dropped by destroying the key rather than the rows, with an opaque recipient set the engine carries and never reads, and a strictness a vault cannot be talked out of because a field nobody declared is a field nothing seals, with a trail every `REVEAL` writes to and `INFO FOR AUDIT` reads back, and edited field by field so that rotating a secret keeps the recipients it was shared with | 54 | ✅ runs |
 | **Time-series** | epoch-anchored windows every process agrees on, aggregates per window, retention as a statement that reports what it removed | 12 | ✅ runs |
 | **References** | `FETCH` — follow a reference, an array of them, or a nested route, without a join | 12 | ✅ runs |
 | **Geospatial** | a geometry type on an exact integer grid, eight predicates over whole shapes, geodesic distance and area, shapes written as literals, a spatial index seven of the eight predicates read through, a nearest-first read over positions, a geo store declared as one so the field, the index and the requirement cannot come apart, and a measured refinement ratio saying what that index's candidates cost | 65 | 🚧 partial — the nearest few is over positions rather than whole shapes |
@@ -130,7 +131,7 @@ possible rather than aspirational.
 
 ## Status
 
-**Stage: active development · `0.0.5-alpha` · not published to crates.io.** What
+**Stage: active development · `0.0.6-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -759,7 +760,7 @@ credential precisely so that a supervisor does not have to hold one.
 
 The `Dockerfile` builds from this working tree; the published image is
 [`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb). It is
-alpha, and `latest` moves — pin the version tag for anything you would mind
+a beta, and `latest` moves — pin the version tag for anything you would mind
 losing.
 
 ## Keeping one running on a Mac
@@ -1099,6 +1100,7 @@ crates/
   tessari-ql                  TessariQL: lexer, parser, AST
   tessari-query               a typed query builder that builds the syntax, never the text
   tessari-session             running a script: catalog, planning, execution, permissions
+  tessari-vault               sealed values: the key hierarchy and the authenticated envelope
   tessaridb                     the embedded front door — open, run, follow the changes
   tessari-http                the HTTP and WebSocket surface
   tessari-wire                the wire protocol

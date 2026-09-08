@@ -28,6 +28,7 @@ const FIELD_DATABASE: &str = "database";
 const FIELD_TABLE: &str = "table";
 const FIELD_KIND: &str = "kind";
 const FIELD_REQUIRED: &str = "required";
+const FIELD_SECRET: &str = "secret";
 const FIELD_DEFAULT: &str = "default";
 const FIELD_ANALYZER: &str = "analyzer";
 const FIELD_ASSERT: &str = "assert";
@@ -43,6 +44,8 @@ const ENTITY: &str = "field";
 pub struct FieldShape {
     /// Whether the field must hold a value.
     pub required: bool,
+    /// Whether the field's value is sealed before it is stored.
+    pub secret: bool,
     /// The expression a write uses when it supplies none, as written.
     pub default: Option<String>,
     /// The analyzer that turns this field's text into terms, by name.
@@ -83,6 +86,20 @@ pub struct FieldDefinition {
     /// may hold nothing is a constraint that constrains almost nothing. The
     /// distinction stays available on every field that is not required.
     pub required: bool,
+    /// Whether this field's value is sealed before the record is encoded.
+    ///
+    /// The marker that makes a field a secret, and it lives here — on the
+    /// **definition** — rather than being decided by the statement that writes
+    /// the value, because a write path that had to remember to seal is a write
+    /// path that will one day forget. Declared once, enforced on every write
+    /// that follows.
+    ///
+    /// It is only legal on a vault, and that is checked where the field is
+    /// declared. A secret field on an ordinary table would be sealed under a
+    /// key nothing holds, since the four-level hierarchy hangs off the vault's
+    /// own key — so the write would succeed and the value would never be
+    /// readable again.
+    pub secret: bool,
     /// The expression a write uses when it supplies no value, as written.
     ///
     /// Stored as **text** and parsed by the layer that can parse it. The store
@@ -127,6 +144,7 @@ impl FieldDefinition {
                 Value::from(self.kind.name().as_ref()),
             ),
             (FIELD_REQUIRED.to_owned(), Value::Bool(self.required)),
+            (FIELD_SECRET.to_owned(), Value::Bool(self.secret)),
             (
                 FIELD_DEFAULT.to_owned(),
                 self.default.as_deref().map_or(Value::None, Value::from),
@@ -179,6 +197,7 @@ impl FieldDefinition {
             // A definition written before either existed reads as neither, so
             // nothing on disk has to be migrated.
             required: flag(fields, FIELD_REQUIRED, ENTITY)?,
+            secret: flag(fields, FIELD_SECRET, ENTITY)?,
             default: optional_text(fields, FIELD_DEFAULT)?,
             analyzer: optional_text(fields, FIELD_ANALYZER)?,
             assert: optional_assertion(fields)?,
@@ -261,6 +280,7 @@ impl Catalog<'_, '_> {
             name: name.to_owned(),
             kind,
             required: shape.required,
+            secret: shape.secret,
             default: shape.default,
             analyzer: shape.analyzer,
             assert: shape.assert,
@@ -367,6 +387,7 @@ mod tests {
             name: "email".to_owned(),
             kind,
             required: false,
+            secret: false,
             default: None,
             assert: None,
             analyzer: None,

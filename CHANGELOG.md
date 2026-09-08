@@ -12,6 +12,109 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.0.6-beta — 2026-09-08
+
+**Released.** Tagged `v0.0.6-beta` on `main`, and published as
+[`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb) —
+`0.0.6-beta` and `latest`, `linux/amd64` and `linux/arm64`.
+
+**This release adds an engine.** A **vault** is a table whose declared fields
+marked `SECRET` are encrypted before the record is written, which makes nine
+engines over one substrate rather than eight. It changes the on-disk format only
+by adding a record shape that did not exist; a store written by `0.0.5-alpha`
+opens and reads under it unchanged, and a store holding a vault does not open
+under `0.0.5-alpha`.
+
+**The suffix moves from `alpha` to `beta`**, and the compatibility promise does
+not move with it: this file's opening paragraph still governs. Versions before
+1.0 do not promise compatibility with each other, and there is still no migration
+between them.
+
+The claim the whole engine is written against is narrower than "the database
+cannot read it", and it is worth reading exactly:
+
+> **The stored bytes are never plaintext, no key that opens them is written to
+> disk unwrapped, and a sealed or restarted node cannot open anything for
+> anybody.**
+
+A running, unsealed server *can* decrypt — it has to, to answer `REVEAL`. What a
+vault takes away is every copy of the data that is not that running process.
+
+### Added
+
+- **`DEFINE VAULT`, and `SECRET` on a field declaration.** The sealing happens
+  below the layer that serves reads — the ciphertext *is* the stored value — so
+  the search index, the change feed, the replication log and every backup carry
+  ciphertext without any of them having to know what a vault is. That placement
+  was chosen by measurement: an exfiltration survey found no generic read path
+  in this store consults the table kind, so sealing at the session layer would
+  have left plaintext in all four.
+
+- **`UNSEAL VAULT WITH '…'` and `SEAL VAULT`.** The master key exists in memory
+  between those two statements and nowhere else. It is per process, so a restart
+  seals the store and an unattended restart is impossible — a real operational
+  cost, stated here rather than discovered during one. The passphrase is a quoted
+  string rather than an expression, because an expression would put a secret
+  through the evaluator.
+
+- **`REVEAL`**, the only statement that turns a sealed value back into plaintext.
+  It names one record and takes no `WHERE` and no `ORDER BY`: a filter over a
+  secret is an oracle that answers one bit per statement, and an ordering is the
+  same oracle more slowly.
+
+- **`ADD RECIPIENT` / `REMOVE RECIPIENT` / `INFO FOR RECIPIENTS OF`** — an opaque
+  set the engine carries and never interprets. What a recipient's material *is*
+  stays yours to decide, because deciding it here would mean holding the second
+  key hierarchy that answers it.
+
+- **An audit trail every `REVEAL` writes to before its answer leaves**, and a
+  read that cannot be recorded is refused rather than served. `INFO FOR AUDIT`
+  and `INFO FOR AUDIT BY '…'` read it back, answered only to a caller who
+  administers the whole store — the trail is store-wide because a read is
+  recorded before anybody knows whose tenancy it belonged to.
+
+- **`DROP VAULT`**, which destroys the key rather than the rows. That is the only
+  deletion claim a store can honestly make. Where it stops is documented: a
+  backup taken *before* the drop restores a vault that opens, so destroying a
+  secret is two acts — drop the vault, and expire the copies that predate it.
+
+- **A quoted field name** in `DEFINE FIELD`, `ALTER TABLE … ADD/ALTER/DROP FIELD`
+  and `REVEAL`. Found because a vault's flagship example was impossible: a field
+  called `password` could be written in an object literal and could not be
+  declared, and a vault is strict, so it was a field nothing could hold.
+
+### Changed
+
+- **A vault record is edited field by field**, and this is the difference worth
+  knowing before you rotate a secret. An edit seals only the fields it names,
+  leaves every other envelope untouched, and reuses the record's own data key —
+  so every wrap made by `ADD RECIPIENT` still opens. Replacing the record whole
+  mints a fresh data key, so the recipient entries are cleared.
+
+  What is refused is narrow: an assignment on a vault may not **read** the
+  record. The fields an edit names are the fields you supplied, so writing them
+  needs nothing opened; an expression that reads the record would have to open a
+  sealed value to answer, and opening a secret is `REVEAL`, which records itself
+  before it answers.
+
+- **`INFO FOR`'s subject list names `GRAPH` and `RECIPIENTS OF`**, both of which
+  had parsed since they existed without appearing in the message that lists what
+  it accepts.
+
+### Not defended against, published with the engine
+
+Eight things, listed in full in the language reference and on the documentation
+site. The one worth repeating here is the eighth, because it is the one whose
+obvious fix does not work: **an attacker who can write to the storage backend
+gains a rollback.** Restoring one record's stored bytes from an older copy makes
+the secret that was rotated out live again, because the envelope binds the table,
+the record and the field — everything identifying *which* value this is, and
+nothing identifying *when*. A version bound into the envelope is restored along
+with the ciphertext it was meant to police, so both sides of the comparison move
+together; closing it needs a counter outside the store, and an embedded engine
+whose only durable state is the attacked backend has none. Rotate at the source,
+and treat backend write access as equivalent to holding the secrets.
+
 ## 0.0.5-alpha — 2026-09-07
 
 **Released.** Tagged `v0.0.5-alpha` on `main`, and published as
@@ -121,7 +224,7 @@ same records under the new one.
 This release is full-text search. `MATCHES` could ask for a whole word and score
 it; it can now ask for the word a reader has started typing, the word they meant
 rather than the one they typed, a phrase, either of two words, and not a third —
-and it can say where in the text it matched. 1105 conformance cases define the
+and it can say where in the text it matched. 1159 conformance cases define the
 language and run in the build, up from 1035.
 
 Nothing here changes an answer a `0.0.2-alpha` statement already gave. Every

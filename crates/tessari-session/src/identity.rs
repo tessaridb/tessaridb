@@ -232,6 +232,18 @@ impl Needs {
         kinds: &[Kind::Read, Kind::Operate],
         at: At::Store,
     };
+    /// Governing, where the thing governed is the store — the audit trail.
+    ///
+    /// [`Self::GOVERN`] with the container widened, as [`Self::MANAGE_STORE`] is
+    /// to [`Self::MANAGE`]. Nothing new is invented: the audit trail is a
+    /// question about identities, which is what `govern` answers, and it is held
+    /// store-wide because a vault read is recorded before anybody knows whose
+    /// tenancy it belonged to. An owner of one namespace must not satisfy it, or
+    /// they read every other namespace's reads.
+    const GOVERN_STORE: Self = Self {
+        kinds: &[Kind::Govern],
+        at: At::Store,
+    };
     /// Declaring a thing that will later write on the declarer's behalf.
     const MANAGE_WRITE: Self = Self {
         kinds: &[Kind::Manage, Kind::Write],
@@ -313,6 +325,13 @@ impl Needs {
             | StatementKind::Throw { .. }
             | StatementKind::Select(_)
             | StatementKind::Get { .. }
+            // Reading a secret is reading, and demanding more here would be the
+            // wrong kind of caution: it would make the grant the second lock,
+            // when the key already is. A caller who may read the vault and holds
+            // no key is refused at decryption; a caller who holds the key and
+            // may not read the vault is refused here. Neither passes by the
+            // other's route (F3).
+            | StatementKind::Reveal { .. }
             | StatementKind::Keys { .. }
             // Reading a file is reading. Named rather than left to the
             // catch-all, which reads as `Write` — the default that is right for
@@ -337,6 +356,13 @@ impl Needs {
             // named container resolved, which is not what the session's tenancy
             // holds at the moment `USE` runs, so it is its own slice (Q-252).
             // A scoped user is still refused by `within_tenancy`.
+            // Unsealing is running the node. It is store-wide because the key
+            // it unwraps is store-wide, and it is `Operate` rather than `Manage`
+            // for the same reason `DEFINE NODE` is: it changes what this process
+            // can do, not what the store contains.
+            StatementKind::SealVault { .. } | StatementKind::UnsealVault { .. } => {
+                Self::OPERATE_STORE
+            }
             StatementKind::Use { .. }
             | StatementKind::Begin
             | StatementKind::Commit
@@ -454,6 +480,15 @@ impl Needs {
             StatementKind::Info {
                 subject: InfoSubject::Consumer(_) | InfoSubject::Consumers,
             } => Self::MANAGE,
+            // The audit trail, and it must be named here rather than left to
+            // the arm below. That arm is a catch-all over `Info` alone, so a new
+            // subject joins it silently — and this is the subject where that is
+            // worst: read is what every signed-in caller has, and the trail is
+            // every vault read in every tenancy of the store. Named, it demands
+            // `govern` over the store itself.
+            StatementKind::Info {
+                subject: InfoSubject::Audit(_),
+            } => Self::GOVERN_STORE,
             // The other four are reads of the catalog, and what they report is
             // narrowed to what the caller could have found out anyway.
             StatementKind::Info { .. } => Self::READ,
@@ -495,6 +530,8 @@ impl Needs {
             | StatementKind::DropVector { .. }
             | StatementKind::DefineGeo { .. }
             | StatementKind::DropGeo { .. }
+            | StatementKind::DefineVault { .. }
+            | StatementKind::DropVault { .. }
             | StatementKind::DefineGraph { .. }
             | StatementKind::DropGraph { .. }
             | StatementKind::DefineEdge { .. }
@@ -530,6 +567,15 @@ impl Needs {
                 ..
             }
             | StatementKind::Update { .. }
+            // Both recipient statements refuse on a claim about prior state —
+            // *that name is already a recipient*, *that name is not one* — so
+            // each answers a question about the set before it changed it, which
+            // is the property this class is measured on rather than reasoned
+            // about. The refusals are deliberate (a silent revocation is the
+            // worst answer `REMOVE RECIPIENT` could give), and the reading half
+            // is what they cost.
+            | StatementKind::AddRecipient { .. }
+            | StatementKind::RemoveRecipient { .. }
             | StatementKind::DeleteWhere { .. } => Self::READ_WRITE,
             // **The six that are measurably silent about prior state.** Every
             // one of them answers `ok` against an absent or conflicting record,

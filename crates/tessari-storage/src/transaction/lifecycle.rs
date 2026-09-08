@@ -36,6 +36,16 @@ impl<'a> Transaction<'a> {
         self.snapshot
     }
 
+    /// The store this transaction runs against.
+    ///
+    /// `pub(crate)` and not part of the public surface: everything above this
+    /// crate already holds the store it opened the transaction from, and the one
+    /// caller here is the sealing path, which needs the per-process keyring that
+    /// lives on the store rather than in the log.
+    pub(crate) const fn store(&self) -> &Store {
+        self.store
+    }
+
     /// Read a record as of this transaction's snapshot.
     ///
     /// Returns `None` when the record does not exist at that point, including

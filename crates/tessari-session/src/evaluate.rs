@@ -970,6 +970,48 @@ impl Session<'_> {
     /// The access path stays with produce. Which walk serves a table is decided
     /// by whether one *succeeds*, so a prepare that reported a path would be
     /// guessing at what the walk is about to find.
+    /// Refuse a `SELECT` whose source is a vault, and name the word that reads one.
+    ///
+    /// # What this refusal is and is not
+    ///
+    /// It is **not** a confidentiality control, and treating it as one would be
+    /// the mistake. A `SELECT` over a vault that reached the records would
+    /// answer with the sealed envelopes, because the envelope *is* the stored
+    /// value — the exfiltration survey's whole finding. So nothing leaks if a
+    /// path reaches records without passing here.
+    ///
+    /// What it buys is that the language means something. A caller who writes
+    /// `SELECT * FROM team` and receives a column of opaque bytes concludes the
+    /// vault is broken; one who is told to use `REVEAL` has learned the feature.
+    ///
+    /// # Where it is applied, and where it is not
+    ///
+    /// Here, at the three `SELECT` sources that name a table — which is exactly
+    /// the form the design's refusal names. A graph traversal or a `FETCH` that
+    /// lands on a vault record still returns ciphertext rather than this
+    /// message. That gap is recorded as **Q-416** rather than closed by adding
+    /// the call to every site that resolves a table: a refusal maintained by
+    /// remembering to call it is the shape of thing this whole feature avoids,
+    /// and the mechanical enumeration of read paths belongs to the negative
+    /// matrix in W122, where it can be derived rather than recalled.
+    pub(crate) fn refuse_reading_a_vault(
+        &self,
+        transaction: &mut Transaction<'_>,
+        id: TableId,
+        table: &TableRef,
+    ) -> Result<()> {
+        if Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|definition| definition.is_vault())
+        {
+            return Err(Error::NotReadBySelect {
+                table: table.name.text.clone(),
+                span: table.span,
+            });
+        }
+        Ok(())
+    }
+
     fn prepare_source<'a>(
         &self,
         transaction: &mut Transaction<'_>,
@@ -994,6 +1036,7 @@ impl Session<'_> {
             )),
             Source::Record(target) => {
                 let (_, address) = self.address(transaction, target)?;
+                self.refuse_reading_a_vault(transaction, address.table, &target.table)?;
                 let visible = self.visible_in(transaction, address.table)?;
                 let found = match transaction.get(&address)? {
                     Some(payload) => {
@@ -1011,6 +1054,7 @@ impl Session<'_> {
             }
             Source::Table(table) => {
                 let (context, id) = self.resolve_table(transaction, table)?;
+                self.refuse_reading_a_vault(transaction, id, table)?;
                 let searched = self.searched_for(transaction, id, &shown(select))?;
                 Ok((Prepared::Table(context, id), searched))
             }
@@ -1028,6 +1072,11 @@ impl Session<'_> {
             }
             Source::Where { table, condition } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
+                // Ahead of the analyzer resolution below, so a `WHERE` naming a
+                // secret field is refused for being a read of a vault rather
+                // than for the shape of its condition — one refusal, and the one
+                // that names the statement to use instead.
+                self.refuse_reading_a_vault(transaction, id, table)?;
                 // Resolved once for the query rather than once per record: which
                 // analyzer a field carries is a property of the schema, and the
                 // schema does not change under a read; nor does the collection a

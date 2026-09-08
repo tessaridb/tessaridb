@@ -256,6 +256,13 @@ fn kind_name(error: &Error) -> &'static str {
         Error::AnchorGone { .. } => "AnchorGone",
         Error::StillDepended { .. } => "StillDepended",
         Error::TableBelongsToGraph { .. } => "TableBelongsToGraph",
+        Error::NotReadBySelect { .. } => "NotReadBySelect",
+        Error::NotIndexable { .. } => "NotIndexable",
+        Error::SecretNeedsVault { .. } => "SecretNeedsVault",
+        Error::NotASecret { .. } => "NotASecret",
+        Error::VaultIsStrict { .. } => "VaultIsStrict",
+        Error::VaultEditComputesFromTheRecord { .. } => "VaultEditComputesFromTheRecord",
+        Error::RecipientIsNotAName { .. } => "RecipientIsNotAName",
         _ => "Unnamed",
     }
 }
@@ -329,6 +336,19 @@ fn store_kind(error: &tessari_storage::Error) -> &'static str {
         tessari_storage::Error::NoSuchParent { .. } => "NoSuchParent",
         tessari_storage::Error::VersionReclaimed { .. } => "VersionReclaimed",
         tessari_storage::Error::VersionInTheFuture { .. } => "VersionInTheFuture",
+        // One name for every refusal the vault crate raises, deliberately. The
+        // distinctions it draws — sealed, wrong key, unknown algorithm — matter
+        // to an operator and must not become a corpus vocabulary a client can
+        // branch on: "which of these went wrong" is exactly the question an
+        // attacker asks, and a stable name per variant is an answer.
+        tessari_storage::Error::Vault(_) => "Vault",
+        tessari_storage::Error::VaultUnavailable => "VaultUnavailable",
+        tessari_storage::Error::VaultReservedField { .. } => "VaultReservedField",
+        tessari_storage::Error::VaultNotAnObject { .. } => "VaultNotAnObject",
+        tessari_storage::Error::VaultNoKey { .. } => "VaultNoKey",
+        tessari_storage::Error::VaultReservedRecipient { .. } => "VaultReservedRecipient",
+        tessari_storage::Error::VaultRecipientExists { .. } => "VaultRecipientExists",
+        tessari_storage::Error::VaultNoRecipient { .. } => "VaultNoRecipient",
         _ => "Unnamed",
     }
 }

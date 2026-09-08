@@ -77,6 +77,24 @@ pub struct Store {
     /// answering `INFO FOR CONSUMER` and the thread doing the consuming must be
     /// looking at one registry, not at two that agree until they do not.
     running: Arc<crate::running::Running>,
+    /// Whether this process can open what its vaults hold.
+    ///
+    /// Shared for the same reason as the two registries above, and the
+    /// consequence of getting it wrong is larger: two handles to one store with
+    /// two keyrings means one connection unseals and the next one is still
+    /// sealed, which reads as an intermittent authorization fault rather than
+    /// as the design error it is.
+    ///
+    /// It is **per-process and never persisted**. The root record travels in
+    /// the log because every node needs it; the unsealed master key travels
+    /// nowhere, so a follower holding every byte of the leader's log holds
+    /// nothing that opens a secret.
+    vault: Arc<crate::vault::OpenVault>,
+    /// Where a read of a vault is recorded before its answer leaves.
+    ///
+    /// Beside the vault rather than inside it: the trail outlives any one
+    /// unsealing, and a sealed store still records the reads it refused.
+    audit: Arc<crate::audit::AuditTrail>,
 }
 
 impl Store {
@@ -103,6 +121,10 @@ impl Store {
             backend,
             snapshots: Arc::new(Registry::default()),
             running: Arc::new(crate::running::Running::default()),
+            // Sealed. A store that opened unsealed would be one that opens
+            // secrets for whoever restarted it.
+            vault: Arc::new(crate::vault::OpenVault::sealed()),
+            audit: Arc::new(crate::audit::AuditTrail::default()),
         })
     }
 
@@ -142,6 +164,26 @@ impl Store {
     #[must_use]
     pub fn running(&self) -> &Arc<crate::running::Running> {
         &self.running
+    }
+
+    /// Where a read of a vault is recorded before its answer leaves.
+    ///
+    /// Handing this out is safe in a way handing out a key is not: what a caller
+    /// can do with it is add a device that must also succeed for a read to be
+    /// served. There is no way through it to make a read unrecorded.
+    #[must_use]
+    pub fn audit(&self) -> &Arc<crate::audit::AuditTrail> {
+        &self.audit
+    }
+
+    /// Whether this process can open what the store's vaults hold.
+    ///
+    /// Sealed after every restart, deliberately: unsealing is the one thing
+    /// nobody can automate away without also removing the property that makes a
+    /// restart safe.
+    #[must_use]
+    pub fn vault(&self) -> &Arc<crate::vault::OpenVault> {
+        &self.vault
     }
 
     /// Change what this node is for, and where it is reached.

@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 mod adjacency;
+mod audit;
 mod catalog;
 mod covering;
 mod error;
@@ -33,30 +34,39 @@ mod node;
 mod reclaim;
 mod running;
 mod schema;
+mod sealing;
 mod snapshots;
 mod store;
 mod transaction;
+mod vault;
 
 pub use catalog::{
     AnalyzerDefinition, Authority, Catalog, ConsumerDefinition, DatabaseDefinition, EDGE_IN,
     EDGE_OUT, EdgeDeclaration, EdgeKindDefinition, EdgeOrder, FieldDefinition, FieldShape,
     GEO_FIELD, GrantDefinition, GraphDefinition, Held, IndexDefinition, IndexShape, Kind, Mapped,
     NamespaceDefinition, OnFailure, RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE,
-    SYSTEM_NAMESPACE, TableDefinition, TableKind, TableShape, UserDefinition, VECTOR_FIELD,
-    VectorDeclaration, VectorDistance, Verb,
+    SYSTEM_NAMESPACE, StoredKind, TableDefinition, TableKind, TableShape, UserDefinition,
+    VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance, Verb,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
+pub use catalog::VaultRoot;
 pub use covering::MEASURED_RELATION;
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
+pub use audit::{AuditDevice, AuditTrail, VaultRead, entries as audit_entries, reads_by};
 pub use error::{Error, Result};
 pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use graph::vector_of;
 pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
+pub use sealing::{
+    KEYS_FIELD, VAULT_RECIPIENT, add_recipient, initialise_root, mint_vault_key, open_data_key,
+    open_field, recipients, remove_recipient, reseal_named, seal_secrets, vault_key_scope,
+};
 pub use store::{Health, Store};
 pub use tessari_encoding::{BUILD_VERSION, Roles};
 pub use transaction::{
     Expansion, Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction,
 };
+pub use vault::OpenVault;
