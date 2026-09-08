@@ -13,7 +13,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
 use rust_decimal::Decimal;
-use tessari_types::{Datetime, Duration, Number, RecordId, RecordRef, TableId, Value, ValueRange};
+use tessari_types::{
+    Datetime, Duration, Geometry, Number, Position, RecordId, RecordRef, TableId, Value, ValueRange,
+};
 
 /// One of each type, plus the values that break a careless implementation.
 fn corpus() -> Vec<Value> {
@@ -67,6 +69,16 @@ fn corpus() -> Vec<Value> {
         ))),
         Value::Set(BTreeSet::new()),
         Value::Set(BTreeSet::from([Value::Null])),
+        // The two the corpus went without for two releases (Q-476). They are
+        // last because the ranks are appended and never inserted, and they carry
+        // pairs rather than single values for the same reason every other type
+        // here does: a total order fails on a *pair*, so one value of a type
+        // proves that it sorts against the others and nothing about how it sorts
+        // against itself.
+        Value::Geometry(Geometry::Point(Position::new(0.0, 0.0))),
+        Value::Geometry(Geometry::Point(Position::new(1.0, 1.0))),
+        Value::Regex(String::new()),
+        Value::Regex("a".to_owned()),
     ]
 }
 
@@ -80,18 +92,19 @@ fn the_corpus_covers_every_type_in_the_milestone_set_and_no_other() {
     assert_eq!(
         seen,
         [
-            "array", "bool", "bytes", "datetime", "duration", "none", "null", "number", "object",
-            "range", "record", "set", "string", "table", "uuid",
+            "array", "bool", "bytes", "datetime", "duration", "geometry", "none", "null", "number",
+            "object", "range", "record", "regex", "set", "string", "table", "uuid",
         ],
-        "this corpus covers fifteen of the value system's seventeen types; \
-         `geometry` and `regex` are deliberately absent (Q-476) and every other \
-         change to the set belongs here"
+        "the corpus must hold every one of the value system's seventeen types \
+         and no other — a type absent from here is a type no property in this \
+         file is asserted about"
     );
-    // Fifteen, and the two that are missing are named above rather than left to
-    // be discovered. The value system has **seventeen** types: this list is a
-    // statement about the corpus below, not about the language, and the message
-    // said otherwise until W159.
-    assert_eq!(seen.len(), 15);
+    // Seventeen, and the list is now the language's own set rather than a
+    // sample of it. It held fifteen until W160: `geometry` and `regex` were
+    // added to `Value` and never added here, and the assertion's message
+    // presented that gap as a milestone decision, which is the version of the
+    // sentence that stops anybody looking (Q-476).
+    assert_eq!(seen.len(), 17);
 }
 
 // ------------------------------------------------------- absent versus null
@@ -252,6 +265,12 @@ fn every_type_orders_below_the_next_one_in_the_declared_rank() {
             Bound::Unbounded,
         ))),
         Value::Set(BTreeSet::new()),
+        // Appended to `Rank` and therefore appended here. Pinning them matters
+        // more than pinning the ones above, not less: a rank added at the end is
+        // the one somebody could later "tidy" into alphabetical position, and
+        // doing so reorders every index holding a mixed column.
+        Value::Geometry(Geometry::Point(Position::new(0.0, 0.0))),
+        Value::Regex(String::new()),
     ];
     for pair in one_of_each.windows(2) {
         assert!(
