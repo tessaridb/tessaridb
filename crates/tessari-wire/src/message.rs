@@ -3,15 +3,15 @@
 //! # Values travel in the store's own encoding
 //!
 //! Not JSON. The HTTP endpoint speaks JSON because a browser is owed JSON, and
-//! it pays for that: fifteen value types projected onto six, with a decimal
+//! it pays for that: seventeen value types projected onto six, with a decimal
 //! quoted so it is not silently a double and a datetime, a duration and a record
 //! reference all arriving as text. A client reading that back has to *guess* —
 //! deciding `"12.34"` is a decimal and `"2s"` a duration by looking at them,
 //! which is a parser inventing what a lossless encoder already knew.
 //!
 //! So a value here goes through `tessari_encoding::payload`, the same codec the
-//! store writes records with. Fifteen types out, fifteen types back, nothing to
-//! get wrong at either end.
+//! store writes records with. Seventeen types out, seventeen types back, nothing
+//! to get wrong at either end.
 
 use std::collections::BTreeMap;
 

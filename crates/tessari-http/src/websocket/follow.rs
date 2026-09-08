@@ -111,9 +111,11 @@ pub(crate) fn read(body: &str) -> Result<Asked, String> {
 
 /// One change, as the object a browser parses.
 ///
-/// The fifteen-into-six compromise ADR-0016 recorded for this surface applies
-/// here exactly as it does to a query answer: the same encoder, so a value does
-/// not mean one thing in a reply and another in a feed.
+/// The seventeen-into-six compromise ADR-0016 recorded for this surface — it
+/// was fifteen types when that decision was written, and the ADR keeps its own
+/// number because a dated record should — applies here exactly as it does to a
+/// query answer: the same encoder, so a value does not mean one thing in a
+/// reply and another in a feed.
 pub(crate) fn encode(change: &Change, table: &str, allowed: &Visible, names: &Names) -> String {
     let mut out = String::from(r#"{"sequence":"#);
     out.push_str(&change.sequence.get().to_string());

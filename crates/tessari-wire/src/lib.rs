@@ -24,12 +24,12 @@
 //!
 //! # Why not JSON, when there is already an endpoint that speaks it
 //!
-//! Because JSON has six types and this store has fifteen. The HTTP surface pays
+//! Because JSON has six types and this store has seventeen. The HTTP surface pays
 //! that price deliberately — a browser is owed JSON — and quotes a decimal so it
 //! is not silently a double. A client reading that back has to *guess*: is
 //! `"12.34"` a decimal, and `"2s"` a duration? Here a value goes through the
-//! codec the store writes records with, so fifteen types go out and fifteen come
-//! back, and neither end decides anything.
+//! codec the store writes records with, so seventeen types go out and seventeen
+//! come back, and neither end decides anything.
 //!
 //! # What it is not, yet
 //!

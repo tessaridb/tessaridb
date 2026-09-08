@@ -72,7 +72,7 @@ impl Client {
 
     /// Run a script whose parameters take the values `parameters` binds.
     ///
-    /// The values travel in the store's own codec, so all fifteen kinds cross
+    /// The values travel in the store's own codec, so all seventeen kinds cross
     /// unchanged and the server never has to *read* one — which is what keeps
     /// the grammar's rule intact at this distance: a supplied value cannot
     /// become syntax, and nothing about being remote gives that back.
