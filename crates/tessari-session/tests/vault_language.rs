@@ -634,3 +634,83 @@ fn a_bare_keyword_is_still_not_a_field_name_and_a_missing_name_still_says_so() {
         "a field declaration with no name did not report a missing name: {missing}"
     );
 }
+
+/// Rotating a secret, and the two ways an edit could have been spelled.
+///
+/// # What was wrong, and why nothing caught it
+///
+/// A record read back for an edit carries `#keys` — the map of data keys
+/// wrapped once per recipient — and the *ciphertext* of every sealed field.
+/// `SET` and `MERGE` compute from that record, so they carried both into the
+/// write: sealing refused `#keys` by name, and a vault holding a second secret
+/// refused earlier still, with a schema violation saying a `string` field held
+/// bytes.
+///
+/// Both messages were about the write and neither was about the cause, and the
+/// cause is not routable-around: computing from a sealed field means opening
+/// it, opening one is `REVEAL`, and `REVEAL` records itself before it answers.
+/// So the refusal now says what the language actually offers.
+///
+/// Every existing test wrote with `CREATE` or replaced records whole, which is
+/// why a suite of twenty vault tests was green over a store where a secret
+/// could not be rotated by the verb an operator reaches for first.
+#[test]
+fn an_edit_that_computes_from_a_vault_record_says_what_to_write_instead() {
+    let store = store();
+    let mut session = holding(&store);
+    session
+        .run(&format!(
+            "CREATE team:'github' = {{ login: 'ada', token: '{PLANTED}' }};"
+        ))
+        .unwrap();
+
+    for statement in [
+        "UPDATE team:'github' SET token = 'rotated';",
+        "UPDATE team:'github' MERGE { token: 'rotated' };",
+    ] {
+        let refused = refusal(&mut session, statement);
+        // Pinned to the words only this refusal produces. The two it replaced —
+        // one naming `#keys`, one naming a type mismatch — would both satisfy a
+        // check that only asserted an error came back.
+        assert!(
+            refused.contains("written whole") && refused.contains("UPDATE"),
+            "{statement} was refused for another reason: {refused}",
+        );
+        assert!(
+            !refused.contains("#keys"),
+            "the refusal still names the store's own field: {refused}",
+        );
+    }
+
+    // And the form it points at works, which is what makes the message worth
+    // trusting rather than a dead end.
+    session
+        .run("UPDATE team:'github' = { login: 'ada', token: 'rotated' };")
+        .unwrap();
+    let opened = format!(
+        "{:?}",
+        value(&mut session, "REVEAL token FROM team:'github';")
+    );
+    assert!(opened.contains("rotated"), "{opened}");
+    assert!(
+        !opened.contains(PLANTED),
+        "the rotation left the old secret readable: {opened}",
+    );
+}
+
+/// The same refusal does not reach a table that is not a vault.
+///
+/// The check keys on the record carrying the store's key map, which only a
+/// vault's does — so this is the control that says the condition is the vault
+/// rather than the verb.
+#[test]
+fn an_ordinary_table_is_still_edited_field_by_field() {
+    let store = store();
+    let mut session = holding(&store);
+    session
+        .run("DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { body: 'first' };")
+        .unwrap();
+    session.run("UPDATE notes:1 SET body = 'second';").unwrap();
+    let read = format!("{:?}", session.run("SELECT body FROM notes:1;").unwrap());
+    assert!(read.contains("second"), "{read}");
+}

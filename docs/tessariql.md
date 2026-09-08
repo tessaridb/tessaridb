@@ -1115,6 +1115,7 @@ entries were ever sealed.
 | a field nobody declared, on a write | there is no declaration to carry the `SECRET` marker, so the value would be stored in the clear |
 | `ALTER TABLE … SET SCHEMALESS` | it would remove the refusal above, one statement after the vault was declared |
 | `EXPLAIN SELECT … FROM team` | `EXPLAIN` describes a read; a read the store refuses has no plan, and printing one would describe a walk that could never start |
+| `UPDATE team:'github' SET token = …` and `MERGE` | an edit computes from the record, and a vault's record is ciphertext — see below |
 
 Three of these are confidentiality controls and the first is not. A `SELECT` that
 reached the records would answer with the sealed envelopes, since the envelope
@@ -1123,6 +1124,31 @@ to keep a secret. The index refusal, the undeclared-field refusal and the
 schemaless refusal each stop a real plaintext from being written: an index over a
 secret field is a searchable copy of it, and the last two are the same hole
 approached from two directions.
+
+#### Writing a vault record
+
+The whole record is the unit of a vault write:
+
+```
+CREATE team:'github' = { login: 'ada', token: 'the secret' };
+UPDATE team:'github' = { login: 'ada', token: 'the rotated secret' };
+```
+
+`UPDATE … SET` and `UPDATE … MERGE` are **refused**, and the message names the
+form above. Both compute from the record as it stands, and a vault's record as
+it stands is the sealed envelope of every secret field — so building on it would
+mean opening the fields the edit never mentioned. Opening a secret is `REVEAL`,
+and `REVEAL` writes its audit entry before it answers; an `UPDATE` that opened
+three secrets in order to re-seal them would put plaintext in the server with
+nothing anywhere recording that it had been there.
+
+**A write re-seals the record under a fresh data key**, which is worth knowing
+before you rotate one: the recipient entries were wrapped under the key it
+replaces, so they open nothing afterwards and are cleared. Re-state them after
+the write. This is the same reason `ADD RECIPIENT` and `REMOVE RECIPIENT` are
+their own statements rather than an `UPDATE` of a field — and it is why the
+whole-record form is the honest one, since a `SET` that quietly dropped a
+recipient set would be a loss nobody saw.
 
 #### What `INFO` reports
 
@@ -1221,9 +1247,32 @@ Three limits, stated rather than discovered later:
 - **There is no tamper-evident chain.** Chaining would serialise every read
   through one key, and what it buys is evidence against an attacker who already
   holds the backend — which is outside what a vault defends against anyway.
-- **There is no statement that reads the trail yet.** The forensic question —
-  *this credential was compromised; what did it read?* — is answered through the
-  embedded API, not through TessariQL.
+- **The trail is scanned, not indexed.** `INFO FOR AUDIT` reads it end to end,
+  which is the honest shape at this size and stops being one long before a busy
+  store's trail does. The limit is named rather than designed around: an index
+  over the trail is a later addition, and pretending the scan is a plan would be
+  worse than saying it is not.
+
+Reading the trail is a statement:
+
+```
+INFO FOR AUDIT;
+INFO FOR AUDIT BY 'ada';
+```
+
+The first answers with every recorded read, oldest first. The second narrows to
+one actor, which is the shape the question is actually asked in — *this
+credential was compromised; what did it open, and what has to be rotated now?*
+The name may be quoted or bare, so a credential named after a keyword is still
+one you can ask about.
+
+**It is answered only to a caller who administers the whole store**, and the
+reason is where the trail lives rather than how sensitive it is. A read is
+recorded before anybody knows whose tenancy it belonged to, so the trail is held
+store-wide and there is no tenancy to scope an answer by. The demand is
+therefore `govern` over the store itself — strictly narrower than any tenancy
+grant, and what stops one namespace's owner reading another namespace's reads.
+Like every other `INFO`, it reports what was read and never what was returned.
 
 #### What a vault does not defend against
 
@@ -1234,7 +1283,7 @@ a sealed or restarted node opens nothing, a ciphertext moved to another field or
 record fails its binding, and a dropped vault is unopenable in every copy that
 will ever be restored.
 
-Seven things it does not defend against, listed because each of them is a
+Eight things it does not defend against, listed because each of them is a
 question worth answering somewhere else in your design:
 
 1. **The memory of a running, unsealed node.** The server decrypts, so while it
@@ -1255,6 +1304,28 @@ question worth answering somewhere else in your design:
    service, and it is not going to — those are a different product living behind
    a different threat model, and building them here would quietly turn a store
    that can refuse to answer into infrastructure that must always answer.
+8. **An attacker who can *write* to the storage backend.** Note the difference
+   from the paragraph above, which is about one who can *read* it: writing is
+   the stronger power and it buys a rollback. Restore one record's stored bytes
+   from an older copy and the secret that was rotated out is live again, because
+   the envelope binds the table, the record and the field — everything that
+   identifies *which* value this is, and nothing that identifies *when*.
+
+   A version bound into the envelope would not close it, and this is worth
+   stating because it is the fix that suggests itself: any version the opening
+   side can read from the record is restored along with the ciphertext it was
+   meant to police, so both sides of the comparison move together. Closing it
+   needs a counter the attacker cannot roll back, which means state outside the
+   store — and an embedded engine whose only durable state is the backend under
+   attack has none to offer. The store could serialise every sealed write
+   through one shared counter row instead, and will not: that trades the write
+   concurrency of every vault for a defence against an attacker who already
+   holds write access to the disk.
+
+   What follows for you operationally is short. **Rotate at the source**, not
+   only in the vault — a credential the issuing system has revoked is dead
+   whichever copy of the ciphertext comes back — and treat backend write access
+   as equivalent to holding the secrets.
 
 #### Removing a vault
 
@@ -5303,7 +5374,10 @@ report never carries the password hash, which the stored definition does hold.
 
 `INFO FOR ACCESS TO TABLE` asks the same question from the other end — *who
 reaches this object*, rather than *what does this person reach* — and refuses for
-`INFO FOR USER`'s reason, since it is made of the same material. It answers with
+`INFO FOR USER`'s reason, since it is made of the same material. `INFO FOR AUDIT`
+refuses for a third reason on top of both: it is the only report held **store-wide**
+rather than per tenancy, so an owner of one namespace is refused it — see
+§ *Every read is recorded, or refused*. It answers with
 one row per user the caller administers, each saying whether that user may read
 the table and whether they may write it:
 

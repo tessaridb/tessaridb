@@ -252,3 +252,40 @@ CREATE logins:'github' = { password: 'hunter2' };
 --- case: and REVEAL opens it under the name it was declared with
 REVEAL 'password' FROM logins:'github';
 --- expect: ok
+
+--- case: the audit trail has a statement, and it answers on an open store
+INFO FOR AUDIT;
+--- expect: ok
+
+--- case: narrowed to one actor by a quoted name
+INFO FOR AUDIT BY 'ada';
+--- expect: ok
+
+--- case: or by a bare one, so a keyword-named credential is still askable
+INFO FOR AUDIT BY ada;
+--- expect: ok
+
+--- case: BY with nothing after it is a mistake rather than the whole trail
+INFO FOR AUDIT BY;
+--- expect: error UnexpectedToken
+
+--- case: a vault record is written whole, so SET is refused with the form that works
+DEFINE VAULT rotations;
+DEFINE FIELD token ON rotations TYPE string SECRET;
+CREATE rotations:'one' = { token: 'first' };
+UPDATE rotations:'one' SET token = 'second';
+--- expect: error VaultEditNeedsWholeRecord
+
+--- case: and MERGE, which computes from the record the same way
+UPDATE rotations:'one' MERGE { token: 'second' };
+--- expect: error VaultEditNeedsWholeRecord
+
+--- case: the whole record is the unit, and it rotates the secret
+UPDATE rotations:'one' = { token: 'second' };
+--- expect: ok
+
+--- case: an ordinary table is still edited field by field
+DEFINE TABLE rotation_notes SCHEMALESS;
+CREATE rotation_notes:1 = { body: 'first' };
+UPDATE rotation_notes:1 SET body = 'second';
+--- expect: ok

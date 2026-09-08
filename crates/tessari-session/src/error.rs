@@ -1051,6 +1051,29 @@ pub enum Error {
         span: Span,
     },
 
+    /// An edit that computes from the record, applied to a vault's record.
+    ///
+    /// `SET` and `MERGE` start from the record as it stands, and a vault's
+    /// record as it stands is ciphertext plus the store's own key map. Building
+    /// on it would mean opening the sealed fields the edit does not name — and
+    /// opening a secret is `REVEAL`, which records itself before it answers. An
+    /// `UPDATE` that opened three secrets to re-seal them would materialise
+    /// plaintext with nothing to say it had been there, which is the one thing
+    /// the audit ordering exists to prevent.
+    ///
+    /// So the message names the form that works rather than only refusing. The
+    /// whole record is the unit of a vault write, and it is not a limitation
+    /// dressed up: a write re-seals under a fresh data key, so restating the
+    /// record is also what makes the recipient set's loss visible instead of
+    /// silent.
+    #[error(
+        "a vault's record is written whole, not field by field; use `UPDATE … = {{ … }}` (at {span})"
+    )]
+    VaultEditNeedsWholeRecord {
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// Declaring somebody who would reach further than the declarer.
     ///
     /// Separate from [`Error::NotYours`], which is about a user who already

@@ -2844,6 +2844,28 @@ impl Session<'_> {
         existing: Value,
         span: Span,
     ) -> Result<Value> {
+        // An edit that computes from the record cannot compute from a vault's,
+        // and this is where that is said. `SET` and `MERGE` build on `existing`;
+        // in a vault `existing` holds the store's own `#keys` map and the
+        // *ciphertext* of every sealed field, so the write that followed refused
+        // with `VaultReservedField` — naming a field the caller never wrote and
+        // cannot see — or, in a vault with a second secret, with a schema
+        // violation saying a `string` field held bytes.
+        //
+        // Neither refusal was wrong about the write; both were unreadable about
+        // the cause. And the cause is not a defect to route around: computing
+        // from a sealed field means opening it, opening one is `REVEAL`, and
+        // `REVEAL` writes an audit entry before it answers. An `UPDATE` that
+        // quietly opened three secrets to re-seal them would put plaintext in
+        // this process with nothing anywhere recording that it was there.
+        //
+        // So the whole record is the unit of a vault write, which is what
+        // `UPDATE … = { … }` already is.
+        if matches!(edit, Edit::Fields(_) | Edit::Merge(_))
+            && matches!(&existing, Value::Object(fields) if fields.contains_key(tessari_storage::KEYS_FIELD))
+        {
+            return Err(Error::VaultEditNeedsWholeRecord { span });
+        }
         match edit {
             // Replacing the whole record is a write like a create, so the
             // defaults apply to it the same way.
