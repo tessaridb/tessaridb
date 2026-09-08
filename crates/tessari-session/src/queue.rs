@@ -27,9 +27,19 @@
 //! detected write-write race under the store's snapshot isolation: the first
 //! committer wins and the loser writes nothing at all. It is not write skew —
 //! the level's one real gap — precisely because both transactions write the same
-//! key rather than different ones. So the guarantee needs no new machinery, and
-//! a loser does not retry the record it lost: the commit's own retry loop re-runs
-//! the statement, and at re-selection that record is no longer claimable.
+//! key rather than different ones. So the guarantee needs no new machinery.
+//!
+//! **The loser is refused, and the retry belongs to the worker.** This module's
+//! header claimed the opposite until the multi-process harness was run against
+//! it: `commit.rs` builds the write set once, *above* its retry loop, and that
+//! loop re-applies the same batch when the committed tail moves — it does not
+//! re-run the statement, so nothing re-selects. `check_for_conflicts` returns
+//! `Error::Conflict` straight to the caller. Measured in
+//! `tessari-cli/tests/queue_broker.rs` with four consumer processes over sixty
+//! records: **60 hand-outs, 60 finished, none twice, and about 178 refusals**.
+//! Exclusivity and at-least-once are unaffected — a refused claim wrote nothing
+//! — but a worker loop has to ask again, and a caller that treats a refusal as a
+//! fault will stop on a healthy queue.
 //!
 //! # What this does not do
 //!

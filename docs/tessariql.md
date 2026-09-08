@@ -5133,7 +5133,13 @@ its acknowledgement in one transaction, and the work is outside this store.
 **Exclusivity is at most one claimant at a time**, and it needs no machinery of
 its own: two workers that pick one record both *write* that record, which the
 store's snapshot isolation already resolves — the first committer wins and the
-loser writes nothing at all, then re-selects and takes the next record. A worker
+loser writes nothing at all. **The loser is refused, and asking again is the
+worker's job**: it receives a write-conflict refusal naming the record it lost,
+and the store does not quietly re-select the next one on its behalf. So a worker
+loop treats a refusal the way it treats an empty answer — ask again — and the
+cost of contention is one refused statement per losing worker per hand-out,
+which is why a worker with steady work should claim a **batch**: the contention
+amortises over the batch and the ordering does not change. A worker
 that **overruns** its deadline is not stopped, because nothing here can stop it,
 so the whole sentence is: *at most one claimant at a time; a worker that exceeds
 its timeout may find its work handed to somebody else.*
