@@ -8,7 +8,7 @@
 //! # Why it is written here rather than pulled in
 //!
 //! The same reason the writer is hand-written: JSON has six types and this store
-//! has fifteen, so the mapping is a decision. A derived reader would make those
+//! has seventeen, so the mapping is a decision. A derived reader would make those
 //! decisions silently, and two of them matter.
 //!
 //! **A JSON number is a double in every parser that matters.** So a number with

@@ -1,7 +1,7 @@
 //! What the command line prints can be pasted back in.
 //!
 //! The claim is easy to make and easy to make falsely, because a hand-written
-//! example uses four value kinds and the language has fifteen. So the fixture is
+//! example uses four value kinds and the language has seventeen. So the fixture is
 //! a record holding one of each, written through the store, read back, rendered,
 //! and then written again as a statement — and the two records are compared.
 //!
@@ -17,7 +17,7 @@
 //! nobody would paste it — and it is therefore the one most worth holding here
 //! now that the exception is gone.
 //!
-//! **Two of the fifteen are absent from the fixture**, and no longer because
+//! **Two of the seventeen are absent from the fixture**, and no longer because
 //! they cannot be rendered. A `table` and a `record` hold an id, and the name
 //! comes from a resolver the caller supplies (`Db::names_in`) — which this test
 //! deliberately does not, because what it is checking is the *value* renderer

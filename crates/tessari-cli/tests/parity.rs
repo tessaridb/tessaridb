@@ -66,8 +66,12 @@ fn scripts() -> Vec<(&'static str, &'static str)> {
         ("records via a scan", "SELECT * FROM users;"),
         ("records via an identity", "SELECT * FROM users:1;"),
         ("no records at all", "SELECT * FROM users WHERE rank > 99;"),
-        // The whole argument for carrying the store's codec: fifteen types out,
-        // fifteen back, and a decimal that is still a decimal.
+        // The whole argument for carrying the store's codec. The value holds a
+        // record reference, a duration, a decimal, bytes, a datetime, `none`,
+        // `null` and an array — the eight JSON would flatten into strings and
+        // doubles — and every one has to come back as itself. This comment said
+        // "fifteen types out, fifteen back" and the fixture has never held
+        // fifteen; a number nobody counted is worse than none.
         ("a value of every kind", "GET sessions:'abc';"),
         ("a value that is a reference", "SET k:1 = users:2; GET k:1;"),
         ("a plain value", "GET sessions:'def';"),

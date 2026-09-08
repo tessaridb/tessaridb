@@ -6,11 +6,13 @@
 //! not drift — a kind that no value can satisfy, or a value no kind can name,
 //! would be a hole nothing detects.
 //!
-//! # The set is the value system's, plus two
+//! # The set is the value system's, plus six
 //!
-//! Every one of the fifteen value types is nameable. Two more kinds exist
-//! because the value system's shape does not match one-to-one what a declaration
-//! wants to say:
+//! **Fifteen of the seventeen value types are nameable** — every one except
+//! [`Value::None`] and [`Value::Null`], neither of which a field can be declared
+//! as, since both say a field holds nothing rather than what it holds. Six
+//! further kinds exist because the value system's shape does not match
+//! one-to-one what a declaration wants to say, and the first two are:
 //!
 //! - [`FieldKind::Any`] accepts everything. It is the schemaless default made
 //!   explicit, so that a field can be declared — and so appear in a `SCHEMAFULL`
@@ -19,7 +21,9 @@
 //!   [`Int`](FieldKind::Int), [`Float`](FieldKind::Float) and
 //!   [`Decimal`](FieldKind::Decimal) each accept one. [`Value::type_name`]
 //!   reports all three as `number`, so a declaration that could only say
-//!   `number` would be unable to keep money exact.
+//!   `number` would be unable to keep money exact. The three refinements
+//!   [`Int`](FieldKind::Int), [`Float`](FieldKind::Float) and
+//!   [`Decimal`](FieldKind::Decimal) are three of the six.
 //!
 //! # Two kinds carry a parameter
 //!
@@ -388,7 +392,7 @@ mod tests {
     use super::*;
     use crate::{Datetime, Duration, RecordId, RecordRef, TableId, ValueRange};
 
-    /// One value of each of the fifteen types, in the order `Value` declares
+    /// One value of each of the seventeen types, in the order `Value` declares
     /// them. Anything that must hold for the whole value system is asserted
     /// against this list rather than against a sample.
     fn one_of_each() -> Vec<Value> {

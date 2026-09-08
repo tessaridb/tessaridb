@@ -83,8 +83,14 @@ fn the_corpus_covers_every_type_in_the_milestone_set_and_no_other() {
             "array", "bool", "bytes", "datetime", "duration", "none", "null", "number", "object",
             "range", "record", "set", "string", "table", "uuid",
         ],
-        "the value set is fixed at fifteen types by the milestone scope"
+        "this corpus covers fifteen of the value system's seventeen types; \
+         `geometry` and `regex` are deliberately absent (Q-476) and every other \
+         change to the set belongs here"
     );
+    // Fifteen, and the two that are missing are named above rather than left to
+    // be discovered. The value system has **seventeen** types: this list is a
+    // statement about the corpus below, not about the language, and the message
+    // said otherwise until W159.
     assert_eq!(seen.len(), 15);
 }
 

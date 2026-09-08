@@ -1,7 +1,7 @@
 //! Addressing a value that sits inside another one.
 //!
 //! A record payload is already an arbitrarily nested tree — [`Value::Object`]
-//! and [`Value::Array`] are two of the fifteen types, and neither has ever had a
+//! and [`Value::Array`] are two of the seventeen types, and neither has ever had a
 //! depth limit. What was missing is a way to *name* something inside it, so that
 //! a filter, an index and a projection can all say `address.city` and mean the
 //! same value.

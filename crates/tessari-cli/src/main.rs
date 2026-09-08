@@ -26,7 +26,7 @@
 //!
 //! Answers are printed in **TessariQL's own syntax**, so what comes out can be
 //! pasted back in. JSON is what the HTTP endpoint speaks, and it had to decide
-//! how fifteen types become six; a terminal is owed no such compromise.
+//! how seventeen types become six; a terminal is owed no such compromise.
 //!
 //! There is line editing and per-session history, written here rather than
 //! taken as a dependency: `line.rs` says why, and `raw.rs` says what it costs.
