@@ -1,0 +1,16 @@
+//! Every integration test of this crate, in one binary.
+//!
+//! Cargo builds one test binary per file directly under `tests/`, and each one
+//! links the whole workspace again. A subdirectory carrying a `main.rs` is one
+//! target instead, so the cases sit beside this file and the crate pays that
+//! link once rather than once per case.
+
+mod bootstrap;
+mod catch_up;
+mod from_a_running_node;
+mod gap;
+mod produced_identity;
+mod restore;
+mod vault_restore;
+mod vault_shredding;
+mod version;

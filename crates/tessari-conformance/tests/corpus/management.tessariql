@@ -223,3 +223,28 @@ DROP REPLICA warsaw;
 # reader who guessed `DROP NODE` is not left guessing twice.
 DROP NODE second;
 --- expect: error UnexpectedToken
+
+# ------------------------------------------------------------------ CHECK TABLE
+
+--- case: a table that holds to its own declarations checks clean
+# The question every tightening statement answers by refusing, asked on its own
+# and without changing anything. A store this release wrote cannot fail it —
+# the apply path saw every write — and that is the claim the statement makes
+# askable rather than merely stated.
+DEFINE COLLECTION staff;
+ALTER TABLE staff ADD FIELD name TYPE string REQUIRED;
+CREATE staff:1 = { name: 'ada' };
+CHECK TABLE staff;
+--- expect: value []
+
+--- case: a table that declares nothing checks clean without reading its rows
+DEFINE COLLECTION loose;
+CREATE loose:1 = { anything: true };
+CHECK TABLE loose;
+--- expect: value []
+
+--- case: checking a table nobody declared is refused
+# An empty answer here would be indistinguishable from a clean table, so a typo
+# in the name would read as a clean bill of health.
+CHECK TABLE ghost;
+--- expect: error Unknown

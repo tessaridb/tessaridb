@@ -10,7 +10,7 @@ use tessari_storage::{
     Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeOrder, FieldShape,
     GEO_FIELD, IndexDefinition, IndexShape, Mapped, OnFailure, RecordAddress, TableDefinition,
     TableKind, TableShape, Transaction, VECTOR_FIELD, VaultDeclaration, VectorDeclaration,
-    VectorDistance,
+    VectorDistance, Violation, violations,
 };
 
 use tessari_types::{
@@ -383,6 +383,19 @@ impl Session<'_> {
                 Catalog::new(transaction)
                     .set_schemafull(id, matches!(change, TableChange::Schemafull))?;
                 Ok(Outcome::Done)
+            }
+            // The answer is an array and never a refusal, because an operator
+            // deciding whether to fix the data or the declaration needs all of
+            // it. A statement that raised on the first disagreement would hand
+            // them the same table one record at a time — which is the shape the
+            // tightening statements already have, and the reason this one exists
+            // beside them rather than instead of them.
+            StatementKind::CheckTable { table } => {
+                let (context, id) = self.resolve_table(transaction, table)?;
+                let found = violations(transaction, context.namespace, context.database, id)?;
+                Ok(Outcome::Value(Value::Array(
+                    found.into_iter().map(violation_value).collect(),
+                )))
             }
             // Writing the definition again is the whole statement: the entries
             // are derived from it, so a definition arriving in a log record is
@@ -3198,4 +3211,19 @@ fn set_field(
         fields.remove(name);
     }
     Ok(())
+}
+
+/// One disagreement, as the answer carries it.
+///
+/// The rule is a stable word and the detail is the store's own sentence, so a
+/// caller scripting a repair matches on the first and shows the second — rather
+/// than parsing a message written for a person, which is the thing that breaks
+/// when the message is improved.
+fn violation_value(found: Violation) -> Value {
+    Value::Object(BTreeMap::from([
+        ("record".to_owned(), Value::String(found.record)),
+        ("field".to_owned(), Value::String(found.field)),
+        ("rule".to_owned(), Value::String(found.rule.to_owned())),
+        ("detail".to_owned(), Value::String(found.detail)),
+    ]))
 }

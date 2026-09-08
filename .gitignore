@@ -3,6 +3,8 @@
 /target-lint
 /target-pkg
 /target-ra
+/target-perf
+/target-sym
 **/*.rs.bk
 *.pdb
 

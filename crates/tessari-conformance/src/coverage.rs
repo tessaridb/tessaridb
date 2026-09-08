@@ -80,6 +80,7 @@ forms! {
     DropTable => "DROP TABLE",
     DropIndex => "DROP INDEX",
     RebuildIndex => "REBUILD INDEX",
+    CheckTable => "CHECK TABLE",
     DropField => "DROP FIELD",
     DropAnalyzer => "DROP ANALYZER",
     DropReplica => "DROP REPLICA",
@@ -212,6 +213,7 @@ mod tests {
              READ b:'/a.txt';\
              BACKUP;\
              EXPLAIN SELECT * FROM t;\
+             CHECK TABLE t;\
              INFO FOR STORE;\
              INFO FOR NODE;\
              ALTER USER u SET ROLE viewer;\

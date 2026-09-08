@@ -740,3 +740,147 @@ fn a_replica_reaches_the_same_verdict_because_the_constraint_is_in_the_log() {
         "the replica did not learn the constraint: {refused:?}"
     );
 }
+
+/// A check over a table that satisfies its own declarations answers nothing.
+///
+/// The negative half, and it is the half that matters most: a check that found
+/// something on a clean table would be worse than no check at all, because an
+/// operator would learn to ignore it.
+#[test]
+fn a_check_answers_nothing_while_every_record_satisfies_the_declarations() {
+    let fixture = Fixture::new(false);
+    fixture.require("name", FieldKind::String).unwrap();
+    fixture
+        .write("1", &[("name", Value::String("ada".to_owned()))])
+        .unwrap();
+    fixture
+        .write("2", &[("name", Value::String("grace".to_owned()))])
+        .unwrap();
+
+    let mut transaction = fixture.store.begin().unwrap();
+    let found = tessari_storage::violations(
+        &mut transaction,
+        fixture.namespace,
+        fixture.database,
+        fixture.table,
+    )
+    .unwrap();
+    assert!(found.is_empty(), "{found:?}");
+}
+
+/// A table that declares nothing answers nothing, without reading its rows.
+#[test]
+fn a_check_over_a_table_that_constrains_nothing_answers_nothing() {
+    let fixture = Fixture::new(false);
+    fixture
+        .write("1", &[("anything", Value::Bool(true))])
+        .unwrap();
+
+    let mut transaction = fixture.store.begin().unwrap();
+    let found = tessari_storage::violations(
+        &mut transaction,
+        fixture.namespace,
+        fixture.database,
+        fixture.table,
+    )
+    .unwrap();
+    assert!(found.is_empty(), "{found:?}");
+}
+
+/// Every offending record is named, with the rule it broke — never only the first.
+///
+/// The three classes are asserted together because they are reached by three
+/// different arms and a check that walked only one of them would look correct on
+/// any table that violates a single rule. The declarations are held in an
+/// **uncommitted** transaction: committing them is precisely what the apply path
+/// refuses, and refusing is how the store stays consistent — so the state this
+/// check exists to describe is one the language cannot commit its way into, and
+/// an honest test has to build it the way a restore or a hand-edited backend
+/// would.
+#[test]
+fn a_check_names_every_offending_record_and_the_rule_it_broke() {
+    let fixture = Fixture::new(false);
+    fixture
+        .write(
+            "1",
+            &[
+                ("name", Value::String("ada".to_owned())),
+                ("n", Value::Number(Number::Integer(3))),
+            ],
+        )
+        .unwrap();
+    fixture
+        .write("2", &[("n", Value::Number(Number::Integer(3)))])
+        .unwrap();
+    fixture
+        .write(
+            "3",
+            &[
+                ("name", Value::String("bo".to_owned())),
+                ("n", Value::Number(Number::Integer(3))),
+                ("extra", Value::Bool(true)),
+            ],
+        )
+        .unwrap();
+    fixture
+        .write(
+            "4",
+            &[
+                ("name", Value::String("cy".to_owned())),
+                ("n", Value::Number(Number::Integer(-5))),
+            ],
+        )
+        .unwrap();
+
+    let mut transaction = fixture.store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    catalog
+        .create_field(
+            fixture.table,
+            "name",
+            FieldKind::String,
+            FieldShape {
+                required: true,
+                ..FieldShape::default()
+            },
+        )
+        .unwrap();
+    catalog
+        .create_field(
+            fixture.table,
+            "n",
+            FieldKind::Int,
+            FieldShape {
+                assert: Some(not_negative()),
+                ..FieldShape::default()
+            },
+        )
+        .unwrap();
+    catalog.set_schemafull(fixture.table, true).unwrap();
+
+    let found = tessari_storage::violations(
+        &mut transaction,
+        fixture.namespace,
+        fixture.database,
+        fixture.table,
+    )
+    .unwrap();
+
+    let named: Vec<(&str, &str)> = found
+        .iter()
+        .map(|violation| (violation.record.as_str(), violation.rule))
+        .collect();
+    assert_eq!(
+        named,
+        vec![("2", "required"), ("3", "undeclared"), ("4", "assert")],
+        "{found:?}"
+    );
+    // The words are the store's own, so a check run before a tightening and the
+    // tightening's own refusal cannot describe one record two ways.
+    assert!(
+        found[0].detail.contains("required field name"),
+        "{:?}",
+        found[0].detail
+    );
+    assert!(found[1].field == "extra", "{:?}", found[1]);
+}

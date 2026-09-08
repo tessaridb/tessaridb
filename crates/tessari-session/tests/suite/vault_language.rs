@@ -600,9 +600,26 @@ fn a_field_named_password_can_live_in_a_vault() {
         "the field did not come back under the name it was declared with"
     );
 
+    // Dropping a declared field is a **tightening**, not a loosening: the
+    // record still carries `password`, and a strict table that stopped
+    // declaring it would hold a record disagreeing with its own catalog with
+    // nothing anywhere in an error state. That is the hole the classification
+    // closes, so the drop is refused while a record carries the field and taken
+    // once none does.
+    let refused = refusal(&mut session, "ALTER TABLE team DROP FIELD 'password';");
+    assert!(
+        refused.contains("password"),
+        "the refusal did not name the field the record still carries: {refused}"
+    );
+
+    // The record goes rather than the value, because clearing a sealed field is
+    // an edit of a vault record and this test is about the catalog statement.
+    session
+        .run("DELETE team:'github';")
+        .expect("the record could not be removed");
     session
         .run("ALTER TABLE team DROP FIELD 'password';")
-        .expect("a field that can be declared must be droppable");
+        .expect("a field no record carries must be droppable");
 }
 
 /// The bare keyword is still refused, and a statement missing its name still

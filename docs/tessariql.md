@@ -1774,6 +1774,14 @@ ALTER TABLE people DROP FIELD name;
 `DROP FIELD … ON people` say — one function parses the declaration, so the two
 spellings cannot drift into accepting different options.
 
+**Dropping a declaration is a loosening on a lenient table and a tightening on a
+strict one.** On a schemaless table the drop only widens what is admissible, so
+no stored record can contradict it. On a `SCHEMAFULL` table the declaration is
+what made the field legal, so removing it would leave every record carrying that
+field disagreeing with the table's own catalog — which is why the drop is refused
+there while any record still holds the field, naming them. Remove the values, or
+make the table schemaless, and the drop goes through.
+
 **`ALTER FIELD` is the one that is not a second spelling.** A second
 `DEFINE FIELD` is refused because the catalog reserves the name, so redeclaring
 needs a statement of its own. It **replaces the declaration whole** rather than
@@ -1782,7 +1790,42 @@ would make *leave the default alone* and *remove the default* the same sentence.
 
 The drop and the declaration land in one commit, so the rows answer for the
 **new** declaration — altering a field to a type its rows do not satisfy is
-refused, writing neither the removal nor the replacement.
+refused, writing neither the removal nor the replacement. The same holds for
+`REQUIRED`: a field cannot become required while a stored record leaves it empty,
+and the refusal names every record that does, not the first one it meets.
+
+### Asking whether the records still fit: `CHECK TABLE`
+
+```tessariql
+CHECK TABLE notes;
+```
+
+Every statement above answers this question by refusing. `CHECK TABLE` asks it on
+its own and changes nothing: it reads the table and answers with a list of the
+records that disagree with what the table declares **now**, one entry each,
+carrying the record, the field, the rule it broke — `required`, `undeclared`,
+`assert` or `type` — and the same sentence the store uses when it refuses a write
+for that reason. An empty list means the table holds to its declarations.
+
+The `rule` is the part to write a script against. It is one stable word chosen so
+that a caller repairing a table matches on it and shows the detail; the detail is
+written for a person and is free to be improved.
+
+A store this engine wrote cannot fail the check, because the apply path saw every
+write and a refusal fails the whole commit. That is not a reason to leave the
+statement out — it is the reason to have one, since a claim of that shape is worth
+something only when somebody can ask. What it is for is the store that arrived by
+another road: restored from a backup, replicated from a node running different
+rules, or repaired underneath the language. It is also the honest thing to run
+after an upgrade, before trusting the invariant on data this release did not
+write.
+
+It reads the whole table, which is the only truthful way to answer, so it is a
+statement an operator runs rather than something the store decides to do.
+
+Checking a table nobody declared is refused rather than answered with an empty
+list: an empty answer is indistinguishable from a clean table, so a typo in the
+name would read as a clean bill of health.
 
 ### What a table declares about its fields
 
@@ -1920,6 +1963,16 @@ way: the statement reads the whole table inside the commit.
 
 `DROP FIELD` removes the rule and not the data. The rows keep the field; the
 store simply stops having an opinion about it.
+
+**On a strict table it is a tightening, and it is refused while any row still
+carries the field.** That looks backwards until you read what the table promises:
+a strict table says every field a row holds is declared, so dropping a
+declaration under rows that still carry the value would leave those rows
+disagreeing with the catalog — with nothing anywhere in an error state, which is
+the failure the classification exists to prevent. Clear the field from the rows
+first, or drop them; `CHECK TABLE` names every row that stands in the way. On a
+schemaless table nothing changes, because an undeclared field was always
+allowed there.
 
 **`REQUIRED` means the field must hold a value** — present, and not `null`. One
 marker covering both, deliberately: it is what a caller means by "required", and

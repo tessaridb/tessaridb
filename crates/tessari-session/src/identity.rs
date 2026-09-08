@@ -539,6 +539,7 @@ impl Needs {
             | StatementKind::DefineIndex { .. }
             | StatementKind::DropIndex { .. }
             | StatementKind::RebuildIndex { .. }
+            | StatementKind::CheckTable { .. }
             | StatementKind::DefineField { .. }
             | StatementKind::DropField { .. }
             | StatementKind::AlterTable { .. }

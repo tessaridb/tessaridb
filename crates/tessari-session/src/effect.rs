@@ -75,6 +75,12 @@ impl Effect {
             | StatementKind::Keys { .. }
             | StatementKind::Read { .. }
             | StatementKind::Info { .. }
+            // `CHECK TABLE` reads every row and writes none, so a follower may
+            // serve it. That is the point: the question it answers — does what
+            // is stored still satisfy what is declared — is worth asking of the
+            // replica as well as of the leader, and routing it away would make
+            // a divergence between them the one thing it cannot detect.
+            | StatementKind::CheckTable { .. }
             // `REVEAL` writes nothing to the store and is the heaviest read in
             // the language by consequence rather than by cost. It is routed as a
             // read, which means a follower may serve it — deliberately: the

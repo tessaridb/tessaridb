@@ -72,6 +72,7 @@ impl Parser<'_> {
             Some(Keyword::Drop) => self.drop_statement()?,
             Some(Keyword::Alter) => self.alter_statement()?,
             Some(Keyword::Rebuild) => self.rebuild_statement()?,
+            Some(Keyword::Check) => self.check_statement()?,
             Some(Keyword::Grant) => self.grant_statement(true)?,
             Some(Keyword::Revoke) => self.grant_statement(false)?,
             Some(Keyword::Create) => self.write_statement(Keyword::Create)?,
@@ -1635,6 +1636,19 @@ impl Parser<'_> {
         self.expect_keyword(Keyword::On, "`ON` and the table the index reads")?;
         Ok(StatementKind::RebuildIndex {
             name,
+            table: self.table_ref()?,
+        })
+    }
+
+    /// `CHECK TABLE <table>`
+    ///
+    /// `TABLE` is spelled out for the reason `REBUILD INDEX` spells its noun:
+    /// nothing else is checkable yet, and without the noun the statement reads
+    /// as though the table were being repaired rather than examined.
+    fn check_statement(&mut self) -> Result<StatementKind> {
+        self.advance();
+        self.expect_keyword(Keyword::Table, "`TABLE` and the table to check")?;
+        Ok(StatementKind::CheckTable {
             table: self.table_ref()?,
         })
     }

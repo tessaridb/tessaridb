@@ -60,6 +60,7 @@ pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use graph::vector_of;
 pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
+pub use schema::{Violation, violations};
 pub use sealing::{
     KEYS_FIELD, VAULT_RECIPIENT, add_recipient, initialise_root, mint_vault_key, open_data_key,
     open_field, recipients, remove_recipient, reseal_named, seal_secrets, vault_key_scope,

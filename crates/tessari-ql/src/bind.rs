@@ -321,6 +321,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // follows, arriving under the other spelling.
         | StatementKind::AlterField { .. }
         | StatementKind::RebuildIndex { .. }
+        | StatementKind::CheckTable { .. }
         | StatementKind::Backup { .. }
         // A subject is a name and never a value. `INFO FOR TABLE $t` would be a
         // parameter supplying a *table*, which is refused everywhere else in

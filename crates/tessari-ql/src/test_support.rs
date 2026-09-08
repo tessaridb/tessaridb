@@ -249,7 +249,9 @@ fn erase_statement(statement: &mut Statement) {
             erase_name(name);
             erase_table(table);
         }
-        StatementKind::DropTable { table } => erase_table(table),
+        StatementKind::DropTable { table } | StatementKind::CheckTable { table } => {
+            erase_table(table);
+        }
         StatementKind::Relate {
             from,
             edges,

@@ -776,6 +776,26 @@ pub enum StatementKind {
         /// What to change about it.
         change: TableChange,
     },
+    /// `CHECK TABLE readings`
+    ///
+    /// Every stored record that disagrees with what the table declares **now**,
+    /// as an answer rather than a refusal.
+    ///
+    /// A table that was strict from the start cannot hold such a record: the
+    /// apply path saw every write. A table that *became* strict is held to its
+    /// new declaration at the moment it becomes so, and never again. Between
+    /// those two sits the table nobody has checked — one restored from a backup
+    /// taken before a declaration, or one whose operator wants to know what
+    /// stands in the way of making a field required before writing the statement
+    /// that would refuse.
+    ///
+    /// It reads the whole table, which is the only honest way to answer, and
+    /// that is why it is a statement somebody runs and not something the store
+    /// decides to do.
+    CheckTable {
+        /// The table to hold to its own declarations.
+        table: TableRef,
+    },
     /// `REBUILD INDEX by_embedding ON papers`
     ///
     /// Makes the index's entries exactly what its table's rows imply, discarding
