@@ -676,3 +676,25 @@ pub const SEARCH_FUZZY_EXAMINATION_CAP: usize = 1024;
 /// is to name the ceiling rather than to quietly hand back fewer records than
 /// were asked for.
 pub const MAX_CLAIM_RECORDS: u64 = 500;
+
+/// How deep a view may be expanded before the read is refused.
+///
+/// Unit: view expansions along one chain.
+///
+/// A view names a read, and that read may name another view, so expansion
+/// recurses and needs a floor to stop on. Eight, for two reasons that pull in
+/// opposite directions and meet here: deep enough that no view written by hand
+/// meets it — a view over a view over a view is already unusual — and shallow
+/// enough that the refusal arrives before the parse and materialisation cost of
+/// eight nested reads has been paid.
+///
+/// **A cycle is caught by this and gets no second mechanism.** Two views naming
+/// each other cannot avoid the counter, and the refusal prints the chain it
+/// followed, so the cycle is legible in the message. A dedicated cycle detector
+/// would produce a better sentence for a case this already stops, and would then
+/// have to be kept in step with it.
+///
+/// A value of this layer, like the ceiling on a held read: nothing in a stored
+/// definition records it, so a view means the same thing on a node that changes
+/// it.
+pub const MAX_VIEW_DEPTH: usize = 8;

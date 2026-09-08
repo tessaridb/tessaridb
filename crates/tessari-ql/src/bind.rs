@@ -286,6 +286,12 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // a table and a count, and neither is an expression.
         | StatementKind::DefineQueue { .. }
         | StatementKind::DropQueue { .. }
+        // A view holds a read as text, and a parameter substituted into stored
+        // text would be bound once at definition and then frozen — which is a
+        // different feature from a view (a parameterised view is a function) and
+        // would look like this one until somebody changed the binding.
+        | StatementKind::DefineView { .. }
+        | StatementKind::DropView { .. }
         | StatementKind::Claim { .. }
         // `UNSEAL` takes a string literal and never a parameter, so there is
         // nothing here to substitute into. That is the grammar's decision and

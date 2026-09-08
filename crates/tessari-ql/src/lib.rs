@@ -36,7 +36,7 @@ pub use bind::Parameters;
 pub use error::{Error, Result};
 pub use function::{Function, Purity};
 pub use lexer::tokenize;
-pub use parser::{parse, parse_expression};
+pub use parser::{parse, parse_expression, parse_read};
 pub use render::render;
 pub use tessari_types::BinaryOp;
 pub use token::{Keyword, Punct, Span, Spanned, Token};

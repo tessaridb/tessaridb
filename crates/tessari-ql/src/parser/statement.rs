@@ -743,8 +743,12 @@ impl Parser<'_> {
             // an ordinary table name, and a store that had one before this word
             // existed keeps it.
             _ if self.eat_word("queue") => self.define_queue(),
+            // Contextual for the same reason as the rest of this run: `view` is
+            // an ordinary table name, and a store that had one before this word
+            // existed keeps it.
+            _ if self.eat_word("view") => self.define_view(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `CONSUMER`, `VECTOR`, `GEO`, `VAULT` or `QUEUE`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `CONSUMER`, `VECTOR`, `GEO`, `VAULT`, `QUEUE` or `VIEW`",
             )),
         }
     }
@@ -822,6 +826,42 @@ impl Parser<'_> {
             name,
             timeout,
             attempts,
+            if_not_exists,
+        })
+    }
+
+    /// `DEFINE VIEW active AS SELECT * FROM users WHERE active = true`
+    ///
+    /// The read runs to the end of the statement. No parentheses, because there
+    /// is nothing to disambiguate: a view holds exactly one `SELECT` and it is
+    /// everything after `AS`.
+    ///
+    /// # Parsed to validate, kept as text to store
+    ///
+    /// The read is parsed here so that a view which is not one `SELECT` is
+    /// refused where somebody wrote it rather than on whatever read first names
+    /// it, and then the **source text** is what the statement carries — sliced
+    /// by the read's own span. Rendering the parsed tree back would store a
+    /// different statement that happens to mean the same thing, and a reader
+    /// comparing what they wrote against what `INFO` reports should find them
+    /// equal.
+    ///
+    /// Nothing is resolved: the tables the read names need not exist yet, the
+    /// same rule a field's `DEFAULT` follows. The alternative would make the
+    /// order of a provisioning script load-bearing.
+    fn define_view(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        if !self.eat_keyword(Keyword::As) {
+            return Err(self.error_here("`AS` and the read this name means"));
+        }
+        if self.peek_keyword() != Some(Keyword::Select) {
+            return Err(self.error_here("`SELECT` — a view is a read"));
+        }
+        let read = self.select_statement()?;
+        Ok(StatementKind::DefineView {
+            name,
+            read: self.source[read.span.start..read.span.end].to_owned(),
             if_not_exists,
         })
     }
@@ -1869,6 +1909,7 @@ impl Parser<'_> {
             _ if self.eat_word("geo") => Ok(StatementKind::DropGeo { name: self.name()? }),
             _ if self.eat_word("vault") => Ok(StatementKind::DropVault { name: self.name()? }),
             _ if self.eat_word("queue") => Ok(StatementKind::DropQueue { name: self.name()? }),
+            _ if self.eat_word("view") => Ok(StatementKind::DropView { name: self.name()? }),
             // Declined rather than missing, and it says so. `DEFINE NODE` writes
             // this process's own configuration outside the transaction, so its
             // inverse is an edit to a config file rather than a statement — and

@@ -772,6 +772,47 @@ pub enum StatementKind {
         /// The queue to undefine.
         name: Name,
     },
+    /// `DEFINE VIEW active AS SELECT * FROM users WHERE active = true`
+    ///
+    /// A name for a read. Nothing is stored under it and nothing is maintained:
+    /// a statement naming the view is rewritten to carry the read, and the read
+    /// runs the way any other materialised read runs.
+    ///
+    /// # The read is kept as text, not as a tree
+    ///
+    /// The same choice a field's `DEFAULT` makes, and for the same stated
+    /// reason: a definition keeps the text it was written as, so `INFO` answers
+    /// with the statement somebody typed rather than with a re-rendered
+    /// statement that happens to mean the same thing. It also keeps the stored
+    /// record stable across a grammar that grows — a serialised syntax tree
+    /// would have to be versioned every time [`Select`] gained a field, and a
+    /// view written before a clause existed would decode into a read that had
+    /// silently lost it.
+    ///
+    /// The text is **parsed here** all the same, so a view that is not one
+    /// `SELECT` is refused where it is written rather than on the first read.
+    DefineView {
+        /// The name to create.
+        name: Name,
+        /// The read, exactly as it was written.
+        read: String,
+        /// Whether re-defining an existing name is accepted.
+        ///
+        /// It accepts rather than replaces: a repeat definition is refused by
+        /// the catalog's own name reservation, so changing a view is `DROP VIEW`
+        /// and then `DEFINE VIEW`, and this clause only makes a provisioning
+        /// script re-runnable.
+        if_not_exists: bool,
+    },
+    /// `DROP VIEW active`
+    ///
+    /// Removes the definition, which is all there is: a view holds no records,
+    /// no index and no keyspace, so nothing survives it and nothing else has to
+    /// be cleaned up.
+    DropView {
+        /// The view to undefine.
+        name: Name,
+    },
     /// `CLAIM FROM jobs` · `CLAIM 10 FROM jobs`
     ///
     /// Takes the first claimable records in identity order and holds each of

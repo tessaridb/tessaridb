@@ -1,0 +1,95 @@
+# A name for a read — `DEFINE VIEW`.
+#
+# The cases below are the design's commitments stated as assertions: a view
+# answers through its own projection, a condition outside it sees what it
+# answered, a chain of views is bounded, a view is not a store, and a name means
+# one thing whichever word declared it.
+#
+# What is deliberately absent is a case asserting that a bounded read over a view
+# stops early. It does not, and that is stated rather than tested: a view is
+# materialised, so `LIMIT 1` over one still reads what the view reads. The
+# ceiling that keeps it bounded refuses past ten thousand records, which is more
+# than a corpus file should write.
+#
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE work;
+USE DATABASE work;
+--- expect: ok
+
+--- case: a table with something in it for a view to name
+DEFINE TABLE staff SCHEMALESS;
+CREATE staff:1 = { name: 'ada', team: 'eng', salary: 100 };
+CREATE staff:2 = { name: 'bo', team: 'sales', salary: 90 };
+CREATE staff:3 = { name: 'cy', team: 'eng', salary: 120 };
+--- expect: ok
+
+--- case: a view is a name for a read and nothing is stored under it
+DEFINE VIEW engineers AS SELECT * FROM staff WHERE team = 'eng';
+--- expect: ok
+
+--- case: reading the view answers what its read answers
+SELECT * FROM engineers;
+--- expect: rows 2
+
+--- case: a view over a view is expanded as far as the chain goes
+DEFINE VIEW senior_engineers AS SELECT * FROM engineers WHERE salary > 110;
+SELECT * FROM senior_engineers;
+--- expect: rows 1
+
+--- case: a view answers through its own projection
+DEFINE VIEW roster AS SELECT name, team FROM staff;
+SELECT * FROM roster;
+--- expect: rows 3
+
+--- case: a condition outside the view sees what the view answered, not the record
+SELECT * FROM roster WHERE salary > 85;
+--- expect: rows 0
+
+--- case: and the same condition over a field the view does answer with filters
+SELECT * FROM roster WHERE team = 'eng';
+--- expect: rows 2
+
+--- case: a view holds no records, so writing to one is refused
+CREATE engineers:9 = { name: 'ev' };
+--- expect: error ViewIsNotATable
+
+--- case: a view has no keyspace, so a record address into one is refused
+SELECT * FROM engineers:1;
+--- expect: error ViewIsNotATable
+
+--- case: and neither is there a span of identities to walk
+SELECT * FROM engineers:1..3;
+--- expect: error ViewIsNotATable
+
+--- case: an index indexes stored records, and a view has none
+DEFINE INDEX by_name ON engineers FIELDS name;
+--- expect: error ViewIsNotATable
+
+--- case: one namespace, so a view cannot take a table's name
+DEFINE VIEW staff AS SELECT * FROM staff;
+--- expect: error NameTaken
+
+--- case: nor a table a view's
+DEFINE TABLE engineers SCHEMALESS;
+--- expect: error NameTaken
+
+--- case: and a repeat definition is refused rather than replacing
+DEFINE VIEW engineers AS SELECT * FROM staff WHERE team = 'sales';
+--- expect: error NameTaken
+
+--- case: a view whose read is not a read is refused where it is written
+DEFINE VIEW broken AS DELETE FROM staff;
+--- expect: error UnexpectedToken
+
+--- case: dropping a view removes the definition and leaves the records alone
+DROP VIEW engineers;
+SELECT * FROM staff;
+--- expect: rows 3
+
+--- case: and the word refuses a name of another kind
+DROP VIEW staff;
+--- expect: error Unknown

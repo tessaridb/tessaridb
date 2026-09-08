@@ -450,6 +450,49 @@ pub enum Error {
         span: Span,
     },
 
+    /// A view was named where a table has to be.
+    ///
+    /// Reading a view happens by rewriting the statement before anything is
+    /// resolved, so a view name that reaches a resolution is a view in a
+    /// position that has no records to act on — a write, a keyspace address, an
+    /// index, or a read the rewrite does not cover.
+    #[error(
+        "`{name}` is a view (at {span}) — a view holds no records, so it can only be read from"
+    )]
+    ViewIsNotATable {
+        /// The view named.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+    /// A chain of views was expanded as far as the store will follow it.
+    ///
+    /// A view naming a view naming a view, past the depth this build accepts —
+    /// which is also what a cycle looks like from here, and the chain is printed
+    /// so the cycle is legible in the message.
+    #[error("views nested more than {depth} deep (at {span}): {}", chain.join(" -> "))]
+    ViewsTooDeep {
+        /// The chain followed, in the order it was followed.
+        chain: Vec<String>,
+        /// How far the store will follow one.
+        depth: usize,
+        /// Where the read that started it was written.
+        span: Span,
+    },
+    /// A stored view could not be read back as a read.
+    ///
+    /// The text was parsed when it was declared, so this is a catalog whose
+    /// contents have moved under a build that no longer accepts them, not a
+    /// statement somebody has just mistyped.
+    #[error("the stored read of view `{name}` (at {span}) no longer parses: {detail}")]
+    ViewUnreadable {
+        /// The view whose stored read would not parse.
+        name: String,
+        /// What the parser said about it.
+        detail: String,
+        /// Where the view was named.
+        span: Span,
+    },
     /// `CREATE` over a record that is already there.
     ///
     /// Refused rather than replaced: a silent overwrite loses a record with

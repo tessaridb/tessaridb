@@ -10,7 +10,7 @@ use tessari_storage::{
     Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeOrder, FieldShape,
     GEO_FIELD, IndexDefinition, IndexShape, Mapped, OnFailure, QueueDeclaration, RecordAddress,
     TableDefinition, TableKind, TableShape, Transaction, VECTOR_FIELD, VaultDeclaration,
-    VectorDeclaration, VectorDistance, Violation, violations,
+    VectorDeclaration, VectorDistance, ViewDeclaration, Violation, violations,
 };
 
 use tessari_types::{
@@ -646,6 +646,27 @@ impl Session<'_> {
                 span,
             ),
             StatementKind::DropQueue { name } => self.drop_queue(transaction, name, span),
+            StatementKind::DefineView {
+                name,
+                read,
+                if_not_exists,
+            } => self.define_table(
+                transaction,
+                name,
+                TableShape {
+                    // A view declares no fields — its shape is whatever its read
+                    // answers with — so strictness has nothing to be about, and
+                    // `false` is the value that says so rather than a default
+                    // nobody chose.
+                    schemafull: false,
+                    kind: TableKind::View(ViewDeclaration { read: read.clone() }),
+                    identity: IdentityKind::default(),
+                    graph: None,
+                },
+                *if_not_exists,
+                span,
+            ),
+            StatementKind::DropView { name } => self.drop_view(transaction, name, span),
             StatementKind::Claim { table, count, span } => {
                 self.claim(transaction, table, *count, *span)
             }
@@ -1978,6 +1999,37 @@ impl Session<'_> {
             .table(id)?
             .is_some_and(|definition| matches!(definition.kind, TableKind::Queue(_)));
         if !is_queue {
+            return Err(unknown());
+        }
+        Catalog::new(transaction).drop_table(id)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP VIEW active` — the definition, and there is nothing else.
+    ///
+    /// A view holds no records, no index and no keyspace, so dropping one frees
+    /// nothing and orphans nothing. It refuses a name of another kind for the
+    /// reason `DROP QUEUE` does: a word that removed a table of another kind
+    /// would make the statement's own name the least reliable thing about it.
+    fn drop_view(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        let unknown = || Error::Unknown {
+            entity: "view",
+            name: name.text.clone(),
+            span,
+        };
+        let id = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(unknown)?;
+        let is_view = Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|definition| matches!(definition.kind, TableKind::View(_)));
+        if !is_view {
             return Err(unknown());
         }
         Catalog::new(transaction).drop_table(id)?;

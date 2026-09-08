@@ -127,6 +127,8 @@ impl Effect {
             | StatementKind::DropVault { .. }
             | StatementKind::DefineQueue { .. }
             | StatementKind::DropQueue { .. }
+            | StatementKind::DefineView { .. }
+            | StatementKind::DropView { .. }
             | StatementKind::DefineGraph { .. }
             | StatementKind::DropGraph { .. }
             | StatementKind::DefineEdge { .. }

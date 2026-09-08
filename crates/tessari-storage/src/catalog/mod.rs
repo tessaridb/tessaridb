@@ -47,7 +47,7 @@ pub use definition::{
     DatabaseDefinition, EdgeDeclaration, EdgeOrder, GEO_FIELD, IndexDefinition, IndexShape,
     NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL,
     StoredKind, TableDefinition, TableKind, TableShape, VECTOR_FIELD, VaultDeclaration,
-    VectorDeclaration, VectorDistance,
+    VectorDeclaration, VectorDistance, ViewDeclaration,
 };
 pub use edge_kind::EdgeKindDefinition;
 pub use field::{FieldDefinition, FieldShape};

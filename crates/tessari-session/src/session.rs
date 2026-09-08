@@ -427,8 +427,16 @@ impl<'a> Session<'a> {
         statement: &Statement,
     ) -> Result<Outcome> {
         let span = statement.span;
-        self.authorize(store, &statement.kind, span)?;
-        match &statement.kind {
+        // **Views are expanded before the statement is authorized, and the
+        // order is the security property.** The grant check reads the tables a
+        // statement names off the parsed tree, so a view replaced any later
+        // would be checked as one table -- its own -- while the read it stands
+        // for reached tables nobody granted. Rewriting here means the tree whose
+        // tables are counted is the tree that runs.
+        let expanded = self.expand_views(store, &statement.kind)?;
+        let kind = expanded.as_ref().unwrap_or(&statement.kind);
+        self.authorize(store, kind, span)?;
+        match kind {
             StatementKind::Use {
                 namespace,
                 database,

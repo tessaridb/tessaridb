@@ -538,6 +538,11 @@ impl Needs {
             // statements that do.
             | StatementKind::DefineQueue { .. }
             | StatementKind::DropQueue { .. }
+            // Declaring a view is declaring a table — it takes a name in the
+            // table namespace and writes a catalog entry — so it sits with the
+            // structure statements even though nothing is stored under it.
+            | StatementKind::DefineView { .. }
+            | StatementKind::DropView { .. }
             | StatementKind::DefineGraph { .. }
             | StatementKind::DropGraph { .. }
             | StatementKind::DefineEdge { .. }

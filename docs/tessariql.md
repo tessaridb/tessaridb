@@ -5247,6 +5247,86 @@ naming the ceiling. Without a bound, one statement holds the whole queue for the
 whole timeout while every other worker waits — with nothing anywhere in an error
 state, because a claim that takes everything is doing what it was asked to do.
 
+## 6d. A name for a read
+
+```tessariql
+DEFINE VIEW engineers AS SELECT * FROM staff WHERE team = 'eng';
+
+SELECT * FROM engineers;
+SELECT name FROM engineers WHERE salary > 110 ORDER BY name;
+
+DROP VIEW engineers;
+```
+
+A view is a **name for a read**. Nothing is stored under it and nothing is
+maintained: a statement that names one is rewritten to carry the read before
+anything else happens, and the read then runs. `INFO FOR TABLE engineers`
+answers with the statement that declared it, character for character, because
+the read is kept as the text you wrote.
+
+**A view is a name for a read, not a faster way to run one.** The read it stands
+for is held whole before your statement asks anything of it, so `SELECT * FROM
+engineers LIMIT 1` reads what the view reads — it does not stop where the answer
+fills, the way the same statement over a table does. That is the one thing worth
+knowing before using views for large tables.
+
+It is bounded rather than unbounded. A view that names no `LIMIT` runs under the
+ceiling every held read runs under, and past **10 000** records the read is
+**refused** rather than shortened — a truncated answer that looks whole is the
+failure this store spends its rules removing. A view over a table that will grow
+should carry its own `LIMIT`:
+
+```tessariql
+DEFINE VIEW recent_signups AS
+  SELECT * FROM users WHERE created > time::now() - 7d ORDER BY created DESC LIMIT 100;
+```
+
+**A view is read through its own projection.** `DEFINE VIEW roster AS SELECT
+name, team FROM staff` answers two fields, so `SELECT * FROM roster` answers two
+fields and a condition written outside the view can only ask about those two.
+`SELECT * FROM roster WHERE salary > 85` answers nothing — not because no one
+earns that, but because `roster` does not carry `salary` and the condition is
+asked of what the view answered.
+
+**A view may name a view**, up to **8** deep. Past that the read is refused, and
+the refusal prints the chain it followed — which is also how a view that names
+itself, directly or around a loop, is reported.
+
+**A view holds no records**, so `CREATE`, `UPDATE`, `DELETE`, `INSERT`, an index,
+a field declaration, a record address (`engineers:1`) and a span
+(`engineers:1..3`) are each refused. A view and a table share one namespace, so
+neither can take the other's name, and a repeat `DEFINE VIEW` over a name that
+exists is refused: changing a view is `DROP VIEW` and then `DEFINE VIEW`.
+
+### Whose permissions a view reads with
+
+**The caller's.** A view is a saved read, not an authority. The tables the view
+names are checked against *your* grants, exactly as if you had written the read
+out by hand — so a caller who may not read `staff` may not read a view over
+`staff`, and the refusal names `staff`.
+
+A grant on a view itself is therefore refused rather than stored: no grant on a
+view is ever consulted, and one that could be written would look like a
+permission that did something.
+
+This is worth stating because views elsewhere often work the other way, running
+with the authority of whoever defined them. That is a useful thing and it is a
+separate decision with its own consequences, so it is not what this word does
+today; if it arrives it will arrive as a clause you have to write.
+
+### Maintained results are a job for the change feed
+
+A view is re-read every time it is named; nothing is stored under it, and there
+is no `MATERIALIZED` spelling. A store that needs a maintained result should
+write one into an ordinary table from the **change feed**, which is where the
+writes it must react to already are — and the result is then a table you can
+index, back up and grant on like any other.
+
+Maintaining a result inside the writing transaction is the alternative, and it
+is the reason this is not built: every write to `orders` would pay for every
+view over `orders`, silently, with a cost nobody wrote down, and the write's
+failure modes would come to include the view's.
+
 ## 7. Transactions
 
 ```

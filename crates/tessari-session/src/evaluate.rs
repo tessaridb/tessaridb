@@ -1204,11 +1204,22 @@ impl Session<'_> {
             // a held vector. The inner plan is a plan of its own, and one field
             // for it would describe only the shallowest case.
             Source::Subquery { read, condition } => {
-                // `None` for the held ceiling: the grammar already refuses a
-                // materialised source that names no `LIMIT`, so the bound here
-                // is the author's own and a second one below it would be a rule
-                // in two places that could only ever disagree.
-                let inner = self.read(transaction, read, within, None)?;
+                // The ceiling this read runs under, which for a materialised
+                // source written by hand is **none**: the grammar refuses one
+                // that names no `LIMIT`, so `Ceiling::over` sees the bound the
+                // author wrote and declines to add a second.
+                //
+                // A view reaches here having never passed that rule. It is not
+                // written in parentheses — it is a name the session replaced
+                // with a read before anything was authorized — so the parser
+                // could not have seen it, and a view naming no `LIMIT` would
+                // otherwise hold its whole table. `Ceiling::over` is the answer
+                // `budget.rs` already gives for the position the grammar cannot
+                // reach, and this is the second one: past it the read is
+                // **refused**, never truncated, so a view over a growing table
+                // fails in a way somebody can see rather than answering a prefix
+                // that looks whole.
+                let inner = self.read(transaction, read, within, Ceiling::over(read))?;
                 reporting.collected.extend(inner.notes);
                 reporting
                     .collected

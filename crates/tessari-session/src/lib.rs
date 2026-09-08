@@ -59,6 +59,7 @@ mod text;
 mod throttle;
 mod ticket;
 mod vector;
+mod view;
 
 pub use effect::{Effect, admits};
 pub use error::{Depended, Error, Result};

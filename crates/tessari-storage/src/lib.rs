@@ -48,7 +48,7 @@ pub use catalog::{
     NamespaceDefinition, OnFailure, QUEUE_ATTEMPTS, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
     RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE, StoredKind,
     TableDefinition, TableKind, TableShape, UserDefinition, VECTOR_FIELD, VaultDeclaration,
-    VectorDeclaration, VectorDistance, Verb,
+    VectorDeclaration, VectorDistance, Verb, ViewDeclaration,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.

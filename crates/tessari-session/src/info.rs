@@ -474,7 +474,10 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         table: &TableRef,
     ) -> Result<BTreeMap<String, Value>> {
-        let (_, id) = self.resolve_table(transaction, table)?;
+        // The one read that may name a view: describing one is the point of
+        // asking, and a report refused because the subject is a view would be a
+        // report nobody could get for the thing they asked about.
+        let (_, id) = self.resolve_any_table(transaction, table)?;
         let visible = self.visible_in(transaction, id)?;
         let catalog = Catalog::new(transaction);
         let Some(definition) = catalog.table(id)? else {
@@ -1261,6 +1264,14 @@ fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> {
             Value::from(definition.identity.name()),
         ),
     ]);
+    // Present only on a view, and it carries the read rather than a flag. A
+    // marker alone would say the least useful true thing: two views differ
+    // entirely in what they answer and not at all in being views, so a report
+    // omitting the read describes every view identically. It is the same reason
+    // the endpoint pair below is reported and not merely the edge flag.
+    if let Some(read) = definition.view_read() {
+        shape.insert("view".to_owned(), Value::from(read));
+    }
     // Present only on a table that belongs to one, and reported as the **id**
     // for the reason the endpoints below are: this report says what is stored,
     // and a name resolved here would be a second read able to disagree with the

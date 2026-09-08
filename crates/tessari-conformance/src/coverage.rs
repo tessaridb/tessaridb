@@ -56,6 +56,8 @@ forms! {
     DropVault => "DROP VAULT",
     DefineQueue => "DEFINE QUEUE",
     DropQueue => "DROP QUEUE",
+    DefineView => "DEFINE VIEW",
+    DropView => "DROP VIEW",
     Claim => "CLAIM",
     Release => "RELEASE",
     Reveal => "REVEAL",
@@ -215,6 +217,8 @@ mod tests {
              CLAIM 2 FROM q;\
              RELEASE q:1;\
              DROP QUEUE q;\
+             DEFINE VIEW v AS SELECT * FROM t;\
+             DROP VIEW v;\
              GET s:1;\
              SET s:1 = 1;\
              DEL s:1;\

@@ -11,7 +11,7 @@
 //! every path performs.
 
 use tessari_ql::{Span, TableRef};
-use tessari_storage::{Catalog, IndexDefinition, Transaction};
+use tessari_storage::{Catalog, IndexDefinition, TableKind, Transaction};
 use tessari_types::{DatabaseId, NamespaceId, Path, TableId};
 
 use crate::error::{Error, Result};
@@ -113,6 +113,47 @@ impl Session<'_> {
 
     /// The table a reference names, and the tenancy it lives in.
     pub(crate) fn resolve_table(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: &TableRef,
+    ) -> Result<(Context, TableId)> {
+        let (context, id) = self.resolve_any_table(transaction, table)?;
+        // **A view never resolves here, and that is the backstop the whole
+        // feature rests on.** Reading a view is not a resolution at all: the
+        // statement is rewritten before anything is authorized, so by the time
+        // any name reaches this function every view in a read position is
+        // already gone. Every occurrence that is left is a write target, a
+        // keyspace address, an index target, or a read the rewrite did not
+        // reach — and a view has no records for any of them.
+        //
+        // Refusing here rather than at each of those call sites is what makes
+        // the rewrite's coverage a **usability** question instead of a
+        // correctness one: a position the rewrite misses refuses with this
+        // message rather than quietly reading a view's empty prefix and
+        // answering nothing, which is the one failure that would look like a
+        // correct empty result. The statements that legitimately name a view —
+        // `DROP VIEW` and `INFO` — ask the catalog directly, the way
+        // `drop_vault` already does.
+        if let Some(definition) = Catalog::new(transaction).table(id)?
+            && matches!(definition.kind, TableKind::View(_))
+        {
+            return Err(Error::ViewIsNotATable {
+                name: table.name.text.clone(),
+                span: table.span,
+            });
+        }
+        Ok((context, id))
+    }
+
+    /// The same resolution, with a view permitted.
+    ///
+    /// Two functions rather than a flag, because the flag would read as an
+    /// option and this is not one: [`Self::resolve_table`] is what every
+    /// statement that acts on records must use, and this is for the two that
+    /// legitimately name a view — `INFO FOR TABLE`, which describes it, and the
+    /// expansion, which is why the name is there at all. A caller reaching for
+    /// this has to say so.
+    pub(crate) fn resolve_any_table(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,

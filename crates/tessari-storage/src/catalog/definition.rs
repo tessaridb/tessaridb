@@ -47,6 +47,8 @@ const FIELD_IDENTITY: &str = "identity";
 const FIELD_GRAPH: &str = "graph";
 const FIELD_CEILING: &str = "ceiling";
 const FIELD_QUEUE: &str = "queue";
+const FIELD_VIEW: &str = "view";
+const FIELD_READ: &str = "read";
 const FIELD_TIMEOUT: &str = "timeout";
 const FIELD_ATTEMPTS: &str = "attempts";
 const FIELD_DIMENSION: &str = "dimension";
@@ -156,6 +158,18 @@ impl TableDefinition {
     /// down somewhere, because the survey that preceded this feature found that
     /// **no** generic read path in this store consults the table kind at all —
     /// so each refusal is a place that had to be given the question, and a
+    /// The read this table stands for, when it is a view.
+    ///
+    /// `None` for every other kind, which is what lets a caller ask the question
+    /// without first asking what kind it is.
+    #[must_use]
+    pub fn view_read(&self) -> Option<&str> {
+        match &self.kind {
+            TableKind::View(declared) => Some(declared.read.as_str()),
+            _ => None,
+        }
+    }
+
     /// question spelled the same way everywhere is one a reviewer can find.
     #[must_use]
     pub fn is_vault(&self) -> bool {
@@ -338,6 +352,18 @@ impl TableDefinition {
         if let TableKind::Queue(declared) = &self.kind {
             fields.insert(FIELD_QUEUE.to_owned(), declared.to_value());
         }
+        // A view is carried by its read for the reason a queue is carried by its
+        // timeout. Its downgrade case is the **sharpest of the three** and is
+        // worth stating plainly: a build that predates views finds no flag and
+        // no declaration and reads this entry as a plain table — one whose
+        // keyspace is empty. So `SELECT` answers **nothing** rather than the
+        // view's records, which is a wrong answer and not a lost refusal, and
+        // `CREATE` succeeds and writes records into a prefix this build will
+        // never read. Opening a store holding views with an older binary is a
+        // downgrade with data consequences.
+        if let TableKind::View(declared) = &self.kind {
+            fields.insert(FIELD_VIEW.to_owned(), declared.to_value());
+        }
         Value::Object(fields)
     }
 
@@ -378,6 +404,10 @@ impl TableDefinition {
                 },
                 queue: match fields.get(FIELD_QUEUE) {
                     Some(value) => Some(QueueDeclaration::from_value(value)?),
+                    None => None,
+                },
+                view: match fields.get(FIELD_VIEW) {
+                    Some(value) => Some(ViewDeclaration::from_value(value)?),
                     None => None,
                 },
                 ceiling: ceiling(fields)?,
@@ -557,6 +587,75 @@ pub enum TableKind {
     /// timeout in a field beside the kind would make "carries a timeout but is
     /// not a queue" representable, which is the state this type abolishes.
     Queue(QueueDeclaration),
+    /// A name for a read, holding no records of its own — `DEFINE VIEW`.
+    ///
+    /// The ninth kind, and the first that is not a store at all. Every kind
+    /// before it answers *what may be done to these records*; this one has no
+    /// records, so what it changes is where the records come from: a statement
+    /// naming a view is rewritten to carry the view's read before anything
+    /// resolves a name, and the read then runs as an ordinary materialised
+    /// source.
+    ///
+    /// That rewrite happens **before the grant check**, which is the whole of
+    /// why this is a kind and not a catalog entity of its own. A grant names a
+    /// [`tessari_types::TableId`], so a view outside the table namespace would
+    /// need a second permission system; inside it, a view cannot shadow a table
+    /// (one name reservation answers both) and a caller reading through one is
+    /// checked against the tables the view actually reads.
+    ///
+    /// It carries its read for the reason [`TableKind::Vector`] carries its
+    /// declaration: a read in a field beside the kind would make "carries a read
+    /// but is not a view" representable, which is the state this type abolishes.
+    View(ViewDeclaration),
+}
+
+/// The read a view names.
+///
+/// # Text, and not a serialised tree
+///
+/// The same choice a field's `DEFAULT` makes and for the reason stated there —
+/// the storage layer cannot evaluate a TessariQL expression, so a definition
+/// keeps the text it was written as and the layer that owns the language parses
+/// it back. Two properties follow that a stored tree would not have: `INFO`
+/// answers with the statement somebody typed rather than a re-rendered one that
+/// happens to mean the same thing, and a view written before a clause existed
+/// cannot decode into a read that silently lost it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewDeclaration {
+    /// The read, exactly as it was written.
+    pub read: String,
+}
+
+impl ViewDeclaration {
+    /// The value written inside the table's catalog entry.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        Value::Object(BTreeMap::from([(
+            FIELD_READ.to_owned(),
+            Value::from(self.read.as_str()),
+        )]))
+    }
+
+    /// Read a declaration back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when the read is missing or is not a
+    /// string.
+    pub fn from_value(value: &Value) -> Result<Self> {
+        const ENTITY: &str = "view";
+        let fields = object(value, ENTITY)?;
+        let Some(Value::String(read)) = fields.get(FIELD_READ) else {
+            return Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_READ,
+                found: fields
+                    .get(FIELD_READ)
+                    .map_or("none", tessari_types::Value::type_name),
+            });
+        };
+        Ok(Self { read: read.clone() })
+    }
 }
 
 /// What a queue calls the instant a record's current hold lapses.
@@ -802,6 +901,8 @@ pub struct StoredKind {
     pub vault: Option<VaultDeclaration>,
     /// A queue's timeout and attempt ceiling.
     pub queue: Option<QueueDeclaration>,
+    /// A view's read.
+    pub view: Option<ViewDeclaration>,
     /// A bucket's size ceiling.
     pub ceiling: Option<u64>,
 }
@@ -834,6 +935,7 @@ impl TableKind {
             vector,
             vault,
             queue,
+            view,
             ceiling,
         } = stored;
         // A vault is read first and alone. Every other arm below distinguishes
@@ -859,8 +961,24 @@ impl TableKind {
         // added as a ninth tuple element so that the arms already written keep
         // reading as the exhaustive statement they are.
         if let Some(declared) = queue {
+            return match (
+                edge, bucket, collection, geo, endpoints, vector, &view, ceiling,
+            ) {
+                (false, false, false, false, None, None, None, None) => Ok(Self::Queue(declared)),
+                _ => Err(Error::CatalogMalformed {
+                    entity: "table",
+                    field: "kind",
+                    found: "more than one kind",
+                }),
+            };
+        }
+        // A view sets no flag either, and is pulled out here for the reason the
+        // queue is: the tuple match below is an exhaustive statement about the
+        // kinds that *are* flags, and growing it by one element per declaration
+        // would make every arm harder to read to say nothing new.
+        if let Some(declared) = view {
             return match (edge, bucket, collection, geo, endpoints, vector, ceiling) {
-                (false, false, false, false, None, None, None) => Ok(Self::Queue(declared)),
+                (false, false, false, false, None, None, None) => Ok(Self::View(declared)),
                 _ => Err(Error::CatalogMalformed {
                     entity: "table",
                     field: "kind",

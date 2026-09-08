@@ -133,7 +133,7 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 25] = [
+const CROSS_CUTTING: [&str; 26] = [
     // A span of identities is an access path over the table's own key order,
     // and every table has one — a log, an audit trail, a session table and a
     // queue all want the same window and none of them is a different engine for
@@ -147,6 +147,12 @@ const CROSS_CUTTING: [&str; 25] = [
     // says how much of the store, and neither is an access path.
     "authorities",
     "bindings",
+    // A view is a name for a read, so it belongs to no engine and to all of
+    // them: `DEFINE VIEW v AS SELECT …` names a scan, an index read, a walk or a
+    // nearest-neighbour read alike, and expands into whichever the read it
+    // stands for was. Counting it under an engine would file it with whichever
+    // one the example happened to use.
+    "views",
     // Declaring a table's fields with the table is a spelling, and a spelling
     // belongs to no engine: the columns desugar into the field declarations the
     // long form makes, and what a field then does to a write is the same

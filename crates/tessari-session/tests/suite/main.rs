@@ -111,6 +111,7 @@ mod vector_reads;
 mod vector_recall;
 mod vector_store;
 mod vector_width;
+mod views;
 mod windows;
 mod write_answers;
 mod write_bounds;

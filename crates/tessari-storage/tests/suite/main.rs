@@ -24,4 +24,5 @@ mod spatial_nearest;
 mod spatial_region;
 mod term_dictionary;
 mod values_in_records;
+mod view_definitions;
 mod walking_a_table;

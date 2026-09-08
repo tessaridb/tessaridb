@@ -130,6 +130,21 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
             "table `{name}` belongs to a graph this writer cannot name"
         )));
     }
+    // A view is written back as the statement it was declared with, and that
+    // is exact rather than approximate: the read is stored as the text somebody
+    // typed, so this is the one word here that restores the original character
+    // for character. Everything the other arms refuse to write — a flag the word
+    // cannot say, an identity it cannot express — a view does not have, because
+    // it declares no fields, holds no records and names them in no way at all.
+    if let TableKind::View(declared) = &definition.kind {
+        if definition.schemafull || definition.is_edge() {
+            return Err(Unwritable::at(format!(
+                "view `{name}` carries flags its declaring word cannot say"
+            )));
+        }
+        let _ = writeln!(script, "DEFINE VIEW {name} AS {};", declared.read);
+        return Ok(());
+    }
     // Written back as the word that created it, which is the whole reason the
     // kind is stored rather than inferred from the field and the index it
     // creates: `DEFINE TABLE embeddings SCHEMALESS` re-executes happily and

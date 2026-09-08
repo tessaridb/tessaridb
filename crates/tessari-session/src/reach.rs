@@ -46,6 +46,14 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // same way the four words above do.
         | StatementKind::DefineQueue { .. }
         | StatementKind::DropQueue { .. }
+        // A view is a table too, and declaring one names no table for a grant
+        // to be asked about — not even the tables its read names. That is
+        // deliberate and it is the other half of the permission decision: a
+        // view grants nothing, so defining one over a table the author cannot
+        // read is harmless, because *reading* it is checked against the tables
+        // the expansion names and the author's own grants have no part in it.
+        | StatementKind::DefineView { .. }
+        | StatementKind::DropView { .. }
         | StatementKind::DefineVault { .. }
         | StatementKind::DropVault { .. }
         // Sealing is not about a table. It changes whether this process holds a

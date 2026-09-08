@@ -100,6 +100,10 @@ fn erase_statement(statement: &mut Statement) {
         // span of their own to erase.
         | StatementKind::DefineQueue { name, .. }
         | StatementKind::DropQueue { name }
+        // A view joins the name-only list because its read is stored as text
+        // rather than as a tree, so it carries no span to erase either.
+        | StatementKind::DefineView { name, .. }
+        | StatementKind::DropView { name }
         | StatementKind::DropGraph { name }
         | StatementKind::DropUser { name }
         | StatementKind::DropAnalyzer { name }

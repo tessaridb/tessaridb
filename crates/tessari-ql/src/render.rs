@@ -72,6 +72,8 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DefineVector { .. } => Err(unrenderable("DEFINE VECTOR", span)),
         StatementKind::DefineQueue { .. } => Err(unrenderable("DEFINE QUEUE", span)),
         StatementKind::DropQueue { .. } => Err(unrenderable("DROP QUEUE", span)),
+        StatementKind::DefineView { .. } => Err(unrenderable("DEFINE VIEW", span)),
+        StatementKind::DropView { .. } => Err(unrenderable("DROP VIEW", span)),
         StatementKind::Claim { .. } => Err(unrenderable("CLAIM", span)),
         StatementKind::Release { .. } => Err(unrenderable("RELEASE", span)),
         StatementKind::DropVector { .. } => Err(unrenderable("DROP VECTOR", span)),

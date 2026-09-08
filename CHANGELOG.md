@@ -20,11 +20,48 @@ Work landed after the tag was cut, and recorded here because this file's top
 section must name the version this package carries — so there is nowhere else
 for it to go until the next version is opened.
 
+**A view is a name for a read.** `DEFINE VIEW engineers AS SELECT * FROM staff
+WHERE team = 'eng'`, and then `SELECT * FROM engineers` anywhere a table can be
+read. Nothing is stored under it and nothing is maintained: a statement naming a
+view is rewritten to carry the read before anything else happens, so the read
+runs the way any other read does and `INFO FOR TABLE` answers with the statement
+that declared it, character for character.
+
+Three things about it are decisions rather than details, and each is in the
+reference beside the statement.
+
+**It is a name for a read, not a faster way to run one.** The view's read is held
+whole before your statement asks anything of it, so `SELECT * FROM engineers
+LIMIT 1` reads what the view reads — it does not stop where the answer fills, the
+way the same statement over a table does. It is bounded rather than unbounded: a
+view naming no `LIMIT` runs under the ceiling every held read runs under, and
+past ten thousand records the read is **refused** rather than shortened.
+
+**A view reads with the caller's permissions, and a grant on a view is refused.**
+The tables the view names are checked against your own grants, exactly as if you
+had written the read out by hand — so a caller who may not read `staff` may not
+read a view over `staff`, and the refusal names `staff`. Views elsewhere often
+run with the authority of whoever declared them; that is a separate decision with
+its own consequences and is not what this word does today.
+
+**Maintained results are the change feed's job.** There is no `MATERIALIZED`
+spelling and no plan for one: a store that needs a maintained result writes one
+into an ordinary table from the change feed, where the writes it must react to
+already are — and the result is then a table you can index, back up and grant on.
+Maintaining it inside the writing transaction would make every write to a table
+pay for every view over it, silently.
+
+A view is the ninth table kind, so the on-disk format changes only by a field on
+a table definition that did not exist. The downgrade is sharper than the queue's
+and is stated rather than defended: a build that predates views reads a view's
+entry as a plain table over an empty prefix, so `SELECT` answers **nothing**
+rather than the view's records.
+
 **An engine was added.** A **queue** is a table whose records are handed out one
 holder at a time under a hold that lapses — `DEFINE QUEUE jobs TIMEOUT 30s
 ATTEMPTS 5`, then `CLAIM FROM jobs`, `DELETE jobs:7` when the work is done and
 `RELEASE jobs:7` to hand it back early. That makes ten engines over one substrate
-rather than nine. **1261 conformance cases** define the language and run in the
+rather than nine. **1279 conformance cases** define the language and run in the
 build, up from 1237.
 
 The design is the part worth reading, because a queue is normally where a store
@@ -39,7 +76,12 @@ rebuild after a restart.
 
 Exclusivity needed no new machinery either. Two workers that pick one record both
 write that record, which the store's snapshot isolation already resolves — the
-first committer wins, the loser writes nothing and re-selects.
+first committer wins and **the loser is refused**, writing nothing. The retry
+belongs to the worker: the store does not quietly re-select the next record on
+its behalf, so a worker loop treats a write-conflict refusal the way it treats an
+empty answer, and one that has steady work claims a batch. This paragraph said
+"and re-selects" until it was measured with four competing processes; the
+sentence was wrong and the correction is here rather than silent.
 
 Delivery is **at-least-once**, the same guarantee `DEFINE CONSUMER` states, and
 `CLAIM` is **not idempotent**: a worker whose reply is lost and which asks again
