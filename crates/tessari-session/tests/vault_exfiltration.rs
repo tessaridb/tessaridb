@@ -347,3 +347,66 @@ fn a_traversal_and_a_fetch_reach_a_vault_record_and_still_carry_only_ciphertext(
         );
     }
 }
+
+/// The store's own bookkeeping, on the same two paths.
+///
+/// # What was leaking
+///
+/// The paths above return the record **whole**, and a sealed record carries one
+/// field its writer never supplied: `#keys`, the map of wrapped data keys, one
+/// entry per recipient plus the vault's own.
+///
+/// No secret is in it — the entries are ciphertext under the vault key and are
+/// worth nothing without the master key. What is in it is a **count**: how many
+/// recipients this record has, and the fact that it is a vault record at all.
+/// Neither is something a caller who cannot read the vault should learn from a
+/// traversal that happened to pass through it.
+///
+/// # Why it reads as an oversight rather than a decision
+///
+/// The store **refuses** a caller who writes this field — `VaultReservedField`,
+/// and `vault_refusals.rs` pins it. A field the store will not accept from a
+/// caller and then hands back to one is asymmetric, and nothing documented the
+/// outbound half. The strip lives in `redact::seen`, which is the one place both
+/// read paths and both change-feed surfaces already pass through, so it is not a
+/// rule anybody has to remember at a call site added later.
+#[test]
+fn neither_path_hands_back_the_stores_own_wrapped_key_map() {
+    let (_backend, store) = planted();
+    let mut session = Session::new(&store);
+    session
+        .run(&format!(
+            "{USE}
+             DEFINE TABLE users SCHEMALESS;
+             DEFINE TABLE owns EDGE;
+             CREATE users:1 = {{ name: 'ada' }};
+             RELATE users:1 -> owns -> team:'github';
+             CREATE users:2 = {{ name: 'grace', at: team:'github' }};"
+        ))
+        .expect("the graph would not set up");
+
+    for (shape, statement) in [
+        ("a traversal", "SELECT * FROM users:1->owns->team;"),
+        ("a fetch", "SELECT * FROM users:2 FETCH at;"),
+    ] {
+        let answered = format!(
+            "{:?}",
+            session
+                .run(&format!("{USE} {statement}"))
+                .unwrap_or_else(|refusal| panic!("{shape} was refused: {refusal}"))
+        );
+
+        // The same control the test above needs, for the same reason: an empty
+        // answer contains no `#keys` either, and would pass this vacuously.
+        assert!(
+            answered.contains(CONTROL),
+            "{shape} returned no vault record, so this test is asserting about \
+             an empty answer: {answered}"
+        );
+        assert!(
+            !answered.contains("#keys"),
+            "{shape} handed back the wrapped-key map, which publishes the \
+             recipient count: {answered}"
+        );
+    }
+}
