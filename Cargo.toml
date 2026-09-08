@@ -39,6 +39,14 @@ argon2 = { version = "0.5", features = ["std"] }
 # than adding a parallel stack, and a database is the last place to keep its
 # own two hundred lines of unaudited bit manipulation.
 sha2 = { version = "0.10", default-features = false }
+# MD5 and SHA-1, from the same author as `sha2` and over the same `digest` 0.10
+# traits already in the tree — so they add algorithms and no second stack. Both
+# are **broken** for anything needing collision resistance and neither is in the
+# language for security: a store interoperates, and an ETag, a legacy row key or
+# a content id somebody else computed cannot be checked against without them.
+# The alternative is not "safer", it is "the caller cannot do it here".
+md-5 = { version = "0.10", default-features = false }
+sha1 = { version = "0.10", default-features = false }
 # The AEAD every sealed value is encrypted under. ChaCha20-Poly1305 rather than
 # AES-GCM because it is constant-time in pure Rust with no hardware dependency,
 # and one source tree here produces both an arm64 and an amd64 image — an AES

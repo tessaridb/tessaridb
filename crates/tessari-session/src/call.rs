@@ -8,7 +8,7 @@
 //! there. A message saying only "wrong type" makes the author guess which of
 //! three arguments it meant.
 
-use tessari_ql::{Function, Span};
+use tessari_ql::{Aggregate, Function, Span};
 use tessari_types::{Datetime, Number, Value};
 
 use crate::error::{Error, Result};
@@ -61,6 +61,178 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         Function::CryptoSha512 => Ok(crate::digest::sha512(text_at(
             function, arguments, 0, span,
         )?)),
+        // On the same terms as the two above, and see `crate::digest` for what
+        // "the same terms" leaves out: both of these are checksums and neither
+        // decides anything an adversary has an interest in.
+        Function::CryptoMd5 => Ok(crate::digest::md5(text_at(function, arguments, 0, span)?)),
+        Function::CryptoSha1 => Ok(crate::digest::sha1(text_at(function, arguments, 0, span)?)),
+        Function::EncodingBase64 => Ok(crate::encoding::base64(bytes_at(
+            function, arguments, 0, span,
+        )?)),
+        Function::EncodingHex => Ok(crate::encoding::hex(bytes_at(
+            function, arguments, 0, span,
+        )?)),
+        // Text that spells no bytes answers `NONE` rather than failing: the
+        // kind was checked above, so what is left is a question about a value,
+        // and one unparseable row should narrow a read rather than end it.
+        Function::EncodingBase64Decode => Ok(crate::encoding::base64_decode(text_at(
+            function, arguments, 0, span,
+        )?)
+        .map_or(Value::None, Value::Bytes)),
+        Function::EncodingHexDecode => Ok(crate::encoding::hex_decode(text_at(
+            function, arguments, 0, span,
+        )?)
+        .map_or(Value::None, Value::Bytes)),
+        Function::StringStartsWith => {
+            let text = text_at(function, arguments, 0, span)?;
+            let prefix = text_at(function, arguments, 1, span)?;
+            Ok(Value::Bool(text.starts_with(prefix)))
+        }
+        Function::StringEndsWith => {
+            let text = text_at(function, arguments, 0, span)?;
+            let suffix = text_at(function, arguments, 1, span)?;
+            Ok(Value::Bool(text.ends_with(suffix)))
+        }
+        Function::StringContains => {
+            let text = text_at(function, arguments, 0, span)?;
+            let needle = text_at(function, arguments, 1, span)?;
+            Ok(Value::Bool(text.contains(needle)))
+        }
+        Function::StringIndexOf => {
+            let text = text_at(function, arguments, 0, span)?;
+            let needle = text_at(function, arguments, 1, span)?;
+            // `find` answers a **byte** offset and every other position in this
+            // language is a character, so it is converted rather than reported.
+            // The two agree on ASCII, which is exactly why the difference would
+            // survive a test corpus that never left it.
+            match text.find(needle) {
+                Some(at) => count(
+                    text.get(..at).map_or(0, |before| before.chars().count()),
+                    function,
+                    span,
+                ),
+                None => Ok(Value::None),
+            }
+        }
+        Function::StringReverse => Ok(Value::from(
+            text_at(function, arguments, 0, span)?
+                .chars()
+                .rev()
+                .collect::<String>()
+                .as_str(),
+        )),
+        Function::StringTrimStart => Ok(Value::from(
+            text_at(function, arguments, 0, span)?.trim_start(),
+        )),
+        Function::StringTrimEnd => Ok(Value::from(
+            text_at(function, arguments, 0, span)?.trim_end(),
+        )),
+        // Two numbers, in the value system's own order, so `math::min` and the
+        // `min` aggregate cannot disagree about which of two values is smaller.
+        Function::MathMin | Function::MathMax => {
+            let first = number_at(function, arguments, 0, span)?;
+            let second = number_at(function, arguments, 1, span)?;
+            let smaller = function == Function::MathMin;
+            let held = if (first <= second) == smaller {
+                first
+            } else {
+                second
+            };
+            Ok(Value::Number(held.clone()))
+        }
+        Function::MathSign => {
+            let number = number_at(function, arguments, 0, span)?;
+            let zero = Number::Integer(0);
+            Ok(Value::Number(Number::Integer(match number.cmp(&zero) {
+                core::cmp::Ordering::Less => -1,
+                core::cmp::Ordering::Equal => 0,
+                core::cmp::Ordering::Greater => 1,
+            })))
+        }
+        Function::MathTrunc => Ok(Value::Number(truncated(number_at(
+            function, arguments, 0, span,
+        )?))),
+        // `NONE` at zero and below, and `NONE` for a result no float holds, on
+        // `math::sqrt`'s reading: a NaN or an infinity compares false against
+        // everything including itself, so it travels through a filter and an
+        // ordering without ever saying it is not a number.
+        Function::MathLn | Function::MathExp => {
+            let number = number_at(function, arguments, 0, span)?;
+            let Some(held) = number.as_float() else {
+                return Err(Error::CallFailed {
+                    function,
+                    reason: "that number is outside the range a float holds",
+                    span,
+                });
+            };
+            let answer = if function == Function::MathLn {
+                if held <= 0.0_f64 {
+                    return Ok(Value::None);
+                }
+                held.ln()
+            } else {
+                held.exp()
+            };
+            if answer.is_finite() {
+                Ok(Value::Number(Number::float(answer)))
+            } else {
+                Ok(Value::None)
+            }
+        }
+        Function::ArrayConcat => {
+            let first = array_at(function, arguments, 0, span)?.to_vec();
+            let second = array_at(function, arguments, 1, span)?;
+            let mut held = first;
+            held.extend_from_slice(second);
+            Ok(Value::Array(held))
+        }
+        // One more element, whatever kind it is. Appending an array as a value
+        // and joining two arrays are different intentions, and a single
+        // function deciding between them by the argument's kind is how a caller
+        // appending a genuine array of two ends up with two elements.
+        Function::ArrayAppend => {
+            let mut held = array_at(function, arguments, 0, span)?.to_vec();
+            held.push(arguments.get(1).cloned().unwrap_or(Value::None));
+            Ok(Value::Array(held))
+        }
+        Function::ArrayIndexOf => {
+            let items = array_at(function, arguments, 0, span)?;
+            let wanted = arguments.get(1).cloned().unwrap_or(Value::None);
+            match items.iter().position(|held| *held == wanted) {
+                Some(at) => count(at, function, span),
+                None => Ok(Value::None),
+            }
+        }
+        // Folded by the **same accumulator the aggregates run**, rather than by
+        // a second implementation here. These fold one array inside one record
+        // and the aggregates fold a column across records — different
+        // questions, and two answers to "which of these is smaller" or "what do
+        // these add up to" would eventually differ on a decimal, a mixed group
+        // or an empty one. One code path is how they cannot.
+        Function::ArrayMin => folded(Aggregate::Min, function, arguments, span),
+        Function::ArrayMax => folded(Aggregate::Max, function, arguments, span),
+        Function::ArraySum => folded(Aggregate::Sum, function, arguments, span),
+        Function::ObjectEntries => Ok(Value::Array(
+            object_at(function, arguments, 0, span)?
+                .iter()
+                .map(|(name, value)| Value::Array(vec![Value::from(name.as_str()), value.clone()]))
+                .collect(),
+        )),
+        // Whether the field is **there**, which is not the same question as
+        // whether it holds something: a field explicitly holding `none` is
+        // present, and this is the only way to tell the two apart.
+        Function::ObjectHas => {
+            let fields = object_at(function, arguments, 0, span)?;
+            let name = text_at(function, arguments, 1, span)?;
+            Ok(Value::Bool(fields.contains_key(name)))
+        }
+        Function::ObjectMerge => {
+            let mut held = object_at(function, arguments, 0, span)?.clone();
+            for (name, value) in object_at(function, arguments, 1, span)? {
+                held.insert(name.clone(), value.clone());
+            }
+            Ok(Value::Object(held))
+        }
         Function::StringConcat => {
             let first = text_at(function, arguments, 0, span)?;
             let second = text_at(function, arguments, 1, span)?;
@@ -409,6 +581,47 @@ fn text_at(function: Function, arguments: &[Value], at: usize, span: Span) -> Re
     match arguments.get(at) {
         Some(Value::String(text)) => Ok(text),
         other => Err(wrong_type(function, at, "a string", named(other), span)),
+    }
+}
+
+/// One array folded by the accumulator the aggregates use.
+///
+/// The array is the group. Every value in it is offered in order, exactly as a
+/// record's value is offered when the fold is over rows, so the promotion
+/// rules, the treatment of an absence and the answer over nothing are not
+/// restated here — they are the ones already written down and already tested.
+fn folded(
+    aggregate: Aggregate,
+    function: Function,
+    arguments: &[Value],
+    span: Span,
+) -> Result<Value> {
+    let items = array_at(function, arguments, 0, span)?;
+    let mut running = crate::accumulate::Accumulator::for_aggregate(aggregate, span);
+    for value in items {
+        running.offer(value)?;
+    }
+    running.finish()
+}
+
+fn bytes_at(function: Function, arguments: &[Value], at: usize, span: Span) -> Result<&[u8]> {
+    match arguments.get(at) {
+        Some(Value::Bytes(held)) => Ok(held),
+        other => Err(wrong_type(function, at, "bytes", named(other), span)),
+    }
+}
+
+/// A number's whole part, toward zero, keeping its kind.
+///
+/// Its own function rather than an arm of [`reshape`]: that one is the four
+/// shapes `math::abs` and its neighbours give a number and its match is written
+/// per kind, and adding a fifth there would grow a table whose whole point is
+/// to be read at a glance.
+fn truncated(number: &Number) -> Number {
+    match number {
+        Number::Integer(held) => Number::Integer(*held),
+        Number::Decimal(held) => Number::Decimal(held.trunc()),
+        Number::Float(held) => Number::float(held.trunc()),
     }
 }
 

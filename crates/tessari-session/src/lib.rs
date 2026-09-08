@@ -33,6 +33,7 @@ mod context;
 mod describe;
 mod digest;
 mod effect;
+mod encoding;
 mod error;
 mod evaluate;
 mod execute;

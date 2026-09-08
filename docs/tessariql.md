@@ -3982,26 +3982,64 @@ SELECT vector::euclidean(embedding, $probe) AS apart FROM documents;
 SELECT vector::dot(embedding, $probe) AS aligned FROM documents;
 ```
 
+The rest of the collection and number groups, on the same terms:
+
+```
+SELECT string::trim_start(name) AS front, string::trim_end(name) AS back FROM users;
+SELECT string::reverse(name) AS backwards FROM users;
+SELECT * FROM users WHERE string::starts_with(name, $begins);
+SELECT * FROM users WHERE string::ends_with(name, $finishes);
+SELECT * FROM notes WHERE string::contains(body, $needle);
+SELECT string::index_of(body, $needle) AS at FROM notes;
+SELECT math::trunc(ratio) AS whole, math::sign(balance) AS direction FROM accounts;
+SELECT math::ln(weight) AS scaled, math::exp(rate) AS grown FROM samples;
+SELECT math::min(low, high) AS lower, math::max(low, high) AS upper FROM readings;
+SELECT array::min(scores) AS worst, array::max(scores) AS best FROM attempts;
+SELECT array::sum(scores) AS total FROM attempts;
+SELECT array::concat(tags, $extra) AS both FROM users;
+SELECT array::append(tags, 'new') AS grown FROM users;
+SELECT array::index_of(tags, 'urgent') AS at FROM users;
+SELECT object::entries(address) AS pairs FROM users;
+SELECT * FROM users WHERE object::has(address, 'postcode');
+SELECT object::merge(address, $overrides) AS resolved FROM users;
+```
+
 | Group | Functions |
 |---|---|
-| `string` | `len` (characters, not bytes) · `lower` · `upper` · `trim` · `concat(a, b)` · `split(text, separator)` · `slice(text, start, count)` · `replace(text, from, to)` — the [collections](#collections) |
-| `array` | `len` · `first` · `last` · `distinct` · `sort` · `reverse` · `flatten` · `join(items, separator)` · `slice(items, start, count)` — the [collections](#collections) |
-| `object` | `keys` · `values` · `len` — the [collections](#collections) |
-| `math` | `abs` · `floor` · `ceil` · `round` (half away from zero) · `sqrt` · `pow(base, exponent)` |
+| `string` | `len` (characters, not bytes) · `lower` · `upper` · `trim` · `trim_start` · `trim_end` · `reverse` · `concat(a, b)` · `split(text, separator)` · `slice(text, start, count)` · `replace(text, from, to)` · `starts_with(text, prefix)` · `ends_with(text, suffix)` · `contains(text, needle)` · `index_of(text, needle)` — the [collections](#collections) |
+| `array` | `len` · `first` · `last` · `distinct` · `sort` · `reverse` · `flatten` · `min` · `max` · `sum` · `join(items, separator)` · `slice(items, start, count)` · `concat(a, b)` · `append(items, value)` · `index_of(items, value)` — the [collections](#collections) |
+| `object` | `keys` · `values` · `len` · `entries` · `has(o, name)` · `merge(a, b)` — the [collections](#collections) |
+| `math` | `abs` · `floor` · `ceil` · `round` (half away from zero) · `trunc` (toward zero) · `sign` · `sqrt` · `ln` · `exp` · `pow(base, exponent)` · `min(a, b)` · `max(a, b)` |
 | `time` | `now()` · `bucket(instant, width)` — the start of the window an instant is in · `year` · `month` · `day` · `hour` · `minute` · `second` · `unix` · `from_unix(seconds)` — the [calendar](#the-calendar) |
 | `type` | `of(value)` — the type's name, as §3 spells it · `bool` · `int` · `float` · `string` · `datetime` · `uuid` — the [casts](#casts) |
 | `vector` | `cosine(a, b)` · `euclidean(a, b)` · `dot(a, b)` |
 | `rand` | `uuid()` — see [Generated identifiers](#generated-identifiers) |
-| `crypto` | `sha256(text)` · `sha512(text)` — lowercase hex; see [Digests](#digests) |
+| `crypto` | `sha256(text)` · `sha512(text)` · `sha1(text)` · `md5(text)` — lowercase hex; see [Digests](#digests) |
+| `encoding` | `base64(bytes)` · `base64_decode(text)` · `hex(bytes)` · `hex_decode(text)` — see [Bytes as text](#bytes-as-text) |
 | `search` | `score(field, 'query')` — see [Ranking](#ranking) |
 | `geo` | `intersects` · `disjoint` · `covers` · `covered_by` · `contains` · `within` · `equals` · `touches` · `distance(a, b)` · `area(shape)` — see [Shapes](#shapes) |
 
 **What earns a place: a function is here when it cannot be expressed by what the
 language already has.** That is why there is no `array::contains` (`CONTAINS`
-says it), no `string::contains` (`LIKE '%x%'` says it), and no `is_none`
-(`= NONE` says it). `array::last` is the clearest case *for* the rule: a path
-takes a literal position and there is no length to subtract from, so "the last
-element" is otherwise unsayable.
+says it), no `math::clamp` (`math::min(math::max(x, lo), hi)` says it), and no
+`is_none` (`= NONE` says it). `array::last` is the clearest case *for* the rule:
+a path takes a literal position and there is no length to subtract from, so "the
+last element" is otherwise unsayable.
+
+`string::contains`, `starts_with` and `ends_with` used to be refused under that
+rule on the grounds that `LIKE '%x%'` says it, and for a **literal** needle it
+does. It does not for a needle that arrives as a value. `LIKE` takes a pattern,
+so `$needle` holding a `%` or a `_` matches more than the caller asked for, and
+the escape that would fix it — `\` before either — cannot be applied to a value
+the statement has not seen. A search box is the most ordinary query an
+application makes, and it is the case the pattern operator cannot serve. These
+three take a value and never a pattern.
+
+`min`, `max` and `sum` appear in two places and are not the same function twice.
+`array::min(xs)` folds one array inside one record; `min(x)` in a projection
+folds a column across records. Neither can be written as the other, and both are
+computed by one piece of code so that they cannot come to disagree about a
+decimal, a mixed group or an empty one.
 
 **The number of arguments is checked when the statement is read**, because the
 set of functions is known then. What each argument holds is checked when it runs,
@@ -4305,11 +4343,25 @@ silently, with the second record simply overwriting the first.
 |---|---|
 | `crypto::sha256(text)` | the SHA-256 digest, as 64 lowercase hexadecimal characters |
 | `crypto::sha512(text)` | the SHA-512 digest, as 128 of them |
+| `crypto::sha1(text)` | the SHA-1 digest, as 40 of them — a **checksum** |
+| `crypto::md5(text)` | the MD5 digest, as 32 of them — a **checksum** |
 
 ```
 SELECT crypto::sha256(email) AS pseudonym FROM subscribers;
 SELECT * FROM uploads WHERE crypto::sha256(body) = $expected;
+SELECT crypto::md5(body) AS etag FROM uploads;
+SELECT crypto::sha1(body) AS legacy_id FROM uploads;
 ```
+
+**`md5` and `sha1` are checksums and nothing else.** Collisions in both have
+been produced, so neither may decide whether two things are the same when
+somebody might want them to appear so — not a signature, not a deduplication key
+somebody else can supply the inputs for, not a token. They are here because a
+store interoperates: an ETag, a legacy row key, a content id computed by
+something older than this database. Refusing to spell them would not make any of
+that safer; it would make it unreachable from here, which sends the work
+somewhere with no grant check at all. Where a digest has to resist an adversary,
+`crypto::sha256` is one word longer.
 
 **Text in and text out.** A digest is compared against a stored one, written
 beside a record and read in a log, and all three want the form every other tool
@@ -4327,6 +4379,41 @@ property a stored credential must not have. `DEFINE USER` already hashes with
 per-user salt and pinned cost parameters, and there is deliberately no function
 that exposes that from a query: a credential primitive behind a grant check is a
 credential primitive in the wrong place.
+
+### Bytes as text
+
+| Written | What it answers |
+|---|---|
+| `encoding::base64(bytes)` | standard base64 text, padded |
+| `encoding::base64_decode(text)` | the bytes it encodes, or `NONE` |
+| `encoding::hex(bytes)` | lowercase hexadecimal text |
+| `encoding::hex_decode(text)` | the bytes it spells, or `NONE` |
+
+```
+SELECT encoding::base64(body) AS packed FROM uploads;
+SELECT encoding::base64_decode(packed) AS body FROM inbox;
+SELECT encoding::hex(body) AS spelled FROM uploads;
+SELECT encoding::hex_decode(spelled) AS body FROM inbox;
+```
+
+The value system has a `bytes` kind (§3) and until these existed there was no way
+to carry one through anything that speaks text — a JSON field, a message, a
+column something else had already encoded. These are that road, in both
+directions.
+
+**Base64 is the standard alphabet**, RFC 4648 §4, with `+` and `/` and `=`
+padding, which is what a caller pasting the answer somewhere else will be
+understood to mean. The URL-safe alphabet is a different function and is not
+written until somebody needs it.
+
+**Text that spells no bytes answers `NONE` rather than refusing.** Decoding asks
+about a *value*, not about a kind — the kind is already checked, as it is for
+every string function — and a table holding one row that does not decode should
+narrow a read rather than end it. That is the rule the [casts](#casts) already
+follow. What counts as "no bytes" is exact: a length that is not a multiple of
+four (or of two, for hex), a character outside the alphabet, padding anywhere
+but the end, or padding bits that are not zero — because two strings that
+decoded to one value would make the round trip a lie.
 
 ### Shapes
 
