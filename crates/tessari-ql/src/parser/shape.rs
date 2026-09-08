@@ -414,7 +414,9 @@ pub(super) fn check_cursor(
         }
     }
     let named = match from {
-        Source::Table(table) | Source::Where { table, .. } => &table.name,
+        Source::Table(table) | Source::Where { table, .. } | Source::Range { table, .. } => {
+            &table.name
+        }
         Source::Record(target) => &target.table.name,
         Source::Node | Source::Traverse { .. } | Source::Join { .. } | Source::Subquery { .. } => {
             return Ok(());
@@ -610,6 +612,7 @@ pub(super) fn check_fold_positions(
         Source::Node
         | Source::Record(_)
         | Source::Table(_)
+        | Source::Range { .. }
         | Source::Traverse { .. }
         | Source::Join { .. }
         | Source::Subquery { .. } => {}

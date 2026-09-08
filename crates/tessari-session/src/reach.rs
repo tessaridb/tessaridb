@@ -409,7 +409,7 @@ fn in_source(from: &Source) -> Vec<&TableRef> {
         // grant-governed user by role rather than by an empty answer.
         Source::Node => Vec::new(),
         Source::Record(target) => vec![&target.table],
-        Source::Table(table) => vec![table],
+        Source::Table(table) | Source::Range { table, .. } => vec![table],
         // The condition is an expression, and an expression may hold a read.
         Source::Where { table, condition } => {
             let mut found = vec![table];

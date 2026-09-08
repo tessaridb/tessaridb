@@ -3339,6 +3339,44 @@ and the condition decides, so the scan takes both ends inclusive, over-fetches b
 at most the entries exactly equal to a bound, and `> x` discards them the way it
 discards everything else. Measured on two thousand records: 845 µs to 107 µs.
 
+### Reading a span of identities
+
+A range over a **field** is a bounded index scan. A range over the **identity** is
+something cheaper, because it needs nothing to be declared:
+
+```
+SELECT * FROM events:1000..2000;
+SELECT * FROM events:1000..=2000;
+SELECT * FROM events:$from..$to;
+SELECT * FROM sessions:'a'..'m';
+EXPLAIN SELECT * FROM events:1000..2000;
+```
+
+`..` leaves the upper bound out and `..=` takes it in, exactly as the range
+values in §3 do. The lower bound is always in.
+
+**Why it is not `WHERE id >= 1000 AND id < 2000`.** That statement asks the same
+question and is answered by reading the table and testing every record. This one
+is answered by walking the keyspace between two positions: a record's key is its
+table prefix followed by its identity, so the records outside the span are never
+read, never decoded and never tested. The plan says `span` rather than `scan` or
+`index`, because it is neither — nothing is consulted to find the records, and
+the cost is the size of the answer rather than the size of the table.
+
+**Neither bound has to exist.** A bound names a position, and a position is well
+defined whether or not a record sits on it. A span whose lower bound sorts above
+its upper one is empty, in the way `1..1` is empty, and answers with nothing
+rather than refusing.
+
+**What it is a window over.** Identity order, which for both kinds of identity
+this store issues is also **write order**: a `TYPE INT` table numbers records
+with a per-table counter, and a `TYPE UUID` one issues UUID v7, which carries a
+timestamp in its leading bits. So a span of identities is a span of time *as the
+store saw it*. It is not a span of an event time a record carries in a field — if
+records can arrive out of order, those are two different questions, and this
+answers the arrival. A window over a field a record carries is the range read
+above, and it wants an index.
+
 ### Which index runs
 
 Where a condition offers several conjuncts an index could serve, the one that
@@ -5140,7 +5178,7 @@ answers with the plan the read would take, without taking it:
 ```
 
 `access` is one of `record`, `index`, `ordered`, `scan`, `approximate`, `graph`,
-`join` or `materialised`. An index-served read also names the index and the
+`join`, `span` or `materialised`. An index-served read also names the index and the
 **shape** that served it — `equality`, `prefix`, `range` or `terms` — and carries
 `at_most` when a ceiling was free to learn, which today means an equality on a
 `UNIQUE` index.
@@ -5204,7 +5242,7 @@ also makes a read self-documenting without duplicating anything, because the
 assertion is *checked*.
 
 `USING <path>` takes one of the access-path words (§7b): `record`, `index`,
-`ordered`, `scan`, `approximate`, `graph`, `join`, `materialised`. A word that is
+`ordered`, `scan`, `approximate`, `graph`, `join`, `span`, `materialised`. A word that is
 none of them is refused before the read runs, listing the ones that exist.
 
 `USING INDEX <name>` asks the question the path word cannot: `index` says *an*

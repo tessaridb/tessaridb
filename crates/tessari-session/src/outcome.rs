@@ -107,6 +107,18 @@ pub enum AccessPath {
     /// Each side reached its own records its own way, and neither of those is
     /// how this answer was reached. Reporting one side's path named half a read.
     Join,
+    /// A walk between two positions in the table's own keyspace.
+    ///
+    /// Not [`Self::Scan`], which reads every record, and not [`Self::Index`],
+    /// which reads a second structure to find out which records to fetch. This
+    /// one is the records themselves, in the span the statement named — the
+    /// table's own key order **is** the ordering being used, so nothing is
+    /// consulted and nothing outside the span is read.
+    ///
+    /// Its own word because the cost is its own: a scan is linear in the table
+    /// and this is linear in the answer, which is the difference a caller
+    /// reading a plan most wants to see.
+    Span,
     /// Records an inner read produced, held and then read from.
     ///
     /// The outer statement performed no access of its own, which is exactly what
@@ -376,7 +388,7 @@ impl AccessPath {
     /// test pins its length against the count. A variant missing from here would
     /// not be *wrong* — it would be unassertable by `USING` and unlistable in
     /// the refusal that names the words, which is the quiet kind of gap.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Record,
         Self::Index,
         Self::Ordered,
@@ -384,6 +396,7 @@ impl AccessPath {
         Self::Approximate,
         Self::Graph,
         Self::Join,
+        Self::Span,
         Self::Materialised,
     ];
 
@@ -434,6 +447,7 @@ impl AccessPath {
             | Self::Scan
             | Self::Graph
             | Self::Join
+            | Self::Span
             | Self::Materialised => Exactness::Exact,
         }
     }
@@ -449,6 +463,7 @@ impl AccessPath {
             Self::Approximate => "approximate",
             Self::Graph => "graph",
             Self::Join => "join",
+            Self::Span => "span",
             Self::Materialised => "materialised",
         }
     }

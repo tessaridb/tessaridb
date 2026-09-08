@@ -14,6 +14,34 @@ use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
 use super::address::{after, resuming_after};
 use super::{RecordAddress, Transaction};
+
+/// A span of record identities, as the walk carries it.
+///
+/// Its own type rather than three parameters, because `lower`, `upper` and
+/// whether the upper is inside are one fact and are wrong together: a walk
+/// given the first two and not the third silently answers a half-open span as
+/// a closed one, and nothing in the answer says which it was.
+#[derive(Debug, Clone, Copy)]
+struct Span<'a> {
+    /// The first identity in the span, which is always inside it.
+    lower: &'a RecordId,
+    /// The last, which is inside it only when `inclusive`.
+    upper: &'a RecordId,
+    /// Whether `upper` is itself in the span.
+    inclusive: bool,
+}
+
+impl Span<'_> {
+    /// Whether an identity is inside this span.
+    fn holds(&self, id: &RecordId) -> bool {
+        id >= self.lower
+            && if self.inclusive {
+                id <= self.upper
+            } else {
+                id < self.upper
+            }
+    }
+}
 use crate::error::Result;
 
 impl Transaction<'_> {
@@ -122,6 +150,49 @@ impl Transaction<'_> {
         self.table_records(namespace, database, table, Some(wanted), None)
     }
 
+    /// The live records of one table whose identity falls in a span.
+    ///
+    /// A record's key is its table prefix followed by its identity, so a span of
+    /// identities is a **span of the keyspace** — the walk starts at `lower` and
+    /// stops at `upper`, and the records outside it are never read. That is the
+    /// difference between this and a condition over the same field: a condition
+    /// reads the table and tests each record, and this one does not read them.
+    ///
+    /// Both bounds name a **position**, and a position is well defined whether
+    /// or not a record sits on it, so neither bound has to exist. `inclusive`
+    /// says whether `upper` itself is inside the span; `lower` always is.
+    ///
+    /// A span whose lower bound sorts above its upper one answers with nothing
+    /// rather than failing. It is an empty span, in the way `1..1` is an empty
+    /// range, and the alternative is a refusal for a question that has an answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or stored bytes cannot be
+    /// decoded.
+    pub fn records_in_span(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        lower: &RecordId,
+        upper: &RecordId,
+        inclusive: bool,
+    ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        self.records_of(
+            namespace,
+            database,
+            table,
+            None,
+            None,
+            Some(Span {
+                lower,
+                upper,
+                inclusive,
+            }),
+        )
+    }
+
     /// The live records of one table, all of them or the first `bound` of them,
     /// starting past `anchor` when a cursor named one.
     fn table_records(
@@ -132,20 +203,36 @@ impl Transaction<'_> {
         bound: Option<usize>,
         anchor: Option<&RecordId>,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        self.records_of(namespace, database, table, bound, anchor, None)
+    }
+
+    /// The walk all four of the readers above share.
+    fn records_of(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        bound: Option<usize>,
+        anchor: Option<&RecordId>,
+        span: Option<Span<'_>>,
+    ) -> Result<Vec<(RecordId, Vec<u8>)>> {
         let prefix = RecordKey::table_prefix(namespace, database, table);
         let of_this_table = |address: &RecordAddress| {
             address.namespace == namespace && address.database == database && address.table == table
         };
         // The anchor's own versions are behind the page, not in it, so the walk
         // begins past the last of them rather than at the first.
-        let opening = anchor.map_or_else(
-            || prefix.clone(),
-            |anchor| {
-                after(RecordKey::versions_prefix(
-                    namespace, database, table, anchor,
-                ))
-            },
-        );
+        // Three ways to start, and they differ by one record. A span opens **at**
+        // its lower bound because that bound is inside it; a cursor opens past
+        // its anchor's own versions because it has already handed that record
+        // over; and a plain walk opens at the table.
+        let opening = match (&span, anchor) {
+            (Some(span), _) => RecordKey::versions_prefix(namespace, database, table, span.lower),
+            (None, Some(anchor)) => after(RecordKey::versions_prefix(
+                namespace, database, table, anchor,
+            )),
+            (None, None) => prefix.clone(),
+        };
         let wanted = bound.map(|bound| {
             let displacing = self
                 .writes
@@ -172,7 +259,15 @@ impl Transaction<'_> {
         // happened to pass.
         let mut present = 0_usize;
         let mut from = opening;
-        let end = after(prefix);
+        let end = match &span {
+            // An exclusive upper bound stops **before** that record's first
+            // version; an inclusive one stops after its last.
+            Some(span) => {
+                let at = RecordKey::versions_prefix(namespace, database, table, span.upper);
+                if span.inclusive { after(at) } else { at }
+            }
+            None => after(prefix),
+        };
         loop {
             let request = ScanRequest {
                 keyspace: RecordKey::keyspace(),
@@ -214,7 +309,14 @@ impl Transaction<'_> {
             // yet committed would appear on a page it sorts before, which is the
             // one way a cursor could answer with a record it had already handed
             // the caller.
-            if of_this_table(address) && anchor.is_none_or(|anchor| &address.id > anchor) {
+            // And a span applies to a pending write for the same reason the
+            // cursor test does: a record written but not committed still has to
+            // be outside a span it is outside of, or a bounded read answers with
+            // a record the same read would not have found a moment earlier.
+            if of_this_table(address)
+                && anchor.is_none_or(|anchor| &address.id > anchor)
+                && span.as_ref().is_none_or(|span| span.holds(&address.id))
+            {
                 live.insert(address.id.clone(), value.clone());
             }
         }

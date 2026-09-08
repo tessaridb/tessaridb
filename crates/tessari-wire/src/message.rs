@@ -612,6 +612,7 @@ const fn path_tag(path: AccessPath) -> u8 {
         AccessPath::Graph => 5,
         AccessPath::Join => 6,
         AccessPath::Materialised => 7,
+        AccessPath::Span => 8,
     }
 }
 
@@ -628,6 +629,7 @@ const fn path_name(tag: u8) -> &'static str {
         5 => "graph",
         6 => "join",
         7 => "materialised",
+        8 => "span",
         _ => "scan",
     }
 }

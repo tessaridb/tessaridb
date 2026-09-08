@@ -1828,6 +1828,39 @@ pub enum Source {
     Record(RecordTarget),
     /// Every record of a table.
     Table(TableRef),
+    /// `SELECT * FROM events:1000..2000` — every record whose identity falls in
+    /// a span.
+    ///
+    /// # Why this is a source and not a condition
+    ///
+    /// `WHERE id >= 1000 AND id < 2000` asks the same question and is answered
+    /// by reading the table and testing every record. This is answered by
+    /// **walking the keyspace between two positions**, because a record's key is
+    /// its table prefix followed by its identity — so the records outside the
+    /// span are not read, not decoded and not tested. The difference is the
+    /// whole reason the variant exists, and it is a difference in cost of the
+    /// same order as an index.
+    ///
+    /// # What it is a window over
+    ///
+    /// Identity order, which for both identity kinds this store issues is also
+    /// **write order**: `Int` is a per-table counter, and `Uuid` is UUID v7,
+    /// which carries a timestamp in its leading bits. So a span of identities is
+    /// a span of time *as the store saw it*. It is not a span of an event time a
+    /// record carries in a field — if events arrive out of order, those are two
+    /// different questions, and the one this answers is the arrival.
+    Range {
+        /// The table.
+        table: TableRef,
+        /// The first identity in the span, which is always inside it.
+        lower: Identity,
+        /// The last, inside the span only when the bound was written `..=`.
+        upper: Identity,
+        /// Whether the upper bound is itself included.
+        inclusive: bool,
+        /// Where the whole source sits.
+        span: Span,
+    },
     /// A walk along one or more edge tables.
     ///
     /// `users:1->follows` reads the edge records themselves;

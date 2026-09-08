@@ -2063,6 +2063,20 @@ impl Parser<'_> {
         Ok(kinds)
     }
 
+    /// `..` or `..=`, when a span's bound follows.
+    ///
+    /// Answers whether the upper bound is **inclusive**, so the two spellings
+    /// are read once here rather than compared again at every use.
+    fn range_bound(&mut self) -> Option<bool> {
+        if self.eat_punct(Punct::DotDotEquals) {
+            return Some(true);
+        }
+        if self.eat_punct(Punct::DotDot) {
+            return Some(false);
+        }
+        None
+    }
+
     /// What the `FROM` names, resolved to exactly one access path.
     fn select_source(&mut self) -> Result<Source> {
         // `$node` before the table, because it is the one source that is not a
@@ -2083,6 +2097,25 @@ impl Parser<'_> {
         let table = self.table_ref()?;
         if self.peek() == Some(&Token::Punct(Punct::Colon)) {
             let record = self.record_target_after(table)?;
+            // `events:1000..2000` reads as a span, and `events:1000` as one
+            // record, decided by the two dots and nothing else. The identity is
+            // parsed first either way, so a span costs no lookahead and a
+            // record's grammar does not change.
+            if let Some(inclusive) = self.range_bound() {
+                // The table is not written again. `events:1000..events:2000`
+                // would let somebody name two tables in one span, and there is
+                // no answer to that question — so the upper bound is an
+                // identity and the table is the one the lower bound named.
+                let at = self.span_here();
+                let upper = self.record_id(at)?;
+                return Ok(Source::Range {
+                    span: record.span.to(self.span_behind()),
+                    table: record.table,
+                    lower: record.id,
+                    upper,
+                    inclusive,
+                });
+            }
             return Ok(match self.arrow() {
                 Some(direction) => self.traversal(record, direction)?,
                 None => Source::Record(record),
@@ -2279,6 +2312,7 @@ impl Parser<'_> {
             Source::Node
             | Source::Record(_)
             | Source::Table(_)
+            | Source::Range { .. }
             | Source::Traverse { .. }
             | Source::Subquery { .. } => {}
         }

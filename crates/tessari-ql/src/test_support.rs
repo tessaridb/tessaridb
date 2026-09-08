@@ -418,6 +418,10 @@ fn erase_source(source: &mut Source) {
         Source::Node => {}
         Source::Record(record) => erase_record(record),
         Source::Table(table) => erase_table(table),
+        Source::Range { table, span, .. } => {
+            erase_table(table);
+            *span = CANONICAL;
+        }
         Source::Traverse { from, hops, .. } => {
             erase_record(from);
             for hop in hops {

@@ -57,6 +57,14 @@ impl Session<'_> {
                 self.refuse_reading_a_vault(transaction, id, &target.table)?;
                 Ok(Plan::new(AccessPath::Record).on(target.table.name.text.as_str()))
             }
+            // The span is decided by the statement and not by what exists, so
+            // the plan is known without asking anything — which is the same
+            // reason `Source::Record` above needs no enumeration.
+            Source::Range { table, .. } => {
+                let (_, id) = self.resolve_table(transaction, table)?;
+                self.refuse_reading_a_vault(transaction, id, table)?;
+                Ok(Plan::new(AccessPath::Span).on(table.name.text.as_str()))
+            }
             Source::Table(table) => {
                 let named = table.name.text.as_str();
                 // The same gate the read itself passes through, for the reason

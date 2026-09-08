@@ -246,7 +246,7 @@ fn every_path_has_a_word_and_every_word_a_path() {
     // The guard on `ALL`, which Rust cannot check: a variant added without a row
     // there is unassertable by `USING` and missing from the refusal that lists
     // the words, and neither failure raises anything on its own.
-    assert_eq!(AccessPath::ALL.len(), 8);
+    assert_eq!(AccessPath::ALL.len(), 9);
     for path in AccessPath::ALL {
         assert_eq!(AccessPath::named(path.name()), Some(path));
         assert!(AccessPath::known().contains(path.name()));

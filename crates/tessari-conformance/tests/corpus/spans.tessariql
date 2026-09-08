@@ -1,0 +1,91 @@
+# A span of identities — `SELECT * FROM events:1000..2000`.
+#
+# Its own file, and cross-cutting rather than filed under an engine, for the
+# reason the access path exists at all: a record's key is its table prefix
+# followed by its identity, so **every** table has a key order and every table
+# can be walked between two positions in it. A log, an audit trail, a session
+# table and a queue all want the same window, and none of them is a different
+# engine for wanting it.
+#
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE orders;
+USE DATABASE orders;
+--- expect: ok
+
+# A span of identities: a walk between two positions in the table's own
+# keyspace, which needs nothing declared and reads nothing outside the span.
+
+--- case: a table to span
+DEFINE COLLECTION events;
+CREATE events:1 = { n: 1 };
+CREATE events:2 = { n: 2 };
+CREATE events:3 = { n: 3 };
+CREATE events:4 = { n: 4 };
+CREATE events:5 = { n: 5 };
+--- expect: ok
+
+--- case: two dots leave the upper bound out
+SELECT * FROM events:2..4;
+--- expect: rows 2
+
+--- case: and the equals sign takes it in
+SELECT * FROM events:2..=4;
+--- expect: rows 3
+
+--- case: the lower bound is always in
+SELECT n FROM events:1..2;
+--- expect: rows 1
+
+--- case: a span reports its own access path, which is neither a scan nor an index
+EXPLAIN SELECT * FROM events:2..4;
+--- expect: value { access: 'span', exact: true, table: 'events' }
+
+--- case: and the assertion the language has for it agrees
+SELECT * FROM events:2..4 USING span;
+--- expect: rows 2
+
+--- case: neither bound has to exist
+SELECT * FROM events:0..=99;
+--- expect: rows 5
+
+--- case: a lower bound above the upper one is an empty span, not a refusal
+SELECT * FROM events:4..2;
+--- expect: rows 0
+
+--- case: a span whose ends are equal is empty when it is exclusive
+SELECT * FROM events:3..3;
+--- expect: rows 0
+
+--- case: and holds one record when it is inclusive
+SELECT * FROM events:3..=3;
+--- expect: rows 1
+
+--- case: the bounds may be supplied rather than written
+LET $from = 2;
+LET $to = 4;
+SELECT * FROM events:$from..$to;
+--- expect: rows 2
+
+--- case: the same records reached by the path that reads the whole table
+SELECT * FROM events WHERE n >= 2 AND n < 4;
+--- expect: rows 2
+
+--- case: and that path says so, which is the difference the span exists for
+EXPLAIN SELECT * FROM events WHERE n >= 2 AND n < 4;
+--- expect: value { access: 'scan', exact: true, table: 'events' }
+
+--- case: text identities span in their own order
+DEFINE COLLECTION sessions;
+CREATE sessions:'ada' = { n: 1 };
+CREATE sessions:'grace' = { n: 2 };
+CREATE sessions:'zoe' = { n: 3 };
+SELECT * FROM sessions:'a'..'m';
+--- expect: rows 2
+
+--- case: a span is still a read, so a projection and a bound work over it
+SELECT n FROM events:1..=5 ORDER BY n DESC LIMIT 2;
+--- expect: rows 2

@@ -133,7 +133,13 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 24] = [
+const CROSS_CUTTING: [&str; 25] = [
+    // A span of identities is an access path over the table's own key order,
+    // and every table has one — a log, an audit trail, a session table and a
+    // queue all want the same window and none of them is a different engine for
+    // wanting it. Filing it under an engine would make the engine that happened
+    // to be written first look like its owner.
+    "spans",
     // Who may do what, and how far it reaches, is asked before any engine is
     // chosen and answered the same whichever one runs: a `read` at a namespace
     // covers a scan, an index read, a walk and a nearest-neighbour read alike.

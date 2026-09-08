@@ -336,7 +336,18 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
 
 /// A record target's **id** may be supplied; its table may not.
 fn bind_target(target: &mut RecordTarget, binding: &Binding<'_>) -> Result<()> {
-    let Identity::Parameter(name) = &target.id else {
+    let at = target.span;
+    bind_identity(&mut target.id, at, binding)
+}
+
+/// One identity, wherever it stands.
+///
+/// Pulled out of [`bind_target`] rather than copied when `Source::Range` needed
+/// the same thing at both ends of a span: two copies of a value-to-identity
+/// conversion is two lists of which kinds may name a record, and the second one
+/// goes out of step the first time a kind is added.
+fn bind_identity(id: &mut Identity, at: Span, binding: &Binding<'_>) -> Result<()> {
+    let Identity::Parameter(name) = &*id else {
         return Ok(());
     };
     if binding.deferred.contains(name.as_str()) {
@@ -348,10 +359,10 @@ fn bind_target(target: &mut RecordTarget, binding: &Binding<'_>) -> Result<()> {
         }
         return Err(Error::UnboundParameter {
             name: name.clone(),
-            span: target.span,
+            span: at,
         });
     };
-    let id = match value {
+    let held = match value {
         Value::Number(Number::Integer(held)) => RecordId::Int(*held),
         Value::String(text) => RecordId::Text(text.clone()),
         Value::Uuid(bytes) => RecordId::Uuid(*bytes),
@@ -363,11 +374,11 @@ fn bind_target(target: &mut RecordTarget, binding: &Binding<'_>) -> Result<()> {
             return Err(Error::NotARecordIdentity {
                 name: name.clone(),
                 found: other.type_name(),
-                span: target.span,
+                span: at,
             });
         }
     };
-    target.id = Identity::Fixed(id);
+    *id = Identity::Fixed(held);
     Ok(())
 }
 
@@ -390,6 +401,14 @@ fn bind_select(select: &mut Select, binding: &Binding<'_>) -> Result<()> {
     }
     match &mut select.from {
         Source::Record(target) => bind_target(target, binding)?,
+        // Both ends, because either may be a parameter: `FROM events:$from..$to`
+        // is how a window arrives from a caller rather than from a literal.
+        Source::Range {
+            lower, upper, span, ..
+        } => {
+            bind_identity(lower, *span, binding)?;
+            bind_identity(upper, *span, binding)?;
+        }
         Source::Traverse { from, .. } => bind_target(from, binding)?,
         Source::Where { condition, .. } => bind_expr(condition, binding)?,
         Source::Join {

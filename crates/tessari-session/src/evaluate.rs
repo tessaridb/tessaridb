@@ -1058,6 +1058,36 @@ impl Session<'_> {
                 let searched = self.searched_for(transaction, id, &shown(select))?;
                 Ok((Prepared::Table(context, id), searched))
             }
+            // A walk between two positions in the table's own keyspace. The
+            // records outside the span are not read, not decoded and not
+            // tested, which is the whole difference between this and the same
+            // question asked as a condition.
+            Source::Range {
+                table,
+                lower,
+                upper,
+                inclusive,
+                span,
+            } => {
+                let (context, id) = self.resolve_table(transaction, table)?;
+                self.refuse_reading_a_vault(transaction, id, table)?;
+                let visible = self.visible_in(transaction, id)?;
+                let found = transaction.records_in_span(
+                    context.namespace,
+                    context.database,
+                    id,
+                    lower.fixed(*span)?,
+                    upper.fixed(*span)?,
+                    *inclusive,
+                )?;
+                Ok((
+                    Prepared::Held(
+                        self.records_of(found, &visible)?,
+                        Plan::new(AccessPath::Span).on(table.name.text.as_str()),
+                    ),
+                    Searched::default(),
+                ))
+            }
             Source::Traverse {
                 from,
                 direction,
@@ -3363,7 +3393,9 @@ enum Prepared<'a> {
 /// from more than one place, or from a read rather than a table.
 fn table_named(source: &Source) -> Option<&str> {
     match source {
-        Source::Table(table) | Source::Where { table, .. } => Some(table.name.text.as_str()),
+        Source::Table(table) | Source::Where { table, .. } | Source::Range { table, .. } => {
+            Some(table.name.text.as_str())
+        }
         Source::Record(target) => Some(target.table.name.text.as_str()),
         Source::Node | Source::Traverse { .. } | Source::Join { .. } | Source::Subquery { .. } => {
             None
