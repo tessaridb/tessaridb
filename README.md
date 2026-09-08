@@ -21,14 +21,17 @@ products around them.
 
 </div>
 
-> [!WARNING]
-> **TessariDB is under active development and is not ready for production.**
-> It is pre-1.0 and unpublished to crates.io. The query language, the wire format
-> and the on-disk format all change without notice, there is no migration between
-> versions, and several engines are still partial. [**Status**](#status) says what
-> runs today, engine by engine — it is a report, not a roadmap.
-> The [**changelog**](CHANGELOG.md) says what each version is and what it is
-> missing.
+> [!NOTE]
+> **TessariDB is a beta — `0.0.6-beta`.** It is released, tested and published as
+> a container image, and the licence makes production use free, including inside
+> a commercial company.
+> What a beta does not promise yet is permanence of shape: before 1.0 the query
+> language, the wire format and the on-disk format may still change, there is no
+> migration between versions, and several engines are still partial. So pin a
+> released version and expect to re-ingest across one.
+> [**Status**](#status) says what runs today, engine by engine — it is a report,
+> not a roadmap. The [**changelog**](CHANGELOG.md) says what each version is and
+> what it is missing.
 
 ---
 
@@ -162,12 +165,13 @@ follows is what runs today, not a roadmap.
 - ⛔ **Not there:** sharding, replication, and cluster membership. The language
   has words for them; the engine does not have the machinery yet.
   <!-- absent: sharding-replication-cluster-membership -->
-- ⚠️ **Unstable:** the query language, the wire format and the on-disk format all
-  change without notice before 1.0, and there is no migration between versions.
+- 🔄 **Not promised yet:** before 1.0 the query language, the wire format and the
+  on-disk format may still change, and there is no migration between versions.
   <!-- absent: migration-between-versions -->
 
-Use it for prototypes, evaluation and development. Do not put data you cannot
-lose behind it yet — and if you do run it, pin a commit, because `dev` moves.
+Pin a released version rather than tracking `dev`, which moves. And keep a backup
+you have actually restored: the log *is* the backup, and `--verify` reads one
+back without needing anywhere to put it.
 
 ### Two things about geometry that will surprise you if nobody says them
 
