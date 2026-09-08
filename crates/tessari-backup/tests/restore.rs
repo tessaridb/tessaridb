@@ -69,13 +69,20 @@ DEFINE NODE ROLES serving, writable ENDPOINTS 'original:9000';\n\
 DEFINE REPLICA second AT 'peer:9001';\n\
 DEFINE USER root ROLE owner PASSWORD 'a long one';";
 
-/// The file's own header: magic, two versions, the build that wrote it, and the
-/// two sequences it spans.
+/// The name at the head of a file: `TESSARILOG`.
+const MAGIC_LEN: usize = 10;
+
+/// The file's own header: the name, two versions, the build that wrote it, and
+/// the two sequences it spans.
 ///
 /// Named rather than spelled as a number at four call sites, because the layout
 /// is the thing these tests are about and a change to it should touch one line.
-/// It did: the writer's three numbers were added and this is the one line.
-const HEADER_LEN: usize = 8 + 1 + 1 + (4 + 4 + 4) + 8 + 8;
+/// It has moved twice — the writer's three numbers were added, and the name
+/// grew by two bytes — and only the second one caught the flaw in that promise:
+/// one test spelled the two version bytes' own offsets as literals and went red
+/// on its own. They derive from `MAGIC_LEN` now, so the layout really is one
+/// place.
+const HEADER_LEN: usize = MAGIC_LEN + 1 + 1 + (4 + 4 + 4) + 8 + 8;
 
 /// One record's frame: its length, its sequence, and its checksum.
 const FRAME_LEN: usize = 4 + 8 + 4;
@@ -391,7 +398,7 @@ fn a_file_that_is_not_one_is_refused_before_anything_is_applied() {
 #[test]
 fn a_version_this_build_does_not_read_is_refused_rather_than_guessed_at() {
     let (_, _held, taken) = original();
-    for (position, what) in [(8_usize, "format"), (9, "record codec")] {
+    for (position, what) in [(MAGIC_LEN, "format"), (MAGIC_LEN + 1, "record codec")] {
         let mut damaged = taken.clone();
         damaged[position] = 99;
         let (_, restored) = store();

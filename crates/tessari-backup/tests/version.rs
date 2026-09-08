@@ -24,8 +24,11 @@ use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
 use tessari_storage::Store;
 
-/// Where the three writer numbers sit: magic (8) + format (1) + codec (1).
-const WRITER_AT: usize = 10;
+/// How long the name at the head of a file is: `TESSARILOG`.
+const MAGIC_LEN: usize = 10;
+
+/// Where the three writer numbers sit: the name, then format (1) + codec (1).
+const WRITER_AT: usize = MAGIC_LEN + 2;
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
@@ -126,11 +129,43 @@ fn a_file_from_the_previous_header_layout_is_refused_by_name() {
     // silently restore from the wrong sequence. It is refused by the byte
     // instead, which is what that byte is for.
     let mut bytes = taken();
-    bytes[8] = 2;
+    bytes[MAGIC_LEN] = 2;
     let (_, into) = store();
     let refused = tessari_backup::read(&into, &mut bytes.as_slice())
         .unwrap_err()
         .to_string();
     assert!(refused.contains("format"), "{refused}");
     assert!(refused.contains('2'), "{refused}");
+}
+
+#[test]
+fn a_file_written_under_the_old_name_still_restores() {
+    // The name at the head of a file was corrected, which moved those bytes.
+    // A file written before that is still a backup, and this header already
+    // refuses a newer writer while welcoming an older one — so refusing these
+    // would contradict the rule the header is built on, and would do it by
+    // reporting `NotABackup`, which is untrue of the file.
+    let current = taken();
+    let mut legacy = b"TESSALOG".to_vec();
+    legacy.extend_from_slice(&current[MAGIC_LEN..]);
+
+    let (_, into) = store();
+    let restored = tessari_backup::read(&into, &mut legacy.as_slice()).unwrap();
+    assert_eq!(restored.written_by, NodeVersion::current());
+    assert!(restored.records > 0, "an older name must still restore");
+}
+
+#[test]
+fn a_file_that_begins_with_neither_name_is_refused() {
+    // The other half of accepting two names: accepting a third is how a
+    // compatibility branch turns into no check at all.
+    let mut bytes = taken();
+    bytes[0] = b'X';
+
+    let (_, into) = store();
+    let refused = tessari_backup::read(&into, &mut bytes.as_slice())
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("not a TessariDB backup"), "{refused}");
+    assert_eq!(into.committed_tail().unwrap().get(), 0);
 }

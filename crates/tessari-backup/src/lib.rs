@@ -30,7 +30,7 @@
 //! # The format
 //!
 //! ```text
-//! header   "TESSALOG" <format:u8> <codec:u8> <writer:u32*3> <from:u64> <tail:u64>
+//! header   "TESSARILOG" <format:u8> <codec:u8> <writer:u32*3> <from:u64> <tail:u64>
 //! record   <length:u32> <sequence:u64> <crc32:u32> <bytes…>
 //! ```
 //!
@@ -79,7 +79,12 @@ use tessari_types::Sequence;
 mod check;
 
 /// What every file of this kind begins with.
-const MAGIC: &[u8; 8] = b"TESSALOG";
+const MAGIC: &[u8; 10] = b"TESSARILOG";
+
+/// What a file written before the name was corrected begins with.
+///
+/// Read, never written. See [`Head::magic`] for why it is still read.
+const LEGACY_MAGIC: &[u8; 8] = b"TESSALOG";
 
 /// The format's own version, separate from the record codec's.
 ///
@@ -522,13 +527,7 @@ impl Head {
     /// Read and check it, refusing anything this build cannot read **before**
     /// any record is looked at.
     fn read(input: &mut impl Read) -> Result<Self> {
-        let mut magic = [0_u8; 8];
-        input
-            .read_exact(&mut magic)
-            .map_err(|_| Error::NotABackup)?;
-        if &magic != MAGIC {
-            return Err(Error::NotABackup);
-        }
+        Self::magic(input)?;
         let mut versions = [0_u8; 2];
         input
             .read_exact(&mut versions)
@@ -573,6 +572,37 @@ impl Head {
                 tail.try_into().map_err(|_| Error::NotABackup)?,
             )),
         })
+    }
+
+    /// Read the name the file begins with, accepting the one older files carry.
+    ///
+    /// The old name dropped two letters out of the product's own stem and was
+    /// corrected, which moved the bytes a new file starts with. A file written
+    /// before that is still a backup, and this header's whole asymmetry —
+    /// a newer writer refused, an older one welcomed — says that older files
+    /// are the ordinary case. Refusing one over a rename would contradict that,
+    /// and it would do it by reporting `NotABackup`, which is not true of the
+    /// file in hand.
+    fn magic(input: &mut impl Read) -> Result<()> {
+        let mut opening = [0_u8; 8];
+        input
+            .read_exact(&mut opening)
+            .map_err(|_| Error::NotABackup)?;
+        if &opening == LEGACY_MAGIC {
+            return Ok(());
+        }
+        let (lead, rest) = MAGIC.split_at(opening.len());
+        if opening != *lead {
+            return Err(Error::NotABackup);
+        }
+        let mut trailing = [0_u8; 2];
+        input
+            .read_exact(&mut trailing)
+            .map_err(|_| Error::NotABackup)?;
+        if trailing != *rest {
+            return Err(Error::NotABackup);
+        }
+        Ok(())
     }
 
     /// The three numbers naming the build that wrote the file.

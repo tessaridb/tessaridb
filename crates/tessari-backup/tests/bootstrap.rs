@@ -197,7 +197,7 @@ fn a_prefix_cut_in_transit_leaves_the_node_where_it_actually_reached() {
     // inside a sequence, inside a body, and between two records. A cut *inside*
     // the header is not a truncated prefix at all — it is not a prefix, and it
     // is refused as one in `restore.rs`.
-    const HEADER_LEN: usize = 8 + 1 + 1 + (4 + 4 + 4) + 8 + 8;
+    const HEADER_LEN: usize = 10 + 1 + 1 + (4 + 4 + 4) + 8 + 8;
     for cut in (HEADER_LEN..prefix.len()).step_by(7) {
         let (_, follower) = store();
         let brought_up = tessari_backup::bootstrap(&follower, &mut &prefix[..cut]).unwrap();

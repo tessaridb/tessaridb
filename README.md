@@ -980,12 +980,12 @@ pure function (ADR-0001). So a restore is a replay, through the same code a
 replica runs.
 
 ```
-tessaridb ./data --backup ./monday.tessalog
-tessaridb ./restored --restore ./monday.tessalog
+tessaridb ./data --backup ./monday.tessarilog
+tessaridb ./restored --restore ./monday.tessarilog
 
-tessaridb --verify ./monday.tessalog                       # changes nothing, needs no store
-tessaridb ./data --backup ./tuesday.tessalog --from 4001   # only what happened since
-tessaridb ./restored --restore ./monday.tessalog --upto 3000
+tessaridb --verify ./monday.tessarilog                       # changes nothing, needs no store
+tessaridb ./data --backup ./tuesday.tessarilog --from 4001   # only what happened since
+tessaridb ./restored --restore ./monday.tessarilog --upto 3000
 ```
 
 `--verify` reads a backup and says what it holds, applying none of it and opening
