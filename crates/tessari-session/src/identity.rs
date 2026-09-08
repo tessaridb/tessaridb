@@ -232,6 +232,18 @@ impl Needs {
         kinds: &[Kind::Read, Kind::Operate],
         at: At::Store,
     };
+    /// Governing, where the thing governed is the store — the audit trail.
+    ///
+    /// [`Self::GOVERN`] with the container widened, as [`Self::MANAGE_STORE`] is
+    /// to [`Self::MANAGE`]. Nothing new is invented: the audit trail is a
+    /// question about identities, which is what `govern` answers, and it is held
+    /// store-wide because a vault read is recorded before anybody knows whose
+    /// tenancy it belonged to. An owner of one namespace must not satisfy it, or
+    /// they read every other namespace's reads.
+    const GOVERN_STORE: Self = Self {
+        kinds: &[Kind::Govern],
+        at: At::Store,
+    };
     /// Declaring a thing that will later write on the declarer's behalf.
     const MANAGE_WRITE: Self = Self {
         kinds: &[Kind::Manage, Kind::Write],
@@ -468,6 +480,15 @@ impl Needs {
             StatementKind::Info {
                 subject: InfoSubject::Consumer(_) | InfoSubject::Consumers,
             } => Self::MANAGE,
+            // The audit trail, and it must be named here rather than left to
+            // the arm below. That arm is a catch-all over `Info` alone, so a new
+            // subject joins it silently — and this is the subject where that is
+            // worst: read is what every signed-in caller has, and the trail is
+            // every vault read in every tenancy of the store. Named, it demands
+            // `govern` over the store itself.
+            StatementKind::Info {
+                subject: InfoSubject::Audit(_),
+            } => Self::GOVERN_STORE,
             // The other four are reads of the catalog, and what they report is
             // narrowed to what the caller could have found out anyway.
             StatementKind::Info { .. } => Self::READ,

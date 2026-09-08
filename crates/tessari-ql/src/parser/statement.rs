@@ -426,13 +426,32 @@ impl Parser<'_> {
                 self.expect_word("of", "`OF` and the record")?;
                 InfoSubject::Recipients(self.record_target()?)
             }
+            _ if self.eat_word("audit") => InfoSubject::Audit(self.audited_actor()?),
             _ => {
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR`, `GEO` or `VAULT`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR`, `GEO`, `VAULT` or `AUDIT`",
                 ));
             }
         };
         Ok(StatementKind::Info { subject })
+    }
+
+    /// The actor an `INFO FOR AUDIT BY …` narrows to, when one is named.
+    ///
+    /// Quoted or bare, for the reason a declared field name is: the trail holds
+    /// an actor as a string it was handed, so a user whose name is a keyword
+    /// would otherwise be the one credential the forensic question cannot be
+    /// asked about — and the credential somebody named `PASSWORD` is not the
+    /// one to lose.
+    fn audited_actor(&mut self) -> Result<Option<Name>> {
+        if !self.eat_word("by") {
+            return Ok(None);
+        }
+        if matches!(self.peek(), Some(Token::Str(_))) {
+            let (text, span) = self.quoted_field_name()?;
+            return Ok(Some(Name { text, span }));
+        }
+        self.name().map(Some)
     }
 
     /// `USE NAMESPACE prod DATABASE orders` — either part, in that order.

@@ -81,6 +81,7 @@ impl Session<'_> {
             InfoSubject::Geo(name) => self.info_geo(transaction, name, span)?,
             InfoSubject::Vault(name) => self.info_vault(transaction, name, span)?,
             InfoSubject::Recipients(target) => self.info_recipients(transaction, target, span)?,
+            InfoSubject::Audit(actor) => self.info_audit(actor.as_ref())?,
             InfoSubject::User(name) => self.info_user(transaction, name, span)?,
             InfoSubject::Users => self.info_users(transaction)?,
             InfoSubject::Access(table) => self.info_access(transaction, table, span)?,
@@ -304,6 +305,39 @@ impl Session<'_> {
         Ok(BTreeMap::from([(
             "recipients".to_owned(),
             Value::Object(entries),
+        )]))
+    }
+
+    /// `INFO FOR AUDIT` — every recorded vault read, oldest first.
+    ///
+    /// `BY 'ada'` narrows it to one actor, which is the shape the question is
+    /// actually asked in: *this credential was compromised; what did it open,
+    /// and what has to be rotated now?* Until this the answer existed only in
+    /// Rust, so the operator holding that question at three in the morning had
+    /// to write a program to ask it.
+    ///
+    /// # It takes no transaction, and that is the point
+    ///
+    /// The trail is written in a transaction of its own so that a `REVEAL`
+    /// inside a cancelled transaction cannot roll away the record of itself.
+    /// Reading it inside the caller's transaction would undo half of that: a
+    /// reader would see their own uncommitted writes against the trail, and the
+    /// trail is not something a caller writes to.
+    ///
+    /// # There is no check here, and that is not an omission
+    ///
+    /// The demand is declared once, where every statement's demand is declared,
+    /// and it is `govern` over the store itself. A second check written here
+    /// would be a second evaluator of one rule — the thing `INFO FOR ACCESS`
+    /// exists as a counter-example to.
+    fn info_audit(&self, actor: Option<&Name>) -> Result<BTreeMap<String, Value>> {
+        let entries = match actor {
+            Some(name) => tessari_storage::reads_by(self.store, &name.text)?,
+            None => tessari_storage::audit_entries(self.store)?,
+        };
+        Ok(BTreeMap::from([(
+            "audit".to_owned(),
+            Value::Array(entries),
         )]))
     }
 

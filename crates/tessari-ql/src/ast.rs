@@ -1149,10 +1149,10 @@ pub enum StatementKind {
 
 /// What an `INFO FOR` asks about.
 ///
-/// Five subjects, and each one has **exactly one** rule deciding what the caller
-/// may see. That is why they are five subjects rather than one with a filter
-/// argument: a statement whose answer mixes two permission levels can only give
-/// a partial answer or a confusing refusal.
+/// Sixteen subjects, and each one has **exactly one** rule deciding what the
+/// caller may see. That is why they are separate subjects rather than one with a
+/// filter argument: a statement whose answer mixes two permission levels can only
+/// give a partial answer or a confusing refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InfoSubject {
     /// `INFO FOR STORE` — the namespaces.
@@ -1218,6 +1218,31 @@ pub enum InfoSubject {
     /// it is not a recipient anybody added, and listing it would invite an
     /// attempt to remove the one entry that must never go.
     Recipients(RecordTarget),
+    /// `INFO FOR AUDIT` — every recorded vault read; `BY 'ada'` narrows to one
+    /// actor.
+    ///
+    /// The forensic question in the language. `REVEAL` records every read, but
+    /// until this the trail could only be read from Rust — so an operator
+    /// holding a compromised credential could not ask *what did it open* with a
+    /// statement, which is the one moment they most need to.
+    ///
+    /// # The filter does not make this two subjects
+    ///
+    /// It is [`Option`] rather than a second variant because the whole trail and
+    /// one actor's slice of it are the same answer under the same rule: the
+    /// permission is identical, the shape is identical, and narrowing discloses
+    /// strictly less. The rule this enum opens with — one rule per subject —
+    /// is what forbids a filter that spans permission levels, and this one
+    /// spans none.
+    ///
+    /// # It is answered only to the node's administrator
+    ///
+    /// The trail is stored store-wide rather than per tenancy, because a read
+    /// is recorded before anyone knows whose it was. So there is no tenancy to
+    /// scope the answer by, and the honest demand is `govern` held over the
+    /// store itself — strictly narrower than any tenancy grant, and the reason
+    /// one namespace's administrator cannot read another's reads.
+    Audit(Option<Name>),
     /// `INFO FOR USER ada` — one user's role, tenancy and grants.
     ///
     /// The one subject that refuses rather than filters, because its content

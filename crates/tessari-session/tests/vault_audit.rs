@@ -223,7 +223,7 @@ fn the_forensic_question_is_answered_against_real_data_and_timed() {
             .run("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
             .unwrap();
         let mut root = Session::new(&store);
-        root.sign_in("root", "correct horse battery").unwrap();
+        root.sign_in("root", PASSWORD).unwrap();
         root.run(&format!(
             "{USING}
              DEFINE USER ada ON prod.work ROLE editor PASSWORD 'correct horse battery';
@@ -237,7 +237,7 @@ fn the_forensic_question_is_answered_against_real_data_and_timed() {
     for name in ["ada", "root"] {
         for _ in 0..25 {
             let mut session = Session::new(&store);
-            session.sign_in(name, "correct horse battery").unwrap();
+            session.sign_in(name, PASSWORD).unwrap();
             session.run(USING).unwrap();
             session.run("REVEAL token FROM team:'github';").unwrap();
         }
@@ -265,5 +265,145 @@ fn the_forensic_question_is_answered_against_real_data_and_timed() {
     assert!(
         took < std::time::Duration::from_secs(5),
         "the forensic question took {took:?}, which is not a usable answer",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The trail as a statement (`INFO FOR AUDIT`)
+// ---------------------------------------------------------------------------
+//
+// The trail existed before these and could only be read from Rust, so the one
+// question it was built to answer — *this credential was compromised; what did
+// it open?* — was answerable only by writing a program. What these have to
+// prove is not that the reading works but that it is reachable by exactly the
+// callers who should reach it and no others, because the trail is store-wide:
+// it carries every vault read in every tenancy, so a check that let one
+// namespace's administrator read it would hand them another namespace's reads.
+
+const OTHER: &str = "hunter-two-marker-4d81";
+const PASSWORD: &str = "correct horse battery";
+
+/// The same store, plus a store-wide owner and an owner of one tenancy.
+///
+/// `ada` is an **owner** and not an editor on purpose. An editor holds no
+/// `govern` at all, so a refusal for her would prove only that the authority is
+/// demanded — and the thing worth proving is the other half, that holding it
+/// over a tenancy is not holding it over the store.
+fn peopled() -> Store {
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    {
+        let mut session = Session::new(&store);
+        session
+            .run(&format!(
+                "{TENANCY}
+                 UNSEAL VAULT WITH 'an operator passphrase';
+                 DEFINE VAULT team;
+                 DEFINE FIELD token ON team TYPE string SECRET;
+                 CREATE team:'github' = {{ token: '{PLANTED}' }};
+                 CREATE team:'gitlab' = {{ token: '{OTHER}' }};
+                 DEFINE USER root ROLE owner PASSWORD '{PASSWORD}';"
+            ))
+            .unwrap();
+        let mut root = Session::new(&store);
+        root.sign_in("root", "correct horse battery").unwrap();
+        root.run(&format!(
+            "{USING}
+             DEFINE USER ada ON prod.work ROLE owner PASSWORD '{PASSWORD}';
+             GRANT read ON team TO ada;"
+        ))
+        .unwrap();
+    }
+    store
+}
+
+fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
+    let mut session = Session::new(store);
+    session.sign_in(name, "correct horse battery").unwrap();
+    session.run(USING).unwrap();
+    session
+}
+
+#[test]
+fn the_forensic_question_is_answerable_with_a_statement() {
+    let store = holding();
+    let mut session = session_on(&store);
+    session.run("REVEAL token FROM team:'github';").unwrap();
+
+    let reported = format!("{:?}", session.run("INFO FOR AUDIT;").unwrap());
+
+    // What the operator came for: which vault, which record, which field, and
+    // whether it was served.
+    assert!(reported.contains("team"), "{reported}");
+    assert!(reported.contains("github"), "{reported}");
+    assert!(reported.contains("token"), "{reported}");
+    assert!(reported.contains("anonymous"), "{reported}");
+
+    // And what they did not: the trail names reads, never their answers.
+    assert!(
+        !reported.contains(PLANTED),
+        "the trail handed back the secret it recorded a read of",
+    );
+}
+
+#[test]
+fn by_narrows_the_trail_to_one_actor() {
+    let store = peopled();
+    signed_in(&store, "root")
+        .run("REVEAL token FROM team:'github';")
+        .unwrap();
+    signed_in(&store, "ada")
+        .run("REVEAL token FROM team:'gitlab';")
+        .unwrap();
+
+    let mut root = signed_in(&store, "root");
+
+    // The control: unnarrowed, both reads are there. Without it a `BY` that
+    // returned nothing at all would pass the assertions below.
+    let whole = format!("{:?}", root.run("INFO FOR AUDIT;").unwrap());
+    assert!(whole.contains("github"), "{whole}");
+    assert!(whole.contains("gitlab"), "{whole}");
+
+    let ada = format!("{:?}", root.run("INFO FOR AUDIT BY 'ada';").unwrap());
+    assert!(ada.contains("gitlab"), "{ada}");
+    assert!(
+        !ada.contains("github"),
+        "a filter on one actor returned another's read: {ada}",
+    );
+
+    // Bare and quoted name the same actor — a user whose name is a keyword is
+    // still askable about.
+    let bare = format!("{:?}", root.run("INFO FOR AUDIT BY ada;").unwrap());
+    assert_eq!(bare, ada, "the bare name and the quoted one disagree");
+}
+
+#[test]
+fn an_owner_of_one_tenancy_may_not_read_the_whole_stores_trail() {
+    let store = peopled();
+    signed_in(&store, "root")
+        .run("REVEAL token FROM team:'github';")
+        .unwrap();
+
+    // The control: the same statement, from the caller who administers the
+    // store, is served. So the refusal below is about who is asking.
+    let served = format!(
+        "{:?}",
+        signed_in(&store, "root").run("INFO FOR AUDIT;").unwrap()
+    );
+    assert!(served.contains("github"), "{served}");
+
+    let refused = signed_in(&store, "ada")
+        .run("INFO FOR AUDIT;")
+        .expect_err("an owner of one tenancy read the whole store's trail");
+    let message = refused.to_string();
+    // Pinned to the words only this refusal produces. A looser check passes on
+    // any error at all, including one about the trail being unreadable — which
+    // would leave the reach untested while looking green.
+    assert!(
+        message.contains("holds one database") && message.contains("subject is the whole store"),
+        "{message}",
+    );
+    assert!(
+        !message.contains("github"),
+        "the refusal disclosed what it refused to show: {message}",
     );
 }
