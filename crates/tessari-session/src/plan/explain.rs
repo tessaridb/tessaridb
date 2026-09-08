@@ -8,6 +8,7 @@ use crate::session::Session;
 use super::rank::choose;
 use super::reported::Plan;
 use super::statement::{closest, nearest, ordered, scored};
+use super::worth::worth_serving;
 
 impl Session<'_> {
     /// The plan a read would take, without taking it.
@@ -179,7 +180,17 @@ impl Session<'_> {
                 let searched = self.searched_for(transaction, id, &[condition])?;
                 let declared = Catalog::new(transaction).indexes_on(id)?;
                 let offered = self.enumerate(transaction, condition, &declared, &searched)?;
-                Ok(match choose(offered) {
+                // The same guard the read applies, from the same function: a
+                // winner that does not beat reading the table is not the path
+                // the read will take, and an `EXPLAIN` that reported it would
+                // be describing a plan nothing runs.
+                let chosen = match choose(offered) {
+                    Some(candidate) if worth_serving(transaction, id, &candidate)? => {
+                        Some(candidate)
+                    }
+                    _ => None,
+                };
+                Ok(match chosen {
                     Some(chosen) => chosen.plan(Some(named)),
                     None => Plan::new(AccessPath::Scan).on(named),
                 })

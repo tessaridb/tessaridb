@@ -118,6 +118,24 @@ pub const VAULT_ROOT: TableId = TableId::new(16);
 /// length that discloses one.
 pub const VAULT_AUDIT: TableId = TableId::new(17);
 
+/// How many records each table holds, keyed by table id.
+///
+/// The planner reads this to decide whether an index is worth using, and there
+/// was nothing to read before it. [`RECORD_SEQUENCES`] is the only other
+/// per-table number the catalog keeps and it answers a different question: it
+/// is an identity allocator, so it never decreases when a record is deleted and
+/// it is never touched when the caller supplies its own id. A churned table
+/// would read far too large under it and a table written with explicit ids
+/// would read zero.
+///
+/// Catalog state rather than a `META` key, on the same reading as
+/// [`RECORD_SEQUENCES`]: it is derived from the log record inside the commit,
+/// so a replica replaying that record reaches the same number. A count derived
+/// only on the leader would make a follower's planner choose a different access
+/// path for the same query — the same records, by a slower route, with nothing
+/// anywhere in an error state.
+pub const RECORD_COUNTS: TableId = TableId::new(18);
+
 /// The one record [`VAULT_ROOT`] holds.
 pub const VAULT_ROOT_ID: u32 = 1;
 
@@ -222,7 +240,10 @@ mod tests {
         // Every system table, not a sample: an id is only proved distinct if it
         // is compared against all of them, and a name left out of this list
         // cannot be found duplicated however wrong it is. `GRANTS` was missing
-        // from here until it was noticed while adding `REPLICAS`.
+        // from here until it was noticed while adding `REPLICAS`, and the two
+        // vault tables were missing until `RECORD_COUNTS` was added — a list
+        // three short of the constants it guards would have let a new id
+        // collide with one of them and said nothing.
         let ids = [
             NAMESPACES,
             DATABASES,
@@ -239,6 +260,9 @@ mod tests {
             RECORD_SEQUENCES,
             GRAPHS,
             EDGE_KINDS,
+            VAULT_ROOT,
+            VAULT_AUDIT,
+            RECORD_COUNTS,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(

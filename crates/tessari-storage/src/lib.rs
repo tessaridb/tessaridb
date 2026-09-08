@@ -23,6 +23,7 @@
 
 mod adjacency;
 mod audit;
+mod cardinality;
 mod catalog;
 mod covering;
 mod error;

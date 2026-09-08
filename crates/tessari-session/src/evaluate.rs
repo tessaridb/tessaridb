@@ -1740,7 +1740,19 @@ impl Session<'_> {
         // the same record — which is what makes candidates re-tested against the
         // whole condition unable to answer what a scan refuses.
         let visible = self.visible_in(transaction, table)?;
-        if let Some(chosen) = plan::choose(offered) {
+        // Ranking says which index narrows most; it does not say whether the
+        // winner narrows enough to be worth reading. An index that produces
+        // most of the table pays an entry walk on top of a fetch it did not
+        // shorten, so the winner is measured against the table before it is
+        // served — see `plan::worth_serving`, which `EXPLAIN` asks too so that
+        // the reported path is the one the read takes.
+        let chosen = match plan::choose(offered) {
+            Some(candidate) if plan::worth_serving(transaction, table, &candidate)? => {
+                Some(candidate)
+            }
+            _ => None,
+        };
+        if let Some(chosen) = chosen {
             // Built by the candidate itself, which is the same function
             // `EXPLAIN` calls on the candidate its own `choose` returned. The
             // two report one structure because one function writes it.

@@ -451,6 +451,11 @@ impl Store {
         // — which is worth stopping at rather than writing through.
         crate::schema::validate(self, record)?;
         let batch = crate::index::maintain(self, record, crate::log::apply_batch(at, record))?;
+        // Derived here as well as in the commit, because that is the whole
+        // reason it is derived from the record: a follower that skipped this
+        // would carry the records and none of the counts, and its planner would
+        // then choose a different access path for the same query.
+        let batch = crate::cardinality::maintain(self, record, batch, at)?;
         self.backend.apply(batch)?;
         Ok(())
     }

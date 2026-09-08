@@ -14,6 +14,7 @@ mod index_maintenance;
 mod index_sweep;
 mod isolation;
 mod range_batches;
+mod record_counts;
 mod replication;
 mod retention;
 mod schema;

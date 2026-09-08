@@ -3364,6 +3364,36 @@ This is deliberately **not** a cost model. One needs to know how many records
 hold `city = 'london'` as against `city = 'tromsø'`, which means maintained
 histograms — and a stale histogram changes plans silently.
 
+**An index that would return most of the table loses to reading the table.**
+Narrowing most is not the same as narrowing enough: an index read walks entries
+*and* fetches the records they name, so a path that returns nearly everything has
+added a walk to a read it did not shorten, and is slower than no index at all.
+So the winning candidate is measured against the table before it is served, and
+an index runs when it can produce **at most half** of it.
+
+Two numbers decide that and neither works alone. The store keeps a **record count
+per table**, maintained where records are written rather than by counting them
+later. For a candidate whose size is not already known — an equality on a
+non-unique index, a range — the entries are counted by a walk that reads keys and
+no records, and **gives up** as soon as there are more than half a table's worth,
+because counting the rest would cost what the read costs.
+
+Nothing about this changes on a small table. Below about a thousand records a
+scan is a single request to the storage, both paths are cheap, and the comparison
+is switched off — so a table you have just created plans the way you would expect
+from the indexes you declared on it.
+
+Where the store has no count, or the candidate is a shape the counting walk
+cannot follow — a `LIKE 'a%'` prefix, a `MATCHES` expansion, a geometric region —
+the comparison says nothing and the ranking decides alone. A missing measurement
+never overrules a declared index.
+
+`EXPLAIN` (§7b) asks the same question the read asks, so it reports the path the
+read takes rather than the one the ranking preferred. `USING INDEX <name>`
+(§7b″) is how a script says out loud that it expects a particular index — and
+because it is a refusal rather than a router, it is also how a plan that changed
+under you announces itself.
+
 **The plan can only change the cost.** Whichever candidate narrows, the whole
 condition is still tested against every record it produced, which is what makes
 adding an index — or reordering a condition — unable to change an answer. The

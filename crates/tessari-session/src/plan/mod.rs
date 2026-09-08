@@ -27,6 +27,7 @@
 //! | [`serving`] | which declared indexes can answer about a given path |
 //! | [`enumerate`] | every candidate a condition and a schema offer together |
 //! | [`rank`] | which of them promises to narrow the most |
+//! | [`worth`] | whether the one that won beats reading the table |
 //! | [`fold`] | evaluating the record-independent parts of a statement once |
 //! | [`statement`] | what shape of read a whole statement is — nearest, ordered, bounded |
 //! | [`reported`] | the one structure both `EXPLAIN` and an answer report |
@@ -48,13 +49,26 @@
 //! |---|---|---|
 //! | equality on a **unique** index | at most 1 | nothing — it is what unique means |
 //! | `MATCHES` on a search index | at most the smallest term's `df` | one prefix count per term |
-//! | equality on a secondary index | unknown | the read itself |
+//! | equality on a secondary index | unknown, probed against the table | a bounded key-only walk |
+//! | `a > 1 AND a < 9` ordered range | unknown, probed against the table | a bounded key-only walk |
 //! | `LIKE 'a%'` prefix range | unknown, possibly the whole table | the read itself |
 //!
 //! The search bound is only cheap because SGC.T3 made a document frequency a
 //! count of keys rather than a set of decoded record ids. The two nodes compose
 //! by accident of good luck rather than design, and it is worth saying so: had
 //! `df` stayed expensive, a search candidate would rank by shape like the others.
+//!
+//! # The scan is the candidate nobody offered
+//!
+//! Ranking answers which index narrows most; it never answered whether the
+//! winner narrows at all. There was no way to say "an index applied and lost",
+//! so an applicable index was taken unconditionally — and an ordered index that
+//! selects most of a table is slower than no index at all, because the entry
+//! walk and the record fetch are both paid and neither removes anything.
+//! [`worth`] is that missing comparison, and it is deliberately not part of
+//! [`rank`]: ranking is total and pure and can be tested over the whole matrix
+//! without a store, while the comparison needs a maintained table count and a
+//! bounded probe of the winner.
 //!
 //! # Why rule-based and not cost-based
 //!
@@ -103,6 +117,7 @@ mod serving;
 mod statement;
 #[cfg(test)]
 mod tests;
+mod worth;
 
 pub(crate) use candidate::{Candidate, Served};
 pub(crate) use rank::choose;
@@ -111,3 +126,4 @@ pub use reported::Plan;
 pub(crate) use statement::{
     Bounded, Closest, Nearest, Scored, answers, bound, closest, nearest, ordered, scored,
 };
+pub(crate) use worth::worth_serving;

@@ -260,6 +260,77 @@ impl Transaction<'_> {
         Ok(found)
     }
 
+    /// How many entries an ordered index holds between two bounds, giving up
+    /// once there are more than `cap` of them.
+    ///
+    /// `None` means "more than `cap`" and is the whole point of the function.
+    /// The planner asks this to find out whether a range is selective enough to
+    /// be worth serving by the index; a range that is not selective is exactly
+    /// the case where counting it to the end would cost as much as the scan the
+    /// count exists to avoid. So the walk stops, and the caller learns the one
+    /// fact it needed — that this candidate is not better than reading the
+    /// table.
+    ///
+    /// It counts **entries**, not records, and it does not fold this
+    /// transaction's pending writes. Entries are an upper bound on records (a
+    /// multi-valued field puts a record under several of them), which is what
+    /// `AtMost` means, and the estimate decides an access path rather than an
+    /// answer — see [`crate::catalog::Catalog::record_count`] for why nothing
+    /// that decides which records a statement returns may read a number like
+    /// this one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails.
+    pub fn count_in_range(
+        &self,
+        index: &IndexDefinition,
+        fixed: &[Value],
+        lower: Option<&Value>,
+        upper: Option<&Value>,
+        cap: u64,
+    ) -> Result<Option<u64>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let kind = if index.unique {
+            KeyKind::UniqueIndex
+        } else {
+            KeyKind::SecondaryIndex
+        };
+        let prefix = address.prefix(kind);
+        let within = |bound: Option<&Value>| {
+            let mut values = fixed.to_vec();
+            if let Some(held) = bound {
+                values.push(held.clone());
+            }
+            let mut bytes = prefix.clone();
+            bytes.extend_from_slice(&IndexValues::leading(&values));
+            bytes
+        };
+        let end = after(within(upper));
+
+        let mut found = 0_u64;
+        let mut from = within(lower);
+        loop {
+            let request = ScanRequest {
+                keyspace: kind.keyspace(),
+                range: KeyRange::between(Key::from(from), Key::from(end.clone())),
+                direction: ScanDirection::Forward,
+                limit: Some(RANGE_SCAN_BATCH_ENTRIES),
+            };
+            let batch = self.store.backend().scan(&request)?;
+            let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
+            found = found.saturating_add(u64::try_from(batch.len()).unwrap_or(u64::MAX));
+            if found > cap {
+                return Ok(None);
+            }
+            let Some(last) = last.filter(|_| batch.len() >= RANGE_SCAN_BATCH_ENTRIES) else {
+                break;
+            };
+            from = resuming_after(last);
+        }
+        Ok(Some(found))
+    }
+
     /// The records an ordered index names between two bounds, handed over one at
     /// a time in record order, stopping where the caller says to stop.
     ///

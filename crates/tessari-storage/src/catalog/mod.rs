@@ -23,7 +23,10 @@ mod analyzer;
 mod authority;
 mod change;
 mod consumer;
-mod definition;
+// `pub(crate)` for the counter helpers: `crate::cardinality` stores a record
+// count with the same `count`/`count_of` pair the record sequence uses, so the
+// two per-table numbers are written and read one way rather than two.
+pub(crate) mod definition;
 mod edge_kind;
 mod field;
 mod grant;
@@ -689,6 +692,35 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         self.transaction
             .put(address, encode_payload(&held).into_bytes());
         Ok(next)
+    }
+
+    /// How many records a table holds, when the store has a count for it.
+    ///
+    /// `None` means no estimate rather than an empty table: the counter is
+    /// written by [`crate::cardinality`] when a record arrives or leaves, so a
+    /// table nothing has written since the store was created has no record
+    /// here. The two are worth telling apart because a planner told "no
+    /// estimate" must fall back to the behaviour it had before counts existed,
+    /// while a planner told "zero" would conclude that every index beats a scan
+    /// of nothing.
+    ///
+    /// It is an **estimate for choosing an access path** and never an answer.
+    /// Nothing that decides which records a statement returns may read it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store cannot be read or the stored count
+    /// cannot be decoded.
+    pub fn record_count(&mut self, table: TableId) -> Result<Option<u64>> {
+        let address = system::address(system::RECORD_COUNTS, RecordId::Int(id_key(table.get())));
+        let Some(bytes) = self.transaction.get(&address)? else {
+            return Ok(None);
+        };
+        Ok(Some(definition::count_of(
+            &decode_payload(&bytes)?,
+            "record count",
+            "held",
+        )?))
     }
 
     /// Refuse early if the name is already resolvable.

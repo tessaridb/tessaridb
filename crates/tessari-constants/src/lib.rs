@@ -129,6 +129,29 @@ pub const ORDERED_SCAN_BATCH_ENTRIES: usize = 128;
 /// round trips, and it is a few tens of kilobytes.
 pub const RANGE_SCAN_BATCH_ENTRIES: usize = 1024;
 
+/// How many records a table must hold before the planner will decline an index
+/// in favour of reading the table.
+///
+/// Unit: records.
+///
+/// The planner serves an index only when it can produce at most half the table
+/// (§ `plan::worth`). That rule exists because an index read walks entries
+/// *and* fetches records, so one returning most of a table has added a walk to
+/// a read it did not shorten — measured at **2.1× slower than no index at all**.
+///
+/// Below this floor there is nothing to protect. A scan of a thousand records
+/// is one round trip to the substrate, the ratio the rule reasons about is a
+/// ratio between two costs that are both negligible, and the only thing the
+/// guard could achieve is to surprise somebody who declared an index and
+/// watched it go unused. So the guard does not engage, and a small table plans
+/// exactly as it did before the guard existed.
+///
+/// It is the same magnitude as [`RANGE_SCAN_BATCH_ENTRIES`] and deliberately
+/// **not** the same constant: that one is a buffer bound whose value that
+/// constant's own doc calls indifferent, and coupling a planning decision to it
+/// would mean re-tuning a buffer silently re-planned every query in the store.
+pub const PLANNER_SCAN_FLOOR_RECORDS: u64 = 1024;
+
 /// How quickly repeating a term stops improving a BM25 score.
 ///
 /// Unit: dimensionless.
