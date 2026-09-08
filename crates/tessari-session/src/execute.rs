@@ -547,6 +547,24 @@ impl Session<'_> {
                 condition,
                 limit,
             } => self.delete_where(transaction, table, condition, *limit),
+            StatementKind::DeleteSpan {
+                table,
+                lower,
+                upper,
+                inclusive,
+                span: at,
+                limit,
+            } => self.delete_span(
+                transaction,
+                table,
+                crate::evaluate::IdentitySpan {
+                    lower,
+                    upper,
+                    inclusive: *inclusive,
+                    at: *at,
+                },
+                *limit,
+            ),
             StatementKind::DefineBucket {
                 name,
                 max,

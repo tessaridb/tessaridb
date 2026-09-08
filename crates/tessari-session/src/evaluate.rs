@@ -12,7 +12,7 @@ use std::ops::ControlFlow;
 use tessari_constants::ORDERED_FILTER_REACH;
 use tessari_encoding::{Direction as AdjacencyDirection, Posting};
 use tessari_ql::{
-    BinaryOp, DeleteBound, Direction, Expr, ExprKind, FieldPath, Function, Hop, JoinSide,
+    BinaryOp, DeleteBound, Direction, Expr, ExprKind, FieldPath, Function, Hop, Identity, JoinSide,
     Projected, Projection, RecordTarget, Select, Source, Span, TableRef, Using,
 };
 use tessari_storage::{
@@ -435,6 +435,65 @@ impl Session<'_> {
             )?;
             if !boolean(&held, condition.span)? {
                 continue;
+            }
+            transaction.delete(RecordAddress::new(
+                context.namespace,
+                context.database,
+                id,
+                record_id,
+            ));
+            removed = removed.saturating_add(1);
+        }
+        Ok(crate::outcome::Outcome::Removed { count: removed })
+    }
+
+    /// Every record in a span of identities, removed.
+    ///
+    /// # Why there is no re-test here, where the conditional delete has one
+    ///
+    /// `delete_where` tests every candidate against the whole condition,
+    /// because an index **narrows** and the condition decides — a delete that
+    /// trusted the narrowing would remove records the statement did not name.
+    /// A span narrows nothing. It *is* the set the statement named, so there is
+    /// no second question and nothing to re-test, and the absence of the re-test
+    /// is the property rather than an omission.
+    ///
+    /// # What it costs
+    ///
+    /// The span, and not the table. The walk reaches the records between two
+    /// positions in the table's own key order, which is what makes this usable
+    /// as a retention pass over a table that has grown — the conditional form
+    /// reads every record it is going to keep, once per run, forever.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a bound is an unbound parameter, the table cannot
+    /// be resolved, or the store cannot be read.
+    pub(crate) fn delete_span(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: &TableRef,
+        span: IdentitySpan<'_>,
+        limit: DeleteBound,
+    ) -> Result<crate::outcome::Outcome> {
+        let ceiling = match limit {
+            DeleteBound::AtMost(count) => count,
+            DeleteBound::All => u64::MAX,
+        };
+        let (context, id) = self.resolve_table(transaction, table)?;
+        let found = transaction.records_in_span(
+            context.namespace,
+            context.database,
+            id,
+            span.lower.fixed(span.at)?,
+            span.upper.fixed(span.at)?,
+            span.inclusive,
+        )?;
+
+        let mut removed = 0_u64;
+        for (record_id, _) in found {
+            if removed >= ceiling {
+                break;
             }
             transaction.delete(RecordAddress::new(
                 context.namespace,
@@ -3818,4 +3877,22 @@ fn shown(select: &Select) -> Vec<&Expr> {
 /// projection over somebody's whole table.
 fn at(offset: usize) -> Value {
     Value::Number(Number::Integer(i64::try_from(offset).unwrap_or(i64::MAX)))
+}
+
+/// The two ends of a span of identities, and whether the upper one is inside it.
+///
+/// One argument rather than three for the reason the storage side gives about
+/// the same three values: they are one fact and are wrong together — a caller
+/// handed the bounds and not the inclusivity silently removes a half-open span
+/// as a closed one, and nothing in the answer says which it was.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IdentitySpan<'a> {
+    /// The first identity, always inside the span.
+    pub(crate) lower: &'a Identity,
+    /// The last, inside only when `inclusive`.
+    pub(crate) upper: &'a Identity,
+    /// Whether the upper bound is itself inside.
+    pub(crate) inclusive: bool,
+    /// Where the span sits, for a refusal about an unbound parameter.
+    pub(crate) at: Span,
 }

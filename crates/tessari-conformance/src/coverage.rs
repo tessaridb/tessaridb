@@ -98,6 +98,7 @@ forms! {
     Throw => "THROW",
     Delete => "DELETE",
     DeleteWhere => "DELETE FROM",
+    DeleteSpan => "DELETE FROM a span",
     Get => "GET",
     Set => "SET",
     Del => "DEL",
@@ -205,6 +206,7 @@ mod tests {
              THROW 'no';\
              DELETE t:1;\
              DELETE FROM t WHERE a = 1 LIMIT ALL;\
+             DELETE FROM t:1..2 LIMIT ALL;\
              GET s:1;\
              SET s:1 = 1;\
              DEL s:1;\

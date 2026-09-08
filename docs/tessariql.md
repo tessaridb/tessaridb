@@ -3485,6 +3485,28 @@ DELETE FROM readings WHERE at < datetime '2026-01-01T00:00:00Z' LIMIT 1000;
 WHERE …` would read as a table name where an identity belongs, and a statement
 that removes rows should not be one word away from a typo.
 
+**A span of identities is the third form**, and it is the one a retention pass
+wants:
+
+```
+DELETE FROM readings:1..1000 LIMIT ALL;
+DELETE FROM readings:$oldest..$cutoff LIMIT ALL;
+DELETE FROM readings:1..=1000 LIMIT 500;
+```
+
+It removes the records `SELECT * FROM readings:1..1000` would have answered
+with, and it costs what it removes rather than what it keeps: the conditional
+form reads every record it is going to keep, once per run, forever. On a table
+whose identities are its write order — which both identity kinds this store
+issues are — that is the difference between a retention job that stays constant
+and one that grows with the data it is there to bound.
+
+**It takes no `WHERE`, deliberately.** A conditional delete re-tests every
+candidate against the whole condition, because an index narrows and the
+condition decides. A span narrows nothing — it *is* the set the statement named
+— so there is nothing left to decide. Allowing both in one statement would put
+two rules in one place and make the answer depend on which the reader believed.
+
 **The bound is required too.** A conditional delete carries either `LIMIT n` or
 `LIMIT ALL`, and a statement carrying neither is refused before it runs. One of the
 two `LIMIT`s in the language that are not optional — the other bounds a

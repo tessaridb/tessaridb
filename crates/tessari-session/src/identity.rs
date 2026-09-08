@@ -577,7 +577,16 @@ impl Needs {
             // is what they cost.
             | StatementKind::AddRecipient { .. }
             | StatementKind::RemoveRecipient { .. }
-            | StatementKind::DeleteWhere { .. } => Self::READ_WRITE,
+            | StatementKind::DeleteWhere { .. }
+            // `DELETE FROM t:a..b` reads no record — it removes by position —
+            // and is still in this class, because the class is measured on what
+            // the answer discloses rather than on what the statement reads. It
+            // answers `removed n`, and `n` is exactly how many records existed
+            // in a span the **caller** chose. That is an enumeration oracle over
+            // identity ranges and a binary search away from naming them, which
+            // is the same argument the addressed `CREATE` above is classified
+            // by.
+            | StatementKind::DeleteSpan { .. } => Self::READ_WRITE,
             // **The six that are measurably silent about prior state.** Every
             // one of them answers `ok` against an absent or conflicting record,
             // so a holder of `write` alone can run them and learn nothing —

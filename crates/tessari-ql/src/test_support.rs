@@ -320,6 +320,10 @@ fn erase_statement(statement: &mut Statement) {
             erase_table(table);
             erase_expr(condition);
         }
+        StatementKind::DeleteSpan { table, span, .. } => {
+            erase_table(table);
+            *span = CANONICAL;
+        }
         StatementKind::Keys { space, range } => {
             erase_table(space);
             if let Some(range) = range {

@@ -243,6 +243,12 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             bind_target(to, binding)
         }
         StatementKind::DeleteWhere { condition, .. } => bind_expr(condition, binding),
+        StatementKind::DeleteSpan {
+            lower, upper, span, ..
+        } => {
+            bind_identity(lower, *span, binding)?;
+            bind_identity(upper, *span, binding)
+        }
         StatementKind::Keys { range, .. } => match range {
             Some(range) => bind_range(range, binding),
             None => Ok(()),

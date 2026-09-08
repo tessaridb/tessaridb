@@ -1055,6 +1055,40 @@ pub enum StatementKind {
         /// is that removing a table has to be *said*.
         limit: DeleteBound,
     },
+    /// `DELETE FROM events:1000..2000 LIMIT ALL` — every record in a span of
+    /// identities.
+    ///
+    /// The retention statement, once a table's identities are its time order.
+    /// [`Self::DeleteWhere`] over the same records reads the table, tests each
+    /// one and removes the matches; this walks the keyspace between two
+    /// positions and removes what is there, so its cost is the size of what it
+    /// removes rather than the size of what it keeps.
+    ///
+    /// # Why there is no condition
+    ///
+    /// A conditional delete re-tests every candidate against the whole
+    /// condition, because an index **narrows** and the condition decides. A span
+    /// narrows nothing — it *is* the set the statement named — so there is
+    /// nothing left to decide and nothing to re-test. Allowing a `WHERE` beside
+    /// it would put the two rules in one statement and make the answer depend on
+    /// which of them the reader believed.
+    ///
+    /// The bound is required for [`Self::DeleteWhere`]'s reason: removing an
+    /// unbounded set has to be said.
+    DeleteSpan {
+        /// The table being cleared out.
+        table: TableRef,
+        /// The first identity to remove, always included.
+        lower: Identity,
+        /// The last, included only when the bound was written `..=`.
+        upper: Identity,
+        /// Whether the upper bound is itself removed.
+        inclusive: bool,
+        /// Where the span sits, for a refusal about a bound.
+        span: Span,
+        /// How much this statement may remove.
+        limit: DeleteBound,
+    },
     /// `GET sessions:'abc'` as a statement of its own.
     Get {
         /// The key to read.

@@ -115,14 +115,38 @@ impl Parser<'_> {
                 // that removes rows should not be one word away from a typo.
                 if self.eat_keyword(Keyword::From) {
                     let table = self.table_ref()?;
-                    self.expect_keyword(Keyword::Where, "`WHERE` and what to remove")?;
-                    let condition = self.condition()?;
-                    super::shape::no_fold(&condition)?;
-                    super::shape::check_several(&condition)?;
-                    StatementKind::DeleteWhere {
-                        table,
-                        condition: Box::new(condition),
-                        limit: self.delete_bound()?,
+                    // `DELETE FROM events:1000..2000` is the retention form and
+                    // reads exactly as the span a `SELECT` takes, because it
+                    // removes the records that read would have answered with.
+                    if self.peek() == Some(&Token::Punct(Punct::Colon)) {
+                        let record = self.record_target_after(table)?;
+                        // A span and nothing else. `DELETE FROM events:1000`
+                        // would name one record in the form reserved for a set,
+                        // and `DELETE events:1000` already says that — so the
+                        // missing `..` is refused rather than read as either.
+                        let Some(inclusive) = self.range_bound() else {
+                            return Err(self.error_here("`..` or `..=` and the end of the span"));
+                        };
+                        let at = self.span_here();
+                        let upper = self.record_id(at)?;
+                        StatementKind::DeleteSpan {
+                            span: record.span.to(self.span_behind()),
+                            table: record.table,
+                            lower: record.id,
+                            upper,
+                            inclusive,
+                            limit: self.delete_bound()?,
+                        }
+                    } else {
+                        self.expect_keyword(Keyword::Where, "`WHERE` and what to remove")?;
+                        let condition = self.condition()?;
+                        super::shape::no_fold(&condition)?;
+                        super::shape::check_several(&condition)?;
+                        StatementKind::DeleteWhere {
+                            table,
+                            condition: Box::new(condition),
+                            limit: self.delete_bound()?,
+                        }
                     }
                 } else {
                     let target = self.record_target()?;

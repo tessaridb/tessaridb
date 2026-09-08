@@ -211,6 +211,7 @@ impl Effect {
             | StatementKind::Upsert { .. }
             | StatementKind::Delete { .. }
             | StatementKind::DeleteWhere { .. }
+            | StatementKind::DeleteSpan { .. }
             | StatementKind::Relate { .. }
             | StatementKind::DeleteEdge { .. }
             | StatementKind::Set { .. }

@@ -182,6 +182,10 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             found
         }
 
+        // No condition, so no subquery can hide in one: the span is the whole
+        // statement and the table it names is the only table it reaches.
+        StatementKind::DeleteSpan { table, .. } => vec![table],
+
         StatementKind::Keys { space, .. } => vec![space],
 
         // A written value may hold a read — `CREATE audit:1 = { copy: (SELECT

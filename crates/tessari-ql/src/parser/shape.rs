@@ -309,7 +309,7 @@ impl Parser<'_> {
         }))
     }
 
-    /// The bound a conditional delete must carry: `LIMIT 100` or `LIMIT ALL`.
+    /// The bound a delete over a **set** must carry: `LIMIT 100` or `LIMIT ALL`.
     ///
     /// Required, unlike every other `LIMIT` in this grammar. A read that omits
     /// one answers with more rows than the caller expected; a delete that omits
@@ -317,7 +317,7 @@ impl Parser<'_> {
     /// and it costs one word — which is the entire mechanism.
     pub(super) fn delete_bound(&mut self) -> Result<DeleteBound> {
         let expected =
-            "`LIMIT n` or `LIMIT ALL` — a conditional delete states how much it may remove";
+            "`LIMIT n` or `LIMIT ALL` — a delete over a set states how much it may remove";
         if !self.eat_word("limit") {
             return Err(self.error_here(expected));
         }
