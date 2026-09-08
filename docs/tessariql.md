@@ -367,6 +367,15 @@ depends on context. A name that is not a word at all is written as text:
 `{ 'two words': 1 }`. Everywhere else — tables, spaces, indexes, databases — a
 reserved word is not available as a name.
 
+**A field is declared under that same quoted spelling.** `DEFINE FIELD
+'password' ON logins TYPE string SECRET` declares a field whose name is a
+reserved word, and `ALTER TABLE … ADD FIELD`, `ALTER FIELD`, `DROP FIELD` and
+`REVEAL` all accept it the same way. Without it a record could hold a field the
+schema could never declare — which matters most in a vault, because a vault is
+strict, so a field nobody can declare is a field it cannot hold at all. The
+**unquoted** form is still refused: `DEFINE FIELD password ON logins …` reads
+`PASSWORD` as the keyword it is.
+
 ## 4. Definition statements
 
 ```

@@ -13,15 +13,22 @@
 //! right words; a byte test alone would pass against an implementation nobody
 //! can reach.
 //!
-//! # The field is called `token` and not `password`, and that is a finding
+//! # The field is called `token` and not `password`, and that used to be a gap
 //!
 //! `PASSWORD` is a reserved word — `DEFINE USER ada PASSWORD '…'` — so `DEFINE
 //! FIELD password ON team TYPE string SECRET` does not parse, while `CREATE
 //! team:'github' SET password = '…'` does, because an object literal's field name
-//! accepts a keyword and a declaration's does not. A vault is the one place
+//! accepts a keyword and a declaration's did not. A vault is the one place
 //! somebody will certainly try to declare a field called `password`, and the
-//! design document's own example does exactly that. Recorded as **Q-417**; the
-//! tests use `token` so they test the vault rather than the lexer.
+//! design document's own example does exactly that.
+//!
+//! Until W131 the quoted form did not work either, so there was **no way to say
+//! it at all** — and since a vault is strict, a field nobody can declare is a
+//! field a vault cannot hold. `DEFINE FIELD 'password' …` now works, and
+//! `a_field_named_password_can_live_in_a_vault` covers it end to end. The bare
+//! keyword stays refused and stays **Q-417**, because accepting one there widens
+//! every field declaration in the language. The rest of the tests keep `token`,
+//! so that they test the vault rather than the lexer.
 //!
 //! # The refusals, and which of them protect anything
 //!
@@ -551,4 +558,79 @@ fn a_vault_has_no_plan_to_explain_and_the_refusal_carries_nothing() {
             "{statement} quoted a secret: {said}"
         );
     }
+}
+
+/// A field called `password`, which is what a secret store will be asked for.
+///
+/// The design document's flagship example is `DEFINE FIELD password ON team TYPE
+/// string SECRET`, and until W131 no spelling of it worked: the bare word is a
+/// keyword, and the quoted form — which an object literal accepts — was refused
+/// in a declaration too. Since a vault is strict, that made the example not
+/// merely awkward but **impossible**: a field nobody can declare is a field a
+/// vault cannot hold.
+///
+/// This walks the whole life of such a field rather than asserting the parse,
+/// because a name that parses and then cannot be written to, opened or dropped
+/// has only moved the problem.
+#[test]
+fn a_field_named_password_can_live_in_a_vault() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(&format!(
+            "{TENANCY}
+             UNSEAL VAULT WITH 'an operator passphrase';
+             DEFINE VAULT team;
+             DEFINE FIELD login ON team TYPE string;
+             DEFINE FIELD 'password' ON team TYPE string SECRET;
+             CREATE team:'github' = {{ login: 'boog', password: '{PLANTED}' }};"
+        ))
+        .expect("a vault could not hold a field called password");
+
+    // Written by the bare keyword in an object literal and opened by the quoted
+    // name: the two halves of the language now agree about what the field is
+    // called, which is the whole of the defect.
+    let opened = value(&mut session, "REVEAL 'password' FROM team:'github';");
+    let Value::Object(fields) = opened else {
+        panic!("REVEAL answers with an object")
+    };
+    assert_eq!(
+        fields.get("password"),
+        Some(&Value::String(PLANTED.to_owned())),
+        "the field did not come back under the name it was declared with"
+    );
+
+    session
+        .run("ALTER TABLE team DROP FIELD 'password';")
+        .expect("a field that can be declared must be droppable");
+}
+
+/// The bare keyword is still refused, and a statement missing its name still
+/// says so.
+///
+/// Both halves matter. The first keeps Q-417 open rather than quietly answered:
+/// accepting a bare keyword here would widen every field declaration in the
+/// language, which is a decision this change deliberately does not take. The
+/// second is the property that makes the change safe — a quoted name introduces
+/// no ambiguity precisely because a *missing* name is not a string, so no
+/// malformed statement starts parsing as a valid one.
+#[test]
+fn a_bare_keyword_is_still_not_a_field_name_and_a_missing_name_still_says_so() {
+    let store = store();
+    let mut session = holding(&store);
+
+    let bare = refusal(
+        &mut session,
+        "DEFINE FIELD password ON team TYPE string SECRET;",
+    );
+    assert!(
+        bare.contains("a name"),
+        "the bare keyword was accepted or refused for another reason: {bare}"
+    );
+
+    let missing = refusal(&mut session, "ALTER TABLE team ADD FIELD TYPE string;");
+    assert!(
+        missing.contains("a name"),
+        "a field declaration with no name did not report a missing name: {missing}"
+    );
 }

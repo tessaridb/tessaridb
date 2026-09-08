@@ -421,7 +421,7 @@ impl Parser<'_> {
         self.name()
     }
 
-    fn quoted_field_name(&mut self) -> Result<(String, Span)> {
+    pub(super) fn quoted_field_name(&mut self) -> Result<(String, Span)> {
         let Some(Spanned {
             token: Token::Str(text),
             span,

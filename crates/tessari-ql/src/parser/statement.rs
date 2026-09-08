@@ -258,7 +258,11 @@ impl Parser<'_> {
         let mut fields = Vec::new();
         if !self.eat_punct(Punct::Star) {
             loop {
-                fields.push(self.name()?);
+                // The same reader the declaration uses. A field that can only be
+                // declared by quoting its name has to be openable by quoting it
+                // too, or `REVEAL` is the one statement that cannot name what
+                // `DEFINE FIELD` just created.
+                fields.push(self.declared_field_name()?);
                 if !self.eat_punct(Punct::Comma) {
                     break;
                 }
@@ -1173,18 +1177,18 @@ impl Parser<'_> {
             // to something inside it.
             if self.eat_word("add") {
                 self.expect_keyword(Keyword::Field, "`FIELD` and the field to add")?;
-                let name = self.name()?;
+                let name = self.declared_field_name()?;
                 return self.field_declaration(name, table, false);
             }
             if self.eat_keyword(Keyword::Alter) {
                 self.expect_keyword(Keyword::Field, "`FIELD` and the field to change")?;
-                let name = self.name()?;
+                let name = self.declared_field_name()?;
                 return self.field_declaration(name, table, true);
             }
             if self.eat_keyword(Keyword::Drop) {
                 self.expect_keyword(Keyword::Field, "`FIELD` and the field to remove")?;
                 return Ok(StatementKind::DropField {
-                    name: self.name()?,
+                    name: self.declared_field_name()?,
                     table,
                 });
             }
@@ -1257,11 +1261,39 @@ impl Parser<'_> {
         Ok(filter)
     }
 
+    /// The name of a field being declared, altered or dropped.
+    ///
+    /// A field name in an object literal already reads with `field_name()`,
+    /// which takes a quoted name — so `{ 'password': '…' }` writes a field that
+    /// `DEFINE FIELD password …` could not declare, because `PASSWORD` is a
+    /// keyword and `name()` does not accept one. The write worked and the
+    /// declaration did not, and quoting did not help either: the two halves of
+    /// the language disagreed about what a field may be called.
+    ///
+    /// This accepts the quoted form here too, and **only** the quoted form. A
+    /// bare keyword is still refused, which keeps the wider question — whether
+    /// `DEFINE FIELD password` should read as a name — open and separate
+    /// (Q-417). The narrow version is worth having on its own because a string
+    /// literal in a name position cannot be anything else: no existing statement
+    /// changes meaning, only refusals become parses, and a statement that forgot
+    /// its name is still missing a name, because a missing name is not a string.
+    ///
+    /// It matters most in a vault, which is strict, so a field nobody can
+    /// declare is a field a vault cannot hold — and `password` is the first
+    /// thing a secret store will be asked for.
+    fn declared_field_name(&mut self) -> Result<Name> {
+        if matches!(self.peek(), Some(Token::Str(_))) {
+            let (text, span) = self.quoted_field_name()?;
+            return Ok(Name { text, span });
+        }
+        self.name()
+    }
+
     /// `DEFINE FIELD email ON users TYPE string`
     fn define_field(&mut self) -> Result<StatementKind> {
         self.advance();
         let if_not_exists = self.eat_if_not_exists()?;
-        let name = self.name()?;
+        let name = self.declared_field_name()?;
         self.expect_keyword(Keyword::On, "`ON` and the table the field is on")?;
         let table = self.table_ref()?;
         self.declaration_tail(name, table, if_not_exists, false)

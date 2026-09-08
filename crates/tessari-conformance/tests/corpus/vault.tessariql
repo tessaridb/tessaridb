@@ -43,6 +43,13 @@
 # parse while `{ password: '…' }` in a record does. A vault is the one place
 # somebody will certainly try the first spelling. That asymmetry is a real defect
 # and is recorded rather than worked around silently.
+#
+# Half of it closed in W131: the **quoted** name is accepted in a declaration, so
+# a field called `password` can exist in a vault — see the three cases at the end
+# of this file. Before that no spelling worked at all, and a vault is strict, so
+# the design's own example was impossible rather than awkward. The bare keyword
+# is still refused, because accepting one there widens every field declaration in
+# the language (Q-417).
 
 --- case: the tenancy this file works in
 DEFINE NAMESPACE prod;
@@ -232,3 +239,16 @@ ADD RECIPIENT 'ops' TO staff:'1' KEY 0x00;
 --- case: nor any to report
 INFO FOR RECIPIENTS OF staff:'1';
 --- expect: error Unknown
+
+--- case: a field whose name is a keyword is declared by quoting it
+DEFINE VAULT logins;
+DEFINE FIELD 'password' ON logins TYPE string SECRET;
+--- expect: ok
+
+--- case: and a record writes it the way an object literal always could
+CREATE logins:'github' = { password: 'hunter2' };
+--- expect: ok
+
+--- case: and REVEAL opens it under the name it was declared with
+REVEAL 'password' FROM logins:'github';
+--- expect: ok
