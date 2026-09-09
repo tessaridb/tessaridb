@@ -44,6 +44,7 @@ mod retention;
 mod samples;
 mod series;
 mod span;
+mod spread;
 mod workload;
 
 /// A running total in front of the system allocator, in the counting build only.

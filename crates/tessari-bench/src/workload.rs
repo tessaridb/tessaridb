@@ -155,6 +155,11 @@ pub const ALL: &[Workload] = &[
         run: crate::series::series,
     },
     Workload {
+        name: "spread",
+        about: "the same writes into one table and across a hundred, alternating write by write — whether the record count's disk cost is its own version chain or the store",
+        run: crate::spread::spread,
+    },
+    Workload {
         name: "queue",
         about: "what a claim costs behind a prefix of held and of dead-lettered records, and a drain taken one at a time against one taken in a batch",
         run: crate::queue::queue,
