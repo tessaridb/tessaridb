@@ -40,6 +40,7 @@ mod memory;
 mod paging;
 mod queue;
 mod ranges;
+mod retention;
 mod samples;
 mod span;
 mod workload;

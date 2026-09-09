@@ -145,6 +145,11 @@ pub const ALL: &[Workload] = &[
         run: crate::span::span,
     },
     Workload {
+        name: "retention",
+        about: "the same window removed by a span and by a condition, at four table sizes — whether the cost follows what is removed or what is kept",
+        run: crate::retention::retention,
+    },
+    Workload {
         name: "queue",
         about: "what a claim costs behind a prefix of held and of dead-lettered records, and a drain taken one at a time against one taken in a batch",
         run: crate::queue::queue,
