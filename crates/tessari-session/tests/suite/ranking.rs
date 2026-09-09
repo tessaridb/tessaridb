@@ -460,3 +460,55 @@ fn a_projection_dropping_the_searched_field_does_not_change_the_order() {
         vec![RecordId::Int(1), RecordId::Int(2)],
     );
 }
+
+/// A record with no text in the searched field scores zero, not `NONE`.
+///
+/// The twin of `a_record_with_no_text_in_the_field_answers_no_marks_rather_than_none`
+/// in `highlighting.rs`, and it exists for the same reason: on a mixed
+/// collection an absence that answered `NONE` would give the projection two
+/// shapes, and — worse — would reorder the read. The comparison a `DESC` order
+/// makes between an absence and a zero is not the comparison it makes between
+/// two zeroes, so a record that merely lacks the field could sort above records
+/// that were searched and found wanting.
+///
+/// **What this pins, and what it honestly does not.** `Function::SearchScore` is
+/// listed by `Function::answers_for_absence`, and that membership is
+/// unobservable (Q-388): `evaluate` intercepts the function in its
+/// `ExprKind::Call` arm and returns before `call`, and `call` is the only reader
+/// of the list. So this test cannot watch the list. It watches the **answer the
+/// list exists to protect** — if the function were ever routed back through
+/// `call` and the entry had been dropped in the meantime, `call` would
+/// short-circuit to `Value::None` and this assertion would fail. That is the
+/// consequence, not the mechanism, and claiming otherwise would be claiming
+/// coverage the run does not support.
+#[test]
+fn a_record_with_no_text_in_the_field_scores_zero_rather_than_none() {
+    let store = store();
+    let mut session = searchable(&store);
+    write(&mut session, 1, "a note mentioning locks once");
+    // No `body` at all, which the fixture's other records cannot express.
+    session
+        .run("CREATE notes:2 = { title: 'this record carries no body' };")
+        .unwrap();
+
+    let outcomes = session
+        .run(
+            "SELECT search::score(body, 'locks') AS relevance \
+             FROM notes ORDER BY relevance DESC;",
+        )
+        .unwrap();
+    let records = outcomes[0].records().unwrap();
+    assert_eq!(records.len(), 2);
+
+    assert_eq!(
+        records[0].0,
+        RecordId::Int(1),
+        "the record that matched did not come first: {records:?}"
+    );
+    assert!(number(field(&records[0].1, "relevance")) > 0.0);
+    assert_eq!(
+        number(field(&records[1].1, "relevance")),
+        0.0,
+        "an absent field scored something other than zero",
+    );
+}

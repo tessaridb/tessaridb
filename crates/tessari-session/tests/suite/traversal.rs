@@ -251,3 +251,45 @@ fn a_chain_walked_backwards_asks_the_mirrored_question() {
         users(&[1])
     );
 }
+
+/// An edge created inside this transaction is followed by this transaction.
+///
+/// The traversal is an index read, and W188 found the vector walk answering from
+/// a graph that could not contain the record the reading transaction had just
+/// written. Entries are derived at commit, so the question is the same one here
+/// — and the answer must be, too: a `RELATE` and the walk that follows it are
+/// routinely written in one script, and a traversal that could not see its own
+/// edge would answer a short set with nothing in an error state.
+///
+/// Unlike the vector walk there is **no scan to fall back to** — an edge table's
+/// direction indexes are how edges are followed, not an optimisation over
+/// following them — so if this ever regresses the fix is not a refusal. That is
+/// why the case is worth pinning rather than assuming.
+#[test]
+fn an_edge_written_in_this_transaction_is_followed_by_it() {
+    let store = store();
+    let mut session = ready(&store);
+
+    let outcomes = session
+        .run(
+            "BEGIN;\n\
+             RELATE users:5->follows->users:3;\n\
+             SELECT * FROM users:5->follows->users;\n\
+             COMMIT;",
+        )
+        .unwrap();
+    // 0 is `BEGIN`, 1 is the `RELATE`, 2 is the read.
+    let mut found: Vec<RecordId> = outcomes[2]
+        .records()
+        .unwrap()
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect();
+    found.sort();
+
+    assert_eq!(
+        found,
+        users(&[3]),
+        "the edge this transaction wrote was not followed by it: {found:?}"
+    );
+}

@@ -2011,10 +2011,16 @@ impl Session<'_> {
 
     /// Walk a vector index, when there is one that answers this read.
     ///
-    /// `None` is the scan, which is exact, and there are four ways to reach it:
+    /// `None` is the scan, which is exact, and there are five ways to reach it:
     /// no index on the path, one built for another distance, a query that is not
-    /// a vector, and — the one that is about the caller rather than the store —
-    /// a field this caller's grant does not contain.
+    /// a vector, a field this caller's grant does not contain, and a table this
+    /// transaction has written to without committing.
+    ///
+    /// A sixth is made one level up and is not repeated here: `index_on_path`
+    /// refuses every index while `Transaction::indexes_are_current` is false, so
+    /// a reader at an older snapshot never reaches the graph. Entries carry no
+    /// version, so being answered from a newer graph is not approximation, it is
+    /// reading someone else's present.
     ///
     /// That last refusal is the same one [`Evaluator::index_serving_place`],
     /// [`Evaluator::index_serving_score`] and [`Evaluator::index_serving_order`]
@@ -2026,6 +2032,16 @@ impl Session<'_> {
     /// because the `none` key then re-sorts those records into identity order:
     /// what arrives looks like an ordinary unordered result and is a statement
     /// of **membership** about a hidden field, handed over in a single read.
+    ///
+    /// The uncommitted-write refusal was the last of the four and was added in
+    /// W188 for a different reason than the others. `APPROXIMATE` is a contract
+    /// the caller opted into, and under it "the graph missed it" is an answer
+    /// this walk is allowed to give. "This transaction cannot see its own write"
+    /// is not: entries are derived at commit, so a record written here has none,
+    /// and the graph answers as though it did not exist — measured as an exact
+    /// read of `[99, 39, 38]` against an approximate `[39, 38, 37]` for the same
+    /// statement in the same transaction. Isolation is not what `APPROXIMATE`
+    /// relaxes.
     fn walk(
         &self,
         transaction: &mut Transaction<'_>,
@@ -2054,6 +2070,12 @@ impl Session<'_> {
             .as_ref()
             .is_some_and(|fields| !fields.contains(wanted.path.root()))
         {
+            return Ok(None);
+        }
+        // The graph is built from committed entries, so a record this
+        // transaction has written is not in it and would be missing from this
+        // transaction's own read.
+        if transaction.writes_in(context.namespace, context.database, table) {
             return Ok(None);
         }
         let mut rows = Vec::new();

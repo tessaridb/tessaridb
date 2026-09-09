@@ -115,6 +115,7 @@ mod vector_index;
 mod vector_reads;
 mod vector_recall;
 mod vector_store;
+mod vector_walk_freshness;
 mod vector_width;
 mod views;
 mod windows;
