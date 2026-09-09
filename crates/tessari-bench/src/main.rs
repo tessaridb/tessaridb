@@ -42,6 +42,7 @@ mod queue;
 mod ranges;
 mod retention;
 mod samples;
+mod series;
 mod span;
 mod workload;
 

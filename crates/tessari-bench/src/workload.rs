@@ -150,6 +150,11 @@ pub const ALL: &[Workload] = &[
         run: crate::retention::retention,
     },
     Workload {
+        name: "series",
+        about: "the same window removed by a declared RETAIN clause and by a condition, at four table sizes — whether the clause costs what it removes or what the table keeps",
+        run: crate::series::series,
+    },
+    Workload {
         name: "queue",
         about: "what a claim costs behind a prefix of held and of dead-lettered records, and a drain taken one at a time against one taken in a batch",
         run: crate::queue::queue,
