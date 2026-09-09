@@ -341,3 +341,57 @@ fn a_table_below_the_floor_plans_exactly_as_it_did_before() {
         .run("SELECT * FROM small WHERE n >= 2 USING INDEX by_n;")
         .unwrap();
 }
+
+// ── What the guard does not reach (W171, for Q-453) ────────────────────────
+//
+// Q-453 asks whether the guard can be wrong above the floor, and offers doing
+// nothing as one option. That option was a stance nobody had measured. Measuring
+// it found something the question did not anticipate: in the ordering shapes
+// tried, the guard is not the reason the index goes unused, because it is never
+// asked. Candidates are enumerated from the *condition*, so a read with no
+// condition offers none and there is nothing for the guard to weigh — and a
+// declared ordered index therefore does not serve a bounded `ORDER BY` at all.
+//
+// That is a bigger gap than the one Q-453 is about, and it is a different one.
+// Recorded as Q-489 and pinned here so that closing it fails this test loudly
+// rather than passing quietly.
+
+#[test]
+fn a_bounded_ordering_does_not_use_a_declared_index_and_pays_the_whole_table() {
+    let backend = Counting::new();
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let mut session = ready(&store);
+
+    // Ten records wanted, in the order the index already stores them, from a
+    // table with an index on exactly that field and no condition to weigh.
+    backend.reset();
+    let (ordered, access) = answered(&mut session, "SELECT * FROM events ORDER BY n LIMIT 10;");
+    let ordered_rows = backend.rows();
+    assert_eq!(ordered.len(), 10);
+    assert_eq!(
+        access,
+        AccessPath::Scan,
+        "if this now reports Index the gap Q-489 records has been closed — \
+         update the question and this test together"
+    );
+
+    // The same ten, reached through the index, when a condition selective enough
+    // to survive the guard puts the index on the table in the first place.
+    backend.reset();
+    let (served, access) = answered(
+        &mut session,
+        "SELECT * FROM events WHERE n >= 3991 ORDER BY n LIMIT 10;",
+    );
+    let served_rows = backend.rows();
+    assert_eq!(access, AccessPath::Index);
+    assert_eq!(served.len(), 10);
+
+    // The cost of the gap, in the one unit that is a property of the store
+    // rather than of this machine.
+    assert!(
+        served_rows.saturating_mul(10) < ordered_rows,
+        "the unconditioned ordering handed back {ordered_rows} rows for ten records \
+         against {served_rows} through the index — if these are close, the ordering \
+         path has learned to use the index and this test is the thing to fix"
+    );
+}
