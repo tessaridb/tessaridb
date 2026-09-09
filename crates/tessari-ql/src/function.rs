@@ -3,10 +3,16 @@
 //! # What earns a place
 //!
 //! **A function is here when it cannot be expressed by what the language already
-//! has.** That is why there is no `array::contains` (`CONTAINS` says it), no
-//! `string::contains` (`LIKE '%x%'` says it), and no `is_none` (`= NONE` says
-//! it). The rule keeps the surface from growing by association and gives a
-//! reviewer one question to ask about any addition.
+//! has.** That is why there is no `array::contains` (`CONTAINS` says it) and no
+//! `is_none` (`= NONE` says it). The rule keeps the surface from growing by
+//! association and gives a reviewer one question to ask about any addition.
+//!
+//! `string::contains` was refused on the same grounds — `LIKE '%x%'` says it —
+//! and that holds for a **literal** needle only. A needle arriving as a value
+//! may carry `%` or `_`, and the escape that would fix it cannot be applied to
+//! text the statement has never seen, so the function was admitted and the
+//! specification records the reversal. This paragraph stands where the refusal
+//! did, because the refusal outlived the decision that reversed it.
 //!
 //! `array::last` is the clearest case for the rule rather than against it: a
 //! path takes a literal position, and there is no length to subtract from, so
