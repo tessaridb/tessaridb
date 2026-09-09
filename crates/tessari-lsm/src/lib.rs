@@ -27,6 +27,8 @@
 //! not by assertion. The default is the level a system of record needs.
 
 mod backend;
+#[cfg(test)]
+mod cache_filling_tests;
 mod error;
 mod options;
 #[cfg(test)]

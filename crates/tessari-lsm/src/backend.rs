@@ -194,6 +194,51 @@ impl LsmBackend {
         Ok(())
     }
 
+    /// Every engine counter, as the engine formats them.
+    ///
+    /// `pub(crate)` and used by one test: the counters are how a claim about the
+    /// block cache is checked without timing anything, and `enable_statistics()`
+    /// is already set in `database_options`. It is not on the public surface
+    /// because nothing outside this crate has asked for it, and a metrics
+    /// surface is a decision rather than a side effect of needing one counter.
+    #[cfg(test)]
+    pub(crate) fn statistics(&self) -> Option<String> {
+        self.database
+            .property_value(rocksdb::properties::OPTIONS_STATISTICS)
+            .ok()
+            .flatten()
+    }
+
+    /// Read a range, keeping its blocks or not.
+    ///
+    /// The two trait methods differ in exactly this one argument, so they share
+    /// a body: a sweep that answered differently from a scan would be a defect
+    /// nothing in the caller could see.
+    fn read_range(&self, request: &ScanRequest, caching: Caching) -> Result<Vec<(Key, Value)>> {
+        if request.range.is_provably_empty() {
+            return Ok(Vec::new());
+        }
+        let region = self.region(request.keyspace)?;
+        let mode = match request.direction {
+            ScanDirection::Forward => IteratorMode::Start,
+            ScanDirection::Reverse => IteratorMode::End,
+        };
+
+        let mut collected = Vec::new();
+        let limit = request.limit.unwrap_or(usize::MAX);
+        let iterator =
+            self.database
+                .iterator_cf_opt(region, read_options(&request.range, caching), mode);
+        for entry in iterator {
+            if collected.len() >= limit {
+                break;
+            }
+            let (key, value) = entry.map_err(|error| from_engine(&error))?;
+            collected.push((Key::new(key.into_vec()), Value::new(value.into_vec())));
+        }
+        Ok(collected)
+    }
+
     /// Flush everything buffered and hand the directory back.
     ///
     /// A clean close saves the work that recovery would otherwise redo.
@@ -239,28 +284,11 @@ impl KvBackend for LsmBackend {
     }
 
     fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
-        if request.range.is_provably_empty() {
-            return Ok(Vec::new());
-        }
-        let region = self.region(request.keyspace)?;
-        let mode = match request.direction {
-            ScanDirection::Forward => IteratorMode::Start,
-            ScanDirection::Reverse => IteratorMode::End,
-        };
+        self.read_range(request, Caching::Fill)
+    }
 
-        let mut collected = Vec::new();
-        let limit = request.limit.unwrap_or(usize::MAX);
-        let iterator = self
-            .database
-            .iterator_cf_opt(region, read_options(&request.range), mode);
-        for entry in iterator {
-            if collected.len() >= limit {
-                break;
-            }
-            let (key, value) = entry.map_err(|error| from_engine(&error))?;
-            collected.push((Key::new(key.into_vec()), Value::new(value.into_vec())));
-        }
-        Ok(collected)
+    fn sweep(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
+        self.read_range(request, Caching::Skip)
     }
 
     /// Advance an iterator over the range and count what it passes.
@@ -301,7 +329,7 @@ impl KvBackend for LsmBackend {
         let region = self.region(keyspace)?;
         let mut iterator = self
             .database
-            .raw_iterator_cf_opt(region, read_options(range));
+            .raw_iterator_cf_opt(region, read_options(range, Caching::Fill));
         // The read options carry both bounds, so the first key at or after the
         // lower one is where this lands and the upper one ends the walk.
         iterator.seek_to_first();
@@ -404,10 +432,29 @@ impl KvBackend for LsmBackend {
 /// are expressed by moving to the neighbouring key. Appending a zero byte gives
 /// the smallest key strictly greater than the original, which is what both an
 /// exclusive lower bound and an inclusive upper bound need.
-fn read_options(range: &KeyRange) -> ReadOptions {
+/// Whether a read's blocks are worth keeping.
+///
+/// Not a `bool`, because a `bool` at a call site says nothing about which way
+/// round it is — and the two callers of [`read_options`] differ only here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Caching {
+    /// Ordinary reads, whose blocks the next read is likely to want.
+    Fill,
+    /// A one-shot walk of a whole table, whose blocks nothing will ask for
+    /// again. Keeping them evicts the working set the store is serving.
+    Skip,
+}
+
+fn read_options(range: &KeyRange, caching: Caching) -> ReadOptions {
     use std::ops::Bound;
 
     let mut options = ReadOptions::default();
+    if caching == Caching::Skip {
+        // The engine's own guidance for a one-shot read: a scan that touches
+        // more blocks than the cache holds evicts the whole working set to hold
+        // data nothing will read again.
+        options.fill_cache(false);
+    }
     match range.start() {
         Bound::Included(key) => options.set_iterate_lower_bound(key.as_slice().to_vec()),
         Bound::Excluded(key) => options.set_iterate_lower_bound(successor(key)),

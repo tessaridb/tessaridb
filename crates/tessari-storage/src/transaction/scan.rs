@@ -44,6 +44,48 @@ impl Span<'_> {
 }
 use crate::error::Result;
 
+/// Whether a walk's blocks are worth keeping.
+///
+/// A read that serves a query wants its blocks cached, because the next query is
+/// likely to want them. A read that walks a whole table once to check or rebuild
+/// something does not: it touches every block, asks for none of them again, and a
+/// cache that keeps them has evicted what the store is actually serving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reading {
+    /// The ordinary case.
+    Serving,
+    /// A one-shot verification or build pass.
+    Sweep,
+}
+
+/// What one walk of a table is being asked for.
+///
+/// The four readers below differ only in these fields, and they travel together
+/// because a walk is one shape rather than four loose arguments — which is also
+/// what keeps the shared walk's signature readable as the set grows.
+#[derive(Debug, Clone, Copy)]
+struct Walk<'a> {
+    /// At least this many records, or every one there is.
+    bound: Option<usize>,
+    /// Start past this record's own key.
+    anchor: Option<&'a RecordId>,
+    /// Stop at this identity span.
+    span: Option<Span<'a>>,
+    /// Whether the blocks this walk reads are worth keeping.
+    reading: Reading,
+}
+
+impl Default for Walk<'_> {
+    fn default() -> Self {
+        Self {
+            bound: None,
+            anchor: None,
+            span: None,
+            reading: Reading::Serving,
+        }
+    }
+}
+
 impl Transaction<'_> {
     /// Every live record of one table, as of this transaction's snapshot.
     ///
@@ -68,7 +110,38 @@ impl Transaction<'_> {
         database: DatabaseId,
         table: TableId,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
-        self.table_records(namespace, database, table, None, None)
+        self.table_records(namespace, database, table, Walk::default())
+    }
+
+    /// Every live record of one table, for a pass that will not read them again.
+    ///
+    /// Answers exactly what [`Self::scan_table`] answers. The difference is that
+    /// the backend is told not to keep the blocks, because the reads that walk a
+    /// whole table to check or rebuild something — an index build, the
+    /// retroactive tightening pass, `CHECK TABLE` — touch every block once and
+    /// ask for none of them again. A cache that keeps them has evicted the
+    /// working set the store is serving, and serving latency degrades for
+    /// minutes after the statement returned with nothing to point at.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or stored bytes cannot be
+    /// decoded.
+    pub fn sweep_table(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+    ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        self.table_records(
+            namespace,
+            database,
+            table,
+            Walk {
+                reading: Reading::Sweep,
+                ..Walk::default()
+            },
+        )
     }
 
     /// The live records of one table whose identity sorts after `anchor`.
@@ -100,7 +173,16 @@ impl Transaction<'_> {
         anchor: &RecordId,
         bound: Option<usize>,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
-        self.table_records(namespace, database, table, bound, Some(anchor))
+        self.table_records(
+            namespace,
+            database,
+            table,
+            Walk {
+                bound,
+                anchor: Some(anchor),
+                ..Walk::default()
+            },
+        )
     }
 
     /// The first `wanted` live records of one table, in key order.
@@ -147,7 +229,15 @@ impl Transaction<'_> {
         table: TableId,
         wanted: usize,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
-        self.table_records(namespace, database, table, Some(wanted), None)
+        self.table_records(
+            namespace,
+            database,
+            table,
+            Walk {
+                bound: Some(wanted),
+                ..Walk::default()
+            },
+        )
     }
 
     /// The live records of one table whose identity falls in a span.
@@ -183,13 +273,14 @@ impl Transaction<'_> {
             namespace,
             database,
             table,
-            None,
-            None,
-            Some(Span {
-                lower,
-                upper,
-                inclusive,
-            }),
+            Walk {
+                span: Some(Span {
+                    lower,
+                    upper,
+                    inclusive,
+                }),
+                ..Walk::default()
+            },
         )
     }
 
@@ -200,10 +291,9 @@ impl Transaction<'_> {
         namespace: NamespaceId,
         database: DatabaseId,
         table: TableId,
-        bound: Option<usize>,
-        anchor: Option<&RecordId>,
+        walk: Walk<'_>,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
-        self.records_of(namespace, database, table, bound, anchor, None)
+        self.records_of(namespace, database, table, walk)
     }
 
     /// The walk all four of the readers above share.
@@ -212,10 +302,14 @@ impl Transaction<'_> {
         namespace: NamespaceId,
         database: DatabaseId,
         table: TableId,
-        bound: Option<usize>,
-        anchor: Option<&RecordId>,
-        span: Option<Span<'_>>,
+        walk: Walk<'_>,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        let Walk {
+            bound,
+            anchor,
+            span,
+            reading,
+        } = walk;
         let prefix = RecordKey::table_prefix(namespace, database, table);
         let of_this_table = |address: &RecordAddress| {
             address.namespace == namespace && address.database == database && address.table == table
@@ -283,7 +377,10 @@ impl Transaction<'_> {
                         .clamp(1, RANGE_SCAN_BATCH_ENTRIES)
                 }),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = match reading {
+                Reading::Serving => self.store.backend().scan(&request)?,
+                Reading::Sweep => self.store.backend().sweep(&request)?,
+            };
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             let entries = batch.len();
             for (id, value) in self.settled(batch, &mut resolved)? {

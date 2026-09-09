@@ -288,7 +288,7 @@ fn build(
     pending.moved.insert(address, Delta::default());
     pending.terms.insert(address, BTreeMap::new());
     let mut rows: BTreeMap<RecordId, Vec<u8>> = view
-        .scan_table(definition.namespace, definition.database, definition.table)?
+        .sweep_table(definition.namespace, definition.database, definition.table)?
         .into_iter()
         .collect();
 

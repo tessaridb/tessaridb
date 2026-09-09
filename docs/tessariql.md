@@ -1824,6 +1824,15 @@ write.
 It reads the whole table, which is the only truthful way to answer, so it is a
 statement an operator runs rather than something the store decides to do.
 
+**It does not cost the node its warm cache.** A read that walks a whole table
+touches every block once and asks for none of them again, so caching those blocks
+would evict the working set the store is actually serving — and serving latency
+would degrade for minutes after the statement returned, with nothing to point at.
+`CHECK TABLE` reads without keeping what it reads, and so do the other passes
+that walk a table whole: building or rebuilding an index, and the retroactive
+check a tightening declaration runs. The statement still costs what reading a
+table costs; what it no longer costs is everybody else's next read.
+
 Checking a table nobody declared is refused rather than answered with an empty
 list: an empty answer is indistinguishable from a clean table, so a typo in the
 name would read as a clean bill of health.

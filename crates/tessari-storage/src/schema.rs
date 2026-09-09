@@ -472,7 +472,7 @@ pub fn violations(
         return Ok(Vec::new());
     }
     let mut found = Vec::new();
-    for (id, payload) in view.scan_table(namespace, database, table)? {
+    for (id, payload) in view.sweep_table(namespace, database, table)? {
         let Some(refusal) = check(&schema, &decode_payload(&payload)?, &id) else {
             continue;
         };
@@ -634,7 +634,7 @@ fn rows_after(
     address: &TableAddress,
 ) -> Result<Vec<(RecordId, Vec<u8>)>> {
     let mut rows: BTreeMap<RecordId, Vec<u8>> = view
-        .scan_table(address.0, address.1, address.2)?
+        .sweep_table(address.0, address.1, address.2)?
         .into_iter()
         .collect();
     for mutation in record.mutations() {
