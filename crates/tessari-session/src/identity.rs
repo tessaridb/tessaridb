@@ -137,13 +137,16 @@ pub(crate) fn verifies(password: &str, stored: &str) -> bool {
 /// # A set, because a rank was the defect
 ///
 /// This used to be one of five ordered classes, and the last arm of [`Needs::of`]
-/// assigned `Write` to **twenty-four** statements that are two different
-/// authorities: nine that change records, and fifteen that create and drop the
-/// containers records live in. So *writing in a namespace* and *creating
-/// databases in it* were one permission, and no repair that kept an ordering
-/// could separate them — put managing above writing and every manager writes,
-/// put it below and every writer manages, and there is no third position.
-/// Splitting that arm is the whole of the owner's fourth rule.
+/// assigned `Write` to **twenty-six** statements that are three different
+/// authorities: nine that change records, fifteen that create and drop the
+/// containers records live in, and two — `DEFINE NAMESPACE` and `DROP NAMESPACE`
+/// — whose subject is the store itself rather than anything inside it. Those are
+/// the counts of the arm **as it stood at the split**, not of the tree today: the
+/// `manage` arm has taken every table kind declared since. So *writing in a
+/// namespace* and *creating databases in it* were one permission, and no repair
+/// that kept an ordering could separate them — put managing above writing and
+/// every manager writes, put it below and every writer manages, and there is no
+/// third position. Splitting that arm is the whole of the owner's fourth rule.
 ///
 /// # Exhaustive, and the new way to be wrong
 ///
