@@ -273,3 +273,68 @@ fn the_same_records_in_a_plain_table_are_all_answered() {
     assert_eq!(labels, vec!["current".to_owned(), "stale".to_owned()]);
     assert_eq!(fixture.stored_entries(), 2);
 }
+
+#[test]
+fn the_pass_removes_what_the_floor_had_already_hidden_and_changes_no_answer() {
+    let fixture = Fixture::holding(
+        TableKind::Series(SeriesDeclaration { retain: RETAIN }),
+        IdentityKind::Uuid,
+    );
+    let before = fixture.labels();
+
+    let expired = fixture
+        .store
+        .expire_series(fixture.namespace, fixture.database, fixture.table)
+        .unwrap();
+    assert_eq!(expired.records, 1);
+    assert_eq!(expired.batches, 1);
+
+    // The point of the separation: the pass is about storage, so the answer it
+    // leaves behind is the answer that was already being given.
+    assert_eq!(fixture.labels(), before);
+
+    // And it is a removal through the ordinary write path, so it is a tombstone
+    // at a new version rather than bytes vanishing. The space comes back
+    // through the store's ordinary version reclamation, which is the same
+    // sentence the specification already writes about the retention statement.
+    assert_eq!(
+        fixture.stored_entries(),
+        3,
+        "two records and the tombstone the pass wrote over the stale one"
+    );
+}
+
+#[test]
+fn a_second_pass_removes_nothing() {
+    let fixture = Fixture::holding(
+        TableKind::Series(SeriesDeclaration { retain: RETAIN }),
+        IdentityKind::Uuid,
+    );
+    fixture
+        .store
+        .expire_series(fixture.namespace, fixture.database, fixture.table)
+        .unwrap();
+
+    // Without the tombstone check the pass would find the record it just
+    // removed — its identity is still below the floor — write another tombstone
+    // under it, and grow the table it was asked to shrink, for ever.
+    let again = fixture
+        .store
+        .expire_series(fixture.namespace, fixture.database, fixture.table)
+        .unwrap();
+    assert_eq!(again, tessari_storage::Expired::default());
+}
+
+#[test]
+fn the_pass_over_a_plain_table_removes_nothing() {
+    let fixture = Fixture::holding(TableKind::Table, IdentityKind::Uuid);
+
+    // The same two records, the same ages, no floor: a table that is not a
+    // series has nothing to expire, and the pass says so rather than reading it.
+    let expired = fixture
+        .store
+        .expire_series(fixture.namespace, fixture.database, fixture.table)
+        .unwrap();
+    assert_eq!(expired, tessari_storage::Expired::default());
+    assert_eq!(fixture.stored_entries(), 2);
+}

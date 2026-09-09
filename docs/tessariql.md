@@ -3623,6 +3623,20 @@ the answer.
 always is here — so a table declared `RETAIN 30d` describes itself as
 `RETAIN 720h`, which is the same duration written in the unit the literal keeps.
 
+**The removal itself is an ordinary write.** The pass that removes what the floor
+has hidden writes `DELETE`s through the same path any statement uses, so they are
+sequenced into the commit log, carried over the protocol, and visible on the
+change feed. Two things follow that are worth knowing before subscribing to one.
+A consumer of a series table **sees removals no client issued**. And it sees them
+**after** the records stopped being visible to a reader, because ageing out is
+not an event — nothing happens, time passes — so a consumer mirroring a series
+table holds rows the source no longer shows for as long as the pass lags.
+
+**The pass does not free space by itself**, for the same reason the retention
+statement does not: a removal is a tombstone at a new version, and the bytes come
+back through the store's ordinary version reclamation once no reader still needs
+them.
+
 `DROP SERIES` removes the table and everything in it, **including the records
 past the floor that reads had stopped answering with**. They were records the
 store still held; what the floor governed was the answer.

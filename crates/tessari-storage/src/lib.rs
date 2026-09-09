@@ -27,6 +27,7 @@ mod cardinality;
 mod catalog;
 mod covering;
 mod error;
+mod expiry;
 mod feed;
 mod graph;
 mod index;
@@ -55,6 +56,7 @@ pub use catalog::{
 // was measured under, and that relation is a decision this crate takes.
 pub use catalog::VaultRoot;
 pub use covering::MEASURED_RELATION;
+pub use expiry::Expired;
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
 pub use audit::{AuditDevice, AuditTrail, VaultRead, entries as audit_entries, reads_by};

@@ -54,7 +54,7 @@ impl Transaction<'_> {
     ///
     /// Cached per table for the transaction's life, so a walk over ten thousand
     /// records reads the catalog once.
-    pub(super) fn series_floor(
+    pub(crate) fn series_floor(
         &self,
         namespace: NamespaceId,
         table: TableId,
