@@ -8,12 +8,15 @@
 
 #![allow(clippy::panic, clippy::unwrap_used)]
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use tessari_encoding::{LogRecord, Mutation, RecordValue};
+use tessari_encoding::{LogRecord, Mutation, RecordValue, encode_payload};
 use tessari_kv::{Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value};
-use tessari_storage::{Error, RecordAddress, Store};
-use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
+use tessari_storage::{Catalog, EDGE_IN, EDGE_OUT, Error, RecordAddress, Store, TableShape};
+use tessari_types::{
+    DatabaseId, NamespaceId, RecordId, RecordRef, Sequence, TableId, Value as FieldValue,
+};
 
 /// How many records the log is read in one go. Larger than any test writes.
 const PLENTY: usize = 1024;
@@ -270,4 +273,89 @@ fn a_replica_that_applied_a_record_can_still_commit_of_its_own_accord() {
         2,
         "both paths left one log record each"
     );
+}
+
+#[test]
+fn a_replay_derives_the_adjacency_the_commit_derived() {
+    // Q-452. `adjacency.rs` opens by naming this failure as the reason it
+    // derives from the mutation rather than letting a caller write the entries:
+    // "a replica reaches its state by replaying that record ... the symptom
+    // would be a follower whose walks find nothing while the leader answers
+    // correctly, with nothing anywhere in an error state." The replay path
+    // reproduced that symptom by the other route, because it called two of the
+    // three `maintain` functions.
+    //
+    // The keyspace comparison that catches it has been here since the file was
+    // written and passed throughout, because the fixture above writes three
+    // plain records and no edge. So this case is the fixture and not the
+    // assertion: its own catalog, because the one above writes through a raw
+    // address with no tables in it at all.
+    let source_backend = backend();
+    let source = store_on(&source_backend);
+
+    let mut transaction = source.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").unwrap();
+    let database = catalog.create_database(namespace.id, "social").unwrap();
+    let people = catalog
+        .create_table(namespace.id, database.id, "person", TableShape::default())
+        .unwrap();
+    let edges = catalog
+        .create_table(namespace.id, database.id, "knows", TableShape::default())
+        .unwrap();
+    let graph = catalog
+        .create_graph(namespace.id, database.id, "social")
+        .unwrap();
+    catalog
+        .create_edge_kind(&graph, "knows", people.id, people.id, edges.id)
+        .unwrap();
+    transaction.commit().unwrap();
+
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        EDGE_OUT.to_owned(),
+        FieldValue::Record(RecordRef::new(people.id, RecordId::from("ana"))),
+    );
+    fields.insert(
+        EDGE_IN.to_owned(),
+        FieldValue::Record(RecordRef::new(people.id, RecordId::from("ben"))),
+    );
+    let before = dump(&source_backend, Keyspace::INDEX).len();
+    let mut transaction = source.begin().unwrap();
+    transaction.put(
+        RecordAddress::new(namespace.id, database.id, edges.id, RecordId::from("e1")),
+        encode_payload(&FieldValue::Object(fields)).into_bytes(),
+    );
+    transaction.commit().unwrap();
+
+    // The leader derived an entry at each end of the edge. Checked rather than
+    // assumed: if the commit path derived nothing, the comparison below would
+    // pass by finding two stores that are equally empty, which is the way this
+    // case could silently stop testing anything.
+    assert_eq!(
+        dump(&source_backend, Keyspace::INDEX).len(),
+        before + 2,
+        "the commit path derived no adjacency, so this case cannot test the replay"
+    );
+
+    let replica_backend = backend();
+    let replica = store_on(&replica_backend);
+    for (sequence, record) in source.log_records(Sequence::ZERO, PLENTY).unwrap() {
+        replica.apply_record(sequence, &record).unwrap();
+    }
+
+    let node_identity = Key::from(vec![0x38]);
+    for keyspace in Keyspace::ALL {
+        let derived = |backend: &Arc<dyn KvBackend>| {
+            dump(backend, *keyspace)
+                .into_iter()
+                .filter(|(key, _)| *key != node_identity)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            derived(&source_backend),
+            derived(&replica_backend),
+            "keyspace {keyspace} differs after replaying a log that carries an edge"
+        );
+    }
 }

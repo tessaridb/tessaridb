@@ -466,6 +466,19 @@ impl Store {
         let batch = crate::index::maintain(self, record, crate::log::apply_batch(at, record))?;
         // Derived here as well as in the commit, because that is the whole
         // reason it is derived from the record: a follower that skipped this
+        // would carry the edges and no way to walk them, and its walks would
+        // answer nothing while the leader answered correctly — the symptom
+        // `crate::adjacency`'s own header names as the reason it derives from
+        // the mutation at all. It skipped it anyway, from W148 until W185,
+        // because the replay called two of these three and nothing compared a
+        // replica that held an edge (Q-452).
+        //
+        // The order matches the commit path deliberately: two paths that build
+        // one batch in two orders are a difference waiting to become a
+        // divergence nobody can explain.
+        let batch = crate::adjacency::maintain(self, record, batch)?;
+        // Derived here as well as in the commit, because that is the whole
+        // reason it is derived from the record: a follower that skipped this
         // would carry the records and none of the counts, and its planner would
         // then choose a different access path for the same query.
         let batch = crate::cardinality::maintain(self, record, batch, at)?;
