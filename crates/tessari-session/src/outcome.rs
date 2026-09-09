@@ -340,6 +340,25 @@ pub enum Note {
         /// The ceiling, which is also how many records it held.
         rows: u64,
     },
+    /// A held read is most of the way to the ceiling that will refuse it.
+    ///
+    /// A view naming no `LIMIT` runs under the ceiling every held read runs
+    /// under, and past it the read is refused rather than shortened. That is the
+    /// right failure and it arrives with no warning: a view sitting just below
+    /// the line reads perfectly today and stops working on an ordinary week's
+    /// growth, with nothing having said so.
+    ///
+    /// Unlike every other note here, this one reports a **state** rather than
+    /// something that happened during the read — so it fires on every read while
+    /// the condition holds. That is deliberate: the condition is persistent, and
+    /// a warning that appeared once and then went quiet would be worse than
+    /// none.
+    NearingCeiling {
+        /// How many records the read held.
+        rows: u64,
+        /// The ceiling it is approaching, past which the read is refused.
+        most: u64,
+    },
 }
 
 impl Note {
@@ -352,6 +371,7 @@ impl Note {
             Self::ComparedAcrossKinds { .. } => "compared-across-kinds",
             Self::CursorWalked => "cursor-walked",
             Self::SubqueryCeiling { .. } => "subquery-ceiling",
+            Self::NearingCeiling { .. } => "nearing-ceiling",
         }
     }
 
@@ -376,6 +396,10 @@ impl Note {
             Self::SubqueryCeiling { rows } => format!(
                 "the materialised source reached its ceiling of {rows}, \
                  so this answers about a prefix of what it would hold unbounded",
+            ),
+            Self::NearingCeiling { rows, most } => format!(
+                "this held read holds {rows} records of the {most} it may hold, \
+                 past which it is refused rather than shortened",
             ),
         }
     }

@@ -5297,6 +5297,25 @@ DEFINE VIEW recent_signups AS
   SELECT * FROM users WHERE created > time::now() - 7d ORDER BY created DESC LIMIT 100;
 ```
 
+**You are told before you are refused.** Past **8 000** records — four fifths of
+the ceiling — a view raises the note `nearing-ceiling` (§7b′) on every read,
+naming what it holds and what it may hold. It is the one note in this store that
+reports a *state* rather than something that happened during the read, so it does
+not go quiet after the first read: the condition is persistent, and so is the
+warning. Two thousand records of headroom is the point of the number — a view
+nine hundred short of the line reads perfectly today and stops working on an
+ordinary week's growth, and a warning that arrives with the refusal is not a
+warning.
+
+**A view takes no parameters.** `DEFINE VIEW recent(days) AS … $days` is the
+obvious next thing to ask for, and it is not a view: it is a function whose body
+is a read. The reason it is refused rather than added is that the two readings
+are different features that look identical — a value bound once when the view is
+defined is frozen text, and a value bound when the view is read is a function —
+and a store that stored either under `DEFINE VIEW` could not tell you which one
+you had. The day somebody changes the value is the day it matters. When the
+language gains a way to define a function, a parameterised read belongs there.
+
 **A view is read through its own projection.** `DEFINE VIEW roster AS SELECT
 name, team FROM staff` answers two fields, so `SELECT * FROM roster` answers two
 fields and a condition written outside the view can only ask about those two.
@@ -5704,7 +5723,7 @@ note gets exactly the records it would have got before notes existed. The `notes
 key is absent when there is nothing to say, which is almost always — a note is
 worth reading because it is rare.
 
-There are five today:
+There are six today:
 
 | kind | what happened |
 |---|---|
@@ -5713,6 +5732,7 @@ There are five today:
 | `subquery-ceiling` | a materialised source reached the `LIMIT` it stated, so the outer statement asked its question of a prefix |
 | `compared-across-kinds` | the read compared values of two different kinds — a number against the text of one, say — so it answered about the records whose kinds happened to line up |
 | `cursor-walked` | an `AFTER` page was reached by reading the records rather than seeking to the anchor, so it cost what the read costs and not what the page costs (§5, *Resuming a page from a record*) |
+| `nearing-ceiling` | a held read is four fifths of the way to the ceiling that will refuse it, so a view reading fine today stops working as the table grows (§6d) |
 
 **`fell-back` fires on an index that declined, never on a table that has none.**
 A bounded ordered read over an unindexed table is the most ordinary read in the
@@ -5732,6 +5752,16 @@ written rather than a mistake.
 The note names a **pair of kinds, once**. A comparison runs per record, so a read
 over a million mixed records has one thing to say and not a million; and the pair
 reads the same way whichever side of the `=` each half was written on.
+
+**`nearing-ceiling` reports a state and therefore repeats.** Every other note
+here says what happened during one read, so it fires when it happens and is
+silent otherwise. This one says where the store *is*: a view four fifths of the
+way to the ceiling is over the line on every read until somebody bounds it or the
+table shrinks, and a warning that appeared once and then went quiet would be
+worse than none — it would read as something that had passed. It fires only on a
+read running under the ceiling, so a view that named its own `LIMIT` never sees
+it; that view is warned about its own bound by `subquery-ceiling` instead, which
+is a different sentence about a different number.
 
 **`cursor-walked` is about cost and never about the records.** A page that
 sought and a page that walked are the same records in the same order; only the

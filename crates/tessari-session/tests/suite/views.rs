@@ -29,7 +29,7 @@
 use std::sync::Arc;
 
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_session::{Outcome, Session};
+use tessari_session::{Note, Outcome, Session};
 use tessari_storage::Store;
 use tessari_types::Value;
 
@@ -59,6 +59,14 @@ fn peopled(store: &Store) -> Session<'_> {
 /// One statement's outcome.
 fn run(session: &mut Session<'_>, script: &str) -> Outcome {
     session.run(script).unwrap().pop().unwrap()
+}
+
+/// The notes one read raised.
+fn notes(session: &mut Session<'_>, script: &str) -> Vec<Note> {
+    match run(session, script) {
+        Outcome::Records { notes, .. } => notes,
+        other => panic!("a read answered with {other:?}"),
+    }
 }
 
 /// The refusal one statement raises.
@@ -324,6 +332,71 @@ fn a_view_with_no_limit_past_the_ceiling_is_refused_rather_than_shortened() {
         identities(&run(&mut session, "SELECT * FROM first_ten;")).len(),
         10,
         "a view naming its own bound was refused"
+    );
+}
+
+#[test]
+fn a_view_most_of_the_way_to_the_ceiling_says_so_before_it_is_refused() {
+    // The other half of the paragraph above. A view is refused past the ceiling,
+    // which is the right failure and arrives with no warning: a view just under
+    // the line reads perfectly today and stops working on a week's growth. This
+    // is the warning, and the three cases are asserted against one fixture
+    // because the fixture is the expensive part.
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE TABLE wide SCHEMALESS;",
+        )
+        .unwrap();
+    // Four fifths of the ceiling exactly, which is the first count that is over
+    // the line — so this also pins where the line is rather than only that there
+    // is one.
+    const HELD: usize = 8_000;
+    let mut script = String::new();
+    for n in 1..=HELD {
+        script.push_str(&format!("CREATE wide:{n} = {{ n: {n} }};\n"));
+    }
+    session.run(&script).unwrap();
+
+    session
+        .run("DEFINE VIEW everything AS SELECT * FROM wide;")
+        .unwrap();
+    assert_eq!(
+        notes(&mut session, "SELECT * FROM everything;"),
+        vec![Note::NearingCeiling {
+            rows: 8_000,
+            most: 10_000
+        }],
+        "a view four fifths of the way to the ceiling said nothing"
+    );
+
+    // A view naming its own bound runs under no ceiling at all, so telling its
+    // author about one would send them to fix something that does not apply to
+    // them.
+    session
+        .run("DEFINE VIEW first_hundred AS SELECT * FROM wide LIMIT 100;")
+        .unwrap();
+    // It raises `subquery-ceiling` instead, and correctly: it filled the bound
+    // its own author wrote, which is the neighbouring note's whole subject. What
+    // it must not raise is this one.
+    assert_eq!(
+        notes(&mut session, "SELECT * FROM first_hundred;"),
+        vec![Note::SubqueryCeiling { rows: 100 }],
+        "a view that bounded itself was warned about a ceiling it does not run under"
+    );
+
+    // And a view with room left says nothing, which is what stops this note
+    // from being one that always fires.
+    session
+        .run("DEFINE VIEW hardly_any AS SELECT * FROM wide WHERE n < 10;")
+        .unwrap();
+    assert_eq!(
+        notes(&mut session, "SELECT * FROM hardly_any;"),
+        vec![],
+        "a view with two thousand records of headroom raised the warning anyway"
     );
 }
 

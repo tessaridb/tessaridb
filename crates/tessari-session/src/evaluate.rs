@@ -1219,11 +1219,20 @@ impl Session<'_> {
                 // **refused**, never truncated, so a view over a growing table
                 // fails in a way somebody can see rather than answering a prefix
                 // that looks whole.
-                let inner = self.read(transaction, read, within, Ceiling::over(read))?;
+                let ceiling = Ceiling::over(read);
+                let inner = self.read(transaction, read, within, ceiling)?;
                 reporting.collected.extend(inner.notes);
                 reporting
                     .collected
                     .extend(ceiling_reached(read, inner.records.len()));
+                // The ceiling the author did not write, approached rather than
+                // reached. Only a read running under one is asked — a view
+                // naming its own `LIMIT` runs under none, and a note telling its
+                // author about a ceiling that does not apply to them would send
+                // them to fix something that is not there.
+                reporting
+                    .collected
+                    .extend(ceiling.and_then(|ceiling| ceiling.nearing(inner.records.len())));
                 let (found, plan) = (inner.records, Plan::new(AccessPath::Materialised));
                 let Some(condition) = condition else {
                     return Ok((Prepared::Held(found, plan), Searched::default()));
