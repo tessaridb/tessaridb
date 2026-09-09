@@ -51,6 +51,8 @@ const FIELD_VIEW: &str = "view";
 const FIELD_READ: &str = "read";
 const FIELD_TIMEOUT: &str = "timeout";
 const FIELD_ATTEMPTS: &str = "attempts";
+const FIELD_SERIES: &str = "series";
+const FIELD_RETAIN: &str = "retain";
 const FIELD_DIMENSION: &str = "dimension";
 const FIELD_DISTANCE: &str = "distance";
 
@@ -364,6 +366,16 @@ impl TableDefinition {
         if let TableKind::View(declared) = &self.kind {
             fields.insert(FIELD_VIEW.to_owned(), declared.to_value());
         }
+        // A series is carried by its retention for the reason a queue is carried
+        // by its timeout. Its downgrade case is the mildest of the four and is
+        // still worth stating: a build that predates the kind finds no flag and
+        // no declaration and reads this entry as a plain table, so every record
+        // is readable — including the ones past the floor, which this build
+        // hides. The loss is a refusal rather than an answer, the queue's shape
+        // and not the view's.
+        if let TableKind::Series(declared) = &self.kind {
+            fields.insert(FIELD_SERIES.to_owned(), declared.to_value());
+        }
         Value::Object(fields)
     }
 
@@ -408,6 +420,10 @@ impl TableDefinition {
                 },
                 view: match fields.get(FIELD_VIEW) {
                     Some(value) => Some(ViewDeclaration::from_value(value)?),
+                    None => None,
+                },
+                series: match fields.get(FIELD_SERIES) {
+                    Some(value) => Some(SeriesDeclaration::from_value(value)?),
                     None => None,
                 },
                 ceiling: ceiling(fields)?,
@@ -607,6 +623,77 @@ pub enum TableKind {
     /// declaration: a read in a field beside the kind would make "carries a read
     /// but is not a view" representable, which is the state this type abolishes.
     View(ViewDeclaration),
+    /// Records that age out — `DEFINE SERIES`.
+    ///
+    /// The tenth kind, and the one that makes Time an engine rather than a
+    /// convention. What it adds is not a way to store an instant — every table
+    /// could already do that — but a **floor**: past it a record is not in the
+    /// answer, whether or not its bytes have been removed yet.
+    ///
+    /// The floor is a position in the key rather than a predicate over a field,
+    /// and that is the whole construction. A series table's identity is
+    /// [`tessari_types::IdentityKind::Uuid`], fixed by the kind, because UUID
+    /// version 7 carries the millisecond in its leading six bytes big-endian —
+    /// so a read under a retention does not filter, it **starts later**. An
+    /// ordinary table cannot offer that: its counter identity carries no time at
+    /// all, and an age rule over one of its datetime fields is re-tested per
+    /// record.
+    ///
+    /// The comparison is performed by the reader, not raised as an event, which
+    /// is the rule [`TableKind::Queue`]'s hold already follows. One consequence
+    /// is worth stating where it cannot be missed: **the removal is a separate
+    /// act from the hiding.** Correctness comes from the read, so a removal pass
+    /// that lags, is throttled or never runs costs storage and never an answer.
+    Series(SeriesDeclaration),
+}
+
+/// How long a series table answers with a record.
+///
+/// One field, and it is the whole capability, so it has no default for the
+/// reason [`QueueDeclaration::timeout`] has none: a series table that keeps
+/// everything is a table, and a retention the store guessed would drop somebody's
+/// records at a boundary nobody chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeriesDeclaration {
+    /// How far back the answer reaches.
+    ///
+    /// Measured from the instant the read happens, against the millisecond the
+    /// record's identity carries. Not stored on the record, unlike a queue's
+    /// deadline, because there is nothing to write it to: the rule is a property
+    /// of the table and applies to records written before it as well as after.
+    pub retain: Duration,
+}
+
+impl SeriesDeclaration {
+    /// The value written inside the table's catalog entry.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        Value::Object(BTreeMap::from([(
+            FIELD_RETAIN.to_owned(),
+            Value::Duration(self.retain),
+        )]))
+    }
+
+    /// Read a declaration back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when the retention is missing or is
+    /// not a duration.
+    pub fn from_value(value: &Value) -> Result<Self> {
+        const ENTITY: &str = "series";
+        let fields = object(value, ENTITY)?;
+        let Some(Value::Duration(retain)) = fields.get(FIELD_RETAIN) else {
+            return Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_RETAIN,
+                found: fields
+                    .get(FIELD_RETAIN)
+                    .map_or("none", tessari_types::Value::type_name),
+            });
+        };
+        Ok(Self { retain: *retain })
+    }
 }
 
 /// The read a view names.
@@ -903,6 +990,8 @@ pub struct StoredKind {
     pub queue: Option<QueueDeclaration>,
     /// A view's read.
     pub view: Option<ViewDeclaration>,
+    /// A series table's retention.
+    pub series: Option<SeriesDeclaration>,
     /// A bucket's size ceiling.
     pub ceiling: Option<u64>,
 }
@@ -936,6 +1025,7 @@ impl TableKind {
             vault,
             queue,
             view,
+            series,
             ceiling,
         } = stored;
         // A vault is read first and alone. Every other arm below distinguishes
@@ -949,6 +1039,23 @@ impl TableKind {
                 edge, bucket, collection, geo, endpoints, vector, &queue, ceiling,
             ) {
                 (false, false, false, false, None, None, None, None) => Ok(Self::Vault(declared)),
+                _ => Err(Error::CatalogMalformed {
+                    entity: "table",
+                    field: "kind",
+                    found: "more than one kind",
+                }),
+            };
+        }
+        // A series sets no flag either, and is pulled out here for the reason
+        // the queue below it is: the arms already written stay the exhaustive
+        // statement they are.
+        if let Some(declared) = series {
+            return match (
+                edge, bucket, collection, geo, endpoints, vector, &queue, &view, ceiling,
+            ) {
+                (false, false, false, false, None, None, None, None, None) => {
+                    Ok(Self::Series(declared))
+                }
                 _ => Err(Error::CatalogMalformed {
                     entity: "table",
                     field: "kind",

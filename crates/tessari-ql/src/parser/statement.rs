@@ -743,6 +743,7 @@ impl Parser<'_> {
             // an ordinary table name, and a store that had one before this word
             // existed keeps it.
             _ if self.eat_word("queue") => self.define_queue(),
+            _ if self.eat_word("series") => self.define_series(),
             // Contextual for the same reason as the rest of this run: `view` is
             // an ordinary table name, and a store that had one before this word
             // existed keeps it.
@@ -826,6 +827,41 @@ impl Parser<'_> {
             name,
             timeout,
             attempts,
+            if_not_exists,
+        })
+    }
+
+    /// `DEFINE SERIES readings RETAIN 30d`
+    ///
+    /// The retention is a literal duration rather than an expression, on
+    /// [`Self::define_queue`]'s rule and for its reason: a floor a bound value
+    /// could set is a floor a caller could move, and this one is meant to be
+    /// readable in the statement that declared it.
+    fn define_series(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        if !self.eat_word("retain") {
+            return Err(self.error_here("`RETAIN` and how far back the table answers"));
+        }
+        let expected = "a duration, like `30d` or `12h`";
+        let Some(Token::Duration(written)) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let retain = *written;
+        let at = self.span_here();
+        self.advance();
+        // Refused here for the reason a queue's zero timeout is: a retention of
+        // no length is not a retention, it is a table that answers with nothing,
+        // and that is a mistake in the statement rather than a configuration.
+        if retain.seconds() < 0 || (retain.seconds() == 0 && retain.nanos() == 0) {
+            return Err(Error::EmptyRetention {
+                written: retain.to_literal(),
+                span: at,
+            });
+        }
+        Ok(StatementKind::DefineSeries {
+            name,
+            retain,
             if_not_exists,
         })
     }
@@ -1909,6 +1945,7 @@ impl Parser<'_> {
             _ if self.eat_word("geo") => Ok(StatementKind::DropGeo { name: self.name()? }),
             _ if self.eat_word("vault") => Ok(StatementKind::DropVault { name: self.name()? }),
             _ if self.eat_word("queue") => Ok(StatementKind::DropQueue { name: self.name()? }),
+            _ if self.eat_word("series") => Ok(StatementKind::DropSeries { name: self.name()? }),
             _ if self.eat_word("view") => Ok(StatementKind::DropView { name: self.name()? }),
             // Declined rather than missing, and it says so. `DEFINE NODE` writes
             // this process's own configuration outside the transaction, so its

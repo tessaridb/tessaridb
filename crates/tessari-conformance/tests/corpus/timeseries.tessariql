@@ -67,3 +67,40 @@ SELECT count(*) AS held FROM readings;
 --- case: what the policy kept is exactly what it was asked to keep
 SELECT * FROM readings;
 --- expect: rows 3
+
+--- case: a series declares a floor, and the word that made it is what INFO writes back
+DEFINE SERIES fleeting RETAIN 1h;
+--- expect: ok
+
+--- case: a record written now is inside the floor
+CREATE fleeting = { level: 3 };
+--- expect: ok
+
+--- case: and the table answers with it
+SELECT * FROM fleeting;
+--- expect: rows 1
+
+--- case: a record named at an instant in 2024 is written without complaint
+CREATE fleeting:uuid '018cc251-f400-7abc-8d11-223344556677' = { level: 4 };
+--- expect: ok
+
+--- case: the table does not answer with it, because it is past the floor
+SELECT * FROM fleeting;
+--- expect: rows 1
+
+--- case: and naming it directly does not step around the floor either
+SELECT * FROM fleeting:uuid '018cc251-f400-7abc-8d11-223344556677';
+--- expect: rows 0
+
+--- case: a retention that could only empty the answer is refused where it is written
+DEFINE SERIES empty RETAIN 0s;
+--- expect: error EmptyRetention
+
+--- case: dropping a series that is a plain table is refused
+DEFINE TABLE ordinary SCHEMALESS;
+DROP SERIES ordinary;
+--- expect: error Unknown
+
+--- case: and the series itself drops
+DROP SERIES fleeting;
+--- expect: ok

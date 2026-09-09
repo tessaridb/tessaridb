@@ -95,6 +95,13 @@ pub struct Store {
     /// Beside the vault rather than inside it: the trail outlives any one
     /// unsealing, and a sealed store still records the reads it refused.
     audit: Arc<crate::audit::AuditTrail>,
+    /// Which tables carry a retention floor.
+    ///
+    /// Shared for the reason the registries above it are, and held in memory
+    /// for the reason its own module states: the floor is asked on the hottest
+    /// path there is, and a catalog read there would charge every table for a
+    /// feature only a series has.
+    series: Arc<crate::series::SeriesRegistry>,
 }
 
 impl Store {
@@ -125,6 +132,7 @@ impl Store {
             // secrets for whoever restarted it.
             vault: Arc::new(crate::vault::OpenVault::sealed()),
             audit: Arc::new(crate::audit::AuditTrail::default()),
+            series: Arc::new(crate::series::SeriesRegistry::default()),
         })
     }
 
@@ -174,6 +182,11 @@ impl Store {
     #[must_use]
     pub fn audit(&self) -> &Arc<crate::audit::AuditTrail> {
         &self.audit
+    }
+
+    /// Which tables carry a retention floor.
+    pub(crate) fn series(&self) -> &Arc<crate::series::SeriesRegistry> {
+        &self.series
     }
 
     /// Whether this process can open what the store's vaults hold.

@@ -9,8 +9,8 @@ use tessari_ql::{
 use tessari_storage::{
     Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeOrder, FieldShape,
     GEO_FIELD, IndexDefinition, IndexShape, Mapped, OnFailure, QueueDeclaration, RecordAddress,
-    TableDefinition, TableKind, TableShape, Transaction, VECTOR_FIELD, VaultDeclaration,
-    VectorDeclaration, VectorDistance, ViewDeclaration, Violation, violations,
+    SeriesDeclaration, TableDefinition, TableKind, TableShape, Transaction, VECTOR_FIELD,
+    VaultDeclaration, VectorDeclaration, VectorDistance, ViewDeclaration, Violation, violations,
 };
 
 use tessari_types::{
@@ -646,6 +646,31 @@ impl Session<'_> {
                 span,
             ),
             StatementKind::DropQueue { name } => self.drop_queue(transaction, name, span),
+            StatementKind::DefineSeries {
+                name,
+                retain,
+                if_not_exists,
+            } => self.define_table(
+                transaction,
+                name,
+                TableShape {
+                    schemafull: false,
+                    kind: TableKind::Series(SeriesDeclaration { retain: *retain }),
+                    // Fixed by the kind rather than offered as a clause, on the
+                    // rule a vector store's width follows: the floor is a
+                    // position in the key, and only a time-carrying identity has
+                    // one. A counter would make the retention a predicate over
+                    // some field, which is the thing this engine exists to stop
+                    // being — and a series table declared with the wrong
+                    // identity could not be corrected afterwards, since records
+                    // keep the names they were given.
+                    identity: IdentityKind::Uuid,
+                    graph: None,
+                },
+                *if_not_exists,
+                span,
+            ),
+            StatementKind::DropSeries { name } => self.drop_series(transaction, name, span),
             StatementKind::DefineView {
                 name,
                 read,
@@ -1980,6 +2005,37 @@ impl Session<'_> {
     /// `DROP VECTOR` already uses: a word that removed a table of another kind
     /// would make `DROP QUEUE` a second spelling of `DROP TABLE`, and the two
     /// answer to different grants for different reasons.
+    /// `DROP SERIES readings`
+    ///
+    /// Refuses a name that is not a series for [`Self::drop_queue`]'s reason:
+    /// the word in the statement is a claim about what is being removed, and a
+    /// `DROP SERIES` that removed a plain table would be a statement doing
+    /// something other than what it says.
+    fn drop_series(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        let unknown = || Error::Unknown {
+            entity: "series",
+            name: name.text.clone(),
+            span,
+        };
+        let id = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(unknown)?;
+        let is_series = Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|definition| matches!(definition.kind, TableKind::Series(_)));
+        if !is_series {
+            return Err(unknown());
+        }
+        Catalog::new(transaction).drop_table(id)?;
+        Ok(Outcome::Done)
+    }
+
     fn drop_queue(
         &self,
         transaction: &mut Transaction<'_>,

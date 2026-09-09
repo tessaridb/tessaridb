@@ -100,6 +100,9 @@ fn erase_statement(statement: &mut Statement) {
         // span of their own to erase.
         | StatementKind::DefineQueue { name, .. }
         | StatementKind::DropQueue { name }
+        // A series joins it for the same reason: its retention is a literal.
+        | StatementKind::DefineSeries { name, .. }
+        | StatementKind::DropSeries { name }
         // A view joins the name-only list because its read is stored as text
         // rather than as a tree, so it carries no span to erase either.
         | StatementKind::DefineView { name, .. }

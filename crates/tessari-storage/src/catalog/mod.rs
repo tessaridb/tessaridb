@@ -46,8 +46,8 @@ pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{
     DatabaseDefinition, EdgeDeclaration, EdgeOrder, GEO_FIELD, IndexDefinition, IndexShape,
     NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL,
-    StoredKind, TableDefinition, TableKind, TableShape, VECTOR_FIELD, VaultDeclaration,
-    VectorDeclaration, VectorDistance, ViewDeclaration,
+    SeriesDeclaration, StoredKind, TableDefinition, TableKind, TableShape, VECTOR_FIELD,
+    VaultDeclaration, VectorDeclaration, VectorDistance, ViewDeclaration,
 };
 pub use edge_kind::EdgeKindDefinition;
 pub use field::{FieldDefinition, FieldShape};
@@ -175,6 +175,15 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
+        // Learned here rather than on the first read, so a table declared in
+        // this process never costs a catalog round trip to recognise. Recorded
+        // before the commit, which is deliberate and harmless: a rolled-back
+        // creation leaves an entry for a table id nothing can address, and ids
+        // are never reused.
+        self.transaction
+            .store()
+            .series()
+            .learn(id, &definition.kind);
         if matches!(definition.kind, TableKind::Edge(_)) {
             // Every edge table gets the endpoint machinery, declared pair or
             // not: what the pair adds is a refusal at the write and an order on
@@ -544,6 +553,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         let Some(definition) = self.table(id)? else {
             return Ok(false);
         };
+        self.transaction.store().series().forget(id);
         let qualified = qualify(
             Level::Table,
             &[definition.namespace.get(), definition.database.get()],

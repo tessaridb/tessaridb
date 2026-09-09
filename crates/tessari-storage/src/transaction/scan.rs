@@ -327,6 +327,19 @@ impl Transaction<'_> {
             )),
             (None, None) => prefix.clone(),
         };
+        // The retention floor raises where the walk opens rather than filtering
+        // what it passes, which is the whole reason a series table's identity
+        // carries the millisecond: the scan **starts later** and never reads the
+        // records it would have discarded. Taken as a maximum, so a span or a
+        // cursor already past the floor is not pulled backwards by it.
+        let floor = self.series_floor(namespace, table)?;
+        let opening = match &floor {
+            Some(floor) => {
+                let at = RecordKey::versions_prefix(namespace, database, table, floor);
+                if at > opening { at } else { opening }
+            }
+            None => opening,
+        };
         let wanted = bound.map(|bound| {
             let displacing = self
                 .writes
@@ -410,7 +423,13 @@ impl Transaction<'_> {
             // cursor test does: a record written but not committed still has to
             // be outside a span it is outside of, or a bounded read answers with
             // a record the same read would not have found a moment earlier.
+            // A pending write is judged against the floor for the same reason
+            // it is judged against the span: a record this transaction wrote
+            // below the floor is a record the same read would not have found a
+            // moment earlier, and returning it would make the floor a property
+            // of who is asking.
             if of_this_table(address)
+                && floor.as_ref().is_none_or(|floor| &address.id >= floor)
                 && anchor.is_none_or(|anchor| &address.id > anchor)
                 && span.as_ref().is_none_or(|span| span.holds(&address.id))
             {
@@ -530,6 +549,10 @@ impl Transaction<'_> {
         // takes the transaction, so nothing may hold a borrow of it across the
         // call. There are as many of these as this transaction has written to
         // this table, which for the read that motivates this walk is none.
+        // The streaming twin opens at the floor for the reason the collecting
+        // walk does, and it is the same call so the two cannot drift about where
+        // a series table begins.
+        let floor = self.series_floor(namespace, table).map_err(E::from)?;
         let mut pending = self
             .writes
             .iter()
@@ -537,6 +560,11 @@ impl Transaction<'_> {
                 address.namespace == namespace
                     && address.database == database
                     && address.table == table
+                    // Judged against the floor for the reason the collecting
+                    // walk's are: a record this transaction wrote below the
+                    // floor is one the same read would not have found a moment
+                    // earlier.
+                    && floor.as_ref().is_none_or(|floor| &address.id >= floor)
             })
             .map(|(address, value)| (address.id.clone(), value.clone()))
             .collect::<Vec<_>>()
@@ -544,7 +572,10 @@ impl Transaction<'_> {
             .peekable();
 
         let mut resolved: Option<RecordId> = None;
-        let mut from = prefix.clone();
+        let mut from = match &floor {
+            Some(floor) => RecordKey::versions_prefix(namespace, database, table, floor),
+            None => prefix.clone(),
+        };
         let end = after(prefix);
         loop {
             // Batched although the walk names no bound. `table_records` asks for

@@ -36,6 +36,7 @@ mod reclaim;
 mod running;
 mod schema;
 mod sealing;
+mod series;
 mod snapshots;
 mod store;
 mod transaction;
@@ -46,9 +47,9 @@ pub use catalog::{
     EDGE_OUT, EdgeDeclaration, EdgeKindDefinition, EdgeOrder, FieldDefinition, FieldShape,
     GEO_FIELD, GrantDefinition, GraphDefinition, Held, IndexDefinition, IndexShape, Kind, Mapped,
     NamespaceDefinition, OnFailure, QUEUE_ATTEMPTS, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
-    RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE, StoredKind,
-    TableDefinition, TableKind, TableShape, UserDefinition, VECTOR_FIELD, VaultDeclaration,
-    VectorDeclaration, VectorDistance, Verb, ViewDeclaration,
+    RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE,
+    SeriesDeclaration, StoredKind, TableDefinition, TableKind, TableShape, UserDefinition,
+    VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance, Verb, ViewDeclaration,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.

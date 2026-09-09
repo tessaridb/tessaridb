@@ -763,6 +763,39 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `DEFINE SERIES readings RETAIN 30d`
+    ///
+    /// A table whose answer has a floor. Past the retention a record is not
+    /// returned, whether or not its bytes have been removed — the removal is a
+    /// separate act, so a pass that lags costs storage and never an answer.
+    ///
+    /// Like [`StatementKind::DefineQueue`] it does not desugar into fields and
+    /// an index, because there is nothing to declare that would produce the
+    /// behaviour: a `retain` field on a plain table is a field, not a floor.
+    /// What makes it a series is the kind, which is why the kind is what is
+    /// stored — and the kind also fixes the identity, because the floor is a
+    /// position in the key and only a time-carrying identity has one.
+    DefineSeries {
+        /// The name to create.
+        name: Name,
+        /// How far back the table answers.
+        ///
+        /// Required, with no default, for the reason `DEFINE QUEUE`'s timeout
+        /// is: declaring it is the whole capability, and a retention the store
+        /// guessed would drop records at a boundary nobody chose.
+        retain: Duration,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DROP SERIES readings`
+    ///
+    /// Removes the table and everything in it, including the records past the
+    /// floor that reads had stopped answering with. They are records the store
+    /// still held; what the floor governed was the answer, not the storage.
+    DropSeries {
+        /// The name to remove.
+        name: Name,
+    },
     /// `DROP QUEUE jobs`
     ///
     /// Removes the table and everything in it, held records included. A hold is

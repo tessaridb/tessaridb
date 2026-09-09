@@ -83,6 +83,7 @@ mod revocation;
 mod scan_wins;
 mod scoring_source;
 mod scripts;
+mod series;
 mod several;
 mod shaping;
 mod sign_in_throttle;

@@ -56,6 +56,8 @@ forms! {
     DropVault => "DROP VAULT",
     DefineQueue => "DEFINE QUEUE",
     DropQueue => "DROP QUEUE",
+    DefineSeries => "DEFINE SERIES",
+    DropSeries => "DROP SERIES",
     DefineView => "DEFINE VIEW",
     DropView => "DROP VIEW",
     Claim => "CLAIM",
@@ -266,6 +268,8 @@ mod tests {
              CLAIM 2 FROM q;\
              RELEASE q:1;\
              DROP QUEUE q;\
+             DEFINE SERIES s RETAIN 12h;\
+             DROP SERIES s;\
              DEFINE VIEW v AS SELECT * FROM t;\
              DROP VIEW v;\
              GET s:1;\

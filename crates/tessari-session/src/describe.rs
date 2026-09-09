@@ -168,6 +168,30 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         script.push_str(";\n");
         return Ok(());
     }
+    // A series is written back for the reason a queue is: its whole declaration
+    // is a duration, which the grammar reads back. Unlike a queue it says
+    // nothing about its identity, because the kind fixes that — so a stored
+    // series naming records any other way is a definition this word cannot
+    // restore, and saying so is better than writing a statement that would
+    // recreate it wrongly.
+    if let TableKind::Series(declared) = &definition.kind {
+        if definition.schemafull || definition.is_edge() {
+            return Err(Unwritable::at(format!(
+                "series `{name}` carries flags its declaring word cannot say"
+            )));
+        }
+        if definition.identity != IdentityKind::Uuid {
+            return Err(Unwritable::at(format!(
+                "series `{name}` names records in a way its declaring word cannot say"
+            )));
+        }
+        let _ = writeln!(
+            script,
+            "DEFINE SERIES {name} RETAIN {};",
+            declared.retain.to_literal()
+        );
+        return Ok(());
+    }
     // A view is written back as the statement it was declared with, and that
     // is exact rather than approximate: the read is stored as the text somebody
     // typed, so this is the one word here that restores the original character

@@ -3563,11 +3563,69 @@ or none, and a reader at a snapshot sees the table either before or after. What
 that costs is worth knowing: the whole matched set is committed at once, so a
 statement matching a very large table is a very large commit.
 
-**There is no declared retention policy and no background job.** A policy is this
-statement, run by an operator or a schedule — which keeps the decision about when
-it runs somewhere a person can see it, rather than in a table nobody reads. The
-space comes back through the store's ordinary reclamation once no reader still
-needs the versions.
+**A declared retention exists, and it is a property of a `DEFINE SERIES` table
+rather than of every table** — see the next section. This statement stays, and is
+what a policy over an ordinary table is: run by an operator or a schedule, which
+keeps the decision about when it runs somewhere a person can see it. The space
+comes back through the store's ordinary reclamation once no reader still needs
+the versions.
+
+The paragraph that used to stand here refused a declared retention outright, on
+the grounds that a background job fires at a different moment on every replica
+while a statement is one log record each of them applies at one sequence. That
+argument is not overturned; the question it protects is **deferred**. A series
+table's removal pass writes through the ordinary write path, so its removals are
+sequenced and carried exactly as any other write is, and **who schedules the pass**
+is settled by the cluster design rather than here.
+
+### A table whose answer has a floor
+
+```
+DEFINE SERIES readings RETAIN 30d;
+DROP SERIES readings;
+```
+
+`DEFINE SERIES` declares a table that stops answering with what it has outgrown.
+Past the retention a record is **not returned** — and that is a statement about
+the answer, not about the disk.
+
+**The removal is a separate act.** A record past the floor is hidden immediately
+and removed later, which is the property worth understanding before anything
+else here: correctness comes from the read, so a removal pass that lags, is
+throttled, or has never run costs storage and never an answer. The reverse
+arrangement — where the pass is what makes the promise true — fails by returning
+records the policy says are gone, with nothing anywhere in an error state.
+
+**The floor is a position in the key, so the read starts later rather than
+filtering.** A series table names its records with a UUID version 7, fixed by the
+word and not offered as a clause, and such an identity carries the millisecond it
+was minted in. So `RETAIN 30d` is a place to open the scan at. This is the whole
+reason Time is a declared kind rather than a clause any table could wear: an
+ordinary table's counter identity carries no time at all, and a rule over one of
+its `datetime` fields is a predicate re-tested against every record the read
+passes.
+
+**It follows that the floor is about when a record was written, not about what it
+says.** A reading that arrived late carries the identity it was given on arrival,
+so a table of events whose own timestamps run behind their arrival is a table
+whose floor is not the floor its author had in mind. That distinction is the same
+one `SELECT * FROM readings:1..4` and `WHERE at >= …` already draw, and it is
+worth re-reading the two paragraphs above about arrival order before declaring a
+retention over data that arrives out of order.
+
+**The retention is a literal duration and it has no default.** Declaring it is
+the whole capability, and a retention the store guessed would drop somebody's
+records at a boundary nobody chose. `RETAIN 0s` and a negative one are refused
+where they are written, because a floor at or ahead of the present can only empty
+the answer.
+
+**`INFO FOR TABLE` writes the declaration back**, normalised the way a duration
+always is here — so a table declared `RETAIN 30d` describes itself as
+`RETAIN 720h`, which is the same duration written in the unit the literal keeps.
+
+`DROP SERIES` removes the table and everything in it, **including the records
+past the floor that reads had stopped answering with**. They were records the
+store still held; what the floor governed was the answer.
 
 ### Counting per window
 
