@@ -140,6 +140,11 @@ pub const ALL: &[Workload] = &[
         run: vector,
     },
     Workload {
+        name: "span",
+        about: "the same window over identity read three ways — by span, by scan and by a value index — with the record sets compared",
+        run: crate::span::span,
+    },
+    Workload {
         name: "queue",
         about: "what a claim costs behind a prefix of held and of dead-lettered records, and a drain taken one at a time against one taken in a batch",
         run: crate::queue::queue,

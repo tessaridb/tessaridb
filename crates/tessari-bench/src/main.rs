@@ -41,6 +41,7 @@ mod paging;
 mod queue;
 mod ranges;
 mod samples;
+mod span;
 mod workload;
 
 /// A running total in front of the system allocator, in the counting build only.
