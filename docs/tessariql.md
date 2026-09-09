@@ -3378,6 +3378,22 @@ records can arrive out of order, those are two different questions, and this
 answers the arrival. A window over a field a record carries is the range read
 above, and it wants an index.
 
+**One late record is enough, and the two answers can be the same size.** Five
+records written in arrival order, the fourth of them carrying an event time from
+the first day:
+
+```
+SELECT * FROM r WHERE at >= datetime '2026-03-01T00:00:00Z'
+                  AND at <  datetime '2026-03-03T00:00:00Z';
+SELECT * FROM r:1..4;
+```
+
+Both answer **three records**, and they are not the same three: the condition
+answers 1, 2 and 4, the span answers 1, 2 and 3. Equal counts are the part worth
+knowing, because a reader comparing totals sees two reads agreeing while their
+contents differ — so the choice between them is about which question is being
+asked and never about which is faster.
+
 ### Which index runs
 
 Where a condition offers several conjuncts an index could serve, the one that
