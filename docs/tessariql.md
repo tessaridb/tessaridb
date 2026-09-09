@@ -5155,7 +5155,13 @@ and the store does not quietly re-select the next one on its behalf. So a worker
 loop treats a refusal the way it treats an empty answer — ask again — and the
 cost of contention is one refused statement per losing worker per hand-out,
 which is why a worker with steady work should claim a **batch**: the contention
-amortises over the batch and the ordering does not change. A worker
+amortises over the batch and the ordering does not change.
+
+**Bound those retries.** A refusal says why in its message and carries nothing a
+program can branch on, so a worker cannot tell a lost race from a permission
+failure or a mistyped statement — and a loop that re-asks on every refusal
+retries the ones that will never succeed, forever. Cap the attempts and let the
+last one out. A worker
 that **overruns** its deadline is not stopped, because nothing here can stop it,
 so the whole sentence is: *at most one claimant at a time; a worker that exceeds
 its timeout may find its work handed to somebody else.*
