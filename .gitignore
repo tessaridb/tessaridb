@@ -1,5 +1,6 @@
 # Rust
 /target
+/target-check
 /target-lint
 /target-pkg
 /target-ra
