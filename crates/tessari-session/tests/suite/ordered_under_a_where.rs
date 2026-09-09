@@ -384,3 +384,154 @@ fn a_write_in_the_same_transaction_gives_the_order_up() {
     assert_eq!(records.len(), LIMIT);
     assert_eq!(records[0].0, RecordId::Int(RECORDS + 1));
 }
+
+// ── Ascending, where a declaration removes the absences (W172) ──────────────
+//
+// Everything above is descending, and the direction was not a preference. The
+// records an index does not hold are the ones with no value at the key, and
+// ascending those sort **first** — so a walk over the index would answer with
+// the wrong records and raise nothing. `every_shape_the_order_cannot_be_taken_from_the_index_still_scans`
+// lists that refusal by name and it still holds: the fixture above declares no
+// field, so `at` is optional and the ascending read scans.
+//
+// `REQUIRED` is the declaration that removes the absences, and the unconditioned
+// case has served an ascending bound over such a field since `ascending_order.rs`
+// was written. Under a condition it did not, for no reason of its own: the walk
+// took its direction from a constant rather than from the bound. The soundness
+// argument is the one this file already makes — the walk yields records in index
+// order, which **is** the sort order, so the first `wanted` survivors of the
+// first `asking` entries are the first `wanted` survivors of the table — with
+// absences removed by the declaration instead of by the direction.
+//
+// Exhaustion is the one thing that means something different in the two
+// directions. Descending, an index that runs out is missing the records whose
+// value is absent, so the read gives the order up. Ascending over a `REQUIRED`
+// field there are no such records: a walk that runs out has read the **whole
+// table** through the index, and what survived the condition is the complete
+// answer rather than a short one.
+
+/// The same fixture, with the ordering field declared.
+///
+/// Declared **after** the records exist on purpose: that is the order a real
+/// schema arrives in, and the declaration is refused against a table already
+/// holding a record without the field — which is the half of the invariant this
+/// read rests on.
+fn ready_required(store: &Store) -> Session<'_> {
+    let mut session = ready(store);
+    session
+        .run("DEFINE FIELD at ON events TYPE int REQUIRED;")
+        .unwrap();
+    session
+}
+
+/// The ascending twins of [`READS`], at the same three selectivities.
+const ASCENDING: &[&str] = &[
+    "SELECT * FROM events WHERE slot = 0 ORDER BY at LIMIT 10;",
+    "SELECT * FROM events WHERE slot = 0 ORDER BY at START 5 LIMIT 10;",
+    "SELECT * FROM events WHERE slot < 4 ORDER BY at LIMIT 10;",
+    "SELECT * FROM events WHERE rare = 0 ORDER BY at LIMIT 10;",
+    "SELECT * FROM events WHERE at < 3 ORDER BY at LIMIT 10;",
+    "SELECT * FROM events WHERE slot = 99 ORDER BY at LIMIT 10;",
+    "SELECT * FROM events WHERE slot != 3 ORDER BY at LIMIT 10;",
+];
+
+#[test]
+fn an_ascending_order_under_a_condition_is_served_over_a_required_field() {
+    let indexed = store();
+    let mut with = ready_required(&indexed);
+    assert_eq!(path(&mut with, ASCENDING[0]), AccessPath::Scan);
+    with.run(INDEX).unwrap();
+    assert_eq!(path(&mut with, ASCENDING[0]), AccessPath::Ordered);
+    assert_eq!(
+        plan(&mut with, ASCENDING[0], "access"),
+        r#"String("ordered")"#
+    );
+    assert_eq!(plan(&mut with, ASCENDING[0], "index"), r#"String("by_at")"#);
+}
+
+#[test]
+fn the_ascending_answers_are_the_ones_a_scan_gives() {
+    // The rule the direction change could break quietly, asserted the way the
+    // descending half asserts it: against a store carrying no index at all, so
+    // the comparison is with the answer the store would have given anyway.
+    let plain = store();
+    let mut without = ready_required(&plain);
+    let indexed = store();
+    let mut with = ready_required(&indexed);
+    with.run(INDEX).unwrap();
+
+    for read in ASCENDING {
+        let expected = ids(&mut without, read);
+        assert_eq!(ids(&mut with, read), expected, "{read}");
+    }
+}
+
+#[test]
+fn an_ascending_served_order_does_not_read_the_whole_table() {
+    let counting = Counting::new();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let mut session = ready_required(&store);
+    session.run(INDEX).unwrap();
+
+    counting.reset();
+    let answered = ids(&mut session, ASCENDING[0]);
+    let served = counting.rows();
+    assert_eq!(answered.len(), LIMIT);
+
+    counting.reset();
+    ids(&mut session, "SELECT * FROM events ORDER BY at;");
+    let whole = counting.rows();
+
+    assert!(
+        served * 4 < whole,
+        "served {served} rows against {whole} for the whole table"
+    );
+}
+
+#[test]
+fn an_ascending_walk_that_runs_out_of_entries_answers_completely() {
+    // A table small enough that the ceiling is above it, so the walk reaches the
+    // end of the index instead of giving up — the one exit the descending half
+    // does not have. Three matches for a bound of ten: the answer is short, it
+    // is complete, and it is served rather than handed back to the scan.
+    const SMALL: i64 = 40;
+
+    fn build(store: &Store) -> Session<'_> {
+        let mut session = Session::new(store);
+        session
+            .run(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+                 DEFINE DATABASE shop; USE DATABASE shop;\n\
+                 DEFINE COLLECTION events;",
+            )
+            .unwrap();
+        let mut script = String::new();
+        for n in 1..=SMALL {
+            script.push_str(&format!(
+                "CREATE events:{n} = {{ at: {n}, slot: {} }};\n",
+                i64::from(n % 13 == 0)
+            ));
+        }
+        session.run(&script).unwrap();
+        session
+            .run("DEFINE FIELD at ON events TYPE int REQUIRED;")
+            .unwrap();
+        session
+    }
+
+    let plain = store();
+    let mut without = build(&plain);
+    let indexed = store();
+    let mut with = build(&indexed);
+    with.run(INDEX).unwrap();
+
+    let read = "SELECT * FROM events WHERE slot = 1 ORDER BY at LIMIT 10;";
+    let expected = ids(&mut without, read);
+    assert_eq!(
+        expected.len(),
+        3,
+        "the fixture must answer short: {expected:?}"
+    );
+    assert_eq!(path(&mut with, read), AccessPath::Ordered);
+    assert_eq!(ids(&mut with, read), expected);
+}

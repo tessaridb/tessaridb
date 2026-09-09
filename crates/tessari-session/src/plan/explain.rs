@@ -171,7 +171,6 @@ impl Session<'_> {
                 // order sends the read back to the scan, and this reports the
                 // path the planner chose rather than the one it settled for.
                 if let Some(bound) = ordered(select)
-                    && bound.descending
                     && let Some((index, _)) = self.index_serving_order(
                         transaction,
                         context,

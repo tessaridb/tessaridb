@@ -3783,15 +3783,15 @@ over an optional one it is refused and takes the scan. `REQUIRED` is declared on
 a field and promises nothing about what lives inside one, so a route below it —
 `ORDER BY address.city` under a required `address` — is refused too.
 
-The permission stops at the read with no condition. Under a `WHERE`, an order is
-taken from the index **descending only**, whatever the field declares: the walk
-that fills a bound with survivors rests on absences sorting last, and it passes
-its own direction rather than the statement's so that argument cannot be handed a
-different one. `WHERE city = 'Paris' ORDER BY joined LIMIT 10` over a `REQUIRED`
-`joined` narrows on `city` and then sorts the survivors; the order does not come
-from `joined`'s index, and the `REQUIRED` on it changes nothing. Not an oversight
-and not a soundness limit — the door `REQUIRED` opens is simply not used there,
-and no read has asked for it.
+The permission reaches a read **under a condition** too, and by the same
+declaration. `WHERE city = 'Paris' ORDER BY joined LIMIT 10` over a `REQUIRED`
+`joined` takes the order from `joined`'s index and narrows with `city` as it
+walks; over an optional `joined` it narrows first and then sorts the survivors,
+because the records with no value are the ones the answer would begin with and
+the index does not hold them. The walk that fills a bound with **survivors**
+asks for more entries until enough of them pass the condition, so the direction
+has to be the statement's — it was a constant until this permission existed, and
+the `REQUIRED` on the field changed nothing under a `WHERE`.
 
 One consequence is worth naming because it is not symmetric: ascending needs no
 tie-group drain. A forward walk yields a tie group with identities **ascending**,
@@ -5485,12 +5485,16 @@ claimed an index this statement never touched. The inner read's plan is a plan o
 its own, and is not folded into one field.
 
 `ordered` is a bounded read taken from an index already in that order (§5), and
-it names the index. **Descending** it is the one plan with a condition it cannot
-check: whether the index holds enough records to fill the bound is the read
-itself, and an index that runs out hands the read to the scan — which is then
-what the read reports, and says so in a note (§7b′). **Ascending** the plan
-carries no such gap, because the direction is admitted only over a `REQUIRED`
-field, where an index that runs out has already answered the whole table.
+it names the index. It is the one plan with a condition it cannot check: whether
+the index will fill the bound is the read itself, and an index that does not
+hands the read to the scan — which is then what the read reports, and says so in
+a note (§7b′). The gap has two sources and they are not the same one.
+**Descending**, an index that runs out is missing the records with no value, so
+it gives the order up. **Ascending** that cannot happen, because the direction is
+admitted only over a `REQUIRED` field where an index that runs out has already
+answered the whole table — but a read **under a condition** in either direction
+gives the order up when the condition is too thin to fill the bound within the
+ceiling (§5), and no plan can know that in advance either.
 
 **A number this store cannot know is a number it will not print.** There is no
 estimated row count and no cost, because producing one needs statistics about
@@ -6213,7 +6217,7 @@ be, because it is confined to the run its fixed values name.
 | Several terms mean all of them | **contract** |
 | A field with no analyzer holds no terms and matches nothing | **contract** |
 | `REQUIRED` means present and not null | **contract** |
-| A bounded descending order under a `WHERE` is taken from the index that holds the order, and gives it up rather than answering short | **contract** — the index narrows and the condition decides, so the walk continues until the **bound is filled by records that survive the condition**, not until the bound is filled by entries. Past a stated multiple of the bound the condition is too thin for the order to be worth serving that way and the read takes the scan it would have taken anyway. The ceiling bounds the cost and never the answer |
+| A bounded order under a `WHERE` is taken from the index that holds the order — **descending always and ascending over a `REQUIRED` field**, the same door §5 opens for the read with no condition — and gives it up rather than answering short | **contract** — the index narrows and the condition decides, so the walk continues until the **bound is filled by records that survive the condition**, not until the bound is filled by entries. Past a stated multiple of the bound the condition is too thin for the order to be worth serving that way and the read takes the scan it would have taken anyway. The ceiling bounds the cost and never the answer. Ascending, an index that runs out before the ceiling has read the whole table, so what survived the condition is the complete answer and a short one is served rather than handed back |
 | An index over several fields serves a condition on the **leading run** of them the condition fixes to values | **contract** — the field order decides which reads it can serve, and `last = 'x' AND first = 'y'` on `(last, first)` is one lookup rather than a lookup on `last` and a re-test of `first`. The *lookup* run stops at the first field the condition does not fix with an equality, so a `LIKE` on the second column leaves the lookup at one column and is re-tested like any other clause. A **range** on the field immediately after the run is the exception, and it is served: the fixed values name one contiguous run of entries and that run is already ordered by the very field being bounded, so the bounds are a bound on a walk rather than a filter over the run. `at = 20 AND tag >= 1950 AND tag <= 1959` on `(at, tag)` reads the ten entries the bounds name and not the day's hundred |
 | A `UNIQUE` composite promises a ceiling of **one** exactly when the condition fixes every one of its fields, and none otherwise | **contract** — uniqueness is over the whole tuple, so fixing only the first promises nothing: one `last` may have any number of `first`s |
 | Among candidates with no ceiling, the one narrowing more of its index's columns wins — **before** shape is consulted | **contract** — a proof rather than an estimate: the entries matching two fixed fields are a subset of those matching the first alone, and the entries a range keeps are a subset of the run it walks, whatever the data holds. The shape order below it says what a candidate is *trusted* to narrow when nothing exact is known, which is a heuristic, and a proof outranks a heuristic. That ordering is load-bearing rather than tidy: with shape on top, `a = 1 AND b > 2` on `(a, b)` lost the range candidate to the equality one, because `Equality` sorts before `Range` — the wider candidate winning on a guess. An equal count still falls through to shape, and an equal shape to the order the conjuncts were written |

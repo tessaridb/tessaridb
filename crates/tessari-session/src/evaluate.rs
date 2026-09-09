@@ -1419,17 +1419,17 @@ impl Session<'_> {
                 // narrows and then sorts is correct and costs a sort of
                 // everything the condition matched; taking the records in the
                 // order they are already stored in costs the bound.
-                // Descending only. The walk under a condition retries past its
-                // bound, and an ascending retry would read further into values
-                // the answer has already passed rather than further into the
-                // ones it still needs — a different read, not a longer one.
+                // Either direction, and the direction travels on the bound:
+                // ascending is served only where the ordering field is
+                // `REQUIRED`, which is a fact about the schema and is asked for
+                // by `index_serving_order` rather than by this call site.
                 // The decline is remembered rather than acted on here, because
                 // what the read falls back *to* is not known until `candidates`
                 // has chosen — an index on the condition serves this read even
                 // when no index could serve its order.
                 let mut declined = false;
-                if let Some(bound) = plan::ordered(select).filter(|bound| bound.descending) {
-                    match self.descend_matching(
+                if let Some(bound) = plan::ordered(select) {
+                    match self.walk_matching(
                         transaction,
                         context,
                         id,
@@ -2416,8 +2416,8 @@ impl Session<'_> {
         })
     }
 
-    /// A bounded descending read **under a condition**, taken from the index
-    /// that holds the order.
+    /// A bounded ordered read **under a condition**, taken from the index that
+    /// holds the order.
     ///
     /// `None` means the read is not served this way and the caller narrows and
     /// sorts, which is what it did before this existed.
@@ -2441,11 +2441,25 @@ impl Session<'_> {
     /// survivors of the top `k` are the first `wanted` survivors of the whole
     /// table.
     ///
-    /// Absences are the one case that could break that argument and cannot: a
-    /// record with no value for the key has **no index entry** and sorts *last*
-    /// descending, so it is never near the top of the order. That is the same
-    /// fact that makes the unconditioned case descending-only, inherited here
-    /// rather than re-derived.
+    /// Absences are the one case that could break that argument, and the
+    /// direction decides whether they can. A record with no value for the key
+    /// has **no index entry**: descending it sorts *last*, so it is never near
+    /// the top of the order and the walk cannot miss it; ascending it sorts
+    /// *first*, which is exactly where the answer begins. So ascending is served
+    /// only where there are no absences, and `REQUIRED` is that guarantee —
+    /// [`Self::index_serving_order`] asks for it, and asks for it here by
+    /// passing the bound's own direction rather than a constant. Both facts are
+    /// inherited from the unconditioned case rather than re-derived.
+    ///
+    /// # Running out means opposite things in the two directions
+    ///
+    /// Descending, an index that cannot fill `asking` is missing the records
+    /// whose value is absent — they sort below every entry it holds, so the
+    /// answer needs them and the read gives the order up. Ascending over a
+    /// `REQUIRED` field there are no such records, so a walk that runs out has
+    /// read the **whole table** through the index: what survived the condition
+    /// is the complete answer, and handing it back to the scan would read the
+    /// same table a second time to reach the same records.
     ///
     /// # The ceiling bounds the cost and never the answer
     ///
@@ -2460,7 +2474,7 @@ impl Session<'_> {
     /// The answer may be **longer** than the bound, which is correct and
     /// deliberate: it is in order, and `shape::bounded` takes the window the
     /// statement asked for, as it does for every other path.
-    fn descend_matching(
+    fn walk_matching(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
@@ -2469,27 +2483,38 @@ impl Session<'_> {
         condition: &Expr,
         scope: Scope<'_>,
     ) -> Result<Walked> {
-        // Descending, stated rather than taken from the bound: this walk's whole
-        // argument rests on absences sorting *last*, and passing the caller's
-        // direction through would make that argument depend on a value from
-        // somewhere else. The caller refuses an ascending bound before it gets
-        // here; this is the second lock on the same door.
         let Some((index, visible)) =
-            self.index_serving_order(transaction, context, table, wanted.path, true)?
+            self.index_serving_order(transaction, context, table, wanted.path, wanted.descending)?
         else {
             return Ok(Walked::NotServed);
         };
         let ceiling = wanted.wanted.saturating_mul(ORDERED_FILTER_REACH);
         let mut asking = wanted.wanted;
         loop {
-            // `None` is the index unable to fill `asking` — it has run out of
-            // entries, and the records that would fill the rest of the answer
-            // are ones it does not hold. The scan is the read that can find
-            // those.
-            let Some(found) =
-                transaction.records_in_descending_order(&index, ORDERED_LEADING_FIELDS, asking)?
-            else {
-                return Ok(Walked::Declined);
+            // Descending, `None` is the index unable to fill `asking` — it has
+            // run out of entries, and the records that would fill the rest of
+            // the answer are ones it does not hold. The scan is the read that
+            // can find those. Ascending there are none of them, so running out
+            // is the end of the table rather than a hole in the answer, and a
+            // walk shorter than it asked for says so.
+            let (found, exhausted) = if wanted.descending {
+                let Some(found) = transaction.records_in_descending_order(
+                    &index,
+                    ORDERED_LEADING_FIELDS,
+                    asking,
+                )?
+                else {
+                    return Ok(Walked::Declined);
+                };
+                (found, false)
+            } else {
+                let found = transaction.records_in_ascending_order(
+                    &index,
+                    ORDERED_LEADING_FIELDS,
+                    asking,
+                )?;
+                let exhausted = found.len() < asking;
+                (found, exhausted)
             };
             let mut matched = Vec::new();
             for (id, record) in self.records_of(found, &visible)? {
@@ -2498,7 +2523,7 @@ impl Session<'_> {
                     matched.push((id, record));
                 }
             }
-            if matched.len() >= wanted.wanted {
+            if matched.len() >= wanted.wanted || exhausted {
                 return Ok(Walked::Served {
                     found: matched,
                     index: index.name,

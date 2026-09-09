@@ -281,14 +281,18 @@ fn access(plan: &str) -> &str {
 /// Every read the matrix runs.
 ///
 /// The cross-product, and then the same shapes with **no condition at all** —
-/// which is not symmetry for its own sake. The ordered walk under a condition is
-/// descending-only by construction and says so twice (`descend_matching` calls
-/// it "the second lock on the same door"), so an ascending order can only ever
-/// be served from an index when nothing is narrowing the read. Measured before
-/// it was believed: with `at` declared `REQUIRED` and indexed, every one of the
-/// twelve conditioned ascending cells still reports `scan` or a plain index
-/// range. Without this second family the ascending plan is absent from the
-/// matrix for a reason that has nothing to do with any configuration in it.
+/// which is not symmetry for its own sake. The two families reach the ordered
+/// walk by different routes, `walk_in_order` and `walk_matching`, and a matrix
+/// over one of them would report a plan the other never takes. Both directions
+/// are served in both families now; the ascending half of each is admitted only
+/// over a `REQUIRED` field, which is a configuration in this matrix rather than
+/// a property of the read.
+///
+/// That was not always so, and the comment here said the opposite: until W172
+/// the conditioned walk took its direction from a constant, so every one of the
+/// twelve conditioned ascending cells reported `scan` or a plain index range
+/// whatever the field declared. The second family was added to make the
+/// ascending plan reachable at all.
 fn reads() -> Vec<String> {
     let mut found = Vec::new();
     for condition in CONDITIONS {
