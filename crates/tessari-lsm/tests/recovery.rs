@@ -30,6 +30,14 @@
 //! and silently answering as though writes somebody was told had landed had
 //! never happened — which is the difference between losing what was never
 //! promised and losing what was.
+//!
+//! **That half of row 6 is asserted in `src/wal_tracking_tests.rs`, not here.**
+//! It needs a store holding a write-ahead file the engine has closed and
+//! recorded, and this file could only *wait* for one — which is a window, was
+//! tuned twice, and failed a third time under load (Q-490). Building the state
+//! instead needs options that are reachable only from inside the crate, so the
+//! test moved to where they are. What stays here is the case that needs no
+//! window: the live file, which the manifest does not record.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
@@ -132,83 +140,6 @@ fn a_torn_trailing_record_is_tolerated_and_everything_before_it_survives() {
         );
         drop(store);
     }
-}
-
-#[test]
-fn a_write_ahead_file_the_manifest_recorded_is_refused_when_it_is_gone() {
-    // Readiness row 6, second half. `track_and_verify_wals_in_manifest` is set,
-    // and this is what it buys: a write-ahead file the engine has closed and
-    // recorded cannot go missing without the store refusing to open.
-    //
-    // The engine's own words for it are `Corruption: Missing WAL with log
-    // number: …`, which is the right shape — an unknown number of records that
-    // may have been acknowledged is not something to open around.
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("store");
-    let mut small = config();
-    // Small enough that the engine rotates its write-ahead file, so there is a
-    // closed one to remove rather than only the live one.
-    small.memtable_bytes = 512 * 1024;
-
-    // **Written until rotation is observed**, rather than a byte count chosen to
-    // produce it. A fixed count made this fail its own *precondition* under load
-    // — the engine's arena allocates in blocks larger than this budget, so how
-    // much has to be written before a file closes is not a number a test can
-    // know. It failed twice, days apart, and never on a re-run: exactly what a
-    // precondition that is a guess looks like.
-    //
-    // Rotation is detected by the **live file's name changing**, not by two
-    // files being seen at once. The engine reclaims a closed write-ahead file as
-    // soon as its memtable flushes, so "two exist" is a window that a directory
-    // read can pass straight over — and under load it does. A name that has been
-    // superseded is evidence the rotation happened whether or not the older file
-    // has already gone, and the file is grabbed at that moment rather than
-    // looked for again after the store closes, because closing flushes and a
-    // flush is what removes it.
-    let mut closed = None;
-    {
-        let store = LsmBackend::open(&path, small).unwrap();
-        let mut live = logs(&path).last().cloned();
-        let mut n = 0_usize;
-        while closed.is_none() && n < 40_000 {
-            store
-                .apply(WriteBatch::new().put(
-                    Keyspace::DATA,
-                    key(n),
-                    Value::from_slice(&[b'x'; 1024]),
-                ))
-                .unwrap();
-            n = n.saturating_add(1);
-            let held = logs(&path);
-            let newest = held.last().cloned();
-            if newest != live {
-                // The previous live file has been superseded. It is the closed,
-                // recorded one this test needs — if the engine has not already
-                // reclaimed it.
-                closed = live.filter(|held| held.exists());
-                live = newest;
-            }
-        }
-        drop(store);
-    }
-
-    // A precondition that could not be established says so, and says what it
-    // saw. Reporting it as "the engine did not rotate" would blame the engine
-    // for a race in the test, which is how the same failure got tuned twice.
-    let Some(closed) = closed.filter(|held| held.exists()) else {
-        panic!(
-            "no closed write-ahead file could be caught before the engine reclaimed it; \
-             the store now holds {:?}",
-            logs(&path)
-        );
-    };
-    fs::remove_file(&closed).unwrap();
-
-    let refused = LsmBackend::open(&path, small);
-    assert!(
-        refused.is_err(),
-        "a store opened with a recorded write-ahead file missing"
-    );
 }
 
 #[test]
