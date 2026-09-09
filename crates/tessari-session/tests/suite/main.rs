@@ -110,6 +110,7 @@ mod vault_reach_and_open;
 mod vault_recipients;
 mod vault_refusals;
 mod vault_rollback;
+mod vector_field_grants;
 mod vector_index;
 mod vector_reads;
 mod vector_recall;

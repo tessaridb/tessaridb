@@ -2011,11 +2011,21 @@ impl Session<'_> {
 
     /// Walk a vector index, when there is one that answers this read.
     ///
-    /// `None` means there is not — no index on the path, one built for another
-    /// distance, or a query that is not a vector — and the caller scans, which
-    /// is exact. That is the whole safety story: the approximate path is taken
-    /// only when the statement asked and the index matches, and the exact path
-    /// is what every other case falls into.
+    /// `None` is the scan, which is exact, and there are four ways to reach it:
+    /// no index on the path, one built for another distance, a query that is not
+    /// a vector, and — the one that is about the caller rather than the store —
+    /// a field this caller's grant does not contain.
+    ///
+    /// That last refusal is the same one [`Evaluator::index_serving_place`],
+    /// [`Evaluator::index_serving_score`] and [`Evaluator::index_serving_order`]
+    /// each make first, and it was missing here until W187. A field permission
+    /// removes the field *before* anything reads the record, so a caller without
+    /// it sorts by `none` and the read is unordered; the graph, asked anyway,
+    /// answers with the records nearest a vector that caller may not read. The
+    /// harm is larger than the order the other three walks refuse to disclose,
+    /// because the `none` key then re-sorts those records into identity order:
+    /// what arrives looks like an ordinary unordered result and is a statement
+    /// of **membership** about a hidden field, handed over in a single read.
     fn walk(
         &self,
         transaction: &mut Transaction<'_>,
@@ -2037,6 +2047,15 @@ impl Session<'_> {
             return Ok(None);
         };
         let visible = self.visible_in(transaction, table)?;
+        // Asked before the graph is walked and not after: the redaction below
+        // removes the field from the records, and would leave the caller holding
+        // the graph's choice of which records to return.
+        if visible
+            .as_ref()
+            .is_some_and(|fields| !fields.contains(wanted.path.root()))
+        {
+            return Ok(None);
+        }
         let mut rows = Vec::new();
         for id in transaction.records_by_vector(&index, &query, wanted.wanted, wanted.effort)? {
             // Resolved at this reader's own snapshot, like every index read, so
