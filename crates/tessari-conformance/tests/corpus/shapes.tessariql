@@ -106,6 +106,19 @@ SELECT * FROM places WHERE geo::covered_by(at, geometry { type: 'Polygon', coord
 SELECT * FROM places WHERE geo::within(at, geometry { type: 'Polygon', coordinates: [[[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]] });
 --- expect: rows 1
 
+--- case: covers is covered_by read from the other side
+# Same three places, same square, arguments the other way round: the square
+# covers the point rather than the point being covered by it. Boundary counts
+# for both, so this answers the two that `covered_by` answered.
+SELECT * FROM places WHERE geo::covers(geometry { type: 'Polygon', coordinates: [[[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]] }, at);
+--- expect: rows 2
+
+--- case: and contains is within read from the other side
+# The strict pair of the one above, and the boundary place drops out — which is
+# the whole difference between the two families and the reason both are spelled.
+SELECT * FROM places WHERE geo::contains(geometry { type: 'Polygon', coordinates: [[[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]] }, at);
+--- expect: rows 1
+
 --- case: equals is about the ground covered, not about how it was written
 DEFINE COLLECTION zones;
 CREATE zones:1 = { z: geometry { type: 'Polygon', coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] } };

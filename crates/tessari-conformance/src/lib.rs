@@ -11,7 +11,9 @@
 //! - **The corpora** run real scripts against a real store and compare what came
 //!   back. This catches the language doing the wrong thing.
 //! - **The coverage ratchet** ([`coverage`]) fails when a statement form has no
-//!   case. This catches the language growing a statement nobody proved.
+//!   case, and again when a *function* has none. This catches the language
+//!   growing something nobody proved — which it had, four times, before the
+//!   second half of that ratchet existed.
 //! - **The document extractor** ([`document`]) parses every fenced example in
 //!   `docs/tessariql.md` itself. This catches the document and the parser drifting
 //!   apart, which is silent in both directions, and it is what the documentation
@@ -26,6 +28,6 @@ pub mod document;
 pub mod runner;
 
 pub use case::{Case, Corpus, Expectation, MalformedCorpus, read};
-pub use coverage::{FORMS, form_name, forms_in, uncovered};
+pub use coverage::{FORMS, form_name, forms_in, function_spellings, uncalled_functions, uncovered};
 pub use document::{examples, fenced_blocks, specification, specification_path, split_statements};
 pub use runner::{CaseResult, run};

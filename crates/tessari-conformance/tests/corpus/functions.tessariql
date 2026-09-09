@@ -292,9 +292,25 @@ RETURN string::trim_start('  ada  ') = 'ada  ';
 RETURN string::trim_end('  ada  ') = '  ada';
 --- expect: value true
 
+--- case: and both ends at once, which is neither of the two above
+RETURN string::trim('  ada  ') = 'ada';
+--- expect: value true
+
 --- case: characters back to front, which is not the bytes back to front
 RETURN string::reverse('naïve');
 --- expect: value 'evïan'
+
+--- case: the other direction from upper, and it moves the same letters back
+RETURN string::lower('AdA LoVeLaCe');
+--- expect: value 'ada lovelace'
+
+--- case: concat joins exactly two and adds nothing between them
+RETURN string::concat('ada', 'lovelace');
+--- expect: value 'adalovelace'
+
+--- case: concat with an empty side is the other side
+RETURN string::concat('', 'ada') = 'ada' AND string::concat('ada', '') = 'ada';
+--- expect: value true
 
 # The numbers.
 
@@ -316,6 +332,17 @@ RETURN math::sign(0);
 
 --- case: trunc goes toward zero where floor goes down
 RETURN math::trunc(-2.7) = -2 AND math::floor(-2.7) = -3;
+--- expect: value true
+
+--- case: ceil agrees with trunc going down and disagrees going up
+# The three differ only in sign handling, so one number cannot separate them:
+# on -2.7 ceil and trunc both answer -2 and floor answers -3, and on 2.1 ceil
+# is the one that moves.
+RETURN math::ceil(-2.7) = -2 AND math::ceil(2.1) = 3;
+--- expect: value true
+
+--- case: abs takes the sign off and leaves a positive alone
+RETURN math::abs(-3) = 3 AND math::abs(3) = 3 AND math::abs(0) = 0;
 --- expect: value true
 
 --- case: the natural logarithm of one is zero

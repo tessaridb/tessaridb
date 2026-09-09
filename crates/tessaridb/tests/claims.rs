@@ -602,3 +602,82 @@ fn the_readme_and_the_changelog_agree_on_what_is_missing() {
         changelog.difference(&readme).collect::<Vec<_>>()
     );
 }
+
+/// `crypto::md5` and `crypto::sha1` are checksums, and nothing that decides
+/// whether two things are the same may call them.
+///
+/// Both are in the language on purpose — a store interoperates, and an ETag or
+/// a legacy row key computed by something older than this database has to be
+/// reachable from here. The doc comment on `Function::CryptoMd5` says as much,
+/// and says the rest of it too: collisions in both are producible on a laptop,
+/// so neither may decide whether two things are the same when somebody might
+/// want them to appear so.
+///
+/// That was a sentence in a doc comment, which is exactly the kind of rule the
+/// next person adds a call in violation of without ever reading it. This is the
+/// sentence as a test.
+///
+/// The list is the paths where a collision would be a vulnerability rather than
+/// a wrong answer: the vault and its sealing, the catalog rows that hold
+/// credentials, and the two session paths that verify one. Each path is
+/// asserted to EXIST before it is read — a guard over a file that has been
+/// renamed guards nothing and passes quietly, which is the failure this shape
+/// is most prone to.
+#[test]
+fn no_security_path_computes_a_broken_digest() {
+    const GUARDED: &[(&str, &str)] = &[
+        (
+            "crates/tessari-storage/src/vault.rs",
+            "the vault's own reads and writes",
+        ),
+        (
+            "crates/tessari-storage/src/sealing.rs",
+            "sealing and unsealing",
+        ),
+        (
+            "crates/tessari-storage/src/catalog/vault.rs",
+            "the vault's catalog rows",
+        ),
+        (
+            "crates/tessari-storage/src/catalog/system.rs",
+            "where credentials are hashed",
+        ),
+        (
+            "crates/tessari-session/src/ticket.rs",
+            "the session credential",
+        ),
+        (
+            "crates/tessari-session/src/session.rs",
+            "where a statement is authorized",
+        ),
+    ];
+    // The spellings a call would take: the language's own, and the two helpers
+    // in `tessari-session::digest` that back them.
+    const BROKEN: &[&str] = &[
+        "crypto::md5",
+        "crypto::sha1",
+        "CryptoMd5",
+        "CryptoSha1",
+        "digest::md5",
+        "digest::sha1",
+    ];
+
+    let mut found = Vec::new();
+    for (path, why) in GUARDED {
+        let full = repo().join(path);
+        assert!(
+            full.is_file(),
+            "{path} is guarded and does not exist — {why}"
+        );
+        let text = fs::read_to_string(&full).expect("a guarded path");
+        for spelling in BROKEN {
+            if text.contains(spelling) {
+                found.push(format!("{path} names {spelling} ({why})"));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "a broken digest reached a path where a collision is a vulnerability: {found:#?}"
+    );
+}
