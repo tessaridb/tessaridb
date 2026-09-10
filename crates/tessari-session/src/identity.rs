@@ -608,6 +608,10 @@ impl Needs {
             // class is measured on what the answer discloses, which is the same
             // argument that puts a span delete on this line.
             | StatementKind::Claim { .. }
+            // The targeted form discloses the same record by the same answer, so it
+            // takes the same class — named here rather than left to a catch-all,
+            // which is the mistake the release's own comment below records.
+            | StatementKind::ClaimRecord { .. }
             // A release clears a hold and answers nothing about the record, so
             // it is the write half alone — and it is listed here rather than as
             // a write-only statement because the class it would otherwise take

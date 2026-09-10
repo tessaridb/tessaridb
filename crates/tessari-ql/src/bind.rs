@@ -230,6 +230,8 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // A release names one record, and a record's identity may be a
         // parameter wherever a record's identity may be one.
         | StatementKind::Release { target, .. }
+        // A targeted claim names one record for the same reason a release does.
+        | StatementKind::ClaimRecord { target, .. }
         | StatementKind::Read { target, .. } => bind_target(target, binding),
         StatementKind::Relate {
             from, to, value, ..

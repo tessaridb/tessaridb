@@ -881,6 +881,35 @@ pub enum StatementKind {
         /// Where the statement sits.
         span: Span,
     },
+    /// `CLAIM jobs:7`
+    ///
+    /// A hold on the record the caller names, rather than on whichever record
+    /// the walk reaches first.
+    ///
+    /// **The same write by a second door.** It sets the two per-record fields
+    /// [`Self::Claim`] sets, under the same declared timeout, so replication,
+    /// restart and leader change are unchanged — a claim is still an ordinary
+    /// logged write.
+    ///
+    /// **Existence is an error and contention is an answer.** A record that is
+    /// not there raises, as `RELEASE` does, because a caller who named a record
+    /// has to be told it named nothing. A record somebody holds, or one whose
+    /// attempts are spent, answers **no records and no error**, which is the
+    /// selecting form's own convention: nothing claimable is the ordinary case.
+    ///
+    /// **It skips the walk, so arrival order is a promise of [`Self::Claim`]
+    /// alone.** A caller mixing the two forms can take a record the walk had not
+    /// reached, which is the point of naming one.
+    ///
+    /// **The attempt count moves.** A hand-out is a hand-out however the record
+    /// was chosen — so a queue used as a lock table is declared without an
+    /// `ATTEMPTS` ceiling, or it stops locking once the ceiling is reached.
+    ClaimRecord {
+        /// The record to hold.
+        target: RecordTarget,
+        /// Where the statement sits.
+        span: Span,
+    },
     /// `RELEASE jobs:7`
     ///
     /// Clears a hold now rather than at its deadline, so a worker that knows it

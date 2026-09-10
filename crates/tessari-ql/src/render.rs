@@ -76,7 +76,9 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DropSeries { .. } => Err(unrenderable("DROP SERIES", span)),
         StatementKind::DefineView { .. } => Err(unrenderable("DEFINE VIEW", span)),
         StatementKind::DropView { .. } => Err(unrenderable("DROP VIEW", span)),
-        StatementKind::Claim { .. } => Err(unrenderable("CLAIM", span)),
+        StatementKind::Claim { .. } | StatementKind::ClaimRecord { .. } => {
+            Err(unrenderable("CLAIM", span))
+        }
         StatementKind::Release { .. } => Err(unrenderable("RELEASE", span)),
         StatementKind::DropVector { .. } => Err(unrenderable("DROP VECTOR", span)),
         StatementKind::DefineGeo { .. } => Err(unrenderable("DEFINE GEO", span)),

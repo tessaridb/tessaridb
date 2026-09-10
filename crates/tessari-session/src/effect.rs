@@ -222,6 +222,7 @@ impl Effect {
             // Both change records, so both are writes however much the first one
             // also reads.
             | StatementKind::Claim { .. }
+            | StatementKind::ClaimRecord { .. }
             | StatementKind::Release { .. }
             | StatementKind::Relate { .. }
             | StatementKind::DeleteEdge { .. }

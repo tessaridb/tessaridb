@@ -695,6 +695,9 @@ impl Session<'_> {
             StatementKind::Claim { table, count, span } => {
                 self.claim(transaction, table, *count, *span)
             }
+            StatementKind::ClaimRecord { target, span } => {
+                self.claim_record(transaction, target, *span)
+            }
             StatementKind::Release { target, span } => self.release(transaction, target, *span),
             StatementKind::Reveal {
                 target,

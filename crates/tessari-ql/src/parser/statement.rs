@@ -929,16 +929,42 @@ impl Parser<'_> {
     /// decided how many records got written would be the one clause in the
     /// language that changes the store rather than the answer.
     fn claim_statement(&mut self, start: Span) -> Result<StatementKind> {
-        let count = if matches!(self.peek(), Some(Token::Number(_))) {
-            self.claim_count()?
-        } else {
-            1
-        };
-        self.expect_keyword(Keyword::From, "`FROM` and the queue to take from")?;
+        // Three shapes, told apart by the token after `CLAIM` rather than by a
+        // keyword: a number commits to the counting form, `FROM` is that form
+        // with a count of one, and anything else is a record the caller named.
+        if matches!(self.peek(), Some(Token::Number(_))) {
+            let count = self.claim_count()?;
+            self.expect_keyword(Keyword::From, "`FROM` and the queue to take from")?;
+            let table = self.table_ref()?;
+            return Ok(StatementKind::Claim {
+                table,
+                count,
+                span: start.to(self.span_behind()),
+            });
+        }
+        if self.eat_keyword(Keyword::From) {
+            let table = self.table_ref()?;
+            return Ok(StatementKind::Claim {
+                table,
+                count: 1,
+                span: start.to(self.span_behind()),
+            });
+        }
         let table = self.table_ref()?;
-        Ok(StatementKind::Claim {
-            table,
-            count,
+        // Raised here rather than by `record_target_after`, whose message is
+        // shared with every other record-target statement. A bare `CLAIM jobs`
+        // is most likely a forgotten `FROM` rather than a forgotten identity, so
+        // the message names both forms instead of only what the parser wanted
+        // next — and naming them here changes no other statement's refusal.
+        if !self.at_punct(Punct::Colon) {
+            return Err(self.error_here(
+                "`:` and the record to hold, as in `CLAIM jobs:7` — or `FROM` \
+                 and the queue to take from, as in `CLAIM FROM jobs`",
+            ));
+        }
+        let target = self.record_target_after(table)?;
+        Ok(StatementKind::ClaimRecord {
+            target,
             span: start.to(self.span_behind()),
         })
     }

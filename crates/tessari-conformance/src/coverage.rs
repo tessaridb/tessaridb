@@ -61,6 +61,10 @@ forms! {
     DefineView => "DEFINE VIEW",
     DropView => "DROP VIEW",
     Claim => "CLAIM",
+    // Not a spelling — there is no `CLAIM RECORD` keyword pair. The angle
+    // brackets say so, because a coverage label that looked like syntax would
+    // be read as syntax by the next person adding a case.
+    ClaimRecord => "CLAIM <record>",
     Release => "RELEASE",
     Reveal => "REVEAL",
     AddRecipient => "ADD RECIPIENT",
@@ -266,6 +270,7 @@ mod tests {
              DELETE FROM t:1..2 LIMIT ALL;\
              DEFINE QUEUE q TIMEOUT 30s ATTEMPTS 5;\
              CLAIM 2 FROM q;\
+             CLAIM q:7;\
              RELEASE q:1;\
              DROP QUEUE q;\
              DEFINE SERIES s RETAIN 12h;\

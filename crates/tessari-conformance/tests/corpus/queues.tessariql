@@ -119,3 +119,38 @@ SELECT * FROM fast;
 --- case: and `DROP QUEUE` refuses a table of another kind
 DROP QUEUE notes;
 --- expect: error Unknown
+
+--- case: a queue for the claims that name their record
+DEFINE QUEUE slow TIMEOUT 30s;
+CREATE slow:1 = { url: 'p' };
+CREATE slow:2 = { url: 'q' };
+CREATE slow:3 = { url: 'r' };
+--- expect: ok
+
+--- case: a claim that names its record holds that record and no other
+CLAIM slow:2;
+--- expect: rows 1
+
+--- case: the named hold is what the walk then passes over
+CLAIM FROM slow;
+--- expect: rows 1
+
+--- case: a record somebody holds answers nothing rather than raising
+CLAIM slow:2;
+--- expect: rows 0
+
+--- case: a record that is not there raises, because a caller who named one must be told
+CLAIM slow:99;
+--- expect: error Unknown
+
+--- case: release hands a named hold back, and the pair reads as a pair
+RELEASE slow:2;
+--- expect: ok
+
+--- case: and the released record is claimable by name again
+CLAIM slow:2;
+--- expect: rows 1
+
+--- case: a bare table name is neither form, and the refusal names both
+CLAIM slow;
+--- expect: error UnexpectedToken

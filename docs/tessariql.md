@@ -5224,6 +5224,7 @@ CREATE jobs = { url: 'https://example.test/report' };
 
 CLAIM FROM jobs;
 CLAIM 10 FROM jobs;
+CLAIM jobs:7;
 
 DELETE jobs:7;
 RELEASE jobs:7;
@@ -5243,16 +5244,42 @@ first-in-first-out with no ordering state of its own. It answers with the record
 so the worker can do the work, and **an empty queue answers no records rather
 than failing**: a worker polls, and being caught up is the ordinary case.
 
+**`CLAIM jobs:7` holds the record you name**, for a caller that has already
+chosen its work rather than asking for whatever is next. It is the same write —
+the same deadline, the same attempt, the same comparison a later reader performs
+— reached by a key instead of by a walk, so nothing about replication, restart or
+a leader change differs between the two forms.
+
+Two things follow from naming a record, and both are answers to questions the
+selecting form never raises. **A record that is not there raises**, as `RELEASE`
+does, because a caller who named a record has to be told it named nothing. **A
+record somebody else holds answers no records and no error** — that is the
+selecting form's convention kept, and a refusal there would make a caller polling
+for a busy record see failures on a healthy queue. So arrival order is a promise
+of `CLAIM FROM` alone: a caller that names records can take work the walk had not
+reached, which is the point of naming it.
+
+**A queue used as a lock table is declared without an `ATTEMPTS` ceiling.** Every
+claim counts an attempt however the record was chosen, so a ceiling on a table
+whose records are claimed by name repeatedly will, on the claim after the last
+one, stop handing that record out — permanently, with no error, at the moment a
+caller tries to take a hold it is entitled to. Leaving the clause out is what
+says the work cannot poison; for a lock, it cannot.
+
 **`RELEASE` hands a record back before its deadline**, for a worker that knows it
 has failed or is shutting down. It does not touch the attempt count — that was
 taken at the claim, and a record that was handed out was handed out whatever
-happened next.
+happened next. **It does not ask who holds the record**: the store records that a
+record is held and until when, never by whom, so any caller who may write the
+table may hand any record back. A system where that matters keeps the holder in a
+field of its own and checks it before releasing.
 
 ### What the guarantees are, in the same words the consumer's are
 
 ```text
 CREATE       — the record is in the queue when the commit returns
 CLAIM        — a write; the record is held until its stored deadline passes
+CLAIM t:7    — the same write on the record named; held answers nothing, absent raises
 DELETE       — the work is done and the record is gone
 a crash      — nothing written past the last commit; the deadline passes; redelivered
 ```

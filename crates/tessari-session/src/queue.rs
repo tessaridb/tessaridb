@@ -157,6 +157,86 @@ impl Session<'_> {
         })
     }
 
+    /// `CLAIM jobs:7`
+    ///
+    /// The hold the caller asked for, on the record the caller named. Everything
+    /// a hold is — the deadline computed once, the attempt taken at the hand-out,
+    /// the comparison a later reader performs — is the selecting form's, reached
+    /// by a key instead of by a walk.
+    ///
+    /// **Existence raises and contention answers.** A record that is not there is
+    /// [`Error::Unknown`], which is what `RELEASE` answers and what a caller who
+    /// named a record has to be told. A record somebody holds, or one whose
+    /// attempts are spent, answers **no records**: that is the selecting form's
+    /// own convention, and a refusal there would make a worker polling for a busy
+    /// record see failures on a healthy queue.
+    ///
+    /// **It reports [`AccessPath::Record`]** rather than the scan the selecting
+    /// form reports, because it did not walk anything. The two are different
+    /// statements about how the record was reached and only one of them is true
+    /// here.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotAQueue`] when the table is not one, [`Error::Unknown`] when
+    /// there is no such record, and the mapped storage failure otherwise.
+    pub(crate) fn claim_record(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+        span: Span,
+    ) -> Result<Outcome> {
+        let (_, address) = self.address(transaction, target)?;
+        let declared = queue_declaration(
+            transaction,
+            address.table,
+            &target.table.name.text,
+            target.span,
+        )?;
+        let Some(stored) = transaction.get(&address)? else {
+            return Err(Error::Unknown {
+                entity: "record",
+                name: address.id.to_string(),
+                span: target.span,
+            });
+        };
+        let now = crate::call::instant(span)?;
+        let until = deadline(now, declared, span)?;
+
+        // A record that is not an object cannot carry a hold. The selecting form
+        // steps over one so that a single malformed record does not stop every
+        // worker; here the caller named it, so answering nothing says the same
+        // thing about the same record without pretending it was a refusal.
+        let Value::Object(mut fields) = decode_payload(&stored)? else {
+            return Ok(nothing_claimed(&target.table.name.text));
+        };
+        if !claimable(&fields, now, declared) {
+            return Ok(nothing_claimed(&target.table.name.text));
+        }
+        fields.insert(QUEUE_CLAIMED_UNTIL.to_owned(), Value::Datetime(until));
+        fields.insert(
+            QUEUE_ATTEMPTS.to_owned(),
+            Value::Number(Number::Integer(attempts_of(&fields).saturating_add(1))),
+        );
+        let payload = Value::Object(fields);
+        let record = address.id.clone();
+        self.put_engine_record(transaction, address, payload.clone(), span)?;
+
+        // Written before the answer is built, and read back by nothing: a second
+        // targeted claim in the same transaction reaches this record through
+        // `Transaction::get`, which merges what this transaction has written, so
+        // it sees the hold and answers nothing. The selecting form arrives at the
+        // same behaviour from the other side — its writes land after its walk so
+        // that a claim cannot count one record twice.
+        Ok(Outcome::Records {
+            records: vec![(record, payload)],
+            plan: Plan::new(AccessPath::Record).on(&target.table.name.text),
+            notes: Vec::new(),
+            suggestion: None,
+            only: false,
+        })
+    }
+
     /// `RELEASE jobs:7`
     ///
     /// Clears the hold now rather than at its deadline. The attempt count is not
@@ -200,6 +280,21 @@ impl Session<'_> {
         let _ = context;
         self.put_engine_record(transaction, address, Value::Object(fields), span)?;
         Ok(Outcome::Done)
+    }
+}
+
+/// The answer a targeted claim gives when the record is not claimable.
+///
+/// No records and no error — the same shape a successful claim answers with, so
+/// a caller reads one thing either way and the ordinary busy case is not a
+/// failure.
+fn nothing_claimed(table: &str) -> Outcome {
+    Outcome::Records {
+        records: Vec::new(),
+        plan: Plan::new(AccessPath::Record).on(table),
+        notes: Vec::new(),
+        suggestion: None,
+        only: false,
     }
 }
 

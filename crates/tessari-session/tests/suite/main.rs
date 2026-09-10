@@ -74,6 +74,7 @@ mod plan_invariance;
 mod prefix;
 mod pruned_ranking;
 mod queue_claims;
+mod queue_targeted_claims;
 mod ranges;
 mod ranking;
 mod rebuild_index;

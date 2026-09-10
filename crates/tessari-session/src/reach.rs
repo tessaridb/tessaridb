@@ -277,7 +277,8 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::Delete { target, .. }
         | StatementKind::Del { target }
         // A release names one record in one queue, so the queue is the table the
-        // grant is asked about.
+        // grant is asked about, and a targeted claim names one the same way.
+        | StatementKind::ClaimRecord { target, .. }
         | StatementKind::Release { target, .. }
         // A file is a record in the bucket, so the bucket is the table a grant
         // is asked about. The chunks live in a table nothing can name, and are
