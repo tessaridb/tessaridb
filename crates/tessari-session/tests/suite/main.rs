@@ -102,6 +102,7 @@ mod tightening;
 mod timeout;
 mod traversal;
 mod trusted_index;
+mod unique_within_a_transaction;
 mod update_fields;
 mod using;
 mod vault_audit;
