@@ -389,26 +389,43 @@ mod tests {
         read(text.as_bytes()).expect_err("this should not have read")
     }
 
+    /// Compare two answers by their written form rather than by `PartialEq`.
+    ///
+    /// `Value`'s equality equates `Integer(3)`, `Float(3.0)` and
+    /// `Decimal("3.0")` deliberately, and the join relies on it. So an
+    /// assertion about which KIND this reader answers cannot be written with
+    /// `assert_eq!` on the values themselves: it passes against a reader that
+    /// answered the other kind, which is the one difference the tests below
+    /// exist to catch and the one a caller sees on the wire (Q-76).
+    #[track_caller]
+    fn same(answered: impl core::fmt::Debug, expected: impl core::fmt::Debug) {
+        assert_eq!(format!("{answered:?}"), format!("{expected:?}"));
+    }
+
     #[test]
     fn a_whole_number_stays_whole() {
         // The decision this reader exists for. A millisecond timestamp read as a
         // double comes back rounded, and the record lands with the wrong value
         // and no error anywhere.
-        assert_eq!(
+        same(
             parsed("1756300000000"),
-            Value::Number(Number::Integer(1_756_300_000_000))
+            Value::Number(Number::Integer(1_756_300_000_000)),
         );
-        assert_eq!(parsed("-7"), Value::Number(Number::Integer(-7)));
-        assert_eq!(parsed("0"), Value::Number(Number::Integer(0)));
+        same(parsed("-7"), Value::Number(Number::Integer(-7)));
+        same(parsed("0"), Value::Number(Number::Integer(0)));
     }
 
     #[test]
     fn a_number_written_with_a_point_or_an_exponent_is_a_float() {
+        // Left on `assert_eq!` deliberately. `1.5` has no integer twin and
+        // this reader has no decimal path, so there is no kind this assertion
+        // could fail to see — converting it would add noise around the two
+        // below, which have one (Q-76).
         assert_eq!(parsed("1.5"), Value::Number(Number::Float(1.5)));
-        assert_eq!(parsed("1e3"), Value::Number(Number::Float(1000.0)));
+        same(parsed("1e3"), Value::Number(Number::Float(1000.0)));
         // Written as a float even though its value is whole: what a producer
         // wrote is what it meant, and `2.0` in a payload is a measurement.
-        assert_eq!(parsed("2.0"), Value::Number(Number::Float(2.0)));
+        same(parsed("2.0"), Value::Number(Number::Float(2.0)));
     }
 
     #[test]
@@ -433,7 +450,7 @@ mod tests {
         let Value::Object(fields) = parsed(r#"{"a":1,"b":{"c":"x"}}"#) else {
             panic!("not an object");
         };
-        assert_eq!(fields.get("a"), Some(&Value::Number(Number::Integer(1))));
+        same(fields.get("a"), Some(&Value::Number(Number::Integer(1))));
         let Some(Value::Object(inner)) = fields.get("b") else {
             panic!("not nested");
         };

@@ -775,10 +775,24 @@ mod tests {
         Value::from(value)
     }
 
+    /// Compare two answers by their written form rather than by `PartialEq`.
+    ///
+    /// `Value`'s equality equates `Integer(3)`, `Float(3.0)` and
+    /// `Decimal("3.0")` deliberately, and the join relies on it. So an
+    /// assertion about which KIND a function answers cannot be written with
+    /// `assert_eq!` on the values themselves: it passes against a function
+    /// answering the other kind, and a kind is a difference the caller sees on
+    /// the wire (Q-76). The site that carries a message writes the comparison
+    /// out instead, so the message survives.
+    #[track_caller]
+    fn same(answered: impl core::fmt::Debug, expected: impl core::fmt::Debug) {
+        assert_eq!(format!("{answered:?}"), format!("{expected:?}"));
+    }
+
     #[test]
     fn a_length_counts_characters_and_not_bytes() {
         let answer = call(Function::StringLen, &[text("héllo")], at()).expect("a length");
-        assert_eq!(answer, Value::Number(Number::Integer(5)));
+        same(answer, Value::Number(Number::Integer(5)));
     }
 
     #[test]
@@ -839,14 +853,14 @@ mod tests {
     #[test]
     fn rounding_keeps_the_kind_it_was_given() {
         let whole = Value::Number(Number::Integer(7));
-        assert_eq!(
+        same(
             call(Function::MathFloor, std::slice::from_ref(&whole), at()).expect("a number"),
-            whole
+            &whole,
         );
         let fractional = Value::Number(Number::float(2.5));
-        assert_eq!(
+        same(
             call(Function::MathRound, &[fractional], at()).expect("a number"),
-            Value::Number(Number::float(3.0))
+            Value::Number(Number::float(3.0)),
         );
     }
 
@@ -875,8 +889,8 @@ mod tests {
             (Function::TimeSecond, 9),
         ] {
             assert_eq!(
-                read(function, taken.clone()),
-                Value::Number(Number::Integer(expected)),
+                format!("{:?}", read(function, taken.clone())),
+                format!("{:?}", Value::Number(Number::Integer(expected))),
                 "{function}"
             );
         }
@@ -887,13 +901,13 @@ mod tests {
         // Two functions one letter apart in meaning, and both answer an integer,
         // so nothing but this asserts which is which.
         let taken = instant("2026-08-28T14:37:09Z");
-        assert_eq!(
+        same(
             read(Function::TimeSecond, taken.clone()),
-            Value::Number(Number::Integer(9))
+            Value::Number(Number::Integer(9)),
         );
-        assert_eq!(
+        same(
             read(Function::TimeUnix, taken),
-            Value::Number(Number::Integer(1_787_927_829))
+            Value::Number(Number::Integer(1_787_927_829)),
         );
     }
 
@@ -911,9 +925,9 @@ mod tests {
         // remainder nearly always. Asserted so the loss is a decision on the
         // record rather than something nobody looked at.
         let taken = instant("2026-08-28T14:37:09.5Z");
-        assert_eq!(
+        same(
             read(Function::TimeUnix, taken),
-            Value::Number(Number::Integer(1_787_927_829))
+            Value::Number(Number::Integer(1_787_927_829)),
         );
     }
 
