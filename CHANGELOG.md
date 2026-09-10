@@ -12,15 +12,12 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
-## 0.0.6-beta — 2026-09-08
+## 0.1.0-beta — 2026-09-10
 
-### Since the release
+**Released.** Tagged `v0.1.0-beta` on `main`, and published as
+[`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb) —
+`0.1.0-beta` and `latest`, `linux/amd64` and `linux/arm64`.
 
-Work landed after the tag was cut, and recorded here because this file's top
-section must name the version this package carries — so there is nowhere else
-for it to go until the next version is opened.
-
-**A queue can now say who is holding a record.** `USE CONSUMER 'billing'` names
 a session, `CLAIM` signs the hold with it, and `RELEASE ALL FROM jobs` hands back
 everything that session holds — answering the records it freed rather than a
 count. Releasing somebody else's hold is refused, naming them; before this, any
@@ -151,6 +148,8 @@ carries. Successive waves had been raising that number to the corpus's current
 size so that the check requiring the CHANGELOG to state the badge's figure would
 pass, which quietly made a released section describe a release it is not about.
 The count above satisfies that check instead.
+
+## 0.0.6-beta — 2026-09-08
 
 ### The release itself
 
