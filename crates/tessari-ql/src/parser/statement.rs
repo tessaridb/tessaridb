@@ -459,8 +459,20 @@ impl Parser<'_> {
             _ if self.eat_word("node") => InfoSubject::Node,
             // Plural first, as with `USERS` above, so that reading this arm in
             // order tells you which of the two a bare word reaches.
-            _ if self.eat_word("consumers") => InfoSubject::Consumers,
-            _ if self.eat_word("consumer") => InfoSubject::Consumer(self.name()?),
+            _ if self.eat_word("kafka") => {
+                if self.eat_word("consumers") {
+                    InfoSubject::Consumers
+                } else {
+                    self.expect_word("consumer", "`CONSUMER` or `CONSUMERS` after `KAFKA`")?;
+                    InfoSubject::Consumer(self.name()?)
+                }
+            }
+            _ if self.peek_word("consumer") || self.peek_word("consumers") => {
+                return Err(self.error_here(
+                    "`INFO FOR KAFKA CONSUMER` — the bare word now belongs to a \
+                     queue's readers",
+                ));
+            }
             _ if self.eat_word("vector") => InfoSubject::Vector(self.name()?),
             _ if self.eat_word("geo") => InfoSubject::Geo(self.name()?),
             _ if self.eat_word("vault") => InfoSubject::Vault(self.name()?),
@@ -478,7 +490,7 @@ impl Parser<'_> {
                 // list wrong is worse than one that lists none, because a caller
                 // reads it as the whole truth and stops looking.
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `BUCKET`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `RECIPIENTS OF` or `AUDIT`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `BUCKET`, `USER`, `USERS`, `ACCESS`, `NODE`, `KAFKA CONSUMER`, `KAFKA CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `RECIPIENTS OF` or `AUDIT`",
                 ));
             }
         };
@@ -731,7 +743,22 @@ impl Parser<'_> {
             // arms consume their word, so neither may `advance` again.
             _ if self.eat_word("node") => self.define_node(),
             _ if self.eat_word("replica") => self.define_replica(),
-            _ if self.eat_word("consumer") => self.define_consumer(),
+            // `KAFKA` qualifies the word rather than replacing it, and it is
+            // contextual like every other subject here — special after `DEFINE`
+            // and an ordinary identifier everywhere else, so a table called
+            // `kafka` is still spellable.
+            _ if self.eat_word("kafka") => {
+                self.expect_word("consumer", "`CONSUMER` after `KAFKA`")?;
+                self.define_consumer()
+            }
+            // The bare spelling is REFUSED rather than accepted, because the
+            // word is being given to the queue: a `DEFINE CONSUMER` that kept
+            // working would mean broker ingestion today and a claimant identity
+            // later, and nothing in the statement would say which was meant.
+            _ if self.peek_word("consumer") => Err(self.error_here(
+                "`DEFINE KAFKA CONSUMER` — broker ingestion names its broker, \
+                 and `CONSUMER` alone now belongs to a queue's readers",
+            )),
             // Contextual for the reason `DEFINE INDEX … VECTOR` already gives:
             // a field called `vector` in a database of embeddings is not a name
             // to take away, and taking it away here would take it away
@@ -756,7 +783,7 @@ impl Parser<'_> {
             // existed keeps it.
             _ if self.eat_word("view") => self.define_view(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `CONSUMER`, `VECTOR`, `GEO`, `VAULT`, `QUEUE` or `VIEW`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `KAFKA CONSUMER`, `VECTOR`, `GEO`, `VAULT`, `QUEUE` or `VIEW`",
             )),
         }
     }
@@ -1986,12 +2013,17 @@ impl Parser<'_> {
                     table: self.table_ref()?,
                 })
             }
-            // Contextual, for the reason `DEFINE CONSUMER` is: `consumer` is a
+            // Contextual, for the reason `DEFINE KAFKA CONSUMER` is: `consumer` is a
             // plausible table in an application that has customers, and nothing
             // but a subject can stand here.
-            _ if self.eat_word("consumer") => {
+            _ if self.eat_word("kafka") => {
+                self.expect_word("consumer", "`CONSUMER` after `KAFKA`")?;
                 Ok(StatementKind::DropConsumer { name: self.name()? })
             }
+            _ if self.peek_word("consumer") => Err(self.error_here(
+                "`DROP KAFKA CONSUMER` — the bare word now belongs to a \
+                 queue's readers",
+            )),
             // Contextual for the same reason `consumer` is, and listed before
             // `node` so that reading these two in order tells you which of them
             // a bare word reaches.

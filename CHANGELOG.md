@@ -20,6 +20,23 @@ Work landed after the tag was cut, and recorded here because this file's top
 section must name the version this package carries — so there is nowhere else
 for it to go until the next version is opened.
 
+**Broker ingestion now names its broker: `DEFINE KAFKA CONSUMER`.** The
+statement is otherwise unchanged — same clauses, same guarantees, same
+refusals — but `DEFINE CONSUMER`, `DROP CONSUMER` and `INFO FOR CONSUMER[S]`
+are gone and their bare spellings are **refused with a message naming the
+replacement**, rather than left to mean something else later.
+
+The reason is that the general word was being held by one broker. Every noun in
+the statement — brokers, topic, group — comes from Kafka, so naming it is
+honest, and it leaves room for a second broker to be added without a fight over
+whose statement `DEFINE CONSUMER` is. The word itself is wanted back for a
+queue's readers, which is what a consumer is everywhere else.
+
+`KAFKA` is **contextual and not reserved**: it is a subject after `DEFINE`,
+`DROP` and `INFO FOR`, and an ordinary identifier everywhere else, so a table,
+field or parameter called `kafka` is still spellable. That is asserted by a
+test rather than claimed.
+
 **A view is a name for a read.** `DEFINE VIEW engineers AS SELECT * FROM staff
 WHERE team = 'eng'`, and then `SELECT * FROM engineers` anywhere a table can be
 read. Nothing is stored under it and nothing is maintained: a statement naming a
@@ -83,7 +100,7 @@ empty answer, and one that has steady work claims a batch. This paragraph said
 "and re-selects" until it was measured with four competing processes; the
 sentence was wrong and the correction is here rather than silent.
 
-Delivery is **at-least-once**, the same guarantee `DEFINE CONSUMER` states, and
+Delivery is **at-least-once**, the same guarantee `DEFINE KAFKA CONSUMER` states, and
 `CLAIM` is **not idempotent**: a worker whose reply is lost and which asks again
 gets a different record while the first stays held until its deadline. Both are
 written into the reference rather than left to be derived.

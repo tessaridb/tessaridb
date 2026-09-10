@@ -32,7 +32,7 @@ use crate::session::Session;
 /// that acts on it have to mean the same word.
 const FORMAT_JSON: &str = "json";
 
-/// A `DEFINE CONSUMER` statement's parts, carried together.
+/// A `DEFINE KAFKA CONSUMER` statement's parts, carried together.
 ///
 /// Nine fields is more than a function signature should take, and the grouping
 /// is not only clippy's preference: passing them as one borrow means a field

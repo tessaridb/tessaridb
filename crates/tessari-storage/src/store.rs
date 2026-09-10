@@ -74,7 +74,7 @@ pub struct Store {
     /// What this process is doing with the declared consumers.
     ///
     /// Shared like the snapshot registry and for the same reason: a session
-    /// answering `INFO FOR CONSUMER` and the thread doing the consuming must be
+    /// answering `INFO FOR KAFKA CONSUMER` and the thread doing the consuming must be
     /// looking at one registry, not at two that agree until they do not.
     running: Arc<crate::running::Running>,
     /// Whether this process can open what its vaults hold.

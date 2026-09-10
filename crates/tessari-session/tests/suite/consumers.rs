@@ -15,7 +15,7 @@
 //! - A **tenancy-scoped** user — `ada ON prod.shop` — is stopped by resolving
 //!   the destination: `resolve_table` asks whether the caller's tenancy permits
 //!   the database, and it already did that before this statement existed.
-//! - A **grant-governed** user is not, and this is the one `DEFINE CONSUMER`
+//! - A **grant-governed** user is not, and this is the one `DEFINE KAFKA CONSUMER`
 //!   appears in `reach.rs` for. Grants are checked against the tables a
 //!   statement *names*, so a statement naming none passes the loop
 //!   **vacuously** — the shape that let a grant-governed owner take a whole
@@ -37,7 +37,7 @@ use tessari_types::Value;
 const PASSWORD: &str = "correct horse battery";
 
 /// A declaration against `prod.shop.orders`, ready to be varied.
-const DECLARE: &str = "DEFINE CONSUMER orders_in \
+const DECLARE: &str = "DEFINE KAFKA CONSUMER orders_in \
      FROM 'broker-1:9092' TOPIC 'orders' GROUP 'shop-orders' \
      FORMAT json INTO orders IDENTITY order_id \
      MAP amount AS total, placed.at AS placed_at \
@@ -95,7 +95,7 @@ fn a_declared_consumer_is_read_back_field_for_field() {
     let mut session = inside(&store);
     session.run(DECLARE).unwrap();
 
-    let report = reported(session.run("INFO FOR CONSUMER orders_in;").unwrap());
+    let report = reported(session.run("INFO FOR KAFKA CONSUMER orders_in;").unwrap());
     let declared = group(&report, "declared");
     assert_eq!(declared.get("name"), Some(&Value::from("orders_in")));
     assert_eq!(declared.get("topic"), Some(&Value::from("orders")));
@@ -127,7 +127,11 @@ fn the_declaration_survives_a_reopen_and_the_running_half_does_not() {
         inside(&store).run(DECLARE).unwrap();
     }
     let store = Store::open(Arc::clone(&backend)).unwrap();
-    let report = reported(inside(&store).run("INFO FOR CONSUMER orders_in;").unwrap());
+    let report = reported(
+        inside(&store)
+            .run("INFO FOR KAFKA CONSUMER orders_in;")
+            .unwrap(),
+    );
     assert_eq!(
         group(&report, "declared").get("name"),
         Some(&Value::from("orders_in")),
@@ -152,7 +156,7 @@ fn the_report_states_the_delivery_guarantee_where_it_is_configured() {
     let mut session = inside(&store);
     session.run(DECLARE).unwrap();
 
-    let report = reported(session.run("INFO FOR CONSUMER orders_in;").unwrap());
+    let report = reported(session.run("INFO FOR KAFKA CONSUMER orders_in;").unwrap());
     let guarantees = group(&report, "guarantees");
     assert_eq!(
         guarantees.get("delivery"),
@@ -182,10 +186,10 @@ fn a_destination_that_does_not_exist_is_refused_at_declaration() {
         .to_string();
     assert!(failure.contains("table"), "{failure}");
     assert!(
-        session.run("INFO FOR CONSUMERS;").is_ok(),
+        session.run("INFO FOR KAFKA CONSUMERS;").is_ok(),
         "the failed declaration broke the listing"
     );
-    let report = reported(session.run("INFO FOR CONSUMERS;").unwrap());
+    let report = reported(session.run("INFO FOR KAFKA CONSUMERS;").unwrap());
     let Some(Value::Array(listed)) = report.get("consumers") else {
         panic!("no listing");
     };
@@ -239,11 +243,11 @@ fn dropping_forgets_it_and_dropping_an_unknown_one_says_so() {
     let store = shaped(&backend);
     let mut session = inside(&store);
     session.run(DECLARE).unwrap();
-    session.run("DROP CONSUMER orders_in;").unwrap();
+    session.run("DROP KAFKA CONSUMER orders_in;").unwrap();
 
-    assert!(session.run("INFO FOR CONSUMER orders_in;").is_err());
+    assert!(session.run("INFO FOR KAFKA CONSUMER orders_in;").is_err());
     let failure = session
-        .run("DROP CONSUMER orders_in;")
+        .run("DROP KAFKA CONSUMER orders_in;")
         .unwrap_err()
         .to_string();
     assert!(failure.contains("consumer"), "{failure}");
@@ -267,7 +271,7 @@ fn the_listing_says_which_ones_this_node_is_running() {
         )
         .unwrap();
 
-    let report = reported(session.run("INFO FOR CONSUMERS;").unwrap());
+    let report = reported(session.run("INFO FOR KAFKA CONSUMERS;").unwrap());
     let Some(Value::Array(listed)) = report.get("consumers") else {
         panic!("no listing");
     };
@@ -295,7 +299,7 @@ fn a_destination_dropped_under_a_consumer_is_reported_as_gone() {
     session.run(DECLARE).unwrap();
     session.run("DROP TABLE orders;").unwrap();
 
-    let report = reported(session.run("INFO FOR CONSUMER orders_in;").unwrap());
+    let report = reported(session.run("INFO FOR KAFKA CONSUMER orders_in;").unwrap());
     assert_eq!(
         group(&report, "declared").get("destination"),
         Some(&Value::from("<dropped>"))
@@ -424,7 +428,7 @@ fn a_consumer_cannot_be_aimed_at_a_table_the_caller_may_not_write() {
     // And nothing was declared, so the refusal is not a half-write.
     let mut root = Session::new(&store);
     root.sign_in("root", PASSWORD).unwrap();
-    let report = reported(root.run("INFO FOR CONSUMERS;").unwrap());
+    let report = reported(root.run("INFO FOR KAFKA CONSUMERS;").unwrap());
     let Some(Value::Array(listed)) = report.get("consumers") else {
         panic!("no listing");
     };
@@ -471,12 +475,16 @@ fn asking_about_a_consumer_needs_more_than_being_signed_in() {
 
     assert!(
         signed_in(&store, "vic")
-            .run("INFO FOR CONSUMER orders_in;")
+            .run("INFO FOR KAFKA CONSUMER orders_in;")
             .is_err()
     );
-    assert!(signed_in(&store, "vic").run("INFO FOR CONSUMERS;").is_err());
+    assert!(
+        signed_in(&store, "vic")
+            .run("INFO FOR KAFKA CONSUMERS;")
+            .is_err()
+    );
     signed_in(&store, "nina")
-        .run("INFO FOR CONSUMER orders_in;")
+        .run("INFO FOR KAFKA CONSUMER orders_in;")
         .unwrap();
 }
 
@@ -486,7 +494,7 @@ fn a_grant_governed_caller_may_only_feed_the_tables_they_were_granted() {
     //
     // `pat` is an owner of the whole store, so no tenancy check holds them back;
     // what narrows them is a grant. Grants are checked against the tables a
-    // statement **names**, so before the arm was added `DEFINE CONSUMER` named
+    // statement **names**, so before the arm was added `DEFINE KAFKA CONSUMER` named
     // none and the check passed over it — the same vacuous pass that let a
     // grant-governed owner take a whole backup.
     //
@@ -536,7 +544,7 @@ fn a_grant_governed_caller_may_only_feed_the_tables_they_were_granted() {
 #[test]
 fn a_consumer_records_who_declared_it_and_writes_with_their_authority() {
     // The path the coverage matrix found unenforced, closed. The authority
-    // question used to be asked once, at `DEFINE CONSUMER`, and never again:
+    // question used to be asked once, at `DEFINE KAFKA CONSUMER`, and never again:
     // the runner built a session and never signed in, so every batch was
     // written as **nobody**. Demoting the declarer, revoking their authority or
     // deleting the account outright did not stop the writing, because there was
@@ -555,7 +563,7 @@ fn a_consumer_records_who_declared_it_and_writes_with_their_authority() {
     let mut root = Session::new(&store);
     root.sign_in("root", PASSWORD).unwrap();
     let report = reported(
-        root.run("USE NAMESPACE prod; USE DATABASE shop; INFO FOR CONSUMER orders_in;")
+        root.run("USE NAMESPACE prod; USE DATABASE shop; INFO FOR KAFKA CONSUMER orders_in;")
             .unwrap(),
     );
     let declared = group(&report, "declared");

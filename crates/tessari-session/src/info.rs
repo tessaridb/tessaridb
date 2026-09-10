@@ -884,7 +884,7 @@ impl Session<'_> {
 
     /// Every declared consumer, with whether this process is running it.
     ///
-    /// The counters are left to `INFO FOR CONSUMER <name>`: this is the listing
+    /// The counters are left to `INFO FOR KAFKA CONSUMER <name>`: this is the listing
     /// an operator reads to find out *which* consumer to ask about, and a table
     /// of every partition position would bury that.
     fn info_consumers(&self, transaction: &mut Transaction<'_>) -> Result<BTreeMap<String, Value>> {

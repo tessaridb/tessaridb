@@ -22,7 +22,7 @@ DEFINE COLLECTION orders;
 --- expect: ok
 
 --- case: the whole declaration, every clause in the order the grammar reads them
-DEFINE CONSUMER orders_in
+DEFINE KAFKA CONSUMER orders_in
     FROM 'broker-1:9092', 'broker-2:9092'
     TOPIC 'orders'
     GROUP 'shop-orders'
@@ -35,63 +35,63 @@ DEFINE CONSUMER orders_in
 --- expect: ok
 
 --- case: the declaration is read back, with its running half and its refusals
-INFO FOR CONSUMER orders_in;
+INFO FOR KAFKA CONSUMER orders_in;
 --- expect: ok
 
 --- case: and it appears in the listing
-INFO FOR CONSUMERS;
+INFO FOR KAFKA CONSUMERS;
 --- expect: ok
 
 --- case: the name is claimed once
-DEFINE CONSUMER orders_in
+DEFINE KAFKA CONSUMER orders_in
     FROM 'broker-1:9092' TOPIC 'orders' GROUP 'shop-orders'
     FORMAT json INTO orders IDENTITY order_id MAP amount AS total
     ON FAILURE stop;
 --- expect: error NameTaken
 
 --- case: which is what `IF NOT EXISTS` is for, so a setup script re-runs
-DEFINE CONSUMER IF NOT EXISTS orders_in
+DEFINE KAFKA CONSUMER IF NOT EXISTS orders_in
     FROM 'broker-1:9092' TOPIC 'orders' GROUP 'shop-orders'
     FORMAT json INTO orders IDENTITY order_id MAP amount AS total
     ON FAILURE stop;
 --- expect: ok
 
 --- case: parallelism may be left out, and reads as one rather than as "decide for me"
-DEFINE CONSUMER orders_slow
+DEFINE KAFKA CONSUMER orders_slow
     FROM 'broker-1:9092' TOPIC 'orders' GROUP 'shop-orders-slow'
     FORMAT json INTO orders IDENTITY order_id MAP amount AS total
     ON FAILURE stop;
 --- expect: ok
 
 --- case: a destination that does not exist is refused before anything is stored
-DEFINE CONSUMER nowhere_in
+DEFINE KAFKA CONSUMER nowhere_in
     FROM 'broker-1:9092' TOPIC 'orders' GROUP 'g'
     FORMAT json INTO nowhere IDENTITY order_id MAP amount AS total
     ON FAILURE stop;
 --- expect: error Unknown
 
 --- case: a format this store cannot read is refused where it is written
-DEFINE CONSUMER protobuf_in
+DEFINE KAFKA CONSUMER protobuf_in
     FROM 'broker-1:9092' TOPIC 'orders' GROUP 'g'
     FORMAT protobuf INTO orders IDENTITY order_id MAP amount AS total
     ON FAILURE stop;
 --- expect: error Unknown
 
 --- case: two message fields may not land on one record field
-DEFINE CONSUMER ambiguous_in
+DEFINE KAFKA CONSUMER ambiguous_in
     FROM 'broker-1:9092' TOPIC 'orders' GROUP 'g'
     FORMAT json INTO orders IDENTITY order_id MAP amount AS total, gross AS total
     ON FAILURE stop;
 --- expect: error DuplicateMapping
 
 --- case: forgetting one, which frees its name again
-DROP CONSUMER orders_slow;
+DROP KAFKA CONSUMER orders_slow;
 --- expect: ok
 
 --- case: and forgetting one that is not there says so
-DROP CONSUMER orders_slow;
+DROP KAFKA CONSUMER orders_slow;
 --- expect: error Unknown
 
 --- case: asking about one that is not there says so too
-INFO FOR CONSUMER orders_slow;
+INFO FOR KAFKA CONSUMER orders_slow;
 --- expect: error Unknown

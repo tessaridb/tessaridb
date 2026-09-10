@@ -1,4 +1,4 @@
-//! `DEFINE CONSUMER`, `DROP CONSUMER` and `INFO FOR CONSUMER[S]` as text.
+//! `DEFINE KAFKA CONSUMER`, `DROP KAFKA CONSUMER` and `INFO FOR KAFKA CONSUMER[S]` as text.
 //!
 //! # What this file is checking against
 //!
@@ -31,7 +31,7 @@ use tessari_ql::{InfoSubject, OnFailure, StatementKind, parse};
 /// silently removed nothing for the last clause, which made its refusal test
 /// pass a statement that was still complete.
 const CLAUSES: &[(&str, &str)] = &[
-    ("DEFINE CONSUMER", "DEFINE CONSUMER orders_in"),
+    ("DEFINE KAFKA CONSUMER", "DEFINE KAFKA CONSUMER orders_in"),
     ("FROM", "FROM 'broker-1:9092', 'broker-2:9092'"),
     ("TOPIC", "TOPIC 'orders'"),
     ("GROUP", "GROUP 'shop-orders'"),
@@ -274,7 +274,7 @@ fn consumer_and_its_clause_words_are_still_available_as_names() {
 
 #[test]
 fn a_consumer_can_be_dropped_by_name() {
-    let StatementKind::DropConsumer { name } = only("DROP CONSUMER orders_in;") else {
+    let StatementKind::DropConsumer { name } = only("DROP KAFKA CONSUMER orders_in;") else {
         panic!("not a drop");
     };
     assert_eq!(name.text, "orders_in");
@@ -284,17 +284,17 @@ fn a_consumer_can_be_dropped_by_name() {
 fn the_two_info_subjects_are_distinct() {
     // Singular takes a name, plural takes none. Asserted together because the
     // failure worth catching is the plural being read as the singular with a
-    // missing name — which would refuse `INFO FOR CONSUMERS` with a message
+    // missing name — which would refuse `INFO FOR KAFKA CONSUMERS` with a message
     // about a name nobody meant to write.
     assert_eq!(
-        only("INFO FOR CONSUMERS;"),
+        only("INFO FOR KAFKA CONSUMERS;"),
         StatementKind::Info {
             subject: InfoSubject::Consumers
         }
     );
     let StatementKind::Info {
         subject: InfoSubject::Consumer(name),
-    } = only("INFO FOR CONSUMER orders_in;")
+    } = only("INFO FOR KAFKA CONSUMER orders_in;")
     else {
         panic!("not a consumer report");
     };
@@ -314,5 +314,53 @@ fn an_unknown_info_subject_lists_the_two_new_ones() {
 #[test]
 fn the_define_refusal_lists_consumer_too() {
     let failure = refusal("DEFINE PELICAN p;");
+    assert!(failure.contains("CONSUMER"), "{failure}");
+}
+
+// ------------------------------------------------- the word the queue gets back
+
+#[test]
+fn the_bare_spelling_is_refused_and_names_the_one_that_replaced_it() {
+    // The rename's whole risk is a silent one. `CONSUMER` is being handed to a
+    // queue's readers, so a bare `DEFINE CONSUMER` that went on parsing would
+    // mean broker ingestion today and a claimant identity later, with nothing
+    // in the statement saying which was meant. Refusing it is what makes the
+    // move visible at the moment somebody's old script runs.
+    for (source, wanted) in [
+        (
+            "DEFINE CONSUMER orders_in FROM 'b:9092';",
+            "DEFINE KAFKA CONSUMER",
+        ),
+        ("DROP CONSUMER orders_in;", "DROP KAFKA CONSUMER"),
+        ("INFO FOR CONSUMER orders_in;", "INFO FOR KAFKA CONSUMER"),
+        ("INFO FOR CONSUMERS;", "INFO FOR KAFKA CONSUMER"),
+    ] {
+        let failure = refusal(source);
+        assert!(!failure.is_empty(), "{source} was accepted");
+        assert!(failure.contains(wanted), "{source}: {failure}");
+    }
+}
+
+#[test]
+fn kafka_is_a_word_and_not_a_reserved_one() {
+    // The regression a keyword addition causes, and the only thing that finds
+    // it: `kafka` must still be an ordinary name everywhere a name may stand.
+    // Nothing else in the suite would notice a table that stopped being
+    // spellable, because no other test has a reason to call one this.
+    for source in [
+        "SELECT * FROM kafka;",
+        "SELECT kafka FROM events;",
+        "SELECT * FROM events WHERE kafka = 1;",
+        "SELECT kafka AS k FROM events ORDER BY kafka;",
+    ] {
+        assert!(refusal(source).is_empty(), "{source}: {}", refusal(source));
+    }
+}
+
+#[test]
+fn a_kafka_that_is_not_followed_by_consumer_says_so() {
+    // `DEFINE KAFKA` alone is a half-written statement, and the message names
+    // the word that completes it rather than the token it met.
+    let failure = refusal("DEFINE KAFKA orders_in;");
     assert!(failure.contains("CONSUMER"), "{failure}");
 }

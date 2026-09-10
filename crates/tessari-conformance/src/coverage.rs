@@ -82,8 +82,8 @@ forms! {
     AlterUser => "ALTER USER",
     DefineNode => "DEFINE NODE",
     DefineReplica => "DEFINE REPLICA",
-    DefineConsumer => "DEFINE CONSUMER",
-    DropConsumer => "DROP CONSUMER",
+    DefineConsumer => "DEFINE KAFKA CONSUMER",
+    DropConsumer => "DROP KAFKA CONSUMER",
     DropUser => "DROP USER",
     Grant => "GRANT",
     Revoke => "REVOKE",
@@ -249,9 +249,9 @@ mod tests {
              DEFINE USER u ROLE owner PASSWORD 'x';\
              DEFINE NODE ROLES serving;\
              DEFINE REPLICA second AT 'host:9001';\
-             DEFINE CONSUMER c FROM 'b:9092' TOPIC 't' GROUP 'g' FORMAT json \
+             DEFINE KAFKA CONSUMER c FROM 'b:9092' TOPIC 't' GROUP 'g' FORMAT json \
              INTO t IDENTITY k MAP a AS b ON FAILURE stop;\
-             DROP CONSUMER c;\
+             DROP KAFKA CONSUMER c;\
              DROP USER u;\
              GRANT read ON t TO u;\
              REVOKE read ON t FROM u;\

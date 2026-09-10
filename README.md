@@ -132,7 +132,7 @@ possible rather than aspirational.
 |---|---|
 | **Transactions** | snapshot isolation on the commit log, `BEGIN` · `COMMIT` · `CANCEL` |
 | **Real-time** | change subscriptions as a first-class feature — over the wire and over a WebSocket |
-| **Stream ingestion** | `DEFINE CONSUMER` — one statement says what to read, where it lands and under which group, and the node runs it; at-least-once, never exactly-once |
+| **Stream ingestion** | `DEFINE KAFKA CONSUMER` — one statement says what to read, where it lands and under which group, and the node runs it; at-least-once, never exactly-once |
 | **Multi-tenant** | namespaces and databases, users, roles, `GRANT` and `REVOKE` per database |
 | **Four ways in** | embedded library · `tessaridb` CLI · HTTP + WebSocket · a framed binary wire protocol |
 | **Operable** | health and readiness endpoints, Prometheus metrics, graceful drain, log-as-backup with replay-as-restore |

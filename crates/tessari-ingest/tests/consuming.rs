@@ -26,7 +26,7 @@ use tessari_session::{Outcome, Session};
 use tessari_storage::{ConsumerDefinition, Store};
 use tessari_types::Value;
 
-const DECLARE: &str = "DEFINE CONSUMER orders_in \
+const DECLARE: &str = "DEFINE KAFKA CONSUMER orders_in \
      FROM 'broker:9092' TOPIC 'orders' GROUP 'shop-orders' \
      FORMAT json INTO orders IDENTITY order_id \
      MAP amount AS total ON FAILURE quarantine;";
@@ -412,7 +412,7 @@ fn stopping_joins_the_threads_rather_than_abandoning_them() {
 #[test]
 fn a_declaration_whose_destination_has_gone_is_skipped_rather_than_fatal() {
     // One broken consumer must not stop a node from serving. It reports itself
-    // as not running here, which is the same thing `INFO FOR CONSUMER` says.
+    // as not running here, which is the same thing `INFO FOR KAFKA CONSUMER` says.
     let store = declared("quarantine", "");
     Session::new(&store)
         .run("USE NAMESPACE prod; USE DATABASE shop; DROP TABLE orders;")

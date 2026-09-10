@@ -152,7 +152,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
 
         // A consumer names the table it will write into, and that is the whole
         // reason it appears here at all: without it the grant loop would pass
-        // over `DEFINE CONSUMER` vacuously, and a caller could point a
+        // over `DEFINE KAFKA CONSUMER` vacuously, and a caller could point a
         // background writer at a table they were never granted — the `BACKUP`
         // hole again, in a statement that keeps writing after it is issued.
         //

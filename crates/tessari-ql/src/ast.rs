@@ -461,7 +461,7 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
-    /// `DEFINE CONSUMER orders_in FROM 'broker:9092' TOPIC 'orders' …`
+    /// `DEFINE KAFKA CONSUMER orders_in FROM 'broker:9092' TOPIC 'orders' …`
     ///
     /// Ingestion that is **declared rather than scripted**: one statement says
     /// what to read, how to read it, where it lands, and under which group, and
@@ -480,7 +480,7 @@ pub enum StatementKind {
     /// # What it refuses to say
     ///
     /// There is no exactly-once, and there is no schema inference. Both refusals
-    /// are also reported by `INFO FOR CONSUMER`, because a guarantee documented
+    /// are also reported by `INFO FOR KAFKA CONSUMER`, because a guarantee documented
     /// away from the point of configuration is one that will be misread.
     DefineConsumer {
         /// The consumer's catalog identity.
@@ -520,7 +520,7 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
-    /// `DROP CONSUMER orders_in` — stops it and forgets the declaration.
+    /// `DROP KAFKA CONSUMER orders_in` — stops it and forgets the declaration.
     DropConsumer {
         /// The name to remove.
         name: Name,
@@ -1565,7 +1565,7 @@ pub enum InfoSubject {
     /// key: it names no table, so a grant check would pass over it vacuously,
     /// and roles and endpoints have no smaller truthful form to hand a viewer.
     Node,
-    /// `INFO FOR CONSUMER orders_in` — one consumer's declaration and its
+    /// `INFO FOR KAFKA CONSUMER orders_in` — one consumer's declaration and its
     /// running state on **this** node.
     ///
     /// Two named groups rather than one flat object, for [`InfoSubject::Node`]'s
@@ -1579,7 +1579,7 @@ pub enum InfoSubject {
     /// not observed, and the second loudest is that its delivery guarantee is
     /// documented somewhere other than where a person configures it.
     Consumer(Name),
-    /// `INFO FOR CONSUMERS` — every declared consumer, and whether it is running.
+    /// `INFO FOR KAFKA CONSUMERS` — every declared consumer, and whether it is running.
     Consumers,
 }
 

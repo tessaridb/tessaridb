@@ -418,7 +418,7 @@ ALTER TABLE notes SET SCHEMALESS;
 ALTER USER grace SET ROLE editor;
 ALTER USER grace SET PASSWORD 'a longer one';
 
-DEFINE CONSUMER orders_in
+DEFINE KAFKA CONSUMER orders_in
     FROM 'broker-1:9092', 'broker-2:9092'
     TOPIC 'orders'
     GROUP 'shop-orders'
@@ -429,7 +429,7 @@ DEFINE CONSUMER orders_in
     ON FAILURE quarantine
     PARALLELISM 2;
 
-DROP CONSUMER orders_in;
+DROP KAFKA CONSUMER orders_in;
 ```
 
 **`ALTER USER` is how a user changes after it exists**, and it changes one thing
@@ -440,12 +440,12 @@ statement that changed only what it named would make *leave the role alone* and
 declaration whole is the reason this one does not.
 
 **A consumer is ingestion the catalog holds rather than a script somebody
-remembered to start.** One `DEFINE CONSUMER` says what to read (`FROM` brokers,
+remembered to start.** One `DEFINE KAFKA CONSUMER` says what to read (`FROM` brokers,
 `TOPIC`), under which group, in what `FORMAT`, where it lands (`INTO`), which
 field is the record's `IDENTITY`, how incoming fields `MAP` onto stored ones,
 what happens `ON FAILURE`, and how many workers run it. The destination is
 resolved **when the declaration is made**, so there is no window in which a
-consumer is consuming into a table that does not exist. `DROP CONSUMER` stops it
+consumer is consuming into a table that does not exist. `DROP KAFKA CONSUMER` stops it
 and removes the declaration; the records it already wrote stay, because they are
 records like any others.
 
@@ -1698,7 +1698,7 @@ Every catalog object this language can declare can be undeclared, except one:
 | `DEFINE ANALYZER` | `DROP ANALYZER` |
 | `DEFINE USER` | `DROP USER` |
 | `DEFINE REPLICA` | `DROP REPLICA` |
-| `DEFINE CONSUMER` | `DROP CONSUMER` |
+| `DEFINE KAFKA CONSUMER` | `DROP KAFKA CONSUMER` |
 | `DEFINE QUEUE` | `DROP QUEUE` |
 | `DEFINE NODE` | **nothing — see below** |
 

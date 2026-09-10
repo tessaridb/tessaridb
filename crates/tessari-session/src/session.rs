@@ -252,7 +252,7 @@ impl<'a> Session<'a> {
     ///
     /// A declared consumer writes records long after the session that declared
     /// it has gone, and until this existed it wrote them as **nobody** — so the
-    /// authority question was asked once, at `DEFINE CONSUMER`, and never again.
+    /// authority question was asked once, at `DEFINE KAFKA CONSUMER`, and never again.
     /// Demoting the declarer, revoking their authority or deleting the account
     /// outright did not stop the writing, because there was no identity in the
     /// loop for any of those to act on.

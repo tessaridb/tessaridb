@@ -155,7 +155,7 @@ pub(crate) fn verifies(password: &str, stored: &str) -> bool {
 /// **missing** arm and not against a **thin** one: `{write}` type-checks exactly
 /// like `{read, write}`, so an arm with too few kinds is a silent privilege
 /// escalation the compiler cannot see. The three sets that exist *only* because
-/// something is disclosed — `BACKUP`, `CREATE`/`UPDATE`, `DEFINE CONSUMER` —
+/// something is disclosed — `BACKUP`, `CREATE`/`UPDATE`, `DEFINE KAFKA CONSUMER` —
 /// each carry a negative test holding the lesser authority alone, and that test
 /// is the only thing standing where the compiler cannot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -145,7 +145,7 @@ impl Runner {
     /// Called at open and after a restart. A declaration whose destination has
     /// gone, or whose connection cannot be made, is **logged and skipped** rather
     /// than failing the start: one broken consumer must not stop a node from
-    /// serving, and `INFO FOR CONSUMER` reports it as not running here.
+    /// serving, and `INFO FOR KAFKA CONSUMER` reports it as not running here.
     ///
     /// # Errors
     ///
@@ -295,7 +295,7 @@ impl Consuming {
                             progress.last_error = Some(failure.clone());
                         });
                     // `stop` halts this consumer and leaves the rest alone. The
-                    // registry entry goes, so `INFO FOR CONSUMER` reports it as
+                    // registry entry goes, so `INFO FOR KAFKA CONSUMER` reports it as
                     // not running here rather than as running and stuck.
                     self.store.running().stopped(&self.definition.name);
                     return;
@@ -421,7 +421,7 @@ impl Consuming {
             //
             // A declaration predating the field keeps writing unbound, which is
             // deliberate — narrowing an existing consumer on upgrade would be an
-            // outage delivered as a migration — and `INFO FOR CONSUMER` reports
+            // outage delivered as a migration — and `INFO FOR KAFKA CONSUMER` reports
             // the absence so an operator can find it and redeclare.
             if let Some(declarer) = self.definition.declarer
                 && let Err(refused) = session.acting_as(declarer)

@@ -84,7 +84,7 @@ pub fn start(db: &Arc<Db>) -> Running {
 pub fn start(db: &Arc<Db>) -> Running {
     let mut session = tessari_session::Session::new(db.store());
     let declared = session
-        .run("INFO FOR CONSUMERS;")
+        .run("INFO FOR KAFKA CONSUMERS;")
         .is_ok_and(|answered| format!("{answered:?}").contains("name"));
     if declared {
         eprintln!(
