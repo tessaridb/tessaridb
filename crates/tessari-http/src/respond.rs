@@ -794,6 +794,9 @@ pub(crate) fn failure(error: &Error) -> Answer {
 }
 
 #[cfg(test)]
+mod corpus;
+
+#[cfg(test)]
 mod tests {
     use tessaridb::{Outcome, Value};
 
