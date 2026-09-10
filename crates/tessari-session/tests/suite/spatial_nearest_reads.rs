@@ -297,10 +297,6 @@ fn every_shape_the_walk_does_not_produce_stays_a_scan() {
             format!("SELECT * FROM stops ORDER BY geo::distance(at, {here}) LIMIT 3 APPROXIMATE;"),
         ),
         (
-            "a projection runs before the sort",
-            format!("SELECT at FROM stops ORDER BY geo::distance(at, {here}) LIMIT 3;"),
-        ),
-        (
             "GROUP BY folds the records the order would have chosen between",
             format!(
                 "SELECT at, count(*) AS n FROM stops GROUP BY at ORDER BY geo::distance(at, {here}) LIMIT 3;"
@@ -317,6 +313,53 @@ fn every_shape_the_walk_does_not_produce_stays_a_scan() {
             "{why}: `{read}` must not be served nearest-first"
         );
     }
+}
+
+#[test]
+fn a_projection_the_order_can_read_past_keeps_the_walk() {
+    // The blanket refusal this replaces (Q-390) was written for the reason
+    // `ordered` still refuses every projection: a sort key reads the **answer's**
+    // names, so a projection may put something else under the name the key
+    // reads. A distance differs in the one way that decides it — the ordering
+    // stage lays the source record beneath the projection precisely so a key can
+    // reach a field the projection dropped (`consume::reach_past`), and the case
+    // that overlay was built for (Q-143) is this statement, written out.
+    //
+    // Two shapes, because they fail differently if the narrowing is wrong: one
+    // that drops the geometry entirely, and one that writes it out under its own
+    // name — which is a shadow of the field by itself and changes nothing.
+    let here = place(2.3, 48.8);
+    for read in [
+        format!("SELECT id FROM stops ORDER BY geo::distance(at, {here}) LIMIT 3;"),
+        format!("SELECT at FROM stops ORDER BY geo::distance(at, {here}) LIMIT 3;"),
+    ] {
+        assert_eq!(
+            same_either_way(&read),
+            "ordered",
+            "`{read}` answers what the scan answers and should keep its bound"
+        );
+    }
+}
+
+#[test]
+fn a_projection_answering_under_the_geometry_name_falls_back_to_the_scan() {
+    // The one shape the overlay cannot undo: a name the projection **offers**.
+    // Here the answer carries an `at` the index does not hold, so the order the
+    // statement asks for is not the order the entries are in — and the walk has
+    // nothing to re-test the difference against.
+    //
+    // The shadow is a constant because the fixture holds one geometry per
+    // record; what is under test is which `at` the key reads, not how far apart
+    // the two are.
+    let here = place(2.3, 48.8);
+    let elsewhere = place(-73.98, 40.75);
+    let read =
+        format!("SELECT {elsewhere} AS at FROM stops ORDER BY geo::distance(at, {here}) LIMIT 3;");
+    assert_eq!(
+        same_either_way(&read),
+        "scan",
+        "a projection answering under the searched field's own name must not be walked"
+    );
 }
 
 #[test]

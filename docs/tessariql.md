@@ -4809,11 +4809,19 @@ for. `EXPLAIN` reports the read as access `ordered` with shape `nearest`.
 An ordering has nothing to re-test — the entry's position *is* the answer — so
 this read is more careful about when it declines than the filters above are. It
 falls back to the exact scan when the sort is not one a walk produces (a second
-key, a descending one, no `LIMIT`, a projection, a `FETCH`, a `GROUP BY`), when
-the field is not visible to the caller, when this transaction has written to the
-table, when the read is at an older snapshot than the committed tail, and when
-the index runs out before the bound is filled — which is the case where the
-answer needs records with no geometry, since those have no entry and sort last.
+key, a descending one, no `LIMIT`, a `FETCH`, a `GROUP BY`), when the field is
+not visible to the caller, when this transaction has written to the table, when
+the read is at an older snapshot than the committed tail, and when the index runs
+out before the bound is filled — which is the case where the answer needs records
+with no geometry, since those have no entry and sort last.
+
+**A projection keeps the walk**, with the single exception a ranked read makes
+too: a projection answering under the measured field's **own name** with
+something else — `SELECT elsewhere AS at FROM stops ORDER BY geo::distance(at,
+$here)` — where the answer carries an `at` the index does not hold. Dropping the
+field is not that. `SELECT name FROM places ORDER BY geo::distance(shape, $here)
+LIMIT 3` keeps its bound, because the ordering stage reads the source record
+beneath the projection for a key naming a field the projection did not offer.
 
 `geo::distance` takes positions, so a record holding an area is an error in the
 statement. The walk reports the same error the scan does rather than answering
