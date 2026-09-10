@@ -39,8 +39,9 @@
 
 use std::collections::BTreeSet;
 
-use tessari_conformance::{FORMS, examples, forms_in, specification};
+use tessari_conformance::{FORMS, examples, fenced_blocks, forms_in, specification};
 use tessari_ql::Function;
+use tessari_session::AccessPath;
 use tessari_types::FieldKind;
 
 /// What the specification is allowed not to name yet, and why.
@@ -302,4 +303,69 @@ fn the_allow_list_gives_a_reason_for_every_entry() {
             "{unit} is excused without a reason worth reading: {reason:?}"
         );
     }
+}
+
+/// Every `via <word>` the specification prints names a path the engine has.
+///
+/// # Why this is a ratchet and not a proofread
+///
+/// The specification shows answers, and nothing ran them. That is how a false
+/// example survived every gate this project has: `docs/tessariql.md` printed a
+/// suggestion for a read the console answered with three words and no
+/// suggestion at all (Q-393), and the sibling document — the site — printed
+/// `via identity` for two years, a word the engine has never emitted.
+///
+/// Executing the shown answers is not available, and W196 measured why rather
+/// than assuming it: four replay strategies each fail for a structural reason,
+/// the deciding one being that the shown answers describe stores the document
+/// never builds. What *can* be checked without a store is the vocabulary, and
+/// the vocabulary is closed — [`AccessPath::ALL`] is written out with a test
+/// pinning its length, and [`AccessPath::named`] reads it backwards through the
+/// same [`AccessPath::name`] the console prints. So there is one list of path
+/// words, and this asserts the document quotes from it.
+///
+/// The reach is **printed rather than implied**, because a checker that reports
+/// nothing is indistinguishable from a checker that found nothing.
+#[test]
+fn every_path_word_the_specification_shows_is_one_the_engine_emits() {
+    let text = specification();
+    // Only lines that SHOW an answer, which in this document is a `--` line
+    // inside a TessariQL fence. Scanning the prose as well was the first draft
+    // and it is the cry-wolf failure this kind of checker dies of: a sentence
+    // that says "served via the index" is correct English about a correct
+    // engine, and a checker that fails on it is one nobody keeps running.
+    let mut shown = Vec::new();
+    let mut lines = 0;
+    for (start, block) in fenced_blocks(&text) {
+        for (offset, line) in block.lines().enumerate() {
+            let line = line.trim();
+            if !line.starts_with("--") {
+                continue;
+            }
+            lines += 1;
+            let mut rest = line;
+            while let Some(at) = rest.find("via ") {
+                rest = &rest[at + "via ".len()..];
+                let word: String = rest.chars().take_while(char::is_ascii_alphabetic).collect();
+                if !word.is_empty() {
+                    shown.push((start + offset, word));
+                }
+            }
+        }
+    }
+    let unknown: Vec<&(usize, String)> = shown
+        .iter()
+        .filter(|(_, word)| AccessPath::named(word).is_none())
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "the specification shows path words the engine cannot emit: {unknown:?} \
+         — the words that exist are {}",
+        AccessPath::known()
+    );
+    println!(
+        "shown-answer lines={lines} path words={} vocabulary={}",
+        shown.len(),
+        AccessPath::ALL.len()
+    );
 }

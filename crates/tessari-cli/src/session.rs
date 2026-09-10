@@ -292,7 +292,17 @@ pub fn run(
 /// by two code paths agreeing.
 fn report(out: &mut impl Write, answer: &Answer, shape: Shape) -> std::io::Result<()> {
     match answer {
-        Answer::Records { records, .. } if records.is_empty() => writeln!(out, "(no records)"),
+        // No arm of its own for the empty answer. There was one, printing
+        // `(no records)`, and it swept four fields through a `..`: the trailer,
+        // the notes, the exactness word and the suggestion. An empty answer is
+        // the one that has nothing else to go on, so it is the one that can
+        // least afford to lose them — and an empty *approximate* answer read
+        // identically to an empty exact one, which is the criterion that a
+        // caller can never be unable to tell which it got, failing on the
+        // surface a person actually reads. `drawn` answers `None` for an empty
+        // list and the record loop then prints nothing, so the arm below
+        // renders both cases without a branch. Q-393.
+        //
         // `only` is read and deliberately not drawn. The console already prints
         // a record per line, so a read of one already looks like one record —
         // the flag exists for a caller assembling a value, and the surface where
@@ -1185,6 +1195,72 @@ SELECT * FROM users:1;\n";
         assert!(!script.contains("tessaridb>"), "{script}");
         let (prompt, _) = ran("DEFINE NAMESPACE prod;\n", Mode::Interactive);
         assert!(prompt.contains("tessaridb>"), "{prompt}");
+    }
+
+    /// An empty answer is an answer, and it owes the reader what every other
+    /// answer owes: how many, by which path, and whether the store stands
+    /// behind it. Q-393.
+    #[test]
+    fn an_empty_answer_says_how_many_and_by_which_path() {
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE orders; USE DATABASE orders;\n\
+             DEFINE COLLECTION users;\n\
+             CREATE users:1 = { name: 'ada' };\n\
+             SELECT * FROM users WHERE name = 'nobody';\n",
+            Mode::Script,
+        );
+        assert_eq!(ended, Ended::Fine, "{out}");
+        assert!(out.contains("0 record(s), via scan"), "{out}");
+    }
+
+    /// The suggestion is the whole reason the empty case matters: a reader who
+    /// got nothing has nothing else to go on, and the store already knows what
+    /// they probably meant. This is the reference's own example at
+    /// `docs/tessariql.md`, made runnable. Q-393.
+    #[test]
+    fn an_empty_answer_still_says_what_you_probably_meant() {
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE orders; USE DATABASE orders;\n\
+             DEFINE ANALYZER simple FILTERS lowercase, ascii;\n\
+             DEFINE TABLE notes SCHEMALESS;\n\
+             DEFINE FIELD body ON notes TYPE string ANALYZER simple;\n\
+             DEFINE INDEX by_body ON notes FIELDS body SEARCH;\n\
+             CREATE notes:1 = { body: 'a vector store' };\n\
+             SELECT * FROM notes WHERE body MATCHES 'vecter';\n",
+            Mode::Script,
+        );
+        assert_eq!(ended, Ended::Fine, "{out}");
+        assert!(out.contains("0 record(s), via index"), "{out}");
+        assert!(out.contains("did you mean: vecter -> vector"), "{out}");
+    }
+
+    /// G022 S7 on the surface a person reads: *a caller can never be unable to
+    /// tell which it got*. The criterion was recorded PASS against answers that
+    /// have records; an empty approximate answer and an empty exact one were
+    /// the same three words. Q-393.
+    #[test]
+    fn an_empty_approximate_answer_is_not_an_empty_exact_one() {
+        const READY_POINTS: &str = "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE orders; USE DATABASE orders;\n\
+             DEFINE COLLECTION points;\n\
+             DEFINE INDEX by_at ON points FIELDS at VECTOR euclidean;\n";
+        let exactly = format!(
+            "{READY_POINTS}SELECT * FROM points ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2;\n"
+        );
+        let approximately = format!(
+            "{READY_POINTS}SELECT * FROM points ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2 APPROXIMATE;\n"
+        );
+        let (exact, ended) = ran(&exactly, Mode::Script);
+        assert_eq!(ended, Ended::Fine, "{exact}");
+        let (approximate, ended) = ran(&approximately, Mode::Script);
+        assert_eq!(ended, Ended::Fine, "{approximate}");
+        assert_ne!(
+            exact, approximate,
+            "an empty answer must still say which path answered it"
+        );
+        assert!(approximate.contains("approximate"), "{approximate}");
     }
 
     #[test]
