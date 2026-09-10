@@ -313,3 +313,95 @@ fn a_cursor_past_the_last_record_answers_with_nothing() {
     let answered = run(&mut session, "SELECT * FROM people AFTER people:5;");
     assert!(ids(&answered).is_empty());
 }
+
+/// Every page of a script, in order, as identities.
+///
+/// One script, because a transaction is a script: a `run` that ends with one
+/// open is refused whole, so a `BEGIN` on its own call cannot be the setup. A
+/// `CREATE` with no `RETURN` answers no records, so nothing has to be skipped
+/// past — asserted by the walks below, each of which names as many pages as it
+/// asked for.
+fn pages(session: &mut Session<'_>, script: &str) -> Vec<Vec<i64>> {
+    session
+        .run(script)
+        .unwrap_or_else(|error| panic!("{script}: {error}"))
+        .iter()
+        .filter(|answer| answer.records().is_some())
+        .map(|answer| int(&ids(answer)))
+        .collect()
+}
+
+#[test]
+fn paging_inside_a_write_transaction_visits_its_own_write_exactly_once() {
+    // Q-409, run rather than read, and **refuted**. The pending-write fold in
+    // `table_records` tests a write against the page's ANCHOR and against
+    // nothing at the other end, so a record this transaction wrote stays a
+    // candidate for every page until the walk reaches it — which is what the
+    // question read off the source and called a duplicate.
+    //
+    // It cannot be one, and the reason is that **the cursor is applied twice**.
+    // The source's test is a cost optimisation: it stops the walk carrying
+    // records the answer will not hold. The guarantee is `Topmost::offer`, which
+    // drops anything not strictly past the anchor **in the answer's own order**.
+    // Verified rather than argued — with the source's anchor test replaced by
+    // `true`, both tests here still pass, and with the fold disabled entirely
+    // they both fail, which is what says they reach it at all.
+    //
+    // The anchors are written out rather than derived, because a transaction has
+    // to be one script. They are only the real walk's anchors if each page ends
+    // where the next one resumes, so that is asserted rather than assumed: get
+    // it wrong and the sequence double-visits by construction, which would look
+    // exactly like the defect being tested for.
+    let store = store();
+    let mut session = ready(&store);
+    let walked = pages(
+        &mut session,
+        "BEGIN;
+         CREATE people:9 = { name: 'zed' };
+         SELECT * FROM people LIMIT 2;
+         SELECT * FROM people AFTER people:2 LIMIT 2;
+         SELECT * FROM people AFTER people:4 LIMIT 2;
+         SELECT * FROM people AFTER people:9 LIMIT 2;
+         COMMIT;",
+    );
+    for (page, anchor) in walked.iter().zip([2, 4, 9]) {
+        assert_eq!(
+            page.last(),
+            Some(&anchor),
+            "the next page resumes where this one ended: {walked:?}"
+        );
+        assert!(page.len() <= 2, "a page of two answered {page:?}");
+    }
+    assert_eq!(
+        walked.concat(),
+        vec![1, 2, 3, 4, 5, 9],
+        "the transaction's own write is handed back once, in its place: {walked:?}"
+    );
+}
+
+#[test]
+fn an_ordered_page_inside_a_write_transaction_also_visits_its_own_write_once() {
+    // The other end of the same question, and the likelier one: the pending
+    // fold compares IDENTITIES, while an ordered cursor resumes on a VALUE. A
+    // record whose name sorts early and whose identity sorts late is where the
+    // two disagree, so `zed` is not the fixture for this — `aa` is. It holds for
+    // the same reason: the anchor the answer is filtered against is the ordered
+    // one, evaluated by the stage that evaluates every other record's keys.
+    let store = store();
+    let mut session = ready(&store);
+    let walked = pages(
+        &mut session,
+        "BEGIN;
+         CREATE people:9 = { name: 'aa' };
+         SELECT * FROM people ORDER BY name LIMIT 2;
+         SELECT * FROM people ORDER BY name AFTER people:1 LIMIT 2;
+         SELECT * FROM people ORDER BY name AFTER people:3 LIMIT 2;
+         SELECT * FROM people ORDER BY name AFTER people:5 LIMIT 2;
+         COMMIT;",
+    );
+    assert_eq!(
+        walked.concat(),
+        vec![9, 1, 2, 3, 4, 5],
+        "aa, ada, bo, cy, di, ed — each once: {walked:?}"
+    );
+}
