@@ -221,7 +221,12 @@ pub fn run(
         } else {
             pending.push_str(&line);
             scanner.feed(&line);
-            if !scanner.state().closed {
+            let found = scanner.state();
+            // Both facts, because either alone submits the wrong thing: without
+            // `closed` a half-typed statement goes over, and without the
+            // transaction check a statement standing beside a `BEGIN` is sent as
+            // a script that ends with one open, which the store discards whole.
+            if !found.closed || found.open_transaction {
                 continue;
             }
             scanner = Scanner::default();
@@ -517,23 +522,28 @@ impl Scanner {
 
     /// Read the next piece of input, continuing where the last one stopped.
     ///
-    /// Stops early once a statement has closed, exactly as the single-pass walk
-    /// did: everything after that `;` belongs to the next statement and is not
-    /// this scan's business.
+    /// Reads the piece **to its end** rather than stopping at the first `;`.
+    /// Stopping there was the older behaviour and it made the scan answer about
+    /// a prefix while the caller submitted the whole line: a `SELECT` sharing a
+    /// line with a following `BEGIN` was reported as a closed statement, the
+    /// line went over as one script ending with a transaction open, and the
+    /// store discarded the read nobody was told about (Q-370).
+    ///
+    /// So `closed` means *a statement ended somewhere in what has been fed*, and
+    /// it is sticky; `open_transaction` describes the end of everything fed. A
+    /// caller submits when a statement has closed **and** no transaction is
+    /// still open, which is the pair of facts it actually needs.
     fn feed(&mut self, text: &str) {
         if !self.started {
             self.started = true;
             self.at_statement_start = true;
-        }
-        if self.closed {
-            return;
         }
         let mut quote = self.quote;
         let mut escaped = self.escaped;
         let mut commented = self.commented;
         let mut substantial = self.substantial;
         let mut open_transaction = self.open_transaction;
-        let mut closed = false;
+        let mut closed = self.closed;
         let mut at_statement_start = self.at_statement_start;
         let mut word = core::mem::take(&mut self.word);
         let mut characters = text.chars().peekable();
@@ -594,7 +604,6 @@ impl Scanner {
                     // to commit by itself.
                     if !open_transaction {
                         closed = true;
-                        break;
                     }
                 }
                 (None, held) if held.is_alphanumeric() || held == '_' => {
@@ -1195,6 +1204,30 @@ SELECT * FROM users:1;\n";
         assert!(!script.contains("tessaridb>"), "{script}");
         let (prompt, _) = ran("DEFINE NAMESPACE prod;\n", Mode::Interactive);
         assert!(prompt.contains("tessaridb>"), "{prompt}");
+    }
+
+    /// A statement that shares a line with a following `BEGIN` is answered, not
+    /// thrown away with the transaction it was standing next to. Q-370.
+    #[test]
+    fn a_statement_sharing_a_line_with_a_begin_is_not_discarded() {
+        let (out, ended) = ran(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE orders; USE DATABASE orders;\n\
+             DEFINE COLLECTION users;\n\
+             CREATE users:2 = { n: 1 };\n\
+             SELECT * FROM users:2; BEGIN;\n\
+             COMMIT;\n",
+            Mode::Script,
+        );
+        assert_eq!(ended, Ended::Fine, "{out}");
+        assert!(
+            out.contains("1 record(s), via record"),
+            "the read beside the BEGIN never answered: {out}"
+        );
+        assert!(
+            !out.contains("discarded"),
+            "the script was thrown away: {out}"
+        );
     }
 
     /// An empty answer is an answer, and it owes the reader what every other

@@ -5,7 +5,7 @@
 //! answers nothing says so rather than returning an empty list, which would be
 //! indistinguishable from a read that found nothing.
 
-use tessari_types::{RecordId, Value};
+use tessari_types::{RecordId, Value, article};
 
 use crate::plan::Plan;
 
@@ -386,8 +386,10 @@ impl Note {
             ),
             Self::Approximate => GRAPH_WALK_IS_APPROXIMATE.to_owned(),
             Self::ComparedAcrossKinds { left, right } => format!(
-                "this read compared a {left} with a {right}, \
+                "this read compared {} {left} with {} {right}, \
                  so it answered about the records whose kinds happened to line up",
+                article(left),
+                article(right),
             ),
             Self::CursorWalked => "this page was reached by reading the records rather \
                  than seeking to the anchor, so it cost what the read costs and not \

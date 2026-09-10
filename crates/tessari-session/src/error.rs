@@ -5,6 +5,7 @@
 //! the whole thing again.
 
 use tessari_ql::{Function, Span};
+use tessari_types::article;
 
 /// Result alias for every fallible operation in this crate.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -911,7 +912,7 @@ pub enum Error {
     },
 
     /// The signed-in user's role does not allow the statement.
-    #[error("a {role} may not {needs} (at {span})")]
+    #[error("{} {role} may not {needs} (at {span})", article(role))]
     RoleForbids {
         /// The role the user holds.
         role: &'static str,
@@ -1628,6 +1629,37 @@ impl Depended {
             (Self::GraphByTable, _) => "tables",
             (Self::GraphByEdgeKind, 1) => "edge kind",
             (Self::GraphByEdgeKind, _) => "edge kinds",
+        }
+    }
+}
+
+#[cfg(test)]
+mod article_tests {
+    use tessari_ql::Span;
+
+    use super::Error;
+
+    /// Every word that reaches the role refusal reads as English. Three of the
+    /// four begin with a vowel — `owner`, `editor` and the `authorities`
+    /// fallback for a user whose set no role summarises — and only `viewer` got
+    /// the article right by luck, which is why *"a editor may not operate"* was
+    /// reported from a documentation wave rather than from the engine's own
+    /// tests. Q-366.
+    #[test]
+    fn the_role_refusal_reads_as_english_for_every_role_it_can_name() {
+        for (role, wanted) in [
+            ("owner", "an owner may not"),
+            ("editor", "an editor may not"),
+            ("authorities", "an authorities may not"),
+            ("viewer", "a viewer may not"),
+        ] {
+            let said = Error::RoleForbids {
+                role,
+                needs: "operate",
+                span: Span::new(0, 6),
+            }
+            .to_string();
+            assert!(said.starts_with(wanted), "{said}");
         }
     }
 }
