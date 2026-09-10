@@ -5174,6 +5174,22 @@ duration with a unit nothing recognises and is refused by the lexer. The clause
 is optional and its absence means unbounded, which is what every bucket declared
 before it existed is.
 
+**What a bucket says about itself:**
+
+```
+INFO FOR BUCKET avatars;
+```
+
+The name and the ceiling, and nothing else — the files are records, so `SELECT`
+answers them and an `INFO` that also listed would be a second read path over the
+same rows. A table that is not a bucket refuses here as an unknown one, which is
+the refusal `PUT`, `READ` and `DELETE` already make against that same name.
+
+The ceiling comes back as `NONE` where the bucket declared none. Not a zero: a
+ceiling of zero is a bucket nobody can write to, which is a declaration this
+store refuses outright, so reporting absence as zero would describe every
+ordinary bucket as one that admits no file.
+
 The ceiling is checked against the file **as it will be** rather than against the
 bytes a statement carries, which is the only placement that means anything: a
 ranged write splices into bytes already stored, so a file grows past the ceiling

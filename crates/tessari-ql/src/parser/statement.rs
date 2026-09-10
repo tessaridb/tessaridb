@@ -434,6 +434,13 @@ impl Parser<'_> {
                 self.advance();
                 InfoSubject::Graph(self.name()?)
             }
+            // A keyword, unlike `VECTOR`, `GEO` and `VAULT` below, because
+            // `DEFINE BUCKET` reserved the word before this subject existed —
+            // so it is read here as one rather than as a bare word.
+            Some(Keyword::Bucket) => {
+                self.advance();
+                InfoSubject::Bucket(self.name()?)
+            }
             Some(Keyword::User) => {
                 self.advance();
                 InfoSubject::User(self.name()?)
@@ -471,7 +478,7 @@ impl Parser<'_> {
                 // list wrong is worse than one that lists none, because a caller
                 // reads it as the whole truth and stops looking.
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `RECIPIENTS OF` or `AUDIT`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `BUCKET`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `RECIPIENTS OF` or `AUDIT`",
                 ));
             }
         };

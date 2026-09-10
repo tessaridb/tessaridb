@@ -8,6 +8,7 @@
 mod advice;
 mod alone;
 mod alter_user;
+mod analyzer_named_by_a_field;
 mod analyzer_redefinition;
 mod ascending_order;
 mod assertions;

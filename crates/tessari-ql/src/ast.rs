@@ -1455,6 +1455,20 @@ pub enum InfoSubject {
     /// length, a fingerprint or a key identifier would be a slower oracle rather
     /// than none, and a reader would have no way to tell it was one.
     Vault(Name),
+    /// `INFO FOR BUCKET media` — one bucket's name and the largest file it takes.
+    ///
+    /// Distinct from `INFO FOR TABLE` for the reason [`InfoSubject::Vault`] is:
+    /// the answer must carry the word that created the thing, or a round trip
+    /// re-executes as a table and the store stops being one.
+    ///
+    /// **It also exists to be asked before a listing.** A route that lists a
+    /// bucket needs to know a name is one, and until this subject existed there
+    /// was no statement to ask — so the HTTP listing answered `200` with an
+    /// empty body for a plain table while the three routes that write, read and
+    /// delete a file all refused it. A caller then concluded the bucket was
+    /// empty rather than absent, which is a wrong answer wearing a right one's
+    /// clothes.
+    Bucket(Name),
     /// `INFO FOR RECIPIENTS OF team:github` — who may one day open this record.
     ///
     /// The read half of the recipient set, and the reason the set is worth

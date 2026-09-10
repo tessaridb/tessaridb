@@ -1232,6 +1232,20 @@ fn a_vector_store_is_dropped_and_reported_by_the_word_that_made_it() {
 }
 
 #[test]
+fn a_bucket_is_reported_by_the_word_that_made_it() {
+    // The bucket was the one engine with no `INFO` subject, which is why the
+    // HTTP listing route had no statement to ask about bucket-ness and answered
+    // `200` for a plain table instead.
+    let StatementKind::Info { subject, .. } = one("INFO FOR BUCKET media;") else {
+        panic!("not an info statement");
+    };
+    let InfoSubject::Bucket(named) = subject else {
+        panic!("not a bucket subject");
+    };
+    assert_eq!(named.text, "media");
+}
+
+#[test]
 fn vector_stays_a_name_a_caller_may_use_beside_the_new_word() {
     // The word is contextual in all three positions it now appears in, so the
     // table, the field and the store called `vector` all keep working.

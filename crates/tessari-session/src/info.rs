@@ -80,6 +80,7 @@ impl Session<'_> {
             InfoSubject::Vector(name) => self.info_vector(transaction, name, span)?,
             InfoSubject::Geo(name) => self.info_geo(transaction, name, span)?,
             InfoSubject::Vault(name) => self.info_vault(transaction, name, span)?,
+            InfoSubject::Bucket(name) => self.info_bucket(transaction, name, span)?,
             InfoSubject::Recipients(target) => self.info_recipients(transaction, target, span)?,
             InfoSubject::Audit(actor) => self.info_audit(actor.as_ref())?,
             InfoSubject::User(name) => self.info_user(transaction, name, span)?,
@@ -339,6 +340,54 @@ impl Session<'_> {
             "audit".to_owned(),
             Value::Array(entries),
         )]))
+    }
+
+    /// `INFO FOR BUCKET media` — the name and the ceiling, and nothing else.
+    ///
+    /// Short because a bucket declares little: a name and, when it should have
+    /// one, the largest file it takes. What is not here is the listing — the
+    /// files are records and `SELECT` answers them, so an `INFO` that also
+    /// listed would be a second read path over the same rows, obeying whatever
+    /// grants its own code remembered rather than the ones the reader already
+    /// passes through.
+    ///
+    /// **It refuses a table that is not a bucket as `Unknown`**, which is the
+    /// shape [`Session::info_vault`] and [`Session::info_vector`] already use.
+    /// A distinct "wrong kind" answer would let a caller who may read nothing
+    /// learn which names exist, and this subject is asked precisely where a
+    /// caller has not been trusted with the answer yet.
+    fn info_bucket(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let context = self.context(transaction, None, span)?;
+        let missing = || Error::Unknown {
+            entity: "bucket",
+            name: name.text.clone(),
+            span,
+        };
+        let id = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(missing)?;
+        let definition = Catalog::new(transaction).table(id)?.ok_or_else(missing)?;
+        if !definition.is_bucket() {
+            return Err(missing());
+        }
+        Ok(BTreeMap::from([
+            ("name".to_owned(), Value::from(name.text.as_str())),
+            // `None` and not a zero. A ceiling of zero is a bucket nobody can
+            // write to — a declaration this store refuses outright — so
+            // reporting absence as zero would describe every ordinary bucket as
+            // one that admits no file.
+            (
+                "max".to_owned(),
+                definition.byte_ceiling().map_or(Value::None, |ceiling| {
+                    Value::Number(Number::Integer(i64::try_from(ceiling).unwrap_or(i64::MAX)))
+                }),
+            ),
+        ]))
     }
 
     fn info_vault(

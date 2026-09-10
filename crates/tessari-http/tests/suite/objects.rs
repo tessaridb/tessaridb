@@ -160,6 +160,88 @@ fn a_bucket_lists_the_files_it_holds() {
     assert!(body.contains(r#""size""#), "{body}");
 }
 
+/// A listing carries a file listing, and nothing about how the store found it
+/// (Q-260).
+///
+/// The route used to answer with the raw statement result wrapped in a key:
+/// `plan.access`, `plan.table`, `kind` and `path` are query-planner internals,
+/// and `chunks` is a storage detail. Published as-is they become a contract for
+/// every client in every language, and then changing the planner breaks clients
+/// that never asked about it.
+///
+/// A file listing wants a name, a size and a modification time. The records
+/// already carry exactly those three.
+#[test]
+fn a_listing_says_what_the_files_are_and_not_how_they_were_found() {
+    let (_node, address) = node();
+    assert_eq!(script(&address, READY, None), 200);
+    send(
+        &address,
+        "PUT",
+        "/files/prod/library/media/a.txt",
+        b"held",
+        None,
+    );
+
+    let (status, body) = send(&address, "GET", "/files/prod/library/media", b"", None);
+    assert_eq!(status, 200);
+    let body = String::from_utf8_lossy(&body);
+
+    assert!(body.contains(r#""path":"/a.txt""#), "{body}");
+    assert!(body.contains(r#""size":4"#), "{body}");
+    assert!(body.contains(r#""updated""#), "{body}");
+
+    for internal in [r#""plan""#, r#""access""#, r#""kind""#, r#""chunks""#] {
+        assert!(
+            !body.contains(internal),
+            "the listing published {internal}, which is not a file's property: {body}",
+        );
+    }
+}
+
+/// Listing a name that is not a bucket is refused, as the other three routes
+/// against that same name already refuse it (Q-261).
+///
+/// It answered `200` with an empty listing, so a caller concluded the bucket was
+/// empty rather than absent — a confident wrong answer, which is the class this
+/// store treats as most expensive. The route now asks `INFO FOR BUCKET` first:
+/// bucket-ness is settled by a statement through the ordinary session, rather
+/// than by a second path into the catalog opened inside the HTTP layer.
+#[test]
+fn listing_a_table_that_is_not_a_bucket_is_refused_rather_than_answered_empty() {
+    let (_node, address) = node();
+    assert_eq!(script(&address, READY, None), 200);
+    assert_eq!(
+        script(
+            &address,
+            "USE NAMESPACE prod; USE DATABASE library; DEFINE COLLECTION ledger;",
+            None
+        ),
+        200
+    );
+
+    let (status, body) = send(&address, "GET", "/files/prod/library/ledger", b"", None);
+    let body = String::from_utf8_lossy(&body);
+    assert_ne!(
+        status, 200,
+        "listing a plain table answered as though it were an empty bucket: {body}",
+    );
+    assert!(
+        !body.contains(r#""files":[]"#),
+        "the refusal still looks like an empty bucket: {body}",
+    );
+}
+
+/// The same refusal for a name nothing declared at all.
+#[test]
+fn listing_a_bucket_nothing_declared_is_refused() {
+    let (_node, address) = node();
+    assert_eq!(script(&address, READY, None), 200);
+
+    let (status, _) = send(&address, "GET", "/files/prod/library/absent", b"", None);
+    assert_ne!(status, 200, "a bucket nobody declared answered a listing");
+}
+
 #[test]
 fn deleting_a_file_leaves_nothing_to_get() {
     let (_node, address) = node();

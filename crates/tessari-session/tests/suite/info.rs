@@ -1037,3 +1037,73 @@ fn a_definition_carrying_the_naming_scheme_can_be_replayed() {
         "the replayed table names records some other way"
     );
 }
+
+/// `INFO FOR BUCKET` reports the name and the ceiling the bucket declared.
+///
+/// The bucket was the one engine with no `INFO` subject. That absence was not
+/// cosmetic: it is why the HTTP listing route had no statement to ask whether a
+/// name was a bucket, and answered `200` with an empty listing for a plain
+/// table — a confident wrong answer, which is the class this store refuses.
+#[test]
+fn a_bucket_reports_its_name_and_the_largest_file_it_takes() {
+    let store = store();
+    let mut session = ready(&store);
+    session.run("DEFINE BUCKET avatars MAX 5242880;").unwrap();
+
+    let described = report(&mut session, "INFO FOR BUCKET avatars;");
+    let Value::Object(fields) = &described else {
+        panic!("expected an object, got {described:?}");
+    };
+    assert_eq!(fields.get("name"), Some(&Value::from("avatars")));
+    assert_eq!(fields.get("max"), Some(&Value::from(5_242_880_i64)));
+}
+
+/// An unbounded bucket answers `NONE` rather than a zero.
+///
+/// A zero would be the ceiling that admits no file at all — which is a
+/// declaration this store refuses outright — so reporting absence as zero would
+/// describe every ordinary bucket as one nobody can write to.
+#[test]
+fn a_bucket_with_no_ceiling_says_so_rather_than_reporting_a_zero() {
+    let store = store();
+    let mut session = ready(&store);
+    session.run("DEFINE BUCKET media;").unwrap();
+
+    let described = report(&mut session, "INFO FOR BUCKET media;");
+    let Value::Object(fields) = &described else {
+        panic!("expected an object, got {described:?}");
+    };
+    assert_eq!(fields.get("max"), Some(&Value::None));
+}
+
+/// A table that is not a bucket is not a bucket to ask about — the refusal
+/// `INFO FOR VAULT` and `INFO FOR VECTOR` already make.
+///
+/// It refuses as **unknown** rather than as a wrong kind, deliberately: the two
+/// answers together would tell a caller which names exist without their being
+/// able to read either, and the subject that exists to be asked before a listing
+/// must not become a way to enumerate.
+#[test]
+fn info_for_bucket_refuses_a_table_that_holds_no_files() {
+    let store = store();
+    let mut session = ready(&store);
+
+    let refused = session.run("INFO FOR BUCKET orders;");
+    let error = refused.expect_err("a collection is not a bucket");
+    let said = error.to_string();
+    assert!(
+        said.contains("orders") && said.contains("bucket"),
+        "the refusal must name the bucket it could not find, and it said: {said}",
+    );
+}
+
+/// And a name nothing declared refuses the same way, so the two are
+/// indistinguishable from outside.
+#[test]
+fn info_for_bucket_refuses_a_name_nothing_declared() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("INFO FOR BUCKET absent;")
+        .expect_err("nothing declared that name");
+}

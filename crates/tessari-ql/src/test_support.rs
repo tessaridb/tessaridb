@@ -179,7 +179,8 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Graph(name)
             | InfoSubject::Vector(name)
             | InfoSubject::Geo(name)
-            | InfoSubject::Vault(name) => {
+            | InfoSubject::Vault(name)
+            | InfoSubject::Bucket(name) => {
                 erase_name(name);
             }
         },

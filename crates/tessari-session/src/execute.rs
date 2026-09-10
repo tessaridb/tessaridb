@@ -2645,6 +2645,26 @@ impl Session<'_> {
                 span: table.span,
             });
         }
+        // An analyzer is attached to a field by **name**, and nothing in the
+        // catalog enforces the link — which is why `DROP ANALYZER` counts the
+        // fields naming one before it removes it. Resolving the name here closes
+        // that guard's other end. Without it a single misspelling reaches the
+        // exact state the drop-side refusal exists to prevent, and the symptom
+        // is not an error anybody sees: it is a search that quietly stops
+        // matching.
+        if let Some(named) = &shape.analyzer {
+            let declared = Catalog::new(transaction)
+                .analyzers()?
+                .into_iter()
+                .any(|held| &held.name == named);
+            if !declared {
+                return Err(Error::Unknown {
+                    entity: "analyzer",
+                    name: named.clone(),
+                    span: name.span,
+                });
+            }
+        }
         // The default is stored as the text it was written as, so it is read
         // back by parsing rather than by decoding a syntax tree — and a
         // definition stays legible in a dump.
