@@ -621,3 +621,38 @@ fn held_until(session: &mut Session<'_>, record: &str) -> String {
         .get("claimed_until")
         .map_or_else(|| "none".to_owned(), |until| format!("{until:?}"))
 }
+
+#[test]
+fn a_strict_queue_accepts_the_fields_the_engine_writes_and_still_refuses_the_caller() {
+    // The first-party consumer declares every table `SCHEMAFULL`, so a claim on
+    // a strict queue is the shape it will actually use. The engine's own claim
+    // write goes through the same validation a caller's write does, and none of
+    // `attempts`, `claimed_until` and `claimed_by` is a field anybody declares —
+    // exactly the position the vault's key set was in before it was excused by
+    // kind. Before this was excused, the claim was refused with
+    // `UndeclaredField { field: "attempts" }` and a strict queue was unusable.
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE QUEUE jobs TIMEOUT 30s;\n\
+             ALTER TABLE jobs SET SCHEMAFULL;\n\
+             DEFINE FIELD url ON jobs TYPE string REQUIRED;\n\
+             CREATE jobs:1 = { url: 'a' };",
+        )
+        .unwrap();
+    session.run("USE CONSUMER 'billing';").unwrap();
+    let taken = claimed(&run(&mut session, "CLAIM FROM jobs;"));
+    assert_eq!(taken, vec!["1".to_owned()]);
+    assert!(holder(&mut session, "jobs:1").starts_with("billing/"));
+
+    // The exemption opens nothing: a caller writing the same field is refused
+    // by the guard that says it is the engine's, before strictness is asked.
+    let refused = session
+        .run("UPDATE jobs:1 SET attempts = 0;")
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("written by the store"), "{refused}");
+}

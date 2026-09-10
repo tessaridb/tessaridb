@@ -178,6 +178,16 @@ impl TableDefinition {
         matches!(self.kind, TableKind::Vault(_))
     }
 
+    /// Whether this table is a queue.
+    ///
+    /// Asked for the same reason [`Self::is_vault`] is asked: three of a
+    /// queue's fields are written by the engine after a caller's record has been
+    /// validated, so strictness has to know the kind before it can excuse them.
+    #[must_use]
+    pub fn is_queue(&self) -> bool {
+        matches!(self.kind, TableKind::Queue(_))
+    }
+
     /// The vault's key, sealed under the store's master key.
     ///
     /// `None` for everything that is not a vault, which is the same answer a

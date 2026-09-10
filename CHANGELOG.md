@@ -37,6 +37,13 @@ configured and there is nothing to fence.
 live sessions, which is how a restarted worker reclaims what its predecessor
 left. It is spelled out because it can take work from somebody still doing it.
 
+**A queue may be `SCHEMAFULL`.** It could not be before: the three fields the
+engine writes onto a record it hands out — `attempts`, `claimed_until` and
+`claimed_by` — are declared by nobody and are written after a caller's record has
+been validated, so a strict queue refused every claim it had just taken. They are
+now excused by the table's kind, exactly as a vault's key set is, and a caller
+who writes them is still refused by the guard that says they are the engine's.
+
 `RELEASE jobs:7 FOR CONSUMER 'billing'` is the same choice about one record. The
 bare form compares instances, so it frees only what this session took; the named
 form compares group names. A client that holds one connection for many logical
@@ -107,7 +114,7 @@ rather than the view's records.
 holder at a time under a hold that lapses — `DEFINE QUEUE jobs TIMEOUT 30s
 ATTEMPTS 5`, then `CLAIM FROM jobs`, `DELETE jobs:7` when the work is done and
 `RELEASE jobs:7` to hand it back early. That makes ten engines over one substrate
-rather than nine. **1318 conformance cases** define the language and run in the
+rather than nine. **1321 conformance cases** define the language and run in the
 build, up from 1237.
 
 The design is the part worth reading, because a queue is normally where a store

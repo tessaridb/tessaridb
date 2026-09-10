@@ -69,7 +69,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use tessari_encoding::{LogRecord, RecordValue, decode_payload};
 use tessari_types::{Assertion, DatabaseId, FieldKind, NamespaceId, RecordId, TableId, Value};
 
-use crate::catalog::{Catalog, CatalogChange, catalog_change};
+use crate::catalog::{
+    Catalog, CatalogChange, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, catalog_change,
+};
 use crate::error::{Error, Result};
 use crate::sealing::KEYS_FIELD;
 use crate::store::Store;
@@ -94,6 +96,9 @@ struct TableSchema {
     /// nowhere else**. Without the flag the exemption is by name, and one field
     /// name would escape strictness on every ordinary table too.
     vault: bool,
+    /// Whether this is a queue, which decides the same one thing for the three
+    /// fields the queue engine writes onto a record it hands out.
+    queue: bool,
 }
 
 impl TableSchema {
@@ -349,6 +354,19 @@ fn check(schema: &TableSchema, value: &Value, id: &RecordId) -> Option<Error> {
             // so the exemption does not hand one field name a way past strictness
             // on every other table.
             None if schema.vault && name == KEYS_FIELD => {}
+            // The three fields the queue engine writes are in exactly the
+            // position the vault's key set is in: nobody declares them, and the
+            // engine writes them onto the record **after** this validation's
+            // caller handed it over — so a strict queue would refuse every claim
+            // it had just taken. Conditioned on the kind, so three field names
+            // do not escape strictness on every ordinary table; and it opens
+            // nothing, because a caller who writes them is refused before this
+            // by the guard that says they are the engine's.
+            None if schema.queue
+                && matches!(
+                    name.as_str(),
+                    QUEUE_ATTEMPTS | QUEUE_CLAIMED_UNTIL | QUEUE_CLAIMED_BY
+                ) => {}
             None if schema.schemafull => {
                 return Some(Error::UndeclaredField {
                     table: schema.name.clone(),
@@ -493,6 +511,7 @@ fn declared_schema(view: &mut Transaction<'_>, table: TableId) -> Result<TableSc
         .map(|found| found.name.clone())
         .unwrap_or_default();
     let vault = defined.as_ref().is_some_and(|found| found.is_vault());
+    let queue = defined.as_ref().is_some_and(|found| found.is_queue());
     let schemafull = defined.is_some_and(|found| found.schemafull);
     let fields: BTreeMap<String, Declared> = Catalog::new(view)
         .fields_on(table)?
@@ -514,6 +533,7 @@ fn declared_schema(view: &mut Transaction<'_>, table: TableId) -> Result<TableSc
         fields,
         schemafull,
         vault,
+        queue,
     })
 }
 
@@ -528,6 +548,7 @@ fn build_schema(
         mut fields,
         mut schemafull,
         mut vault,
+        queue,
     } = declared_schema(view, table)?;
 
     for mutation in record.mutations() {
@@ -568,6 +589,7 @@ fn build_schema(
         fields,
         schemafull,
         vault,
+        queue,
     })
 }
 

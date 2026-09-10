@@ -198,3 +198,18 @@ RELEASE slow:2 FOR CONSUMER 'billing';
 --- case: a record release that says for and stops is refused
 RELEASE slow:2 FOR;
 --- expect: error UnexpectedToken
+
+--- case: a queue may be strict, which is how an application declares its work
+DEFINE QUEUE strict TIMEOUT 30s;
+ALTER TABLE strict SET SCHEMAFULL;
+DEFINE FIELD url ON strict TYPE string REQUIRED;
+CREATE strict:1 = { url: 'a' };
+--- expect: ok
+
+--- case: and the engine's own claim fields are not refused by that strictness
+CLAIM FROM strict;
+--- expect: rows 1
+
+--- case: while a caller writing them is still refused
+UPDATE strict:1 SET attempts = 0;
+--- expect: error QueueFieldIsTheEngines
