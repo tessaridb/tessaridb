@@ -922,7 +922,7 @@ pub enum StatementKind {
         /// Where the statement sits.
         span: Span,
     },
-    /// `RELEASE jobs:7`
+    /// `RELEASE jobs:7` · `RELEASE jobs:7 FOR CONSUMER 'billing'`
     ///
     /// Clears a hold now rather than at its deadline, so a worker that knows it
     /// has failed — or that is shutting down — returns its work in milliseconds
@@ -932,9 +932,23 @@ pub enum StatementKind {
     /// and a record that was handed out was handed out whatever happened next;
     /// moving it here would make a deliberate hand-back and a crash count
     /// differently for no reason a caller could predict.
+    ///
+    /// **The bare form compares instances and the named form compares groups**,
+    /// exactly as [`Self::ReleaseAll`] does, and for the same reason: taking a
+    /// live colleague's work is the operation you have to type out. The named
+    /// form exists because a client that holds ONE connection for many logical
+    /// callers is minted a fresh instance at every `USE CONSUMER`, so the
+    /// instance-strict form cannot say *let go of the record this caller took*.
+    ///
+    /// **Naming a consumer is not a master key.** A record another group holds
+    /// gives the same refusal the bare form gives, carrying the holder's name,
+    /// and a hold nobody signed belongs to no group and is freed by the bare
+    /// form alone.
     Release {
         /// The record to release.
         target: RecordTarget,
+        /// The group whose hold to clear, when the statement named one.
+        consumer: Option<String>,
         /// Where the statement sits.
         span: Span,
     },

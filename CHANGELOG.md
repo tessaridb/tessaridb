@@ -37,6 +37,13 @@ configured and there is nothing to fence.
 live sessions, which is how a restarted worker reclaims what its predecessor
 left. It is spelled out because it can take work from somebody still doing it.
 
+`RELEASE jobs:7 FOR CONSUMER 'billing'` is the same choice about one record. The
+bare form compares instances, so it frees only what this session took; the named
+form compares group names. A client that holds one connection for many logical
+callers needs it, because it is minted a fresh instance every time it declares a
+name and its own earlier hold would otherwise belong to somebody else. A hold
+nobody signed belongs to no group and the named form leaves it untouched.
+
 A session that declares nothing signs nothing, and its holds stay releasable by
 anybody — so nothing written before this changes behaviour. A different consumer
 name does **not** replay the queue: records are deleted when the work is done, so
@@ -100,7 +107,7 @@ rather than the view's records.
 holder at a time under a hold that lapses — `DEFINE QUEUE jobs TIMEOUT 30s
 ATTEMPTS 5`, then `CLAIM FROM jobs`, `DELETE jobs:7` when the work is done and
 `RELEASE jobs:7` to hand it back early. That makes ten engines over one substrate
-rather than nine. **1312 conformance cases** define the language and run in the
+rather than nine. **1318 conformance cases** define the language and run in the
 build, up from 1237.
 
 The design is the part worth reading, because a queue is normally where a store

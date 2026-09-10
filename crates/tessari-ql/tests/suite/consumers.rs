@@ -406,3 +406,27 @@ fn consumer_is_still_an_ordinary_name() {
         assert!(refusal(source).is_empty(), "{source}: {}", refusal(source));
     }
 }
+
+#[test]
+fn releasing_one_record_may_name_a_group_too() {
+    // Symmetry with `RELEASE ALL ... FOR CONSUMER`, and the reason it exists:
+    // a client holding one connection for many logical callers has a fresh
+    // instance per declaration, so the instance-strict bare form cannot say
+    // *let go of the record this caller took*.
+    let StatementKind::Release { consumer, .. } = only("RELEASE jobs:1 FOR CONSUMER 'billing';")
+    else {
+        panic!("not a release");
+    };
+    assert_eq!(consumer.as_deref(), Some("billing"));
+
+    let StatementKind::Release { consumer, .. } = only("RELEASE jobs:1;") else {
+        panic!("not a release");
+    };
+    assert_eq!(consumer, None);
+}
+
+#[test]
+fn a_release_that_says_for_and_stops_names_what_it_wanted() {
+    let failure = refusal("RELEASE jobs:1 FOR;");
+    assert!(failure.contains("CONSUMER"), "{failure}");
+}

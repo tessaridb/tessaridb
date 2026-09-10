@@ -5300,6 +5300,7 @@ happened next.
 ```tessariql
 USE CONSUMER 'billing';
 CLAIM FROM jobs;
+RELEASE jobs:7 FOR CONSUMER 'billing';
 RELEASE ALL FROM jobs;
 RELEASE ALL FROM jobs FOR CONSUMER 'billing';
 ```
@@ -5319,6 +5320,15 @@ configured.
 **`RELEASE ALL FROM jobs` reaches this session's own holds**, and answers the
 records it freed rather than a count. That is the safe form, and it is the one a
 worker uses when it is shutting down.
+
+**`RELEASE jobs:7 FOR CONSUMER 'billing'` is the same choice about one record.**
+The bare `RELEASE jobs:7` compares **instances** and so frees only what this
+session took; naming the consumer compares **names** and frees what the group
+took. A client that holds one connection for many logical callers needs the
+named form, because it is minted a fresh instance every time it declares a name
+— its own earlier hold would otherwise be somebody else's. A hold nobody signed
+belongs to no group, so the named form leaves it exactly where `RELEASE ALL ...
+FOR CONSUMER` leaves it: untouched. The bare form still frees it.
 
 **`RELEASE ALL FROM jobs FOR CONSUMER 'billing'` reaches the whole group** —
 every hold every session under that name is holding, including live ones. It is

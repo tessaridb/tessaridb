@@ -343,7 +343,7 @@ fn erase_statement(statement: &mut Statement) {
             erase_table(table);
             *span = CANONICAL;
         }
-        StatementKind::ClaimRecord { target, span } | StatementKind::Release { target, span } => {
+        StatementKind::ClaimRecord { target, span } | StatementKind::Release { target, span, .. } => {
             erase_record(target);
             *span = CANONICAL;
         }

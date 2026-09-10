@@ -242,7 +242,7 @@ impl Session<'_> {
         })
     }
 
-    /// `RELEASE jobs:7`
+    /// `RELEASE jobs:7` · `RELEASE jobs:7 FOR CONSUMER 'billing'`
     ///
     /// Clears the hold now rather than at its deadline. The attempt count is not
     /// touched: it was taken at the claim, and a record that was handed out was
@@ -252,14 +252,23 @@ impl Session<'_> {
     /// statement asked for, and a worker that lost a race to the deadline should
     /// not also get a failure for tidying up.
     ///
+    /// **The bare form compares instances and the named form compares groups**,
+    /// which is the split [`Self::release_all`] already makes. The named form is
+    /// not a convenience: a client holding ONE connection for many logical
+    /// callers is minted a fresh instance at every `USE CONSUMER`, so the
+    /// instance-strict form cannot express *let go of the record this caller
+    /// took*, while the group name can.
+    ///
     /// # Errors
     ///
     /// [`Error::NotAQueue`] when the table is not one, [`Error::Unknown`] when
-    /// there is no such record, and the mapped storage failure otherwise.
+    /// there is no such record, [`Error::HeldByAnother`] when the hold is not
+    /// the caller's, and the mapped storage failure otherwise.
     pub(crate) fn release(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
+        consumer: Option<&str>,
         span: Span,
     ) -> Result<Outcome> {
         let (context, address) = self.address(transaction, target)?;
@@ -279,23 +288,41 @@ impl Session<'_> {
         let Value::Object(mut fields) = decode_payload(&stored)? else {
             return Ok(Outcome::Done);
         };
-        if fields.remove(QUEUE_CLAIMED_UNTIL).is_none() {
+        if !fields.contains_key(QUEUE_CLAIMED_UNTIL) {
             return Ok(Outcome::Done);
         }
         // Whose hold this is decides whether the caller may drop it. A record
-        // nobody signed stays releasable by anybody, which is what keeps every
-        // caller that predates `USE CONSUMER` working exactly as it did.
-        if let Some(holder) = claimant_of(&fields)
-            && !self
-                .consumer
-                .as_ref()
-                .is_some_and(|mine| mine.instance == holder.instance)
-        {
-            return Err(Error::HeldByAnother {
-                consumer: holder.name,
-                span: target.span,
-            });
+        // nobody signed stays releasable by the bare form, which is what keeps
+        // every caller that predates `USE CONSUMER` working exactly as it did.
+        match (claimant_of(&fields), consumer) {
+            // A named group asks for that group's hold and for nothing else,
+            // and a record somebody else holds says who, so the caller learns
+            // who to ask rather than that it failed.
+            (Some(holder), Some(named)) if holder.name != named => {
+                return Err(Error::HeldByAnother {
+                    consumer: holder.name,
+                    span: target.span,
+                });
+            }
+            (Some(holder), None)
+                if !self
+                    .consumer
+                    .as_ref()
+                    .is_some_and(|mine| mine.instance == holder.instance) =>
+            {
+                return Err(Error::HeldByAnother {
+                    consumer: holder.name,
+                    span: target.span,
+                });
+            }
+            // An unsigned hold belongs to no group, so the named form leaves it
+            // exactly where `RELEASE ALL ... FOR CONSUMER` leaves it — untouched
+            // and still held — rather than acting as a master key over every
+            // hold nobody signed.
+            (None, Some(_)) => return Ok(Outcome::Done),
+            _ => {}
         }
+        fields.remove(QUEUE_CLAIMED_UNTIL);
         fields.remove(QUEUE_CLAIMED_BY);
         let _ = context;
         self.put_engine_record(transaction, address, Value::Object(fields), span)?;

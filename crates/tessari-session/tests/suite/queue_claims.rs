@@ -539,3 +539,85 @@ fn a_caller_cannot_sign_a_hold_itself() {
         .to_string();
     assert!(refused.contains("claimed_by"), "{refused}");
 }
+
+#[test]
+fn a_group_frees_a_siblings_hold_by_naming_the_record() {
+    // The form a client with ONE connection and many logical callers needs. It
+    // declares a name per caller, so the engine mints it a fresh instance every
+    // time — and the bare `RELEASE` compares instances, which would refuse the
+    // caller its own work. The group form is the same permission `RELEASE ALL
+    // ... FOR CONSUMER` already grants, asked about one record instead of all
+    // of them.
+    let store = store();
+    let mut first = ready(&store, "TIMEOUT 30s");
+    first.run("USE CONSUMER 'billing';").unwrap();
+    run(&mut first, "CLAIM jobs:1;");
+
+    let mut second = beside(&store);
+    second.run("USE CONSUMER 'billing';").unwrap();
+
+    // The bare form still refuses, because the instance is not this one's —
+    // that is the safety this statement is deliberately not weakening.
+    let refused = second.run("RELEASE jobs:1;").unwrap_err().to_string();
+    assert!(refused.contains("billing"), "{refused}");
+
+    // Naming the group frees it.
+    second
+        .run("RELEASE jobs:1 FOR CONSUMER 'billing';")
+        .unwrap();
+    assert_eq!(holder(&mut second, "jobs:1"), "none");
+}
+
+#[test]
+fn naming_a_group_that_does_not_hold_the_record_is_refused_and_names_the_one_that_does() {
+    // Naming a consumer is not a master key: it asks for *that group's* hold,
+    // and a record another group holds answers the same refusal the bare form
+    // gives, carrying the holder so the caller learns who to ask.
+    let store = store();
+    let mut mine = ready(&store, "TIMEOUT 30s");
+    mine.run("USE CONSUMER 'billing';").unwrap();
+    run(&mut mine, "CLAIM jobs:1;");
+
+    let mut theirs = beside(&store);
+    let refused = theirs
+        .run("RELEASE jobs:1 FOR CONSUMER 'reports';")
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("billing"), "{refused}");
+    assert!(holder(&mut mine, "jobs:1").starts_with("billing/"));
+}
+
+#[test]
+fn naming_a_group_leaves_a_hold_nobody_signed_exactly_where_the_sweep_leaves_it() {
+    // An unsigned hold belongs to no group, so the named form must not act as a
+    // master key over every hold nobody signed. `RELEASE ALL ... FOR CONSUMER`
+    // already skips them by construction; this asserts the record form agrees
+    // rather than diverging quietly.
+    let store = store();
+    let mut quiet = ready(&store, "TIMEOUT 30s");
+    run(&mut quiet, "CLAIM jobs:1;");
+    let deadline = held_until(&mut quiet, "jobs:1");
+
+    let mut named = beside(&store);
+    named.run("RELEASE jobs:1 FOR CONSUMER 'billing';").unwrap();
+    // Still held, and by the same deadline: the statement did nothing at all.
+    assert_eq!(held_until(&mut named, "jobs:1"), deadline);
+
+    // And the bare form goes on freeing it, as it always has.
+    named.run("RELEASE jobs:1;").unwrap();
+    assert_eq!(holder(&mut named, "jobs:1"), "none");
+}
+
+/// The `claimed_until` a record carries, as written, or `none`.
+fn held_until(session: &mut Session<'_>, record: &str) -> String {
+    let outcome = run(session, &format!("SELECT * FROM {record};"));
+    let Outcome::Records { records, .. } = outcome else {
+        panic!("expected records");
+    };
+    let Some((_, Value::Object(fields))) = records.first() else {
+        panic!("expected one record");
+    };
+    fields
+        .get("claimed_until")
+        .map_or_else(|| "none".to_owned(), |until| format!("{until:?}"))
+}

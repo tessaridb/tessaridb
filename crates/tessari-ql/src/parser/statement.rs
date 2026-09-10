@@ -563,25 +563,35 @@ impl Parser<'_> {
     /// `RELEASE jobs:7` · `RELEASE ALL FROM jobs [FOR CONSUMER 'billing']`
     fn release_statement(&mut self, start: Span) -> Result<StatementKind> {
         if !self.eat_word("all") {
+            let target = self.record_target()?;
             return Ok(StatementKind::Release {
-                target: self.record_target()?,
+                target,
+                consumer: self.for_consumer()?,
                 span: start.to(self.span_behind()),
             });
         }
         self.expect_keyword(Keyword::From, "`FROM` and the queue to release")?;
         let table = self.table_ref()?;
-        // `for` is read as a contextual word, exactly as `INFO FOR` reads it.
-        let consumer = if self.eat_word("for") {
-            self.expect_word("consumer", "`CONSUMER` and a quoted name after `FOR`")?;
-            Some(self.consumer_name()?)
-        } else {
-            None
-        };
+        let consumer = self.for_consumer()?;
         Ok(StatementKind::ReleaseAll {
             table,
             consumer,
             span: start.to(self.span_behind()),
         })
+    }
+
+    /// The optional `FOR CONSUMER '<name>'` both release forms accept.
+    ///
+    /// `for` is read as a contextual word, exactly as `INFO FOR` reads it, so
+    /// neither `for` nor `consumer` is taken away from an application's own
+    /// schema. One function rather than two copies, because the two statements
+    /// mean the same thing by it: *the group's hold, not this instance's*.
+    fn for_consumer(&mut self) -> Result<Option<String>> {
+        if !self.eat_word("for") {
+            return Ok(None);
+        }
+        self.expect_word("consumer", "`CONSUMER` and a quoted name after `FOR`")?;
+        Ok(Some(self.consumer_name()?))
     }
 
     /// `LET $recent = SELECT id FROM notes ORDER BY at DESC LIMIT 5`

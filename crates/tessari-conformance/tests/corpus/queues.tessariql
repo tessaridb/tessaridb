@@ -174,3 +174,27 @@ RELEASE ALL;
 --- case: the group form names the consumer it reaches
 RELEASE ALL FROM slow FOR CONSUMER 'billing';
 --- expect: rows 0
+
+--- case: the named form leaves a hold nobody signed exactly where it is
+RELEASE slow:2 FOR CONSUMER 'billing';
+--- expect: ok
+
+--- case: so the record is still held, and claiming it by name answers nothing
+CLAIM slow:2;
+--- expect: rows 0
+
+--- case: the bare form frees an unsigned hold as it always has
+RELEASE slow:2;
+--- expect: ok
+
+--- case: and now it is claimable, signed by the name this session declared
+CLAIM slow:2;
+--- expect: rows 1
+
+--- case: which the group form frees, because the group is what took it
+RELEASE slow:2 FOR CONSUMER 'billing';
+--- expect: ok
+
+--- case: a record release that says for and stops is refused
+RELEASE slow:2 FOR;
+--- expect: error UnexpectedToken
