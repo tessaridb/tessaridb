@@ -24,16 +24,16 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --http <host:port> serve this store over HTTP until stopped; may accompany
                   --serve, and one process then holds both
   --param <name>=<value> bind $name to <value>, written as TessariQL; repeatable
-  -e <script>     run this and exit
-  -f <file>       run this file and exit
+  -e, --execute <script> run this and exit
+  -f, --file <file> run this file and exit
   --backup <file> write the store's log to <file> and exit
   --verify <file> read <file> and say what it holds, changing nothing
   --from <n>      with --backup: write only what happened at or after <n>
   --upto <n>      with --restore: stop replaying after sequence <n>
   --restore <file> replay <file> into an empty store and exit
   --health        say whether the store is well, and exit non-zero if not
-  --version       say which build this is, and exit
-  --help          this
+  -V, --version   say which build this is, and exit
+  -h, --help      this
 
 with neither -e nor -f, statements are read from standard input: a prompt when
 that is a terminal, a script when it is a pipe.
@@ -366,7 +366,7 @@ mod tests {
 
     use tessaridb::Number;
 
-    use super::{Asked, PASSWORD, Source, Value, credentials, parse};
+    use super::{Asked, PASSWORD, Source, USAGE, Value, credentials, parse};
 
     fn asked(arguments: &[&str]) -> Result<Asked, String> {
         parse(arguments.iter().map(|held| (*held).to_owned()))
@@ -682,5 +682,49 @@ mod tests {
                 "{source:?} accepted a parameter"
             );
         }
+    }
+
+    /// The usage names every option form the parser accepts.
+    ///
+    /// # Why this reads the source and not a list
+    ///
+    /// `--help` listed four forms fewer than the binary accepted — `--execute`,
+    /// `--file`, `-V` and `-h` all worked and none was printed — and the
+    /// documentation site published the complete table under the sentence
+    /// *"this is the binary's own usage"*, which was therefore false in one
+    /// direction, with the incomplete side being the binary (Q-367).
+    ///
+    /// A list of forms written beside the parser would pin two lists to each
+    /// other and neither to the binary, so this reads the `match` itself. The
+    /// scan stops at the test module, so a form spelled inside a test is not
+    /// mistaken for one the parser takes.
+    #[test]
+    fn the_usage_names_every_option_the_parser_accepts() {
+        let source = include_str!("arguments.rs");
+        let parser = source
+            .split_once("#[cfg(test)]")
+            .map_or(source, |(before, _)| before);
+        let mut forms = Vec::new();
+        for line in parser.lines().filter(|line| line.contains("=>")) {
+            let mut rest = line;
+            while let Some(open) = rest.find('"') {
+                rest = &rest[open + 1..];
+                let Some(close) = rest.find('"') else { break };
+                let (form, after) = rest.split_at(close);
+                rest = &after[1..];
+                if form.starts_with('-') && form.len() > 1 {
+                    forms.push(form.to_owned());
+                }
+            }
+        }
+        assert!(forms.len() > 10, "the scan found almost nothing: {forms:?}");
+        let missing: Vec<&String> = forms
+            .iter()
+            .filter(|form| !USAGE.contains(form.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "the parser accepts option forms the usage does not print: {missing:?}"
+        );
     }
 }

@@ -8,9 +8,9 @@ use tessari_ql::{
 };
 use tessari_storage::{
     Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeOrder, FieldShape,
-    GEO_FIELD, IndexDefinition, IndexShape, Mapped, OnFailure, RecordAddress, TableDefinition,
-    TableKind, TableShape, Transaction, VECTOR_FIELD, VaultDeclaration, VectorDeclaration,
-    VectorDistance,
+    GEO_FIELD, IndexDefinition, IndexShape, Mapped, OnFailure, QueueDeclaration, RecordAddress,
+    SeriesDeclaration, TableDefinition, TableKind, TableShape, Transaction, VECTOR_FIELD,
+    VaultDeclaration, VectorDeclaration, VectorDistance, ViewDeclaration, Violation, violations,
 };
 
 use tessari_types::{
@@ -32,7 +32,7 @@ use crate::session::Session;
 /// that acts on it have to mean the same word.
 const FORMAT_JSON: &str = "json";
 
-/// A `DEFINE CONSUMER` statement's parts, carried together.
+/// A `DEFINE KAFKA CONSUMER` statement's parts, carried together.
 ///
 /// Nine fields is more than a function signature should take, and the grouping
 /// is not only clippy's preference: passing them as one borrow means a field
@@ -384,6 +384,19 @@ impl Session<'_> {
                     .set_schemafull(id, matches!(change, TableChange::Schemafull))?;
                 Ok(Outcome::Done)
             }
+            // The answer is an array and never a refusal, because an operator
+            // deciding whether to fix the data or the declaration needs all of
+            // it. A statement that raised on the first disagreement would hand
+            // them the same table one record at a time — which is the shape the
+            // tightening statements already have, and the reason this one exists
+            // beside them rather than instead of them.
+            StatementKind::CheckTable { table } => {
+                let (context, id) = self.resolve_table(transaction, table)?;
+                let found = violations(transaction, context.namespace, context.database, id)?;
+                Ok(Outcome::Value(Value::Array(
+                    found.into_iter().map(violation_value).collect(),
+                )))
+            }
             // Writing the definition again is the whole statement: the entries
             // are derived from it, so a definition arriving in a log record is
             // what makes them get built — see `Catalog::rebuild_index`.
@@ -534,6 +547,24 @@ impl Session<'_> {
                 condition,
                 limit,
             } => self.delete_where(transaction, table, condition, *limit),
+            StatementKind::DeleteSpan {
+                table,
+                lower,
+                upper,
+                inclusive,
+                span: at,
+                limit,
+            } => self.delete_span(
+                transaction,
+                table,
+                crate::evaluate::IdentitySpan {
+                    lower,
+                    upper,
+                    inclusive: *inclusive,
+                    at: *at,
+                },
+                *limit,
+            ),
             StatementKind::DefineBucket {
                 name,
                 max,
@@ -594,6 +625,89 @@ impl Session<'_> {
                 if_not_exists,
             } => self.define_vault(transaction, name, *if_not_exists, span),
             StatementKind::DropVault { name } => self.drop_vault(transaction, name, span),
+            StatementKind::DefineQueue {
+                name,
+                timeout,
+                attempts,
+                if_not_exists,
+            } => self.define_table(
+                transaction,
+                name,
+                TableShape {
+                    schemafull: false,
+                    kind: TableKind::Queue(QueueDeclaration {
+                        timeout: *timeout,
+                        attempts: *attempts,
+                    }),
+                    identity: IdentityKind::default(),
+                    graph: None,
+                },
+                *if_not_exists,
+                span,
+            ),
+            StatementKind::DropQueue { name } => self.drop_queue(transaction, name, span),
+            StatementKind::DefineSeries {
+                name,
+                retain,
+                if_not_exists,
+            } => self.define_table(
+                transaction,
+                name,
+                TableShape {
+                    schemafull: false,
+                    kind: TableKind::Series(SeriesDeclaration { retain: *retain }),
+                    // Fixed by the kind rather than offered as a clause, on the
+                    // rule a vector store's width follows: the floor is a
+                    // position in the key, and only a time-carrying identity has
+                    // one. A counter would make the retention a predicate over
+                    // some field, which is the thing this engine exists to stop
+                    // being — and a series table declared with the wrong
+                    // identity could not be corrected afterwards, since records
+                    // keep the names they were given.
+                    identity: IdentityKind::Uuid,
+                    graph: None,
+                },
+                *if_not_exists,
+                span,
+            ),
+            StatementKind::DropSeries { name } => self.drop_series(transaction, name, span),
+            StatementKind::DefineView {
+                name,
+                read,
+                if_not_exists,
+            } => self.define_table(
+                transaction,
+                name,
+                TableShape {
+                    // A view declares no fields — its shape is whatever its read
+                    // answers with — so strictness has nothing to be about, and
+                    // `false` is the value that says so rather than a default
+                    // nobody chose.
+                    schemafull: false,
+                    kind: TableKind::View(ViewDeclaration { read: read.clone() }),
+                    identity: IdentityKind::default(),
+                    graph: None,
+                },
+                *if_not_exists,
+                span,
+            ),
+            StatementKind::DropView { name } => self.drop_view(transaction, name, span),
+            StatementKind::Claim { table, count, span } => {
+                self.claim(transaction, table, *count, *span)
+            }
+            StatementKind::ClaimRecord { target, span } => {
+                self.claim_record(transaction, target, *span)
+            }
+            StatementKind::Release {
+                target,
+                consumer,
+                span,
+            } => self.release(transaction, target, consumer.as_deref(), *span),
+            StatementKind::ReleaseAll {
+                table,
+                consumer,
+                span,
+            } => self.release_all(transaction, table, consumer.as_deref(), *span),
             StatementKind::Reveal {
                 target,
                 fields,
@@ -724,6 +838,23 @@ impl Session<'_> {
         self.put_record_sealing(transaction, address, payload, None, span)
     }
 
+    /// The same write, made by the engine rather than by a caller.
+    ///
+    /// The **only** two callers are `CLAIM` and `RELEASE`, and they exist
+    /// because the fields they set are exactly the fields [`Session::put_record`]
+    /// refuses. A named path rather than a flag, so that "this write may set the
+    /// engine's fields" is a thing the reader can see at the call site instead of
+    /// a `true` in an argument list.
+    pub(crate) fn put_engine_record(
+        &self,
+        transaction: &mut Transaction<'_>,
+        address: RecordAddress,
+        payload: Value,
+        span: Span,
+    ) -> Result<()> {
+        self.write_record(transaction, address, payload, None, span)
+    }
+
     /// The same write, told which fields a partial vault edit supplied.
     ///
     /// `None` is every caller but the two edit paths, and means "seal this
@@ -733,6 +864,32 @@ impl Session<'_> {
     /// data key and key set are reused — which is what keeps a recipient's wrap
     /// valid across an edit.
     fn put_record_sealing(
+        &self,
+        transaction: &mut Transaction<'_>,
+        address: RecordAddress,
+        payload: Value,
+        partial: Option<&PartialSeal>,
+        span: Span,
+    ) -> Result<()> {
+        // Every **caller-driven** record write passes through here — the two
+        // creates, the insert, the update, the upsert, the set and both vault
+        // edits — which is why the queue's engine-field refusal sits here rather
+        // than in each of them. One rule in one place, and a write path added
+        // later inherits it instead of having to remember it. This placement was
+        // not the first one tried: the guard sat one level up, in `put_record`,
+        // and `UPDATE` reached the write without passing it.
+        crate::queue::refuse_engine_fields(transaction, &address, &payload, span)?;
+        self.write_record(transaction, address, payload, partial, span)
+    }
+
+    /// The write itself, with no question asked about who is making it.
+    ///
+    /// Split from [`Session::put_record_sealing`] so that the engine's own two
+    /// writes — the claim and the release, which set exactly the fields that
+    /// funnel refuses — have a path that is *named* rather than a flag passed
+    /// into a shared one. A reader at the call site can see which kind of write
+    /// it is without following an argument.
+    fn write_record(
         &self,
         transaction: &mut Transaction<'_>,
         address: RecordAddress,
@@ -1854,6 +2011,99 @@ impl Session<'_> {
     /// name different things even where they would remove the same rows, and a
     /// `DROP VECTOR` that quietly removed an ordinary table would be a typo with
     /// the blast radius of a table.
+    /// `DROP QUEUE jobs`
+    ///
+    /// Refuses a table that is not a queue by reporting it as unknown, the shape
+    /// `DROP VECTOR` already uses: a word that removed a table of another kind
+    /// would make `DROP QUEUE` a second spelling of `DROP TABLE`, and the two
+    /// answer to different grants for different reasons.
+    /// `DROP SERIES readings`
+    ///
+    /// Refuses a name that is not a series for [`Self::drop_queue`]'s reason:
+    /// the word in the statement is a claim about what is being removed, and a
+    /// `DROP SERIES` that removed a plain table would be a statement doing
+    /// something other than what it says.
+    fn drop_series(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        let unknown = || Error::Unknown {
+            entity: "series",
+            name: name.text.clone(),
+            span,
+        };
+        let id = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(unknown)?;
+        let is_series = Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|definition| matches!(definition.kind, TableKind::Series(_)));
+        if !is_series {
+            return Err(unknown());
+        }
+        Catalog::new(transaction).drop_table(id)?;
+        Ok(Outcome::Done)
+    }
+
+    fn drop_queue(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        let unknown = || Error::Unknown {
+            entity: "queue",
+            name: name.text.clone(),
+            span,
+        };
+        let id = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(unknown)?;
+        let is_queue = Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|definition| matches!(definition.kind, TableKind::Queue(_)));
+        if !is_queue {
+            return Err(unknown());
+        }
+        Catalog::new(transaction).drop_table(id)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP VIEW active` — the definition, and there is nothing else.
+    ///
+    /// A view holds no records, no index and no keyspace, so dropping one frees
+    /// nothing and orphans nothing. It refuses a name of another kind for the
+    /// reason `DROP QUEUE` does: a word that removed a table of another kind
+    /// would make the statement's own name the least reliable thing about it.
+    fn drop_view(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let context = self.context(transaction, None, span)?;
+        let unknown = || Error::Unknown {
+            entity: "view",
+            name: name.text.clone(),
+            span,
+        };
+        let id = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(unknown)?;
+        let is_view = Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|definition| matches!(definition.kind, TableKind::View(_)));
+        if !is_view {
+            return Err(unknown());
+        }
+        Catalog::new(transaction).drop_table(id)?;
+        Ok(Outcome::Done)
+    }
+
     fn drop_vector(
         &self,
         transaction: &mut Transaction<'_>,
@@ -2403,6 +2653,26 @@ impl Session<'_> {
                 table: table.name.text.clone(),
                 span: table.span,
             });
+        }
+        // An analyzer is attached to a field by **name**, and nothing in the
+        // catalog enforces the link — which is why `DROP ANALYZER` counts the
+        // fields naming one before it removes it. Resolving the name here closes
+        // that guard's other end. Without it a single misspelling reaches the
+        // exact state the drop-side refusal exists to prevent, and the symptom
+        // is not an error anybody sees: it is a search that quietly stops
+        // matching.
+        if let Some(named) = &shape.analyzer {
+            let declared = Catalog::new(transaction)
+                .analyzers()?
+                .into_iter()
+                .any(|held| &held.name == named);
+            if !declared {
+                return Err(Error::Unknown {
+                    entity: "analyzer",
+                    name: named.clone(),
+                    span: name.span,
+                });
+            }
         }
         // The default is stored as the text it was written as, so it is read
         // back by parsing rather than by decoding a syntax tree — and a
@@ -3198,4 +3468,19 @@ fn set_field(
         fields.remove(name);
     }
     Ok(())
+}
+
+/// One disagreement, as the answer carries it.
+///
+/// The rule is a stable word and the detail is the store's own sentence, so a
+/// caller scripting a repair matches on the first and shows the second — rather
+/// than parsing a message written for a person, which is the thing that breaks
+/// when the message is improved.
+fn violation_value(found: Violation) -> Value {
+    Value::Object(BTreeMap::from([
+        ("record".to_owned(), Value::String(found.record)),
+        ("field".to_owned(), Value::String(found.field)),
+        ("rule".to_owned(), Value::String(found.rule.to_owned())),
+        ("detail".to_owned(), Value::String(found.detail)),
+    ]))
 }

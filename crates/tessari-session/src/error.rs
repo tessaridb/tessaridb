@@ -5,6 +5,7 @@
 //! the whole thing again.
 
 use tessari_ql::{Function, Span};
+use tessari_types::article;
 
 /// Result alias for every fallible operation in this crate.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -450,6 +451,49 @@ pub enum Error {
         span: Span,
     },
 
+    /// A view was named where a table has to be.
+    ///
+    /// Reading a view happens by rewriting the statement before anything is
+    /// resolved, so a view name that reaches a resolution is a view in a
+    /// position that has no records to act on — a write, a keyspace address, an
+    /// index, or a read the rewrite does not cover.
+    #[error(
+        "`{name}` is a view (at {span}) — a view holds no records, so it can only be read from"
+    )]
+    ViewIsNotATable {
+        /// The view named.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+    /// A chain of views was expanded as far as the store will follow it.
+    ///
+    /// A view naming a view naming a view, past the depth this build accepts —
+    /// which is also what a cycle looks like from here, and the chain is printed
+    /// so the cycle is legible in the message.
+    #[error("views nested more than {depth} deep (at {span}): {}", chain.join(" -> "))]
+    ViewsTooDeep {
+        /// The chain followed, in the order it was followed.
+        chain: Vec<String>,
+        /// How far the store will follow one.
+        depth: usize,
+        /// Where the read that started it was written.
+        span: Span,
+    },
+    /// A stored view could not be read back as a read.
+    ///
+    /// The text was parsed when it was declared, so this is a catalog whose
+    /// contents have moved under a build that no longer accepts them, not a
+    /// statement somebody has just mistyped.
+    #[error("the stored read of view `{name}` (at {span}) no longer parses: {detail}")]
+    ViewUnreadable {
+        /// The view whose stored read would not parse.
+        name: String,
+        /// What the parser said about it.
+        detail: String,
+        /// Where the view was named.
+        span: Span,
+    },
     /// `CREATE` over a record that is already there.
     ///
     /// Refused rather than replaced: a silent overwrite loses a record with
@@ -868,7 +912,7 @@ pub enum Error {
     },
 
     /// The signed-in user's role does not allow the statement.
-    #[error("a {role} may not {needs} (at {span})")]
+    #[error("{} {role} may not {needs} (at {span})", article(role))]
     RoleForbids {
         /// The role the user holds.
         role: &'static str,
@@ -1399,6 +1443,95 @@ pub enum Error {
         span: Span,
     },
 
+    /// A statement that only a queue answers, aimed at another kind of table.
+    ///
+    /// Refused rather than answered as an ordinary read, because `CLAIM` writes:
+    /// a table that gained holds because somebody used the wrong verb would
+    /// carry two fields nothing maintains and nothing would ever notice.
+    #[error("{table} is not a queue (at {span}) — define it with `DEFINE QUEUE`")]
+    NotAQueue {
+        /// The table as written.
+        table: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A caller's write setting a field only the queue engine may set.
+    ///
+    /// The bucket's rule in a second place and for the identical reason: engine
+    /// metadata a caller can write is metadata that can lie, and a hold whose
+    /// deadline the holder chose is not a hold. Named rather than silently
+    /// dropped, so a payload that happens to use the name is told what happened.
+    #[error(
+        "`{field}` on a queue is written by the store (at {span}) — `CLAIM` and `RELEASE` set it"
+    )]
+    QueueFieldIsTheEngines {
+        /// The field the write named.
+        field: &'static str,
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// A release of a hold that belongs to somebody else.
+    ///
+    /// Refused rather than performed, because taking another claimant's work
+    /// away is a different act from letting go of your own — and until there
+    /// was a claimant to compare, any caller who could write the table could do
+    /// it with nothing anywhere saying so.
+    ///
+    /// It names the **consumer** and not the instance: the consumer is the name
+    /// a person chose and can recognise, while the instance is a value the
+    /// engine minted and means nothing to anybody reading the message.
+    #[error("{consumer} is holding that record (at {span})")]
+    HeldByAnother {
+        /// The consumer whose hold it is.
+        consumer: String,
+        /// Where the release was written.
+        span: Span,
+    },
+
+    /// `RELEASE ALL` from a session that never said who it is.
+    ///
+    /// The bare form means *everything mine*, and a session with no declared
+    /// consumer has no instance for *mine* to point at. The two silent readings
+    /// are both wrong in ways that look like success — succeeding on nothing
+    /// tells a worker its work was freed when it was not, and freeing every
+    /// unsigned hold takes work from claimants who never asked this session for
+    /// anything — so it is refused, naming the statement that would fix it.
+    #[error("`RELEASE ALL` needs `USE CONSUMER` first, or a named consumer (at {span})")]
+    NoConsumerDeclared {
+        /// Where the release was written.
+        span: Span,
+    },
+
+    /// A claim for more records than one statement may take.
+    ///
+    /// A bound rather than a tuning knob: without one, a single statement holds
+    /// the whole queue for the whole timeout and every other worker waits, with
+    /// nothing anywhere in an error state.
+    #[error("a claim takes at most {ceiling} records, not {asked} (at {span})")]
+    ClaimAboveCeiling {
+        /// How many were asked for.
+        asked: u64,
+        /// How many one statement may take.
+        ceiling: u64,
+        /// Where the claim was written.
+        span: Span,
+    },
+
+    /// A claim whose deadline falls outside the range an instant can hold.
+    ///
+    /// Only reachable from a timeout so long that adding it to now overflows,
+    /// which the declaration allows because refusing a long timeout would need a
+    /// ceiling nobody has a reason for. Refused here rather than saturated: a
+    /// deadline clamped to the end of time is a hold that never lapses, which is
+    /// the one thing this engine exists to prevent.
+    #[error("this queue\'s timeout puts the claim past the end of time (at {span})")]
+    ClaimDeadlineUnreachable {
+        /// Where the claim was written.
+        span: Span,
+    },
+
     /// A record written by hand into a bucket.
     ///
     /// A bucket's records describe bytes the store holds. One a caller can write
@@ -1528,6 +1661,37 @@ impl Depended {
             (Self::GraphByTable, _) => "tables",
             (Self::GraphByEdgeKind, 1) => "edge kind",
             (Self::GraphByEdgeKind, _) => "edge kinds",
+        }
+    }
+}
+
+#[cfg(test)]
+mod article_tests {
+    use tessari_ql::Span;
+
+    use super::Error;
+
+    /// Every word that reaches the role refusal reads as English. Three of the
+    /// four begin with a vowel — `owner`, `editor` and the `authorities`
+    /// fallback for a user whose set no role summarises — and only `viewer` got
+    /// the article right by luck, which is why *"a editor may not operate"* was
+    /// reported from a documentation wave rather than from the engine's own
+    /// tests. Q-366.
+    #[test]
+    fn the_role_refusal_reads_as_english_for_every_role_it_can_name() {
+        for (role, wanted) in [
+            ("owner", "an owner may not"),
+            ("editor", "an editor may not"),
+            ("authorities", "an authorities may not"),
+            ("viewer", "a viewer may not"),
+        ] {
+            let said = Error::RoleForbids {
+                role,
+                needs: "operate",
+                span: Span::new(0, 6),
+            }
+            .to_string();
+            assert!(said.starts_with(wanted), "{said}");
         }
     }
 }

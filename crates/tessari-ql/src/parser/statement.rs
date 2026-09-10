@@ -72,6 +72,7 @@ impl Parser<'_> {
             Some(Keyword::Drop) => self.drop_statement()?,
             Some(Keyword::Alter) => self.alter_statement()?,
             Some(Keyword::Rebuild) => self.rebuild_statement()?,
+            Some(Keyword::Check) => self.check_statement()?,
             Some(Keyword::Grant) => self.grant_statement(true)?,
             Some(Keyword::Revoke) => self.grant_statement(false)?,
             Some(Keyword::Create) => self.write_statement(Keyword::Create)?,
@@ -114,14 +115,38 @@ impl Parser<'_> {
                 // that removes rows should not be one word away from a typo.
                 if self.eat_keyword(Keyword::From) {
                     let table = self.table_ref()?;
-                    self.expect_keyword(Keyword::Where, "`WHERE` and what to remove")?;
-                    let condition = self.condition()?;
-                    super::shape::no_fold(&condition)?;
-                    super::shape::check_several(&condition)?;
-                    StatementKind::DeleteWhere {
-                        table,
-                        condition: Box::new(condition),
-                        limit: self.delete_bound()?,
+                    // `DELETE FROM events:1000..2000` is the retention form and
+                    // reads exactly as the span a `SELECT` takes, because it
+                    // removes the records that read would have answered with.
+                    if self.peek() == Some(&Token::Punct(Punct::Colon)) {
+                        let record = self.record_target_after(table)?;
+                        // A span and nothing else. `DELETE FROM events:1000`
+                        // would name one record in the form reserved for a set,
+                        // and `DELETE events:1000` already says that — so the
+                        // missing `..` is refused rather than read as either.
+                        let Some(inclusive) = self.range_bound() else {
+                            return Err(self.error_here("`..` or `..=` and the end of the span"));
+                        };
+                        let at = self.span_here();
+                        let upper = self.record_id(at)?;
+                        StatementKind::DeleteSpan {
+                            span: record.span.to(self.span_behind()),
+                            table: record.table,
+                            lower: record.id,
+                            upper,
+                            inclusive,
+                            limit: self.delete_bound()?,
+                        }
+                    } else {
+                        self.expect_keyword(Keyword::Where, "`WHERE` and what to remove")?;
+                        let condition = self.condition()?;
+                        super::shape::no_fold(&condition)?;
+                        super::shape::check_several(&condition)?;
+                        StatementKind::DeleteWhere {
+                            table,
+                            condition: Box::new(condition),
+                            limit: self.delete_bound()?,
+                        }
                     }
                 } else {
                     let target = self.record_target()?;
@@ -229,6 +254,13 @@ impl Parser<'_> {
             // including in the vault whose fields somebody is declaring. Nothing
             // but a verb can stand at the head of a statement, so nothing is
             // ambiguous, and each arm has already consumed its word.
+            // Two more contextual verbs, and here the reason is the strongest
+            // it gets: `claim` and `release` are ordinary column names in
+            // exactly the kind of application that wants a queue — a task
+            // tracker's own table has a `claim` on it — so reserving them here
+            // would take them away from the schema the word exists to serve.
+            _ if self.eat_word("claim") => self.claim_statement(start)?,
+            _ if self.eat_word("release") => self.release_statement(start)?,
             _ if self.eat_word("reveal") => self.reveal_statement(start)?,
             _ if self.eat_word("add") => self.add_recipient_statement(start)?,
             _ if self.eat_word("remove") => self.remove_recipient_statement(start)?,
@@ -399,6 +431,13 @@ impl Parser<'_> {
                 self.advance();
                 InfoSubject::Graph(self.name()?)
             }
+            // A keyword, unlike `VECTOR`, `GEO` and `VAULT` below, because
+            // `DEFINE BUCKET` reserved the word before this subject existed —
+            // so it is read here as one rather than as a bare word.
+            Some(Keyword::Bucket) => {
+                self.advance();
+                InfoSubject::Bucket(self.name()?)
+            }
             Some(Keyword::User) => {
                 self.advance();
                 InfoSubject::User(self.name()?)
@@ -417,8 +456,20 @@ impl Parser<'_> {
             _ if self.eat_word("node") => InfoSubject::Node,
             // Plural first, as with `USERS` above, so that reading this arm in
             // order tells you which of the two a bare word reaches.
-            _ if self.eat_word("consumers") => InfoSubject::Consumers,
-            _ if self.eat_word("consumer") => InfoSubject::Consumer(self.name()?),
+            _ if self.eat_word("kafka") => {
+                if self.eat_word("consumers") {
+                    InfoSubject::Consumers
+                } else {
+                    self.expect_word("consumer", "`CONSUMER` or `CONSUMERS` after `KAFKA`")?;
+                    InfoSubject::Consumer(self.name()?)
+                }
+            }
+            _ if self.peek_word("consumer") || self.peek_word("consumers") => {
+                return Err(self.error_here(
+                    "`INFO FOR KAFKA CONSUMER` — the bare word now belongs to a \
+                     queue's readers",
+                ));
+            }
             _ if self.eat_word("vector") => InfoSubject::Vector(self.name()?),
             _ if self.eat_word("geo") => InfoSubject::Geo(self.name()?),
             _ if self.eat_word("vault") => InfoSubject::Vault(self.name()?),
@@ -436,7 +487,7 @@ impl Parser<'_> {
                 // list wrong is worse than one that lists none, because a caller
                 // reads it as the whole truth and stops looking.
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `USER`, `USERS`, `ACCESS`, `NODE`, `CONSUMER`, `CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `RECIPIENTS OF` or `AUDIT`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `BUCKET`, `USER`, `USERS`, `ACCESS`, `NODE`, `KAFKA CONSUMER`, `KAFKA CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `RECIPIENTS OF` or `AUDIT`",
                 ));
             }
         };
@@ -472,13 +523,75 @@ impl Parser<'_> {
         if self.eat_keyword(Keyword::Database) {
             database = Some(self.name()?);
         }
-        if namespace.is_none() && database.is_none() {
-            return Err(self.error_here("`NAMESPACE` or `DATABASE` after `USE`"));
+        // Contextual like every other subject word in this file: `consumer` is
+        // a perfectly ordinary column name in an application that has
+        // customers, and reserving it here would reserve it everywhere.
+        let consumer = if self.eat_word("consumer") {
+            Some(self.consumer_name()?)
+        } else {
+            None
+        };
+        if namespace.is_none() && database.is_none() && consumer.is_none() {
+            return Err(self.error_here("`NAMESPACE`, `DATABASE` or `CONSUMER` after `USE`"));
         }
         Ok(StatementKind::Use {
             namespace,
             database,
+            consumer,
         })
+    }
+
+    /// The quoted name a session claims under.
+    ///
+    /// A literal rather than an identifier: it is the client's own string, not a
+    /// catalog object, and nothing declares it first.
+    fn consumer_name(&mut self) -> Result<String> {
+        let Some(Token::Str(name)) = self.peek() else {
+            return Err(self.error_here("a quoted consumer name"));
+        };
+        let name = name.clone();
+        self.advance();
+        if name.is_empty() {
+            // An empty name would be a consumer that reads as *nobody said*,
+            // which is what an ABSENT `claimed_by` already means. Two spellings
+            // of one state is how a reader ends up asking which was meant.
+            return Err(self.error_here("a consumer name with something in it"));
+        }
+        Ok(name)
+    }
+
+    /// `RELEASE jobs:7` · `RELEASE ALL FROM jobs [FOR CONSUMER 'billing']`
+    fn release_statement(&mut self, start: Span) -> Result<StatementKind> {
+        if !self.eat_word("all") {
+            let target = self.record_target()?;
+            return Ok(StatementKind::Release {
+                target,
+                consumer: self.for_consumer()?,
+                span: start.to(self.span_behind()),
+            });
+        }
+        self.expect_keyword(Keyword::From, "`FROM` and the queue to release")?;
+        let table = self.table_ref()?;
+        let consumer = self.for_consumer()?;
+        Ok(StatementKind::ReleaseAll {
+            table,
+            consumer,
+            span: start.to(self.span_behind()),
+        })
+    }
+
+    /// The optional `FOR CONSUMER '<name>'` both release forms accept.
+    ///
+    /// `for` is read as a contextual word, exactly as `INFO FOR` reads it, so
+    /// neither `for` nor `consumer` is taken away from an application's own
+    /// schema. One function rather than two copies, because the two statements
+    /// mean the same thing by it: *the group's hold, not this instance's*.
+    fn for_consumer(&mut self) -> Result<Option<String>> {
+        if !self.eat_word("for") {
+            return Ok(None);
+        }
+        self.expect_word("consumer", "`CONSUMER` and a quoted name after `FOR`")?;
+        Ok(Some(self.consumer_name()?))
     }
 
     /// `LET $recent = SELECT id FROM notes ORDER BY at DESC LIMIT 5`
@@ -689,7 +802,22 @@ impl Parser<'_> {
             // arms consume their word, so neither may `advance` again.
             _ if self.eat_word("node") => self.define_node(),
             _ if self.eat_word("replica") => self.define_replica(),
-            _ if self.eat_word("consumer") => self.define_consumer(),
+            // `KAFKA` qualifies the word rather than replacing it, and it is
+            // contextual like every other subject here — special after `DEFINE`
+            // and an ordinary identifier everywhere else, so a table called
+            // `kafka` is still spellable.
+            _ if self.eat_word("kafka") => {
+                self.expect_word("consumer", "`CONSUMER` after `KAFKA`")?;
+                self.define_consumer()
+            }
+            // The bare spelling is REFUSED rather than accepted, because the
+            // word is being given to the queue: a `DEFINE CONSUMER` that kept
+            // working would mean broker ingestion today and a claimant identity
+            // later, and nothing in the statement would say which was meant.
+            _ if self.peek_word("consumer") => Err(self.error_here(
+                "`DEFINE KAFKA CONSUMER` — broker ingestion names its broker, \
+                 and `CONSUMER` alone now belongs to a queue's readers",
+            )),
             // Contextual for the reason `DEFINE INDEX … VECTOR` already gives:
             // a field called `vector` in a database of embeddings is not a name
             // to take away, and taking it away here would take it away
@@ -704,8 +832,17 @@ impl Parser<'_> {
             // password manager's own schema, which is precisely the kind of
             // application this word exists for.
             _ if self.eat_word("vault") => self.define_vault(),
+            // Contextual for the same reason as the rest of this run: `queue` is
+            // an ordinary table name, and a store that had one before this word
+            // existed keeps it.
+            _ if self.eat_word("queue") => self.define_queue(),
+            _ if self.eat_word("series") => self.define_series(),
+            // Contextual for the same reason as the rest of this run: `view` is
+            // an ordinary table name, and a store that had one before this word
+            // existed keeps it.
+            _ if self.eat_word("view") => self.define_view(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `CONSUMER`, `VECTOR`, `GEO` or `VAULT`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `KAFKA CONSUMER`, `VECTOR`, `GEO`, `VAULT`, `QUEUE` or `VIEW`",
             )),
         }
     }
@@ -737,6 +874,212 @@ impl Parser<'_> {
             distance: self.name()?,
             if_not_exists,
         })
+    }
+
+    /// `DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5`
+    ///
+    /// One required clause and one optional one, read in a fixed order for the
+    /// reason `DEFINE VECTOR`'s two are: two clauses is too few to be worth an
+    /// order-free reader, and a fixed order is what makes the statement read the
+    /// same way in every store that has one.
+    ///
+    /// The timeout is a literal duration rather than an expression, the rule the
+    /// query timeout already keeps: a budget a bound value could set is a budget
+    /// a caller could raise, and this one is meant to be readable in the
+    /// statement that declared it rather than in a bindings map somewhere else.
+    fn define_queue(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        if !self.eat_word("timeout") {
+            return Err(self.error_here("`TIMEOUT` and how long a claim holds a record"));
+        }
+        let expected = "a duration, like `30s` or `5m`";
+        let Some(Token::Duration(written)) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let timeout = *written;
+        let at = self.span_here();
+        self.advance();
+        // Refused here rather than at the claim, for the reason the query
+        // timeout gives about its own zero: a hold of no length is not a hold,
+        // so the declaration could only ever produce a queue that hands one
+        // record to every worker at once — which is a mistake in the statement,
+        // and the statement is where it is worth saying so.
+        if timeout.seconds() < 0 || (timeout.seconds() == 0 && timeout.nanos() == 0) {
+            return Err(Error::EmptyTimeout {
+                written: timeout.to_literal(),
+                span: at,
+            });
+        }
+        let attempts = if self.eat_word("attempts") {
+            Some(self.attempt_ceiling()?)
+        } else {
+            None
+        };
+        Ok(StatementKind::DefineQueue {
+            name,
+            timeout,
+            attempts,
+            if_not_exists,
+        })
+    }
+
+    /// `DEFINE SERIES readings RETAIN 30d`
+    ///
+    /// The retention is a literal duration rather than an expression, on
+    /// [`Self::define_queue`]'s rule and for its reason: a floor a bound value
+    /// could set is a floor a caller could move, and this one is meant to be
+    /// readable in the statement that declared it.
+    fn define_series(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        if !self.eat_word("retain") {
+            return Err(self.error_here("`RETAIN` and how far back the table answers"));
+        }
+        let expected = "a duration, like `30d` or `12h`";
+        let Some(Token::Duration(written)) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let retain = *written;
+        let at = self.span_here();
+        self.advance();
+        // Refused here for the reason a queue's zero timeout is: a retention of
+        // no length is not a retention, it is a table that answers with nothing,
+        // and that is a mistake in the statement rather than a configuration.
+        if retain.seconds() < 0 || (retain.seconds() == 0 && retain.nanos() == 0) {
+            return Err(Error::EmptyRetention {
+                written: retain.to_literal(),
+                span: at,
+            });
+        }
+        Ok(StatementKind::DefineSeries {
+            name,
+            retain,
+            if_not_exists,
+        })
+    }
+
+    /// `DEFINE VIEW active AS SELECT * FROM users WHERE active = true`
+    ///
+    /// The read runs to the end of the statement. No parentheses, because there
+    /// is nothing to disambiguate: a view holds exactly one `SELECT` and it is
+    /// everything after `AS`.
+    ///
+    /// # Parsed to validate, kept as text to store
+    ///
+    /// The read is parsed here so that a view which is not one `SELECT` is
+    /// refused where somebody wrote it rather than on whatever read first names
+    /// it, and then the **source text** is what the statement carries — sliced
+    /// by the read's own span. Rendering the parsed tree back would store a
+    /// different statement that happens to mean the same thing, and a reader
+    /// comparing what they wrote against what `INFO` reports should find them
+    /// equal.
+    ///
+    /// Nothing is resolved: the tables the read names need not exist yet, the
+    /// same rule a field's `DEFAULT` follows. The alternative would make the
+    /// order of a provisioning script load-bearing.
+    fn define_view(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        if !self.eat_keyword(Keyword::As) {
+            return Err(self.error_here("`AS` and the read this name means"));
+        }
+        if self.peek_keyword() != Some(Keyword::Select) {
+            return Err(self.error_here("`SELECT` — a view is a read"));
+        }
+        let read = self.select_statement()?;
+        Ok(StatementKind::DefineView {
+            name,
+            read: self.source[read.span.start..read.span.end].to_owned(),
+            if_not_exists,
+        })
+    }
+
+    /// The whole number after `ATTEMPTS`, which must be one and must be at least one.
+    ///
+    /// Zero is refused rather than read as unlimited. Unlimited already has a
+    /// spelling — leaving the clause out — and a second one that looks like
+    /// "never hand this out" would be the one somebody writes by accident.
+    fn attempt_ceiling(&mut self) -> Result<u32> {
+        let expected = "how many times a record may be handed out, like `5`";
+        let Some(Token::Number(Number::Integer(written))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        // Read before advancing, so the refusal points at the number rather than
+        // at whatever follows it.
+        let Some(ceiling) = u32::try_from(*written).ok().filter(|held| *held > 0) else {
+            return Err(self.error_here(expected));
+        };
+        self.advance();
+        Ok(ceiling)
+    }
+
+    /// `CLAIM FROM jobs` · `CLAIM 10 FROM jobs`
+    ///
+    /// The count sits before `FROM` rather than in a `LIMIT` after the table,
+    /// because it is not a ceiling on an answer that was going to be produced
+    /// anyway — it is how much work this statement takes, and a `LIMIT` that
+    /// decided how many records got written would be the one clause in the
+    /// language that changes the store rather than the answer.
+    fn claim_statement(&mut self, start: Span) -> Result<StatementKind> {
+        // Three shapes, told apart by the token after `CLAIM` rather than by a
+        // keyword: a number commits to the counting form, `FROM` is that form
+        // with a count of one, and anything else is a record the caller named.
+        if matches!(self.peek(), Some(Token::Number(_))) {
+            let count = self.claim_count()?;
+            self.expect_keyword(Keyword::From, "`FROM` and the queue to take from")?;
+            let table = self.table_ref()?;
+            return Ok(StatementKind::Claim {
+                table,
+                count,
+                span: start.to(self.span_behind()),
+            });
+        }
+        if self.eat_keyword(Keyword::From) {
+            let table = self.table_ref()?;
+            return Ok(StatementKind::Claim {
+                table,
+                count: 1,
+                span: start.to(self.span_behind()),
+            });
+        }
+        let table = self.table_ref()?;
+        // Raised here rather than by `record_target_after`, whose message is
+        // shared with every other record-target statement. A bare `CLAIM jobs`
+        // is most likely a forgotten `FROM` rather than a forgotten identity, so
+        // the message names both forms instead of only what the parser wanted
+        // next — and naming them here changes no other statement's refusal.
+        if !self.at_punct(Punct::Colon) {
+            return Err(self.error_here(
+                "`:` and the record to hold, as in `CLAIM jobs:7` — or `FROM` \
+                 and the queue to take from, as in `CLAIM FROM jobs`",
+            ));
+        }
+        let target = self.record_target_after(table)?;
+        Ok(StatementKind::ClaimRecord {
+            target,
+            span: start.to(self.span_behind()),
+        })
+    }
+
+    /// The whole number after `CLAIM`.
+    ///
+    /// Zero is refused here because it is a **shape** mistake — a statement that
+    /// asks for no records is not a claim — while the upper bound is refused by
+    /// the store rather than by the grammar. That split is the one
+    /// `DEFINE VECTOR` already makes about its distance: how much a store is
+    /// willing to hand out in one statement is the store's question, and a
+    /// ceiling compiled into the parser would be a second place holding it.
+    fn claim_count(&mut self) -> Result<u64> {
+        let expected = "how many records to claim, like `10`";
+        let Some(Token::Number(Number::Integer(written))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let Some(count) = u64::try_from(*written).ok().filter(|held| *held > 0) else {
+            return Err(self.error_here(expected));
+        };
+        self.advance();
+        Ok(count)
     }
 
     /// `DEFINE GEO places`
@@ -1557,6 +1900,29 @@ impl Parser<'_> {
         Ok(Some(Approximation::Effort(candidates)))
     }
 
+    /// `WITHOUT SCAN GUARD`, which lifts the planner's veto for this read.
+    ///
+    /// Three words rather than one, and that is the point. The clause changes
+    /// which plan runs, so a reader skimming the tail must not be able to take
+    /// it for decoration — `USING INDEX` was rejected as the place to put it for
+    /// the same reason, since a modifier that turns an assertion into an
+    /// instruction is a pun.
+    ///
+    /// All three words are contextual, like the rest of this tail: a field, a
+    /// table or an index called `without`, `scan` or `guard` stays itself.
+    /// `WITHOUT` only begins this clause where a clause may begin, and once it
+    /// has, the two words after it are required — a bare `WITHOUT` names nothing
+    /// this planner has, and guessing at what was meant would be inventing a
+    /// second spelling nobody documented.
+    fn scan_guard(&mut self) -> Result<bool> {
+        if !self.eat_word("without") {
+            return Ok(false);
+        }
+        self.expect_word("scan", "`SCAN GUARD` — the guard `WITHOUT` lifts")?;
+        self.expect_word("guard", "`GUARD`, completing `WITHOUT SCAN GUARD`")?;
+        Ok(true)
+    }
+
     fn vector_width(&mut self) -> Result<FieldKind> {
         self.expect_punct(Punct::Less, "`<` and the width every vector here holds")?;
         let span = self.span_here();
@@ -1639,6 +2005,19 @@ impl Parser<'_> {
         })
     }
 
+    /// `CHECK TABLE <table>`
+    ///
+    /// `TABLE` is spelled out for the reason `REBUILD INDEX` spells its noun:
+    /// nothing else is checkable yet, and without the noun the statement reads
+    /// as though the table were being repaired rather than examined.
+    fn check_statement(&mut self) -> Result<StatementKind> {
+        self.advance();
+        self.expect_keyword(Keyword::Table, "`TABLE` and the table to check")?;
+        Ok(StatementKind::CheckTable {
+            table: self.table_ref()?,
+        })
+    }
+
     fn drop_statement(&mut self) -> Result<StatementKind> {
         self.advance();
         match self.peek_keyword() {
@@ -1693,12 +2072,17 @@ impl Parser<'_> {
                     table: self.table_ref()?,
                 })
             }
-            // Contextual, for the reason `DEFINE CONSUMER` is: `consumer` is a
+            // Contextual, for the reason `DEFINE KAFKA CONSUMER` is: `consumer` is a
             // plausible table in an application that has customers, and nothing
             // but a subject can stand here.
-            _ if self.eat_word("consumer") => {
+            _ if self.eat_word("kafka") => {
+                self.expect_word("consumer", "`CONSUMER` after `KAFKA`")?;
                 Ok(StatementKind::DropConsumer { name: self.name()? })
             }
+            _ if self.peek_word("consumer") => Err(self.error_here(
+                "`DROP KAFKA CONSUMER` — the bare word now belongs to a \
+                 queue's readers",
+            )),
             // Contextual for the same reason `consumer` is, and listed before
             // `node` so that reading these two in order tells you which of them
             // a bare word reaches.
@@ -1707,6 +2091,9 @@ impl Parser<'_> {
             _ if self.eat_word("vector") => Ok(StatementKind::DropVector { name: self.name()? }),
             _ if self.eat_word("geo") => Ok(StatementKind::DropGeo { name: self.name()? }),
             _ if self.eat_word("vault") => Ok(StatementKind::DropVault { name: self.name()? }),
+            _ if self.eat_word("queue") => Ok(StatementKind::DropQueue { name: self.name()? }),
+            _ if self.eat_word("series") => Ok(StatementKind::DropSeries { name: self.name()? }),
+            _ if self.eat_word("view") => Ok(StatementKind::DropView { name: self.name()? }),
             // Declined rather than missing, and it says so. `DEFINE NODE` writes
             // this process's own configuration outside the transaction, so its
             // inverse is an edit to a config file rather than a statement — and
@@ -2049,6 +2436,20 @@ impl Parser<'_> {
         Ok(kinds)
     }
 
+    /// `..` or `..=`, when a span's bound follows.
+    ///
+    /// Answers whether the upper bound is **inclusive**, so the two spellings
+    /// are read once here rather than compared again at every use.
+    fn range_bound(&mut self) -> Option<bool> {
+        if self.eat_punct(Punct::DotDotEquals) {
+            return Some(true);
+        }
+        if self.eat_punct(Punct::DotDot) {
+            return Some(false);
+        }
+        None
+    }
+
     /// What the `FROM` names, resolved to exactly one access path.
     fn select_source(&mut self) -> Result<Source> {
         // `$node` before the table, because it is the one source that is not a
@@ -2069,6 +2470,25 @@ impl Parser<'_> {
         let table = self.table_ref()?;
         if self.peek() == Some(&Token::Punct(Punct::Colon)) {
             let record = self.record_target_after(table)?;
+            // `events:1000..2000` reads as a span, and `events:1000` as one
+            // record, decided by the two dots and nothing else. The identity is
+            // parsed first either way, so a span costs no lookahead and a
+            // record's grammar does not change.
+            if let Some(inclusive) = self.range_bound() {
+                // The table is not written again. `events:1000..events:2000`
+                // would let somebody name two tables in one span, and there is
+                // no answer to that question — so the upper bound is an
+                // identity and the table is the one the lower bound named.
+                let at = self.span_here();
+                let upper = self.record_id(at)?;
+                return Ok(Source::Range {
+                    span: record.span.to(self.span_behind()),
+                    table: record.table,
+                    lower: record.id,
+                    upper,
+                    inclusive,
+                });
+            }
             return Ok(match self.arrow() {
                 Some(direction) => self.traversal(record, direction)?,
                 None => Source::Record(record),
@@ -2208,6 +2628,10 @@ impl Parser<'_> {
         // and contextual like the rest: a field called `approximate` stays a
         // field.
         let approximate = self.approximation()?;
+        // Beside `APPROXIMATE` because it qualifies the read the same way — both
+        // say something about how the answer may be produced — and before
+        // `USING`, which is an assertion about what the read then did.
+        let lift_scan_guard = self.scan_guard()?;
         // After everything, because it is an assertion *about* the read rather
         // than part of it — nothing below the parser reads it to decide
         // anything. Contextual like the rest, so a field called `using` stays a
@@ -2265,6 +2689,7 @@ impl Parser<'_> {
             Source::Node
             | Source::Record(_)
             | Source::Table(_)
+            | Source::Range { .. }
             | Source::Traverse { .. }
             | Source::Subquery { .. } => {}
         }
@@ -2279,6 +2704,7 @@ impl Parser<'_> {
             order,
             after,
             approximate,
+            lift_scan_guard,
             start: skip,
             limit,
             using,

@@ -50,6 +50,29 @@ pub struct Session<'a> {
     database: Option<String>,
     /// Visible to the crate because `authorize.rs` asks it three questions.
     pub(crate) identity: Identity,
+    /// Who this session is when it claims, once `USE CONSUMER` has said.
+    ///
+    /// Visible to the crate because `queue.rs` writes it into a record and
+    /// compares it on a release.
+    pub(crate) consumer: Option<Consumer>,
+}
+
+/// Who a session is, to a queue.
+///
+/// Two halves that mean different things, and the difference is the whole
+/// design: the **name** is the client's and a repeated one means *share the
+/// work*, while the **instance** is the engine's and cannot repeat at all.
+///
+/// Kafka has the client supply both, so `group.instance.id` uniqueness is the
+/// operator's problem and a duplicate has to be fenced by epoch. Minting the
+/// instance here means uniqueness cannot be violated, and the fencing question
+/// does not get answered — it stops existing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Consumer {
+    /// The name the session declared. Shared on purpose when it is shared.
+    pub name: String,
+    /// The value this session was minted, unique and never reissued.
+    pub instance: String,
 }
 
 impl<'a> Session<'a> {
@@ -61,6 +84,7 @@ impl<'a> Session<'a> {
             identity: Identity::Anonymous,
             namespace: None,
             database: None,
+            consumer: None,
         }
     }
 
@@ -252,7 +276,7 @@ impl<'a> Session<'a> {
     ///
     /// A declared consumer writes records long after the session that declared
     /// it has gone, and until this existed it wrote them as **nobody** — so the
-    /// authority question was asked once, at `DEFINE CONSUMER`, and never again.
+    /// authority question was asked once, at `DEFINE KAFKA CONSUMER`, and never again.
     /// Demoting the declarer, revoking their authority or deleting the account
     /// outright did not stop the writing, because there was no identity in the
     /// loop for any of those to act on.
@@ -322,6 +346,10 @@ impl<'a> Session<'a> {
             namespace: self.namespace.clone(),
             database: self.database.clone(),
             identity: Identity::Anonymous,
+            // A probe reads a catalog as somebody else and never claims, so it
+            // carries no claimant. Copying one would let a permission probe
+            // release the real session's work.
+            consumer: None,
         };
         probe.acting_as(id)?;
         Ok(probe)
@@ -427,11 +455,20 @@ impl<'a> Session<'a> {
         statement: &Statement,
     ) -> Result<Outcome> {
         let span = statement.span;
-        self.authorize(store, &statement.kind, span)?;
-        match &statement.kind {
+        // **Views are expanded before the statement is authorized, and the
+        // order is the security property.** The grant check reads the tables a
+        // statement names off the parsed tree, so a view replaced any later
+        // would be checked as one table -- its own -- while the read it stands
+        // for reached tables nobody granted. Rewriting here means the tree whose
+        // tables are counted is the tree that runs.
+        let expanded = self.expand_views(store, &statement.kind)?;
+        let kind = expanded.as_ref().unwrap_or(&statement.kind);
+        self.authorize(store, kind, span)?;
+        match kind {
             StatementKind::Use {
                 namespace,
                 database,
+                consumer,
             } => {
                 // Recorded, not resolved: the namespace this names may be
                 // defined by a later statement of the same transaction.
@@ -440,6 +477,18 @@ impl<'a> Session<'a> {
                 }
                 if let Some(name) = database {
                     self.database = Some(name.text.clone());
+                }
+                if let Some(name) = consumer {
+                    // A fresh instance on every declaration, including a
+                    // re-declaration of the same name. A session that says who
+                    // it is again is a new claimant from the queue's side, and
+                    // reusing the value would let `RELEASE ALL` reach holds the
+                    // previous declaration took — which is the reuse §1 of the
+                    // design forbids, arriving from inside one session.
+                    self.consumer = Some(Consumer {
+                        name: name.clone(),
+                        instance: crate::ticket::instance(),
+                    });
                 }
                 Ok(Outcome::Done)
             }

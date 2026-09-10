@@ -27,8 +27,12 @@
 //! not by assertion. The default is the level a system of record needs.
 
 mod backend;
+#[cfg(test)]
+mod cache_filling_tests;
 mod error;
 mod options;
+#[cfg(test)]
+mod wal_tracking_tests;
 
 pub use backend::LsmBackend;
 pub use options::{Durability, StoreConfig, effective_options_files};

@@ -14,7 +14,77 @@ use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
 use super::address::{after, resuming_after};
 use super::{RecordAddress, Transaction};
+
+/// A span of record identities, as the walk carries it.
+///
+/// Its own type rather than three parameters, because `lower`, `upper` and
+/// whether the upper is inside are one fact and are wrong together: a walk
+/// given the first two and not the third silently answers a half-open span as
+/// a closed one, and nothing in the answer says which it was.
+#[derive(Debug, Clone, Copy)]
+struct Span<'a> {
+    /// The first identity in the span, which is always inside it.
+    lower: &'a RecordId,
+    /// The last, which is inside it only when `inclusive`.
+    upper: &'a RecordId,
+    /// Whether `upper` is itself in the span.
+    inclusive: bool,
+}
+
+impl Span<'_> {
+    /// Whether an identity is inside this span.
+    fn holds(&self, id: &RecordId) -> bool {
+        id >= self.lower
+            && if self.inclusive {
+                id <= self.upper
+            } else {
+                id < self.upper
+            }
+    }
+}
 use crate::error::Result;
+
+/// Whether a walk's blocks are worth keeping.
+///
+/// A read that serves a query wants its blocks cached, because the next query is
+/// likely to want them. A read that walks a whole table once to check or rebuild
+/// something does not: it touches every block, asks for none of them again, and a
+/// cache that keeps them has evicted what the store is actually serving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reading {
+    /// The ordinary case.
+    Serving,
+    /// A one-shot verification or build pass.
+    Sweep,
+}
+
+/// What one walk of a table is being asked for.
+///
+/// The four readers below differ only in these fields, and they travel together
+/// because a walk is one shape rather than four loose arguments — which is also
+/// what keeps the shared walk's signature readable as the set grows.
+#[derive(Debug, Clone, Copy)]
+struct Walk<'a> {
+    /// At least this many records, or every one there is.
+    bound: Option<usize>,
+    /// Start past this record's own key.
+    anchor: Option<&'a RecordId>,
+    /// Stop at this identity span.
+    span: Option<Span<'a>>,
+    /// Whether the blocks this walk reads are worth keeping.
+    reading: Reading,
+}
+
+impl Default for Walk<'_> {
+    fn default() -> Self {
+        Self {
+            bound: None,
+            anchor: None,
+            span: None,
+            reading: Reading::Serving,
+        }
+    }
+}
 
 impl Transaction<'_> {
     /// Every live record of one table, as of this transaction's snapshot.
@@ -40,7 +110,38 @@ impl Transaction<'_> {
         database: DatabaseId,
         table: TableId,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
-        self.table_records(namespace, database, table, None, None)
+        self.table_records(namespace, database, table, Walk::default())
+    }
+
+    /// Every live record of one table, for a pass that will not read them again.
+    ///
+    /// Answers exactly what [`Self::scan_table`] answers. The difference is that
+    /// the backend is told not to keep the blocks, because the reads that walk a
+    /// whole table to check or rebuild something — an index build, the
+    /// retroactive tightening pass, `CHECK TABLE` — touch every block once and
+    /// ask for none of them again. A cache that keeps them has evicted the
+    /// working set the store is serving, and serving latency degrades for
+    /// minutes after the statement returned with nothing to point at.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or stored bytes cannot be
+    /// decoded.
+    pub fn sweep_table(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+    ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        self.table_records(
+            namespace,
+            database,
+            table,
+            Walk {
+                reading: Reading::Sweep,
+                ..Walk::default()
+            },
+        )
     }
 
     /// The live records of one table whose identity sorts after `anchor`.
@@ -72,7 +173,16 @@ impl Transaction<'_> {
         anchor: &RecordId,
         bound: Option<usize>,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
-        self.table_records(namespace, database, table, bound, Some(anchor))
+        self.table_records(
+            namespace,
+            database,
+            table,
+            Walk {
+                bound,
+                anchor: Some(anchor),
+                ..Walk::default()
+            },
+        )
     }
 
     /// The first `wanted` live records of one table, in key order.
@@ -119,7 +229,59 @@ impl Transaction<'_> {
         table: TableId,
         wanted: usize,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
-        self.table_records(namespace, database, table, Some(wanted), None)
+        self.table_records(
+            namespace,
+            database,
+            table,
+            Walk {
+                bound: Some(wanted),
+                ..Walk::default()
+            },
+        )
+    }
+
+    /// The live records of one table whose identity falls in a span.
+    ///
+    /// A record's key is its table prefix followed by its identity, so a span of
+    /// identities is a **span of the keyspace** — the walk starts at `lower` and
+    /// stops at `upper`, and the records outside it are never read. That is the
+    /// difference between this and a condition over the same field: a condition
+    /// reads the table and tests each record, and this one does not read them.
+    ///
+    /// Both bounds name a **position**, and a position is well defined whether
+    /// or not a record sits on it, so neither bound has to exist. `inclusive`
+    /// says whether `upper` itself is inside the span; `lower` always is.
+    ///
+    /// A span whose lower bound sorts above its upper one answers with nothing
+    /// rather than failing. It is an empty span, in the way `1..1` is an empty
+    /// range, and the alternative is a refusal for a question that has an answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or stored bytes cannot be
+    /// decoded.
+    pub fn records_in_span(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        lower: &RecordId,
+        upper: &RecordId,
+        inclusive: bool,
+    ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        self.records_of(
+            namespace,
+            database,
+            table,
+            Walk {
+                span: Some(Span {
+                    lower,
+                    upper,
+                    inclusive,
+                }),
+                ..Walk::default()
+            },
+        )
     }
 
     /// The live records of one table, all of them or the first `bound` of them,
@@ -129,23 +291,55 @@ impl Transaction<'_> {
         namespace: NamespaceId,
         database: DatabaseId,
         table: TableId,
-        bound: Option<usize>,
-        anchor: Option<&RecordId>,
+        walk: Walk<'_>,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        self.records_of(namespace, database, table, walk)
+    }
+
+    /// The walk all four of the readers above share.
+    fn records_of(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        walk: Walk<'_>,
+    ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        let Walk {
+            bound,
+            anchor,
+            span,
+            reading,
+        } = walk;
         let prefix = RecordKey::table_prefix(namespace, database, table);
         let of_this_table = |address: &RecordAddress| {
             address.namespace == namespace && address.database == database && address.table == table
         };
         // The anchor's own versions are behind the page, not in it, so the walk
         // begins past the last of them rather than at the first.
-        let opening = anchor.map_or_else(
-            || prefix.clone(),
-            |anchor| {
-                after(RecordKey::versions_prefix(
-                    namespace, database, table, anchor,
-                ))
-            },
-        );
+        // Three ways to start, and they differ by one record. A span opens **at**
+        // its lower bound because that bound is inside it; a cursor opens past
+        // its anchor's own versions because it has already handed that record
+        // over; and a plain walk opens at the table.
+        let opening = match (&span, anchor) {
+            (Some(span), _) => RecordKey::versions_prefix(namespace, database, table, span.lower),
+            (None, Some(anchor)) => after(RecordKey::versions_prefix(
+                namespace, database, table, anchor,
+            )),
+            (None, None) => prefix.clone(),
+        };
+        // The retention floor raises where the walk opens rather than filtering
+        // what it passes, which is the whole reason a series table's identity
+        // carries the millisecond: the scan **starts later** and never reads the
+        // records it would have discarded. Taken as a maximum, so a span or a
+        // cursor already past the floor is not pulled backwards by it.
+        let floor = self.series_floor(namespace, table)?;
+        let opening = match &floor {
+            Some(floor) => {
+                let at = RecordKey::versions_prefix(namespace, database, table, floor);
+                if at > opening { at } else { opening }
+            }
+            None => opening,
+        };
         let wanted = bound.map(|bound| {
             let displacing = self
                 .writes
@@ -172,7 +366,15 @@ impl Transaction<'_> {
         // happened to pass.
         let mut present = 0_usize;
         let mut from = opening;
-        let end = after(prefix);
+        let end = match &span {
+            // An exclusive upper bound stops **before** that record's first
+            // version; an inclusive one stops after its last.
+            Some(span) => {
+                let at = RecordKey::versions_prefix(namespace, database, table, span.upper);
+                if span.inclusive { after(at) } else { at }
+            }
+            None => after(prefix),
+        };
         loop {
             let request = ScanRequest {
                 keyspace: RecordKey::keyspace(),
@@ -188,7 +390,10 @@ impl Transaction<'_> {
                         .clamp(1, RANGE_SCAN_BATCH_ENTRIES)
                 }),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = match reading {
+                Reading::Serving => self.store.backend().scan(&request)?,
+                Reading::Sweep => self.store.backend().sweep(&request)?,
+            };
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             let entries = batch.len();
             for (id, value) in self.settled(batch, &mut resolved)? {
@@ -214,7 +419,20 @@ impl Transaction<'_> {
             // yet committed would appear on a page it sorts before, which is the
             // one way a cursor could answer with a record it had already handed
             // the caller.
-            if of_this_table(address) && anchor.is_none_or(|anchor| &address.id > anchor) {
+            // And a span applies to a pending write for the same reason the
+            // cursor test does: a record written but not committed still has to
+            // be outside a span it is outside of, or a bounded read answers with
+            // a record the same read would not have found a moment earlier.
+            // A pending write is judged against the floor for the same reason
+            // it is judged against the span: a record this transaction wrote
+            // below the floor is a record the same read would not have found a
+            // moment earlier, and returning it would make the floor a property
+            // of who is asking.
+            if of_this_table(address)
+                && floor.as_ref().is_none_or(|floor| &address.id >= floor)
+                && anchor.is_none_or(|anchor| &address.id > anchor)
+                && span.as_ref().is_none_or(|span| span.holds(&address.id))
+            {
                 live.insert(address.id.clone(), value.clone());
             }
         }
@@ -331,6 +549,10 @@ impl Transaction<'_> {
         // takes the transaction, so nothing may hold a borrow of it across the
         // call. There are as many of these as this transaction has written to
         // this table, which for the read that motivates this walk is none.
+        // The streaming twin opens at the floor for the reason the collecting
+        // walk does, and it is the same call so the two cannot drift about where
+        // a series table begins.
+        let floor = self.series_floor(namespace, table).map_err(E::from)?;
         let mut pending = self
             .writes
             .iter()
@@ -338,6 +560,11 @@ impl Transaction<'_> {
                 address.namespace == namespace
                     && address.database == database
                     && address.table == table
+                    // Judged against the floor for the reason the collecting
+                    // walk's are: a record this transaction wrote below the
+                    // floor is one the same read would not have found a moment
+                    // earlier.
+                    && floor.as_ref().is_none_or(|floor| &address.id >= floor)
             })
             .map(|(address, value)| (address.id.clone(), value.clone()))
             .collect::<Vec<_>>()
@@ -345,7 +572,10 @@ impl Transaction<'_> {
             .peekable();
 
         let mut resolved: Option<RecordId> = None;
-        let mut from = prefix.clone();
+        let mut from = match &floor {
+            Some(floor) => RecordKey::versions_prefix(namespace, database, table, floor),
+            None => prefix.clone(),
+        };
         let end = after(prefix);
         loop {
             // Batched although the walk names no bound. `table_records` asks for

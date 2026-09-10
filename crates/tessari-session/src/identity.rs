@@ -137,13 +137,16 @@ pub(crate) fn verifies(password: &str, stored: &str) -> bool {
 /// # A set, because a rank was the defect
 ///
 /// This used to be one of five ordered classes, and the last arm of [`Needs::of`]
-/// assigned `Write` to **twenty-four** statements that are two different
-/// authorities: nine that change records, and fifteen that create and drop the
-/// containers records live in. So *writing in a namespace* and *creating
-/// databases in it* were one permission, and no repair that kept an ordering
-/// could separate them — put managing above writing and every manager writes,
-/// put it below and every writer manages, and there is no third position.
-/// Splitting that arm is the whole of the owner's fourth rule.
+/// assigned `Write` to **twenty-six** statements that are three different
+/// authorities: nine that change records, fifteen that create and drop the
+/// containers records live in, and two — `DEFINE NAMESPACE` and `DROP NAMESPACE`
+/// — whose subject is the store itself rather than anything inside it. Those are
+/// the counts of the arm **as it stood at the split**, not of the tree today: the
+/// `manage` arm has taken every table kind declared since. So *writing in a
+/// namespace* and *creating databases in it* were one permission, and no repair
+/// that kept an ordering could separate them — put managing above writing and
+/// every manager writes, put it below and every writer manages, and there is no
+/// third position. Splitting that arm is the whole of the owner's fourth rule.
 ///
 /// # Exhaustive, and the new way to be wrong
 ///
@@ -152,7 +155,7 @@ pub(crate) fn verifies(password: &str, stored: &str) -> bool {
 /// **missing** arm and not against a **thin** one: `{write}` type-checks exactly
 /// like `{read, write}`, so an arm with too few kinds is a silent privilege
 /// escalation the compiler cannot see. The three sets that exist *only* because
-/// something is disclosed — `BACKUP`, `CREATE`/`UPDATE`, `DEFINE CONSUMER` —
+/// something is disclosed — `BACKUP`, `CREATE`/`UPDATE`, `DEFINE KAFKA CONSUMER` —
 /// each carry a negative test holding the lesser authority alone, and that test
 /// is the only thing standing where the compiler cannot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -532,6 +535,19 @@ impl Needs {
             | StatementKind::DropGeo { .. }
             | StatementKind::DefineVault { .. }
             | StatementKind::DropVault { .. }
+            // Declaring a queue is declaring a table, so it sits with the rest
+            // of the structure statements. `CLAIM` and `RELEASE` are not here:
+            // they write records, and they are classified below with the other
+            // statements that do.
+            | StatementKind::DefineQueue { .. }
+            | StatementKind::DropQueue { .. }
+            | StatementKind::DefineSeries { .. }
+            | StatementKind::DropSeries { .. }
+            // Declaring a view is declaring a table — it takes a name in the
+            // table namespace and writes a catalog entry — so it sits with the
+            // structure statements even though nothing is stored under it.
+            | StatementKind::DefineView { .. }
+            | StatementKind::DropView { .. }
             | StatementKind::DefineGraph { .. }
             | StatementKind::DropGraph { .. }
             | StatementKind::DefineEdge { .. }
@@ -539,6 +555,7 @@ impl Needs {
             | StatementKind::DefineIndex { .. }
             | StatementKind::DropIndex { .. }
             | StatementKind::RebuildIndex { .. }
+            | StatementKind::CheckTable { .. }
             | StatementKind::DefineField { .. }
             | StatementKind::DropField { .. }
             | StatementKind::AlterTable { .. }
@@ -576,7 +593,32 @@ impl Needs {
             // is what they cost.
             | StatementKind::AddRecipient { .. }
             | StatementKind::RemoveRecipient { .. }
-            | StatementKind::DeleteWhere { .. } => Self::READ_WRITE,
+            | StatementKind::DeleteWhere { .. }
+            // `DELETE FROM t:a..b` reads no record — it removes by position —
+            // and is still in this class, because the class is measured on what
+            // the answer discloses rather than on what the statement reads. It
+            // answers `removed n`, and `n` is exactly how many records existed
+            // in a span the **caller** chose. That is an enumeration oracle over
+            // identity ranges and a binary search away from naming them, which
+            // is the same argument the addressed `CREATE` above is classified
+            // by.
+            | StatementKind::DeleteSpan { .. }
+            // A claim writes the hold **and** answers with the record, so it
+            // discloses everything a `SELECT` of the same records would. The
+            // class is measured on what the answer discloses, which is the same
+            // argument that puts a span delete on this line.
+            | StatementKind::Claim { .. }
+            // The targeted form discloses the same record by the same answer, so it
+            // takes the same class — named here rather than left to a catch-all,
+            // which is the mistake the release's own comment below records.
+            | StatementKind::ClaimRecord { .. }
+            // A release clears a hold and answers nothing about the record, so
+            // it is the write half alone — and it is listed here rather than as
+            // a write-only statement because the class it would otherwise take
+            // is decided by a catch-all arm, and a catch-all over a statement
+            // family is how the next member added gets mis-permissioned.
+            | StatementKind::Release { .. }
+            | StatementKind::ReleaseAll { .. } => Self::READ_WRITE,
             // **The six that are measurably silent about prior state.** Every
             // one of them answers `ok` against an absent or conflicting record,
             // so a holder of `write` alone can run them and learn nothing —

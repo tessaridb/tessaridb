@@ -109,8 +109,14 @@ pub(crate) fn nearest(select: &Select) -> Option<Nearest<'_>> {
 ///   at;
 /// - a sort key that is not `geo::distance` on a field and something constant;
 /// - `GROUP BY`, which folds the records a walk would have chosen between;
-/// - a projection, because the sort runs after it and may name what the
-///   projection produced rather than what the index holds;
+/// - a projection that answers under the geometry's **own name** with something
+///   else, because the sort runs after it and would then measure a field the
+///   index does not hold. Every other projection keeps the walk: the ordering
+///   stage lays the source record beneath the projection so a key can reach a
+///   field the projection dropped (`consume::reach_past`), and that overlay was
+///   built for this statement (Q-143). The blanket refusal that stood here until
+///   wave 195 was [`ordered`]'s reason applied to a read that does not share it
+///   (Q-390);
 /// - a `FETCH`, which replaces a reference with the record it names before the
 ///   sort sees it.
 pub(crate) struct Closest<'a> {
@@ -133,9 +139,6 @@ pub(crate) fn closest(select: &Select) -> Option<Closest<'_>> {
         || !select.fetch.is_empty()
         || resumes(select)
     {
-        return None;
-    }
-    if !matches!(select.projection, Projection::All) {
         return None;
     }
     let [ordering] = select.order.as_slice() else {
@@ -168,6 +171,11 @@ pub(crate) fn closest(select: &Select) -> Option<Closest<'_>> {
         (_, ExprKind::Path(field)) if !reads_a_record(first) => (field, first),
         _ => return None,
     };
+    // Asked here rather than at the top, because the name that may be shadowed
+    // is the one the ordering measures and that is not known until the field is.
+    if shadowed(&select.projection, field.path.root()) {
+        return None;
+    }
     let limit = select.limit?;
     // A `START` skips records the walk still has to find, so it is added to what
     // the walk asks for rather than making the read unservable.

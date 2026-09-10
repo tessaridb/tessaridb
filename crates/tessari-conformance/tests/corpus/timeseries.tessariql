@@ -1,10 +1,23 @@
 # The time-series engine: a time-keyed table, a window, and a retention policy.
 #
-# There is no `TIMESERIES` table kind, and that is the design rather than a
-# shortfall. A time series is an ordinary table with an indexed instant, so
-# every read, every index and every statement the language already has works on
-# it — and the two things it genuinely could not say were a **window** and a
-# **retention policy**. Those are what this file exercises.
+# Two shapes are exercised here, and the first is still the general one. A time
+# series is an ordinary table with an indexed instant, so every read, every
+# index and every statement the language already has works on it — and the two
+# things it genuinely could not say were a **window** and a **retention
+# policy**. The cases below the tenancy exercise that table.
+#
+# The second shape is `DEFINE SERIES … RETAIN`, a table kind that declares how
+# far back its answer reaches. It exists because a retention *policy* written as
+# a statement is something an operator has to remember to run, while a declared
+# floor is a property of the table that every read applies. Its identity is
+# fixed to UUID v7, which is what makes an age floor a position in the key
+# rather than a predicate over a field. The cases from `fleeting` onward
+# exercise that kind.
+#
+# This header used to say there was no such kind and that its absence was the
+# design. That was true when it was written and stopped being true when the kind
+# shipped; it is corrected rather than deleted, because the first paragraph is
+# still the answer for a table that wants no floor.
 
 --- case: the tenancy this file works in
 DEFINE NAMESPACE prod;
@@ -56,7 +69,7 @@ SELECT time::bucket(at, 500ms) AS w FROM readings:1;
 SELECT count(*) AS held, max(level) AS peak FROM readings;
 --- expect: rows 1
 
---- case: a retention policy is a statement, not a declaration
+--- case: over an ordinary table a retention policy is a statement
 DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z' LIMIT ALL;
 --- expect: ok
 
@@ -67,3 +80,40 @@ SELECT count(*) AS held FROM readings;
 --- case: what the policy kept is exactly what it was asked to keep
 SELECT * FROM readings;
 --- expect: rows 3
+
+--- case: a series declares a floor, and the word that made it is what INFO writes back
+DEFINE SERIES fleeting RETAIN 1h;
+--- expect: ok
+
+--- case: a record written now is inside the floor
+CREATE fleeting = { level: 3 };
+--- expect: ok
+
+--- case: and the table answers with it
+SELECT * FROM fleeting;
+--- expect: rows 1
+
+--- case: a record named at an instant in 2024 is written without complaint
+CREATE fleeting:uuid '018cc251-f400-7abc-8d11-223344556677' = { level: 4 };
+--- expect: ok
+
+--- case: the table does not answer with it, because it is past the floor
+SELECT * FROM fleeting;
+--- expect: rows 1
+
+--- case: and naming it directly does not step around the floor either
+SELECT * FROM fleeting:uuid '018cc251-f400-7abc-8d11-223344556677';
+--- expect: rows 0
+
+--- case: a retention that could only empty the answer is refused where it is written
+DEFINE SERIES empty RETAIN 0s;
+--- expect: error EmptyRetention
+
+--- case: dropping a series that is a plain table is refused
+DEFINE TABLE ordinary SCHEMALESS;
+DROP SERIES ordinary;
+--- expect: error Unknown
+
+--- case: and the series itself drops
+DROP SERIES fleeting;
+--- expect: ok

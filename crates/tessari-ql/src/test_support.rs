@@ -72,6 +72,9 @@ fn erase_statement(statement: &mut Statement) {
         StatementKind::Use {
             namespace,
             database,
+            // A consumer name is a literal and carries no span of its own, so
+            // there is nothing here to normalise.
+            consumer: _,
         } => {
             erase_optional_name(namespace.as_mut());
             erase_optional_name(database.as_mut());
@@ -96,6 +99,17 @@ fn erase_statement(statement: &mut Statement) {
         // than written in the statement.
         | StatementKind::DefineVault { name, .. }
         | StatementKind::DropVault { name }
+        // The name-only list, because a queue's two clauses are literals with no
+        // span of their own to erase.
+        | StatementKind::DefineQueue { name, .. }
+        | StatementKind::DropQueue { name }
+        // A series joins it for the same reason: its retention is a literal.
+        | StatementKind::DefineSeries { name, .. }
+        | StatementKind::DropSeries { name }
+        // A view joins the name-only list because its read is stored as text
+        // rather than as a tree, so it carries no span to erase either.
+        | StatementKind::DefineView { name, .. }
+        | StatementKind::DropView { name }
         | StatementKind::DropGraph { name }
         | StatementKind::DropUser { name }
         | StatementKind::DropAnalyzer { name }
@@ -168,7 +182,8 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Graph(name)
             | InfoSubject::Vector(name)
             | InfoSubject::Geo(name)
-            | InfoSubject::Vault(name) => {
+            | InfoSubject::Vault(name)
+            | InfoSubject::Bucket(name) => {
                 erase_name(name);
             }
         },
@@ -249,7 +264,9 @@ fn erase_statement(statement: &mut Statement) {
             erase_name(name);
             erase_table(table);
         }
-        StatementKind::DropTable { table } => erase_table(table),
+        StatementKind::DropTable { table } | StatementKind::CheckTable { table } => {
+            erase_table(table);
+        }
         StatementKind::Relate {
             from,
             edges,
@@ -317,6 +334,22 @@ fn erase_statement(statement: &mut Statement) {
         } => {
             erase_table(table);
             erase_expr(condition);
+        }
+        StatementKind::DeleteSpan { table, span, .. } => {
+            erase_table(table);
+            *span = CANONICAL;
+        }
+        StatementKind::Claim { table, span, .. } => {
+            erase_table(table);
+            *span = CANONICAL;
+        }
+        StatementKind::ClaimRecord { target, span } | StatementKind::Release { target, span, .. } => {
+            erase_record(target);
+            *span = CANONICAL;
+        }
+        StatementKind::ReleaseAll { table, span, .. } => {
+            erase_table(table);
+            *span = CANONICAL;
         }
         StatementKind::Keys { space, range } => {
             erase_table(space);
@@ -416,6 +449,10 @@ fn erase_source(source: &mut Source) {
         Source::Node => {}
         Source::Record(record) => erase_record(record),
         Source::Table(table) => erase_table(table),
+        Source::Range { table, span, .. } => {
+            erase_table(table);
+            *span = CANONICAL;
+        }
         Source::Traverse { from, hops, .. } => {
             erase_record(from);
             for hop in hops {

@@ -75,6 +75,12 @@ impl Effect {
             | StatementKind::Keys { .. }
             | StatementKind::Read { .. }
             | StatementKind::Info { .. }
+            // `CHECK TABLE` reads every row and writes none, so a follower may
+            // serve it. That is the point: the question it answers — does what
+            // is stored still satisfy what is declared — is worth asking of the
+            // replica as well as of the leader, and routing it away would make
+            // a divergence between them the one thing it cannot detect.
+            | StatementKind::CheckTable { .. }
             // `REVEAL` writes nothing to the store and is the heaviest read in
             // the language by consequence rather than by cost. It is routed as a
             // read, which means a follower may serve it — deliberately: the
@@ -119,6 +125,12 @@ impl Effect {
             | StatementKind::DropGeo { .. }
             | StatementKind::DefineVault { .. }
             | StatementKind::DropVault { .. }
+            | StatementKind::DefineQueue { .. }
+            | StatementKind::DropQueue { .. }
+            | StatementKind::DefineSeries { .. }
+            | StatementKind::DropSeries { .. }
+            | StatementKind::DefineView { .. }
+            | StatementKind::DropView { .. }
             | StatementKind::DefineGraph { .. }
             | StatementKind::DropGraph { .. }
             | StatementKind::DefineEdge { .. }
@@ -205,6 +217,14 @@ impl Effect {
             | StatementKind::Upsert { .. }
             | StatementKind::Delete { .. }
             | StatementKind::DeleteWhere { .. }
+            | StatementKind::DeleteSpan { .. }
+            // A claim writes the hold it hands out, and a release clears one.
+            // Both change records, so both are writes however much the first one
+            // also reads.
+            | StatementKind::Claim { .. }
+            | StatementKind::ClaimRecord { .. }
+            | StatementKind::Release { .. }
+            | StatementKind::ReleaseAll { .. }
             | StatementKind::Relate { .. }
             | StatementKind::DeleteEdge { .. }
             | StatementKind::Set { .. }

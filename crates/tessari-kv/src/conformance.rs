@@ -101,6 +101,56 @@ fn scan_is_ordered(backend: &dyn KvBackend) -> CheckResult {
     }
 }
 
+/// A sweep answers exactly what a scan answers.
+///
+/// The two differ only in what the backend does with the blocks afterwards, and
+/// that is invisible from here — which is the point of asserting the half that
+/// is visible. A backend whose sweep dropped, reordered or truncated anything
+/// would be answering a different question to save a cache, and the caller has
+/// no way to notice.
+fn sweep_agrees_with_scan(backend: &dyn KvBackend) -> CheckResult {
+    const NAME: &str = "sweep-agrees-with-scan";
+    let mut batch = WriteBatch::new();
+    for n in 0..64_u32 {
+        batch = batch.put(
+            Keyspace::DATA,
+            key(format!("swp:{n:04}").as_bytes()),
+            value(format!("v{n}").as_bytes()),
+        );
+    }
+    if let Err(error) = backend.apply(batch) {
+        return CheckResult::fail(NAME, format!("apply failed: {error}"));
+    }
+    let request = ScanRequest::new(Keyspace::DATA, KeyRange::prefix(b"swp:"));
+    let scanned = match backend.scan(&request) {
+        Ok(pairs) => pairs,
+        Err(error) => return CheckResult::fail(NAME, format!("scan failed: {error}")),
+    };
+    let swept = match backend.sweep(&request) {
+        Ok(pairs) => pairs,
+        Err(error) => return CheckResult::fail(NAME, format!("sweep failed: {error}")),
+    };
+    if swept.len() != scanned.len() {
+        return CheckResult::fail(
+            NAME,
+            format!(
+                "scan gave {} pairs and sweep gave {}",
+                scanned.len(),
+                swept.len()
+            ),
+        );
+    }
+    // Pair by pair rather than by length: two reads of the same range returning
+    // the same count and different content is the failure a count would report
+    // as agreement.
+    for (at, (left, right)) in scanned.iter().zip(swept.iter()).enumerate() {
+        if left != right {
+            return CheckResult::fail(NAME, format!("pair {at} differs"));
+        }
+    }
+    CheckResult::pass(NAME)
+}
+
 /// Rule 1 — a reverse scan is exactly the forward scan reversed.
 fn reverse_scan_mirrors_forward(backend: &dyn KvBackend) -> CheckResult {
     const NAME: &str = "reverse-scan-mirrors-forward";
@@ -448,6 +498,7 @@ const CHECKS: &[Check] = &[
         "batched-first-agrees-with-scan",
         batched_first_agrees_with_scan,
     ),
+    ("sweep-agrees-with-scan", sweep_agrees_with_scan),
 ];
 
 /// How many checks the suite contains.

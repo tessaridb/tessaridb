@@ -205,6 +205,11 @@ impl Transaction<'_> {
             // follower — a walk that finds nothing there while the leader is
             // correct, with nothing in an error state.
             let batch = crate::adjacency::maintain(self.store, &record, batch)?;
+            // And the record counts, in the same batch and for the third time
+            // for the same reason: the planner on a follower must read the same
+            // number as the planner on the leader, or one query takes two access
+            // paths depending on which node answered it.
+            let batch = crate::cardinality::maintain(self.store, &record, batch, commit_at)?;
             // Everything above this ran. This is the whole difference between a
             // rehearsal and a write, and it is one line so that it can only ever
             // be the whole difference.

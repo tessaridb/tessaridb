@@ -36,6 +36,8 @@
 //! primitive behind a grant check rather than behind the code that owns the
 //! credential (Q-218).
 
+use md5::Md5;
+use sha1::Sha1;
 use sha2::{Digest as _, Sha256, Sha512};
 use tessari_types::Value;
 
@@ -46,6 +48,26 @@ use tessari_types::Value;
 /// before anything reaches here.
 pub(crate) fn sha256(text: &str) -> Value {
     hex(&Sha256::digest(text.as_bytes()))
+}
+
+/// The MD5 digest of this text's UTF-8 bytes, as lowercase hex.
+///
+/// A **checksum**. Collisions in MD5 are producible on a laptop, so nothing
+/// here may decide whether two things are the same when somebody might want
+/// them to appear so. It is in the language because a store interoperates, and
+/// an ETag, a legacy row key or a content id computed elsewhere cannot be
+/// checked against without it — refusing to spell it sends the caller somewhere
+/// with no grant check rather than making anything safer.
+pub(crate) fn md5(text: &str) -> Value {
+    hex(&Md5::digest(text.as_bytes()))
+}
+
+/// The SHA-1 digest of this text's UTF-8 bytes, as lowercase hex.
+///
+/// A checksum on [`md5`]'s terms, and here because git object ids, older ETags
+/// and a great deal of installed software speak it.
+pub(crate) fn sha1(text: &str) -> Value {
+    hex(&Sha1::digest(text.as_bytes()))
 }
 
 /// The SHA-512 digest of this text's UTF-8 bytes, as lowercase hex.

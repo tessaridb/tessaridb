@@ -154,7 +154,7 @@ pub struct ConsumerDefinition {
     /// # Why a consumer has an identity at all
     ///
     /// Without one, the authority question is asked **once**, at
-    /// `DEFINE CONSUMER`, and never again — so demoting the declarer, revoking
+    /// `DEFINE KAFKA CONSUMER`, and never again — so demoting the declarer, revoking
     /// their authority or deleting the account outright does not stop the
     /// writing, because there is no identity in the loop for any of those to act
     /// on. The rule the rest of this store follows is that a thing acts with the
@@ -163,7 +163,7 @@ pub struct ConsumerDefinition {
     ///
     /// `None` for a consumer declared before this field existed. Those keep
     /// running unbound rather than stopping on upgrade — narrowing them would be
-    /// an outage delivered as a migration — and `INFO FOR CONSUMER` reports the
+    /// an outage delivered as a migration — and `INFO FOR KAFKA CONSUMER` reports the
     /// absence so an operator can find them and redeclare. An absence that
     /// nothing surfaces is the same as no field at all.
     pub declarer: Option<u32>,
@@ -356,7 +356,7 @@ impl Catalog<'_, '_> {
     /// destination's database, which follows what a user and a replica already
     /// do: a consumer is an operational object an operator refers to by one
     /// name, and two of them sharing a name in different databases would make
-    /// `DROP CONSUMER orders_in` a question rather than an instruction.
+    /// `DROP KAFKA CONSUMER orders_in` a question rather than an instruction.
     ///
     /// # Errors
     ///

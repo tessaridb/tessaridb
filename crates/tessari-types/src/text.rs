@@ -594,3 +594,53 @@ mod writing {
         }
     }
 }
+
+/// The English indefinite article for `word` — `"a"` or `"an"`.
+///
+/// A refusal that says *"a editor may not operate"* is read as carelessness
+/// about everything else it says, and the defect hides: of the four words that
+/// reach the role refusal, three begin with a vowel and only `viewer` gets the
+/// article right by luck, so the message looks correct exactly often enough not
+/// to be reported (Q-366).
+///
+/// The rule is the first letter and nothing cleverer. English has real
+/// exceptions — a *hour*, an *SST* — and none of them can reach the callers
+/// here, whose vocabularies are the store's own nouns: role names, catalog
+/// entry kinds, key kinds and value kinds. Guessing at pronunciation for words
+/// that do not occur would be code answering a question nobody asked.
+#[must_use]
+pub fn article(word: &str) -> &'static str {
+    match word.chars().next() {
+        Some(first) if matches!(first.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u') => "an",
+        _ => "a",
+    }
+}
+
+#[cfg(test)]
+mod article_tests {
+    use super::article;
+
+    #[test]
+    fn the_words_that_actually_reach_it_get_the_right_article() {
+        for (word, wanted) in [
+            ("owner", "an"),
+            ("editor", "an"),
+            ("authorities", "an"),
+            ("viewer", "a"),
+            ("index", "an"),
+            ("analyzer", "an"),
+            ("table", "a"),
+            ("int", "an"),
+            ("object", "an"),
+            ("array", "an"),
+            ("string", "a"),
+        ] {
+            assert_eq!(article(word), wanted, "{word}");
+        }
+    }
+
+    #[test]
+    fn an_empty_word_does_not_panic_and_reads_as_a_consonant() {
+        assert_eq!(article(""), "a");
+    }
+}

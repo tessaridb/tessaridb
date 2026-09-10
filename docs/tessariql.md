@@ -418,7 +418,7 @@ ALTER TABLE notes SET SCHEMALESS;
 ALTER USER grace SET ROLE editor;
 ALTER USER grace SET PASSWORD 'a longer one';
 
-DEFINE CONSUMER orders_in
+DEFINE KAFKA CONSUMER orders_in
     FROM 'broker-1:9092', 'broker-2:9092'
     TOPIC 'orders'
     GROUP 'shop-orders'
@@ -429,7 +429,7 @@ DEFINE CONSUMER orders_in
     ON FAILURE quarantine
     PARALLELISM 2;
 
-DROP CONSUMER orders_in;
+DROP KAFKA CONSUMER orders_in;
 ```
 
 **`ALTER USER` is how a user changes after it exists**, and it changes one thing
@@ -440,12 +440,12 @@ statement that changed only what it named would make *leave the role alone* and
 declaration whole is the reason this one does not.
 
 **A consumer is ingestion the catalog holds rather than a script somebody
-remembered to start.** One `DEFINE CONSUMER` says what to read (`FROM` brokers,
+remembered to start.** One `DEFINE KAFKA CONSUMER` says what to read (`FROM` brokers,
 `TOPIC`), under which group, in what `FORMAT`, where it lands (`INTO`), which
 field is the record's `IDENTITY`, how incoming fields `MAP` onto stored ones,
 what happens `ON FAILURE`, and how many workers run it. The destination is
 resolved **when the declaration is made**, so there is no window in which a
-consumer is consuming into a table that does not exist. `DROP CONSUMER` stops it
+consumer is consuming into a table that does not exist. `DROP KAFKA CONSUMER` stops it
 and removes the declaration; the records it already wrote stay, because they are
 records like any others.
 
@@ -1698,7 +1698,8 @@ Every catalog object this language can declare can be undeclared, except one:
 | `DEFINE ANALYZER` | `DROP ANALYZER` |
 | `DEFINE USER` | `DROP USER` |
 | `DEFINE REPLICA` | `DROP REPLICA` |
-| `DEFINE CONSUMER` | `DROP CONSUMER` |
+| `DEFINE KAFKA CONSUMER` | `DROP KAFKA CONSUMER` |
+| `DEFINE QUEUE` | `DROP QUEUE` |
 | `DEFINE NODE` | **nothing — see below** |
 
 **A drop removes its own definition and nothing beneath it**, and refuses while
@@ -1774,6 +1775,14 @@ ALTER TABLE people DROP FIELD name;
 `DROP FIELD … ON people` say — one function parses the declaration, so the two
 spellings cannot drift into accepting different options.
 
+**Dropping a declaration is a loosening on a lenient table and a tightening on a
+strict one.** On a schemaless table the drop only widens what is admissible, so
+no stored record can contradict it. On a `SCHEMAFULL` table the declaration is
+what made the field legal, so removing it would leave every record carrying that
+field disagreeing with the table's own catalog — which is why the drop is refused
+there while any record still holds the field, naming them. Remove the values, or
+make the table schemaless, and the drop goes through.
+
 **`ALTER FIELD` is the one that is not a second spelling.** A second
 `DEFINE FIELD` is refused because the catalog reserves the name, so redeclaring
 needs a statement of its own. It **replaces the declaration whole** rather than
@@ -1782,7 +1791,51 @@ would make *leave the default alone* and *remove the default* the same sentence.
 
 The drop and the declaration land in one commit, so the rows answer for the
 **new** declaration — altering a field to a type its rows do not satisfy is
-refused, writing neither the removal nor the replacement.
+refused, writing neither the removal nor the replacement. The same holds for
+`REQUIRED`: a field cannot become required while a stored record leaves it empty,
+and the refusal names every record that does, not the first one it meets.
+
+### Asking whether the records still fit: `CHECK TABLE`
+
+```tessariql
+CHECK TABLE notes;
+```
+
+Every statement above answers this question by refusing. `CHECK TABLE` asks it on
+its own and changes nothing: it reads the table and answers with a list of the
+records that disagree with what the table declares **now**, one entry each,
+carrying the record, the field, the rule it broke — `required`, `undeclared`,
+`assert` or `type` — and the same sentence the store uses when it refuses a write
+for that reason. An empty list means the table holds to its declarations.
+
+The `rule` is the part to write a script against. It is one stable word chosen so
+that a caller repairing a table matches on it and shows the detail; the detail is
+written for a person and is free to be improved.
+
+A store this engine wrote cannot fail the check, because the apply path saw every
+write and a refusal fails the whole commit. That is not a reason to leave the
+statement out — it is the reason to have one, since a claim of that shape is worth
+something only when somebody can ask. What it is for is the store that arrived by
+another road: restored from a backup, replicated from a node running different
+rules, or repaired underneath the language. It is also the honest thing to run
+after an upgrade, before trusting the invariant on data this release did not
+write.
+
+It reads the whole table, which is the only truthful way to answer, so it is a
+statement an operator runs rather than something the store decides to do.
+
+**It does not cost the node its warm cache.** A read that walks a whole table
+touches every block once and asks for none of them again, so caching those blocks
+would evict the working set the store is actually serving — and serving latency
+would degrade for minutes after the statement returned, with nothing to point at.
+`CHECK TABLE` reads without keeping what it reads, and so do the other passes
+that walk a table whole: building or rebuilding an index, and the retroactive
+check a tightening declaration runs. The statement still costs what reading a
+table costs; what it no longer costs is everybody else's next read.
+
+Checking a table nobody declared is refused rather than answered with an empty
+list: an empty answer is indistinguishable from a clean table, so a typo in the
+name would read as a clean bill of health.
 
 ### What a table declares about its fields
 
@@ -1920,6 +1973,16 @@ way: the statement reads the whole table inside the commit.
 
 `DROP FIELD` removes the rule and not the data. The rows keep the field; the
 store simply stops having an opinion about it.
+
+**On a strict table it is a tightening, and it is refused while any row still
+carries the field.** That looks backwards until you read what the table promises:
+a strict table says every field a row holds is declared, so dropping a
+declaration under rows that still carry the value would leave those rows
+disagreeing with the catalog — with nothing anywhere in an error state, which is
+the failure the classification exists to prevent. Clear the field from the rows
+first, or drop them; `CHECK TABLE` names every row that stands in the way. On a
+schemaless table nothing changes, because an undeclared field was always
+allowed there.
 
 **`REQUIRED` means the field must hold a value** — present, and not `null`. One
 marker covering both, deliberately: it is what a caller means by "required", and
@@ -3286,6 +3349,60 @@ and the condition decides, so the scan takes both ends inclusive, over-fetches b
 at most the entries exactly equal to a bound, and `> x` discards them the way it
 discards everything else. Measured on two thousand records: 845 µs to 107 µs.
 
+### Reading a span of identities
+
+A range over a **field** is a bounded index scan. A range over the **identity** is
+something cheaper, because it needs nothing to be declared:
+
+```
+SELECT * FROM events:1000..2000;
+SELECT * FROM events:1000..=2000;
+SELECT * FROM events:$from..$to;
+SELECT * FROM sessions:'a'..'m';
+EXPLAIN SELECT * FROM events:1000..2000;
+```
+
+`..` leaves the upper bound out and `..=` takes it in, exactly as the range
+values in §3 do. The lower bound is always in.
+
+**Why it is not `WHERE id >= 1000 AND id < 2000`.** That statement asks the same
+question and is answered by reading the table and testing every record. This one
+is answered by walking the keyspace between two positions: a record's key is its
+table prefix followed by its identity, so the records outside the span are never
+read, never decoded and never tested. The plan says `span` rather than `scan` or
+`index`, because it is neither — nothing is consulted to find the records, and
+the cost is the size of the answer rather than the size of the table.
+
+**Neither bound has to exist.** A bound names a position, and a position is well
+defined whether or not a record sits on it. A span whose lower bound sorts above
+its upper one is empty, in the way `1..1` is empty, and answers with nothing
+rather than refusing.
+
+**What it is a window over.** Identity order, which for both kinds of identity
+this store issues is also **write order**: a `TYPE INT` table numbers records
+with a per-table counter, and a `TYPE UUID` one issues UUID v7, which carries a
+timestamp in its leading bits. So a span of identities is a span of time *as the
+store saw it*. It is not a span of an event time a record carries in a field — if
+records can arrive out of order, those are two different questions, and this
+answers the arrival. A window over a field a record carries is the range read
+above, and it wants an index.
+
+**One late record is enough, and the two answers can be the same size.** Five
+records written in arrival order, the fourth of them carrying an event time from
+the first day:
+
+```
+SELECT * FROM r WHERE at >= datetime '2026-03-01T00:00:00Z'
+                  AND at <  datetime '2026-03-03T00:00:00Z';
+SELECT * FROM r:1..4;
+```
+
+Both answer **three records**, and they are not the same three: the condition
+answers 1, 2 and 4, the span answers 1, 2 and 3. Equal counts are the part worth
+knowing, because a reader comparing totals sees two reads agreeing while their
+contents differ — so the choice between them is about which question is being
+asked and never about which is faster.
+
 ### Which index runs
 
 Where a condition offers several conjuncts an index could serve, the one that
@@ -3310,6 +3427,70 @@ from the condition they wrote.
 This is deliberately **not** a cost model. One needs to know how many records
 hold `city = 'london'` as against `city = 'tromsø'`, which means maintained
 histograms — and a stale histogram changes plans silently.
+
+**An index that would return most of the table loses to reading the table.**
+Narrowing most is not the same as narrowing enough: an index read walks entries
+*and* fetches the records they name, so a path that returns nearly everything has
+added a walk to a read it did not shorten, and is slower than no index at all.
+So the winning candidate is measured against the table before it is served, and
+an index runs when it can produce **at most half** of it.
+
+Two numbers decide that and neither works alone. The store keeps a **record count
+per table**, maintained where records are written rather than by counting them
+later. For a candidate whose size is not already known — an equality on a
+non-unique index, a range — the entries are counted by a walk that reads keys and
+no records, and **gives up** as soon as there are more than half a table's worth,
+because counting the rest would cost what the read costs.
+
+Nothing about this changes on a small table. Below about a thousand records a
+scan is a single request to the storage, both paths are cheap, and the comparison
+is switched off — so a table you have just created plans the way you would expect
+from the indexes you declared on it.
+
+Where the store has no count, or the candidate is a shape the counting walk
+cannot follow — a `LIKE 'a%'` prefix, a `MATCHES` expansion, a geometric region —
+the comparison says nothing and the ranking decides alone. A missing measurement
+never overrules a declared index.
+
+`EXPLAIN` (§7b) asks the same question the read asks, so it reports the path the
+read takes rather than the one the ranking preferred. `USING INDEX <name>`
+(§7b″) is how a script says out loud that it expects a particular index — and
+because it is a refusal rather than a router, it is also how a plan that changed
+under you announces itself.
+
+**And half the table is a policy, so a read may lift it.**
+
+```tessariql
+SELECT * FROM events WHERE n >= 401 WITHOUT SCAN GUARD;
+```
+
+`WITHOUT SCAN GUARD` tells the planner not to measure the winning candidate
+against the table. Half is a threshold this store chose; the count behind it is
+exact, taken by the walk described above. So what can be wrong here is the
+threshold and never the number, and the clause is spelled as lifting a guard
+rather than as overriding an estimate — because there is no estimate to override.
+
+**It lifts the veto and chooses nothing.** The ranking still picks the candidate,
+a table with no applicable index still gets the scan, and `EXPLAIN` still reports
+what ran. An override naming an index would be a router, and a router has to
+answer what happens when the named index does not fit the predicate, how it
+composes with ranking, and what a plan then means — questions a threshold does
+not raise. The worst a misuse can do here is the behaviour that shipped before
+the comparison existed.
+
+It is a separate clause and not a word on `USING INDEX`, deliberately: that one
+is an assertion about what the read did, and a modifier turning it into an
+instruction would be a pun a reader can miss. Three words cannot be missed.
+
+All three are contextual, like the rest of the tail — a field, a table or an
+index called `without`, `scan` or `guard` stays itself — but once `WITHOUT`
+begins the clause, both words after it are required.
+
+**It is meant to be temporary.** The clause exists because the threshold is a
+policy rather than a measurement, and it is retired when this planner acquires a
+cost model or the statistics that would make the policy unnecessary. A hint with
+no stated end is one nobody dares remove years later, so its end is stated here
+where the next reader will find it.
 
 **The plan can only change the cost.** Whichever candidate narrows, the whole
 condition is still tested against every record it produced, which is what makes
@@ -3364,6 +3545,28 @@ DELETE FROM readings WHERE at < datetime '2026-01-01T00:00:00Z' LIMIT 1000;
 WHERE …` would read as a table name where an identity belongs, and a statement
 that removes rows should not be one word away from a typo.
 
+**A span of identities is the third form**, and it is the one a retention pass
+wants:
+
+```
+DELETE FROM readings:1..1000 LIMIT ALL;
+DELETE FROM readings:$oldest..$cutoff LIMIT ALL;
+DELETE FROM readings:1..=1000 LIMIT 500;
+```
+
+It removes the records `SELECT * FROM readings:1..1000` would have answered
+with, and it costs what it removes rather than what it keeps: the conditional
+form reads every record it is going to keep, once per run, forever. On a table
+whose identities are its write order — which both identity kinds this store
+issues are — that is the difference between a retention job that stays constant
+and one that grows with the data it is there to bound.
+
+**It takes no `WHERE`, deliberately.** A conditional delete re-tests every
+candidate against the whole condition, because an index narrows and the
+condition decides. A span narrows nothing — it *is* the set the statement named
+— so there is nothing left to decide. Allowing both in one statement would put
+two rules in one place and make the answer depend on which the reader believed.
+
 **The bound is required too.** A conditional delete carries either `LIMIT n` or
 `LIMIT ALL`, and a statement carrying neither is refused before it runs. One of the
 two `LIMIT`s in the language that are not optional — the other bounds a
@@ -3394,11 +3597,83 @@ or none, and a reader at a snapshot sees the table either before or after. What
 that costs is worth knowing: the whole matched set is committed at once, so a
 statement matching a very large table is a very large commit.
 
-**There is no declared retention policy and no background job.** A policy is this
-statement, run by an operator or a schedule — which keeps the decision about when
-it runs somewhere a person can see it, rather than in a table nobody reads. The
-space comes back through the store's ordinary reclamation once no reader still
-needs the versions.
+**A declared retention exists, and it is a property of a `DEFINE SERIES` table
+rather than of every table** — see the next section. This statement stays, and is
+what a policy over an ordinary table is: run by an operator or a schedule, which
+keeps the decision about when it runs somewhere a person can see it. The space
+comes back through the store's ordinary reclamation once no reader still needs
+the versions.
+
+The paragraph that used to stand here refused a declared retention outright, on
+the grounds that a background job fires at a different moment on every replica
+while a statement is one log record each of them applies at one sequence. That
+argument is not overturned; the question it protects is **deferred**. A series
+table's removal pass writes through the ordinary write path, so its removals are
+sequenced and carried exactly as any other write is, and **who schedules the pass**
+is settled by the cluster design rather than here.
+
+### A table whose answer has a floor
+
+```
+DEFINE SERIES readings RETAIN 30d;
+DROP SERIES readings;
+```
+
+`DEFINE SERIES` declares a table that stops answering with what it has outgrown.
+Past the retention a record is **not returned** — and that is a statement about
+the answer, not about the disk.
+
+**The removal is a separate act.** A record past the floor is hidden immediately
+and removed later, which is the property worth understanding before anything
+else here: correctness comes from the read, so a removal pass that lags, is
+throttled, or has never run costs storage and never an answer. The reverse
+arrangement — where the pass is what makes the promise true — fails by returning
+records the policy says are gone, with nothing anywhere in an error state.
+
+**The floor is a position in the key, so the read starts later rather than
+filtering.** A series table names its records with a UUID version 7, fixed by the
+word and not offered as a clause, and such an identity carries the millisecond it
+was minted in. So `RETAIN 30d` is a place to open the scan at. This is the whole
+reason Time is a declared kind rather than a clause any table could wear: an
+ordinary table's counter identity carries no time at all, and a rule over one of
+its `datetime` fields is a predicate re-tested against every record the read
+passes.
+
+**It follows that the floor is about when a record was written, not about what it
+says.** A reading that arrived late carries the identity it was given on arrival,
+so a table of events whose own timestamps run behind their arrival is a table
+whose floor is not the floor its author had in mind. That distinction is the same
+one `SELECT * FROM readings:1..4` and `WHERE at >= …` already draw, and it is
+worth re-reading the two paragraphs above about arrival order before declaring a
+retention over data that arrives out of order.
+
+**The retention is a literal duration and it has no default.** Declaring it is
+the whole capability, and a retention the store guessed would drop somebody's
+records at a boundary nobody chose. `RETAIN 0s` and a negative one are refused
+where they are written, because a floor at or ahead of the present can only empty
+the answer.
+
+**`INFO FOR TABLE` writes the declaration back**, normalised the way a duration
+always is here — so a table declared `RETAIN 30d` describes itself as
+`RETAIN 720h`, which is the same duration written in the unit the literal keeps.
+
+**The removal itself is an ordinary write.** The pass that removes what the floor
+has hidden writes `DELETE`s through the same path any statement uses, so they are
+sequenced into the commit log, carried over the protocol, and visible on the
+change feed. Two things follow that are worth knowing before subscribing to one.
+A consumer of a series table **sees removals no client issued**. And it sees them
+**after** the records stopped being visible to a reader, because ageing out is
+not an event — nothing happens, time passes — so a consumer mirroring a series
+table holds rows the source no longer shows for as long as the pass lags.
+
+**The pass does not free space by itself**, for the same reason the retention
+statement does not: a removal is a tombstone at a new version, and the bytes come
+back through the store's ordinary version reclamation once no reader still needs
+them.
+
+`DROP SERIES` removes the table and everything in it, **including the records
+past the floor that reads had stopped answering with**. They were records the
+store still held; what the floor governed was the answer.
 
 ### Counting per window
 
@@ -3623,15 +3898,15 @@ over an optional one it is refused and takes the scan. `REQUIRED` is declared on
 a field and promises nothing about what lives inside one, so a route below it —
 `ORDER BY address.city` under a required `address` — is refused too.
 
-The permission stops at the read with no condition. Under a `WHERE`, an order is
-taken from the index **descending only**, whatever the field declares: the walk
-that fills a bound with survivors rests on absences sorting last, and it passes
-its own direction rather than the statement's so that argument cannot be handed a
-different one. `WHERE city = 'Paris' ORDER BY joined LIMIT 10` over a `REQUIRED`
-`joined` narrows on `city` and then sorts the survivors; the order does not come
-from `joined`'s index, and the `REQUIRED` on it changes nothing. Not an oversight
-and not a soundness limit — the door `REQUIRED` opens is simply not used there,
-and no read has asked for it.
+The permission reaches a read **under a condition** too, and by the same
+declaration. `WHERE city = 'Paris' ORDER BY joined LIMIT 10` over a `REQUIRED`
+`joined` takes the order from `joined`'s index and narrows with `city` as it
+walks; over an optional `joined` it narrows first and then sorts the survivors,
+because the records with no value are the ones the answer would begin with and
+the index does not hold them. The walk that fills a bound with **survivors**
+asks for more entries until enough of them pass the condition, so the direction
+has to be the statement's — it was a constant until this permission existed, and
+the `REQUIRED` on the field changed nothing under a `WHERE`.
 
 One consequence is worth naming because it is not symmetric: ascending needs no
 tie-group drain. A forward walk yields a tie group with identities **ascending**,
@@ -3899,26 +4174,64 @@ SELECT vector::euclidean(embedding, $probe) AS apart FROM documents;
 SELECT vector::dot(embedding, $probe) AS aligned FROM documents;
 ```
 
+The rest of the collection and number groups, on the same terms:
+
+```
+SELECT string::trim_start(name) AS front, string::trim_end(name) AS back FROM users;
+SELECT string::reverse(name) AS backwards FROM users;
+SELECT * FROM users WHERE string::starts_with(name, $begins);
+SELECT * FROM users WHERE string::ends_with(name, $finishes);
+SELECT * FROM notes WHERE string::contains(body, $needle);
+SELECT string::index_of(body, $needle) AS at FROM notes;
+SELECT math::trunc(ratio) AS whole, math::sign(balance) AS direction FROM accounts;
+SELECT math::ln(weight) AS scaled, math::exp(rate) AS grown FROM samples;
+SELECT math::min(low, high) AS lower, math::max(low, high) AS upper FROM readings;
+SELECT array::min(scores) AS worst, array::max(scores) AS best FROM attempts;
+SELECT array::sum(scores) AS total FROM attempts;
+SELECT array::concat(tags, $extra) AS both FROM users;
+SELECT array::append(tags, 'new') AS grown FROM users;
+SELECT array::index_of(tags, 'urgent') AS at FROM users;
+SELECT object::entries(address) AS pairs FROM users;
+SELECT * FROM users WHERE object::has(address, 'postcode');
+SELECT object::merge(address, $overrides) AS resolved FROM users;
+```
+
 | Group | Functions |
 |---|---|
-| `string` | `len` (characters, not bytes) · `lower` · `upper` · `trim` · `concat(a, b)` · `split(text, separator)` · `slice(text, start, count)` · `replace(text, from, to)` — the [collections](#collections) |
-| `array` | `len` · `first` · `last` · `distinct` · `sort` · `reverse` · `flatten` · `join(items, separator)` · `slice(items, start, count)` — the [collections](#collections) |
-| `object` | `keys` · `values` · `len` — the [collections](#collections) |
-| `math` | `abs` · `floor` · `ceil` · `round` (half away from zero) · `sqrt` · `pow(base, exponent)` |
+| `string` | `len` (characters, not bytes) · `lower` · `upper` · `trim` · `trim_start` · `trim_end` · `reverse` · `concat(a, b)` · `split(text, separator)` · `slice(text, start, count)` · `replace(text, from, to)` · `starts_with(text, prefix)` · `ends_with(text, suffix)` · `contains(text, needle)` · `index_of(text, needle)` — the [collections](#collections) |
+| `array` | `len` · `first` · `last` · `distinct` · `sort` · `reverse` · `flatten` · `min` · `max` · `sum` · `join(items, separator)` · `slice(items, start, count)` · `concat(a, b)` · `append(items, value)` · `index_of(items, value)` — the [collections](#collections) |
+| `object` | `keys` · `values` · `len` · `entries` · `has(o, name)` · `merge(a, b)` — the [collections](#collections) |
+| `math` | `abs` · `floor` · `ceil` · `round` (half away from zero) · `trunc` (toward zero) · `sign` · `sqrt` · `ln` · `exp` · `pow(base, exponent)` · `min(a, b)` · `max(a, b)` |
 | `time` | `now()` · `bucket(instant, width)` — the start of the window an instant is in · `year` · `month` · `day` · `hour` · `minute` · `second` · `unix` · `from_unix(seconds)` — the [calendar](#the-calendar) |
 | `type` | `of(value)` — the type's name, as §3 spells it · `bool` · `int` · `float` · `string` · `datetime` · `uuid` — the [casts](#casts) |
 | `vector` | `cosine(a, b)` · `euclidean(a, b)` · `dot(a, b)` |
 | `rand` | `uuid()` — see [Generated identifiers](#generated-identifiers) |
-| `crypto` | `sha256(text)` · `sha512(text)` — lowercase hex; see [Digests](#digests) |
+| `crypto` | `sha256(text)` · `sha512(text)` · `sha1(text)` · `md5(text)` — lowercase hex; see [Digests](#digests) |
+| `encoding` | `base64(bytes)` · `base64_decode(text)` · `hex(bytes)` · `hex_decode(text)` — see [Bytes as text](#bytes-as-text) |
 | `search` | `score(field, 'query')` — see [Ranking](#ranking) |
 | `geo` | `intersects` · `disjoint` · `covers` · `covered_by` · `contains` · `within` · `equals` · `touches` · `distance(a, b)` · `area(shape)` — see [Shapes](#shapes) |
 
 **What earns a place: a function is here when it cannot be expressed by what the
 language already has.** That is why there is no `array::contains` (`CONTAINS`
-says it), no `string::contains` (`LIKE '%x%'` says it), and no `is_none`
-(`= NONE` says it). `array::last` is the clearest case *for* the rule: a path
-takes a literal position and there is no length to subtract from, so "the last
-element" is otherwise unsayable.
+says it), no `math::clamp` (`math::min(math::max(x, lo), hi)` says it), and no
+`is_none` (`= NONE` says it). `array::last` is the clearest case *for* the rule:
+a path takes a literal position and there is no length to subtract from, so "the
+last element" is otherwise unsayable.
+
+`string::contains`, `starts_with` and `ends_with` used to be refused under that
+rule on the grounds that `LIKE '%x%'` says it, and for a **literal** needle it
+does. It does not for a needle that arrives as a value. `LIKE` takes a pattern,
+so `$needle` holding a `%` or a `_` matches more than the caller asked for, and
+the escape that would fix it — `\` before either — cannot be applied to a value
+the statement has not seen. A search box is the most ordinary query an
+application makes, and it is the case the pattern operator cannot serve. These
+three take a value and never a pattern.
+
+`min`, `max` and `sum` appear in two places and are not the same function twice.
+`array::min(xs)` folds one array inside one record; `min(x)` in a projection
+folds a column across records. Neither can be written as the other, and both are
+computed by one piece of code so that they cannot come to disagree about a
+decimal, a mixed group or an empty one.
 
 **The number of arguments is checked when the statement is read**, because the
 set of functions is known then. What each argument holds is checked when it runs,
@@ -4222,11 +4535,25 @@ silently, with the second record simply overwriting the first.
 |---|---|
 | `crypto::sha256(text)` | the SHA-256 digest, as 64 lowercase hexadecimal characters |
 | `crypto::sha512(text)` | the SHA-512 digest, as 128 of them |
+| `crypto::sha1(text)` | the SHA-1 digest, as 40 of them — a **checksum** |
+| `crypto::md5(text)` | the MD5 digest, as 32 of them — a **checksum** |
 
 ```
 SELECT crypto::sha256(email) AS pseudonym FROM subscribers;
 SELECT * FROM uploads WHERE crypto::sha256(body) = $expected;
+SELECT crypto::md5(body) AS etag FROM uploads;
+SELECT crypto::sha1(body) AS legacy_id FROM uploads;
 ```
+
+**`md5` and `sha1` are checksums and nothing else.** Collisions in both have
+been produced, so neither may decide whether two things are the same when
+somebody might want them to appear so — not a signature, not a deduplication key
+somebody else can supply the inputs for, not a token. They are here because a
+store interoperates: an ETag, a legacy row key, a content id computed by
+something older than this database. Refusing to spell them would not make any of
+that safer; it would make it unreachable from here, which sends the work
+somewhere with no grant check at all. Where a digest has to resist an adversary,
+`crypto::sha256` is one word longer.
 
 **Text in and text out.** A digest is compared against a stored one, written
 beside a record and read in a log, and all three want the form every other tool
@@ -4244,6 +4571,41 @@ property a stored credential must not have. `DEFINE USER` already hashes with
 per-user salt and pinned cost parameters, and there is deliberately no function
 that exposes that from a query: a credential primitive behind a grant check is a
 credential primitive in the wrong place.
+
+### Bytes as text
+
+| Written | What it answers |
+|---|---|
+| `encoding::base64(bytes)` | standard base64 text, padded |
+| `encoding::base64_decode(text)` | the bytes it encodes, or `NONE` |
+| `encoding::hex(bytes)` | lowercase hexadecimal text |
+| `encoding::hex_decode(text)` | the bytes it spells, or `NONE` |
+
+```
+SELECT encoding::base64(body) AS packed FROM uploads;
+SELECT encoding::base64_decode(packed) AS body FROM inbox;
+SELECT encoding::hex(body) AS spelled FROM uploads;
+SELECT encoding::hex_decode(spelled) AS body FROM inbox;
+```
+
+The value system has a `bytes` kind (§3) and until these existed there was no way
+to carry one through anything that speaks text — a JSON field, a message, a
+column something else had already encoded. These are that road, in both
+directions.
+
+**Base64 is the standard alphabet**, RFC 4648 §4, with `+` and `/` and `=`
+padding, which is what a caller pasting the answer somewhere else will be
+understood to mean. The URL-safe alphabet is a different function and is not
+written until somebody needs it.
+
+**Text that spells no bytes answers `NONE` rather than refusing.** Decoding asks
+about a *value*, not about a kind — the kind is already checked, as it is for
+every string function — and a table holding one row that does not decode should
+narrow a read rather than end it. That is the rule the [casts](#casts) already
+follow. What counts as "no bytes" is exact: a length that is not a multiple of
+four (or of two, for hex), a character outside the alphabet, padding anywhere
+but the end, or padding bits that are not zero — because two strings that
+decoded to one value would make the round trip a lie.
 
 ### Shapes
 
@@ -4447,11 +4809,19 @@ for. `EXPLAIN` reports the read as access `ordered` with shape `nearest`.
 An ordering has nothing to re-test — the entry's position *is* the answer — so
 this read is more careful about when it declines than the filters above are. It
 falls back to the exact scan when the sort is not one a walk produces (a second
-key, a descending one, no `LIMIT`, a projection, a `FETCH`, a `GROUP BY`), when
-the field is not visible to the caller, when this transaction has written to the
-table, when the read is at an older snapshot than the committed tail, and when
-the index runs out before the bound is filled — which is the case where the
-answer needs records with no geometry, since those have no entry and sort last.
+key, a descending one, no `LIMIT`, a `FETCH`, a `GROUP BY`), when the field is
+not visible to the caller, when this transaction has written to the table, when
+the read is at an older snapshot than the committed tail, and when the index runs
+out before the bound is filled — which is the case where the answer needs records
+with no geometry, since those have no entry and sort last.
+
+**A projection keeps the walk**, with the single exception a ranked read makes
+too: a projection answering under the measured field's **own name** with
+something else — `SELECT elsewhere AS at FROM stops ORDER BY geo::distance(at,
+$here)` — where the answer carries an `at` the index does not hold. Dropping the
+field is not that. `SELECT name FROM places ORDER BY geo::distance(shape, $here)
+LIMIT 3` keeps its bound, because the ordering stage reads the source record
+beneath the projection for a key naming a field the projection did not offer.
 
 `geo::distance` takes positions, so a record holding an area is an error in the
 statement. The walk reports the same error the scan does rather than answering
@@ -4812,6 +5182,22 @@ duration with a unit nothing recognises and is refused by the lexer. The clause
 is optional and its absence means unbounded, which is what every bucket declared
 before it existed is.
 
+**What a bucket says about itself:**
+
+```
+INFO FOR BUCKET avatars;
+```
+
+The name and the ceiling, and nothing else — the files are records, so `SELECT`
+answers them and an `INFO` that also listed would be a second read path over the
+same rows. A table that is not a bucket refuses here as an unknown one, which is
+the refusal `PUT`, `READ` and `DELETE` already make against that same name.
+
+The ceiling comes back as `NONE` where the bucket declared none. Not a zero: a
+ceiling of zero is a bucket nobody can write to, which is a declaration this
+store refuses outright, so reporting absence as zero would describe every
+ordinary bucket as one that admits no file.
+
 The ceiling is checked against the file **as it will be** rather than against the
 bytes a statement carries, which is the only placement that means anything: a
 ranged write splices into bytes already stored, so a file grows past the ceiling
@@ -4852,6 +5238,354 @@ A file is named by a **path**, so its identity is text: `media:1` is refused.
 That is not an aesthetic rule. A chunk's identity is the path followed by its
 ordinal, and an integer identity and the text of that integer would produce the
 same chunk — two files sharing bytes, which is not a defect anybody finds twice.
+
+## 6c. Work waiting to be done
+
+```tessariql
+DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5;
+
+CREATE jobs = { url: 'https://example.test/report' };
+
+CLAIM FROM jobs;
+CLAIM 10 FROM jobs;
+CLAIM jobs:7;
+
+DELETE jobs:7;
+RELEASE jobs:7;
+
+DROP QUEUE jobs;
+```
+
+A queue is a table whose records are handed out **one holder at a time**, under
+a hold that lapses. Enqueueing is `CREATE` and finishing is `DELETE`, because
+the store already has both words: a record that should stop existing is deleted,
+and a second verb meaning *delete, but for a queue* would give one act two
+spellings.
+
+**`CLAIM` takes the first claimable records in identity order**, which is arrival
+order — both identity kinds this store issues are time-ordered, so the queue is
+first-in-first-out with no ordering state of its own. It answers with the records
+so the worker can do the work, and **an empty queue answers no records rather
+than failing**: a worker polls, and being caught up is the ordinary case.
+
+**`CLAIM jobs:7` holds the record you name**, for a caller that has already
+chosen its work rather than asking for whatever is next. It is the same write —
+the same deadline, the same attempt, the same comparison a later reader performs
+— reached by a key instead of by a walk, so nothing about replication, restart or
+a leader change differs between the two forms.
+
+Two things follow from naming a record, and both are answers to questions the
+selecting form never raises. **A record that is not there raises**, as `RELEASE`
+does, because a caller who named a record has to be told it named nothing. **A
+record somebody else holds answers no records and no error** — that is the
+selecting form's convention kept, and a refusal there would make a caller polling
+for a busy record see failures on a healthy queue. So arrival order is a promise
+of `CLAIM FROM` alone: a caller that names records can take work the walk had not
+reached, which is the point of naming it.
+
+**A queue used as a lock table is declared without an `ATTEMPTS` ceiling.** Every
+claim counts an attempt however the record was chosen, so a ceiling on a table
+whose records are claimed by name repeatedly will, on the claim after the last
+one, stop handing that record out — permanently, with no error, at the moment a
+caller tries to take a hold it is entitled to. Leaving the clause out is what
+says the work cannot poison; for a lock, it cannot.
+
+**`RELEASE` hands a record back before its deadline**, for a worker that knows it
+has failed or is shutting down. It does not touch the attempt count — that was
+taken at the claim, and a record that was handed out was handed out whatever
+happened next.
+
+### Saying who you are
+
+```tessariql
+USE CONSUMER 'billing';
+CLAIM FROM jobs;
+RELEASE jobs:7 FOR CONSUMER 'billing';
+RELEASE ALL FROM jobs;
+RELEASE ALL FROM jobs FOR CONSUMER 'billing';
+```
+
+A session that says who it is signs the holds it takes, and the record carries
+`claimed_by` — an object of two routes, `consumer` and `instance`. **A session
+that says nothing signs nothing**, and its holds stay releasable by anybody,
+which is exactly how a queue behaved before this existed.
+
+**The name is yours and it is meant to be shared.** Several workers under one
+name is the ordinary arrangement, and it means *we are the billing workers* —
+they divide the work between them and none displaces another. Only the
+**instance** is unique, and you never write it: the store mints one for each
+session that declares a name, so two workers cannot collide however they are
+configured.
+
+**`RELEASE ALL FROM jobs` reaches this session's own holds**, and answers the
+records it freed rather than a count. That is the safe form, and it is the one a
+worker uses when it is shutting down.
+
+**`RELEASE jobs:7 FOR CONSUMER 'billing'` is the same choice about one record.**
+The bare `RELEASE jobs:7` compares **instances** and so frees only what this
+session took; naming the consumer compares **names** and frees what the group
+took. A client that holds one connection for many logical callers needs the
+named form, because it is minted a fresh instance every time it declares a name
+— its own earlier hold would otherwise be somebody else's. A hold nobody signed
+belongs to no group, so the named form leaves it exactly where `RELEASE ALL ...
+FOR CONSUMER` leaves it: untouched. The bare form still frees it.
+
+**`RELEASE ALL FROM jobs FOR CONSUMER 'billing'` reaches the whole group** —
+every hold every session under that name is holding, including live ones. It is
+what a worker coming back from a crash uses to reclaim what its predecessor left,
+because a restarted worker is a *new* instance and its own holds are gone. It is
+spelled out precisely because it can take work from somebody still doing it.
+
+It names its queue for the reason `CLAIM` names its queue. A form that named none
+would sweep every queue in the database, and a caller granted write on only some
+of them would get a partial success that read as a whole one.
+
+Releasing a hold that belongs to another consumer is **refused**, naming the
+consumer that holds it. The store protects you from a mistake, not from a lie: a
+consumer name is a string the client chose, and a caller who may write the table
+could already clear any hold by writing the record.
+
+**A different consumer name does not give you a second copy of the work.** If you
+have met message brokers where a new group replays the whole topic, this is not
+that: a queue's records are deleted when the work is done, so a second consumer
+sees only what the first did not take. A name scopes releasing and reading, and
+nothing else.
+
+### What the guarantees are, in the same words the consumer's are
+
+```text
+CREATE       — the record is in the queue when the commit returns
+CLAIM        — a write; the record is held until its stored deadline passes
+CLAIM t:7    — the same write on the record named; held answers nothing, absent raises
+DELETE       — the work is done and the record is gone
+a crash      — nothing written past the last commit; the deadline passes; redelivered
+```
+
+**Delivery is at-least-once.** A worker that finishes the work and dies before
+`DELETE` has its record handed out again. Exactly-once would need the work and
+its acknowledgement in one transaction, and the work is outside this store.
+
+**Exclusivity is at most one claimant at a time**, and it needs no machinery of
+its own: two workers that pick one record both *write* that record, which the
+store's snapshot isolation already resolves — the first committer wins and the
+loser writes nothing at all. **The loser is refused, and asking again is the
+worker's job**: it receives a write-conflict refusal naming the record it lost,
+and the store does not quietly re-select the next one on its behalf. So a worker
+loop treats a refusal the way it treats an empty answer — ask again — and the
+cost of contention is one refused statement per losing worker per hand-out,
+which is why a worker with steady work should claim a **batch**: the contention
+amortises over the batch and the ordering does not change.
+
+**Bound those retries.** A refusal says why in its message and carries nothing a
+program can branch on, so a worker cannot tell a lost race from a permission
+failure or a mistyped statement — and a loop that re-asks on every refusal
+retries the ones that will never succeed, forever. Cap the attempts and let the
+last one out. A worker
+that **overruns** its deadline is not stopped, because nothing here can stop it,
+so the whole sentence is: *at most one claimant at a time; a worker that exceeds
+its timeout may find its work handed to somebody else.*
+
+**`CLAIM` is not idempotent.** A worker whose reply is lost and which asks again
+receives a *different* record; the first stays held until its deadline passes.
+Nothing is lost, and a claim retry is not free.
+
+**Nothing is lost short of losing the store.** A record leaves a queue only by
+`DELETE`, and a `DELETE` is a commit.
+
+### The hold is a value, not a lease
+
+There is no lease manager, no reaper and no timer. A claim is an ordinary write,
+so it is sequenced into the log and replicated by the mechanism every other write
+uses. The instant it lapses is computed **once**, by the session taking it, and
+written into the record — the rule `time::now()` already follows, so a replica
+applies what was written rather than asking its own clock. And a hold lapses
+because a later reader finds that instant in the past: the comparison *is* the
+expiry.
+
+That is why **nothing happens when a claimant dies**. There is no liveness
+detection and no heartbeat; the deadline passes and the record becomes claimable.
+A worker that dies holding a thirty-second claim delays that record by up to
+thirty seconds, which is what choosing a timeout means — and the timeout is on
+the declaration so that it can be chosen.
+
+The comparison is against a **wall clock**, because a monotonic clock is
+meaningful only inside one process and so cannot be a value in a log. A clock
+stepped forward passes every jumped deadline at once and redelivers the held set;
+a clock stepped backward stalls the queue until it catches up, which is the worse
+of the two because a stalled queue looks exactly like an idle one. The
+diagnostic is one statement — `SELECT id, claimed_until FROM jobs ORDER BY
+claimed_until LIMIT 1` beside `time::now()` — and a deadline further ahead than
+one `TIMEOUT` is the signature.
+
+### Two fields the store writes and you do not
+
+| field | meaning |
+|---|---|
+| `claimed_until` | the instant the current hold lapses; absent when nothing holds it |
+| `attempts` | how many times this record has been handed out |
+
+A `CREATE` or `UPDATE` that sets either is **refused, naming the field**. This is
+the bucket's rule in a second place and for the identical reason: engine metadata
+a caller can write is metadata that can lie, and a hold whose deadline the holder
+chose is not a hold. The names are ordinary and visible, so a table that is not a
+queue may use them freely; on a queue they collide, and the refusal says so
+rather than silently dropping the field.
+
+**A lapsed record is not rewritten**, so a read meaning *unclaimed* compares
+rather than testing for absence:
+
+```tessariql
+SELECT * FROM jobs WHERE claimed_until = NONE OR claimed_until < time::now();
+```
+
+The shorter spelling looks right and hides every record whose worker has already
+gone.
+
+**There is deliberately no field naming the holder.** A session here carries a
+user identity and nothing finer, and every worker in a deployment signs in as one
+user — so a field claiming to name the holder would name the wrong thing exactly
+when somebody is debugging.
+
+### Retry, and the dead letter that is not a second table
+
+`ATTEMPTS n` is the ceiling on hand-outs. The count is taken at the **claim**,
+because how many times a record was handed out is a fact the store can observe
+while how many times the work failed is a fact only the worker holds.
+
+A record that reaches the ceiling stops being handed out and **stays where it
+is**, keeping its payload and its count:
+
+```tessariql
+SELECT * FROM jobs WHERE attempts >= 5;
+```
+
+That is the dead letter. Moving it would need a destination table, a schema for
+it, a rule for when it does not exist and a permission story — all to answer a
+question a `WHERE` already answers. Reviving one is `DELETE` then `CREATE`: a
+record that exhausted its declared budget and is being put back is new work, and
+it goes to the back of the queue.
+
+Leaving `ATTEMPTS` out means unlimited, which is a legitimate choice for work
+that cannot poison. `ATTEMPTS 0` is refused rather than read as unlimited —
+unlimited already has a spelling, and a second one that looks like *never hand
+this out* is the one somebody writes by accident.
+
+### What it costs, said plainly
+
+`CLAIM` walks the table from the head, so it steps over records that are held —
+and over records whose attempts are spent, which never become claimable again.
+The held half heals itself when the deadlines pass; the dead half does not, so a
+queue that accumulates dead records pays for them on every claim. The retention
+statement is the answer, and it is the same one every growing table here already
+needs:
+
+```tessariql
+DELETE FROM jobs WHERE attempts >= 5 LIMIT ALL;
+```
+
+One statement takes at most **500** records, and asking for more is refused
+naming the ceiling. Without a bound, one statement holds the whole queue for the
+whole timeout while every other worker waits — with nothing anywhere in an error
+state, because a claim that takes everything is doing what it was asked to do.
+
+## 6d. A name for a read
+
+```tessariql
+DEFINE VIEW engineers AS SELECT * FROM staff WHERE team = 'eng';
+
+SELECT * FROM engineers;
+SELECT name FROM engineers WHERE salary > 110 ORDER BY name;
+
+DROP VIEW engineers;
+```
+
+A view is a **name for a read**. Nothing is stored under it and nothing is
+maintained: a statement that names one is rewritten to carry the read before
+anything else happens, and the read then runs. `INFO FOR TABLE engineers`
+answers with the statement that declared it, character for character, because
+the read is kept as the text you wrote.
+
+**A view is a name for a read, not a faster way to run one.** The read it stands
+for is held whole before your statement asks anything of it, so `SELECT * FROM
+engineers LIMIT 1` reads what the view reads — it does not stop where the answer
+fills, the way the same statement over a table does. That is the one thing worth
+knowing before using views for large tables.
+
+It is bounded rather than unbounded. A view that names no `LIMIT` runs under the
+ceiling every held read runs under, and past **10 000** records the read is
+**refused** rather than shortened — a truncated answer that looks whole is the
+failure this store spends its rules removing. A view over a table that will grow
+should carry its own `LIMIT`:
+
+```tessariql
+DEFINE VIEW recent_signups AS
+  SELECT * FROM users WHERE created > time::now() - 7d ORDER BY created DESC LIMIT 100;
+```
+
+**You are told before you are refused.** Past **8 000** records — four fifths of
+the ceiling — a view raises the note `nearing-ceiling` (§7b′) on every read,
+naming what it holds and what it may hold. It is the one note in this store that
+reports a *state* rather than something that happened during the read, so it does
+not go quiet after the first read: the condition is persistent, and so is the
+warning. Two thousand records of headroom is the point of the number — a view
+nine hundred short of the line reads perfectly today and stops working on an
+ordinary week's growth, and a warning that arrives with the refusal is not a
+warning.
+
+**A view takes no parameters.** `DEFINE VIEW recent(days) AS … $days` is the
+obvious next thing to ask for, and it is not a view: it is a function whose body
+is a read. The reason it is refused rather than added is that the two readings
+are different features that look identical — a value bound once when the view is
+defined is frozen text, and a value bound when the view is read is a function —
+and a store that stored either under `DEFINE VIEW` could not tell you which one
+you had. The day somebody changes the value is the day it matters. When the
+language gains a way to define a function, a parameterised read belongs there.
+
+**A view is read through its own projection.** `DEFINE VIEW roster AS SELECT
+name, team FROM staff` answers two fields, so `SELECT * FROM roster` answers two
+fields and a condition written outside the view can only ask about those two.
+`SELECT * FROM roster WHERE salary > 85` answers nothing — not because no one
+earns that, but because `roster` does not carry `salary` and the condition is
+asked of what the view answered.
+
+**A view may name a view**, up to **8** deep. Past that the read is refused, and
+the refusal prints the chain it followed — which is also how a view that names
+itself, directly or around a loop, is reported.
+
+**A view holds no records**, so `CREATE`, `UPDATE`, `DELETE`, `INSERT`, an index,
+a field declaration, a record address (`engineers:1`) and a span
+(`engineers:1..3`) are each refused. A view and a table share one namespace, so
+neither can take the other's name, and a repeat `DEFINE VIEW` over a name that
+exists is refused: changing a view is `DROP VIEW` and then `DEFINE VIEW`.
+
+### Whose permissions a view reads with
+
+**The caller's.** A view is a saved read, not an authority. The tables the view
+names are checked against *your* grants, exactly as if you had written the read
+out by hand — so a caller who may not read `staff` may not read a view over
+`staff`, and the refusal names `staff`.
+
+A grant on a view itself is therefore refused rather than stored: no grant on a
+view is ever consulted, and one that could be written would look like a
+permission that did something.
+
+This is worth stating because views elsewhere often work the other way, running
+with the authority of whoever defined them. That is a useful thing and it is a
+separate decision with its own consequences, so it is not what this word does
+today; if it arrives it will arrive as a clause you have to write.
+
+### Maintained results are a job for the change feed
+
+A view is re-read every time it is named; nothing is stored under it, and there
+is no `MATERIALIZED` spelling. A store that needs a maintained result should
+write one into an ordinary table from the **change feed**, which is where the
+writes it must react to already are — and the result is then a table you can
+index, back up and grant on like any other.
+
+Maintaining a result inside the writing transaction is the alternative, and it
+is the reason this is not built: every write to `orders` would pay for every
+view over `orders`, silently, with a cost nobody wrote down, and the write's
+failure modes would come to include the view's.
 
 ## 7. Transactions
 
@@ -4970,7 +5704,7 @@ answers with the plan the read would take, without taking it:
 ```
 
 `access` is one of `record`, `index`, `ordered`, `scan`, `approximate`, `graph`,
-`join` or `materialised`. An index-served read also names the index and the
+`join`, `span` or `materialised`. An index-served read also names the index and the
 **shape** that served it — `equality`, `prefix`, `range` or `terms` — and carries
 `at_most` when a ceiling was free to learn, which today means an equality on a
 `UNIQUE` index.
@@ -4995,12 +5729,16 @@ claimed an index this statement never touched. The inner read's plan is a plan o
 its own, and is not folded into one field.
 
 `ordered` is a bounded read taken from an index already in that order (§5), and
-it names the index. **Descending** it is the one plan with a condition it cannot
-check: whether the index holds enough records to fill the bound is the read
-itself, and an index that runs out hands the read to the scan — which is then
-what the read reports, and says so in a note (§7b′). **Ascending** the plan
-carries no such gap, because the direction is admitted only over a `REQUIRED`
-field, where an index that runs out has already answered the whole table.
+it names the index. It is the one plan with a condition it cannot check: whether
+the index will fill the bound is the read itself, and an index that does not
+hands the read to the scan — which is then what the read reports, and says so in
+a note (§7b′). The gap has two sources and they are not the same one.
+**Descending**, an index that runs out is missing the records with no value, so
+it gives the order up. **Ascending** that cannot happen, because the direction is
+admitted only over a `REQUIRED` field where an index that runs out has already
+answered the whole table — but a read **under a condition** in either direction
+gives the order up when the condition is too thin to fill the bound within the
+ceiling (§5), and no plan can know that in advance either.
 
 **A number this store cannot know is a number it will not print.** There is no
 estimated row count and no cost, because producing one needs statistics about
@@ -5034,7 +5772,7 @@ also makes a read self-documenting without duplicating anything, because the
 assertion is *checked*.
 
 `USING <path>` takes one of the access-path words (§7b): `record`, `index`,
-`ordered`, `scan`, `approximate`, `graph`, `join`, `materialised`. A word that is
+`ordered`, `scan`, `approximate`, `graph`, `join`, `span`, `materialised`. A word that is
 none of them is refused before the read runs, listing the ones that exist.
 
 `USING INDEX <name>` asks the question the path word cannot: `index` says *an*
@@ -5210,7 +5948,7 @@ note gets exactly the records it would have got before notes existed. The `notes
 key is absent when there is nothing to say, which is almost always — a note is
 worth reading because it is rare.
 
-There are five today:
+There are six today:
 
 | kind | what happened |
 |---|---|
@@ -5219,6 +5957,7 @@ There are five today:
 | `subquery-ceiling` | a materialised source reached the `LIMIT` it stated, so the outer statement asked its question of a prefix |
 | `compared-across-kinds` | the read compared values of two different kinds — a number against the text of one, say — so it answered about the records whose kinds happened to line up |
 | `cursor-walked` | an `AFTER` page was reached by reading the records rather than seeking to the anchor, so it cost what the read costs and not what the page costs (§5, *Resuming a page from a record*) |
+| `nearing-ceiling` | a held read is four fifths of the way to the ceiling that will refuse it, so a view reading fine today stops working as the table grows (§6d) |
 
 **`fell-back` fires on an index that declined, never on a table that has none.**
 A bounded ordered read over an unindexed table is the most ordinary read in the
@@ -5238,6 +5977,16 @@ written rather than a mistake.
 The note names a **pair of kinds, once**. A comparison runs per record, so a read
 over a million mixed records has one thing to say and not a million; and the pair
 reads the same way whichever side of the `=` each half was written on.
+
+**`nearing-ceiling` reports a state and therefore repeats.** Every other note
+here says what happened during one read, so it fires when it happens and is
+silent otherwise. This one says where the store *is*: a view four fifths of the
+way to the ceiling is over the line on every read until somebody bounds it or the
+table shrinks, and a warning that appeared once and then went quiet would be
+worse than none — it would read as something that had passed. It fires only on a
+read running under the ceiling, so a view that named its own `LIMIT` never sees
+it; that view is warned about its own bound by `subquery-ceiling` instead, which
+is a different sentence about a different number.
 
 **`cursor-walked` is about cost and never about the records.** A page that
 sought and a page that walked are the same records in the same order; only the
@@ -5474,7 +6223,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.0.5", "build": "0.0.5-alpha", "endpoints": ["db-1.internal:9000"],
+ "version": "0.1.0", "build": "0.1.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000"}]}}
 ```
 
@@ -5661,8 +6410,8 @@ be, because it is confined to the run its fixed values name.
 | declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
 | `HAVING` | a filter over groups is a second filter position with its own scoping rule — it sees folds where `WHERE` does not — and is worth its own milestone rather than an afterthought. A fold written in a `WHERE` is refused by name rather than as a stray token, so the message says which of the two the author wanted |
 | `DISTINCT` | it is `GROUP BY` over the projection with no fold, and one spelling for one thing. **Both positions it is asked for already have a spelling, and each is now pinned by a case rather than by this sentence:** the distinct set is `SELECT city FROM people GROUP BY city` (and `GROUP BY city, name` for the distinct pairs), and how many there are is that grouping counted — `SELECT count(*) AS cities FROM (SELECT city FROM people GROUP BY city LIMIT 100)`. The bound on the inner read is not friction added here; it is the rule every materialised source obeys (§5) |
-| a declared retention policy, enforced in the background | a policy is `DELETE FROM … WHERE`, run by an operator or a schedule; a declared one needs a job runner and a decision about when it runs, and hiding that in a table is how a store deletes something at three in the morning that nobody expected |
-| `LIMIT` on a delete | a retention run is one commit, so bounding one means deciding what a half-applied policy means |
+| **a retention policy declared on an ordinary table** | **built for one table kind and still refused for the rest.** `DEFINE SERIES … RETAIN` declares a floor and the objection above is answered rather than waived: what is past the floor stops being *answered with* immediately, which is a read applying a rule and not a deletion nobody asked for, and the removal that follows is a pass with no schedule — so nothing deletes anything at three in the morning unless an operator ran it. On a table that declares no floor a policy is still `DELETE FROM … WHERE`, because a floor that every read must apply is a cost every read on every table would pay for a property most tables do not want. See [A table whose answer has a floor](#a-table-whose-answer-has-a-floor) |
+| an **unbounded** delete | inverted, and this row is what it inverted to. `LIMIT n` and `LIMIT ALL` are both built and the bound is *required*, so the question the row was avoiding — what a half-applied policy means — is answered by making the author say which they meant. What is still open is whether the bound should become optional with full removal as the default; it is a decision and not a gap |
 | filling a window that has no records | grouping answers with the groups the data has; filling a gap means knowing the range the caller meant, which the statement does not say |
 | a sub-second window | `time::bucket` takes a whole number of seconds; the nanosecond remainder is a different arithmetic and is refused rather than rounded |
 | a spilling aggregate | **narrowed by measurement, and by a smaller part of it than this row used to claim.** A fold holds one accumulator per group and not one value per record, so what a fold costs is set by how many groups there are and not by how many records went into them — every fold this store has is computable one value at a time. What is still built in memory is the **group map**, so grouping by a field with more distinct values than fit needs a spill, and so would a fold that cannot be computed incrementally, of which there is none. Note that this did not move a grouping read's peak: the fold frees each record as it folds it, so the peak is the source's materialised vector, exactly as it is for the two rows above |
@@ -5723,7 +6472,7 @@ be, because it is confined to the run its fixed values name.
 | Several terms mean all of them | **contract** |
 | A field with no analyzer holds no terms and matches nothing | **contract** |
 | `REQUIRED` means present and not null | **contract** |
-| A bounded descending order under a `WHERE` is taken from the index that holds the order, and gives it up rather than answering short | **contract** — the index narrows and the condition decides, so the walk continues until the **bound is filled by records that survive the condition**, not until the bound is filled by entries. Past a stated multiple of the bound the condition is too thin for the order to be worth serving that way and the read takes the scan it would have taken anyway. The ceiling bounds the cost and never the answer |
+| A bounded order under a `WHERE` is taken from the index that holds the order — **descending always and ascending over a `REQUIRED` field**, the same door §5 opens for the read with no condition — and gives it up rather than answering short | **contract** — the index narrows and the condition decides, so the walk continues until the **bound is filled by records that survive the condition**, not until the bound is filled by entries. Past a stated multiple of the bound the condition is too thin for the order to be worth serving that way and the read takes the scan it would have taken anyway. The ceiling bounds the cost and never the answer. Ascending, an index that runs out before the ceiling has read the whole table, so what survived the condition is the complete answer and a short one is served rather than handed back |
 | An index over several fields serves a condition on the **leading run** of them the condition fixes to values | **contract** — the field order decides which reads it can serve, and `last = 'x' AND first = 'y'` on `(last, first)` is one lookup rather than a lookup on `last` and a re-test of `first`. The *lookup* run stops at the first field the condition does not fix with an equality, so a `LIKE` on the second column leaves the lookup at one column and is re-tested like any other clause. A **range** on the field immediately after the run is the exception, and it is served: the fixed values name one contiguous run of entries and that run is already ordered by the very field being bounded, so the bounds are a bound on a walk rather than a filter over the run. `at = 20 AND tag >= 1950 AND tag <= 1959` on `(at, tag)` reads the ten entries the bounds name and not the day's hundred |
 | A `UNIQUE` composite promises a ceiling of **one** exactly when the condition fixes every one of its fields, and none otherwise | **contract** — uniqueness is over the whole tuple, so fixing only the first promises nothing: one `last` may have any number of `first`s |
 | Among candidates with no ceiling, the one narrowing more of its index's columns wins — **before** shape is consulted | **contract** — a proof rather than an estimate: the entries matching two fixed fields are a subset of those matching the first alone, and the entries a range keeps are a subset of the run it walks, whatever the data holds. The shape order below it says what a candidate is *trusted* to narrow when nothing exact is known, which is a heuristic, and a proof outranks a heuristic. That ordering is load-bearing rather than tidy: with shape on top, `a = 1 AND b > 2` on `(a, b)` lost the range candidate to the equality one, because `Equality` sorts before `Range` — the wider candidate winning on a guess. An equal count still falls through to shape, and an equal shape to the order the conjuncts were written |

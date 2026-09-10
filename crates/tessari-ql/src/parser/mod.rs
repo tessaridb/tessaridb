@@ -21,7 +21,7 @@ mod statement;
 
 use std::collections::BTreeSet;
 
-use crate::ast::{Expr, Script, Statement, StatementKind};
+use crate::ast::{Expr, Script, Select, Statement, StatementKind};
 use crate::error::{Error, Result};
 use crate::lexer::tokenize;
 use crate::token::{Keyword, Punct, Span, Spanned, Token};
@@ -101,6 +101,35 @@ pub fn parse_expression(source: &str) -> Result<Expr> {
         return Err(parser.error_here("the end of the expression"));
     }
     Ok(expression)
+}
+
+/// Read `source` into one read, with nothing around it.
+///
+/// The way a view stored in the catalog is read back — the same shape
+/// [`parse_expression`] has, for the same reason: a definition keeps the text it
+/// was written as, so something has to turn that text into a tree again.
+///
+/// # Errors
+///
+/// Returns the first failure, refuses text that does not begin with `SELECT`,
+/// and refuses a read followed by anything else — a stored view is one read or
+/// it is not a view.
+pub fn parse_read(source: &str) -> Result<Select> {
+    let tokens = tokenize(source)?;
+    let mut parser = Parser {
+        source,
+        tokens,
+        position: 0,
+        reading_paths: false,
+    };
+    if parser.peek_keyword() != Some(Keyword::Select) {
+        return Err(parser.error_here("`SELECT` — a view is a read"));
+    }
+    let read = parser.select_statement()?;
+    if parser.peek().is_some() {
+        return Err(parser.error_here("the end of the read"));
+    }
+    Ok(read)
 }
 
 /// A cursor over the tokens, and the source they came from.

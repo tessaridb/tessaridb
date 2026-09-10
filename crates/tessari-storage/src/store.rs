@@ -74,7 +74,7 @@ pub struct Store {
     /// What this process is doing with the declared consumers.
     ///
     /// Shared like the snapshot registry and for the same reason: a session
-    /// answering `INFO FOR CONSUMER` and the thread doing the consuming must be
+    /// answering `INFO FOR KAFKA CONSUMER` and the thread doing the consuming must be
     /// looking at one registry, not at two that agree until they do not.
     running: Arc<crate::running::Running>,
     /// Whether this process can open what its vaults hold.
@@ -95,6 +95,13 @@ pub struct Store {
     /// Beside the vault rather than inside it: the trail outlives any one
     /// unsealing, and a sealed store still records the reads it refused.
     audit: Arc<crate::audit::AuditTrail>,
+    /// Which tables carry a retention floor.
+    ///
+    /// Shared for the reason the registries above it are, and held in memory
+    /// for the reason its own module states: the floor is asked on the hottest
+    /// path there is, and a catalog read there would charge every table for a
+    /// feature only a series has.
+    series: Arc<crate::series::SeriesRegistry>,
 }
 
 impl Store {
@@ -125,6 +132,7 @@ impl Store {
             // secrets for whoever restarted it.
             vault: Arc::new(crate::vault::OpenVault::sealed()),
             audit: Arc::new(crate::audit::AuditTrail::default()),
+            series: Arc::new(crate::series::SeriesRegistry::default()),
         })
     }
 
@@ -174,6 +182,11 @@ impl Store {
     #[must_use]
     pub fn audit(&self) -> &Arc<crate::audit::AuditTrail> {
         &self.audit
+    }
+
+    /// Which tables carry a retention floor.
+    pub(crate) fn series(&self) -> &Arc<crate::series::SeriesRegistry> {
+        &self.series
     }
 
     /// Whether this process can open what the store's vaults hold.
@@ -451,6 +464,24 @@ impl Store {
         // — which is worth stopping at rather than writing through.
         crate::schema::validate(self, record)?;
         let batch = crate::index::maintain(self, record, crate::log::apply_batch(at, record))?;
+        // Derived here as well as in the commit, because that is the whole
+        // reason it is derived from the record: a follower that skipped this
+        // would carry the edges and no way to walk them, and its walks would
+        // answer nothing while the leader answered correctly — the symptom
+        // `crate::adjacency`'s own header names as the reason it derives from
+        // the mutation at all. It skipped it anyway, from W148 until W185,
+        // because the replay called two of these three and nothing compared a
+        // replica that held an edge (Q-452).
+        //
+        // The order matches the commit path deliberately: two paths that build
+        // one batch in two orders are a difference waiting to become a
+        // divergence nobody can explain.
+        let batch = crate::adjacency::maintain(self, record, batch)?;
+        // Derived here as well as in the commit, because that is the whole
+        // reason it is derived from the record: a follower that skipped this
+        // would carry the records and none of the counts, and its planner would
+        // then choose a different access path for the same query.
+        let batch = crate::cardinality::maintain(self, record, batch, at)?;
         self.backend.apply(batch)?;
         Ok(())
     }

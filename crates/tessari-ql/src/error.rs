@@ -312,6 +312,23 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `RETAIN` names a floor that would leave nothing to answer with.
+    ///
+    /// `RETAIN 0s` and `RETAIN -1d` put the floor at or ahead of the present, so
+    /// the table answers with nothing however much it holds. A clause that can
+    /// only empty the answer is a mistake in the statement rather than a
+    /// policy, so it is caught where the statement is read.
+    #[error(
+        "a retention of {written} (at {span}) leaves nothing to answer with; \
+         a floor is a positive duration"
+    )]
+    EmptyRetention {
+        /// The retention as it was written.
+        written: String,
+        /// Where the clause is.
+        span: Span,
+    },
+
     /// Two projections in one read answer under the same name.
     ///
     /// `SELECT address.city, work.city` would write one field twice into a
@@ -746,6 +763,7 @@ impl Error {
             | Self::CursorBesideAReshaping { span, .. }
             | Self::AnchorFromAnotherTable { span, .. }
             | Self::EmptyTimeout { span, .. }
+            | Self::EmptyRetention { span, .. }
             | Self::DepthNeedsOneHopToATable { span }
             | Self::DepthBelowOne { span }
             | Self::VectorWidthBelowOne { span }

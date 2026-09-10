@@ -77,7 +77,7 @@ use tessari_encoding::{
     UniqueIndexKey, decode_payload,
 };
 use tessari_geo::{Bounds, Cell, Shape};
-use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
+use tessari_kv::{Key, KeyRange, Keyspace, ScanDirection, ScanRequest, WriteBatch, WriteOp};
 use tessari_types::{Analyzer, RecordId, TableId, Value};
 
 use crate::catalog::{Catalog, IndexDefinition, defined_index};
@@ -288,7 +288,7 @@ fn build(
     pending.moved.insert(address, Delta::default());
     pending.terms.insert(address, BTreeMap::new());
     let mut rows: BTreeMap<RecordId, Vec<u8>> = view
-        .scan_table(definition.namespace, definition.database, definition.table)?
+        .sweep_table(definition.namespace, definition.database, definition.table)?
         .into_iter()
         .collect();
 
@@ -611,9 +611,23 @@ fn insert(
     // The precondition is what makes this safe against a concurrent writer: the
     // check below reads committed state, and without it a second transaction
     // could claim the value between the read and the apply.
+    //
+    // Reading committed state alone could not see **this** transaction's own
+    // removal, so a batch that deleted the record holding a value and then wrote
+    // another record with it was refused by the index it was maintaining —
+    // naming, as the offender, a record the same batch was about to delete. The
+    // batch is asked instead. Ordering settles the rest: the delete was queued
+    // first and this put is queued last, so the entry the batch leaves behind is
+    // this one.
+    //
+    // The concurrency guarantee is untouched, because the precondition below is
+    // still the committed entry: a second transaction that claims the value
+    // first still wins and this batch still fails.
     let batch = match store.backend().get(keyspace, &key)? {
         Some(existing) => {
-            if IndexTarget::decode(existing.as_slice())?.id != *id {
+            if !releases(&batch, keyspace, &key)
+                && IndexTarget::decode(existing.as_slice())?.id != *id
+            {
                 return Err(violation());
             }
             batch.expect_value(keyspace, key.clone(), existing)
@@ -621,6 +635,20 @@ fn insert(
         None => batch.expect_absent(keyspace, key.clone()),
     };
     Ok(batch.put(keyspace, key, IndexTarget::new(id.clone()).encode()))
+}
+
+/// Whether this batch already deletes an index entry.
+///
+/// Asked per key, never "does the batch delete anything": a transaction that
+/// releases one unique value has not released every one of them.
+fn releases(batch: &WriteBatch, keyspace: Keyspace, key: &Key) -> bool {
+    batch.ops().iter().any(|op| match op {
+        WriteOp::Delete {
+            keyspace: space,
+            key: dropped,
+        } => *space == keyspace && dropped == key,
+        WriteOp::Put { .. } => false,
+    })
 }
 
 fn remove(

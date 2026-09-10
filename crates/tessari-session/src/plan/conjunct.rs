@@ -175,6 +175,34 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::VectorEuclidean
         | Function::VectorDot
         | Function::SearchScore
+        | Function::CryptoMd5
+        | Function::CryptoSha1
+        | Function::EncodingBase64
+        | Function::EncodingBase64Decode
+        | Function::EncodingHex
+        | Function::EncodingHexDecode
+        | Function::StringStartsWith
+        | Function::StringEndsWith
+        | Function::StringContains
+        | Function::StringIndexOf
+        | Function::StringReverse
+        | Function::StringTrimStart
+        | Function::StringTrimEnd
+        | Function::MathMin
+        | Function::MathMax
+        | Function::MathSign
+        | Function::MathTrunc
+        | Function::MathLn
+        | Function::MathExp
+        | Function::ArrayConcat
+        | Function::ArrayAppend
+        | Function::ArrayIndexOf
+        | Function::ArrayMin
+        | Function::ArrayMax
+        | Function::ArraySum
+        | Function::ObjectEntries
+        | Function::ObjectHas
+        | Function::ObjectMerge
         | Function::SearchHighlight => None,
     }
 }

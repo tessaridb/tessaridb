@@ -130,6 +130,83 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
             "table `{name}` belongs to a graph this writer cannot name"
         )));
     }
+    // A queue is written back as the word that declared it, and until W157 it was
+    // not written back at all: with no arm here it fell through to the tail
+    // below and described itself as `DEFINE TABLE jobs SCHEMALESS` — a statement
+    // that re-executes happily and restores a table with two ordinary fields and
+    // no hold, so every refusal the word carries is gone and `CLAIM` no longer
+    // works against it. Nothing was in an error state, which is the exact
+    // failure this module exists to prevent (Q-475).
+    //
+    // The arm is a statement rather than an `Unwritable` refusal because a
+    // queue's declaration is fully sayable: a `Duration` and an `Option<u32>`
+    // are both literals the grammar reads back. The vault is the other case and
+    // refuses, because a key is not a declaration.
+    if let TableKind::Queue(declared) = &definition.kind {
+        if definition.schemafull || definition.is_edge() {
+            return Err(Unwritable::at(format!(
+                "queue `{name}` carries flags its declaring word cannot say"
+            )));
+        }
+        if definition.identity != IdentityKind::default() {
+            return Err(Unwritable::at(format!(
+                "queue `{name}` names records in a way its declaring word cannot say"
+            )));
+        }
+        let _ = write!(
+            script,
+            "DEFINE QUEUE {name} TIMEOUT {}",
+            declared.timeout.to_literal()
+        );
+        // Omitted when none was declared, because leaving the clause out is how
+        // "unlimited" is spelled — and `ATTEMPTS 0` is refused by the grammar,
+        // so writing the absent ceiling as a number would produce a statement
+        // that does not parse rather than one that restores something weaker.
+        if let Some(ceiling) = declared.attempts {
+            let _ = write!(script, " ATTEMPTS {ceiling}");
+        }
+        script.push_str(";\n");
+        return Ok(());
+    }
+    // A series is written back for the reason a queue is: its whole declaration
+    // is a duration, which the grammar reads back. Unlike a queue it says
+    // nothing about its identity, because the kind fixes that — so a stored
+    // series naming records any other way is a definition this word cannot
+    // restore, and saying so is better than writing a statement that would
+    // recreate it wrongly.
+    if let TableKind::Series(declared) = &definition.kind {
+        if definition.schemafull || definition.is_edge() {
+            return Err(Unwritable::at(format!(
+                "series `{name}` carries flags its declaring word cannot say"
+            )));
+        }
+        if definition.identity != IdentityKind::Uuid {
+            return Err(Unwritable::at(format!(
+                "series `{name}` names records in a way its declaring word cannot say"
+            )));
+        }
+        let _ = writeln!(
+            script,
+            "DEFINE SERIES {name} RETAIN {};",
+            declared.retain.to_literal()
+        );
+        return Ok(());
+    }
+    // A view is written back as the statement it was declared with, and that
+    // is exact rather than approximate: the read is stored as the text somebody
+    // typed, so this is the one word here that restores the original character
+    // for character. Everything the other arms refuse to write — a flag the word
+    // cannot say, an identity it cannot express — a view does not have, because
+    // it declares no fields, holds no records and names them in no way at all.
+    if let TableKind::View(declared) = &definition.kind {
+        if definition.schemafull || definition.is_edge() {
+            return Err(Unwritable::at(format!(
+                "view `{name}` carries flags its declaring word cannot say"
+            )));
+        }
+        let _ = writeln!(script, "DEFINE VIEW {name} AS {};", declared.read);
+        return Ok(());
+    }
     // Written back as the word that created it, which is the whole reason the
     // kind is stored rather than inferred from the field and the index it
     // creates: `DEFINE TABLE embeddings SCHEMALESS` re-executes happily and

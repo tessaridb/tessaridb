@@ -3,7 +3,7 @@
 //! # Why a parameter's value is written in TessariQL
 //!
 //! Because this store has one value syntax and JSON is not it. JSON has six
-//! types and the value system has fifteen, so a JSON→`Value` mapping is a
+//! types and the value system has seventeen, so a JSON→`Value` mapping is a
 //! *decision* rather than a translation — and it is the decision `dec` exists to
 //! prevent, arriving at the last step instead of the first: a caller writing
 //! `12.34` in JSON hands over a double.

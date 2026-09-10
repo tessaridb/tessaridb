@@ -38,8 +38,13 @@ mod counting;
 #[cfg(feature = "counting")]
 mod memory;
 mod paging;
+mod queue;
 mod ranges;
+mod retention;
 mod samples;
+mod series;
+mod span;
+mod spread;
 mod workload;
 
 /// A running total in front of the system allocator, in the counting build only.

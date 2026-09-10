@@ -30,6 +30,7 @@ mod commit;
 mod index;
 mod lifecycle;
 mod ordered;
+mod retention;
 mod scan;
 mod search;
 mod spatial;
@@ -39,10 +40,12 @@ pub use adjacency::Neighbour;
 pub use search::Expansion;
 pub use spatial::{Nearby, Region};
 
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tessari_encoding::RecordValue;
-use tessari_types::Sequence;
+use tessari_types::{RecordId, Sequence, TableId};
 
 use crate::store::Store;
 
@@ -58,4 +61,33 @@ pub struct Transaction<'a> {
     store: &'a Store,
     snapshot: Sequence,
     writes: BTreeMap<RecordAddress, RecordValue>,
+    /// The instant this transaction judges a series table's floor against.
+    ///
+    /// Read once, on the first question that needs it, for the reason the
+    /// snapshot is fixed once: one read answers at one floor, or a walk long
+    /// enough to cross the boundary refuses in its second batch what it returned
+    /// in its first.
+    reading_at: Cell<Option<u64>>,
+    /// The floor per series table, derived once each.
+    floors: RefCell<BTreeMap<TableId, Option<RecordId>>>,
+}
+
+impl Transaction<'_> {
+    /// The millisecond this transaction judges retention against.
+    fn reading_at(&self) -> u64 {
+        if let Some(held) = self.reading_at.get() {
+            return held;
+        }
+        // A clock before the epoch answers zero, which puts every floor at the
+        // beginning of time and hides nothing. The alternative — refusing the
+        // read — would turn a misconfigured host clock into an outage over data
+        // that is present and correct.
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| {
+                u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+            });
+        self.reading_at.set(Some(millis));
+        millis
+    }
 }

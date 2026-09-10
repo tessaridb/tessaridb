@@ -53,6 +53,7 @@ use std::time::Instant;
 use tessari_ql::{Select, Span, Timeout};
 
 use crate::error::{Error, Result};
+use crate::outcome::Note;
 
 /// A moment a read must not still be producing records after.
 #[derive(Debug, Clone, Copy)]
@@ -114,6 +115,21 @@ impl Deadline {
 /// layer and not of the grammar: nothing in the tree records it, so a statement
 /// means the same thing on a node that raises it (Q-208).
 const UNSTATED: u64 = 10_000;
+
+/// The share of the ceiling past which a held read says it is approaching one.
+///
+/// A share rather than a distance, so it stays right if [`UNSTATED`] ever moves.
+/// Four fifths leaves two thousand records of headroom, which is time to do
+/// something rather than notice at the refusal — a view sitting at nine hundred
+/// short of the line reads perfectly today and stops working on an ordinary
+/// week's growth (Q-474).
+///
+/// It fires on **every** read while the read is over the line, and that is not
+/// noise. The neighbouring note reports a boundary that was *reached* during one
+/// read; this reports a state the store is *in*, and a warning about a
+/// persistent condition that went quiet after the first read would be worse than
+/// none.
+const NEARING: u64 = UNSTATED / 5 * 4;
 
 /// How many records a read standing in an expression may hold, when it named no
 /// bound itself.
@@ -198,6 +214,19 @@ impl Ceiling {
             most: UNSTATED,
             collecting: None,
             span: read.span,
+        })
+    }
+
+    /// The note this ceiling raises while a read is most of the way to it.
+    ///
+    /// Asked after the read rather than during it, beside the note for the
+    /// ceiling that was actually reached, because the two are the same
+    /// question asked of the same number and a caller wants them together.
+    pub(crate) fn nearing(self, held: usize) -> Option<Note> {
+        let held = u64::try_from(held).ok()?;
+        (held >= NEARING).then_some(Note::NearingCeiling {
+            rows: held,
+            most: self.most,
         })
     }
 

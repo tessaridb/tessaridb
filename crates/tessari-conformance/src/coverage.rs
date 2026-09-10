@@ -18,7 +18,7 @@
 //! script, and therefore invisible to both tests, so nothing ever demanded a
 //! case for them. The rows below are the single declaration that closes it.
 
-use tessari_ql::{Script, StatementKind};
+use tessari_ql::{Function, Script, StatementKind};
 
 /// The statement forms, declared once.
 ///
@@ -54,6 +54,19 @@ forms! {
     DropGeo => "DROP GEO",
     DefineVault => "DEFINE VAULT",
     DropVault => "DROP VAULT",
+    DefineQueue => "DEFINE QUEUE",
+    DropQueue => "DROP QUEUE",
+    DefineSeries => "DEFINE SERIES",
+    DropSeries => "DROP SERIES",
+    DefineView => "DEFINE VIEW",
+    DropView => "DROP VIEW",
+    Claim => "CLAIM",
+    // Not a spelling — there is no `CLAIM RECORD` keyword pair. The angle
+    // brackets say so, because a coverage label that looked like syntax would
+    // be read as syntax by the next person adding a case.
+    ClaimRecord => "CLAIM <record>",
+    Release => "RELEASE",
+    ReleaseAll => "RELEASE ALL",
     Reveal => "REVEAL",
     AddRecipient => "ADD RECIPIENT",
     RemoveRecipient => "REMOVE RECIPIENT",
@@ -70,8 +83,8 @@ forms! {
     AlterUser => "ALTER USER",
     DefineNode => "DEFINE NODE",
     DefineReplica => "DEFINE REPLICA",
-    DefineConsumer => "DEFINE CONSUMER",
-    DropConsumer => "DROP CONSUMER",
+    DefineConsumer => "DEFINE KAFKA CONSUMER",
+    DropConsumer => "DROP KAFKA CONSUMER",
     DropUser => "DROP USER",
     Grant => "GRANT",
     Revoke => "REVOKE",
@@ -80,6 +93,7 @@ forms! {
     DropTable => "DROP TABLE",
     DropIndex => "DROP INDEX",
     RebuildIndex => "REBUILD INDEX",
+    CheckTable => "CHECK TABLE",
     DropField => "DROP FIELD",
     DropAnalyzer => "DROP ANALYZER",
     DropReplica => "DROP REPLICA",
@@ -97,6 +111,7 @@ forms! {
     Throw => "THROW",
     Delete => "DELETE",
     DeleteWhere => "DELETE FROM",
+    DeleteSpan => "DELETE FROM a span",
     Get => "GET",
     Set => "SET",
     Del => "DEL",
@@ -112,6 +127,55 @@ forms! {
     Commit => "COMMIT",
     Cancel => "CANCEL",
     Verify => "VERIFY",
+}
+
+/// Every function the language spells, in its own spelling.
+///
+/// This list is deliberately **not** declared here the way [`FORMS`] is.
+/// `Function::ALL` already exists, and `Function::spelling` is an exhaustive
+/// match, so a function added to the language arrives in this set with no edit
+/// anywhere — which is the property the macro above had to be written to give
+/// the statement forms.
+#[must_use]
+pub fn function_spellings() -> Vec<&'static str> {
+    Function::ALL.iter().map(|f| f.spelling()).collect()
+}
+
+/// The functions that no script in `scripts` calls.
+///
+/// **What this proves, and what it does not.** A call is found by its spelling
+/// followed by an open parenthesis, in the text of a case rather than in its
+/// parsed tree. The statement ratchet above can be exact because a parsed
+/// statement carries its own kind; an expression tree has no equivalent free
+/// answer, and walking twenty-two expression variants and eighty statement
+/// kinds to reach one would be a second parser living in the test crate.
+///
+/// So a case that spelled `string::lower(` inside a string literal would count.
+/// That is acceptable here in a way it would not be against arbitrary input:
+/// the corpora are data written by hand for this purpose, so spelling a call
+/// without making one is a deliberate act rather than the drift this guards
+/// against — a function added to the language and never exercised.
+#[must_use]
+pub fn uncalled_functions(scripts: &[String]) -> Vec<&'static str> {
+    function_spellings()
+        .into_iter()
+        .filter(|spelling| !scripts.iter().any(|script| calls(script, spelling)))
+        .collect()
+}
+
+/// Whether `script` calls `spelling`: the name, then optional spaces, then `(`.
+///
+/// Splitting on the spelling rather than indexing past it is what keeps the
+/// `(` test honest about the boundary — every piece after the first is the text
+/// that followed an occurrence, so `string::trim_start(` cannot answer for
+/// `string::trim`, which is a distinction the corpus actually depended on: the
+/// ratchet found seven uncalled functions where a plain substring search found
+/// four.
+fn calls(script: &str, spelling: &str) -> bool {
+    script
+        .split(spelling)
+        .skip(1)
+        .any(|after| after.trim_start().starts_with('('))
 }
 
 /// The forms a script uses.
@@ -186,9 +250,9 @@ mod tests {
              DEFINE USER u ROLE owner PASSWORD 'x';\
              DEFINE NODE ROLES serving;\
              DEFINE REPLICA second AT 'host:9001';\
-             DEFINE CONSUMER c FROM 'b:9092' TOPIC 't' GROUP 'g' FORMAT json \
+             DEFINE KAFKA CONSUMER c FROM 'b:9092' TOPIC 't' GROUP 'g' FORMAT json \
              INTO t IDENTITY k MAP a AS b ON FAILURE stop;\
-             DROP CONSUMER c;\
+             DROP KAFKA CONSUMER c;\
              DROP USER u;\
              GRANT read ON t TO u;\
              REVOKE read ON t FROM u;\
@@ -204,6 +268,17 @@ mod tests {
              THROW 'no';\
              DELETE t:1;\
              DELETE FROM t WHERE a = 1 LIMIT ALL;\
+             DELETE FROM t:1..2 LIMIT ALL;\
+             DEFINE QUEUE q TIMEOUT 30s ATTEMPTS 5;\
+             CLAIM 2 FROM q;\
+             CLAIM q:7;\
+             RELEASE q:1;\
+             RELEASE ALL FROM q;\
+             DROP QUEUE q;\
+             DEFINE SERIES s RETAIN 12h;\
+             DROP SERIES s;\
+             DEFINE VIEW v AS SELECT * FROM t;\
+             DROP VIEW v;\
              GET s:1;\
              SET s:1 = 1;\
              DEL s:1;\
@@ -212,6 +287,7 @@ mod tests {
              READ b:'/a.txt';\
              BACKUP;\
              EXPLAIN SELECT * FROM t;\
+             CHECK TABLE t;\
              INFO FOR STORE;\
              INFO FOR NODE;\
              ALTER USER u SET ROLE viewer;\

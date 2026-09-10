@@ -23,7 +23,10 @@ mod analyzer;
 mod authority;
 mod change;
 mod consumer;
-mod definition;
+// `pub(crate)` for the counter helpers: `crate::cardinality` stores a record
+// count with the same `count`/`count_of` pair the record sequence uses, so the
+// two per-table numbers are written and read one way rather than two.
+pub(crate) mod definition;
 mod edge_kind;
 mod field;
 mod grant;
@@ -41,9 +44,11 @@ pub use authority::{Authority, Held, Kind, Reach};
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{
-    DatabaseDefinition, EdgeDeclaration, EdgeOrder, GEO_FIELD, IndexDefinition, IndexShape,
-    NamespaceDefinition, RECORD_LEVEL, StoredKind, TableDefinition, TableKind, TableShape,
-    VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance,
+    CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, DatabaseDefinition, EdgeDeclaration, EdgeOrder,
+    GEO_FIELD, IndexDefinition, IndexShape, NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
+    QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, SeriesDeclaration, StoredKind,
+    TableDefinition, TableKind, TableShape, VECTOR_FIELD, VaultDeclaration, VectorDeclaration,
+    VectorDistance, ViewDeclaration,
 };
 pub use edge_kind::EdgeKindDefinition;
 pub use field::{FieldDefinition, FieldShape};
@@ -171,6 +176,15 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
+        // Learned here rather than on the first read, so a table declared in
+        // this process never costs a catalog round trip to recognise. Recorded
+        // before the commit, which is deliberate and harmless: a rolled-back
+        // creation leaves an entry for a table id nothing can address, and ids
+        // are never reused.
+        self.transaction
+            .store()
+            .series()
+            .learn(id, &definition.kind);
         if matches!(definition.kind, TableKind::Edge(_)) {
             // Every edge table gets the endpoint machinery, declared pair or
             // not: what the pair adds is a refusal at the write and an order on
@@ -540,6 +554,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         let Some(definition) = self.table(id)? else {
             return Ok(false);
         };
+        self.transaction.store().series().forget(id);
         let qualified = qualify(
             Level::Table,
             &[definition.namespace.get(), definition.database.get()],
@@ -689,6 +704,35 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         self.transaction
             .put(address, encode_payload(&held).into_bytes());
         Ok(next)
+    }
+
+    /// How many records a table holds, when the store has a count for it.
+    ///
+    /// `None` means no estimate rather than an empty table: the counter is
+    /// written by [`crate::cardinality`] when a record arrives or leaves, so a
+    /// table nothing has written since the store was created has no record
+    /// here. The two are worth telling apart because a planner told "no
+    /// estimate" must fall back to the behaviour it had before counts existed,
+    /// while a planner told "zero" would conclude that every index beats a scan
+    /// of nothing.
+    ///
+    /// It is an **estimate for choosing an access path** and never an answer.
+    /// Nothing that decides which records a statement returns may read it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store cannot be read or the stored count
+    /// cannot be decoded.
+    pub fn record_count(&mut self, table: TableId) -> Result<Option<u64>> {
+        let address = system::address(system::RECORD_COUNTS, RecordId::Int(id_key(table.get())));
+        let Some(bytes) = self.transaction.get(&address)? else {
+            return Ok(None);
+        };
+        Ok(Some(definition::count_of(
+            &decode_payload(&bytes)?,
+            "record count",
+            "held",
+        )?))
     }
 
     /// Refuse early if the name is already resolvable.

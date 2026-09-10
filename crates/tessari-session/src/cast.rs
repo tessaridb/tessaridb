@@ -193,16 +193,32 @@ mod tests {
         read(function, &value, at()).ok()
     }
 
+    /// Compare two answers by their written form rather than by `PartialEq`.
+    ///
+    /// `Value`'s equality equates `Integer(3)`, `Float(3.0)` and
+    /// `Decimal("3.0")` deliberately, and the join relies on it. This module is
+    /// the one place where the kind IS the answer, so an assertion written with
+    /// `assert_eq!` on the values themselves cannot see what `type::int` is for:
+    /// it passes against a cast that answered the other kind, and against one
+    /// that handed the value straight back (Q-76).
+    #[track_caller]
+    fn same(answered: impl core::fmt::Debug, expected: impl core::fmt::Debug) {
+        assert_eq!(format!("{answered:?}"), format!("{expected:?}"));
+    }
+
     #[test]
     fn text_becomes_the_kind_it_spells() {
-        assert_eq!(
+        same(
             cast(Function::TypeInt, Value::from("42")),
-            Some(Value::from(42_i64))
+            Some(Value::from(42_i64)),
         );
         assert_eq!(
             cast(Function::TypeBool, Value::from("true")),
             Some(Value::Bool(true))
         );
+        // Left on `assert_eq!` deliberately: `float` answers through
+        // `Number::float` and nothing else, so the only wrong kind it could
+        // give back is the String it was handed, which equality already sees.
         assert_eq!(
             cast(Function::TypeFloat, Value::from("2.5")),
             Some(Value::Number(Number::float(2.5)))
@@ -237,9 +253,9 @@ mod tests {
             cast(Function::TypeInt, Value::Number(Number::float(2.5))),
             None
         );
-        assert_eq!(
+        same(
             cast(Function::TypeInt, Value::Number(Number::float(2.0))),
-            Some(Value::from(2_i64))
+            Some(Value::from(2_i64)),
         );
     }
 

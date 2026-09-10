@@ -118,9 +118,26 @@ pub(crate) fn get(db: &Db, target: &Target<'_>, tokens: &Tokens, presented: &Pre
     };
     let Some(path) = target.path.clone() else {
         // No path: the request named a bucket, and listing one is a query.
-        let script = format!("{} SELECT * FROM {};", target.tenancy(), target.bucket);
+        //
+        // `INFO FOR BUCKET` runs first because `SELECT` alone cannot tell the
+        // two apart: it succeeds against any table, so listing a name declared
+        // with `DEFINE TABLE` answered `200` with an empty listing and a caller
+        // concluded the bucket was empty rather than absent (Q-261). The other
+        // three routes here already refuse it, because `PUT`, `READ` and
+        // `DELETE` resolve the bucket before they run.
+        //
+        // It is asked as a **statement**, through the same session, rather than
+        // by reaching into the catalog from here — a route that reaches the
+        // store directly is a second permission model, "the kind that is
+        // discovered rather than designed" (ADR-0011 §6).
+        let script = format!(
+            "{} INFO FOR BUCKET {}; SELECT * FROM {};",
+            target.tenancy(),
+            target.bucket,
+            target.bucket,
+        );
         return match session.run_with(&script, &Parameters::new()) {
-            Ok(outcomes) => crate::respond::listing(db, &outcomes),
+            Ok(outcomes) => crate::respond::listing(&outcomes),
             Err(error) => failure(&error),
         };
     };

@@ -227,6 +227,11 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }
         | StatementKind::Del { target }
+        // A release names one record, and a record's identity may be a
+        // parameter wherever a record's identity may be one.
+        | StatementKind::Release { target, .. }
+        // A targeted claim names one record for the same reason a release does.
+        | StatementKind::ClaimRecord { target, .. }
         | StatementKind::Read { target, .. } => bind_target(target, binding),
         StatementKind::Relate {
             from, to, value, ..
@@ -243,6 +248,12 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             bind_target(to, binding)
         }
         StatementKind::DeleteWhere { condition, .. } => bind_expr(condition, binding),
+        StatementKind::DeleteSpan {
+            lower, upper, span, ..
+        } => {
+            bind_identity(lower, *span, binding)?;
+            bind_identity(upper, *span, binding)
+        }
         StatementKind::Keys { range, .. } => match range {
             Some(range) => bind_range(range, binding),
             None => Ok(()),
@@ -258,7 +269,12 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // Everything else names things and holds no values: the definitions, the
         // drops, the grants, the tenancy statements, the point reads and the
         // transaction words.
-        StatementKind::Use { .. }
+        // A consumer name is a literal the statement wrote, never a
+        // parameter: it selects for the session rather than naming data, and a
+        // caller that could bind it could change who a session is from outside
+        // the script that declared it.
+        StatementKind::ReleaseAll { .. }
+        | StatementKind::Use { .. }
         | StatementKind::DefineNamespace { .. }
         | StatementKind::DefineDatabase { .. }
         | StatementKind::DefineTable { .. }
@@ -271,6 +287,23 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::DropGeo { .. }
         | StatementKind::DefineVault { .. }
         | StatementKind::DropVault { .. }
+        // `DEFINE QUEUE`'s timeout is a literal duration and its ceiling a
+        // literal number, for the reason the query timeout's is: a budget a
+        // bound value could set is a budget a caller could raise. `CLAIM` names
+        // a table and a count, and neither is an expression.
+        | StatementKind::DefineQueue { .. }
+        | StatementKind::DropQueue { .. }
+        // A series carries a literal duration, on the same rule and for the same
+        // reason: a floor a bound value could set is a floor a caller could move.
+        | StatementKind::DefineSeries { .. }
+        | StatementKind::DropSeries { .. }
+        // A view holds a read as text, and a parameter substituted into stored
+        // text would be bound once at definition and then frozen — which is a
+        // different feature from a view (a parameterised view is a function) and
+        // would look like this one until somebody changed the binding.
+        | StatementKind::DefineView { .. }
+        | StatementKind::DropView { .. }
+        | StatementKind::Claim { .. }
         // `UNSEAL` takes a string literal and never a parameter, so there is
         // nothing here to substitute into. That is the grammar's decision and
         // this arm is where it shows: a passphrase that could arrive as `$p`
@@ -321,6 +354,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // follows, arriving under the other spelling.
         | StatementKind::AlterField { .. }
         | StatementKind::RebuildIndex { .. }
+        | StatementKind::CheckTable { .. }
         | StatementKind::Backup { .. }
         // A subject is a name and never a value. `INFO FOR TABLE $t` would be a
         // parameter supplying a *table*, which is refused everywhere else in
@@ -335,7 +369,18 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
 
 /// A record target's **id** may be supplied; its table may not.
 fn bind_target(target: &mut RecordTarget, binding: &Binding<'_>) -> Result<()> {
-    let Identity::Parameter(name) = &target.id else {
+    let at = target.span;
+    bind_identity(&mut target.id, at, binding)
+}
+
+/// One identity, wherever it stands.
+///
+/// Pulled out of [`bind_target`] rather than copied when `Source::Range` needed
+/// the same thing at both ends of a span: two copies of a value-to-identity
+/// conversion is two lists of which kinds may name a record, and the second one
+/// goes out of step the first time a kind is added.
+fn bind_identity(id: &mut Identity, at: Span, binding: &Binding<'_>) -> Result<()> {
+    let Identity::Parameter(name) = &*id else {
         return Ok(());
     };
     if binding.deferred.contains(name.as_str()) {
@@ -347,10 +392,10 @@ fn bind_target(target: &mut RecordTarget, binding: &Binding<'_>) -> Result<()> {
         }
         return Err(Error::UnboundParameter {
             name: name.clone(),
-            span: target.span,
+            span: at,
         });
     };
-    let id = match value {
+    let held = match value {
         Value::Number(Number::Integer(held)) => RecordId::Int(*held),
         Value::String(text) => RecordId::Text(text.clone()),
         Value::Uuid(bytes) => RecordId::Uuid(*bytes),
@@ -362,11 +407,11 @@ fn bind_target(target: &mut RecordTarget, binding: &Binding<'_>) -> Result<()> {
             return Err(Error::NotARecordIdentity {
                 name: name.clone(),
                 found: other.type_name(),
-                span: target.span,
+                span: at,
             });
         }
     };
-    target.id = Identity::Fixed(id);
+    *id = Identity::Fixed(held);
     Ok(())
 }
 
@@ -389,6 +434,14 @@ fn bind_select(select: &mut Select, binding: &Binding<'_>) -> Result<()> {
     }
     match &mut select.from {
         Source::Record(target) => bind_target(target, binding)?,
+        // Both ends, because either may be a parameter: `FROM events:$from..$to`
+        // is how a window arrives from a caller rather than from a literal.
+        Source::Range {
+            lower, upper, span, ..
+        } => {
+            bind_identity(lower, *span, binding)?;
+            bind_identity(upper, *span, binding)?;
+        }
         Source::Traverse { from, .. } => bind_target(from, binding)?,
         Source::Where { condition, .. } => bind_expr(condition, binding)?,
         Source::Join {

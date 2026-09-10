@@ -137,6 +137,28 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
     /// Read a range of keys.
     fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>>;
 
+    /// Read a range of keys **once**, without keeping what it reads.
+    ///
+    /// Answers exactly what [`Self::scan`] answers. The difference is what the
+    /// backend does with the blocks afterwards, and it matters for the reads
+    /// that walk a whole table to check or rebuild something — an index build,
+    /// the retroactive tightening pass, `CHECK TABLE`. Those touch every block
+    /// once and will never ask for any of them again, so a cache that keeps them
+    /// has evicted the working set the store is actually serving in order to
+    /// hold data with no second reader. Serving latency then degrades for
+    /// minutes after the statement has returned, with nothing to point at.
+    ///
+    /// The default is [`Self::scan`], which is right for any backend with no
+    /// cache to spoil.
+    ///
+    /// It is a method rather than a field on [`ScanRequest`] for a reason worth
+    /// recording: the request is built by struct literal at 47 sites, 43 of
+    /// which have nothing to do with sweeps, and a new field would have made
+    /// every one of them state a value it does not care about.
+    fn sweep(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
+        self.scan(request)
+    }
+
     /// The first pair of each of several ranges, in one ask.
     ///
     /// Returns one entry per range, in the order the ranges were given: the

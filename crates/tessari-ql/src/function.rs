@@ -3,10 +3,16 @@
 //! # What earns a place
 //!
 //! **A function is here when it cannot be expressed by what the language already
-//! has.** That is why there is no `array::contains` (`CONTAINS` says it), no
-//! `string::contains` (`LIKE '%x%'` says it), and no `is_none` (`= NONE` says
-//! it). The rule keeps the surface from growing by association and gives a
-//! reviewer one question to ask about any addition.
+//! has.** That is why there is no `array::contains` (`CONTAINS` says it) and no
+//! `is_none` (`= NONE` says it). The rule keeps the surface from growing by
+//! association and gives a reviewer one question to ask about any addition.
+//!
+//! `string::contains` was refused on the same grounds — `LIKE '%x%'` says it —
+//! and that holds for a **literal** needle only. A needle arriving as a value
+//! may carry `%` or `_`, and the escape that would fix it cannot be applied to
+//! text the statement has never seen, so the function was admitted and the
+//! specification records the reversal. This paragraph stands where the refusal
+//! did, because the refusal outlived the decision that reversed it.
 //!
 //! `array::last` is the clearest case for the rule rather than against it: a
 //! path takes a literal position, and there is no length to subtract from, so
@@ -241,142 +247,272 @@ pub enum Function {
     /// `crypto::sha512(text)` — the same, as a hundred and twenty-eight
     /// lowercase hexadecimal characters.
     CryptoSha512,
+    /// `crypto::md5(text)` — the MD5 digest, as thirty-two lowercase
+    /// hexadecimal characters.
+    ///
+    /// **A checksum, and broken as anything else.** Collisions in MD5 are
+    /// producible on a laptop, so it must never decide whether two things are
+    /// the same when somebody might want them to appear so. It is in the
+    /// language because a store interoperates: an ETag, a legacy row key, a
+    /// content id computed by something older than this database. Refusing to
+    /// spell it would not make any of those safer — it would make them
+    /// unreachable from here, which sends the caller to a place with no grant
+    /// check at all.
+    ///
+    /// Everything [`Self::CryptoSha256`] says about text in, text out and about
+    /// passwords holds here unchanged.
+    CryptoMd5,
+    /// `crypto::sha1(text)` — the SHA-1 digest, as forty lowercase hexadecimal
+    /// characters.
+    ///
+    /// A checksum on the same terms as [`Self::CryptoMd5`]: collisions have
+    /// been produced, so it decides nothing an adversary has an interest in,
+    /// and it exists because git object ids, older ETags and a great deal of
+    /// installed software speak it.
+    CryptoSha1,
+    /// `encoding::base64(bytes)` — the bytes as standard base64 text, padded.
+    ///
+    /// RFC 4648 §4 with the `+/` alphabet and `=` padding, which is what a
+    /// caller pasting the result into anything else will be understood to mean.
+    /// The URL-safe alphabet is a different function and is not written until
+    /// somebody needs it.
+    EncodingBase64,
+    /// `encoding::base64_decode(text)` — the bytes that text encodes, or `NONE`
+    /// when it encodes none.
+    ///
+    /// `NONE` rather than a refusal, and for the reason every cast answers that
+    /// way: this is a question about a **value**, not about a kind, and a table
+    /// holding one unparseable row should narrow rather than become unreadable.
+    EncodingBase64Decode,
+    /// `encoding::hex(bytes)` — the bytes as lowercase hexadecimal text.
+    EncodingHex,
+    /// `encoding::hex_decode(text)` — the bytes that text spells, or `NONE`.
+    ///
+    /// Either case of letter is read; an odd number of characters or anything
+    /// outside `0-9a-fA-F` answers `NONE`, on [`Self::EncodingBase64Decode`]'s
+    /// reading.
+    EncodingHexDecode,
+    /// `string::starts_with(text, prefix)`
+    ///
+    /// Not a spelling of `LIKE`, and that is the point: a `LIKE` pattern is a
+    /// pattern, so a prefix holding `%` or `_` cannot be written as one without
+    /// escaping it — and a caller who forgets quietly matches more than they
+    /// meant. This takes a **value**.
+    StringStartsWith,
+    /// `string::ends_with(text, suffix)` — [`Self::StringStartsWith`]'s other end.
+    StringEndsWith,
+    /// `string::contains(text, needle)` — anywhere in the text.
+    ///
+    /// The `CONTAINS` operator is about an array holding a value; this is about
+    /// text holding text, and they are different questions that would be one
+    /// word if this were spelled as an operator.
+    StringContains,
+    /// `string::index_of(text, needle)` — where it first occurs, counted in
+    /// characters, or `NONE`.
+    ///
+    /// `NONE` and never `-1`. A sentinel that is also a number travels through
+    /// arithmetic and an ordering as though it meant something.
+    StringIndexOf,
+    /// `string::reverse(text)` — the characters back to front.
+    ///
+    /// Characters, as [`Self::StringLen`] counts them. Reversing the bytes of
+    /// UTF-8 does not produce text.
+    StringReverse,
+    /// `string::trim_start(text)` — whitespace from the front only.
+    StringTrimStart,
+    /// `string::trim_end(text)` — whitespace from the end only.
+    StringTrimEnd,
+    /// `math::min(a, b)` — the smaller of two numbers.
+    ///
+    /// Two numbers, not an array and not a column: `min` over rows is an
+    /// aggregate and already exists, and confusing the two is how a projection
+    /// silently folds a table.
+    MathMin,
+    /// `math::max(a, b)` — the larger, on [`Self::MathMin`]'s terms.
+    MathMax,
+    /// `math::sign(number)` — `-1`, `0` or `1`.
+    MathSign,
+    /// `math::trunc(number)` — the whole part, toward zero.
+    ///
+    /// Distinct from [`Self::MathFloor`] for negatives, which is the only place
+    /// the two differ and the only place anybody is surprised.
+    MathTrunc,
+    /// `math::ln(number)` — the natural logarithm, or `NONE` at zero and below.
+    ///
+    /// `NONE` rather than `-∞` or a NaN, on [`Self::MathSqrt`]'s reading: a
+    /// value that compares false against everything travels through a filter
+    /// and an ordering without saying anything.
+    MathLn,
+    /// `math::exp(number)` — `e` raised to it.
+    MathExp,
+    /// `array::concat(a, b)` — one array holding both, in order.
+    ArrayConcat,
+    /// `array::append(items, value)` — the array with one more value at the end.
+    ///
+    /// Separate from [`Self::ArrayConcat`] because appending an **array** and
+    /// appending *to* an array are different intentions, and one function doing
+    /// both decides which by inspecting the argument's kind — which is how a
+    /// caller appending a genuine array of two ends up with two elements.
+    ArrayAppend,
+    /// `array::index_of(items, value)` — the first position holding it, or
+    /// `NONE`, on [`Self::StringIndexOf`]'s reading.
+    ArrayIndexOf,
+    /// `array::min(items)` — the smallest, in the value system's order, or
+    /// `NONE` over nothing.
+    ///
+    /// This folds **one array in one record**. The `min` aggregate folds a
+    /// column across records. Both are wanted and neither can be written as the
+    /// other.
+    ArrayMin,
+    /// `array::max(items)` — the largest, on [`Self::ArrayMin`]'s terms.
+    ArrayMax,
+    /// `array::sum(items)` — the numbers added; over nothing, zero.
+    ///
+    /// Zero over an empty array, which is what the `sum` aggregate answers over
+    /// no rows, so the two agree where they meet.
+    ArraySum,
+    /// `object::entries(o)` — one two-element array per field, name first.
+    ///
+    /// The inverse of reading [`Self::ObjectKeys`] and [`Self::ObjectValues`]
+    /// separately, which the language could not zip back together.
+    ObjectEntries,
+    /// `object::has(o, name)` — whether the field is there at all.
+    ///
+    /// Different from comparing the field against `NONE`: a field explicitly
+    /// holding `none` is present, and this is the only way to tell the two
+    /// apart.
+    ObjectHas,
+    /// `object::merge(a, b)` — both objects' fields, `b` winning a collision.
+    ObjectMerge,
+}
+
+/// The functions, declared once.
+///
+/// Expands to [`Function::ALL`] and to the exhaustive match in
+/// [`Function::spelling`], from one set of rows. A variant missing from the rows
+/// fails that match's exhaustiveness check, which is a compile error — and that
+/// is the whole of what this macro is for.
+///
+/// `ALL` used to be a hand-written list *beside* the match, which is two
+/// declarations of one table with the compiler checking one of them. Every
+/// function ratchet iterates `ALL` — the two purity memberships, the
+/// classification sweep, the cast vocabulary, the corpus coverage in
+/// `tessari-conformance` and the documentation coverage — so a variant absent
+/// from it was outside all of their universes at once rather than merely
+/// unchecked by them. And [`Function::parse`] searches `ALL`, so the function
+/// would not have been parseable either: the language would have refused a
+/// correctly written call to a function it has.
+///
+/// The same repair for the same reason is `tessari-conformance`'s `forms!`,
+/// where seven statement forms had already drifted through the gap before it
+/// was closed.
+macro_rules! functions {
+    ($($variant:ident => $spelling:literal),+ $(,)?) => {
+        /// Every function, so that a listing cannot drift from the set.
+        pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+        /// How the function is written, group and name together.
+        #[must_use]
+        pub const fn spelling(self) -> &'static str {
+            match self {
+                $(Self::$variant => $spelling,)+
+            }
+        }
+    };
 }
 
 impl Function {
-    /// Every function, so that a listing cannot drift from the set.
-    pub const ALL: &'static [Self] = &[
-        Self::StringLen,
-        Self::StringLower,
-        Self::StringUpper,
-        Self::StringTrim,
-        Self::StringConcat,
-        Self::StringSplit,
-        Self::StringSlice,
-        Self::StringLines,
-        Self::StringReplace,
-        Self::MathSqrt,
-        Self::MathPow,
-        Self::ArrayLen,
-        Self::ArrayFirst,
-        Self::ArrayLast,
-        Self::ObjectKeys,
-        Self::ObjectValues,
-        Self::ObjectLen,
-        Self::ArrayDistinct,
-        Self::ArraySort,
-        Self::ArrayReverse,
-        Self::ArrayFlatten,
-        Self::ArrayJoin,
-        Self::ArraySlice,
-        Self::MathAbs,
-        Self::MathFloor,
-        Self::MathCeil,
-        Self::MathRound,
-        Self::TimeNow,
-        Self::TimeYear,
-        Self::TimeMonth,
-        Self::TimeDay,
-        Self::TimeHour,
-        Self::TimeMinute,
-        Self::TimeSecond,
-        Self::TimeUnix,
-        Self::TimeFromUnix,
-        Self::RandUuid,
-        Self::TypeOf,
-        Self::TypeBool,
-        Self::TypeInt,
-        Self::TypeFloat,
-        Self::TypeString,
-        Self::TypeDatetime,
-        Self::TypeUuid,
-        Self::VectorCosine,
-        Self::VectorEuclidean,
-        Self::VectorDot,
-        Self::SearchScore,
-        Self::SearchHighlight,
-        Self::TimeBucket,
-        Self::GeoIntersects,
-        Self::GeoDisjoint,
-        Self::GeoCovers,
-        Self::GeoCoveredBy,
-        Self::GeoContains,
-        Self::GeoWithin,
-        Self::GeoEquals,
-        Self::GeoTouches,
-        Self::GeoDistance,
-        Self::GeoArea,
-        Self::CryptoSha256,
-        Self::CryptoSha512,
-    ];
-
-    /// How the function is written, group and name together.
-    #[must_use]
-    pub const fn spelling(self) -> &'static str {
-        match self {
-            Self::StringLen => "string::len",
-            Self::StringLower => "string::lower",
-            Self::StringUpper => "string::upper",
-            Self::StringTrim => "string::trim",
-            Self::StringConcat => "string::concat",
-            Self::StringSplit => "string::split",
-            Self::StringSlice => "string::slice",
-            Self::StringLines => "string::lines",
-            Self::StringReplace => "string::replace",
-            Self::MathSqrt => "math::sqrt",
-            Self::MathPow => "math::pow",
-            Self::ArrayLen => "array::len",
-            Self::ArrayFirst => "array::first",
-            Self::ArrayLast => "array::last",
-            Self::ObjectKeys => "object::keys",
-            Self::ObjectValues => "object::values",
-            Self::ObjectLen => "object::len",
-            Self::ArrayDistinct => "array::distinct",
-            Self::ArraySort => "array::sort",
-            Self::ArrayReverse => "array::reverse",
-            Self::ArrayFlatten => "array::flatten",
-            Self::ArrayJoin => "array::join",
-            Self::ArraySlice => "array::slice",
-            Self::MathAbs => "math::abs",
-            Self::MathFloor => "math::floor",
-            Self::MathCeil => "math::ceil",
-            Self::MathRound => "math::round",
-            Self::TimeNow => "time::now",
-            Self::TimeYear => "time::year",
-            Self::TimeMonth => "time::month",
-            Self::TimeDay => "time::day",
-            Self::TimeHour => "time::hour",
-            Self::TimeMinute => "time::minute",
-            Self::TimeSecond => "time::second",
-            Self::TimeUnix => "time::unix",
-            Self::TimeFromUnix => "time::from_unix",
-            Self::RandUuid => "rand::uuid",
-            Self::TypeOf => "type::of",
-            Self::TypeBool => "type::bool",
-            Self::TypeInt => "type::int",
-            Self::TypeFloat => "type::float",
-            Self::TypeString => "type::string",
-            Self::TypeDatetime => "type::datetime",
-            Self::TypeUuid => "type::uuid",
-            Self::VectorCosine => "vector::cosine",
-            Self::VectorEuclidean => "vector::euclidean",
-            Self::VectorDot => "vector::dot",
-            Self::SearchScore => "search::score",
-            Self::SearchHighlight => "search::highlight",
-            Self::TimeBucket => "time::bucket",
-            Self::GeoIntersects => "geo::intersects",
-            Self::GeoDisjoint => "geo::disjoint",
-            Self::GeoCovers => "geo::covers",
-            Self::GeoCoveredBy => "geo::covered_by",
-            Self::GeoContains => "geo::contains",
-            Self::GeoWithin => "geo::within",
-            Self::GeoEquals => "geo::equals",
-            Self::GeoTouches => "geo::touches",
-            Self::GeoDistance => "geo::distance",
-            Self::GeoArea => "geo::area",
-            Self::CryptoSha256 => "crypto::sha256",
-            Self::CryptoSha512 => "crypto::sha512",
-        }
+    functions! {
+        StringLen => "string::len",
+        StringLower => "string::lower",
+        StringUpper => "string::upper",
+        StringTrim => "string::trim",
+        StringConcat => "string::concat",
+        StringSplit => "string::split",
+        StringSlice => "string::slice",
+        StringLines => "string::lines",
+        StringReplace => "string::replace",
+        MathSqrt => "math::sqrt",
+        MathPow => "math::pow",
+        ArrayLen => "array::len",
+        ArrayFirst => "array::first",
+        ArrayLast => "array::last",
+        ObjectKeys => "object::keys",
+        ObjectValues => "object::values",
+        ObjectLen => "object::len",
+        ArrayDistinct => "array::distinct",
+        ArraySort => "array::sort",
+        ArrayReverse => "array::reverse",
+        ArrayFlatten => "array::flatten",
+        ArrayJoin => "array::join",
+        ArraySlice => "array::slice",
+        MathAbs => "math::abs",
+        MathFloor => "math::floor",
+        MathCeil => "math::ceil",
+        MathRound => "math::round",
+        TimeNow => "time::now",
+        TimeYear => "time::year",
+        TimeMonth => "time::month",
+        TimeDay => "time::day",
+        TimeHour => "time::hour",
+        TimeMinute => "time::minute",
+        TimeSecond => "time::second",
+        TimeUnix => "time::unix",
+        TimeFromUnix => "time::from_unix",
+        RandUuid => "rand::uuid",
+        TypeOf => "type::of",
+        TypeBool => "type::bool",
+        TypeInt => "type::int",
+        TypeFloat => "type::float",
+        TypeString => "type::string",
+        TypeDatetime => "type::datetime",
+        TypeUuid => "type::uuid",
+        VectorCosine => "vector::cosine",
+        VectorEuclidean => "vector::euclidean",
+        VectorDot => "vector::dot",
+        SearchScore => "search::score",
+        SearchHighlight => "search::highlight",
+        TimeBucket => "time::bucket",
+        GeoIntersects => "geo::intersects",
+        GeoDisjoint => "geo::disjoint",
+        GeoCovers => "geo::covers",
+        GeoCoveredBy => "geo::covered_by",
+        GeoContains => "geo::contains",
+        GeoWithin => "geo::within",
+        GeoEquals => "geo::equals",
+        GeoTouches => "geo::touches",
+        GeoDistance => "geo::distance",
+        GeoArea => "geo::area",
+        CryptoSha256 => "crypto::sha256",
+        CryptoSha512 => "crypto::sha512",
+        CryptoMd5 => "crypto::md5",
+        CryptoSha1 => "crypto::sha1",
+        EncodingBase64 => "encoding::base64",
+        EncodingBase64Decode => "encoding::base64_decode",
+        EncodingHex => "encoding::hex",
+        EncodingHexDecode => "encoding::hex_decode",
+        StringStartsWith => "string::starts_with",
+        StringEndsWith => "string::ends_with",
+        StringContains => "string::contains",
+        StringIndexOf => "string::index_of",
+        StringReverse => "string::reverse",
+        StringTrimStart => "string::trim_start",
+        StringTrimEnd => "string::trim_end",
+        MathMin => "math::min",
+        MathMax => "math::max",
+        MathSign => "math::sign",
+        MathTrunc => "math::trunc",
+        MathLn => "math::ln",
+        MathExp => "math::exp",
+        ArrayConcat => "array::concat",
+        ArrayAppend => "array::append",
+        ArrayIndexOf => "array::index_of",
+        ArrayMin => "array::min",
+        ArrayMax => "array::max",
+        ArraySum => "array::sum",
+        ObjectEntries => "object::entries",
+        ObjectHas => "object::has",
+        ObjectMerge => "object::merge",
     }
 
     /// How many arguments it takes.
@@ -433,6 +569,23 @@ impl Function {
             | Self::GeoArea
             | Self::CryptoSha256
             | Self::SearchHighlight
+            | Self::CryptoMd5
+            | Self::CryptoSha1
+            | Self::EncodingBase64
+            | Self::EncodingBase64Decode
+            | Self::EncodingHex
+            | Self::EncodingHexDecode
+            | Self::StringReverse
+            | Self::StringTrimStart
+            | Self::StringTrimEnd
+            | Self::MathSign
+            | Self::MathTrunc
+            | Self::MathLn
+            | Self::MathExp
+            | Self::ArrayMin
+            | Self::ArrayMax
+            | Self::ArraySum
+            | Self::ObjectEntries
             | Self::CryptoSha512 => 1,
             Self::StringConcat
             | Self::StringSplit
@@ -451,6 +604,17 @@ impl Function {
             | Self::GeoWithin
             | Self::GeoEquals
             | Self::GeoTouches
+            | Self::StringStartsWith
+            | Self::StringEndsWith
+            | Self::StringContains
+            | Self::StringIndexOf
+            | Self::MathMin
+            | Self::MathMax
+            | Self::ArrayConcat
+            | Self::ArrayAppend
+            | Self::ArrayIndexOf
+            | Self::ObjectHas
+            | Self::ObjectMerge
             | Self::GeoDistance => 2,
             Self::ArraySlice | Self::StringSlice | Self::StringLines | Self::StringReplace => 3,
         }
@@ -540,6 +704,34 @@ impl Function {
             | Self::GeoArea
             | Self::CryptoSha256
             | Self::SearchHighlight
+            | Self::CryptoMd5
+            | Self::CryptoSha1
+            | Self::EncodingBase64
+            | Self::EncodingBase64Decode
+            | Self::EncodingHex
+            | Self::EncodingHexDecode
+            | Self::StringStartsWith
+            | Self::StringEndsWith
+            | Self::StringContains
+            | Self::StringIndexOf
+            | Self::StringReverse
+            | Self::StringTrimStart
+            | Self::StringTrimEnd
+            | Self::MathMin
+            | Self::MathMax
+            | Self::MathSign
+            | Self::MathTrunc
+            | Self::MathLn
+            | Self::MathExp
+            | Self::ArrayConcat
+            | Self::ArrayAppend
+            | Self::ArrayIndexOf
+            | Self::ArrayMin
+            | Self::ArrayMax
+            | Self::ArraySum
+            | Self::ObjectEntries
+            | Self::ObjectHas
+            | Self::ObjectMerge
             | Self::CryptoSha512 => Purity::Pure,
         }
     }

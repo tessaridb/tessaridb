@@ -470,18 +470,44 @@ pub(crate) fn backup(
     }
 }
 
-/// A bucket's listing, as the records it answered with.
-pub(crate) fn listing(db: &Db, outcomes: &[Outcome]) -> Answer {
-    let Some(outcome) = outcomes.last() else {
-        return Answer::new(200, r#"{"files":[]}"#.to_owned());
-    };
-    let referenced = match outcome {
-        Outcome::Records { records, .. } => records.clone(),
-        _ => Vec::new(),
-    };
-    let names = db.names_in(&referenced).unwrap_or_default();
+/// A bucket's listing: what the files are, and nothing about how they were
+/// found.
+///
+/// This used to hand back the raw statement result wrapped in a key, which
+/// published `plan.access`, `plan.table`, `kind` and `path` — planner internals
+/// — plus `chunks`, a storage detail (Q-260). A public route's body is a
+/// contract in every language a client is written in, so changing the planner
+/// would then have broken clients that never asked about it.
+///
+/// A file listing wants a name, a size and a modification time, and the records
+/// already carry exactly those three. A record missing one of them contributes
+/// the keys it has rather than a null: the caller asked what is in the bucket,
+/// and a key that is absent says the store never recorded it.
+pub(crate) fn listing(outcomes: &[Outcome]) -> Answer {
+    let records = outcomes
+        .last()
+        .and_then(Outcome::records)
+        .unwrap_or_default();
+    let names = json::Names::new();
     let mut body = String::from(r#"{"files":["#);
-    encode(&mut body, outcome, &names);
+    for (position, (id, held)) in records.iter().enumerate() {
+        if position > 0 {
+            body.push(',');
+        }
+        body.push_str(r#"{"path":"#);
+        json::string(&mut body, &id.to_string());
+        if let tessaridb::Value::Object(fields) = held {
+            for key in ["size", "updated"] {
+                if let Some(value) = fields.get(key).filter(|value| value.is_present()) {
+                    body.push(',');
+                    json::string(&mut body, key);
+                    body.push(':');
+                    json::write(&mut body, value, &names);
+                }
+            }
+        }
+        body.push('}');
+    }
     body.push_str("]}");
     Answer::new(200, body)
 }
@@ -766,6 +792,9 @@ pub(crate) fn failure(error: &Error) -> Answer {
     body.push('}');
     Answer::new(status, body)
 }
+
+#[cfg(test)]
+mod corpus;
 
 #[cfg(test)]
 mod tests {

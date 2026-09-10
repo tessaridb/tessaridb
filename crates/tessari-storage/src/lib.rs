@@ -23,9 +23,11 @@
 
 mod adjacency;
 mod audit;
+mod cardinality;
 mod catalog;
 mod covering;
 mod error;
+mod expiry;
 mod feed;
 mod graph;
 mod index;
@@ -35,23 +37,27 @@ mod reclaim;
 mod running;
 mod schema;
 mod sealing;
+mod series;
 mod snapshots;
 mod store;
 mod transaction;
 mod vault;
 
 pub use catalog::{
-    AnalyzerDefinition, Authority, Catalog, ConsumerDefinition, DatabaseDefinition, EDGE_IN,
-    EDGE_OUT, EdgeDeclaration, EdgeKindDefinition, EdgeOrder, FieldDefinition, FieldShape,
-    GEO_FIELD, GrantDefinition, GraphDefinition, Held, IndexDefinition, IndexShape, Kind, Mapped,
-    NamespaceDefinition, OnFailure, RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE,
-    SYSTEM_NAMESPACE, StoredKind, TableDefinition, TableKind, TableShape, UserDefinition,
-    VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance, Verb,
+    AnalyzerDefinition, Authority, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
+    ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition,
+    EdgeOrder, FieldDefinition, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition, Held,
+    IndexDefinition, IndexShape, Kind, Mapped, NamespaceDefinition, OnFailure, QUEUE_ATTEMPTS,
+    QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach,
+    ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE, SeriesDeclaration, StoredKind,
+    TableDefinition, TableKind, TableShape, UserDefinition, VECTOR_FIELD, VaultDeclaration,
+    VectorDeclaration, VectorDistance, Verb, ViewDeclaration,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
 pub use catalog::VaultRoot;
 pub use covering::MEASURED_RELATION;
+pub use expiry::Expired;
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
 pub use audit::{AuditDevice, AuditTrail, VaultRead, entries as audit_entries, reads_by};
@@ -60,6 +66,7 @@ pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use graph::vector_of;
 pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
+pub use schema::{Violation, violations};
 pub use sealing::{
     KEYS_FIELD, VAULT_RECIPIENT, add_recipient, initialise_root, mint_vault_key, open_data_key,
     open_field, recipients, remove_recipient, reseal_named, seal_secrets, vault_key_scope,

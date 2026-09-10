@@ -18,6 +18,7 @@ counting = []
 [dependencies]
 tessaridb.workspace = true
 tessari-backup.workspace = true
+tessari-storage.workspace = true
 tessari-types.workspace = true
 
 [lints]

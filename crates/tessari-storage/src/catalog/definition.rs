@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 
 use tessari_types::{
-    DatabaseId, GraphId, IdentityKind, IndexId, NamespaceId, Number, Path, TableId, Value,
+    DatabaseId, Duration, GraphId, IdentityKind, IndexId, NamespaceId, Number, Path, TableId, Value,
 };
 
 use tessari_vault::{KeyId, Wrapped};
@@ -46,6 +46,13 @@ const FIELD_DESCENDING: &str = "descending";
 const FIELD_IDENTITY: &str = "identity";
 const FIELD_GRAPH: &str = "graph";
 const FIELD_CEILING: &str = "ceiling";
+const FIELD_QUEUE: &str = "queue";
+const FIELD_VIEW: &str = "view";
+const FIELD_READ: &str = "read";
+const FIELD_TIMEOUT: &str = "timeout";
+const FIELD_ATTEMPTS: &str = "attempts";
+const FIELD_SERIES: &str = "series";
+const FIELD_RETAIN: &str = "retain";
 const FIELD_DIMENSION: &str = "dimension";
 const FIELD_DISTANCE: &str = "distance";
 
@@ -153,10 +160,32 @@ impl TableDefinition {
     /// down somewhere, because the survey that preceded this feature found that
     /// **no** generic read path in this store consults the table kind at all —
     /// so each refusal is a place that had to be given the question, and a
+    /// The read this table stands for, when it is a view.
+    ///
+    /// `None` for every other kind, which is what lets a caller ask the question
+    /// without first asking what kind it is.
+    #[must_use]
+    pub fn view_read(&self) -> Option<&str> {
+        match &self.kind {
+            TableKind::View(declared) => Some(declared.read.as_str()),
+            _ => None,
+        }
+    }
+
     /// question spelled the same way everywhere is one a reviewer can find.
     #[must_use]
     pub fn is_vault(&self) -> bool {
         matches!(self.kind, TableKind::Vault(_))
+    }
+
+    /// Whether this table is a queue.
+    ///
+    /// Asked for the same reason [`Self::is_vault`] is asked: three of a
+    /// queue's fields are written by the engine after a caller's record has been
+    /// validated, so strictness has to know the kind before it can excuse them.
+    #[must_use]
+    pub fn is_queue(&self) -> bool {
+        matches!(self.kind, TableKind::Queue(_))
     }
 
     /// The vault's key, sealed under the store's master key.
@@ -324,6 +353,39 @@ impl TableDefinition {
         if let TableKind::Bucket(Some(max)) = self.kind {
             fields.insert(FIELD_CEILING.to_owned(), byte_count(max));
         }
+        // A queue is carried by its declaration for the reason a vector store
+        // and a vault are: a queue with no timeout is not a queue with a missing
+        // property, it is a table whose holds would never lapse. The downgrade
+        // case is milder than the vault's and is still worth stating: a build
+        // that predates queues finds no flag and no declaration and reads this
+        // entry as a plain **table**, so the records are readable, the claim
+        // fields are ordinary fields, and every refusal the word carries is
+        // gone — the same shape of loss, without the confidentiality.
+        if let TableKind::Queue(declared) = &self.kind {
+            fields.insert(FIELD_QUEUE.to_owned(), declared.to_value());
+        }
+        // A view is carried by its read for the reason a queue is carried by its
+        // timeout. Its downgrade case is the **sharpest of the three** and is
+        // worth stating plainly: a build that predates views finds no flag and
+        // no declaration and reads this entry as a plain table — one whose
+        // keyspace is empty. So `SELECT` answers **nothing** rather than the
+        // view's records, which is a wrong answer and not a lost refusal, and
+        // `CREATE` succeeds and writes records into a prefix this build will
+        // never read. Opening a store holding views with an older binary is a
+        // downgrade with data consequences.
+        if let TableKind::View(declared) = &self.kind {
+            fields.insert(FIELD_VIEW.to_owned(), declared.to_value());
+        }
+        // A series is carried by its retention for the reason a queue is carried
+        // by its timeout. Its downgrade case is the mildest of the four and is
+        // still worth stating: a build that predates the kind finds no flag and
+        // no declaration and reads this entry as a plain table, so every record
+        // is readable — including the ones past the floor, which this build
+        // hides. The loss is a refusal rather than an answer, the queue's shape
+        // and not the view's.
+        if let TableKind::Series(declared) = &self.kind {
+            fields.insert(FIELD_SERIES.to_owned(), declared.to_value());
+        }
         Value::Object(fields)
     }
 
@@ -360,6 +422,18 @@ impl TableDefinition {
                 },
                 vault: match fields.get(FIELD_VAULT) {
                     Some(value) => Some(VaultDeclaration::from_value(value)?),
+                    None => None,
+                },
+                queue: match fields.get(FIELD_QUEUE) {
+                    Some(value) => Some(QueueDeclaration::from_value(value)?),
+                    None => None,
+                },
+                view: match fields.get(FIELD_VIEW) {
+                    Some(value) => Some(ViewDeclaration::from_value(value)?),
+                    None => None,
+                },
+                series: match fields.get(FIELD_SERIES) {
+                    Some(value) => Some(SeriesDeclaration::from_value(value)?),
                     None => None,
                 },
                 ceiling: ceiling(fields)?,
@@ -521,7 +595,220 @@ pub enum TableKind {
     /// the only deletion claim a store like this can honestly make, since a row
     /// delete is a statement about the live table and not about the data.
     Vault(VaultDeclaration),
+    /// Work waiting to be done, handed out under a hold that lapses — `DEFINE
+    /// QUEUE`.
+    ///
+    /// The hold is not a lease and there is no lease manager, deliberately. A
+    /// claim is an ordinary **write**, so it is sequenced into the log and
+    /// replicated by the mechanism every other write uses; the instant it lapses
+    /// is computed once by the session that takes it and **written into the
+    /// record**, the same rule `time::now()` already follows so that a replica
+    /// applies what was written rather than asking its own clock; and expiry is
+    /// a comparison a later reader performs rather than an event anything
+    /// raises. Those three together are why the queue holds no state outside the
+    /// log and therefore asks nothing of a cluster that an ordinary write does
+    /// not already ask.
+    ///
+    /// It carries its declaration for the reason [`TableKind::Vector`] does: a
+    /// timeout in a field beside the kind would make "carries a timeout but is
+    /// not a queue" representable, which is the state this type abolishes.
+    Queue(QueueDeclaration),
+    /// A name for a read, holding no records of its own — `DEFINE VIEW`.
+    ///
+    /// The ninth kind, and the first that is not a store at all. Every kind
+    /// before it answers *what may be done to these records*; this one has no
+    /// records, so what it changes is where the records come from: a statement
+    /// naming a view is rewritten to carry the view's read before anything
+    /// resolves a name, and the read then runs as an ordinary materialised
+    /// source.
+    ///
+    /// That rewrite happens **before the grant check**, which is the whole of
+    /// why this is a kind and not a catalog entity of its own. A grant names a
+    /// [`tessari_types::TableId`], so a view outside the table namespace would
+    /// need a second permission system; inside it, a view cannot shadow a table
+    /// (one name reservation answers both) and a caller reading through one is
+    /// checked against the tables the view actually reads.
+    ///
+    /// It carries its read for the reason [`TableKind::Vector`] carries its
+    /// declaration: a read in a field beside the kind would make "carries a read
+    /// but is not a view" representable, which is the state this type abolishes.
+    View(ViewDeclaration),
+    /// Records that age out — `DEFINE SERIES`.
+    ///
+    /// The tenth kind, and the one that makes Time an engine rather than a
+    /// convention. What it adds is not a way to store an instant — every table
+    /// could already do that — but a **floor**: past it a record is not in the
+    /// answer, whether or not its bytes have been removed yet.
+    ///
+    /// The floor is a position in the key rather than a predicate over a field,
+    /// and that is the whole construction. A series table's identity is
+    /// [`tessari_types::IdentityKind::Uuid`], fixed by the kind, because UUID
+    /// version 7 carries the millisecond in its leading six bytes big-endian —
+    /// so a read under a retention does not filter, it **starts later**. An
+    /// ordinary table cannot offer that: its counter identity carries no time at
+    /// all, and an age rule over one of its datetime fields is re-tested per
+    /// record.
+    ///
+    /// The comparison is performed by the reader, not raised as an event, which
+    /// is the rule [`TableKind::Queue`]'s hold already follows. One consequence
+    /// is worth stating where it cannot be missed: **the removal is a separate
+    /// act from the hiding.** Correctness comes from the read, so a removal pass
+    /// that lags, is throttled or never runs costs storage and never an answer.
+    Series(SeriesDeclaration),
 }
+
+/// How long a series table answers with a record.
+///
+/// One field, and it is the whole capability, so it has no default for the
+/// reason [`QueueDeclaration::timeout`] has none: a series table that keeps
+/// everything is a table, and a retention the store guessed would drop somebody's
+/// records at a boundary nobody chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeriesDeclaration {
+    /// How far back the answer reaches.
+    ///
+    /// Measured from the instant the read happens, against the millisecond the
+    /// record's identity carries. Not stored on the record, unlike a queue's
+    /// deadline, because there is nothing to write it to: the rule is a property
+    /// of the table and applies to records written before it as well as after.
+    pub retain: Duration,
+}
+
+impl SeriesDeclaration {
+    /// The value written inside the table's catalog entry.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        Value::Object(BTreeMap::from([(
+            FIELD_RETAIN.to_owned(),
+            Value::Duration(self.retain),
+        )]))
+    }
+
+    /// Read a declaration back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when the retention is missing or is
+    /// not a duration.
+    pub fn from_value(value: &Value) -> Result<Self> {
+        const ENTITY: &str = "series";
+        let fields = object(value, ENTITY)?;
+        let Some(Value::Duration(retain)) = fields.get(FIELD_RETAIN) else {
+            return Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_RETAIN,
+                found: fields
+                    .get(FIELD_RETAIN)
+                    .map_or("none", tessari_types::Value::type_name),
+            });
+        };
+        Ok(Self { retain: *retain })
+    }
+}
+
+/// The read a view names.
+///
+/// # Text, and not a serialised tree
+///
+/// The same choice a field's `DEFAULT` makes and for the reason stated there —
+/// the storage layer cannot evaluate a TessariQL expression, so a definition
+/// keeps the text it was written as and the layer that owns the language parses
+/// it back. Two properties follow that a stored tree would not have: `INFO`
+/// answers with the statement somebody typed rather than a re-rendered one that
+/// happens to mean the same thing, and a view written before a clause existed
+/// cannot decode into a read that silently lost it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewDeclaration {
+    /// The read, exactly as it was written.
+    pub read: String,
+}
+
+impl ViewDeclaration {
+    /// The value written inside the table's catalog entry.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        Value::Object(BTreeMap::from([(
+            FIELD_READ.to_owned(),
+            Value::from(self.read.as_str()),
+        )]))
+    }
+
+    /// Read a declaration back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when the read is missing or is not a
+    /// string.
+    pub fn from_value(value: &Value) -> Result<Self> {
+        const ENTITY: &str = "view";
+        let fields = object(value, ENTITY)?;
+        let Some(Value::String(read)) = fields.get(FIELD_READ) else {
+            return Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_READ,
+                found: fields
+                    .get(FIELD_READ)
+                    .map_or("none", tessari_types::Value::type_name),
+            });
+        };
+        Ok(Self { read: read.clone() })
+    }
+}
+
+/// What a queue calls the instant a record's current hold lapses.
+///
+/// Visible and ordinary, so `SELECT` can answer *what is held and until when* —
+/// which is the most common thing anybody does with a queue that has gone quiet.
+/// It could instead have been hidden behind a byte no identifier can spell, the
+/// way a bucket's chunk table is, and that was rejected for exactly that reason:
+/// a queue whose state cannot be read is a queue nobody can debug.
+///
+/// The cost of being visible is that a payload field of this name collides, and
+/// the collision is refused at the write naming the field rather than absorbed
+/// silently (Q-461).
+///
+/// A lapsed record is **not** rewritten — nothing sweeps a passed deadline away
+/// — so a reader asking for unclaimed records compares rather than testing for
+/// absence: `claimed_until IS NONE OR claimed_until < time::now()`.
+pub const QUEUE_CLAIMED_UNTIL: &str = "claimed_until";
+
+/// What a queue calls who is holding a record.
+///
+/// An object of two routes — `consumer`, the name a session declared, and
+/// `instance`, the value the engine minted for that session — because the pair
+/// is **one fact**: who took this. Two flat fields would be two payload
+/// collision surfaces where one will do, and a route into a stored object is
+/// already how a condition reaches a nested value.
+///
+/// **Absent when the session never said who it was.** A claim from an
+/// undeclared session writes nothing here, which keeps every existing caller
+/// working unchanged and makes the absence mean something true — *nobody said*
+/// — rather than a default that is itself a claim.
+///
+/// Visible and ordinary for [`QUEUE_CLAIMED_UNTIL`]'s reason, and here the
+/// reason is sharper: *who has this* is the first question asked of a queue that
+/// has gone quiet, and it is the one question the engine could not answer at all
+/// until this field existed.
+///
+/// The instance is **not** derived from a sign-in ticket and never shares its
+/// value. A ticket is a credential; this is read by anyone who may `SELECT` the
+/// queue, and one value serving both would publish the first to everybody
+/// holding the second.
+pub const QUEUE_CLAIMED_BY: &str = "claimed_by";
+
+/// A route inside [`QUEUE_CLAIMED_BY`]: the name the session declared.
+pub const CLAIMED_BY_CONSUMER: &str = "consumer";
+
+/// A route inside [`QUEUE_CLAIMED_BY`]: the value the engine minted.
+pub const CLAIMED_BY_INSTANCE: &str = "instance";
+
+/// What a queue calls the number of times a record has been handed out.
+///
+/// Counted at the hand-out and not at a failure, because how many times a record
+/// was handed out is a fact the store can observe, while how many times the work
+/// failed is a fact only the worker holds — and a count the store cannot verify
+/// is a count that will eventually be wrong.
+pub const QUEUE_ATTEMPTS: &str = "attempts";
 
 /// What a vector store calls the field its vectors are in.
 ///
@@ -623,6 +910,73 @@ impl VectorDeclaration {
     }
 }
 
+/// How long a queue holds a claim, and how many times it hands a record out.
+///
+/// The timeout is the whole capability, which is why it has no default: a queue
+/// whose holds never lapse is a table with two extra fields, and a queue whose
+/// timeout the store guessed would hand work to a second worker at a moment
+/// nobody chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueDeclaration {
+    /// How long a claim holds a record before it lapses.
+    ///
+    /// Added to the instant the claiming session reads, once, and written into
+    /// the record — so the deadline in the log is a value every node agrees
+    /// about rather than a computation each one repeats against its own clock.
+    pub timeout: Duration,
+    /// How many times one record may be handed out, when a ceiling was declared.
+    ///
+    /// `None` is unlimited, which is a legitimate choice for a queue whose work
+    /// cannot poison and a visible one, because it is what leaving the clause
+    /// out says. A record that reaches the ceiling stops being claimable and
+    /// stays where it is: the dead letter is a predicate, not a second table.
+    pub attempts: Option<u32>,
+}
+
+impl QueueDeclaration {
+    /// The value written inside the table's catalog entry.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        let mut fields =
+            BTreeMap::from([(FIELD_TIMEOUT.to_owned(), Value::Duration(self.timeout))]);
+        // Written only when it was declared, on the bucket ceiling's contract
+        // rather than a flag's: an attempt ceiling nobody named is absent rather
+        // than zero, and zero is the one number that would have to mean
+        // "unlimited" while reading as "never hand this out".
+        if let Some(ceiling) = self.attempts {
+            fields.insert(FIELD_ATTEMPTS.to_owned(), number(ceiling));
+        }
+        Value::Object(fields)
+    }
+
+    /// Read a declaration back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when the timeout is missing or is not
+    /// a duration, or when the attempt ceiling is not a number.
+    pub fn from_value(value: &Value) -> Result<Self> {
+        const ENTITY: &str = "queue";
+        let fields = object(value, ENTITY)?;
+        let Some(Value::Duration(timeout)) = fields.get(FIELD_TIMEOUT) else {
+            return Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_TIMEOUT,
+                found: fields
+                    .get(FIELD_TIMEOUT)
+                    .map_or("none", tessari_types::Value::type_name),
+            });
+        };
+        Ok(Self {
+            timeout: *timeout,
+            attempts: match fields.get(FIELD_ATTEMPTS) {
+                Some(_) => Some(field_id(fields, FIELD_ATTEMPTS, ENTITY)?),
+                None => None,
+            },
+        })
+    }
+}
+
 /// The pair an edge table joins, and the order its edges are held in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeDeclaration {
@@ -672,6 +1026,12 @@ pub struct StoredKind {
     pub vector: Option<VectorDeclaration>,
     /// A vault's wrapped key.
     pub vault: Option<VaultDeclaration>,
+    /// A queue's timeout and attempt ceiling.
+    pub queue: Option<QueueDeclaration>,
+    /// A view's read.
+    pub view: Option<ViewDeclaration>,
+    /// A series table's retention.
+    pub series: Option<SeriesDeclaration>,
     /// A bucket's size ceiling.
     pub ceiling: Option<u64>,
 }
@@ -703,6 +1063,9 @@ impl TableKind {
             endpoints,
             vector,
             vault,
+            queue,
+            view,
+            series,
             ceiling,
         } = stored;
         // A vault is read first and alone. Every other arm below distinguishes
@@ -712,8 +1075,57 @@ impl TableKind {
         // resolve by precedence — it is a catalog entry that must not be
         // honoured in either direction.
         if let Some(declared) = vault {
+            return match (
+                edge, bucket, collection, geo, endpoints, vector, &queue, ceiling,
+            ) {
+                (false, false, false, false, None, None, None, None) => Ok(Self::Vault(declared)),
+                _ => Err(Error::CatalogMalformed {
+                    entity: "table",
+                    field: "kind",
+                    found: "more than one kind",
+                }),
+            };
+        }
+        // A series sets no flag either, and is pulled out here for the reason
+        // the queue below it is: the arms already written stay the exhaustive
+        // statement they are.
+        if let Some(declared) = series {
+            return match (
+                edge, bucket, collection, geo, endpoints, vector, &queue, &view, ceiling,
+            ) {
+                (false, false, false, false, None, None, None, None, None) => {
+                    Ok(Self::Series(declared))
+                }
+                _ => Err(Error::CatalogMalformed {
+                    entity: "table",
+                    field: "kind",
+                    found: "more than one kind",
+                }),
+            };
+        }
+        // A queue sets no flag either, so it reaches the match below as a plain
+        // table carrying a declaration — and it is pulled out here rather than
+        // added as a ninth tuple element so that the arms already written keep
+        // reading as the exhaustive statement they are.
+        if let Some(declared) = queue {
+            return match (
+                edge, bucket, collection, geo, endpoints, vector, &view, ceiling,
+            ) {
+                (false, false, false, false, None, None, None, None) => Ok(Self::Queue(declared)),
+                _ => Err(Error::CatalogMalformed {
+                    entity: "table",
+                    field: "kind",
+                    found: "more than one kind",
+                }),
+            };
+        }
+        // A view sets no flag either, and is pulled out here for the reason the
+        // queue is: the tuple match below is an exhaustive statement about the
+        // kinds that *are* flags, and growing it by one element per declaration
+        // would make every arm harder to read to say nothing new.
+        if let Some(declared) = view {
             return match (edge, bucket, collection, geo, endpoints, vector, ceiling) {
-                (false, false, false, false, None, None, None) => Ok(Self::Vault(declared)),
+                (false, false, false, false, None, None, None) => Ok(Self::View(declared)),
                 _ => Err(Error::CatalogMalformed {
                     entity: "table",
                     field: "kind",

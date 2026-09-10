@@ -2,7 +2,7 @@
 //!
 //! # Why not JSON
 //!
-//! JSON has six types and this store has fifteen, so every rendering into it is
+//! JSON has six types and this store has seventeen, so every rendering into it is
 //! a decision — the HTTP endpoint had to take them, and quotes a decimal because
 //! a JSON number is a double in every parser that matters. A command line has no
 //! such obligation, so it renders in **TessariQL**: what is printed can be pasted
@@ -21,7 +21,7 @@
 //! Claiming the output round-trips is a claim that has to hold for **every** kind
 //! the value system has, not for the four a hand-written example uses. The test
 //! at the bottom parses the rendered form back and compares, over a value
-//! covering all fifteen — so a type added to the language without a rendering
+//! covering all seventeen — so a type added to the language without a rendering
 //! fails a test rather than printing something that cannot be read back.
 
 use std::collections::BTreeMap;

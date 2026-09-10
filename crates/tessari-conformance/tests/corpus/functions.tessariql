@@ -178,3 +178,245 @@ RETURN string::lines('one\r\ntwo\r\n', 0, 2) = 'one\ntwo';
 --- case: a trailing newline does not grow a line for the count to spend
 RETURN string::lines('one\ntwo\n', 0, 3) = 'one\ntwo';
 --- expect: value true
+
+# The checksums, against the vectors their own specifications print. They are
+# here beside SHA-2 rather than in a file of their own because what separates
+# them is what they may be used for and not how they are called.
+
+--- case: md5 of the canonical three letters
+RETURN crypto::md5('abc');
+--- expect: value '900150983cd24fb0d6963f7d28e17f72'
+
+--- case: md5 of nothing is still a digest
+RETURN crypto::md5('');
+--- expect: value 'd41d8cd98f00b204e9800998ecf8427e'
+
+--- case: sha1 of the same three letters
+RETURN crypto::sha1('abc');
+--- expect: value 'a9993e364706816aba3e25717850c26c9cd0d89d'
+
+--- case: sha1 of nothing
+RETURN crypto::sha1('');
+--- expect: value 'da39a3ee5e6b4b0d3255bfef95601890afd80709'
+
+--- case: a checksum of an absent field is absent, like every other function
+RETURN crypto::md5(NONE);
+--- expect: value NONE
+
+# Bytes as text. The vectors are RFC 4648 §10's, which is what makes a
+# hand-written codec worth trusting.
+
+--- case: base64 pads a one-byte tail with two equals signs
+RETURN encoding::base64(0x66);
+--- expect: value 'Zg=='
+
+--- case: base64 of three bytes needs no padding
+RETURN encoding::base64(0x666f6f);
+--- expect: value 'Zm9v'
+
+--- case: base64 of six bytes
+RETURN encoding::base64(0x666f6f626172);
+--- expect: value 'Zm9vYmFy'
+
+--- case: and it decodes back to the bytes it came from
+RETURN encoding::base64_decode('Zm9vYmFy') = 0x666f6f626172;
+--- expect: value true
+
+--- case: text that is not base64 spells no bytes
+RETURN encoding::base64_decode('!!!!');
+--- expect: value NONE
+
+--- case: a length that is not a multiple of four spells no bytes either
+RETURN encoding::base64_decode('abc');
+--- expect: value NONE
+
+--- case: padding bits that are not zero would let two strings mean one value
+RETURN encoding::base64_decode('Zh==');
+--- expect: value NONE
+
+--- case: hex is lowercase
+RETURN encoding::hex(0x0abcde);
+--- expect: value '0abcde'
+
+--- case: hex reads either case back
+RETURN encoding::hex_decode('0ABCDE') = 0x0abcde;
+--- expect: value true
+
+--- case: an odd number of hexadecimal characters spells no bytes
+RETURN encoding::hex_decode('abc');
+--- expect: value NONE
+
+--- case: a character outside the alphabet spells no bytes
+RETURN encoding::hex_decode('zz');
+--- expect: value NONE
+
+# The string functions a pattern cannot serve, because a needle is a value.
+
+--- case: a prefix that is a value and not a pattern
+RETURN string::starts_with('lovelace', 'love');
+--- expect: value true
+
+--- case: and one that is not the prefix
+RETURN string::starts_with('lovelace', 'ada');
+--- expect: value false
+
+--- case: a per-cent sign in the needle is a character and not a wildcard
+RETURN string::starts_with('lovelace', '%');
+--- expect: value false
+
+--- case: a suffix
+RETURN string::ends_with('lovelace', 'lace');
+--- expect: value true
+
+--- case: text holding text
+RETURN string::contains('lovelace', 'vela');
+--- expect: value true
+
+--- case: an underscore in the needle matches an underscore and nothing else
+RETURN string::contains('lovelace', '_');
+--- expect: value false
+
+--- case: where it first occurs, counted in characters and not in bytes
+RETURN string::index_of('naïve', 'v');
+--- expect: value 3
+
+--- case: a needle that is not there answers nothing rather than minus one
+RETURN string::index_of('lovelace', 'z');
+--- expect: value NONE
+
+--- case: the front trimmed and the end left alone
+RETURN string::trim_start('  ada  ') = 'ada  ';
+--- expect: value true
+
+--- case: and the other way round
+RETURN string::trim_end('  ada  ') = '  ada';
+--- expect: value true
+
+--- case: and both ends at once, which is neither of the two above
+RETURN string::trim('  ada  ') = 'ada';
+--- expect: value true
+
+--- case: characters back to front, which is not the bytes back to front
+RETURN string::reverse('naïve');
+--- expect: value 'evïan'
+
+--- case: the other direction from upper, and it moves the same letters back
+RETURN string::lower('AdA LoVeLaCe');
+--- expect: value 'ada lovelace'
+
+--- case: concat joins exactly two and adds nothing between them
+RETURN string::concat('ada', 'lovelace');
+--- expect: value 'adalovelace'
+
+--- case: concat with an empty side is the other side
+RETURN string::concat('', 'ada') = 'ada' AND string::concat('ada', '') = 'ada';
+--- expect: value true
+
+# The numbers.
+
+--- case: the smaller of two
+RETURN math::min(3, 5);
+--- expect: value 3
+
+--- case: the larger of two, keeping the kind it came in as
+RETURN math::max(3, 5);
+--- expect: value 5
+
+--- case: sign is minus one, zero or one
+RETURN math::sign(-4.5);
+--- expect: value -1
+
+--- case: and zero has no direction
+RETURN math::sign(0);
+--- expect: value 0
+
+--- case: trunc goes toward zero where floor goes down
+RETURN math::trunc(-2.7) = -2 AND math::floor(-2.7) = -3;
+--- expect: value true
+
+--- case: ceil agrees with trunc going down and disagrees going up
+# The three differ only in sign handling, so one number cannot separate them:
+# on -2.7 ceil and trunc both answer -2 and floor answers -3, and on 2.1 ceil
+# is the one that moves.
+RETURN math::ceil(-2.7) = -2 AND math::ceil(2.1) = 3;
+--- expect: value true
+
+--- case: abs takes the sign off and leaves a positive alone
+RETURN math::abs(-3) = 3 AND math::abs(3) = 3 AND math::abs(0) = 0;
+--- expect: value true
+
+--- case: the natural logarithm of one is zero
+RETURN math::ln(1) = 0;
+--- expect: value true
+
+--- case: and of zero there is none, rather than a negative infinity
+RETURN math::ln(0);
+--- expect: value NONE
+
+--- case: a negative has no logarithm either
+RETURN math::ln(-1);
+--- expect: value NONE
+
+--- case: e to the zero
+RETURN math::exp(0) = 1;
+--- expect: value true
+
+# One array folded inside one record, which the aggregates cannot do.
+
+--- case: the smallest in an array
+RETURN array::min([3, 1, 2]);
+--- expect: value 1
+
+--- case: the largest
+RETURN array::max([3, 1, 2]);
+--- expect: value 3
+
+--- case: nothing has no smallest
+RETURN array::min([]);
+--- expect: value NONE
+
+--- case: the numbers added
+RETURN array::sum([1, 2, 3]);
+--- expect: value 6
+
+--- case: over nothing, zero — which is what the sum aggregate answers too
+RETURN array::sum([]);
+--- expect: value 0
+
+--- case: two arrays joined
+RETURN array::concat([1, 2], [3]) = [1, 2, 3];
+--- expect: value true
+
+--- case: appending an array adds one element and does not splice it
+RETURN array::append([1, 2], [3, 4]) = [1, 2, [3, 4]];
+--- expect: value true
+
+--- case: where a value first appears
+RETURN array::index_of(['a', 'b', 'c'], 'b');
+--- expect: value 1
+
+--- case: a value that is not there answers nothing
+RETURN array::index_of(['a'], 'z');
+--- expect: value NONE
+
+# Objects, taken apart and put back together.
+
+--- case: entries pair each name with its value, in the object's own order
+RETURN object::entries({ a: 1, b: 2 }) = [['a', 1], ['b', 2]];
+--- expect: value true
+
+--- case: a field that is there
+RETURN object::has({ a: 1 }, 'a');
+--- expect: value true
+
+--- case: a field explicitly holding nothing is still there
+RETURN object::has({ a: NONE }, 'a');
+--- expect: value true
+
+--- case: and one that was never named is not
+RETURN object::has({ a: 1 }, 'b');
+--- expect: value false
+
+--- case: merging, with the second object winning a collision
+RETURN object::merge({ a: 1, b: 2 }, { b: 9, c: 3 }) = { a: 1, b: 9, c: 3 };
+--- expect: value true

@@ -12,7 +12,7 @@ use std::ops::ControlFlow;
 use tessari_constants::ORDERED_FILTER_REACH;
 use tessari_encoding::{Direction as AdjacencyDirection, Posting};
 use tessari_ql::{
-    BinaryOp, DeleteBound, Direction, Expr, ExprKind, FieldPath, Function, Hop, JoinSide,
+    BinaryOp, DeleteBound, Direction, Expr, ExprKind, FieldPath, Function, Hop, Identity, JoinSide,
     Projected, Projection, RecordTarget, Select, Source, Span, TableRef, Using,
 };
 use tessari_storage::{
@@ -389,7 +389,9 @@ impl Session<'_> {
         // delete has no `LIMIT` that stops the source, it has a ceiling on how
         // many it removes, and it must see every candidate to know it is done.
         let candidates =
-            match self.candidates(transaction, id, context, condition, &searched, None)? {
+            // `false`: a delete carries no read tail, so there is no clause to lift
+            // the guard and nothing here to read one from.
+            match self.candidates(transaction, id, context, condition, &searched, Asked::nothing())? {
                 Some(reached) => match reached.records {
                     Candidates::Held(held) => held,
                     // Read whole here, deliberately, for the reason the scan
@@ -435,6 +437,65 @@ impl Session<'_> {
             )?;
             if !boolean(&held, condition.span)? {
                 continue;
+            }
+            transaction.delete(RecordAddress::new(
+                context.namespace,
+                context.database,
+                id,
+                record_id,
+            ));
+            removed = removed.saturating_add(1);
+        }
+        Ok(crate::outcome::Outcome::Removed { count: removed })
+    }
+
+    /// Every record in a span of identities, removed.
+    ///
+    /// # Why there is no re-test here, where the conditional delete has one
+    ///
+    /// `delete_where` tests every candidate against the whole condition,
+    /// because an index **narrows** and the condition decides — a delete that
+    /// trusted the narrowing would remove records the statement did not name.
+    /// A span narrows nothing. It *is* the set the statement named, so there is
+    /// no second question and nothing to re-test, and the absence of the re-test
+    /// is the property rather than an omission.
+    ///
+    /// # What it costs
+    ///
+    /// The span, and not the table. The walk reaches the records between two
+    /// positions in the table's own key order, which is what makes this usable
+    /// as a retention pass over a table that has grown — the conditional form
+    /// reads every record it is going to keep, once per run, forever.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a bound is an unbound parameter, the table cannot
+    /// be resolved, or the store cannot be read.
+    pub(crate) fn delete_span(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: &TableRef,
+        span: IdentitySpan<'_>,
+        limit: DeleteBound,
+    ) -> Result<crate::outcome::Outcome> {
+        let ceiling = match limit {
+            DeleteBound::AtMost(count) => count,
+            DeleteBound::All => u64::MAX,
+        };
+        let (context, id) = self.resolve_table(transaction, table)?;
+        let found = transaction.records_in_span(
+            context.namespace,
+            context.database,
+            id,
+            span.lower.fixed(span.at)?,
+            span.upper.fixed(span.at)?,
+            span.inclusive,
+        )?;
+
+        let mut removed = 0_u64;
+        for (record_id, _) in found {
+            if removed >= ceiling {
+                break;
             }
             transaction.delete(RecordAddress::new(
                 context.namespace,
@@ -1058,6 +1119,36 @@ impl Session<'_> {
                 let searched = self.searched_for(transaction, id, &shown(select))?;
                 Ok((Prepared::Table(context, id), searched))
             }
+            // A walk between two positions in the table's own keyspace. The
+            // records outside the span are not read, not decoded and not
+            // tested, which is the whole difference between this and the same
+            // question asked as a condition.
+            Source::Range {
+                table,
+                lower,
+                upper,
+                inclusive,
+                span,
+            } => {
+                let (context, id) = self.resolve_table(transaction, table)?;
+                self.refuse_reading_a_vault(transaction, id, table)?;
+                let visible = self.visible_in(transaction, id)?;
+                let found = transaction.records_in_span(
+                    context.namespace,
+                    context.database,
+                    id,
+                    lower.fixed(*span)?,
+                    upper.fixed(*span)?,
+                    *inclusive,
+                )?;
+                Ok((
+                    Prepared::Held(
+                        self.records_of(found, &visible)?,
+                        Plan::new(AccessPath::Span).on(table.name.text.as_str()),
+                    ),
+                    Searched::default(),
+                ))
+            }
             Source::Traverse {
                 from,
                 direction,
@@ -1115,15 +1206,35 @@ impl Session<'_> {
             // a held vector. The inner plan is a plan of its own, and one field
             // for it would describe only the shallowest case.
             Source::Subquery { read, condition } => {
-                // `None` for the held ceiling: the grammar already refuses a
-                // materialised source that names no `LIMIT`, so the bound here
-                // is the author's own and a second one below it would be a rule
-                // in two places that could only ever disagree.
-                let inner = self.read(transaction, read, within, None)?;
+                // The ceiling this read runs under, which for a materialised
+                // source written by hand is **none**: the grammar refuses one
+                // that names no `LIMIT`, so `Ceiling::over` sees the bound the
+                // author wrote and declines to add a second.
+                //
+                // A view reaches here having never passed that rule. It is not
+                // written in parentheses — it is a name the session replaced
+                // with a read before anything was authorized — so the parser
+                // could not have seen it, and a view naming no `LIMIT` would
+                // otherwise hold its whole table. `Ceiling::over` is the answer
+                // `budget.rs` already gives for the position the grammar cannot
+                // reach, and this is the second one: past it the read is
+                // **refused**, never truncated, so a view over a growing table
+                // fails in a way somebody can see rather than answering a prefix
+                // that looks whole.
+                let ceiling = Ceiling::over(read);
+                let inner = self.read(transaction, read, within, ceiling)?;
                 reporting.collected.extend(inner.notes);
                 reporting
                     .collected
                     .extend(ceiling_reached(read, inner.records.len()));
+                // The ceiling the author did not write, approached rather than
+                // reached. Only a read running under one is asked — a view
+                // naming its own `LIMIT` runs under none, and a note telling its
+                // author about a ceiling that does not apply to them would send
+                // them to fix something that is not there.
+                reporting
+                    .collected
+                    .extend(ceiling.and_then(|ceiling| ceiling.nearing(inner.records.len())));
                 let (found, plan) = (inner.records, Plan::new(AccessPath::Materialised));
                 let Some(condition) = condition else {
                     return Ok((Prepared::Held(found, plan), Searched::default()));
@@ -1319,17 +1430,17 @@ impl Session<'_> {
                 // narrows and then sorts is correct and costs a sort of
                 // everything the condition matched; taking the records in the
                 // order they are already stored in costs the bound.
-                // Descending only. The walk under a condition retries past its
-                // bound, and an ascending retry would read further into values
-                // the answer has already passed rather than further into the
-                // ones it still needs — a different read, not a longer one.
+                // Either direction, and the direction travels on the bound:
+                // ascending is served only where the ordering field is
+                // `REQUIRED`, which is a fact about the schema and is asked for
+                // by `index_serving_order` rather than by this call site.
                 // The decline is remembered rather than acted on here, because
                 // what the read falls back *to* is not known until `candidates`
                 // has chosen — an index on the condition serves this read even
                 // when no index could serve its order.
                 let mut declined = false;
-                if let Some(bound) = plan::ordered(select).filter(|bound| bound.descending) {
-                    match self.descend_matching(
+                if let Some(bound) = plan::ordered(select) {
+                    match self.walk_matching(
                         transaction,
                         context,
                         id,
@@ -1352,7 +1463,17 @@ impl Session<'_> {
                     records: candidates,
                     plan,
                     answered,
-                }) = self.candidates(transaction, id, context, condition, searched, named)?
+                }) = self.candidates(
+                    transaction,
+                    id,
+                    context,
+                    condition,
+                    searched,
+                    Asked {
+                        named,
+                        lift_scan_guard: select.lift_scan_guard,
+                    },
+                )?
                 else {
                     // No index serves this condition, so the scan does — and it
                     // is *walked* rather than read whole, because this is the
@@ -1718,7 +1839,7 @@ impl Session<'_> {
         context: crate::context::Context,
         condition: &Expr,
         searched: &Searched,
-        named: Option<&str>,
+        asked: Asked<'_>,
     ) -> Result<Option<Reached>> {
         // Once for the statement rather than once per conjunct: which indexes a
         // table carries is one question, and it used to be asked as many times
@@ -1740,11 +1861,25 @@ impl Session<'_> {
         // the same record — which is what makes candidates re-tested against the
         // whole condition unable to answer what a scan refuses.
         let visible = self.visible_in(transaction, table)?;
-        if let Some(chosen) = plan::choose(offered) {
+        // Ranking says which index narrows most; it does not say whether the
+        // winner narrows enough to be worth reading. An index that produces
+        // most of the table pays an entry walk on top of a fetch it did not
+        // shorten, so the winner is measured against the table before it is
+        // served — see `plan::worth_serving`, which `EXPLAIN` asks too so that
+        // the reported path is the one the read takes.
+        let chosen = match plan::choose(offered) {
+            Some(candidate)
+                if plan::worth_serving(transaction, table, &candidate, asked.lift_scan_guard)? =>
+            {
+                Some(candidate)
+            }
+            _ => None,
+        };
+        if let Some(chosen) = chosen {
             // Built by the candidate itself, which is the same function
             // `EXPLAIN` calls on the candidate its own `choose` returned. The
             // two report one structure because one function writes it.
-            let plan = chosen.plan(named);
+            let plan = chosen.plan(asked.named);
             let answered = self.trusts(condition, &chosen, &visible);
             // The field's, resolved once for the statement while the analyzers
             // were being read — the same value the query's terms were built
@@ -1890,11 +2025,37 @@ impl Session<'_> {
 
     /// Walk a vector index, when there is one that answers this read.
     ///
-    /// `None` means there is not — no index on the path, one built for another
-    /// distance, or a query that is not a vector — and the caller scans, which
-    /// is exact. That is the whole safety story: the approximate path is taken
-    /// only when the statement asked and the index matches, and the exact path
-    /// is what every other case falls into.
+    /// `None` is the scan, which is exact, and there are five ways to reach it:
+    /// no index on the path, one built for another distance, a query that is not
+    /// a vector, a field this caller's grant does not contain, and a table this
+    /// transaction has written to without committing.
+    ///
+    /// A sixth is made one level up and is not repeated here: `index_on_path`
+    /// refuses every index while `Transaction::indexes_are_current` is false, so
+    /// a reader at an older snapshot never reaches the graph. Entries carry no
+    /// version, so being answered from a newer graph is not approximation, it is
+    /// reading someone else's present.
+    ///
+    /// That last refusal is the same one [`Evaluator::index_serving_place`],
+    /// [`Evaluator::index_serving_score`] and [`Evaluator::index_serving_order`]
+    /// each make first, and it was missing here until W187. A field permission
+    /// removes the field *before* anything reads the record, so a caller without
+    /// it sorts by `none` and the read is unordered; the graph, asked anyway,
+    /// answers with the records nearest a vector that caller may not read. The
+    /// harm is larger than the order the other three walks refuse to disclose,
+    /// because the `none` key then re-sorts those records into identity order:
+    /// what arrives looks like an ordinary unordered result and is a statement
+    /// of **membership** about a hidden field, handed over in a single read.
+    ///
+    /// The uncommitted-write refusal was the last of the four and was added in
+    /// W188 for a different reason than the others. `APPROXIMATE` is a contract
+    /// the caller opted into, and under it "the graph missed it" is an answer
+    /// this walk is allowed to give. "This transaction cannot see its own write"
+    /// is not: entries are derived at commit, so a record written here has none,
+    /// and the graph answers as though it did not exist — measured as an exact
+    /// read of `[99, 39, 38]` against an approximate `[39, 38, 37]` for the same
+    /// statement in the same transaction. Isolation is not what `APPROXIMATE`
+    /// relaxes.
     fn walk(
         &self,
         transaction: &mut Transaction<'_>,
@@ -1916,6 +2077,21 @@ impl Session<'_> {
             return Ok(None);
         };
         let visible = self.visible_in(transaction, table)?;
+        // Asked before the graph is walked and not after: the redaction below
+        // removes the field from the records, and would leave the caller holding
+        // the graph's choice of which records to return.
+        if visible
+            .as_ref()
+            .is_some_and(|fields| !fields.contains(wanted.path.root()))
+        {
+            return Ok(None);
+        }
+        // The graph is built from committed entries, so a record this
+        // transaction has written is not in it and would be missing from this
+        // transaction's own read.
+        if transaction.writes_in(context.namespace, context.database, table) {
+            return Ok(None);
+        }
         let mut rows = Vec::new();
         for id in transaction.records_by_vector(&index, &query, wanted.wanted, wanted.effort)? {
             // Resolved at this reader's own snapshot, like every index read, so
@@ -2304,8 +2480,8 @@ impl Session<'_> {
         })
     }
 
-    /// A bounded descending read **under a condition**, taken from the index
-    /// that holds the order.
+    /// A bounded ordered read **under a condition**, taken from the index that
+    /// holds the order.
     ///
     /// `None` means the read is not served this way and the caller narrows and
     /// sorts, which is what it did before this existed.
@@ -2329,11 +2505,25 @@ impl Session<'_> {
     /// survivors of the top `k` are the first `wanted` survivors of the whole
     /// table.
     ///
-    /// Absences are the one case that could break that argument and cannot: a
-    /// record with no value for the key has **no index entry** and sorts *last*
-    /// descending, so it is never near the top of the order. That is the same
-    /// fact that makes the unconditioned case descending-only, inherited here
-    /// rather than re-derived.
+    /// Absences are the one case that could break that argument, and the
+    /// direction decides whether they can. A record with no value for the key
+    /// has **no index entry**: descending it sorts *last*, so it is never near
+    /// the top of the order and the walk cannot miss it; ascending it sorts
+    /// *first*, which is exactly where the answer begins. So ascending is served
+    /// only where there are no absences, and `REQUIRED` is that guarantee —
+    /// [`Self::index_serving_order`] asks for it, and asks for it here by
+    /// passing the bound's own direction rather than a constant. Both facts are
+    /// inherited from the unconditioned case rather than re-derived.
+    ///
+    /// # Running out means opposite things in the two directions
+    ///
+    /// Descending, an index that cannot fill `asking` is missing the records
+    /// whose value is absent — they sort below every entry it holds, so the
+    /// answer needs them and the read gives the order up. Ascending over a
+    /// `REQUIRED` field there are no such records, so a walk that runs out has
+    /// read the **whole table** through the index: what survived the condition
+    /// is the complete answer, and handing it back to the scan would read the
+    /// same table a second time to reach the same records.
     ///
     /// # The ceiling bounds the cost and never the answer
     ///
@@ -2348,7 +2538,7 @@ impl Session<'_> {
     /// The answer may be **longer** than the bound, which is correct and
     /// deliberate: it is in order, and `shape::bounded` takes the window the
     /// statement asked for, as it does for every other path.
-    fn descend_matching(
+    fn walk_matching(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
@@ -2357,27 +2547,38 @@ impl Session<'_> {
         condition: &Expr,
         scope: Scope<'_>,
     ) -> Result<Walked> {
-        // Descending, stated rather than taken from the bound: this walk's whole
-        // argument rests on absences sorting *last*, and passing the caller's
-        // direction through would make that argument depend on a value from
-        // somewhere else. The caller refuses an ascending bound before it gets
-        // here; this is the second lock on the same door.
         let Some((index, visible)) =
-            self.index_serving_order(transaction, context, table, wanted.path, true)?
+            self.index_serving_order(transaction, context, table, wanted.path, wanted.descending)?
         else {
             return Ok(Walked::NotServed);
         };
         let ceiling = wanted.wanted.saturating_mul(ORDERED_FILTER_REACH);
         let mut asking = wanted.wanted;
         loop {
-            // `None` is the index unable to fill `asking` — it has run out of
-            // entries, and the records that would fill the rest of the answer
-            // are ones it does not hold. The scan is the read that can find
-            // those.
-            let Some(found) =
-                transaction.records_in_descending_order(&index, ORDERED_LEADING_FIELDS, asking)?
-            else {
-                return Ok(Walked::Declined);
+            // Descending, `None` is the index unable to fill `asking` — it has
+            // run out of entries, and the records that would fill the rest of
+            // the answer are ones it does not hold. The scan is the read that
+            // can find those. Ascending there are none of them, so running out
+            // is the end of the table rather than a hole in the answer, and a
+            // walk shorter than it asked for says so.
+            let (found, exhausted) = if wanted.descending {
+                let Some(found) = transaction.records_in_descending_order(
+                    &index,
+                    ORDERED_LEADING_FIELDS,
+                    asking,
+                )?
+                else {
+                    return Ok(Walked::Declined);
+                };
+                (found, false)
+            } else {
+                let found = transaction.records_in_ascending_order(
+                    &index,
+                    ORDERED_LEADING_FIELDS,
+                    asking,
+                )?;
+                let exhausted = found.len() < asking;
+                (found, exhausted)
             };
             let mut matched = Vec::new();
             for (id, record) in self.records_of(found, &visible)? {
@@ -2386,7 +2587,7 @@ impl Session<'_> {
                     matched.push((id, record));
                 }
             }
-            if matched.len() >= wanted.wanted {
+            if matched.len() >= wanted.wanted || exhausted {
                 return Ok(Walked::Served {
                     found: matched,
                     index: index.name,
@@ -3063,6 +3264,35 @@ type Hopped = (Vec<(RecordId, Value)>, Vec<RecordRef>);
 /// field is a bare `bool` that a caller could silently drop or, worse, read the
 /// wrong way round. Naming it makes `answered: false` — which is what a scan and
 /// every ordinary index read say — a statement rather than a position.
+/// What the statement itself said about the plan, as opposed to what the store
+/// worked out.
+///
+/// The two travel together because they come from one place — the read's tail —
+/// and are read by one function. A pair rather than two arguments because a
+/// planner call taking eight things has stopped being readable, and grouping
+/// them by where they came from is the division that survives the next one being
+/// added.
+#[derive(Clone, Copy)]
+struct Asked<'a> {
+    /// The table the plan reports, when the source names one.
+    named: Option<&'a str>,
+    /// `WITHOUT SCAN GUARD` — the planner's size veto is lifted for this read.
+    lift_scan_guard: bool,
+}
+
+impl Asked<'_> {
+    /// A read whose statement said nothing about its plan.
+    ///
+    /// A `DELETE` carries no read tail to say anything in, so it asks for the
+    /// defaults rather than for a privilege no caller could have written down.
+    const fn nothing() -> Self {
+        Self {
+            named: None,
+            lift_scan_guard: false,
+        }
+    }
+}
+
 struct Reached {
     /// The records to test, or to answer with when `answered`.
     records: Candidates,
@@ -3351,7 +3581,9 @@ enum Prepared<'a> {
 /// from more than one place, or from a read rather than a table.
 fn table_named(source: &Source) -> Option<&str> {
     match source {
-        Source::Table(table) | Source::Where { table, .. } => Some(table.name.text.as_str()),
+        Source::Table(table) | Source::Where { table, .. } | Source::Range { table, .. } => {
+            Some(table.name.text.as_str())
+        }
         Source::Record(target) => Some(target.table.name.text.as_str()),
         Source::Node | Source::Traverse { .. } | Source::Join { .. } | Source::Subquery { .. } => {
             None
@@ -3774,4 +4006,22 @@ fn shown(select: &Select) -> Vec<&Expr> {
 /// projection over somebody's whole table.
 fn at(offset: usize) -> Value {
     Value::Number(Number::Integer(i64::try_from(offset).unwrap_or(i64::MAX)))
+}
+
+/// The two ends of a span of identities, and whether the upper one is inside it.
+///
+/// One argument rather than three for the reason the storage side gives about
+/// the same three values: they are one fact and are wrong together — a caller
+/// handed the bounds and not the inclusivity silently removes a half-open span
+/// as a closed one, and nothing in the answer says which it was.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IdentitySpan<'a> {
+    /// The first identity, always inside the span.
+    pub(crate) lower: &'a Identity,
+    /// The last, inside only when `inclusive`.
+    pub(crate) upper: &'a Identity,
+    /// Whether the upper bound is itself inside.
+    pub(crate) inclusive: bool,
+    /// Where the span sits, for a refusal about an unbound parameter.
+    pub(crate) at: Span,
 }

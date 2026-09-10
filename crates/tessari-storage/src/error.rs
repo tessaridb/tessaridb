@@ -11,7 +11,7 @@
 //! be to do nothing.
 
 use tessari_kv::ErrorCategory;
-use tessari_types::{FieldKind, RecordId, Sequence};
+use tessari_types::{FieldKind, RecordId, Sequence, article};
 
 /// Result alias for every fallible operation in this crate.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -375,7 +375,10 @@ pub enum Error {
     /// The bytes decoded as a value, so this is not a codec failure: something
     /// wrote a well-formed value that is not a definition, which makes it an
     /// integrity problem rather than a compatibility one.
-    #[error("catalog entry for a {entity} has a malformed {field}: found {found}")]
+    #[error(
+        "catalog entry for {} {entity} has a malformed {field}: found {found}",
+        article(entity)
+    )]
     CatalogMalformed {
         /// Which kind of entry it was.
         entity: &'static str,

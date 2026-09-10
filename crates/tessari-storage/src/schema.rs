@@ -19,8 +19,15 @@
 //! A [`FieldKind`] constrains a **present, non-null** value. `none` passes,
 //! because the field is not there — the rule an index already applies to a
 //! record missing an indexed field — and `null` passes, because that is SQL's
-//! rule for a typed column. So `TYPE string` does not make a field mandatory;
-//! requiring a value is a separate constraint this milestone does not have.
+//! rule for a typed column. So `TYPE string` does not make a field mandatory:
+//! `REQUIRED` is the separate constraint that does, and it is the one constraint
+//! about **absence**, which is why it is checked over the declarations below
+//! rather than over what the record holds.
+//!
+//! `DEFAULT` runs before that check, so a required field carrying a default is
+//! satisfied by a write that omits it and by one that sends `none`. An explicit
+//! `null` is refused: absence and a value meaning nothing are different answers,
+//! and a default fills the first.
 //!
 //! A `SCHEMAFULL` table additionally refuses a field it has no declaration for.
 //! That is what turns a set of declarations into a schema, because the mistake
@@ -62,7 +69,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use tessari_encoding::{LogRecord, RecordValue, decode_payload};
 use tessari_types::{Assertion, DatabaseId, FieldKind, NamespaceId, RecordId, TableId, Value};
 
-use crate::catalog::{Catalog, CatalogChange, catalog_change};
+use crate::catalog::{
+    Catalog, CatalogChange, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, catalog_change,
+};
 use crate::error::{Error, Result};
 use crate::sealing::KEYS_FIELD;
 use crate::store::Store;
@@ -87,6 +96,9 @@ struct TableSchema {
     /// nowhere else**. Without the flag the exemption is by name, and one field
     /// name would escape strictness on every ordinary table too.
     vault: bool,
+    /// Whether this is a queue, which decides the same one thing for the three
+    /// fields the queue engine writes onto a record it hands out.
+    queue: bool,
 }
 
 impl TableSchema {
@@ -133,7 +145,6 @@ type TableAddress = (NamespaceId, DatabaseId, TableId);
 /// any of them is raised, so a caller writing a batch is told about all of it at
 /// once rather than one commit at a time.
 pub(crate) fn validate(store: &Store, record: &LogRecord) -> Result<()> {
-    let tightened = tightened_tables(record)?;
     let touched: BTreeSet<TableAddress> = record
         .mutations()
         .iter()
@@ -141,11 +152,27 @@ pub(crate) fn validate(store: &Store, record: &LogRecord) -> Result<()> {
         .map(|mutation| (mutation.namespace, mutation.database, mutation.table))
         .filter(|address| !is_system(address))
         .collect();
-    if tightened.is_empty() && touched.is_empty() {
+    // Whether anything here touches the catalog at all, asked before a snapshot
+    // is taken. Which tables a record tightens can no longer be read from the
+    // record alone — a dropped field carries only its id, so its table has to be
+    // read back — and the early return exists to keep an ordinary write from
+    // paying for a view it has no use for.
+    let mut declares = false;
+    for mutation in record.mutations() {
+        if catalog_change(mutation)?.is_some() {
+            declares = true;
+            break;
+        }
+    }
+    if !declares && touched.is_empty() {
         return Ok(());
     }
 
     let mut view = store.begin()?;
+    let tightened = tightened_tables(&mut view, record)?;
+    if tightened.is_empty() && touched.is_empty() {
+        return Ok(());
+    }
     let mut schemas: BTreeMap<TableId, TableSchema> = BTreeMap::new();
     for address in touched.iter().chain(tightened.iter()) {
         let schema = build_schema(&mut view, record, address.2)?;
@@ -327,6 +354,19 @@ fn check(schema: &TableSchema, value: &Value, id: &RecordId) -> Option<Error> {
             // so the exemption does not hand one field name a way past strictness
             // on every other table.
             None if schema.vault && name == KEYS_FIELD => {}
+            // The three fields the queue engine writes are in exactly the
+            // position the vault's key set is in: nobody declares them, and the
+            // engine writes them onto the record **after** this validation's
+            // caller handed it over — so a strict queue would refuse every claim
+            // it had just taken. Conditioned on the kind, so three field names
+            // do not escape strictness on every ordinary table; and it opens
+            // nothing, because a caller who writes them is refused before this
+            // by the guard that says they are the engine's.
+            None if schema.queue
+                && matches!(
+                    name.as_str(),
+                    QUEUE_ATTEMPTS | QUEUE_CLAIMED_UNTIL | QUEUE_CLAIMED_BY
+                ) => {}
             None if schema.schemafull => {
                 return Some(Error::UndeclaredField {
                     table: schema.name.clone(),
@@ -365,20 +405,115 @@ fn check(schema: &TableSchema, value: &Value, id: &RecordId) -> Option<Error> {
     None
 }
 
-/// The schema a table will have once this record is applied.
-fn build_schema(
+/// One stored record that disagrees with what its table declares now.
+///
+/// An **answer**, not a refusal, which is the whole reason this type exists
+/// beside [`Error`]: a check that raised on the first disagreement would make an
+/// operator fix a table one statement at a time, and the count is the thing they
+/// need before they can decide whether to fix the data or the declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Violation {
+    /// The record's identity, as a statement would name it.
+    pub record: String,
+    /// The field the disagreement is about.
+    pub field: String,
+    /// Which rule it broke, as one stable word.
+    ///
+    /// Stable because a caller scripting a repair matches on this and reads the
+    /// detail; a message is written for a person and may be reworded, and a
+    /// caller that had to parse one would break when it was.
+    pub rule: &'static str,
+    /// The disagreement as the store words it when it refuses a write.
+    ///
+    /// The same sentence, so that a check run before a tightening statement and
+    /// the tightening statement's own refusal cannot describe the same record
+    /// differently.
+    pub detail: String,
+}
+
+impl Violation {
+    /// The answer shape for a refusal the schema pass produced.
+    ///
+    /// `None` for anything else, which cannot arise from [`check`] and is not
+    /// asserted away: a variant added there and forgotten here would otherwise
+    /// become a violation this reports as clean.
+    fn of(refusal: &Error) -> Option<Self> {
+        let (record, field, rule) = match refusal {
+            Error::MissingRequiredField { record, field, .. } => {
+                (record.clone(), field.clone(), "required")
+            }
+            Error::UndeclaredField { record, field, .. } => {
+                (record.clone(), field.clone(), "undeclared")
+            }
+            Error::AssertionViolation { record, field, .. } => {
+                (record.clone(), field.clone(), "assert")
+            }
+            Error::SchemaViolation { record, field, .. } => {
+                (record.to_string(), field.to_string(), "type")
+            }
+            _ => return None,
+        };
+        Some(Self {
+            record,
+            field,
+            rule,
+            detail: refusal.to_string(),
+        })
+    }
+}
+
+/// Every stored record of one table that disagrees with what it declares now.
+///
+/// The question a tightening statement answers by refusing, asked on its own.
+/// A table that was strict from the start cannot hold a record that contradicts
+/// it — the apply path saw every one of them. A table that **became** strict is
+/// checked at the moment it became so and never again, and between those two
+/// there is a table that has a declaration nobody has ever held its rows to: one
+/// restored from a backup taken before the declaration, or one whose rows were
+/// written while a field was optional and whose operator wants to know what
+/// stands in the way of requiring it.
+///
+/// At most one violation per record, because [`check`] stops at the first: a
+/// record that is wrong in two ways is one record to go and look at.
+///
+/// It reads the whole table, which is the only honest way to answer, and it is
+/// therefore a statement an operator runs rather than something the store does
+/// on its own.
+pub fn violations(
     view: &mut Transaction<'_>,
-    record: &LogRecord,
+    namespace: NamespaceId,
+    database: DatabaseId,
     table: TableId,
-) -> Result<TableSchema> {
+) -> Result<Vec<Violation>> {
+    let schema = declared_schema(view, table)?;
+    if schema.constrains_nothing() {
+        return Ok(Vec::new());
+    }
+    let mut found = Vec::new();
+    for (id, payload) in view.sweep_table(namespace, database, table)? {
+        let Some(refusal) = check(&schema, &decode_payload(&payload)?, &id) else {
+            continue;
+        };
+        found.extend(Violation::of(&refusal));
+    }
+    Ok(found)
+}
+
+/// The schema a table has as the catalog stands.
+///
+/// The half of [`build_schema`] that reads nothing but the catalog, so that a
+/// caller with no log record in hand — [`violations`] — asks the same question
+/// the apply path asks and cannot drift from it by asking a second way.
+fn declared_schema(view: &mut Transaction<'_>, table: TableId) -> Result<TableSchema> {
     let defined = Catalog::new(view).table(table)?;
-    let mut name = defined
+    let name = defined
         .as_ref()
         .map(|found| found.name.clone())
         .unwrap_or_default();
-    let mut vault = defined.as_ref().is_some_and(|found| found.is_vault());
-    let mut schemafull = defined.is_some_and(|found| found.schemafull);
-    let mut fields: BTreeMap<String, Declared> = Catalog::new(view)
+    let vault = defined.as_ref().is_some_and(|found| found.is_vault());
+    let queue = defined.as_ref().is_some_and(|found| found.is_queue());
+    let schemafull = defined.is_some_and(|found| found.schemafull);
+    let fields: BTreeMap<String, Declared> = Catalog::new(view)
         .fields_on(table)?
         .into_iter()
         .map(|declared| {
@@ -393,6 +528,28 @@ fn build_schema(
             )
         })
         .collect();
+    Ok(TableSchema {
+        name,
+        fields,
+        schemafull,
+        vault,
+        queue,
+    })
+}
+
+/// The schema a table will have once this record is applied.
+fn build_schema(
+    view: &mut Transaction<'_>,
+    record: &LogRecord,
+    table: TableId,
+) -> Result<TableSchema> {
+    let TableSchema {
+        mut name,
+        mut fields,
+        mut schemafull,
+        mut vault,
+        queue,
+    } = declared_schema(view, table)?;
 
     for mutation in record.mutations() {
         match catalog_change(mutation)? {
@@ -432,6 +589,7 @@ fn build_schema(
         fields,
         schemafull,
         vault,
+        queue,
     })
 }
 
@@ -440,7 +598,10 @@ fn build_schema(
 ///
 /// Loosening never needs a re-check: a dropped declaration only widens what is
 /// allowed, and a table redefined schemaless refuses less than it did.
-fn tightened_tables(record: &LogRecord) -> Result<BTreeSet<TableAddress>> {
+fn tightened_tables(
+    view: &mut Transaction<'_>,
+    record: &LogRecord,
+) -> Result<BTreeSet<TableAddress>> {
     let mut tables = BTreeSet::new();
     for mutation in record.mutations() {
         // Two things tighten a table, and the second one arrived when
@@ -462,6 +623,26 @@ fn tightened_tables(record: &LogRecord) -> Result<BTreeSet<TableAddress>> {
             Some(CatalogChange::TableDefined(defined)) if defined.schemafull => {
                 tables.insert((defined.namespace, defined.database, defined.id));
             }
+            // **Dropping a declaration is not always a loosening.** On a strict
+            // table the declaration is what made the field legal, so removing it
+            // leaves every stored record carrying that field contradicting the
+            // table's own catalog — with nothing raised, because the statement
+            // reads as a widening and was classified as one. The store's first
+            // rule is that it never holds data disagreeing with its catalog, and
+            // this was the way past it.
+            //
+            // The table is added whether or not it is strict, because that is
+            // decided by the schema built below and a second reading here could
+            // disagree with it. On a table that is not strict the re-check finds
+            // nothing, and the cost is one scan on a statement `DEFINE FIELD`
+            // already pays a scan for.
+            Some(CatalogChange::FieldDropped(address)) => {
+                if let Some(payload) = view.get(&address)? {
+                    let dropped =
+                        crate::catalog::FieldDefinition::from_value(&decode_payload(&payload)?)?;
+                    tables.insert((dropped.namespace, dropped.database, dropped.table));
+                }
+            }
             _ => {}
         }
     }
@@ -475,7 +656,7 @@ fn rows_after(
     address: &TableAddress,
 ) -> Result<Vec<(RecordId, Vec<u8>)>> {
     let mut rows: BTreeMap<RecordId, Vec<u8>> = view
-        .scan_table(address.0, address.1, address.2)?
+        .sweep_table(address.0, address.1, address.2)?
         .into_iter()
         .collect();
     for mutation in record.mutations() {

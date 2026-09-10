@@ -157,3 +157,16 @@ PUT small:'/tiny.bin' START 8 = 0xff;
 --- case: and the refused splice left the file as it was
 READ small:'/tiny.bin';
 --- expect: value 0x0001020304050607
+
+--- case: a bucket says what it is and the largest file it takes
+INFO FOR BUCKET small;
+--- expect: ok
+
+--- case: a table that holds no files is not a bucket to ask about
+DEFINE COLLECTION ledger;
+INFO FOR BUCKET ledger;
+--- expect: error Unknown
+
+--- case: and a name nothing declared refuses the same way, so the two tell apart from outside by nothing
+INFO FOR BUCKET absent;
+--- expect: error Unknown

@@ -5,7 +5,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use tessari_conformance::{FORMS, examples, forms_in, read, run, specification_path, uncovered};
+use tessari_conformance::{
+    FORMS, examples, forms_in, function_spellings, read, run, specification_path,
+    uncalled_functions, uncovered,
+};
 
 fn corpus_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -91,6 +94,34 @@ fn every_statement_form_has_a_case() {
         "{} of {} statement forms have no conformance case: {missing:?}",
         missing.len(),
         FORMS.len()
+    );
+}
+
+#[test]
+fn every_function_has_a_case() {
+    // The sibling of the ratchet above, and it is here because its absence had
+    // already cost something: four functions reached the shipped language with
+    // no conformance case, and two of them — `string::lower` and
+    // `string::concat` — had no test of any kind in the workspace. The
+    // statement half of this rule has been enforced since the corpus existed;
+    // the function half was a sentence nobody checked.
+    let scripts: Vec<String> = corpora()
+        .into_iter()
+        .flat_map(|(name, text)| {
+            read(&name, &text)
+                .unwrap()
+                .cases
+                .into_iter()
+                .map(|case| case.script)
+        })
+        .collect();
+
+    let missing = uncalled_functions(&scripts);
+    assert!(
+        missing.is_empty(),
+        "{} of {} functions have no conformance case: {missing:?}",
+        missing.len(),
+        function_spellings().len()
     );
 }
 

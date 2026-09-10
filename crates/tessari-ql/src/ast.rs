@@ -55,6 +55,18 @@ pub enum StatementKind {
         namespace: Option<Name>,
         /// The database to work in, when the statement names one.
         database: Option<Name>,
+        /// Who this session is, when it claims from a queue.
+        ///
+        /// A **string literal** and not an identifier, because it is data the
+        /// client chose rather than a catalog object — and deliberately not
+        /// declared anywhere first, so a worker starting under autoscale needs
+        /// no `DEFINE` before it can work.
+        ///
+        /// The same name on several sessions means **share the work**, which is
+        /// what a single declared name reads as. Nothing is fenced: sharing is
+        /// the point, and the identity that must not collide is the instance the
+        /// engine mints beside this, never this.
+        consumer: Option<String>,
     },
     /// `DEFINE NAMESPACE prod`
     DefineNamespace {
@@ -461,7 +473,7 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
-    /// `DEFINE CONSUMER orders_in FROM 'broker:9092' TOPIC 'orders' …`
+    /// `DEFINE KAFKA CONSUMER orders_in FROM 'broker:9092' TOPIC 'orders' …`
     ///
     /// Ingestion that is **declared rather than scripted**: one statement says
     /// what to read, how to read it, where it lands, and under which group, and
@@ -480,7 +492,7 @@ pub enum StatementKind {
     /// # What it refuses to say
     ///
     /// There is no exactly-once, and there is no schema inference. Both refusals
-    /// are also reported by `INFO FOR CONSUMER`, because a guarantee documented
+    /// are also reported by `INFO FOR KAFKA CONSUMER`, because a guarantee documented
     /// away from the point of configuration is one that will be misread.
     DefineConsumer {
         /// The consumer's catalog identity.
@@ -520,7 +532,7 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
-    /// `DROP CONSUMER orders_in` — stops it and forgets the declaration.
+    /// `DROP KAFKA CONSUMER orders_in` — stops it and forgets the declaration.
     DropConsumer {
         /// The name to remove.
         name: Name,
@@ -731,6 +743,246 @@ pub enum StatementKind {
         /// The vault to undefine.
         name: Name,
     },
+    /// `DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5`
+    ///
+    /// The eighth word in the row, and the first one whose whole capability is
+    /// a **hold that lapses**. Written out as what it stands for, a queue is an
+    /// ordinary table plus two rules the store enforces and a caller cannot:
+    /// a claim writes a deadline, and a record whose deadline has passed is
+    /// claimable again.
+    ///
+    /// Unlike [`StatementKind::DefineVector`] and [`StatementKind::DefineGeo`]
+    /// it does **not** desugar into fields and an index, because there is
+    /// nothing to declare that would produce the behaviour — a `claimed_until`
+    /// field on a plain table is a field, not a hold. What makes it a queue is
+    /// the kind, which is why the kind is what is stored.
+    DefineQueue {
+        /// The name to create.
+        name: Name,
+        /// How long a claim holds a record before it lapses.
+        ///
+        /// Required, with no default, for the reason `DEFINE VECTOR`'s width is:
+        /// declaring it is the whole capability. A queue whose holds never lapse
+        /// is a table with two extra fields, and a timeout the store guessed
+        /// would hand work to a second worker at a moment nobody chose.
+        timeout: Duration,
+        /// How many times one record may be handed out, when a ceiling was named.
+        ///
+        /// Absent is unlimited, which is a legitimate choice for work that
+        /// cannot poison — and a visible one, because leaving the clause out is
+        /// what says it.
+        attempts: Option<u32>,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DEFINE SERIES readings RETAIN 30d`
+    ///
+    /// A table whose answer has a floor. Past the retention a record is not
+    /// returned, whether or not its bytes have been removed — the removal is a
+    /// separate act, so a pass that lags costs storage and never an answer.
+    ///
+    /// Like [`StatementKind::DefineQueue`] it does not desugar into fields and
+    /// an index, because there is nothing to declare that would produce the
+    /// behaviour: a `retain` field on a plain table is a field, not a floor.
+    /// What makes it a series is the kind, which is why the kind is what is
+    /// stored — and the kind also fixes the identity, because the floor is a
+    /// position in the key and only a time-carrying identity has one.
+    DefineSeries {
+        /// The name to create.
+        name: Name,
+        /// How far back the table answers.
+        ///
+        /// Required, with no default, for the reason `DEFINE QUEUE`'s timeout
+        /// is: declaring it is the whole capability, and a retention the store
+        /// guessed would drop records at a boundary nobody chose.
+        retain: Duration,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DROP SERIES readings`
+    ///
+    /// Removes the table and everything in it, including the records past the
+    /// floor that reads had stopped answering with. They are records the store
+    /// still held; what the floor governed was the answer, not the storage.
+    DropSeries {
+        /// The name to remove.
+        name: Name,
+    },
+    /// `DROP QUEUE jobs`
+    ///
+    /// Removes the table and everything in it, held records included. A hold is
+    /// a field on a record rather than a resource somebody else owns, so there
+    /// is nothing here to wait for and nothing to release first.
+    DropQueue {
+        /// The queue to undefine.
+        name: Name,
+    },
+    /// `DEFINE VIEW active AS SELECT * FROM users WHERE active = true`
+    ///
+    /// A name for a read. Nothing is stored under it and nothing is maintained:
+    /// a statement naming the view is rewritten to carry the read, and the read
+    /// runs the way any other materialised read runs.
+    ///
+    /// # The read is kept as text, not as a tree
+    ///
+    /// The same choice a field's `DEFAULT` makes, and for the same stated
+    /// reason: a definition keeps the text it was written as, so `INFO` answers
+    /// with the statement somebody typed rather than with a re-rendered
+    /// statement that happens to mean the same thing. It also keeps the stored
+    /// record stable across a grammar that grows — a serialised syntax tree
+    /// would have to be versioned every time [`Select`] gained a field, and a
+    /// view written before a clause existed would decode into a read that had
+    /// silently lost it.
+    ///
+    /// The text is **parsed here** all the same, so a view that is not one
+    /// `SELECT` is refused where it is written rather than on the first read.
+    DefineView {
+        /// The name to create.
+        name: Name,
+        /// The read, exactly as it was written.
+        read: String,
+        /// Whether re-defining an existing name is accepted.
+        ///
+        /// It accepts rather than replaces: a repeat definition is refused by
+        /// the catalog's own name reservation, so changing a view is `DROP VIEW`
+        /// and then `DEFINE VIEW`, and this clause only makes a provisioning
+        /// script re-runnable.
+        if_not_exists: bool,
+    },
+    /// `DROP VIEW active`
+    ///
+    /// Removes the definition, which is all there is: a view holds no records,
+    /// no index and no keyspace, so nothing survives it and nothing else has to
+    /// be cleaned up.
+    DropView {
+        /// The view to undefine.
+        name: Name,
+    },
+    /// `CLAIM FROM jobs` · `CLAIM 10 FROM jobs`
+    ///
+    /// Takes the first claimable records in identity order and holds each of
+    /// them until the queue's declared timeout has passed, answering with the
+    /// records so the worker can do the work.
+    ///
+    /// **It is a statement rather than a clause on `SELECT`**, because it
+    /// writes, and a reading verb that wrote would be lying about what it does —
+    /// the same reason `RELATE` is its own statement rather than a flavour of
+    /// `CREATE`.
+    ///
+    /// **Nothing claimable answers zero records and is not an error.** A worker
+    /// polls; an empty queue is the ordinary case, not a fault.
+    ///
+    /// **It is not idempotent**, and that is worth knowing before relying on it:
+    /// a worker whose reply is lost and which asks again receives a *different*
+    /// record, while the first stays held until its deadline passes. Nothing is
+    /// lost — delivery is at-least-once — but a claim retry is not free.
+    Claim {
+        /// The queue to take from.
+        table: TableRef,
+        /// How many records at most.
+        ///
+        /// One when the statement named no number.
+        ///
+        /// Zero is refused by the grammar, because a claim for no records is not
+        /// a claim. The **upper** bound is the store's refusal rather than the
+        /// grammar's, on the split `DEFINE VECTOR` already makes about its
+        /// distance: how much a store will hand out in one statement is the
+        /// store's question, and unbounded it is one statement holding the whole
+        /// queue for the whole timeout while every other worker waits.
+        count: u64,
+        /// Where the statement sits.
+        span: Span,
+    },
+    /// `CLAIM jobs:7`
+    ///
+    /// A hold on the record the caller names, rather than on whichever record
+    /// the walk reaches first.
+    ///
+    /// **The same write by a second door.** It sets the two per-record fields
+    /// [`Self::Claim`] sets, under the same declared timeout, so replication,
+    /// restart and leader change are unchanged — a claim is still an ordinary
+    /// logged write.
+    ///
+    /// **Existence is an error and contention is an answer.** A record that is
+    /// not there raises, as `RELEASE` does, because a caller who named a record
+    /// has to be told it named nothing. A record somebody holds, or one whose
+    /// attempts are spent, answers **no records and no error**, which is the
+    /// selecting form's own convention: nothing claimable is the ordinary case.
+    ///
+    /// **It skips the walk, so arrival order is a promise of [`Self::Claim`]
+    /// alone.** A caller mixing the two forms can take a record the walk had not
+    /// reached, which is the point of naming one.
+    ///
+    /// **The attempt count moves.** A hand-out is a hand-out however the record
+    /// was chosen — so a queue used as a lock table is declared without an
+    /// `ATTEMPTS` ceiling, or it stops locking once the ceiling is reached.
+    ClaimRecord {
+        /// The record to hold.
+        target: RecordTarget,
+        /// Where the statement sits.
+        span: Span,
+    },
+    /// `RELEASE jobs:7` · `RELEASE jobs:7 FOR CONSUMER 'billing'`
+    ///
+    /// Clears a hold now rather than at its deadline, so a worker that knows it
+    /// has failed — or that is shutting down — returns its work in milliseconds
+    /// instead of in `TIMEOUT`.
+    ///
+    /// It does **not** touch the attempt count. The count is taken at the claim,
+    /// and a record that was handed out was handed out whatever happened next;
+    /// moving it here would make a deliberate hand-back and a crash count
+    /// differently for no reason a caller could predict.
+    ///
+    /// **The bare form compares instances and the named form compares groups**,
+    /// exactly as [`Self::ReleaseAll`] does, and for the same reason: taking a
+    /// live colleague's work is the operation you have to type out. The named
+    /// form exists because a client that holds ONE connection for many logical
+    /// callers is minted a fresh instance at every `USE CONSUMER`, so the
+    /// instance-strict form cannot say *let go of the record this caller took*.
+    ///
+    /// **Naming a consumer is not a master key.** A record another group holds
+    /// gives the same refusal the bare form gives, carrying the holder's name,
+    /// and a hold nobody signed belongs to no group and is freed by the bare
+    /// form alone.
+    Release {
+        /// The record to release.
+        target: RecordTarget,
+        /// The group whose hold to clear, when the statement named one.
+        consumer: Option<String>,
+        /// Where the statement sits.
+        span: Span,
+    },
+    /// `RELEASE ALL FROM jobs` · `RELEASE ALL FROM jobs FOR CONSUMER 'billing'`
+    ///
+    /// Clears every hold this session's **instance** holds in one queue, or
+    /// every hold a named **consumer** holds there.
+    ///
+    /// **It names its queue, for the reason [`Self::Claim`] names its queue.**
+    /// A form that named none would have to sweep every queue in the database:
+    /// unbounded in cost, and — worse — a caller granted write on some of them
+    /// would get a partial success that looked like a whole one, because the
+    /// statement cannot refuse a table it was never told about. One table is one
+    /// permission question with one answer.
+    ///
+    /// **The bare form is the safe one and the group form is spelled out.** A
+    /// worker that crashed and came back holds a *new* instance, so reclaiming
+    /// its predecessor's work is the named-consumer form — the operation that
+    /// can take a live colleague's work is the one you have to type.
+    ///
+    /// **It answers the records it released, not a count.** A caller cannot list
+    /// what it holds without reading first, and a session ending after a crash
+    /// is the caller least able to read anything; a number would leave that read
+    /// where it is.
+    ///
+    /// The attempt count is untouched, for [`Self::Release`]'s reason.
+    ReleaseAll {
+        /// The queue to let go of.
+        table: TableRef,
+        /// Whose holds to drop, or this session's instance when absent.
+        consumer: Option<String>,
+        /// Where the statement sits.
+        span: Span,
+    },
     /// `ALTER TABLE users ALTER FIELD email TYPE string REQUIRED`
     ///
     /// Redeclares a field that already exists, which a second `DEFINE FIELD`
@@ -775,6 +1027,26 @@ pub enum StatementKind {
         table: TableRef,
         /// What to change about it.
         change: TableChange,
+    },
+    /// `CHECK TABLE readings`
+    ///
+    /// Every stored record that disagrees with what the table declares **now**,
+    /// as an answer rather than a refusal.
+    ///
+    /// A table that was strict from the start cannot hold such a record: the
+    /// apply path saw every write. A table that *became* strict is held to its
+    /// new declaration at the moment it becomes so, and never again. Between
+    /// those two sits the table nobody has checked — one restored from a backup
+    /// taken before a declaration, or one whose operator wants to know what
+    /// stands in the way of making a field required before writing the statement
+    /// that would refuse.
+    ///
+    /// It reads the whole table, which is the only honest way to answer, and
+    /// that is why it is a statement somebody runs and not something the store
+    /// decides to do.
+    CheckTable {
+        /// The table to hold to its own declarations.
+        table: TableRef,
     },
     /// `REBUILD INDEX by_embedding ON papers`
     ///
@@ -1035,6 +1307,40 @@ pub enum StatementKind {
         /// is that removing a table has to be *said*.
         limit: DeleteBound,
     },
+    /// `DELETE FROM events:1000..2000 LIMIT ALL` — every record in a span of
+    /// identities.
+    ///
+    /// The retention statement, once a table's identities are its time order.
+    /// [`Self::DeleteWhere`] over the same records reads the table, tests each
+    /// one and removes the matches; this walks the keyspace between two
+    /// positions and removes what is there, so its cost is the size of what it
+    /// removes rather than the size of what it keeps.
+    ///
+    /// # Why there is no condition
+    ///
+    /// A conditional delete re-tests every candidate against the whole
+    /// condition, because an index **narrows** and the condition decides. A span
+    /// narrows nothing — it *is* the set the statement named — so there is
+    /// nothing left to decide and nothing to re-test. Allowing a `WHERE` beside
+    /// it would put the two rules in one statement and make the answer depend on
+    /// which of them the reader believed.
+    ///
+    /// The bound is required for [`Self::DeleteWhere`]'s reason: removing an
+    /// unbounded set has to be said.
+    DeleteSpan {
+        /// The table being cleared out.
+        table: TableRef,
+        /// The first identity to remove, always included.
+        lower: Identity,
+        /// The last, included only when the bound was written `..=`.
+        upper: Identity,
+        /// Whether the upper bound is itself removed.
+        inclusive: bool,
+        /// Where the span sits, for a refusal about a bound.
+        span: Span,
+        /// How much this statement may remove.
+        limit: DeleteBound,
+    },
     /// `GET sessions:'abc'` as a statement of its own.
     Get {
         /// The key to read.
@@ -1206,6 +1512,20 @@ pub enum InfoSubject {
     /// length, a fingerprint or a key identifier would be a slower oracle rather
     /// than none, and a reader would have no way to tell it was one.
     Vault(Name),
+    /// `INFO FOR BUCKET media` — one bucket's name and the largest file it takes.
+    ///
+    /// Distinct from `INFO FOR TABLE` for the reason [`InfoSubject::Vault`] is:
+    /// the answer must carry the word that created the thing, or a round trip
+    /// re-executes as a table and the store stops being one.
+    ///
+    /// **It also exists to be asked before a listing.** A route that lists a
+    /// bucket needs to know a name is one, and until this subject existed there
+    /// was no statement to ask — so the HTTP listing answered `200` with an
+    /// empty body for a plain table while the three routes that write, read and
+    /// delete a file all refused it. A caller then concluded the bucket was
+    /// empty rather than absent, which is a wrong answer wearing a right one's
+    /// clothes.
+    Bucket(Name),
     /// `INFO FOR RECIPIENTS OF team:github` — who may one day open this record.
     ///
     /// The read half of the recipient set, and the reason the set is worth
@@ -1302,7 +1622,7 @@ pub enum InfoSubject {
     /// key: it names no table, so a grant check would pass over it vacuously,
     /// and roles and endpoints have no smaller truthful form to hand a viewer.
     Node,
-    /// `INFO FOR CONSUMER orders_in` — one consumer's declaration and its
+    /// `INFO FOR KAFKA CONSUMER orders_in` — one consumer's declaration and its
     /// running state on **this** node.
     ///
     /// Two named groups rather than one flat object, for [`InfoSubject::Node`]'s
@@ -1316,7 +1636,7 @@ pub enum InfoSubject {
     /// not observed, and the second loudest is that its delivery guarantee is
     /// documented somewhere other than where a person configures it.
     Consumer(Name),
-    /// `INFO FOR CONSUMERS` — every declared consumer, and whether it is running.
+    /// `INFO FOR KAFKA CONSUMERS` — every declared consumer, and whether it is running.
     Consumers,
 }
 
@@ -1476,6 +1796,35 @@ pub struct Select {
     pub omit: Vec<FieldPath>,
     /// Which access path the statement resolves to.
     pub from: Source,
+    /// Whether `WITHOUT SCAN GUARD` was written, lifting the planner's veto.
+    ///
+    /// The guard it lifts is a **policy** and not a measurement: an index is
+    /// served when it can produce at most half the table, and half is a
+    /// threshold this store chose rather than a number a cost model produced.
+    /// `plan::worth_serving` counts with a bounded probe, so what can be wrong
+    /// here is the threshold and never the count — which is why the clause is
+    /// spelled as lifting a guard rather than as overriding an estimate.
+    ///
+    /// It lifts the veto and does **not** choose the path. An override naming an
+    /// index would be a router, and a router owes answers to every question a
+    /// router raises: what an inapplicable named index does to the predicate,
+    /// how it composes with ranking, what `EXPLAIN` then reports. This is one
+    /// flag reaching one function — the ranking still chooses, an inapplicable
+    /// index still changes nothing, and the worst case of misuse is the
+    /// behaviour that shipped before the guard existed.
+    ///
+    /// A separate clause rather than a word on `USING INDEX`, deliberately: that
+    /// clause is an assertion about what the read did, and a modifier turning it
+    /// into an instruction would be a pun a reader can miss. This one cannot be
+    /// missed.
+    ///
+    /// **Its removal condition, recorded at birth** (Q-494): it exists because
+    /// the threshold is a policy, and it is retired when the planner acquires a
+    /// cost model or statistics that make the policy unnecessary. A hint with no
+    /// recorded removal condition is scar tissue — it freezes plans against a
+    /// planner that has since improved, and nobody dares remove it because
+    /// nobody remembers why it is there.
+    pub lift_scan_guard: bool,
     /// Where `ONLY` was written, when it was.
     ///
     /// The clause is an **assertion by the author** that at most one record
@@ -1808,6 +2157,39 @@ pub enum Source {
     Record(RecordTarget),
     /// Every record of a table.
     Table(TableRef),
+    /// `SELECT * FROM events:1000..2000` — every record whose identity falls in
+    /// a span.
+    ///
+    /// # Why this is a source and not a condition
+    ///
+    /// `WHERE id >= 1000 AND id < 2000` asks the same question and is answered
+    /// by reading the table and testing every record. This is answered by
+    /// **walking the keyspace between two positions**, because a record's key is
+    /// its table prefix followed by its identity — so the records outside the
+    /// span are not read, not decoded and not tested. The difference is the
+    /// whole reason the variant exists, and it is a difference in cost of the
+    /// same order as an index.
+    ///
+    /// # What it is a window over
+    ///
+    /// Identity order, which for both identity kinds this store issues is also
+    /// **write order**: `Int` is a per-table counter, and `Uuid` is UUID v7,
+    /// which carries a timestamp in its leading bits. So a span of identities is
+    /// a span of time *as the store saw it*. It is not a span of an event time a
+    /// record carries in a field — if events arrive out of order, those are two
+    /// different questions, and the one this answers is the arrival.
+    Range {
+        /// The table.
+        table: TableRef,
+        /// The first identity in the span, which is always inside it.
+        lower: Identity,
+        /// The last, inside the span only when the bound was written `..=`.
+        upper: Identity,
+        /// Whether the upper bound is itself included.
+        inclusive: bool,
+        /// Where the whole source sits.
+        span: Span,
+    },
     /// A walk along one or more edge tables.
     ///
     /// `users:1->follows` reads the edge records themselves;

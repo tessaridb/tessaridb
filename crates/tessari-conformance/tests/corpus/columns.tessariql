@@ -73,15 +73,15 @@ DEFINE ANALYZER simple FILTERS lowercase;
 DEFINE TABLE notes (body string ANALYZER simple);
 --- expect: ok
 
---- case: naming an analyzer that does not exist is accepted, as it is in the long spelling
-# Recorded rather than endorsed. A field attaches an analyzer by name and
-# nothing checks the name at declaration time, so this succeeds and the symptom
-# arrives later as a search that quietly matches nothing. The two spellings
-# agree, which is the property this file is here to hold — the columnar form
-# reproduces the gap rather than inventing a second behaviour — and closing it
-# is a change to what declaring a field means, not to how it is written.
+--- case: naming an analyzer that does not exist is refused, as it is in the long spelling
+# A field attaches an analyzer by name, and the name is resolved where it is
+# written. `DROP ANALYZER` already counts the fields naming one before removing
+# it; this is that guard's other end, and without it a single misspelling
+# reached the state the drop-side refusal exists to prevent — with no error and
+# a search that quietly matched nothing. The two spellings agree, which is the
+# property this file is here to hold.
 DEFINE TABLE drafts (body string ANALYZER missing);
---- expect: ok
+--- expect: error Unknown
 
 --- case: columns imply strictness, and the word is not needed to get it
 DEFINE TABLE tight (name string);

@@ -139,6 +139,31 @@ pub const ALL: &[Workload] = &[
         about: "a nearest-neighbour read over a scan — the number an HNSW index has to beat",
         run: vector,
     },
+    Workload {
+        name: "span",
+        about: "the same window over identity read three ways — by span, by scan and by a value index — with the record sets compared",
+        run: crate::span::span,
+    },
+    Workload {
+        name: "retention",
+        about: "the same window removed by a span and by a condition, at four table sizes — whether the cost follows what is removed or what is kept",
+        run: crate::retention::retention,
+    },
+    Workload {
+        name: "series",
+        about: "the same window removed by a declared RETAIN clause and by a condition, at four table sizes — whether the clause costs what it removes or what the table keeps",
+        run: crate::series::series,
+    },
+    Workload {
+        name: "spread",
+        about: "the same writes into one table and across a hundred, alternating write by write — whether the record count's disk cost is its own version chain or the store",
+        run: crate::spread::spread,
+    },
+    Workload {
+        name: "queue",
+        about: "what a claim costs behind a prefix of held and of dead-lettered records, and a drain taken one at a time against one taken in a batch",
+        run: crate::queue::queue,
+    },
 ];
 
 /// The workload of this name, if there is one.

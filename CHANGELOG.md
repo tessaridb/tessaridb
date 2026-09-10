@@ -12,7 +12,146 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.1.0-beta — 2026-09-10
+
+**Released.** Tagged `v0.1.0-beta` on `main`, and published as
+[`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb) —
+`0.1.0-beta` and `latest`, `linux/amd64` and `linux/arm64`.
+
+a session, `CLAIM` signs the hold with it, and `RELEASE ALL FROM jobs` hands back
+everything that session holds — answering the records it freed rather than a
+count. Releasing somebody else's hold is refused, naming them; before this, any
+caller who could write the table could drop any hold with nothing anywhere
+saying so.
+
+**The name is shared on purpose and the identity that must not collide is not
+yours.** Several workers under one name divide the work between them and none
+displaces another — that is what one declared name means. Only the *instance* is
+unique, and the store mints it, so two workers cannot collide however they are
+configured and there is nothing to fence.
+
+`RELEASE ALL FROM jobs FOR CONSUMER 'billing'` reaches the whole group, including
+live sessions, which is how a restarted worker reclaims what its predecessor
+left. It is spelled out because it can take work from somebody still doing it.
+
+**A queue may be `SCHEMAFULL`.** It could not be before: the three fields the
+engine writes onto a record it hands out — `attempts`, `claimed_until` and
+`claimed_by` — are declared by nobody and are written after a caller's record has
+been validated, so a strict queue refused every claim it had just taken. They are
+now excused by the table's kind, exactly as a vault's key set is, and a caller
+who writes them is still refused by the guard that says they are the engine's.
+
+`RELEASE jobs:7 FOR CONSUMER 'billing'` is the same choice about one record. The
+bare form compares instances, so it frees only what this session took; the named
+form compares group names. A client that holds one connection for many logical
+callers needs it, because it is minted a fresh instance every time it declares a
+name and its own earlier hold would otherwise belong to somebody else. A hold
+nobody signed belongs to no group and the named form leaves it untouched.
+
+A session that declares nothing signs nothing, and its holds stay releasable by
+anybody — so nothing written before this changes behaviour. A different consumer
+name does **not** replay the queue: records are deleted when the work is done, so
+a name scopes releasing and reading and nothing else.
+
+**Broker ingestion now names its broker: `DEFINE KAFKA CONSUMER`.** The
+statement is otherwise unchanged — same clauses, same guarantees, same
+refusals — but `DEFINE CONSUMER`, `DROP CONSUMER` and `INFO FOR CONSUMER[S]`
+are gone and their bare spellings are **refused with a message naming the
+replacement**, rather than left to mean something else later.
+
+The reason is that the general word was being held by one broker. Every noun in
+the statement — brokers, topic, group — comes from Kafka, so naming it is
+honest, and it leaves room for a second broker to be added without a fight over
+whose statement `DEFINE CONSUMER` is. The word itself is wanted back for a
+queue's readers, which is what a consumer is everywhere else.
+
+`KAFKA` is **contextual and not reserved**: it is a subject after `DEFINE`,
+`DROP` and `INFO FOR`, and an ordinary identifier everywhere else, so a table,
+field or parameter called `kafka` is still spellable. That is asserted by a
+test rather than claimed.
+
+**A view is a name for a read.** `DEFINE VIEW engineers AS SELECT * FROM staff
+WHERE team = 'eng'`, and then `SELECT * FROM engineers` anywhere a table can be
+read. Nothing is stored under it and nothing is maintained: a statement naming a
+view is rewritten to carry the read before anything else happens, so the read
+runs the way any other read does and `INFO FOR TABLE` answers with the statement
+that declared it, character for character.
+
+Three things about it are decisions rather than details, and each is in the
+reference beside the statement.
+
+**It is a name for a read, not a faster way to run one.** The view's read is held
+whole before your statement asks anything of it, so `SELECT * FROM engineers
+LIMIT 1` reads what the view reads — it does not stop where the answer fills, the
+way the same statement over a table does. It is bounded rather than unbounded: a
+view naming no `LIMIT` runs under the ceiling every held read runs under, and
+past ten thousand records the read is **refused** rather than shortened.
+
+**A view reads with the caller's permissions, and a grant on a view is refused.**
+The tables the view names are checked against your own grants, exactly as if you
+had written the read out by hand — so a caller who may not read `staff` may not
+read a view over `staff`, and the refusal names `staff`. Views elsewhere often
+run with the authority of whoever declared them; that is a separate decision with
+its own consequences and is not what this word does today.
+
+**Maintained results are the change feed's job.** There is no `MATERIALIZED`
+spelling and no plan for one: a store that needs a maintained result writes one
+into an ordinary table from the change feed, where the writes it must react to
+already are — and the result is then a table you can index, back up and grant on.
+Maintaining it inside the writing transaction would make every write to a table
+pay for every view over it, silently.
+
+A view is the ninth table kind, so the on-disk format changes only by a field on
+a table definition that did not exist. The downgrade is sharper than the queue's
+and is stated rather than defended: a build that predates views reads a view's
+entry as a plain table over an empty prefix, so `SELECT` answers **nothing**
+rather than the view's records.
+
+**An engine was added.** A **queue** is a table whose records are handed out one
+holder at a time under a hold that lapses — `DEFINE QUEUE jobs TIMEOUT 30s
+ATTEMPTS 5`, then `CLAIM FROM jobs`, `DELETE jobs:7` when the work is done and
+`RELEASE jobs:7` to hand it back early. That makes ten engines over one substrate
+rather than nine. **1321 conformance cases** define the language and run in the
+build, up from 1237.
+
+The design is the part worth reading, because a queue is normally where a store
+grows a lease manager and this one does not. A claim is an ordinary **write**, so
+it is sequenced into the log and replicated by the mechanism every other write
+uses. The instant it lapses is computed once by the session taking it and
+**written into the record** — the rule `time::now()` already follows, so a
+replica applies what was written rather than asking its own clock. And a hold
+lapses because a later reader finds that instant in the past: the comparison is
+the expiry, so there is no reaper, no timer and no state outside the log to
+rebuild after a restart.
+
+Exclusivity needed no new machinery either. Two workers that pick one record both
+write that record, which the store's snapshot isolation already resolves — the
+first committer wins and **the loser is refused**, writing nothing. The retry
+belongs to the worker: the store does not quietly re-select the next record on
+its behalf, so a worker loop treats a write-conflict refusal the way it treats an
+empty answer, and one that has steady work claims a batch. This paragraph said
+"and re-selects" until it was measured with four competing processes; the
+sentence was wrong and the correction is here rather than silent.
+
+Delivery is **at-least-once**, the same guarantee `DEFINE KAFKA CONSUMER` states, and
+`CLAIM` is **not idempotent**: a worker whose reply is lost and which asks again
+gets a different record while the first stays held until its deadline. Both are
+written into the reference rather than left to be derived.
+
+The on-disk format changes only by a field on a table definition that did not
+exist. A definition written by `0.0.6-beta` reads back unchanged, and a store
+holding a queue opened by `0.0.6-beta` reads that table as a plain table —
+records intact, and every refusal the word carries gone.
+
+**The `0.0.3-alpha` section below says 1105 again**, which is what its own tag
+carries. Successive waves had been raising that number to the corpus's current
+size so that the check requiring the CHANGELOG to state the badge's figure would
+pass, which quietly made a released section describe a release it is not about.
+The count above satisfies that check instead.
+
 ## 0.0.6-beta — 2026-09-08
+
+### The release itself
 
 **Released.** Tagged `v0.0.6-beta` on `main`, and published as
 [`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb) —
@@ -224,7 +363,7 @@ same records under the new one.
 This release is full-text search. `MATCHES` could ask for a whole word and score
 it; it can now ask for the word a reader has started typing, the word they meant
 rather than the one they typed, a phrase, either of two words, and not a third —
-and it can say where in the text it matched. 1159 conformance cases define the
+and it can say where in the text it matched. 1105 conformance cases define the
 language and run in the build, up from 1035.
 
 Nothing here changes an answer a `0.0.2-alpha` statement already gave. Every

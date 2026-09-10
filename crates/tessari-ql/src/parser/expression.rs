@@ -501,7 +501,7 @@ impl Parser<'_> {
     ///
     /// A float is refused rather than converted: `users:1.0` and `users:1` would
     /// otherwise be one record or two depending on how the text was written.
-    fn record_id(&mut self, at: Span) -> Result<Identity> {
+    pub(super) fn record_id(&mut self, at: Span) -> Result<Identity> {
         if self.peek_keyword() == Some(Keyword::Uuid) {
             let (text, span) = self.marked_string("text after `uuid`")?;
             let bytes = parse_uuid(&text).ok_or(Error::InvalidUuid { text, span })?;

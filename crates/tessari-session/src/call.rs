@@ -8,7 +8,7 @@
 //! there. A message saying only "wrong type" makes the author guess which of
 //! three arguments it meant.
 
-use tessari_ql::{Function, Span};
+use tessari_ql::{Aggregate, Function, Span};
 use tessari_types::{Datetime, Number, Value};
 
 use crate::error::{Error, Result};
@@ -61,6 +61,178 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         Function::CryptoSha512 => Ok(crate::digest::sha512(text_at(
             function, arguments, 0, span,
         )?)),
+        // On the same terms as the two above, and see `crate::digest` for what
+        // "the same terms" leaves out: both of these are checksums and neither
+        // decides anything an adversary has an interest in.
+        Function::CryptoMd5 => Ok(crate::digest::md5(text_at(function, arguments, 0, span)?)),
+        Function::CryptoSha1 => Ok(crate::digest::sha1(text_at(function, arguments, 0, span)?)),
+        Function::EncodingBase64 => Ok(crate::encoding::base64(bytes_at(
+            function, arguments, 0, span,
+        )?)),
+        Function::EncodingHex => Ok(crate::encoding::hex(bytes_at(
+            function, arguments, 0, span,
+        )?)),
+        // Text that spells no bytes answers `NONE` rather than failing: the
+        // kind was checked above, so what is left is a question about a value,
+        // and one unparseable row should narrow a read rather than end it.
+        Function::EncodingBase64Decode => Ok(crate::encoding::base64_decode(text_at(
+            function, arguments, 0, span,
+        )?)
+        .map_or(Value::None, Value::Bytes)),
+        Function::EncodingHexDecode => Ok(crate::encoding::hex_decode(text_at(
+            function, arguments, 0, span,
+        )?)
+        .map_or(Value::None, Value::Bytes)),
+        Function::StringStartsWith => {
+            let text = text_at(function, arguments, 0, span)?;
+            let prefix = text_at(function, arguments, 1, span)?;
+            Ok(Value::Bool(text.starts_with(prefix)))
+        }
+        Function::StringEndsWith => {
+            let text = text_at(function, arguments, 0, span)?;
+            let suffix = text_at(function, arguments, 1, span)?;
+            Ok(Value::Bool(text.ends_with(suffix)))
+        }
+        Function::StringContains => {
+            let text = text_at(function, arguments, 0, span)?;
+            let needle = text_at(function, arguments, 1, span)?;
+            Ok(Value::Bool(text.contains(needle)))
+        }
+        Function::StringIndexOf => {
+            let text = text_at(function, arguments, 0, span)?;
+            let needle = text_at(function, arguments, 1, span)?;
+            // `find` answers a **byte** offset and every other position in this
+            // language is a character, so it is converted rather than reported.
+            // The two agree on ASCII, which is exactly why the difference would
+            // survive a test corpus that never left it.
+            match text.find(needle) {
+                Some(at) => count(
+                    text.get(..at).map_or(0, |before| before.chars().count()),
+                    function,
+                    span,
+                ),
+                None => Ok(Value::None),
+            }
+        }
+        Function::StringReverse => Ok(Value::from(
+            text_at(function, arguments, 0, span)?
+                .chars()
+                .rev()
+                .collect::<String>()
+                .as_str(),
+        )),
+        Function::StringTrimStart => Ok(Value::from(
+            text_at(function, arguments, 0, span)?.trim_start(),
+        )),
+        Function::StringTrimEnd => Ok(Value::from(
+            text_at(function, arguments, 0, span)?.trim_end(),
+        )),
+        // Two numbers, in the value system's own order, so `math::min` and the
+        // `min` aggregate cannot disagree about which of two values is smaller.
+        Function::MathMin | Function::MathMax => {
+            let first = number_at(function, arguments, 0, span)?;
+            let second = number_at(function, arguments, 1, span)?;
+            let smaller = function == Function::MathMin;
+            let held = if (first <= second) == smaller {
+                first
+            } else {
+                second
+            };
+            Ok(Value::Number(held.clone()))
+        }
+        Function::MathSign => {
+            let number = number_at(function, arguments, 0, span)?;
+            let zero = Number::Integer(0);
+            Ok(Value::Number(Number::Integer(match number.cmp(&zero) {
+                core::cmp::Ordering::Less => -1,
+                core::cmp::Ordering::Equal => 0,
+                core::cmp::Ordering::Greater => 1,
+            })))
+        }
+        Function::MathTrunc => Ok(Value::Number(truncated(number_at(
+            function, arguments, 0, span,
+        )?))),
+        // `NONE` at zero and below, and `NONE` for a result no float holds, on
+        // `math::sqrt`'s reading: a NaN or an infinity compares false against
+        // everything including itself, so it travels through a filter and an
+        // ordering without ever saying it is not a number.
+        Function::MathLn | Function::MathExp => {
+            let number = number_at(function, arguments, 0, span)?;
+            let Some(held) = number.as_float() else {
+                return Err(Error::CallFailed {
+                    function,
+                    reason: "that number is outside the range a float holds",
+                    span,
+                });
+            };
+            let answer = if function == Function::MathLn {
+                if held <= 0.0_f64 {
+                    return Ok(Value::None);
+                }
+                held.ln()
+            } else {
+                held.exp()
+            };
+            if answer.is_finite() {
+                Ok(Value::Number(Number::float(answer)))
+            } else {
+                Ok(Value::None)
+            }
+        }
+        Function::ArrayConcat => {
+            let first = array_at(function, arguments, 0, span)?.to_vec();
+            let second = array_at(function, arguments, 1, span)?;
+            let mut held = first;
+            held.extend_from_slice(second);
+            Ok(Value::Array(held))
+        }
+        // One more element, whatever kind it is. Appending an array as a value
+        // and joining two arrays are different intentions, and a single
+        // function deciding between them by the argument's kind is how a caller
+        // appending a genuine array of two ends up with two elements.
+        Function::ArrayAppend => {
+            let mut held = array_at(function, arguments, 0, span)?.to_vec();
+            held.push(arguments.get(1).cloned().unwrap_or(Value::None));
+            Ok(Value::Array(held))
+        }
+        Function::ArrayIndexOf => {
+            let items = array_at(function, arguments, 0, span)?;
+            let wanted = arguments.get(1).cloned().unwrap_or(Value::None);
+            match items.iter().position(|held| *held == wanted) {
+                Some(at) => count(at, function, span),
+                None => Ok(Value::None),
+            }
+        }
+        // Folded by the **same accumulator the aggregates run**, rather than by
+        // a second implementation here. These fold one array inside one record
+        // and the aggregates fold a column across records — different
+        // questions, and two answers to "which of these is smaller" or "what do
+        // these add up to" would eventually differ on a decimal, a mixed group
+        // or an empty one. One code path is how they cannot.
+        Function::ArrayMin => folded(Aggregate::Min, function, arguments, span),
+        Function::ArrayMax => folded(Aggregate::Max, function, arguments, span),
+        Function::ArraySum => folded(Aggregate::Sum, function, arguments, span),
+        Function::ObjectEntries => Ok(Value::Array(
+            object_at(function, arguments, 0, span)?
+                .iter()
+                .map(|(name, value)| Value::Array(vec![Value::from(name.as_str()), value.clone()]))
+                .collect(),
+        )),
+        // Whether the field is **there**, which is not the same question as
+        // whether it holds something: a field explicitly holding `none` is
+        // present, and this is the only way to tell the two apart.
+        Function::ObjectHas => {
+            let fields = object_at(function, arguments, 0, span)?;
+            let name = text_at(function, arguments, 1, span)?;
+            Ok(Value::Bool(fields.contains_key(name)))
+        }
+        Function::ObjectMerge => {
+            let mut held = object_at(function, arguments, 0, span)?.clone();
+            for (name, value) in object_at(function, arguments, 1, span)? {
+                held.insert(name.clone(), value.clone());
+            }
+            Ok(Value::Object(held))
+        }
         Function::StringConcat => {
             let first = text_at(function, arguments, 0, span)?;
             let second = text_at(function, arguments, 1, span)?;
@@ -168,7 +340,7 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // Evaluated in the session, so the instant that reaches the log is a
         // value like any other — a replica applies what was written rather than
         // asking its own clock and reaching a different answer.
-        Function::TimeNow => now(function, span),
+        Function::TimeNow => Ok(Value::Datetime(instant(span)?)),
         // The six readings of a date, each named separately rather than sharing
         // one arm with a match inside it. A shared arm needs a fallback for the
         // function the outer match already excluded, and a fallback here is an
@@ -358,9 +530,20 @@ fn from_unix(function: Function, arguments: &[Value], span: Span) -> Result<Valu
     Ok(Value::Datetime(Datetime::from_seconds(seconds)))
 }
 
-fn now(function: Function, span: Span) -> Result<Value> {
+/// The instant this process's clock reads.
+///
+/// Shared with the queue engine, which needs the same instant for the same
+/// reason `time::now()` gives it to a statement: a claim's deadline is computed
+/// once here and **written**, so the value that reaches the log is one every
+/// node agrees about rather than a computation each of them repeats against its
+/// own clock.
+///
+/// It reports through [`Function::TimeNow`] whoever asks, because there is one
+/// clock and a caller reading a failure wants to know which one could not be
+/// read — not which internal path asked it.
+pub(crate) fn instant(span: Span) -> Result<Datetime> {
     let failed = |reason: &'static str| Error::CallFailed {
-        function,
+        function: Function::TimeNow,
         reason,
         span,
     };
@@ -368,9 +551,7 @@ fn now(function: Function, span: Span) -> Result<Value> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| failed("the clock is before the epoch"))?;
     let seconds = i64::try_from(since.as_secs()).map_err(|_| failed("the clock is unreadable"))?;
-    let instant = Datetime::new(seconds, since.subsec_nanos())
-        .ok_or_else(|| failed("the clock is unreadable"))?;
-    Ok(Value::Datetime(instant))
+    Datetime::new(seconds, since.subsec_nanos()).ok_or_else(|| failed("the clock is unreadable"))
 }
 
 /// An element count as a value, refusing one no integer can hold.
@@ -409,6 +590,47 @@ fn text_at(function: Function, arguments: &[Value], at: usize, span: Span) -> Re
     match arguments.get(at) {
         Some(Value::String(text)) => Ok(text),
         other => Err(wrong_type(function, at, "a string", named(other), span)),
+    }
+}
+
+/// One array folded by the accumulator the aggregates use.
+///
+/// The array is the group. Every value in it is offered in order, exactly as a
+/// record's value is offered when the fold is over rows, so the promotion
+/// rules, the treatment of an absence and the answer over nothing are not
+/// restated here — they are the ones already written down and already tested.
+fn folded(
+    aggregate: Aggregate,
+    function: Function,
+    arguments: &[Value],
+    span: Span,
+) -> Result<Value> {
+    let items = array_at(function, arguments, 0, span)?;
+    let mut running = crate::accumulate::Accumulator::for_aggregate(aggregate, span);
+    for value in items {
+        running.offer(value)?;
+    }
+    running.finish()
+}
+
+fn bytes_at(function: Function, arguments: &[Value], at: usize, span: Span) -> Result<&[u8]> {
+    match arguments.get(at) {
+        Some(Value::Bytes(held)) => Ok(held),
+        other => Err(wrong_type(function, at, "bytes", named(other), span)),
+    }
+}
+
+/// A number's whole part, toward zero, keeping its kind.
+///
+/// Its own function rather than an arm of [`reshape`]: that one is the four
+/// shapes `math::abs` and its neighbours give a number and its match is written
+/// per kind, and adding a fifth there would grow a table whose whole point is
+/// to be read at a glance.
+fn truncated(number: &Number) -> Number {
+    match number {
+        Number::Integer(held) => Number::Integer(*held),
+        Number::Decimal(held) => Number::Decimal(held.trunc()),
+        Number::Float(held) => Number::float(held.trunc()),
     }
 }
 
@@ -553,10 +775,24 @@ mod tests {
         Value::from(value)
     }
 
+    /// Compare two answers by their written form rather than by `PartialEq`.
+    ///
+    /// `Value`'s equality equates `Integer(3)`, `Float(3.0)` and
+    /// `Decimal("3.0")` deliberately, and the join relies on it. So an
+    /// assertion about which KIND a function answers cannot be written with
+    /// `assert_eq!` on the values themselves: it passes against a function
+    /// answering the other kind, and a kind is a difference the caller sees on
+    /// the wire (Q-76). The site that carries a message writes the comparison
+    /// out instead, so the message survives.
+    #[track_caller]
+    fn same(answered: impl core::fmt::Debug, expected: impl core::fmt::Debug) {
+        assert_eq!(format!("{answered:?}"), format!("{expected:?}"));
+    }
+
     #[test]
     fn a_length_counts_characters_and_not_bytes() {
         let answer = call(Function::StringLen, &[text("héllo")], at()).expect("a length");
-        assert_eq!(answer, Value::Number(Number::Integer(5)));
+        same(answer, Value::Number(Number::Integer(5)));
     }
 
     #[test]
@@ -617,14 +853,14 @@ mod tests {
     #[test]
     fn rounding_keeps_the_kind_it_was_given() {
         let whole = Value::Number(Number::Integer(7));
-        assert_eq!(
+        same(
             call(Function::MathFloor, std::slice::from_ref(&whole), at()).expect("a number"),
-            whole
+            &whole,
         );
         let fractional = Value::Number(Number::float(2.5));
-        assert_eq!(
+        same(
             call(Function::MathRound, &[fractional], at()).expect("a number"),
-            Value::Number(Number::float(3.0))
+            Value::Number(Number::float(3.0)),
         );
     }
 
@@ -653,8 +889,8 @@ mod tests {
             (Function::TimeSecond, 9),
         ] {
             assert_eq!(
-                read(function, taken.clone()),
-                Value::Number(Number::Integer(expected)),
+                format!("{:?}", read(function, taken.clone())),
+                format!("{:?}", Value::Number(Number::Integer(expected))),
                 "{function}"
             );
         }
@@ -665,13 +901,13 @@ mod tests {
         // Two functions one letter apart in meaning, and both answer an integer,
         // so nothing but this asserts which is which.
         let taken = instant("2026-08-28T14:37:09Z");
-        assert_eq!(
+        same(
             read(Function::TimeSecond, taken.clone()),
-            Value::Number(Number::Integer(9))
+            Value::Number(Number::Integer(9)),
         );
-        assert_eq!(
+        same(
             read(Function::TimeUnix, taken),
-            Value::Number(Number::Integer(1_787_927_829))
+            Value::Number(Number::Integer(1_787_927_829)),
         );
     }
 
@@ -689,9 +925,9 @@ mod tests {
         // remainder nearly always. Asserted so the loss is a decision on the
         // record rather than something nobody looked at.
         let taken = instant("2026-08-28T14:37:09.5Z");
-        assert_eq!(
+        same(
             read(Function::TimeUnix, taken),
-            Value::Number(Number::Integer(1_787_927_829))
+            Value::Number(Number::Integer(1_787_927_829)),
         );
     }
 

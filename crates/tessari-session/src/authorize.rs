@@ -461,6 +461,10 @@ impl<'a> Session<'a> {
         let StatementKind::Use {
             namespace,
             database,
+            // A consumer name is not a tenancy: it selects who this session is
+            // to a queue, reaches no namespace and no database, and a scoped
+            // user naming one is not reaching outside anything.
+            consumer: _,
         } = kind
         else {
             return Ok(());

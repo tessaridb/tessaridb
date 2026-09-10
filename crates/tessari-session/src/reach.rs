@@ -42,6 +42,20 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // the caller's tenancy level like the four words above. `DROP VAULT`
         // destroys a key rather than rows, and that makes it more consequential
         // without making it reach differently.
+        // A queue is a table too, and both halves of its lifecycle reach the
+        // same way the four words above do.
+        | StatementKind::DefineQueue { .. }
+        | StatementKind::DropQueue { .. }
+        | StatementKind::DefineSeries { .. }
+        | StatementKind::DropSeries { .. }
+        // A view is a table too, and declaring one names no table for a grant
+        // to be asked about — not even the tables its read names. That is
+        // deliberate and it is the other half of the permission decision: a
+        // view grants nothing, so defining one over a table the author cannot
+        // read is harmless, because *reading* it is checked against the tables
+        // the expansion names and the author's own grants have no part in it.
+        | StatementKind::DefineView { .. }
+        | StatementKind::DropView { .. }
         | StatementKind::DefineVault { .. }
         | StatementKind::DropVault { .. }
         // Sealing is not about a table. It changes whether this process holds a
@@ -138,7 +152,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
 
         // A consumer names the table it will write into, and that is the whole
         // reason it appears here at all: without it the grant loop would pass
-        // over `DEFINE CONSUMER` vacuously, and a caller could point a
+        // over `DEFINE KAFKA CONSUMER` vacuously, and a caller could point a
         // background writer at a table they were never granted — the `BACKUP`
         // hole again, in a statement that keeps writing after it is issued.
         //
@@ -169,7 +183,8 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DropIndex { table, .. }
         | StatementKind::AlterTable { table, .. }
         | StatementKind::AlterField { table, .. }
-        | StatementKind::RebuildIndex { table, .. } => vec![table],
+        | StatementKind::RebuildIndex { table, .. }
+        | StatementKind::CheckTable { table } => vec![table],
 
         // The condition is walked for the same reason a read's is: a subquery
         // inside it reaches a table this statement does not name.
@@ -180,6 +195,14 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             found.extend(in_expr(condition));
             found
         }
+
+        // No condition, so no subquery can hide in one: the span is the whole
+        // statement and the table it names is the only table it reaches.
+        StatementKind::DeleteSpan { table, .. } => vec![table],
+
+        // A claim names one table and takes no condition, so nothing can hide a
+        // read of a second one inside it.
+        StatementKind::Claim { table, .. } => vec![table],
 
         StatementKind::Keys { space, .. } => vec![space],
 
@@ -253,12 +276,21 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }
         | StatementKind::Del { target }
+        // A release names one record in one queue, so the queue is the table the
+        // grant is asked about, and a targeted claim names one the same way.
+        | StatementKind::ClaimRecord { target, .. }
+        | StatementKind::Release { target, .. }
         // A file is a record in the bucket, so the bucket is the table a grant
         // is asked about. The chunks live in a table nothing can name, and are
         // reached only through these two statements — which is what keeps a
         // file's bytes and its metadata behind **one** permission question
         // rather than two (ADR-0011).
         | StatementKind::Read { target, .. } => vec![&target.table],
+
+        // Releasing many reaches the one queue it names — which is the whole
+        // reason it names one: a sweep over every queue would ask a permission
+        // question per table and answer a partial success as if it were whole.
+        StatementKind::ReleaseAll { table, .. } => vec![table],
 
         // An edge reaches three: the two records it connects and the table the
         // relation is recorded in. A grant on the edge table alone would let
@@ -408,7 +440,7 @@ fn in_source(from: &Source) -> Vec<&TableRef> {
         // grant-governed user by role rather than by an empty answer.
         Source::Node => Vec::new(),
         Source::Record(target) => vec![&target.table],
-        Source::Table(table) => vec![table],
+        Source::Table(table) | Source::Range { table, .. } => vec![table],
         // The condition is an expression, and an expression may hold a read.
         Source::Where { table, condition } => {
             let mut found = vec![table];

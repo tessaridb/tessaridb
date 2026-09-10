@@ -641,6 +641,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1114,6 +1124,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1208,7 +1229,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-backup"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "tempfile",
  "tessari-encoding",
@@ -1222,16 +1243,17 @@ dependencies = [
 
 [[package]]
 name = "tessari-bench"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "tessari-backup",
+ "tessari-storage",
  "tessari-types",
  "tessaridb",
 ]
 
 [[package]]
 name = "tessari-cli"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "libc",
  "log",
@@ -1252,7 +1274,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-conformance"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "tessari-kv",
  "tessari-ql",
@@ -1263,11 +1285,11 @@ dependencies = [
 
 [[package]]
 name = "tessari-constants"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 
 [[package]]
 name = "tessari-encoding"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "proptest",
  "rust_decimal",
@@ -1279,7 +1301,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-geo"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "proptest",
  "tessari-types",
@@ -1288,7 +1310,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-http"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "log",
  "tessari-backup",
@@ -1306,7 +1328,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-ingest"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "log",
  "rdkafka",
@@ -1318,14 +1340,14 @@ dependencies = [
 
 [[package]]
 name = "tessari-kv"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "tessari-lsm"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "rocksdb",
  "tempfile",
@@ -1339,7 +1361,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-ql"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "rust_decimal",
  "tessari-types",
@@ -1348,7 +1370,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-query"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "tessari-ql",
  "tessari-types",
@@ -1357,15 +1379,17 @@ dependencies = [
 
 [[package]]
 name = "tessari-serve"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 
 [[package]]
 name = "tessari-session"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "argon2",
  "log",
+ "md-5",
  "rust_decimal",
+ "sha1",
  "sha2",
  "tessari-backup",
  "tessari-constants",
@@ -1381,7 +1405,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-storage"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "getrandom 0.4.3",
  "log",
@@ -1396,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-types"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "rust_decimal",
  "serde",
@@ -1405,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-vault"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -1416,7 +1440,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-wire"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "log",
  "rust_decimal",
@@ -1434,7 +1458,7 @@ dependencies = [
 
 [[package]]
 name = "tessaridb"
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 dependencies = [
  "tempfile",
  "tessari-kv",

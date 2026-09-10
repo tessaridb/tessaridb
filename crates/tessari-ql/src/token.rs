@@ -248,6 +248,8 @@ pub enum Keyword {
     Alter,
     /// `REBUILD` — make an index's entries what its table's rows imply.
     Rebuild,
+    /// `CHECK` — ask whether what is stored still satisfies what is declared.
+    Check,
     /// `TABLE`
     Table,
     /// `SPACE`
@@ -448,6 +450,7 @@ impl Keyword {
             Self::Drop => "DROP",
             Self::Alter => "ALTER",
             Self::Rebuild => "REBUILD",
+            Self::Check => "CHECK",
             Self::Table => "TABLE",
             Self::Space => "SPACE",
             Self::Bucket => "BUCKET",
@@ -538,6 +541,7 @@ impl Keyword {
         Self::Drop,
         Self::Alter,
         Self::Rebuild,
+        Self::Check,
         Self::Table,
         Self::Space,
         Self::Bucket,

@@ -151,6 +151,21 @@ impl Session<'_> {
     }
 }
 
+/// A fresh claimant instance, as hexadecimal.
+///
+/// **Deliberately its own function, and deliberately not `token()`.** The two
+/// produce the same shape by the same generator, and that is exactly why the
+/// distinction has to be written down rather than left to be noticed: a ticket
+/// is an **authentication credential**, while an instance is written into
+/// `claimed_by` and read by anybody who may `SELECT` the queue. One value
+/// serving both would publish the credential to everyone who can read the work.
+///
+/// So the generator is shared and the **value never is**. If these two are ever
+/// merged for tidiness, that is the defect.
+pub(crate) fn instance() -> String {
+    token()
+}
+
 /// A fresh token, as hexadecimal.
 fn token() -> String {
     let mut bytes = [0_u8; TOKEN_BYTES];

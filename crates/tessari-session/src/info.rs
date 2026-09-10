@@ -80,6 +80,7 @@ impl Session<'_> {
             InfoSubject::Vector(name) => self.info_vector(transaction, name, span)?,
             InfoSubject::Geo(name) => self.info_geo(transaction, name, span)?,
             InfoSubject::Vault(name) => self.info_vault(transaction, name, span)?,
+            InfoSubject::Bucket(name) => self.info_bucket(transaction, name, span)?,
             InfoSubject::Recipients(target) => self.info_recipients(transaction, target, span)?,
             InfoSubject::Audit(actor) => self.info_audit(actor.as_ref())?,
             InfoSubject::User(name) => self.info_user(transaction, name, span)?,
@@ -341,6 +342,54 @@ impl Session<'_> {
         )]))
     }
 
+    /// `INFO FOR BUCKET media` — the name and the ceiling, and nothing else.
+    ///
+    /// Short because a bucket declares little: a name and, when it should have
+    /// one, the largest file it takes. What is not here is the listing — the
+    /// files are records and `SELECT` answers them, so an `INFO` that also
+    /// listed would be a second read path over the same rows, obeying whatever
+    /// grants its own code remembered rather than the ones the reader already
+    /// passes through.
+    ///
+    /// **It refuses a table that is not a bucket as `Unknown`**, which is the
+    /// shape [`Session::info_vault`] and [`Session::info_vector`] already use.
+    /// A distinct "wrong kind" answer would let a caller who may read nothing
+    /// learn which names exist, and this subject is asked precisely where a
+    /// caller has not been trusted with the answer yet.
+    fn info_bucket(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let context = self.context(transaction, None, span)?;
+        let missing = || Error::Unknown {
+            entity: "bucket",
+            name: name.text.clone(),
+            span,
+        };
+        let id = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)?
+            .ok_or_else(missing)?;
+        let definition = Catalog::new(transaction).table(id)?.ok_or_else(missing)?;
+        if !definition.is_bucket() {
+            return Err(missing());
+        }
+        Ok(BTreeMap::from([
+            ("name".to_owned(), Value::from(name.text.as_str())),
+            // `None` and not a zero. A ceiling of zero is a bucket nobody can
+            // write to — a declaration this store refuses outright — so
+            // reporting absence as zero would describe every ordinary bucket as
+            // one that admits no file.
+            (
+                "max".to_owned(),
+                definition.byte_ceiling().map_or(Value::None, |ceiling| {
+                    Value::Number(Number::Integer(i64::try_from(ceiling).unwrap_or(i64::MAX)))
+                }),
+            ),
+        ]))
+    }
+
     fn info_vault(
         &self,
         transaction: &mut Transaction<'_>,
@@ -474,7 +523,10 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         table: &TableRef,
     ) -> Result<BTreeMap<String, Value>> {
-        let (_, id) = self.resolve_table(transaction, table)?;
+        // The one read that may name a view: describing one is the point of
+        // asking, and a report refused because the subject is a view would be a
+        // report nobody could get for the thing they asked about.
+        let (_, id) = self.resolve_any_table(transaction, table)?;
         let visible = self.visible_in(transaction, id)?;
         let catalog = Catalog::new(transaction);
         let Some(definition) = catalog.table(id)? else {
@@ -832,7 +884,7 @@ impl Session<'_> {
 
     /// Every declared consumer, with whether this process is running it.
     ///
-    /// The counters are left to `INFO FOR CONSUMER <name>`: this is the listing
+    /// The counters are left to `INFO FOR KAFKA CONSUMER <name>`: this is the listing
     /// an operator reads to find out *which* consumer to ask about, and a table
     /// of every partition position would bury that.
     fn info_consumers(&self, transaction: &mut Transaction<'_>) -> Result<BTreeMap<String, Value>> {
@@ -1179,6 +1231,9 @@ fn selecting(namespace: Option<&str>, database: Option<&str>, span: Span) -> Sta
     StatementKind::Use {
         namespace: named(namespace),
         database: named(database),
+        // Synthesised to re-select tenancy and nothing else; a report never
+        // declares a claimant.
+        consumer: None,
     }
 }
 
@@ -1193,6 +1248,10 @@ fn reading(table: &TableRef) -> StatementKind {
         projection: Projection::All,
         omit: Vec::new(),
         from: Source::Table(table.clone()),
+        // The guard applies to this read as it does to any other: a statement
+        // the store builds for itself gets no privilege a caller could not ask
+        // for in writing.
+        lift_scan_guard: false,
         only: None,
         fetch: Vec::new(),
         split: None,
@@ -1261,6 +1320,14 @@ fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> {
             Value::from(definition.identity.name()),
         ),
     ]);
+    // Present only on a view, and it carries the read rather than a flag. A
+    // marker alone would say the least useful true thing: two views differ
+    // entirely in what they answer and not at all in being views, so a report
+    // omitting the read describes every view identically. It is the same reason
+    // the endpoint pair below is reported and not merely the edge flag.
+    if let Some(read) = definition.view_read() {
+        shape.insert("view".to_owned(), Value::from(read));
+    }
     // Present only on a table that belongs to one, and reported as the **id**
     // for the reason the endpoints below are: this report says what is stored,
     // and a name resolved here would be a second read able to disagree with the

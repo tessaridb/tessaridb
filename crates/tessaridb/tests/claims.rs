@@ -133,7 +133,13 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 24] = [
+const CROSS_CUTTING: [&str; 26] = [
+    // A span of identities is an access path over the table's own key order,
+    // and every table has one — a log, an audit trail, a session table and a
+    // queue all want the same window and none of them is a different engine for
+    // wanting it. Filing it under an engine would make the engine that happened
+    // to be written first look like its owner.
+    "spans",
     // Who may do what, and how far it reaches, is asked before any engine is
     // chosen and answered the same whichever one runs: a `read` at a namespace
     // covers a scan, an index read, a walk and a nearest-neighbour read alike.
@@ -141,6 +147,12 @@ const CROSS_CUTTING: [&str; 24] = [
     // says how much of the store, and neither is an access path.
     "authorities",
     "bindings",
+    // A view is a name for a read, so it belongs to no engine and to all of
+    // them: `DEFINE VIEW v AS SELECT …` names a scan, an index read, a walk or a
+    // nearest-neighbour read alike, and expands into whichever the read it
+    // stands for was. Counting it under an engine would file it with whichever
+    // one the example happened to use.
+    "views",
     // Declaring a table's fields with the table is a spelling, and a spelling
     // belongs to no engine: the columns desugar into the field declarations the
     // long form makes, and what a field then does to a write is the same
@@ -588,5 +600,84 @@ fn the_readme_and_the_changelog_agree_on_what_is_missing() {
         "only in README: {:?} — only in CHANGELOG: {:?}",
         readme.difference(&changelog).collect::<Vec<_>>(),
         changelog.difference(&readme).collect::<Vec<_>>()
+    );
+}
+
+/// `crypto::md5` and `crypto::sha1` are checksums, and nothing that decides
+/// whether two things are the same may call them.
+///
+/// Both are in the language on purpose — a store interoperates, and an ETag or
+/// a legacy row key computed by something older than this database has to be
+/// reachable from here. The doc comment on `Function::CryptoMd5` says as much,
+/// and says the rest of it too: collisions in both are producible on a laptop,
+/// so neither may decide whether two things are the same when somebody might
+/// want them to appear so.
+///
+/// That was a sentence in a doc comment, which is exactly the kind of rule the
+/// next person adds a call in violation of without ever reading it. This is the
+/// sentence as a test.
+///
+/// The list is the paths where a collision would be a vulnerability rather than
+/// a wrong answer: the vault and its sealing, the catalog rows that hold
+/// credentials, and the two session paths that verify one. Each path is
+/// asserted to EXIST before it is read — a guard over a file that has been
+/// renamed guards nothing and passes quietly, which is the failure this shape
+/// is most prone to.
+#[test]
+fn no_security_path_computes_a_broken_digest() {
+    const GUARDED: &[(&str, &str)] = &[
+        (
+            "crates/tessari-storage/src/vault.rs",
+            "the vault's own reads and writes",
+        ),
+        (
+            "crates/tessari-storage/src/sealing.rs",
+            "sealing and unsealing",
+        ),
+        (
+            "crates/tessari-storage/src/catalog/vault.rs",
+            "the vault's catalog rows",
+        ),
+        (
+            "crates/tessari-storage/src/catalog/system.rs",
+            "where credentials are hashed",
+        ),
+        (
+            "crates/tessari-session/src/ticket.rs",
+            "the session credential",
+        ),
+        (
+            "crates/tessari-session/src/session.rs",
+            "where a statement is authorized",
+        ),
+    ];
+    // The spellings a call would take: the language's own, and the two helpers
+    // in `tessari-session::digest` that back them.
+    const BROKEN: &[&str] = &[
+        "crypto::md5",
+        "crypto::sha1",
+        "CryptoMd5",
+        "CryptoSha1",
+        "digest::md5",
+        "digest::sha1",
+    ];
+
+    let mut found = Vec::new();
+    for (path, why) in GUARDED {
+        let full = repo().join(path);
+        assert!(
+            full.is_file(),
+            "{path} is guarded and does not exist — {why}"
+        );
+        let text = fs::read_to_string(&full).expect("a guarded path");
+        for spelling in BROKEN {
+            if text.contains(spelling) {
+                found.push(format!("{path} names {spelling} ({why})"));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "a broken digest reached a path where a collision is a vulnerability: {found:#?}"
     );
 }

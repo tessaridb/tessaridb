@@ -10,6 +10,7 @@
 //! for the same question is how a caller ends up handling only one of them.
 
 use tessari_kv::ErrorCategory;
+use tessari_types::article;
 
 use crate::kind::KeyKind;
 
@@ -66,7 +67,7 @@ pub enum Error {
     },
 
     /// The leading byte does not name the kind the caller asked to decode.
-    #[error("expected a {expected} key, found kind tag 0x{found:02x} ({found_name})")]
+    #[error("expected {} {expected} key, found kind tag 0x{found:02x} ({found_name})", article(expected.name()))]
     UnexpectedKind {
         /// What the caller was decoding.
         expected: KeyKind,

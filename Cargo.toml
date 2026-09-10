@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.0.6-beta"
+version = "0.1.0-beta"
 edition = "2024"
 rust-version = "1.85"
 license = "BUSL-1.1"
@@ -12,23 +12,23 @@ repository = "https://github.com/TessariDB/TessariDB"
 publish = false
 
 [workspace.dependencies]
-tessari-types = { path = "crates/tessari-types", version = "0.0.6-beta" }
-tessari-constants = { path = "crates/tessari-constants", version = "0.0.6-beta" }
-tessari-kv = { path = "crates/tessari-kv", version = "0.0.6-beta" }
-tessari-encoding = { path = "crates/tessari-encoding", version = "0.0.6-beta" }
-tessari-geo = { path = "crates/tessari-geo", version = "0.0.6-beta" }
-tessari-storage = { path = "crates/tessari-storage", version = "0.0.6-beta" }
-tessari-lsm = { path = "crates/tessari-lsm", version = "0.0.6-beta" }
-tessari-ql = { path = "crates/tessari-ql", version = "0.0.6-beta" }
-tessari-session = { path = "crates/tessari-session", version = "0.0.6-beta" }
-tessari-conformance = { path = "crates/tessari-conformance", version = "0.0.6-beta" }
-tessaridb = { path = "crates/tessaridb", version = "0.0.6-beta" }
-tessari-backup = { path = "crates/tessari-backup", version = "0.0.6-beta" }
-tessari-wire = { path = "crates/tessari-wire", version = "0.0.6-beta" }
-tessari-http = { path = "crates/tessari-http", version = "0.0.6-beta" }
-tessari-ingest = { path = "crates/tessari-ingest", version = "0.0.6-beta" }
-tessari-serve = { path = "crates/tessari-serve", version = "0.0.6-beta" }
-tessari-vault = { path = "crates/tessari-vault", version = "0.0.6-beta" }
+tessari-types = { path = "crates/tessari-types", version = "0.1.0-beta" }
+tessari-constants = { path = "crates/tessari-constants", version = "0.1.0-beta" }
+tessari-kv = { path = "crates/tessari-kv", version = "0.1.0-beta" }
+tessari-encoding = { path = "crates/tessari-encoding", version = "0.1.0-beta" }
+tessari-geo = { path = "crates/tessari-geo", version = "0.1.0-beta" }
+tessari-storage = { path = "crates/tessari-storage", version = "0.1.0-beta" }
+tessari-lsm = { path = "crates/tessari-lsm", version = "0.1.0-beta" }
+tessari-ql = { path = "crates/tessari-ql", version = "0.1.0-beta" }
+tessari-session = { path = "crates/tessari-session", version = "0.1.0-beta" }
+tessari-conformance = { path = "crates/tessari-conformance", version = "0.1.0-beta" }
+tessaridb = { path = "crates/tessaridb", version = "0.1.0-beta" }
+tessari-backup = { path = "crates/tessari-backup", version = "0.1.0-beta" }
+tessari-wire = { path = "crates/tessari-wire", version = "0.1.0-beta" }
+tessari-http = { path = "crates/tessari-http", version = "0.1.0-beta" }
+tessari-ingest = { path = "crates/tessari-ingest", version = "0.1.0-beta" }
+tessari-serve = { path = "crates/tessari-serve", version = "0.1.0-beta" }
+tessari-vault = { path = "crates/tessari-vault", version = "0.1.0-beta" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
@@ -39,6 +39,14 @@ argon2 = { version = "0.5", features = ["std"] }
 # than adding a parallel stack, and a database is the last place to keep its
 # own two hundred lines of unaudited bit manipulation.
 sha2 = { version = "0.10", default-features = false }
+# MD5 and SHA-1, from the same author as `sha2` and over the same `digest` 0.10
+# traits already in the tree — so they add algorithms and no second stack. Both
+# are **broken** for anything needing collision resistance and neither is in the
+# language for security: a store interoperates, and an ETag, a legacy row key or
+# a content id somebody else computed cannot be checked against without them.
+# The alternative is not "safer", it is "the caller cannot do it here".
+md-5 = { version = "0.10", default-features = false }
+sha1 = { version = "0.10", default-features = false }
 # The AEAD every sealed value is encrypted under. ChaCha20-Poly1305 rather than
 # AES-GCM because it is constant-time in pure Rust with no hardware dependency,
 # and one source tree here produces both an arm64 and an amd64 image — an AES

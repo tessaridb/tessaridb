@@ -236,6 +236,13 @@ fn kind_name(error: &Error) -> &'static str {
         Error::CallFailed { .. } => "CallFailed",
         Error::NotCastable { .. } => "NotCastable",
         Error::NotABucket { .. } => "NotABucket",
+        Error::NotAQueue { .. } => "NotAQueue",
+        Error::ViewIsNotATable { .. } => "ViewIsNotATable",
+        Error::ViewsTooDeep { .. } => "ViewsTooDeep",
+        Error::ViewUnreadable { .. } => "ViewUnreadable",
+        Error::QueueFieldIsTheEngines { .. } => "QueueFieldIsTheEngines",
+        Error::ClaimAboveCeiling { .. } => "ClaimAboveCeiling",
+        Error::ClaimDeadlineUnreachable { .. } => "ClaimDeadlineUnreachable",
         Error::NotWrittenByHand { .. } => "NotWrittenByHand",
         Error::FileNeedsAPath { .. } => "FileNeedsAPath",
         Error::FileIsNotBytes { .. } => "FileIsNotBytes",
@@ -270,6 +277,7 @@ fn kind_name(error: &Error) -> &'static str {
 fn script_kind(error: &tessari_ql::Error) -> &'static str {
     match error {
         tessari_ql::Error::EmptyTimeout { .. } => "EmptyTimeout",
+        tessari_ql::Error::EmptyRetention { .. } => "EmptyRetention",
         tessari_ql::Error::UnexpectedCharacter { .. } => "UnexpectedCharacter",
         tessari_ql::Error::UnterminatedString { .. } => "UnterminatedString",
         tessari_ql::Error::InvalidEscape { .. } => "InvalidEscape",

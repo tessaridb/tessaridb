@@ -129,6 +129,29 @@ pub const ORDERED_SCAN_BATCH_ENTRIES: usize = 128;
 /// round trips, and it is a few tens of kilobytes.
 pub const RANGE_SCAN_BATCH_ENTRIES: usize = 1024;
 
+/// How many records a table must hold before the planner will decline an index
+/// in favour of reading the table.
+///
+/// Unit: records.
+///
+/// The planner serves an index only when it can produce at most half the table
+/// (§ `plan::worth`). That rule exists because an index read walks entries
+/// *and* fetches records, so one returning most of a table has added a walk to
+/// a read it did not shorten — measured at **2.1× slower than no index at all**.
+///
+/// Below this floor there is nothing to protect. A scan of a thousand records
+/// is one round trip to the substrate, the ratio the rule reasons about is a
+/// ratio between two costs that are both negligible, and the only thing the
+/// guard could achieve is to surprise somebody who declared an index and
+/// watched it go unused. So the guard does not engage, and a small table plans
+/// exactly as it did before the guard existed.
+///
+/// It is the same magnitude as [`RANGE_SCAN_BATCH_ENTRIES`] and deliberately
+/// **not** the same constant: that one is a buffer bound whose value that
+/// constant's own doc calls indifferent, and coupling a planning decision to it
+/// would mean re-tuning a buffer silently re-planned every query in the store.
+pub const PLANNER_SCAN_FLOOR_RECORDS: u64 = 1024;
+
 /// How quickly repeating a term stops improving a BM25 score.
 ///
 /// Unit: dimensionless.
@@ -631,3 +654,47 @@ pub const SEARCH_FUZZY_EXPANSION_CAP: usize = 16;
 /// avoid reading tens of records is the trade this number makes, and it stops
 /// being a good one somewhere past here.
 pub const SEARCH_FUZZY_EXAMINATION_CAP: usize = 1024;
+
+/// How many records one `CLAIM` may take.
+///
+/// Unit: records held by a single statement.
+///
+/// A bound rather than a tuning knob, and the reason is the one the consumer's
+/// own batch already gave: without a ceiling, one statement holds the whole
+/// queue for the whole timeout and every other worker waits — with nothing
+/// anywhere in an error state, because a claim that takes everything is doing
+/// exactly what it was asked to do.
+///
+/// Five hundred, which is not a fresh guess: it is the ingest consumer's
+/// `BATCH`, chosen there against the same question — how many records is it
+/// reasonable to move in one transaction — and answering one question twice with
+/// two numbers is how a store ends up with two answers nobody can tell apart.
+///
+/// Unlike the search caps above, this one **refuses**. They decline to serve a
+/// candidate and fall back to a path that returns the identical result; there is
+/// no cheaper path that answers `CLAIM 100000` correctly, so the honest response
+/// is to name the ceiling rather than to quietly hand back fewer records than
+/// were asked for.
+pub const MAX_CLAIM_RECORDS: u64 = 500;
+
+/// How deep a view may be expanded before the read is refused.
+///
+/// Unit: view expansions along one chain.
+///
+/// A view names a read, and that read may name another view, so expansion
+/// recurses and needs a floor to stop on. Eight, for two reasons that pull in
+/// opposite directions and meet here: deep enough that no view written by hand
+/// meets it — a view over a view over a view is already unusual — and shallow
+/// enough that the refusal arrives before the parse and materialisation cost of
+/// eight nested reads has been paid.
+///
+/// **A cycle is caught by this and gets no second mechanism.** Two views naming
+/// each other cannot avoid the counter, and the refusal prints the chain it
+/// followed, so the cycle is legible in the message. A dedicated cycle detector
+/// would produce a better sentence for a case this already stops, and would then
+/// have to be kept in step with it.
+///
+/// A value of this layer, like the ceiling on a held read: nothing in a stored
+/// definition records it, so a view means the same thing on a node that changes
+/// it.
+pub const MAX_VIEW_DEPTH: usize = 8;

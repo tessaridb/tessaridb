@@ -8,6 +8,7 @@ use crate::session::Session;
 use super::rank::choose;
 use super::reported::Plan;
 use super::statement::{closest, nearest, ordered, scored};
+use super::worth::worth_serving;
 
 impl Session<'_> {
     /// The plan a read would take, without taking it.
@@ -55,6 +56,14 @@ impl Session<'_> {
                 let (_, id) = self.resolve_table(transaction, &target.table)?;
                 self.refuse_reading_a_vault(transaction, id, &target.table)?;
                 Ok(Plan::new(AccessPath::Record).on(target.table.name.text.as_str()))
+            }
+            // The span is decided by the statement and not by what exists, so
+            // the plan is known without asking anything — which is the same
+            // reason `Source::Record` above needs no enumeration.
+            Source::Range { table, .. } => {
+                let (_, id) = self.resolve_table(transaction, table)?;
+                self.refuse_reading_a_vault(transaction, id, table)?;
+                Ok(Plan::new(AccessPath::Span).on(table.name.text.as_str()))
             }
             Source::Table(table) => {
                 let named = table.name.text.as_str();
@@ -162,7 +171,6 @@ impl Session<'_> {
                 // order sends the read back to the scan, and this reports the
                 // path the planner chose rather than the one it settled for.
                 if let Some(bound) = ordered(select)
-                    && bound.descending
                     && let Some((index, _)) = self.index_serving_order(
                         transaction,
                         context,
@@ -179,7 +187,19 @@ impl Session<'_> {
                 let searched = self.searched_for(transaction, id, &[condition])?;
                 let declared = Catalog::new(transaction).indexes_on(id)?;
                 let offered = self.enumerate(transaction, condition, &declared, &searched)?;
-                Ok(match choose(offered) {
+                // The same guard the read applies, from the same function: a
+                // winner that does not beat reading the table is not the path
+                // the read will take, and an `EXPLAIN` that reported it would
+                // be describing a plan nothing runs.
+                let chosen = match choose(offered) {
+                    Some(candidate)
+                        if worth_serving(transaction, id, &candidate, select.lift_scan_guard)? =>
+                    {
+                        Some(candidate)
+                    }
+                    _ => None,
+                };
+                Ok(match chosen {
                     Some(chosen) => chosen.plan(Some(named)),
                     None => Plan::new(AccessPath::Scan).on(named),
                 })
