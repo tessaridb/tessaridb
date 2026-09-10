@@ -231,6 +231,10 @@ impl Select<Sourced> {
             // has no way to write.
             omit: Vec::new(),
             from,
+            // Nor `WITHOUT SCAN GUARD`: it lifts a planner threshold for a read
+            // whose shape the caller knows, and a builder that set it would be
+            // making that judgement on their behalf for every read it assembles.
+            lift_scan_guard: false,
             // Nor `ONLY`: it is an assertion about how many records answer, and
             // a builder cannot make one on the caller's behalf.
             only: None,

@@ -341,3 +341,86 @@ fn a_table_below_the_floor_plans_exactly_as_it_did_before() {
         .run("SELECT * FROM small WHERE n >= 2 USING INDEX by_n;")
         .unwrap();
 }
+
+/// The clause that lifts the veto, and the two things it must not do.
+///
+/// The guard is a **policy**, not a measurement: half-the-table is a threshold
+/// this store chose, and `worth_serving` counts with a bounded probe rather than
+/// estimating. So what can be wrong here is the threshold, and an author who
+/// knows their workload needs a way to say so — Q-494, deferred in W178 with its
+/// shape decided and built here on the owner's instruction of 2026-09-10.
+///
+/// **It lifts the veto; it does not choose the path.** An override that forced a
+/// named index would be a router, and a router drags in every question a router
+/// has: what happens when the named index does not apply to the predicate at
+/// all, how it interacts with ranking, what `EXPLAIN` then reports. Lifting the
+/// veto is one flag reaching one function — the ranking still chooses, an
+/// inapplicable index still changes nothing, and the worst case of misuse is the
+/// behaviour that shipped before the guard existed.
+///
+/// That is why the second case below is not a formality. A clause that made a
+/// path appear where no index applies would be the router this one is written
+/// not to be, and nothing else in the file would notice.
+#[test]
+fn the_clause_lifts_the_veto_and_the_answer_is_unchanged() {
+    let store = store();
+    let mut session = ready(&store);
+
+    // The Q-407 case, which the guard vetoes.
+    agrees(&mut session, "n >= 401", AccessPath::Scan);
+
+    let truth = without_an_index(&mut session, "n >= 401");
+    let (found, access) = answered(
+        &mut session,
+        "SELECT * FROM events WHERE n >= 401 WITHOUT SCAN GUARD;",
+    );
+    assert_eq!(
+        access,
+        AccessPath::Index,
+        "the clause did not lift the veto"
+    );
+    // The assertion that matters. A planner is the component most tempted to
+    // change an answer, and a faster wrong answer is what this clause could
+    // introduce if it did anything other than skip a comparison.
+    let of = |ids: &[RecordId]| -> Vec<String> { ids.iter().map(|id| format!("{id}")).collect() };
+    assert_eq!(
+        of(&found),
+        of(&truth),
+        "the read under the clause answered differently from the scan"
+    );
+}
+
+#[test]
+fn the_clause_invents_no_path_where_no_index_applies() {
+    // `mirror` carries no index at all, so there is nothing for the ranking to
+    // choose and nothing for the guard to have vetoed. A clause that produced a
+    // path here would be routing rather than lifting.
+    let store = store();
+    let mut session = ready(&store);
+
+    let (_, access) = answered(
+        &mut session,
+        "SELECT * FROM mirror WHERE n >= 401 WITHOUT SCAN GUARD;",
+    );
+    assert_eq!(
+        access,
+        AccessPath::Scan,
+        "the clause produced a path over a table with no index"
+    );
+}
+
+#[test]
+fn explain_agrees_with_the_read_under_the_clause() {
+    // The invariant this whole guard is built around: `EXPLAIN` asks the same
+    // function the read does, so a clause reaching one and not the other would
+    // make the reported plan a description of something nothing runs.
+    let store = store();
+    let mut session = ready(&store);
+    assert_eq!(
+        explained(
+            &mut session,
+            "SELECT * FROM events WHERE n >= 401 WITHOUT SCAN GUARD;"
+        ),
+        r#"String("index")"#
+    );
+}

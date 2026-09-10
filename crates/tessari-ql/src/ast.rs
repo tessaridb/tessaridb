@@ -1696,6 +1696,35 @@ pub struct Select {
     pub omit: Vec<FieldPath>,
     /// Which access path the statement resolves to.
     pub from: Source,
+    /// Whether `WITHOUT SCAN GUARD` was written, lifting the planner's veto.
+    ///
+    /// The guard it lifts is a **policy** and not a measurement: an index is
+    /// served when it can produce at most half the table, and half is a
+    /// threshold this store chose rather than a number a cost model produced.
+    /// `plan::worth_serving` counts with a bounded probe, so what can be wrong
+    /// here is the threshold and never the count — which is why the clause is
+    /// spelled as lifting a guard rather than as overriding an estimate.
+    ///
+    /// It lifts the veto and does **not** choose the path. An override naming an
+    /// index would be a router, and a router owes answers to every question a
+    /// router raises: what an inapplicable named index does to the predicate,
+    /// how it composes with ranking, what `EXPLAIN` then reports. This is one
+    /// flag reaching one function — the ranking still chooses, an inapplicable
+    /// index still changes nothing, and the worst case of misuse is the
+    /// behaviour that shipped before the guard existed.
+    ///
+    /// A separate clause rather than a word on `USING INDEX`, deliberately: that
+    /// clause is an assertion about what the read did, and a modifier turning it
+    /// into an instruction would be a pun a reader can miss. This one cannot be
+    /// missed.
+    ///
+    /// **Its removal condition, recorded at birth** (Q-494): it exists because
+    /// the threshold is a policy, and it is retired when the planner acquires a
+    /// cost model or statistics that make the policy unnecessary. A hint with no
+    /// recorded removal condition is scar tissue — it freezes plans against a
+    /// planner that has since improved, and nobody dares remove it because
+    /// nobody remembers why it is there.
+    pub lift_scan_guard: bool,
     /// Where `ONLY` was written, when it was.
     ///
     /// The clause is an **assertion by the author** that at most one record

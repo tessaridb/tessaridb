@@ -1196,6 +1196,10 @@ fn reading(table: &TableRef) -> StatementKind {
         projection: Projection::All,
         omit: Vec::new(),
         from: Source::Table(table.clone()),
+        // The guard applies to this read as it does to any other: a statement
+        // the store builds for itself gets no privilege a caller could not ask
+        // for in writing.
+        lift_scan_guard: false,
         only: None,
         fetch: Vec::new(),
         split: None,

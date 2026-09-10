@@ -192,7 +192,9 @@ impl Session<'_> {
                 // the read will take, and an `EXPLAIN` that reported it would
                 // be describing a plan nothing runs.
                 let chosen = match choose(offered) {
-                    Some(candidate) if worth_serving(transaction, id, &candidate)? => {
+                    Some(candidate)
+                        if worth_serving(transaction, id, &candidate, select.lift_scan_guard)? =>
+                    {
                         Some(candidate)
                     }
                     _ => None,

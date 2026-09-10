@@ -3458,6 +3458,40 @@ read takes rather than the one the ranking preferred. `USING INDEX <name>`
 because it is a refusal rather than a router, it is also how a plan that changed
 under you announces itself.
 
+**And half the table is a policy, so a read may lift it.**
+
+```tessariql
+SELECT * FROM events WHERE n >= 401 WITHOUT SCAN GUARD;
+```
+
+`WITHOUT SCAN GUARD` tells the planner not to measure the winning candidate
+against the table. Half is a threshold this store chose; the count behind it is
+exact, taken by the walk described above. So what can be wrong here is the
+threshold and never the number, and the clause is spelled as lifting a guard
+rather than as overriding an estimate — because there is no estimate to override.
+
+**It lifts the veto and chooses nothing.** The ranking still picks the candidate,
+a table with no applicable index still gets the scan, and `EXPLAIN` still reports
+what ran. An override naming an index would be a router, and a router has to
+answer what happens when the named index does not fit the predicate, how it
+composes with ranking, and what a plan then means — questions a threshold does
+not raise. The worst a misuse can do here is the behaviour that shipped before
+the comparison existed.
+
+It is a separate clause and not a word on `USING INDEX`, deliberately: that one
+is an assertion about what the read did, and a modifier turning it into an
+instruction would be a pun a reader can miss. Three words cannot be missed.
+
+All three are contextual, like the rest of the tail — a field, a table or an
+index called `without`, `scan` or `guard` stays itself — but once `WITHOUT`
+begins the clause, both words after it are required.
+
+**It is meant to be temporary.** The clause exists because the threshold is a
+policy rather than a measurement, and it is retired when this planner acquires a
+cost model or the statistics that would make the policy unnecessary. A hint with
+no stated end is one nobody dares remove years later, so its end is stated here
+where the next reader will find it.
+
 **The plan can only change the cost.** Whichever candidate narrows, the whole
 condition is still tested against every record it produced, which is what makes
 adding an index — or reordering a condition — unable to change an answer. The

@@ -389,7 +389,9 @@ impl Session<'_> {
         // delete has no `LIMIT` that stops the source, it has a ceiling on how
         // many it removes, and it must see every candidate to know it is done.
         let candidates =
-            match self.candidates(transaction, id, context, condition, &searched, None)? {
+            // `false`: a delete carries no read tail, so there is no clause to lift
+            // the guard and nothing here to read one from.
+            match self.candidates(transaction, id, context, condition, &searched, Asked::nothing())? {
                 Some(reached) => match reached.records {
                     Candidates::Held(held) => held,
                     // Read whole here, deliberately, for the reason the scan
@@ -1461,7 +1463,17 @@ impl Session<'_> {
                     records: candidates,
                     plan,
                     answered,
-                }) = self.candidates(transaction, id, context, condition, searched, named)?
+                }) = self.candidates(
+                    transaction,
+                    id,
+                    context,
+                    condition,
+                    searched,
+                    Asked {
+                        named,
+                        lift_scan_guard: select.lift_scan_guard,
+                    },
+                )?
                 else {
                     // No index serves this condition, so the scan does — and it
                     // is *walked* rather than read whole, because this is the
@@ -1827,7 +1839,7 @@ impl Session<'_> {
         context: crate::context::Context,
         condition: &Expr,
         searched: &Searched,
-        named: Option<&str>,
+        asked: Asked<'_>,
     ) -> Result<Option<Reached>> {
         // Once for the statement rather than once per conjunct: which indexes a
         // table carries is one question, and it used to be asked as many times
@@ -1856,7 +1868,9 @@ impl Session<'_> {
         // served — see `plan::worth_serving`, which `EXPLAIN` asks too so that
         // the reported path is the one the read takes.
         let chosen = match plan::choose(offered) {
-            Some(candidate) if plan::worth_serving(transaction, table, &candidate)? => {
+            Some(candidate)
+                if plan::worth_serving(transaction, table, &candidate, asked.lift_scan_guard)? =>
+            {
                 Some(candidate)
             }
             _ => None,
@@ -1865,7 +1879,7 @@ impl Session<'_> {
             // Built by the candidate itself, which is the same function
             // `EXPLAIN` calls on the candidate its own `choose` returned. The
             // two report one structure because one function writes it.
-            let plan = chosen.plan(named);
+            let plan = chosen.plan(asked.named);
             let answered = self.trusts(condition, &chosen, &visible);
             // The field's, resolved once for the statement while the analyzers
             // were being read — the same value the query's terms were built
@@ -3250,6 +3264,35 @@ type Hopped = (Vec<(RecordId, Value)>, Vec<RecordRef>);
 /// field is a bare `bool` that a caller could silently drop or, worse, read the
 /// wrong way round. Naming it makes `answered: false` — which is what a scan and
 /// every ordinary index read say — a statement rather than a position.
+/// What the statement itself said about the plan, as opposed to what the store
+/// worked out.
+///
+/// The two travel together because they come from one place — the read's tail —
+/// and are read by one function. A pair rather than two arguments because a
+/// planner call taking eight things has stopped being readable, and grouping
+/// them by where they came from is the division that survives the next one being
+/// added.
+#[derive(Clone, Copy)]
+struct Asked<'a> {
+    /// The table the plan reports, when the source names one.
+    named: Option<&'a str>,
+    /// `WITHOUT SCAN GUARD` — the planner's size veto is lifted for this read.
+    lift_scan_guard: bool,
+}
+
+impl Asked<'_> {
+    /// A read whose statement said nothing about its plan.
+    ///
+    /// A `DELETE` carries no read tail to say anything in, so it asks for the
+    /// defaults rather than for a privilege no caller could have written down.
+    const fn nothing() -> Self {
+        Self {
+            named: None,
+            lift_scan_guard: false,
+        }
+    }
+}
+
 struct Reached {
     /// The records to test, or to answer with when `answered`.
     records: Candidates,

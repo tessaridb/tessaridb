@@ -40,6 +40,17 @@
 //! a small table and watched it go unused. `USING INDEX <name>` would report
 //! that out loud, correctly, and about nothing worth reporting.
 //!
+//! # The one way past it
+//!
+//! `WITHOUT SCAN GUARD` on the read, which returns `true` here before anything
+//! is counted. It lifts this veto and chooses nothing: the ranking above still
+//! picks the candidate, an inapplicable index still produces no path, and the
+//! worst a misuse can do is the behaviour that shipped before this module
+//! existed. It is retired when the planner acquires a cost model or statistics
+//! that make the threshold unnecessary — recorded here rather than only in the
+//! question, because a hint whose removal condition lives somewhere else is a
+//! hint nobody dares remove.
+//!
 //! # What a missing number means
 //!
 //! `None` from the count is "no estimate", and a planner told nothing behaves
@@ -65,7 +76,15 @@ pub(crate) fn worth_serving(
     transaction: &mut Transaction<'_>,
     table: TableId,
     chosen: &Candidate,
+    lifted: bool,
 ) -> Result<bool> {
+    // `WITHOUT SCAN GUARD`. Answered before anything is counted, because the
+    // probe is the cost this clause exists to decline paying: an author who has
+    // said the threshold is wrong for their workload should not also pay for it
+    // to be measured.
+    if lifted {
+        return Ok(true);
+    }
     let Some(records) = Catalog::new(transaction).record_count(table)? else {
         return Ok(true);
     };

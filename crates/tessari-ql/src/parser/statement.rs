@@ -1781,6 +1781,29 @@ impl Parser<'_> {
         Ok(Some(Approximation::Effort(candidates)))
     }
 
+    /// `WITHOUT SCAN GUARD`, which lifts the planner's veto for this read.
+    ///
+    /// Three words rather than one, and that is the point. The clause changes
+    /// which plan runs, so a reader skimming the tail must not be able to take
+    /// it for decoration — `USING INDEX` was rejected as the place to put it for
+    /// the same reason, since a modifier that turns an assertion into an
+    /// instruction is a pun.
+    ///
+    /// All three words are contextual, like the rest of this tail: a field, a
+    /// table or an index called `without`, `scan` or `guard` stays itself.
+    /// `WITHOUT` only begins this clause where a clause may begin, and once it
+    /// has, the two words after it are required — a bare `WITHOUT` names nothing
+    /// this planner has, and guessing at what was meant would be inventing a
+    /// second spelling nobody documented.
+    fn scan_guard(&mut self) -> Result<bool> {
+        if !self.eat_word("without") {
+            return Ok(false);
+        }
+        self.expect_word("scan", "`SCAN GUARD` — the guard `WITHOUT` lifts")?;
+        self.expect_word("guard", "`GUARD`, completing `WITHOUT SCAN GUARD`")?;
+        Ok(true)
+    }
+
     fn vector_width(&mut self) -> Result<FieldKind> {
         self.expect_punct(Punct::Less, "`<` and the width every vector here holds")?;
         let span = self.span_here();
@@ -2481,6 +2504,10 @@ impl Parser<'_> {
         // and contextual like the rest: a field called `approximate` stays a
         // field.
         let approximate = self.approximation()?;
+        // Beside `APPROXIMATE` because it qualifies the read the same way — both
+        // say something about how the answer may be produced — and before
+        // `USING`, which is an assertion about what the read then did.
+        let lift_scan_guard = self.scan_guard()?;
         // After everything, because it is an assertion *about* the read rather
         // than part of it — nothing below the parser reads it to decide
         // anything. Contextual like the rest, so a field called `using` stays a
@@ -2553,6 +2580,7 @@ impl Parser<'_> {
             order,
             after,
             approximate,
+            lift_scan_guard,
             start: skip,
             limit,
             using,
