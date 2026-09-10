@@ -55,6 +55,18 @@ pub enum StatementKind {
         namespace: Option<Name>,
         /// The database to work in, when the statement names one.
         database: Option<Name>,
+        /// Who this session is, when it claims from a queue.
+        ///
+        /// A **string literal** and not an identifier, because it is data the
+        /// client chose rather than a catalog object — and deliberately not
+        /// declared anywhere first, so a worker starting under autoscale needs
+        /// no `DEFINE` before it can work.
+        ///
+        /// The same name on several sessions means **share the work**, which is
+        /// what a single declared name reads as. Nothing is fenced: sharing is
+        /// the point, and the identity that must not collide is the instance the
+        /// engine mints beside this, never this.
+        consumer: Option<String>,
     },
     /// `DEFINE NAMESPACE prod`
     DefineNamespace {
@@ -923,6 +935,37 @@ pub enum StatementKind {
     Release {
         /// The record to release.
         target: RecordTarget,
+        /// Where the statement sits.
+        span: Span,
+    },
+    /// `RELEASE ALL FROM jobs` · `RELEASE ALL FROM jobs FOR CONSUMER 'billing'`
+    ///
+    /// Clears every hold this session's **instance** holds in one queue, or
+    /// every hold a named **consumer** holds there.
+    ///
+    /// **It names its queue, for the reason [`Self::Claim`] names its queue.**
+    /// A form that named none would have to sweep every queue in the database:
+    /// unbounded in cost, and — worse — a caller granted write on some of them
+    /// would get a partial success that looked like a whole one, because the
+    /// statement cannot refuse a table it was never told about. One table is one
+    /// permission question with one answer.
+    ///
+    /// **The bare form is the safe one and the group form is spelled out.** A
+    /// worker that crashed and came back holds a *new* instance, so reclaiming
+    /// its predecessor's work is the named-consumer form — the operation that
+    /// can take a live colleague's work is the one you have to type.
+    ///
+    /// **It answers the records it released, not a count.** A caller cannot list
+    /// what it holds without reading first, and a session ending after a crash
+    /// is the caller least able to read anything; a number would leave that read
+    /// where it is.
+    ///
+    /// The attempt count is untouched, for [`Self::Release`]'s reason.
+    ReleaseAll {
+        /// The queue to let go of.
+        table: TableRef,
+        /// Whose holds to drop, or this session's instance when absent.
+        consumer: Option<String>,
         /// Where the statement sits.
         span: Span,
     },

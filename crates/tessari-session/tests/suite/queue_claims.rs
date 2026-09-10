@@ -328,3 +328,214 @@ fn drop_queue_refuses_a_table_that_is_not_one() {
     // second spelling of `DROP TABLE`.
     assert!(session.run("DROP QUEUE notes;").is_err());
 }
+
+// ------------------------------------------------------------- the claimant
+
+/// A second session on the same store, in the same tenancy.
+fn beside<'a>(store: &'a Store) -> Session<'a> {
+    let mut session = Session::new(store);
+    session
+        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    session
+}
+
+/// The `claimed_by` a record carries, as `consumer/instance`, or `none`.
+fn holder(session: &mut Session<'_>, record: &str) -> String {
+    let outcome = run(session, &format!("SELECT * FROM {record};"));
+    let Outcome::Records { records, .. } = outcome else {
+        panic!("expected records");
+    };
+    let Some((_, Value::Object(fields))) = records.first() else {
+        panic!("expected one record");
+    };
+    match fields.get("claimed_by") {
+        Some(Value::Object(held)) => format!(
+            "{}/{}",
+            match held.get("consumer") {
+                Some(Value::String(name)) => name.clone(),
+                other => panic!("consumer is {other:?}"),
+            },
+            match held.get("instance") {
+                Some(Value::String(id)) => id.clone(),
+                other => panic!("instance is {other:?}"),
+            }
+        ),
+        None => "none".to_owned(),
+        other => panic!("claimed_by is {other:?}"),
+    }
+}
+
+#[test]
+fn a_session_that_says_who_it_is_signs_the_hold_and_one_that_does_not_signs_nothing() {
+    let store = store();
+    let mut said = ready(&store, "TIMEOUT 30s");
+    said.run("USE CONSUMER 'billing';").unwrap();
+    run(&mut said, "CLAIM FROM jobs;");
+    let signed = holder(&mut said, "jobs:1");
+    assert!(signed.starts_with("billing/"), "{signed}");
+
+    // The absence is the point: it means *nobody said*, which is a true
+    // statement, where a default would have been a claim.
+    let mut quiet = beside(&store);
+    run(&mut quiet, "CLAIM FROM jobs;");
+    assert_eq!(holder(&mut quiet, "jobs:2"), "none");
+}
+
+#[test]
+fn releasing_another_claimants_hold_is_refused_and_names_the_consumer() {
+    // The hole this closes: until there was a claimant to compare against, any
+    // caller who could write the table could drop anybody's hold, with nothing
+    // anywhere saying so.
+    let store = store();
+    let mut mine = ready(&store, "TIMEOUT 30s");
+    mine.run("USE CONSUMER 'billing';").unwrap();
+    run(&mut mine, "CLAIM jobs:1;");
+
+    let mut theirs = beside(&store);
+    theirs.run("USE CONSUMER 'reports';").unwrap();
+    let refused = theirs.run("RELEASE jobs:1;").unwrap_err().to_string();
+    assert!(refused.contains("billing"), "{refused}");
+
+    // And my own hold still lets go.
+    mine.run("RELEASE jobs:1;").unwrap();
+    assert_eq!(holder(&mut mine, "jobs:1"), "none");
+}
+
+#[test]
+fn an_unsigned_hold_stays_releasable_by_anybody() {
+    // What keeps every caller written before `USE CONSUMER` working exactly as
+    // it did: nothing signs their holds, so nothing refuses them.
+    let store = store();
+    let mut first = ready(&store, "TIMEOUT 30s");
+    run(&mut first, "CLAIM jobs:1;");
+    let mut other = beside(&store);
+    other.run("RELEASE jobs:1;").unwrap();
+}
+
+#[test]
+fn release_all_answers_the_records_it_freed_and_leaves_other_claimants_alone() {
+    let store = store();
+    let mut mine = ready(&store, "TIMEOUT 30s");
+    mine.run("USE CONSUMER 'billing';").unwrap();
+    run(&mut mine, "CLAIM 2 FROM jobs;");
+
+    let mut theirs = beside(&store);
+    theirs.run("USE CONSUMER 'reports';").unwrap();
+    run(&mut theirs, "CLAIM FROM jobs;");
+
+    // The records and not a count: a caller cannot list what it holds without
+    // reading first, and a session back from a crash is the one least able to.
+    let freed = claimed(&run(&mut mine, "RELEASE ALL FROM jobs;"));
+    assert_eq!(freed, vec!["1".to_owned(), "2".to_owned()]);
+    assert_eq!(holder(&mut mine, "jobs:1"), "none");
+    assert_eq!(holder(&mut mine, "jobs:2"), "none");
+
+    let still = holder(&mut theirs, "jobs:3");
+    assert!(still.starts_with("reports/"), "{still}");
+}
+
+#[test]
+fn release_all_without_a_declared_consumer_is_refused_and_names_the_statement() {
+    // Both silent readings are wrong in a way that looks like success:
+    // succeeding on nothing tells a worker its work was freed when it was not,
+    // and freeing every unsigned hold takes work from claimants who never asked
+    // this session for anything.
+    let store = store();
+    let mut quiet = ready(&store, "TIMEOUT 30s");
+    run(&mut quiet, "CLAIM FROM jobs;");
+    let refused = quiet.run("RELEASE ALL FROM jobs;").unwrap_err().to_string();
+    assert!(refused.contains("USE CONSUMER"), "{refused}");
+}
+
+#[test]
+fn the_same_consumer_name_shares_the_work_and_fences_nobody() {
+    // The owner's correction, asserted: a single declared name reads as a
+    // GROUP. Five machines writing the same name mean *we are the billing
+    // workers*, and fencing them would make the fifth displace the fourth.
+    let store = store();
+    let mut one = ready(&store, "TIMEOUT 30s");
+    one.run("USE CONSUMER 'billing';").unwrap();
+    let mut two = beside(&store);
+    two.run("USE CONSUMER 'billing';").unwrap();
+
+    assert_eq!(claimed(&run(&mut one, "CLAIM FROM jobs;")), vec!["1"]);
+    // The second session under the same name gets DIFFERENT work, and the
+    // first one's hold is untouched — no displacement anywhere.
+    assert_eq!(claimed(&run(&mut two, "CLAIM FROM jobs;")), vec!["2"]);
+    assert!(holder(&mut one, "jobs:1").starts_with("billing/"));
+}
+
+#[test]
+fn two_sessions_under_one_name_hold_different_instances() {
+    // Which is what makes `RELEASE ALL` safe by default: the bare form reaches
+    // this session's instance, so a restarted worker cannot drop a live
+    // colleague's work by accident.
+    let store = store();
+    let mut one = ready(&store, "TIMEOUT 30s");
+    one.run("USE CONSUMER 'billing';").unwrap();
+    let mut two = beside(&store);
+    two.run("USE CONSUMER 'billing';").unwrap();
+    run(&mut one, "CLAIM jobs:1;");
+    run(&mut two, "CLAIM jobs:2;");
+    assert_ne!(holder(&mut one, "jobs:1"), holder(&mut two, "jobs:2"));
+
+    let freed = claimed(&run(&mut two, "RELEASE ALL FROM jobs;"));
+    assert_eq!(freed, vec!["2".to_owned()], "only its own instance");
+    assert!(holder(&mut one, "jobs:1").starts_with("billing/"));
+}
+
+#[test]
+fn the_named_consumer_form_reaches_the_whole_group() {
+    // The operation that CAN take a live colleague's work is the one you have
+    // to type. Both holds go, and that is the point of naming it.
+    let store = store();
+    let mut one = ready(&store, "TIMEOUT 30s");
+    one.run("USE CONSUMER 'billing';").unwrap();
+    let mut two = beside(&store);
+    two.run("USE CONSUMER 'billing';").unwrap();
+    run(&mut one, "CLAIM jobs:1;");
+    run(&mut two, "CLAIM jobs:2;");
+
+    let freed = claimed(&run(
+        &mut two,
+        "RELEASE ALL FROM jobs FOR CONSUMER 'billing';",
+    ));
+    assert_eq!(freed, vec!["1".to_owned(), "2".to_owned()]);
+}
+
+#[test]
+fn declaring_a_consumer_again_mints_a_new_instance() {
+    // A session that says who it is again is a new claimant from the queue's
+    // side. Reusing the value would let `RELEASE ALL` reach holds the previous
+    // declaration took, which is the reuse the design forbids arriving from
+    // inside one session.
+    let store = store();
+    let mut session = ready(&store, "TIMEOUT 30s");
+    session.run("USE CONSUMER 'billing';").unwrap();
+    run(&mut session, "CLAIM jobs:1;");
+    let first = holder(&mut session, "jobs:1");
+
+    session.run("USE CONSUMER 'billing';").unwrap();
+    run(&mut session, "CLAIM jobs:2;");
+    assert_ne!(first, holder(&mut session, "jobs:2"));
+
+    // And the earlier hold is out of reach of the new instance's bare form.
+    let freed = claimed(&run(&mut session, "RELEASE ALL FROM jobs;"));
+    assert_eq!(freed, vec!["2".to_owned()]);
+}
+
+#[test]
+fn a_caller_cannot_sign_a_hold_itself() {
+    // The strongest of the three engine fields to refuse: the other two are
+    // bookkeeping, this one is an assertion about WHO. A caller able to write
+    // it could sign a hold with another consumer's name and then have that
+    // consumer's `RELEASE ALL` drop it.
+    let store = store();
+    let mut session = ready(&store, "TIMEOUT 30s");
+    let refused = session
+        .run("CREATE jobs:9 = { url: 'd', claimed_by: { consumer: 'billing' } };")
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("claimed_by"), "{refused}");
+}

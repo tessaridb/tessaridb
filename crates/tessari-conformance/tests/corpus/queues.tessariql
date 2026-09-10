@@ -154,3 +154,23 @@ CLAIM slow:2;
 --- case: a bare table name is neither form, and the refusal names both
 CLAIM slow;
 --- expect: error UnexpectedToken
+
+--- case: a session says who it is before it claims
+USE CONSUMER 'billing';
+--- expect: ok
+
+--- case: a signed claim can be let go of wholesale, and answers what it freed
+CLAIM 2 FROM slow;
+--- expect: rows 1
+
+--- case: releasing many names its queue and answers the records, not a count
+RELEASE ALL FROM slow;
+--- expect: rows 1
+
+--- case: releasing many needs to know whose, so a bare table is not enough
+RELEASE ALL;
+--- expect: error UnexpectedToken
+
+--- case: the group form names the consumer it reaches
+RELEASE ALL FROM slow FOR CONSUMER 'billing';
+--- expect: rows 0

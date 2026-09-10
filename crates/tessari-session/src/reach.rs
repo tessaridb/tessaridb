@@ -287,6 +287,11 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // rather than two (ADR-0011).
         | StatementKind::Read { target, .. } => vec![&target.table],
 
+        // Releasing many reaches the one queue it names — which is the whole
+        // reason it names one: a sweep over every queue would ask a permission
+        // question per table and answer a partial success as if it were whole.
+        StatementKind::ReleaseAll { table, .. } => vec![table],
+
         // An edge reaches three: the two records it connects and the table the
         // relation is recorded in. A grant on the edge table alone would let
         // somebody write a link between records they cannot see.

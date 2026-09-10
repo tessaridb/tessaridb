@@ -699,6 +699,11 @@ impl Session<'_> {
                 self.claim_record(transaction, target, *span)
             }
             StatementKind::Release { target, span } => self.release(transaction, target, *span),
+            StatementKind::ReleaseAll {
+                table,
+                consumer,
+                span,
+            } => self.release_all(transaction, table, consumer.as_deref(), *span),
             StatementKind::Reveal {
                 target,
                 fields,

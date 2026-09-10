@@ -80,6 +80,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
             Err(unrenderable("CLAIM", span))
         }
         StatementKind::Release { .. } => Err(unrenderable("RELEASE", span)),
+        StatementKind::ReleaseAll { .. } => Err(unrenderable("RELEASE ALL", span)),
         StatementKind::DropVector { .. } => Err(unrenderable("DROP VECTOR", span)),
         StatementKind::DefineGeo { .. } => Err(unrenderable("DEFINE GEO", span)),
         StatementKind::DropGeo { .. } => Err(unrenderable("DROP GEO", span)),

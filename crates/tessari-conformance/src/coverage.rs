@@ -66,6 +66,7 @@ forms! {
     // be read as syntax by the next person adding a case.
     ClaimRecord => "CLAIM <record>",
     Release => "RELEASE",
+    ReleaseAll => "RELEASE ALL",
     Reveal => "REVEAL",
     AddRecipient => "ADD RECIPIENT",
     RemoveRecipient => "REMOVE RECIPIENT",
@@ -272,6 +273,7 @@ mod tests {
              CLAIM 2 FROM q;\
              CLAIM q:7;\
              RELEASE q:1;\
+             RELEASE ALL FROM q;\
              DROP QUEUE q;\
              DEFINE SERIES s RETAIN 12h;\
              DROP SERIES s;\

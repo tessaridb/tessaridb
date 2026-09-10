@@ -5293,10 +5293,53 @@ says the work cannot poison; for a lock, it cannot.
 **`RELEASE` hands a record back before its deadline**, for a worker that knows it
 has failed or is shutting down. It does not touch the attempt count — that was
 taken at the claim, and a record that was handed out was handed out whatever
-happened next. **It does not ask who holds the record**: the store records that a
-record is held and until when, never by whom, so any caller who may write the
-table may hand any record back. A system where that matters keeps the holder in a
-field of its own and checks it before releasing.
+happened next.
+
+### Saying who you are
+
+```tessariql
+USE CONSUMER 'billing';
+CLAIM FROM jobs;
+RELEASE ALL FROM jobs;
+RELEASE ALL FROM jobs FOR CONSUMER 'billing';
+```
+
+A session that says who it is signs the holds it takes, and the record carries
+`claimed_by` — an object of two routes, `consumer` and `instance`. **A session
+that says nothing signs nothing**, and its holds stay releasable by anybody,
+which is exactly how a queue behaved before this existed.
+
+**The name is yours and it is meant to be shared.** Several workers under one
+name is the ordinary arrangement, and it means *we are the billing workers* —
+they divide the work between them and none displaces another. Only the
+**instance** is unique, and you never write it: the store mints one for each
+session that declares a name, so two workers cannot collide however they are
+configured.
+
+**`RELEASE ALL FROM jobs` reaches this session's own holds**, and answers the
+records it freed rather than a count. That is the safe form, and it is the one a
+worker uses when it is shutting down.
+
+**`RELEASE ALL FROM jobs FOR CONSUMER 'billing'` reaches the whole group** —
+every hold every session under that name is holding, including live ones. It is
+what a worker coming back from a crash uses to reclaim what its predecessor left,
+because a restarted worker is a *new* instance and its own holds are gone. It is
+spelled out precisely because it can take work from somebody still doing it.
+
+It names its queue for the reason `CLAIM` names its queue. A form that named none
+would sweep every queue in the database, and a caller granted write on only some
+of them would get a partial success that read as a whole one.
+
+Releasing a hold that belongs to another consumer is **refused**, naming the
+consumer that holds it. The store protects you from a mistake, not from a lie: a
+consumer name is a string the client chose, and a caller who may write the table
+could already clear any hold by writing the record.
+
+**A different consumer name does not give you a second copy of the work.** If you
+have met message brokers where a new group replays the whole topic, this is not
+that: a queue's records are deleted when the work is done, so a second consumer
+sees only what the first did not take. A name scopes releasing and reading, and
+nothing else.
 
 ### What the guarantees are, in the same words the consumer's are
 

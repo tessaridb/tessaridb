@@ -269,7 +269,12 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // Everything else names things and holds no values: the definitions, the
         // drops, the grants, the tenancy statements, the point reads and the
         // transaction words.
-        StatementKind::Use { .. }
+        // A consumer name is a literal the statement wrote, never a
+        // parameter: it selects for the session rather than naming data, and a
+        // caller that could bind it could change who a session is from outside
+        // the script that declared it.
+        StatementKind::ReleaseAll { .. }
+        | StatementKind::Use { .. }
         | StatementKind::DefineNamespace { .. }
         | StatementKind::DefineDatabase { .. }
         | StatementKind::DefineTable { .. }

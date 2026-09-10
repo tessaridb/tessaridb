@@ -260,10 +260,7 @@ impl Parser<'_> {
             // tracker's own table has a `claim` on it — so reserving them here
             // would take them away from the schema the word exists to serve.
             _ if self.eat_word("claim") => self.claim_statement(start)?,
-            _ if self.eat_word("release") => StatementKind::Release {
-                target: self.record_target()?,
-                span: start.to(self.span_behind()),
-            },
+            _ if self.eat_word("release") => self.release_statement(start)?,
             _ if self.eat_word("reveal") => self.reveal_statement(start)?,
             _ if self.eat_word("add") => self.add_recipient_statement(start)?,
             _ if self.eat_word("remove") => self.remove_recipient_statement(start)?,
@@ -526,12 +523,64 @@ impl Parser<'_> {
         if self.eat_keyword(Keyword::Database) {
             database = Some(self.name()?);
         }
-        if namespace.is_none() && database.is_none() {
-            return Err(self.error_here("`NAMESPACE` or `DATABASE` after `USE`"));
+        // Contextual like every other subject word in this file: `consumer` is
+        // a perfectly ordinary column name in an application that has
+        // customers, and reserving it here would reserve it everywhere.
+        let consumer = if self.eat_word("consumer") {
+            Some(self.consumer_name()?)
+        } else {
+            None
+        };
+        if namespace.is_none() && database.is_none() && consumer.is_none() {
+            return Err(self.error_here("`NAMESPACE`, `DATABASE` or `CONSUMER` after `USE`"));
         }
         Ok(StatementKind::Use {
             namespace,
             database,
+            consumer,
+        })
+    }
+
+    /// The quoted name a session claims under.
+    ///
+    /// A literal rather than an identifier: it is the client's own string, not a
+    /// catalog object, and nothing declares it first.
+    fn consumer_name(&mut self) -> Result<String> {
+        let Some(Token::Str(name)) = self.peek() else {
+            return Err(self.error_here("a quoted consumer name"));
+        };
+        let name = name.clone();
+        self.advance();
+        if name.is_empty() {
+            // An empty name would be a consumer that reads as *nobody said*,
+            // which is what an ABSENT `claimed_by` already means. Two spellings
+            // of one state is how a reader ends up asking which was meant.
+            return Err(self.error_here("a consumer name with something in it"));
+        }
+        Ok(name)
+    }
+
+    /// `RELEASE jobs:7` · `RELEASE ALL FROM jobs [FOR CONSUMER 'billing']`
+    fn release_statement(&mut self, start: Span) -> Result<StatementKind> {
+        if !self.eat_word("all") {
+            return Ok(StatementKind::Release {
+                target: self.record_target()?,
+                span: start.to(self.span_behind()),
+            });
+        }
+        self.expect_keyword(Keyword::From, "`FROM` and the queue to release")?;
+        let table = self.table_ref()?;
+        // `for` is read as a contextual word, exactly as `INFO FOR` reads it.
+        let consumer = if self.eat_word("for") {
+            self.expect_word("consumer", "`CONSUMER` and a quoted name after `FOR`")?;
+            Some(self.consumer_name()?)
+        } else {
+            None
+        };
+        Ok(StatementKind::ReleaseAll {
+            table,
+            consumer,
+            span: start.to(self.span_behind()),
         })
     }
 

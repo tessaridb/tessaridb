@@ -20,6 +20,28 @@ Work landed after the tag was cut, and recorded here because this file's top
 section must name the version this package carries — so there is nowhere else
 for it to go until the next version is opened.
 
+**A queue can now say who is holding a record.** `USE CONSUMER 'billing'` names
+a session, `CLAIM` signs the hold with it, and `RELEASE ALL FROM jobs` hands back
+everything that session holds — answering the records it freed rather than a
+count. Releasing somebody else's hold is refused, naming them; before this, any
+caller who could write the table could drop any hold with nothing anywhere
+saying so.
+
+**The name is shared on purpose and the identity that must not collide is not
+yours.** Several workers under one name divide the work between them and none
+displaces another — that is what one declared name means. Only the *instance* is
+unique, and the store mints it, so two workers cannot collide however they are
+configured and there is nothing to fence.
+
+`RELEASE ALL FROM jobs FOR CONSUMER 'billing'` reaches the whole group, including
+live sessions, which is how a restarted worker reclaims what its predecessor
+left. It is spelled out because it can take work from somebody still doing it.
+
+A session that declares nothing signs nothing, and its holds stay releasable by
+anybody — so nothing written before this changes behaviour. A different consumer
+name does **not** replay the queue: records are deleted when the work is done, so
+a name scopes releasing and reading and nothing else.
+
 **Broker ingestion now names its broker: `DEFINE KAFKA CONSUMER`.** The
 statement is otherwise unchanged — same clauses, same guarantees, same
 refusals — but `DEFINE CONSUMER`, `DROP CONSUMER` and `INFO FOR CONSUMER[S]`
@@ -78,7 +100,7 @@ rather than the view's records.
 holder at a time under a hold that lapses — `DEFINE QUEUE jobs TIMEOUT 30s
 ATTEMPTS 5`, then `CLAIM FROM jobs`, `DELETE jobs:7` when the work is done and
 `RELEASE jobs:7` to hand it back early. That makes ten engines over one substrate
-rather than nine. **1307 conformance cases** define the language and run in the
+rather than nine. **1312 conformance cases** define the language and run in the
 build, up from 1237.
 
 The design is the part worth reading, because a queue is normally where a store

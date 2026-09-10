@@ -617,7 +617,8 @@ impl Needs {
             // a write-only statement because the class it would otherwise take
             // is decided by a catch-all arm, and a catch-all over a statement
             // family is how the next member added gets mis-permissioned.
-            | StatementKind::Release { .. } => Self::READ_WRITE,
+            | StatementKind::Release { .. }
+            | StatementKind::ReleaseAll { .. } => Self::READ_WRITE,
             // **The six that are measurably silent about prior state.** Every
             // one of them answers `ok` against an absent or conflicting record,
             // so a holder of `write` alone can run them and learn nothing —

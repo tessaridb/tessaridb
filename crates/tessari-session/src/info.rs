@@ -1231,6 +1231,9 @@ fn selecting(namespace: Option<&str>, database: Option<&str>, span: Span) -> Sta
     StatementKind::Use {
         namespace: named(namespace),
         database: named(database),
+        // Synthesised to re-select tenancy and nothing else; a report never
+        // declares a claimant.
+        consumer: None,
     }
 }
 

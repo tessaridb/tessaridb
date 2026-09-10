@@ -53,19 +53,22 @@ fn the_session_statement_takes_either_half_or_both() {
         one("USE NAMESPACE prod;"),
         StatementKind::Use {
             namespace: Some(_),
-            database: None
+            database: None,
+            consumer: None
         }
     ));
     assert!(matches!(
         one("USE DATABASE orders;"),
         StatementKind::Use {
             namespace: None,
-            database: Some(_)
+            database: Some(_),
+            consumer: None
         }
     ));
     let StatementKind::Use {
         namespace: Some(namespace),
         database: Some(database),
+        consumer: None,
     } = one("USE NAMESPACE prod DATABASE orders;")
     else {
         panic!("expected both halves");

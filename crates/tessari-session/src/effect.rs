@@ -224,6 +224,7 @@ impl Effect {
             | StatementKind::Claim { .. }
             | StatementKind::ClaimRecord { .. }
             | StatementKind::Release { .. }
+            | StatementKind::ReleaseAll { .. }
             | StatementKind::Relate { .. }
             | StatementKind::DeleteEdge { .. }
             | StatementKind::Set { .. }

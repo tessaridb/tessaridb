@@ -364,3 +364,45 @@ fn a_kafka_that_is_not_followed_by_consumer_says_so() {
     let failure = refusal("DEFINE KAFKA orders_in;");
     assert!(failure.contains("CONSUMER"), "{failure}");
 }
+
+// ------------------------------------------------ the word the queue got back
+
+#[test]
+fn a_session_says_who_it_is_with_a_quoted_name() {
+    let StatementKind::Use { consumer, .. } = only("USE CONSUMER 'billing';") else {
+        panic!("not a session statement");
+    };
+    assert_eq!(consumer.as_deref(), Some("billing"));
+}
+
+#[test]
+fn an_empty_consumer_name_is_refused() {
+    // An empty name would read as *nobody said*, which is what an ABSENT
+    // `claimed_by` already means. Two spellings of one state is how a reader
+    // ends up asking which was meant.
+    assert!(!refusal("USE CONSUMER '';").is_empty());
+}
+
+#[test]
+fn releasing_many_names_its_queue() {
+    // The form that named no queue would have to sweep every queue in the
+    // database, and a caller granted write on some of them would get a partial
+    // success that looked like a whole one.
+    let refused = refusal("RELEASE ALL;");
+    assert!(refused.contains("FROM"), "{refused}");
+    assert!(refusal("RELEASE ALL FROM jobs;").is_empty());
+    assert!(refusal("RELEASE ALL FROM jobs FOR CONSUMER 'billing';").is_empty());
+}
+
+#[test]
+fn consumer_is_still_an_ordinary_name() {
+    // `USE CONSUMER` reads `consumer` contextually, so it must not have been
+    // taken away from the schema of an application that has customers.
+    for source in [
+        "SELECT * FROM consumer;",
+        "SELECT consumer FROM orders;",
+        "SELECT * FROM orders WHERE consumer = 'ada';",
+    ] {
+        assert!(refusal(source).is_empty(), "{source}: {}", refusal(source));
+    }
+}

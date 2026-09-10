@@ -44,10 +44,11 @@ pub use authority::{Authority, Held, Kind, Reach};
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{
-    DatabaseDefinition, EdgeDeclaration, EdgeOrder, GEO_FIELD, IndexDefinition, IndexShape,
-    NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL,
-    SeriesDeclaration, StoredKind, TableDefinition, TableKind, TableShape, VECTOR_FIELD,
-    VaultDeclaration, VectorDeclaration, VectorDistance, ViewDeclaration,
+    CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, DatabaseDefinition, EdgeDeclaration, EdgeOrder,
+    GEO_FIELD, IndexDefinition, IndexShape, NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
+    QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, SeriesDeclaration, StoredKind,
+    TableDefinition, TableKind, TableShape, VECTOR_FIELD, VaultDeclaration, VectorDeclaration,
+    VectorDistance, ViewDeclaration,
 };
 pub use edge_kind::EdgeKindDefinition;
 pub use field::{FieldDefinition, FieldShape};

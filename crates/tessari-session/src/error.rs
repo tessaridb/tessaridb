@@ -1472,6 +1472,38 @@ pub enum Error {
         span: Span,
     },
 
+    /// A release of a hold that belongs to somebody else.
+    ///
+    /// Refused rather than performed, because taking another claimant's work
+    /// away is a different act from letting go of your own — and until there
+    /// was a claimant to compare, any caller who could write the table could do
+    /// it with nothing anywhere saying so.
+    ///
+    /// It names the **consumer** and not the instance: the consumer is the name
+    /// a person chose and can recognise, while the instance is a value the
+    /// engine minted and means nothing to anybody reading the message.
+    #[error("{consumer} is holding that record (at {span})")]
+    HeldByAnother {
+        /// The consumer whose hold it is.
+        consumer: String,
+        /// Where the release was written.
+        span: Span,
+    },
+
+    /// `RELEASE ALL` from a session that never said who it is.
+    ///
+    /// The bare form means *everything mine*, and a session with no declared
+    /// consumer has no instance for *mine* to point at. The two silent readings
+    /// are both wrong in ways that look like success — succeeding on nothing
+    /// tells a worker its work was freed when it was not, and freeing every
+    /// unsigned hold takes work from claimants who never asked this session for
+    /// anything — so it is refused, naming the statement that would fix it.
+    #[error("`RELEASE ALL` needs `USE CONSUMER` first, or a named consumer (at {span})")]
+    NoConsumerDeclared {
+        /// Where the release was written.
+        span: Span,
+    },
+
     /// A claim for more records than one statement may take.
     ///
     /// A bound rather than a tuning knob: without one, a single statement holds

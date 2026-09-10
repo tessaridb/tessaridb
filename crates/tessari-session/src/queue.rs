@@ -62,15 +62,15 @@ use tessari_constants::MAX_CLAIM_RECORDS;
 use tessari_encoding::decode_payload;
 use tessari_ql::{RecordTarget, Span, TableRef};
 use tessari_storage::{
-    Catalog, QUEUE_ATTEMPTS, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RecordAddress, TableDefinition,
-    TableKind, Transaction,
+    CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
+    QUEUE_CLAIMED_UNTIL, QueueDeclaration, RecordAddress, TableDefinition, TableKind, Transaction,
 };
 use tessari_types::{Datetime, Number, RecordId, Value};
 
 use crate::error::{Error, Result};
 use crate::outcome::{AccessPath, Outcome};
 use crate::plan::Plan;
-use crate::session::Session;
+use crate::session::{Consumer, Session};
 
 impl Session<'_> {
     /// `CLAIM 10 FROM jobs`
@@ -106,6 +106,9 @@ impl Session<'_> {
         // rather than a computation a reader would repeat.
         let now = crate::call::instant(span)?;
         let until = deadline(now, declared, span)?;
+        // Cloned out before the walk: the closure borrows the transaction, so
+        // it cannot also borrow the session.
+        let claimant = self.consumer.clone();
 
         let mut taken: Vec<(RecordId, Value)> = Vec::new();
         let mut writes: Vec<(RecordId, Value)> = Vec::new();
@@ -131,6 +134,7 @@ impl Session<'_> {
                     QUEUE_ATTEMPTS.to_owned(),
                     Value::Number(Number::Integer(attempts_of(&fields).saturating_add(1))),
                 );
+                mark_claimant(&mut fields, claimant.as_ref());
                 let payload = Value::Object(fields);
                 taken.push((record.clone(), payload.clone()));
                 writes.push((record, payload));
@@ -218,6 +222,7 @@ impl Session<'_> {
             QUEUE_ATTEMPTS.to_owned(),
             Value::Number(Number::Integer(attempts_of(&fields).saturating_add(1))),
         );
+        mark_claimant(&mut fields, self.consumer.as_ref());
         let payload = Value::Object(fields);
         let record = address.id.clone();
         self.put_engine_record(transaction, address, payload.clone(), span)?;
@@ -277,10 +282,171 @@ impl Session<'_> {
         if fields.remove(QUEUE_CLAIMED_UNTIL).is_none() {
             return Ok(Outcome::Done);
         }
+        // Whose hold this is decides whether the caller may drop it. A record
+        // nobody signed stays releasable by anybody, which is what keeps every
+        // caller that predates `USE CONSUMER` working exactly as it did.
+        if let Some(holder) = claimant_of(&fields)
+            && !self
+                .consumer
+                .as_ref()
+                .is_some_and(|mine| mine.instance == holder.instance)
+        {
+            return Err(Error::HeldByAnother {
+                consumer: holder.name,
+                span: target.span,
+            });
+        }
+        fields.remove(QUEUE_CLAIMED_BY);
         let _ = context;
         self.put_engine_record(transaction, address, Value::Object(fields), span)?;
         Ok(Outcome::Done)
     }
+
+    /// `RELEASE ALL FROM jobs [FOR CONSUMER 'billing']`
+    ///
+    /// Every hold in one queue that belongs to this session's instance, or to a
+    /// named consumer, cleared in one statement.
+    ///
+    /// **It answers the records it released**, not a count. A caller cannot list
+    /// what it holds without reading first, and a session coming back from a
+    /// crash is the caller least able to read anything — so a number here would
+    /// leave that read exactly where it was.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotAQueue`] when the table is not one,
+    /// [`Error::NoConsumerDeclared`] when the bare form is used by a session
+    /// that never said who it is, and the mapped storage failure otherwise.
+    pub(crate) fn release_all(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: &TableRef,
+        consumer: Option<&str>,
+        span: Span,
+    ) -> Result<Outcome> {
+        let (context, id) = self.resolve_table(transaction, table)?;
+        queue_declaration(transaction, id, &table.name.text, table.span)?;
+        // The bare form is refused rather than answered, because a session with
+        // no instance has no *everything mine* to name. Succeeding on nothing
+        // would tell a worker its work was freed when it was not, and freeing
+        // every unsigned hold would take work from claimants who never asked
+        // this session for anything.
+        let whose = match (consumer, self.consumer.as_ref()) {
+            (Some(named), _) => Whose::Consumer(named.to_owned()),
+            (None, Some(mine)) => Whose::Instance(mine.instance.clone()),
+            (None, None) => return Err(Error::NoConsumerDeclared { span }),
+        };
+
+        let mut freed: Vec<(RecordId, Value)> = Vec::new();
+        let mut writes: Vec<(RecordId, Value)> = Vec::new();
+        transaction.walk_table(
+            context.namespace,
+            context.database,
+            id,
+            |_, record, bytes| -> Result<ControlFlow<()>> {
+                let Value::Object(mut fields) = decode_payload(&bytes)? else {
+                    return Ok(ControlFlow::Continue(()));
+                };
+                let Some(holder) = claimant_of(&fields) else {
+                    return Ok(ControlFlow::Continue(()));
+                };
+                if !whose.holds(&holder) {
+                    return Ok(ControlFlow::Continue(()));
+                }
+                fields.remove(QUEUE_CLAIMED_UNTIL);
+                fields.remove(QUEUE_CLAIMED_BY);
+                // The attempt count is left alone, for `release`'s reason: it
+                // was taken at the hand-out, and a record that was handed out
+                // was handed out whatever happened next.
+                let payload = Value::Object(fields);
+                freed.push((record.clone(), payload.clone()));
+                writes.push((record, payload));
+                Ok(ControlFlow::Continue(()))
+            },
+        )?;
+
+        // After the walk, for the reason the selecting claim writes after its
+        // own: a record written during a walk is merged into an order that was
+        // already decided.
+        for (record, payload) in writes {
+            let address = RecordAddress::new(context.namespace, context.database, id, record);
+            self.put_engine_record(transaction, address, payload, span)?;
+        }
+
+        Ok(Outcome::Records {
+            records: freed,
+            plan: Plan::new(AccessPath::Scan).on(&table.name.text),
+            notes: Vec::new(),
+            suggestion: None,
+            only: false,
+        })
+    }
+}
+
+/// Whose holds a release is asking about.
+enum Whose {
+    /// This session's own instance — the safe default.
+    Instance(String),
+    /// A named consumer, which may be several live sessions at once.
+    Consumer(String),
+}
+
+impl Whose {
+    /// Whether this hold is one of the ones asked for.
+    fn holds(&self, holder: &Claimant) -> bool {
+        match *self {
+            Self::Instance(ref instance) => holder.instance == *instance,
+            Self::Consumer(ref name) => holder.name == *name,
+        }
+    }
+}
+
+/// Who holds a record, read back out of it.
+struct Claimant {
+    /// The name the holder's session declared.
+    name: String,
+    /// The value the engine minted for that session.
+    instance: String,
+}
+
+/// The claimant a record carries, when it carries one.
+///
+/// A record whose `claimed_by` is malformed reads as **unheld** rather than
+/// raising: the field is the engine's and a caller cannot write it, so a shape
+/// that is wrong here is this engine's own bug, and failing a release because of
+/// it would leave the work stuck with no way for an operator to free it.
+fn claimant_of(fields: &BTreeMap<String, Value>) -> Option<Claimant> {
+    let Some(Value::Object(held)) = fields.get(QUEUE_CLAIMED_BY) else {
+        return None;
+    };
+    let text = |route: &str| match held.get(route) {
+        Some(Value::String(found)) => Some(found.clone()),
+        _ => None,
+    };
+    Some(Claimant {
+        name: text(CLAIMED_BY_CONSUMER)?,
+        instance: text(CLAIMED_BY_INSTANCE)?,
+    })
+}
+
+/// Record who is taking this hold, when the session said who it is.
+///
+/// Writes nothing when it did not, which is what keeps the field's absence
+/// meaning *nobody said* rather than a default that is itself a claim.
+fn mark_claimant(fields: &mut BTreeMap<String, Value>, claimant: Option<&Consumer>) {
+    let Some(claimant) = claimant else {
+        return;
+    };
+    let mut held = BTreeMap::new();
+    held.insert(
+        CLAIMED_BY_CONSUMER.to_owned(),
+        Value::from(claimant.name.as_str()),
+    );
+    held.insert(
+        CLAIMED_BY_INSTANCE.to_owned(),
+        Value::from(claimant.instance.as_str()),
+    );
+    fields.insert(QUEUE_CLAIMED_BY.to_owned(), Value::Object(held));
 }
 
 /// The answer a targeted claim gives when the record is not claimable.
@@ -397,7 +563,10 @@ pub(crate) fn refuse_engine_fields(
     let Value::Object(fields) = payload else {
         return Ok(());
     };
-    if !fields.contains_key(QUEUE_CLAIMED_UNTIL) && !fields.contains_key(QUEUE_ATTEMPTS) {
+    if !fields.contains_key(QUEUE_CLAIMED_UNTIL)
+        && !fields.contains_key(QUEUE_ATTEMPTS)
+        && !fields.contains_key(QUEUE_CLAIMED_BY)
+    {
         return Ok(());
     }
     let is_queue = Catalog::new(transaction)
@@ -408,8 +577,14 @@ pub(crate) fn refuse_engine_fields(
     }
     let field = if fields.contains_key(QUEUE_CLAIMED_UNTIL) {
         QUEUE_CLAIMED_UNTIL
-    } else {
+    } else if fields.contains_key(QUEUE_ATTEMPTS) {
         QUEUE_ATTEMPTS
+    } else {
+        // The strongest of the three to refuse. The other two are the engine's
+        // bookkeeping; this one is an ASSERTION ABOUT WHO, and a caller able to
+        // write it could sign a hold with another consumer's name and then have
+        // that consumer's `RELEASE ALL` drop it.
+        QUEUE_CLAIMED_BY
     };
     Err(Error::QueueFieldIsTheEngines { field, span })
 }

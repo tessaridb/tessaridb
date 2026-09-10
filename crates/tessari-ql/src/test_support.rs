@@ -72,6 +72,9 @@ fn erase_statement(statement: &mut Statement) {
         StatementKind::Use {
             namespace,
             database,
+            // A consumer name is a literal and carries no span of its own, so
+            // there is nothing here to normalise.
+            consumer: _,
         } => {
             erase_optional_name(namespace.as_mut());
             erase_optional_name(database.as_mut());
@@ -342,6 +345,10 @@ fn erase_statement(statement: &mut Statement) {
         }
         StatementKind::ClaimRecord { target, span } | StatementKind::Release { target, span } => {
             erase_record(target);
+            *span = CANONICAL;
+        }
+        StatementKind::ReleaseAll { table, span, .. } => {
+            erase_table(table);
             *span = CANONICAL;
         }
         StatementKind::Keys { space, range } => {

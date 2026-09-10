@@ -762,6 +762,36 @@ impl ViewDeclaration {
 /// absence: `claimed_until IS NONE OR claimed_until < time::now()`.
 pub const QUEUE_CLAIMED_UNTIL: &str = "claimed_until";
 
+/// What a queue calls who is holding a record.
+///
+/// An object of two routes — `consumer`, the name a session declared, and
+/// `instance`, the value the engine minted for that session — because the pair
+/// is **one fact**: who took this. Two flat fields would be two payload
+/// collision surfaces where one will do, and a route into a stored object is
+/// already how a condition reaches a nested value.
+///
+/// **Absent when the session never said who it was.** A claim from an
+/// undeclared session writes nothing here, which keeps every existing caller
+/// working unchanged and makes the absence mean something true — *nobody said*
+/// — rather than a default that is itself a claim.
+///
+/// Visible and ordinary for [`QUEUE_CLAIMED_UNTIL`]'s reason, and here the
+/// reason is sharper: *who has this* is the first question asked of a queue that
+/// has gone quiet, and it is the one question the engine could not answer at all
+/// until this field existed.
+///
+/// The instance is **not** derived from a sign-in ticket and never shares its
+/// value. A ticket is a credential; this is read by anyone who may `SELECT` the
+/// queue, and one value serving both would publish the first to everybody
+/// holding the second.
+pub const QUEUE_CLAIMED_BY: &str = "claimed_by";
+
+/// A route inside [`QUEUE_CLAIMED_BY`]: the name the session declared.
+pub const CLAIMED_BY_CONSUMER: &str = "consumer";
+
+/// A route inside [`QUEUE_CLAIMED_BY`]: the value the engine minted.
+pub const CLAIMED_BY_INSTANCE: &str = "instance";
+
 /// What a queue calls the number of times a record has been handed out.
 ///
 /// Counted at the hand-out and not at a failure, because how many times a record
