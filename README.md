@@ -101,6 +101,11 @@ services and a consistency problem that lands in the agent's own code.
 Every row is proven by an executable corpus — a script the build runs and
 compares against expected answers, case by case. The counts are those cases.
 
+**Twelve rows, ten engines.** A row is a corpus rather than an engine, and three
+of them — Documents, Relational and References — are three faces of the record
+store rather than three stores. The
+[engines page](https://docs.tessaridb.com/overview/engines) lists the ten.
+
 | Engine | What it gives you | Cases | State |
 |---|---|---|:--|
 | **Documents** | schemaless or schemafull records, nested objects and arrays, typed fields with defaults | 38 + 78 + 16 | ✅ runs |
