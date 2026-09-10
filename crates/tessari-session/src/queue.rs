@@ -602,16 +602,46 @@ pub(crate) fn refuse_engine_fields(
     if !is_queue {
         return Ok(());
     }
-    let field = if fields.contains_key(QUEUE_CLAIMED_UNTIL) {
+
+    // What the record holds now, because the payload above is not what the
+    // caller said. Every caller-driven write funnels through here as the whole
+    // record about to be stored, and for `UPDATE ... SET` that is the merge of
+    // the caller's assignments over what was already there — so on a held
+    // record it carries all three of these whether or not the caller mentioned
+    // any. Judging the payload alone therefore refused a worker who wrote a
+    // field of its own on work it had just taken, naming a field that worker
+    // had never typed, which made a claimed record unwritable and a claim
+    // pointless.
+    //
+    // The rule is that a caller may not INTRODUCE or CHANGE one of these.
+    // Carrying one forward unchanged is not writing it: the value that reaches
+    // storage is the value the engine put there, so nothing a caller could lie
+    // about has moved.
+    let stored = match transaction.get(address)? {
+        Some(bytes) => match decode_payload(&bytes)? {
+            Value::Object(held) => held,
+            _ => BTreeMap::new(),
+        },
+        None => BTreeMap::new(),
+    };
+    let supplied = |name: &str| {
+        fields
+            .get(name)
+            .is_some_and(|value| stored.get(name) != Some(value))
+    };
+
+    let field = if supplied(QUEUE_CLAIMED_UNTIL) {
         QUEUE_CLAIMED_UNTIL
-    } else if fields.contains_key(QUEUE_ATTEMPTS) {
+    } else if supplied(QUEUE_ATTEMPTS) {
         QUEUE_ATTEMPTS
-    } else {
+    } else if supplied(QUEUE_CLAIMED_BY) {
         // The strongest of the three to refuse. The other two are the engine's
         // bookkeeping; this one is an ASSERTION ABOUT WHO, and a caller able to
         // write it could sign a hold with another consumer's name and then have
         // that consumer's `RELEASE ALL` drop it.
         QUEUE_CLAIMED_BY
+    } else {
+        return Ok(());
     };
     Err(Error::QueueFieldIsTheEngines { field, span })
 }

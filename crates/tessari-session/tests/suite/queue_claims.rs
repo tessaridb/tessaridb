@@ -656,3 +656,67 @@ fn a_strict_queue_accepts_the_fields_the_engine_writes_and_still_refuses_the_cal
         .to_string();
     assert!(refused.contains("written by the store"), "{refused}");
 }
+
+#[test]
+fn a_claimed_record_may_still_be_worked_on() {
+    // The point of taking work is to then do something to it, and until this was
+    // fixed a held record could not be written at all: the refusal came back
+    // naming `claimed_until`, a field the caller had not mentioned, because the
+    // guard was reading the payload about to be written and for `UPDATE ... SET`
+    // that payload is the MERGED record. The same statement on the same table
+    // succeeded while the record was free, which is the shape that says the
+    // hold was the cause.
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE QUEUE jobs TIMEOUT 30s;\n\
+             CREATE jobs:1 = { url: 'a' };",
+        )
+        .unwrap();
+    session.run("USE CONSUMER 'billing';").unwrap();
+    let taken = claimed(&run(&mut session, "CLAIM FROM jobs;"));
+    assert_eq!(taken, vec!["1".to_owned()]);
+    let deadline = held_until(&mut session, "jobs:1");
+
+    // A field of the caller's own, on a record the caller holds.
+    session.run("UPDATE jobs:1 SET url = 'b';").unwrap();
+
+    // And the hold is still there afterwards, on the same deadline and with the
+    // same count. An update that quietly freed the work would pass an assertion
+    // about `url` alone.
+    assert!(holder(&mut session, "jobs:1").starts_with("billing/"));
+    assert_eq!(held_until(&mut session, "jobs:1"), deadline);
+    assert_eq!(attempts_of(&mut session, "jobs:1"), "1");
+
+    // The three the engine owns are still refused on the same held record, and
+    // each is asked separately: one rule admitting the update must not admit
+    // them as a side effect.
+    for statement in [
+        "UPDATE jobs:1 SET attempts = 0;",
+        "UPDATE jobs:1 SET claimed_until = 1;",
+        "UPDATE jobs:1 SET claimed_by = 'someone';",
+    ] {
+        let refused = session.run(statement).unwrap_err().to_string();
+        assert!(
+            refused.contains("written by the store"),
+            "{statement}: {refused}"
+        );
+    }
+}
+
+/// The `attempts` a record carries, as written, or `none`.
+fn attempts_of(session: &mut Session<'_>, record: &str) -> String {
+    let outcome = run(session, &format!("SELECT * FROM {record};"));
+    let Outcome::Records { records, .. } = outcome else {
+        panic!("expected records");
+    };
+    let Some((_, Value::Object(fields))) = records.first() else {
+        panic!("expected one record");
+    };
+    fields
+        .get("attempts")
+        .map_or_else(|| "none".to_owned(), |count| format!("{count}"))
+}

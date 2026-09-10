@@ -213,3 +213,19 @@ CLAIM FROM strict;
 --- case: while a caller writing them is still refused
 UPDATE strict:1 SET attempts = 0;
 --- expect: error QueueFieldIsTheEngines
+
+--- case: work a caller holds may still be worked on, which is what holding it was for
+UPDATE strict:1 SET url = 'b';
+--- expect: ok
+
+--- case: and the hold is still there afterwards
+SELECT id FROM strict WHERE claimed_until != NONE;
+--- expect: rows 1
+
+--- case: while the field the caller never typed stays the engine's on that same record
+UPDATE strict:1 SET claimed_until = 1;
+--- expect: error QueueFieldIsTheEngines
+
+--- case: and so does the one that says who
+UPDATE strict:1 SET claimed_by = 'someone';
+--- expect: error QueueFieldIsTheEngines

@@ -14,6 +14,23 @@ compares carries no pre-release suffix.
 
 ## 0.1.0-beta — 2026-09-10
 
+### Since the release
+
+Work landed after the tag was cut, and recorded here because this file's top
+section must name the version this package carries — so there is nowhere else
+for it to go until the next version is opened.
+
+**A claimed queue record can be written to again.** Taking a job and then
+recording anything on it was refused — `UPDATE jobs:7 SET stage = 'fetched'` on a
+record you hold came back naming `claimed_until`, a field you had not typed,
+while the same statement on the same table succeeded whenever the record happened
+to be free. The guard that keeps `claimed_until`, `attempts` and `claimed_by` the
+store's own was reading the whole record about to be written, and on a held record
+that carries all three whatever the statement said. It now refuses a caller who
+**introduces or changes** one of them; carrying one forward untouched is not
+writing it. The three refusals it existed for are unchanged, and the hold, its
+deadline and its attempt count survive the update.
+
 **Released.** Tagged `v0.1.0-beta` on `main`, and published as
 [`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb) —
 `0.1.0-beta` and `latest`, `linux/amd64` and `linux/arm64`.
@@ -111,7 +128,7 @@ rather than the view's records.
 holder at a time under a hold that lapses — `DEFINE QUEUE jobs TIMEOUT 30s
 ATTEMPTS 5`, then `CLAIM FROM jobs`, `DELETE jobs:7` when the work is done and
 `RELEASE jobs:7` to hand it back early. That makes ten engines over one substrate
-rather than nine. **1321 conformance cases** define the language and run in the
+rather than nine. **1325 conformance cases** define the language and run in the
 build, up from 1237.
 
 The design is the part worth reading, because a queue is normally where a store

@@ -5424,12 +5424,29 @@ one `TIMEOUT` is the signature.
 | `claimed_until` | the instant the current hold lapses; absent when nothing holds it |
 | `attempts` | how many times this record has been handed out |
 
-A `CREATE` or `UPDATE` that sets either is **refused, naming the field**. This is
-the bucket's rule in a second place and for the identical reason: engine metadata
-a caller can write is metadata that can lie, and a hold whose deadline the holder
-chose is not a hold. The names are ordinary and visible, so a table that is not a
-queue may use them freely; on a queue they collide, and the refusal says so
-rather than silently dropping the field.
+A `CREATE` or `UPDATE` that sets either is **refused, naming the field**, and so
+is one that sets `claimed_by`. This is the bucket's rule in a second place and
+for the identical reason: engine metadata a caller can write is metadata that can
+lie, and a hold whose deadline the holder chose is not a hold. The names are
+ordinary and visible, so a table that is not a queue may use them freely; on a
+queue they collide, and the refusal says so rather than silently dropping the
+field.
+
+**Work you hold is still work you can write to.** The rule is that you may not
+introduce or change one of these fields — carrying one forward untouched is not
+writing it — so a worker that takes a job and then records something on it is
+writing its own field on a record it holds, and that is allowed:
+
+```tessariql
+USE CONSUMER 'billing';
+CLAIM jobs:7;
+UPDATE jobs:7 SET stage = 'fetched';
+```
+
+The hold, its deadline and its attempt count are exactly where `CLAIM` left them
+afterwards. Saying this out loud because the opposite would be quiet: a queue
+whose records went read-only the moment they were claimed would refuse the one
+thing claiming them was for.
 
 **A lapsed record is not rewritten**, so a read meaning *unclaimed* compares
 rather than testing for absence:

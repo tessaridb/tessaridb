@@ -16,29 +16,27 @@ t = "test --workspace --tests"
 tdoc = "test --workspace --doc"
 lint = "clippy --workspace --all-targets --all-features -- -D warnings"
 
-# One target directory per tool.
+# One target directory: the standard `target/`.
 #
-# `cargo check`, `cargo clippy` and `cargo test` are three different compile
-# modes. Sharing one `target/` makes them evict each other's fingerprints, so
-# alternating clippy and tests pays a full rebuild every single time — which is
-# where this project's build minutes were actually going, not in linking.
+# There used to be three — `target-pkg` for per-package runs, `target-lint` for
+# clippy, `target-check` for `cargo check` — because those are three compile
+# modes and sharing one directory makes them evict each other's fingerprints, so
+# alternating tools paid a rebuild every time.
 #
-# Cargo has no per-command target directory, and an alias cannot set an
-# environment variable, so the split is made at the call site:
+# Retired 2026-09-11 on the owner's instruction. The eviction is still real; what
+# changed is the price of avoiding it. Measured that day: `target/` alone held
+# 100 GB, beside 5.8 GB in `target-pkg`, 1.2 GB in `target-lint`, 497 MB in
+# `target-check` and a stray 423 MB `target-pkg` that a mis-rooted run had left
+# inside a test suite. Disk stopped being the cheap side of the trade.
 #
-#   wave    CARGO_TARGET_DIR=target-pkg cargo test -p <crate> --tests
-#   batch   cargo t                       (default `target/`)
-#   lint    CARGO_TARGET_DIR=target-lint cargo lint
-#   editor  rust-analyzer.cargo.targetDir = true   (its own `target/rust-analyzer`)
+# What makes one directory affordable is not alternating tools. Run the gates in
+# ONE batch at the end of a wave — `cargo fmt --all --check`, then `cargo t`,
+# then `cargo lint` — and pay the rebuild once instead of once per step. The
+# first `cargo lint` after a test run is not cheap: measured cold on 2026-09-11
+# it took 60 minutes, and the same command warm takes half a second.
 #
-# Each directory stays warm on its own, so the second run of either tool is
-# incremental instead of cold. The cost is disk, which is the cheap side of the
-# trade.
-#
-# The `target-pkg` line is what makes a per-wave run cheap. Cargo unifies
-# features across whatever is selected, so `-p <crate>` and `--workspace`
-# produce different fingerprints and, in ONE directory, invalidate each other on
-# every switch — which is why this project had a standing rule never to
-# alternate them. Given each its own directory, the rule stops being needed:
-# the narrow run stays warm for the wave loop and the wide run stays warm for
-# the batch boundary.
+# Two companions come back with it. Do not alternate `-p <crate>` and
+# `--workspace`: the two selections unify features differently and now invalidate
+# each other again, so iterate inside one crate and switch to the workspace run
+# once, at the boundary. And validate a manifest with `cargo metadata --no-deps`,
+# which compiles nothing, rather than with `cargo check`.
