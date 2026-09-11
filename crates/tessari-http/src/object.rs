@@ -23,7 +23,7 @@
 //! before any statement exists — which is the check being *in front of* the
 //! interpolation rather than trusted to be somewhere.
 
-use tessaridb::{Db, Outcome, Parameters, Value};
+use tessaridb::{Db, Error, Outcome, Parameters, Value};
 
 use crate::basic::Presented;
 use crate::respond::{Answer, failure, session_for};
@@ -80,6 +80,58 @@ impl Target<'_> {
 }
 
 /// `PUT /files/…/{path}` — write a file.
+/// A refusal from one of these four routes, with "there is no bucket there"
+/// answered `404` rather than `400` (Q-515).
+///
+/// # Why the mapping is here and not in `failure`
+///
+/// [`Error::Unknown`] carries an `entity` and is raised for a table, a namespace,
+/// a user and an index as readily as for a bucket, and [`failure`] serves every
+/// route on this surface — including `POST /script`. Moving either error inside
+/// that shared match would change all of them at once, and on `/script` a `404`
+/// would be a claim about the URI, which is `/script` and is fine.
+///
+/// These four routes are the ones where the URI **names** the bucket, so they are
+/// the ones that can say it is not there. A caller who asked for a bucket that is
+/// not there did not write a malformed request, and `400` sends them to fix the
+/// one thing that was not wrong — the same correction [`failure`] already makes
+/// for `NotGranted` and for `RecordExists`.
+///
+/// # Three shapes, not two, and `"table"` is not a widening
+///
+/// "There is no bucket here" reaches this function under three labels, because
+/// two different resolvers get there first. `INFO FOR BUCKET` funnels all of its
+/// failures through one constructor and so reports `entity: "bucket"` for an
+/// undeclared name **and** for one declared as something else; `Store::bucket`
+/// resolves before it checks the kind, so an undeclared name on the three file
+/// routes never reaches `NotABucket` at all — `Context::resolve_table` has
+/// already raised `entity: "table"`.
+///
+/// Matching `"table"` here catches that third shape and widens nothing, because
+/// the only table name any of these four statements can carry **is** the bucket
+/// segment: the file's path travels as a parameter, and the namespace and
+/// database are their own entities. On this surface, `no table named …` can only
+/// ever mean the bucket segment named nothing.
+///
+/// The body is [`failure`]'s own, unchanged, and it differs by route — the
+/// listing says *"no bucket named …"* whichever way it failed, while a file route
+/// says *"… is not a bucket"* for a name that is declared as something else. So
+/// the status says **it is not here** and the sentence says which; a client is
+/// told to surface it rather than parse it.
+fn refused(error: &Error) -> Answer {
+    let mut answer = failure(error);
+    if matches!(
+        error,
+        Error::Unknown {
+            entity: "bucket" | "table",
+            ..
+        } | Error::NotABucket { .. }
+    ) {
+        answer.status = 404;
+    }
+    answer
+}
+
 pub(crate) fn put(
     db: &Db,
     target: &Target<'_>,
@@ -103,7 +155,7 @@ pub(crate) fn put(
     let script = format!("{} PUT {}:$path = $held;", target.tenancy(), target.bucket);
     match session.run_with(&script, &given) {
         Ok(_) => Answer::new(201, r#"{"written":true}"#.to_owned()),
-        Err(error) => failure(&error),
+        Err(error) => refused(&error),
     }
 }
 
@@ -122,9 +174,12 @@ pub(crate) fn get(db: &Db, target: &Target<'_>, tokens: &Tokens, presented: &Pre
         // `INFO FOR BUCKET` runs first because `SELECT` alone cannot tell the
         // two apart: it succeeds against any table, so listing a name declared
         // with `DEFINE TABLE` answered `200` with an empty listing and a caller
-        // concluded the bucket was empty rather than absent (Q-261). The other
-        // three routes here already refuse it, because `PUT`, `READ` and
-        // `DELETE` resolve the bucket before they run.
+        // concluded the bucket was empty rather than absent (Q-261). `PUT` and
+        // `READ` refuse it on their own, because they are file statements and
+        // resolve the bucket themselves. `DELETE` is not one and did not — it
+        // ran a plain record delete and answered `204` against any table at all
+        // — so it now asks the same question this branch does, which is what
+        // makes all four routes agree at last (Q-515, W206).
         //
         // It is asked as a **statement**, through the same session, rather than
         // by reaching into the catalog from here — a route that reaches the
@@ -138,7 +193,7 @@ pub(crate) fn get(db: &Db, target: &Target<'_>, tokens: &Tokens, presented: &Pre
         );
         return match session.run_with(&script, &Parameters::new()) {
             Ok(outcomes) => crate::respond::listing(&outcomes),
-            Err(error) => failure(&error),
+            Err(error) => refused(&error),
         };
     };
     let mut given = Parameters::new();
@@ -152,7 +207,7 @@ pub(crate) fn get(db: &Db, target: &Target<'_>, tokens: &Tokens, presented: &Pre
             // says the same thing.
             _ => Answer::new(404, r#"{"error":"no such file"}"#.to_owned()),
         },
-        Err(error) => failure(&error),
+        Err(error) => refused(&error),
     }
 }
 
@@ -175,10 +230,31 @@ pub(crate) fn delete(
     };
     let mut given = Parameters::new();
     given.insert("path".to_owned(), Value::String(path));
-    let script = format!("{} DELETE {}:$path;", target.tenancy(), target.bucket);
+    // `INFO FOR BUCKET` first, and this route is the reason the sentence above
+    // about the other three refusing was not true of it.
+    //
+    // `PUT` and `READ` are file statements and resolve the bucket themselves, so
+    // they refuse an ordinary table on their own. A delete is **not** a file
+    // statement — there is no `DELETE FILE` — so this route was sending a plain
+    // record delete, which asks nothing about bucket-ness. `DELETE
+    // /files/ns/db/<a table>/<anything>` therefore answered `204`, reporting a
+    // file removed from a bucket that does not exist, and would have removed a
+    // real record from a real table had one carried that id. One route of four
+    // disagreeing about what a bucket is, which is Q-261 again on the member of
+    // the set nobody re-checked.
+    //
+    // Asked as a statement through the same session rather than by reaching into
+    // the catalog from here, for the reason the listing branch above gives:
+    // a route that reaches the store directly is a second permission model.
+    let script = format!(
+        "{} INFO FOR BUCKET {}; DELETE {}:$path;",
+        target.tenancy(),
+        target.bucket,
+        target.bucket,
+    );
     match session.run_with(&script, &given) {
         Ok(_) => Answer::new(204, String::new()),
-        Err(error) => failure(&error),
+        Err(error) => refused(&error),
     }
 }
 

@@ -18,9 +18,10 @@ use tessari_types::{
     TableId, Value,
 };
 
+use crate::condition::boolean;
 use crate::context::Context;
 use crate::error::{Depended, Error, Result};
-use crate::evaluate::{key_bound, within};
+use crate::evaluate::{Scope, key_bound, within};
 use crate::generate;
 use crate::geometry::on_the_grid;
 use crate::outcome::Outcome;
@@ -440,6 +441,7 @@ impl Session<'_> {
             StatementKind::Update {
                 target,
                 edit,
+                condition,
                 answer,
             } => {
                 let (_, address) = self.writable(transaction, target)?;
@@ -450,6 +452,27 @@ impl Session<'_> {
                     });
                 };
                 let before = decode_payload(&existing)?;
+                // The condition is tested against the record **as stored**, and
+                // before the edit is computed at all — so a refused update
+                // writes nothing, touches no index, and never reaches the queue
+                // guard or the sealing path.
+                //
+                // Against the stored record rather than against the payload,
+                // which is the rule W205 had to find from the other side: a
+                // guard that judges what is about to be written is not judging
+                // what the caller said. `WHERE version = 1` beside
+                // `SET version = 2` must compare the one already there, and
+                // reading the payload would compare it against the value this
+                // very statement is setting — always false, and silently.
+                if let Some(condition) = condition {
+                    let held = self.evaluate_in(transaction, condition, Scope::of(&before))?;
+                    if !boolean(&held, condition.span)? {
+                        return Err(Error::ConditionNotMet {
+                            id: address.id.to_string(),
+                            span: condition.span,
+                        });
+                    }
+                }
                 let (payload, partial) =
                     self.applied(transaction, edit, before.clone(), target.span)?;
                 // One rule rather than two: the result of either shape is a
@@ -629,22 +652,36 @@ impl Session<'_> {
                 name,
                 timeout,
                 attempts,
+                schemafull,
+                graph,
                 if_not_exists,
-            } => self.define_table(
-                transaction,
-                name,
-                TableShape {
-                    schemafull: false,
-                    kind: TableKind::Queue(QueueDeclaration {
-                        timeout: *timeout,
-                        attempts: *attempts,
-                    }),
-                    identity: IdentityKind::default(),
-                    graph: None,
-                },
-                *if_not_exists,
-                span,
-            ),
+            } => {
+                // Resolved before the queue is created, on `DEFINE TABLE`'s own
+                // rule and for its reason: a table left standing with a
+                // membership nothing resolves belongs to no graph anyone can
+                // name, and `INFO FOR GRAPH` would never list it.
+                let graph = self.resolve_graph(transaction, graph.as_ref())?;
+                self.define_table(
+                    transaction,
+                    name,
+                    TableShape {
+                        // Both taken from the statement rather than fixed here.
+                        // They were fixed until W208b¹, and what that cost was
+                        // not theoretical: a table that is strict and is an end
+                        // of a link — which is what a record model's work table
+                        // normally is — could not be a queue at all.
+                        schemafull: *schemafull,
+                        kind: TableKind::Queue(QueueDeclaration {
+                            timeout: *timeout,
+                            attempts: *attempts,
+                        }),
+                        identity: IdentityKind::default(),
+                        graph,
+                    },
+                    *if_not_exists,
+                    span,
+                )
+            }
             StatementKind::DropQueue { name } => self.drop_queue(transaction, name, span),
             StatementKind::DefineSeries {
                 name,
@@ -873,12 +910,18 @@ impl Session<'_> {
     ) -> Result<()> {
         // Every **caller-driven** record write passes through here — the two
         // creates, the insert, the update, the upsert, the set and both vault
-        // edits — which is why the queue's engine-field refusal sits here rather
+        // edits — which is why the queue's engine-field rule sits here rather
         // than in each of them. One rule in one place, and a write path added
         // later inherits it instead of having to remember it. This placement was
         // not the first one tried: the guard sat one level up, in `put_record`,
         // and `UPDATE` reached the write without passing it.
-        crate::queue::refuse_engine_fields(transaction, &address, &payload, span)?;
+        //
+        // It takes the payload by value and hands it back because the rule has
+        // two halves: refuse a caller that introduces or changes one of the
+        // engine's fields, and carry forward the ones a whole-record write
+        // simply left out.
+        let mut payload = payload;
+        crate::queue::hold_engine_fields(transaction, &address, &mut payload, span)?;
         self.write_record(transaction, address, payload, partial, span)
     }
 

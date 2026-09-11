@@ -743,7 +743,7 @@ pub enum StatementKind {
         /// The vault to undefine.
         name: Name,
     },
-    /// `DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5`
+    /// `DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5 SCHEMAFULL IN work`
     ///
     /// The eighth word in the row, and the first one whose whole capability is
     /// a **hold that lapses**. Written out as what it stands for, a queue is an
@@ -772,6 +772,24 @@ pub enum StatementKind {
         /// cannot poison — and a visible one, because leaving the clause out is
         /// what says it.
         attempts: Option<u32>,
+        /// Whether a record carrying a field nobody declared is refused.
+        ///
+        /// The same flag [`StatementKind::DefineTable`] carries, and it is here
+        /// because the first consumer to reach for a queue needed it. A queue
+        /// declares no columns, so it is **lenient by default** — the rule a
+        /// declared table already keeps, read properly: strictness constrains
+        /// declared fields, and a word with no field list has nothing to
+        /// constrain until `DEFINE FIELD` arrives afterwards.
+        schemafull: bool,
+        /// The graph this queue belongs to, when it belongs to one.
+        ///
+        /// A queue is an ordinary table plus a hold, and there was never a
+        /// reason it could not be an end of a link. Before this clause a queue
+        /// could not: `DEFINE EDGE` refuses a table that belongs to no graph,
+        /// and declaring the table first and the queue second is refused
+        /// because the name is taken — so a table that had to be both was
+        /// simply unrepresentable.
+        graph: Option<Name>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -1222,6 +1240,25 @@ pub enum StatementKind {
         target: RecordTarget,
         /// How it changes.
         edit: Edit,
+        /// What the record must already say for the change to happen.
+        ///
+        /// `UPDATE tasks:'t1' SET title = 'b' WHERE version = 1` — the language's
+        /// compare-and-set. Evaluated against the record **as stored**, never
+        /// against the payload the edit produces, so `WHERE version = 1` beside
+        /// `SET version = 2` means what it reads as.
+        ///
+        /// A condition that does not hold is a **refusal**, and the failure
+        /// discards the work above it in the transaction. That follows from what
+        /// this verb already is: `UPDATE` asserts the record is present and
+        /// refuses when it is not, so asserting it is also in a particular state
+        /// is the same assertion one step further in. A count would make it the
+        /// only assertion here a caller can ignore by forgetting to read a
+        /// number, and forgetting costs two workers holding one job.
+        ///
+        /// [`StatementKind::Upsert`] deliberately has no such field: it asserts
+        /// nothing about the record, so a condition on it would have to invent a
+        /// meaning.
+        condition: Option<Expr>,
         /// What the statement answers with.
         answer: Answer,
     },

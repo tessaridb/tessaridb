@@ -424,3 +424,31 @@ DELETE staff:9 RETURN AFTER;
 --- case: the write a refused clause was attached to never ran
 SELECT * FROM staff WHERE name = 'nobody';
 --- expect: rows 0
+
+--- case: a compare-and-set applies when the record says what the caller asserted
+CREATE staff:60 = { name: 'ada', version: 1 };
+--- expect: ok
+
+--- case: and the update goes through
+UPDATE staff:60 SET name = 'grace', version = 2 WHERE version = 1;
+--- expect: ok
+
+--- case: the record now carries what the winner wrote
+SELECT name FROM staff:60;
+--- expect: rows 1
+
+--- case: a caller asserting the version it already lost is refused
+UPDATE staff:60 SET name = 'hopper', version = 3 WHERE version = 1;
+--- expect: error ConditionNotMet
+
+--- case: and the loser wrote nothing at all
+SELECT id FROM staff WHERE version = 3;
+--- expect: rows 0
+
+--- case: the condition reads the record as stored, not the payload being written
+UPDATE staff:60 SET version = 3 WHERE version = 2;
+--- expect: ok
+
+--- case: UPSERT takes no condition, because it asserts nothing about the record
+UPSERT staff:61 SET name = 'nobody' WHERE version = 1;
+--- expect: error UnexpectedToken

@@ -222,13 +222,17 @@ fn listing_a_table_that_is_not_a_bucket_is_refused_rather_than_answered_empty() 
 
     let (status, body) = send(&address, "GET", "/files/prod/library/ledger", b"", None);
     let body = String::from_utf8_lossy(&body);
-    assert_ne!(
-        status, 200,
+    assert_eq!(
+        status, 404,
         "listing a plain table answered as though it were an empty bucket: {body}",
     );
     assert!(
         !body.contains(r#""files":[]"#),
         "the refusal still looks like an empty bucket: {body}",
+    );
+    assert!(
+        body.contains("bucket"),
+        "the refusal does not say which part of the URL was missing: {body}",
     );
 }
 
@@ -239,7 +243,7 @@ fn listing_a_bucket_nothing_declared_is_refused() {
     assert_eq!(script(&address, READY, None), 200);
 
     let (status, _) = send(&address, "GET", "/files/prod/library/absent", b"", None);
-    assert_ne!(status, 200, "a bucket nobody declared answered a listing");
+    assert_eq!(status, 404, "a bucket nobody declared answered a listing");
 }
 
 #[test]
@@ -433,4 +437,176 @@ fn the_write_and_head_methods_refuse_a_caller_without_the_grant_and_serve_one_wi
         ada,
     );
     assert_eq!(status, 200, "the grant did not let a head through");
+}
+
+/// All four routes answer `404` for a name that is not a bucket (Q-515).
+///
+/// # Why `404` and not the `400` this used to be
+///
+/// `400` is what a **malformed** request gets, and `GET /files/prod/library/ledger`
+/// is not malformed — it is a well-formed request for a bucket that is not there.
+/// A client told `400` learns that it wrote the request wrongly, which is the one
+/// thing it did not do. `respond::failure` has made this correction three times
+/// already for the same reason: `NotGranted` answers `403` and not `400`, and
+/// `RecordExists` and `StillDepended` answer `409`, each because `400` sends a
+/// client to fix the wrong thing.
+///
+/// The whole `/files` surface now reads one way — **`404` means it is not here**,
+/// and the body says which part of "it" was missing. A name declared as a table
+/// is `404` rather than `409` because from the caller's side there is no bucket at
+/// that URI; the body still carries *"… is not a bucket"*, so nothing that
+/// separates the two cases is lost.
+#[test]
+fn every_files_route_answers_404_for_a_name_that_is_not_a_bucket() {
+    let (_node, address) = node();
+    assert_eq!(script(&address, READY, None), 200);
+    assert_eq!(
+        script(
+            &address,
+            "USE NAMESPACE prod; USE DATABASE library; DEFINE COLLECTION ledger;",
+            None
+        ),
+        200
+    );
+
+    // Declared, but as a table; and declared nowhere at all. The listing route
+    // cannot tell them apart — `info_bucket` raises one error for both — and the
+    // other three reach `Store::bucket`, so this walks the whole surface.
+    for bucket in ["ledger", "absent"] {
+        for (method, suffix) in [
+            ("GET", "/note.txt"),
+            ("HEAD", "/note.txt"),
+            ("PUT", "/note.txt"),
+            ("DELETE", "/note.txt"),
+            ("GET", ""),
+        ] {
+            let path = format!("/files/prod/library/{bucket}{suffix}");
+            let (status, body) = send(&address, method, &path, b"held", None);
+            assert_eq!(
+                status,
+                404,
+                "{method} {path} answered {status} instead of 404: {}",
+                String::from_utf8_lossy(&body),
+            );
+        }
+    }
+}
+
+/// The same error over `/script` is still a `400`, and that boundary is the point.
+///
+/// `Error::Unknown` carries an `entity` and is raised for a table, a namespace, a
+/// user and an index as well as for a bucket, so mapping it to `404` inside
+/// `respond::failure` would change every route at once. `/script` is an **RPC**
+/// surface: the URI is `/script`, the URI is fine, and a `404` there would be a
+/// statement about the route rather than about the script. `/files` is a
+/// **resource** surface where the URI names the thing that is missing.
+///
+/// So the mapping lives at the `/files` routes and not in the shared match, and
+/// this case is what fails if somebody later moves it.
+#[test]
+fn the_same_missing_bucket_over_script_is_still_a_bad_request() {
+    let (_node, address) = node();
+    assert_eq!(script(&address, READY, None), 200);
+
+    let (status, _) = send(
+        &address,
+        "POST",
+        "/script",
+        b"USE NAMESPACE prod; USE DATABASE library; INFO FOR BUCKET absent;",
+        None,
+    );
+    assert_eq!(
+        status, 400,
+        "a statement naming an absent bucket answered 404 — the /files mapping \
+         has leaked into the shared failure match, and every route that reports \
+         an unknown table, user or index has moved with it",
+    );
+}
+
+/// The file surface does not delete records out of ordinary tables (Q-515, W206).
+///
+/// # The defect this pins, which is not about a status code
+///
+/// `PUT` and `READ` are file statements and resolve the bucket themselves, so
+/// they always refused an ordinary table. A delete is not a file statement —
+/// there is no `DELETE FILE` — so this route sent a plain record delete, and a
+/// plain record delete asks nothing about bucket-ness. `DELETE
+/// /files/prod/library/ledger/note.txt` therefore answered **204**: a file
+/// removed, from a bucket that does not exist.
+///
+/// The `204` was the visible half. The expensive half is this test: a record id
+/// is arbitrary text, so a path that happens to match one **removed a real
+/// record from a real table** through a route that has no business touching
+/// records at all. Asserting the status alone would leave that untested, and it
+/// is the reason this wave stopped being about a status code.
+#[test]
+fn a_delete_through_the_file_surface_cannot_reach_a_record_in_a_table() {
+    let (_node, address) = node();
+    assert_eq!(script(&address, READY, None), 200);
+    assert_eq!(
+        script(
+            &address,
+            "USE NAMESPACE prod; USE DATABASE library; DEFINE COLLECTION ledger; \
+             CREATE ledger:'/note.txt' = { amount: 1 };",
+            None
+        ),
+        200
+    );
+
+    let (status, body) = send(
+        &address,
+        "DELETE",
+        "/files/prod/library/ledger/note.txt",
+        b"",
+        None,
+    );
+    assert_eq!(
+        status,
+        404,
+        "a delete against a table answered {status}: {}",
+        String::from_utf8_lossy(&body),
+    );
+
+    // The status is not the assertion that matters. This is.
+    let (status, body) = send(
+        &address,
+        "POST",
+        "/script",
+        b"USE NAMESPACE prod; USE DATABASE library; SELECT amount FROM ledger;",
+        None,
+    );
+    let body = String::from_utf8_lossy(&body);
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains("amount"),
+        "the file route deleted a record out of an ordinary table: {body}",
+    );
+}
+
+/// A missing namespace is not a missing bucket, and `/files` says so (Q-515).
+///
+/// The `404` mapping names `"bucket"` and `"table"` because on this surface both
+/// can only mean the bucket segment. A namespace and a database are their own
+/// entities and are deliberately left where they were: this wave answered the
+/// question the owner asked — *what does "it is not a bucket" answer* — and
+/// widening to the other two segments is a larger decision than that one
+/// (Q-517). The published specification says the same in the same words: it
+/// specifies the bucket segment only.
+///
+/// Without this case the restriction inside the mapping is documentation. A
+/// `matches!` widened to every `Error::Unknown` passes the whole suite otherwise,
+/// which is how a narrowing survives in a comment and dies in the code.
+#[test]
+fn a_missing_namespace_on_the_file_surface_is_not_reported_as_a_missing_bucket() {
+    let (_node, address) = node();
+    assert_eq!(script(&address, READY, None), 200);
+
+    let (status, body) = send(&address, "GET", "/files/nope/library/media", b"", None);
+    assert_eq!(
+        status,
+        400,
+        "a missing namespace answered {status}: the /files 404 mapping has \
+         widened past the bucket segment, which this version does not specify: {}",
+        String::from_utf8_lossy(&body),
+    );
 }

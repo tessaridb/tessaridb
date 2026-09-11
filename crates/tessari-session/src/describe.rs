@@ -125,6 +125,13 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
     // would restore a table that belongs to no graph, so `INFO FOR GRAPH` would
     // no longer list it and every walk bounded by that graph would quietly stop
     // reaching it.
+    //
+    // This is before the per-kind arms and catches **every** kind, including a
+    // queue that now says `IN` for itself. That is uniform rather than a queue's
+    // problem: a plain `DEFINE TABLE staff SCHEMAFULL IN work` has been
+    // undefinable for the same reason since graphs arrived, because this writer
+    // is handed a `GraphId` and nothing that resolves one to a name. Lifting it
+    // is a change to what this function is given, not to this arm (Q-521).
     if definition.graph.is_some() {
         return Err(Unwritable::at(format!(
             "table `{name}` belongs to a graph this writer cannot name"
@@ -142,8 +149,14 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
     // queue's declaration is fully sayable: a `Duration` and an `Option<u32>`
     // are both literals the grammar reads back. The vault is the other case and
     // refuses, because a key is not a declaration.
+    //
+    // Strictness left this refusal in W208b¹, when `DEFINE QUEUE` learned to say
+    // it. What remains is the edge clause, kept as a ratchet rather than as a
+    // live case: `DEFINE QUEUE` has no `EDGE` word, so a queue cannot be an edge
+    // table today — and if one ever can, the refusal is what stops this arm
+    // writing a declaration that silently drops the endpoints.
     if let TableKind::Queue(declared) = &definition.kind {
-        if definition.schemafull || definition.is_edge() {
+        if definition.is_edge() {
             return Err(Unwritable::at(format!(
                 "queue `{name}` carries flags its declaring word cannot say"
             )));
@@ -165,6 +178,14 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         if let Some(ceiling) = declared.attempts {
             let _ = write!(script, " ATTEMPTS {ceiling}");
         }
+        // Always written, on this function's own rule: a declaration leaning on
+        // a default is one whose meaning changes when the default moves, and
+        // changes silently, in a script somebody kept.
+        script.push_str(if definition.schemafull {
+            " SCHEMAFULL"
+        } else {
+            " SCHEMALESS"
+        });
         script.push_str(";\n");
         return Ok(());
     }

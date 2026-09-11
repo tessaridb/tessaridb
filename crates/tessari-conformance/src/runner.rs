@@ -202,6 +202,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::UnclosedTransaction { .. } => "UnclosedTransaction",
         Error::RecordExists { .. } => "RecordExists",
         Error::NoSuchRecord { .. } => "NoSuchRecord",
+        Error::ConditionNotMet { .. } => "ConditionNotMet",
         Error::InvalidKeyBound { .. } => "InvalidKeyBound",
         Error::NotAnEdgeTable { .. } => "NotAnEdgeTable",
         Error::EndpointsNotDeclared { .. } => "EndpointsNotDeclared",

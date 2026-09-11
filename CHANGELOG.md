@@ -12,6 +12,110 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.1.1-beta — 2026-09-11
+
+A patch release, and the reason to cut one rather than wait is the first
+entry below: a write could drop a hold by saying nothing about it, and that
+defect is live in `0.1.0-beta`. Everything here is additive — every statement
+that parsed under `0.1.0-beta` parses here and means the same thing — which is
+why the middle number does not move.
+
+**A write cannot drop a hold by saying nothing about it.** The store writes
+`claimed_until`, `attempts` and `claimed_by`, and a caller that names one of
+them is refused. A caller that **omits** them was not — and a whole-record
+`UPDATE jobs:1 = { url: 'b' }` omits every field it does not mention, so the
+record came back with no hold, no deadline and no attempt count. Nothing was in
+an error state, and the work was claimable again while its holder still believed
+it held it: the failure the conditional `UPDATE` below was built to prevent,
+reached by a door nobody had checked, because every test of the guard used
+`SET` — which merges over the stored record and so carries the three fields
+along by accident.
+
+The two halves are now one rule. A caller may not introduce or change one of
+those fields, and it follows that a caller may not remove one either, so a write
+that leaves them out carries them forward. Refusing such a write would have been
+the other reading and is the wrong one: the conditional whole-record write is
+exactly the compare-and-set a consumer holding work performs.
+
+The attempt count is the half with teeth of its own. A ceiling a caller can
+clear by rewriting the record is not a ceiling — a record that had poisoned
+three workers could be recycled by the fourth, indefinitely. That is fixed by
+the same rule.
+
+**`DEFINE QUEUE` says whether it is strict and which graph it is in.** A queue
+was described from the start as an ordinary table plus a hold that lapses, but
+its declaring word could say neither of the two things an ordinary table says
+about itself. That cost more than symmetry: a work table in a record model is
+normally strict and is normally an end of a link, and such a table could not be
+a queue at all — `DEFINE EDGE` refuses a table belonging to no graph, declaring
+the table first and the queue second is refused because the name is taken, and
+reaching strictness through `ALTER TABLE` leaves a table `INFO FOR TABLE` can no
+longer write back as a statement.
+
+`DEFINE QUEUE tasks TIMEOUT 10m SCHEMAFULL IN work` now says both. The flags
+follow `TIMEOUT` and `ATTEMPTS`, are order-free against each other, and neither
+is accepted twice — the same reading `DEFINE TABLE` gives its own. **A queue
+that names no flag means exactly what it meant before**: lenient, and in no
+graph, which is the rule a declaration carrying no columns already followed.
+`INFO FOR TABLE` writes the strictness word back with the rest; a queue in a
+graph is still reported as undefinable, in the same sentence as every other kind
+in a graph, because that writer holds a graph id and nothing that resolves one
+to a name.
+
+**`UPDATE … WHERE` — the language has a compare-and-set.** Until now TessariQL
+offered exactly one: a conditional `DELETE` as the guard followed by a `CREATE`
+as the failure signal, because a create over a record that is still there is
+refused and discards the transaction. It is correct, and against a queue it is a
+silent disaster — a claim lives **on** the record, so recreating the record drops
+the hold with no error at all, and the work is claimable again while its first
+holder still believes it holds it. Any store that versions its records and wants
+the queue hits this, so the fix is in the language rather than in a consumer.
+
+`UPDATE orders:7 SET status = 'paid', version = 4 WHERE version = 3` changes the
+record only if it still says what the caller last read. A condition that does not
+hold is a **refusal** and not a count, which follows from what this verb already
+is: `UPDATE` asserts the record is present and refuses when it is not, so
+asserting it is in a particular state is the same assertion one step further in.
+The failure discards the work above it in the transaction, which is what makes
+the clause a guard rather than a filter — a guard a caller can forget to check is
+not one. The condition reads the record **as stored**, so `WHERE version = 3`
+beside `SET version = 4` compares the value that is there. `UPSERT` takes no such
+clause and says so, because it asserts nothing about the record it writes.
+
+**A file route cannot delete a record out of an ordinary table.**
+`DELETE /files/{ns}/{db}/{name}/{path}` ran a plain record delete, which asks
+nothing about whether the name is a bucket — so it answered `204` against any
+table at all, reporting a file removed from a bucket that does not exist, and
+removed the record outright whenever one carried that path as its id. `PUT` and
+`GET` were never exposed to this because they are file statements and resolve the
+bucket themselves; a delete is not one, and nothing re-checked it when the
+listing route was fixed. It now asks `INFO FOR BUCKET` first, so all four routes
+agree at last about what a bucket is.
+
+**A bucket that is not there answers `404`.** All four `/files` routes refused a
+name that is not a bucket with `400`, and nothing had chosen `400` — it is where
+the error map sends everything it has no arm for. A request for a bucket that is
+not there is not a malformed request, and `400` told a caller they had written it
+wrongly, which was the one thing they had not done. The whole file surface now
+reads one way: **`404` means it is not here**, whether the missing part is the
+file or the bucket, and the sentence in the body says which. A missing namespace
+or database is unchanged, and the protocol specification now states all of this.
+
+**A claimed queue record can be written to again.** Taking a job and then
+recording anything on it was refused — `UPDATE jobs:7 SET stage = 'fetched'` on a
+record you hold came back naming `claimed_until`, a field you had not typed,
+while the same statement on the same table succeeded whenever the record happened
+to be free. The guard that keeps `claimed_until`, `attempts` and `claimed_by` the
+store's own was reading the whole record about to be written, and on a held record
+that carries all three whatever the statement said. It now refuses a caller who
+**introduces or changes** one of them; carrying one forward untouched is not
+writing it. The three refusals it existed for are unchanged, and the hold, its
+deadline and its attempt count survive the update.
+
+**Released.** Tagged `v0.1.1-beta` on `main`, and published as
+[`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb) —
+`0.1.1-beta` and `latest`, `linux/amd64` and `linux/arm64`.
+
 ## 0.1.0-beta — 2026-09-10
 
 **Released.** Tagged `v0.1.0-beta` on `main`, and published as
@@ -111,7 +215,7 @@ rather than the view's records.
 holder at a time under a hold that lapses — `DEFINE QUEUE jobs TIMEOUT 30s
 ATTEMPTS 5`, then `CLAIM FROM jobs`, `DELETE jobs:7` when the work is done and
 `RELEASE jobs:7` to hand it back early. That makes ten engines over one substrate
-rather than nine. **1321 conformance cases** define the language and run in the
+rather than nine. **1349 conformance cases** define the language and run in the
 build, up from 1237.
 
 The design is the part worth reading, because a queue is normally where a store

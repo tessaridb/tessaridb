@@ -656,3 +656,388 @@ fn a_strict_queue_accepts_the_fields_the_engine_writes_and_still_refuses_the_cal
         .to_string();
     assert!(refused.contains("written by the store"), "{refused}");
 }
+
+#[test]
+fn a_claimed_record_may_still_be_worked_on() {
+    // The point of taking work is to then do something to it, and until this was
+    // fixed a held record could not be written at all: the refusal came back
+    // naming `claimed_until`, a field the caller had not mentioned, because the
+    // guard was reading the payload about to be written and for `UPDATE ... SET`
+    // that payload is the MERGED record. The same statement on the same table
+    // succeeded while the record was free, which is the shape that says the
+    // hold was the cause.
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE QUEUE jobs TIMEOUT 30s;\n\
+             CREATE jobs:1 = { url: 'a' };",
+        )
+        .unwrap();
+    session.run("USE CONSUMER 'billing';").unwrap();
+    let taken = claimed(&run(&mut session, "CLAIM FROM jobs;"));
+    assert_eq!(taken, vec!["1".to_owned()]);
+    let deadline = held_until(&mut session, "jobs:1");
+
+    // A field of the caller's own, on a record the caller holds.
+    session.run("UPDATE jobs:1 SET url = 'b';").unwrap();
+
+    // And the hold is still there afterwards, on the same deadline and with the
+    // same count. An update that quietly freed the work would pass an assertion
+    // about `url` alone.
+    assert!(holder(&mut session, "jobs:1").starts_with("billing/"));
+    assert_eq!(held_until(&mut session, "jobs:1"), deadline);
+    assert_eq!(attempts_of(&mut session, "jobs:1"), "1");
+
+    // The three the engine owns are still refused on the same held record, and
+    // each is asked separately: one rule admitting the update must not admit
+    // them as a side effect.
+    for statement in [
+        "UPDATE jobs:1 SET attempts = 0;",
+        "UPDATE jobs:1 SET claimed_until = 1;",
+        "UPDATE jobs:1 SET claimed_by = 'someone';",
+    ] {
+        let refused = session.run(statement).unwrap_err().to_string();
+        assert!(
+            refused.contains("written by the store"),
+            "{statement}: {refused}"
+        );
+    }
+}
+
+/// The `attempts` a record carries, as written, or `none`.
+fn attempts_of(session: &mut Session<'_>, record: &str) -> String {
+    let outcome = run(session, &format!("SELECT * FROM {record};"));
+    let Outcome::Records { records, .. } = outcome else {
+        panic!("expected records");
+    };
+    let Some((_, Value::Object(fields))) = records.first() else {
+        panic!("expected one record");
+    };
+    fields
+        .get("attempts")
+        .map_or_else(|| "none".to_owned(), |count| format!("{count}"))
+}
+
+/// A compare-and-set on a held record keeps the hold — the case Q-513 exists for.
+///
+/// # What this replaces, and why the replacement had to be in the language
+///
+/// A consumer that versions its records has exactly one way to write safely, and
+/// until this clause existed TessariQL offered only one compare-and-set: a
+/// conditional `DELETE` as the guard followed by a `CREATE` as the failure
+/// signal, because a create over a record that is still there is refused and
+/// discards the transaction. It is correct, and on a queue it is a disaster —
+/// the hold lives **on the record**, so delete-and-recreate destroys it with no
+/// error at all, and the work is claimable again while its first holder still
+/// believes it holds it. That was measured against a real engine before this was
+/// built, not argued.
+///
+/// So the assertion that matters here is not that the update applied. It is that
+/// all three engine fields are **exactly** what they were: the same holder, the
+/// same deadline, the same attempt count.
+#[test]
+fn a_compare_and_set_on_held_work_keeps_the_hold() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE QUEUE jobs TIMEOUT 30s;\n\
+             CREATE jobs:1 = { url: 'a', version: 1 };",
+        )
+        .unwrap();
+    session.run("USE CONSUMER 'billing';").unwrap();
+    let taken = claimed(&run(&mut session, "CLAIM FROM jobs;"));
+    assert_eq!(taken, vec!["1".to_owned()]);
+
+    let held_by = holder(&mut session, "jobs:1");
+    let deadline = held_until(&mut session, "jobs:1");
+    let attempts = attempts_of(&mut session, "jobs:1");
+
+    // The compare-and-set a versioned consumer writes, in one statement.
+    session
+        .run("UPDATE jobs:1 SET url = 'b', version = 2 WHERE version = 1;")
+        .unwrap();
+
+    assert_eq!(
+        holder(&mut session, "jobs:1"),
+        held_by,
+        "the hold changed hands across a compare-and-set"
+    );
+    assert_eq!(
+        held_until(&mut session, "jobs:1"),
+        deadline,
+        "the deadline moved across a compare-and-set"
+    );
+    assert_eq!(
+        attempts_of(&mut session, "jobs:1"),
+        attempts,
+        "the attempt count moved across a compare-and-set"
+    );
+
+    // And the loser of the race is refused rather than told a number.
+    let refused = session
+        .run("UPDATE jobs:1 SET url = 'c', version = 3 WHERE version = 1;")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("does not say what the condition asserts"),
+        "{refused}"
+    );
+    still_reads_b(&mut session);
+}
+
+/// The record a lost race left alone still reads as it did.
+fn still_reads_b(session: &mut Session<'_>) {
+    let outcome = run(session, "SELECT * FROM jobs:1;");
+    let Outcome::Records { records, .. } = outcome else {
+        panic!("expected records");
+    };
+    let Some((_, Value::Object(fields))) = records.first() else {
+        panic!("expected one record");
+    };
+    assert_eq!(format!("{:?}", fields.get("url")), "Some(String(\"b\"))");
+}
+
+// ---------------------------------------------------------------------------
+// The two clauses a queue could not say (W208b¹)
+//
+// A queue is "an ordinary table plus two rules the store enforces", and until
+// this wave the word could say neither of the two things an ordinary table says
+// about itself: whether it is strict, and which graph it belongs to. That was
+// not a gap on paper. The first consumer to reach for `DEFINE QUEUE` —
+// TessariDB Agent Memory's `tasks` — is `SCHEMAFULL` and is an end of two link
+// kinds, so it could not become a queue at all: `DEFINE EDGE … FROM tasks` was
+// refused because the table belonged to no graph, and declaring the table first
+// and the queue second was refused because the name was taken.
+// ---------------------------------------------------------------------------
+
+/// A queue in a graph is an end of a link like any other table.
+#[test]
+fn a_queue_can_be_an_end_of_a_link() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE GRAPH work;\n\
+             DEFINE QUEUE jobs TIMEOUT 30s IN work;\n\
+             DEFINE TABLE crews SCHEMALESS IN work;\n\
+             DEFINE EDGE runs IN work FROM crews TO jobs;\n\
+             CREATE jobs:1 = { url: 'a' };\n\
+             CREATE crews:1 = { name: 'night' };\n\
+             RELATE crews:1 -> runs -> jobs:1;",
+        )
+        .unwrap();
+
+    // The walk is the assertion: a membership that did not reach the catalog
+    // would leave this answering nothing, which is exactly how the absence
+    // failed before — quietly, with no record and no error.
+    let outcome = run(&mut session, "SELECT * FROM crews:1 -> runs -> jobs;");
+    let Outcome::Records { records, .. } = outcome else {
+        panic!("expected records");
+    };
+    assert_eq!(records.len(), 1, "the walk reached nothing: {records:?}");
+
+    // And the hold still works on the far end of that link.
+    let held = run(&mut session, "CLAIM jobs:1;");
+    assert_eq!(claimed(&held), vec!["1".to_owned()]);
+}
+
+/// A strict queue refuses a field nobody declared, and still takes the three
+/// the engine writes for itself.
+#[test]
+fn a_strict_queue_refuses_a_field_nobody_declared() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE QUEUE jobs TIMEOUT 30s SCHEMAFULL;\n\
+             DEFINE FIELD url ON jobs TYPE string REQUIRED;\n\
+             CREATE jobs:1 = { url: 'a' };",
+        )
+        .unwrap();
+
+    let refused = session
+        .run("CREATE jobs:2 = { url: 'b', sneaky: 3 };")
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("sneaky"), "{refused}");
+
+    // `claimed_by`, `claimed_until` and `attempts` are the store's own, so
+    // strictness must not be the thing that stops a claim working.
+    let held = run(&mut session, "USE CONSUMER 'billing'; CLAIM jobs:1;");
+    assert_eq!(claimed(&held), vec!["1".to_owned()]);
+}
+
+/// Leaving both clauses out means what it always meant.
+#[test]
+fn a_queue_declared_with_no_flags_is_lenient_and_in_no_graph() {
+    let store = store();
+    let mut session = ready(&store, "TIMEOUT 30s");
+    session
+        .run("CREATE jobs:9 = { url: 'd', anything: true };")
+        .unwrap();
+    let refused = session
+        .run("DEFINE GRAPH work; DEFINE TABLE crews SCHEMALESS IN work; DEFINE EDGE runs IN work FROM crews TO jobs;")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("does not belong to graph"),
+        "a queue that named no graph joined one anyway: {refused}"
+    );
+}
+
+/// The two clauses are order-free against each other, and neither is accepted
+/// twice — the rule `DEFINE TABLE`'s own flag loop keeps.
+#[test]
+fn the_queue_flags_are_order_free_and_neither_is_accepted_twice() {
+    for declaration in [
+        "DEFINE QUEUE jobs TIMEOUT 30s SCHEMAFULL IN work;",
+        "DEFINE QUEUE jobs TIMEOUT 30s IN work SCHEMAFULL;",
+        "DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5 IN work SCHEMAFULL;",
+    ] {
+        let store = store();
+        let mut session = Session::new(&store);
+        session
+            .run(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+                 DEFINE DATABASE shop; USE DATABASE shop;\n\
+                 DEFINE GRAPH work;",
+            )
+            .unwrap();
+        session
+            .run(declaration)
+            .unwrap_or_else(|error| panic!("{declaration} was refused: {error}"));
+    }
+
+    let alone = store();
+    let mut session = Session::new(&alone);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE GRAPH work;",
+        )
+        .unwrap();
+    for twice in [
+        "DEFINE QUEUE jobs TIMEOUT 30s SCHEMAFULL SCHEMALESS;",
+        "DEFINE QUEUE jobs TIMEOUT 30s IN work IN work;",
+    ] {
+        assert!(
+            session.run(twice).is_err(),
+            "a repeated flag was accepted: {twice}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The write that drops a hold by saying nothing about it (W208c)
+//
+// `refuse_engine_fields` refuses a caller who INTRODUCES or CHANGES one of the
+// three fields the engine writes. It could not refuse a caller who **omits**
+// them, because omitting is not writing — and a whole-record `UPDATE t:1 = {…}`
+// omits everything it does not mention. So the record that came back had no
+// hold, no deadline and no attempt count, with nothing in an error state.
+//
+// That is the same sentence this engine's own changelog uses about the CAS it
+// replaced: the hold is dropped with no error at all, and the work is claimable
+// again while its first holder still believes it holds it. It arrived by a door
+// nobody checked, because every test of the guard used `SET`, which merges over
+// the stored record and therefore carries the three fields along by accident.
+//
+// The attempt count is the half with teeth of its own: a ceiling a caller can
+// reset by rewriting the record is not a ceiling, and a record that has poisoned
+// a worker three times can be recycled forever by the worker it poisons.
+// ---------------------------------------------------------------------------
+
+/// A whole-record write keeps the hold, the deadline and the attempt count.
+#[test]
+fn a_whole_record_write_cannot_drop_the_hold_or_the_attempt_count() {
+    let store = store();
+    let mut session = ready(&store, "TIMEOUT 30s");
+    run(&mut session, "USE CONSUMER 'billing'; CLAIM jobs:1;");
+
+    let held_by = holder(&mut session, "jobs:1");
+    let deadline = held_until(&mut session, "jobs:1");
+    let attempts = attempts_of(&mut session, "jobs:1");
+
+    // The form a consumer that stores whole records actually writes — the
+    // caller's own fields, and nothing said about the engine's.
+    session.run("UPDATE jobs:1 = { url: 'z' };").unwrap();
+
+    assert_eq!(
+        holder(&mut session, "jobs:1"),
+        held_by,
+        "a whole-record write dropped the hold"
+    );
+    assert_eq!(
+        held_until(&mut session, "jobs:1"),
+        deadline,
+        "a whole-record write dropped the deadline"
+    );
+    assert_eq!(
+        attempts_of(&mut session, "jobs:1"),
+        attempts,
+        "a whole-record write reset the attempt count"
+    );
+
+    // And the caller's own field did change, so this is preservation and not a
+    // write that was quietly refused.
+    let outcome = run(&mut session, "SELECT * FROM jobs:1;");
+    let Outcome::Records { records, .. } = outcome else {
+        panic!("expected records");
+    };
+    let Some((_, Value::Object(fields))) = records.first() else {
+        panic!("expected one record");
+    };
+    assert_eq!(format!("{:?}", fields.get("url")), "Some(String(\"z\"))");
+}
+
+/// A record nobody holds still remembers how often it has been handed out.
+///
+/// The ceiling is the reason: `ATTEMPTS` exists so a record that poisons a
+/// worker stops being handed out, and a count a caller can clear by rewriting
+/// the record protects nobody.
+#[test]
+fn a_whole_record_write_cannot_clear_the_attempt_count_of_a_free_record() {
+    let store = store();
+    let mut session = ready(&store, "TIMEOUT 30s ATTEMPTS 3");
+    run(&mut session, "USE CONSUMER 'billing'; CLAIM jobs:1;");
+    session
+        .run("RELEASE jobs:1 FOR CONSUMER 'billing';")
+        .unwrap();
+    let attempts = attempts_of(&mut session, "jobs:1");
+
+    session.run("UPDATE jobs:1 = { url: 'z' };").unwrap();
+    assert_eq!(
+        attempts_of(&mut session, "jobs:1"),
+        attempts,
+        "rewriting a free record cleared its attempt count, so the ceiling is not one"
+    );
+}
+
+/// The conditional form a consumer uses for its compare-and-set keeps the hold
+/// too — which is the whole point of the clause, and the shape `SET` never
+/// exercised.
+#[test]
+fn a_whole_record_compare_and_set_keeps_the_hold() {
+    let store = store();
+    let mut session = ready(&store, "TIMEOUT 30s");
+    run(&mut session, "USE CONSUMER 'billing'; CLAIM jobs:1;");
+    let held_by = holder(&mut session, "jobs:1");
+    let attempts = attempts_of(&mut session, "jobs:1");
+
+    session
+        .run("UPDATE jobs:1 = { url: 'z' } WHERE url = 'a';")
+        .unwrap();
+    assert_eq!(holder(&mut session, "jobs:1"), held_by);
+    assert_eq!(attempts_of(&mut session, "jobs:1"), attempts);
+}

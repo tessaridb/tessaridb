@@ -2611,10 +2611,43 @@ UPDATE users:1 SET email = 'ada2@example.com';
 UPDATE users:1 SET visits = visits + 1, seen = time::now();
 UPDATE users:1 SET address.city = 'Lyon';
 UPDATE users:1 MERGE { address: { city: 'Lyon' } };
+UPDATE users:1 SET email = 'ada2@example.com', version = 2 WHERE version = 1;
 UPSERT users:1 = { name: 'ada' };
 UPSERT users:1 SET visits = 1;
 DELETE users:1;
 ```
+
+**`WHERE` on an `UPDATE` is a compare-and-set, and a lost race is a refusal.**
+It is the clause a caller writes when somebody else may be writing the same
+record: `UPDATE orders:7 SET status = 'paid', version = 4 WHERE version = 3`
+changes the record only if it still says what you last read, and **refuses** if it
+does not — `record 7 does not say what the condition asserts`. Nothing is
+written, no index moves, and because it is a refusal rather than a count, the
+failure discards the work above it in the transaction. That is the difference
+that makes it worth having: a guard you can forget to check is not a guard.
+
+The clause follows from what `UPDATE` already is. This verb asserts the record is
+**present** and refuses when it is not, which is the whole of how it differs from
+`UPSERT`; asserting the record is also in a particular state is that same
+assertion one step further in, so it fails the same way. `UPSERT` therefore takes
+no `WHERE` at all — it writes the record whether or not it is there, so there is
+no prior state to test — and says so rather than accepting the clause and
+ignoring it.
+
+**The condition reads the record as stored, never the record being written.**
+`WHERE version = 3` beside `SET version = 4` compares the **3** that is there
+against the 3 you expected. It has to: reading the payload would compare the 4
+this very statement is setting, so every compare-and-set in every program would
+be false, and nothing would be in an error state to say why.
+
+It composes with a queue, which is the reason it exists. A worker that holds a
+job may compare-and-set it — `UPDATE jobs:7 SET stage = 'fetched', version = 2
+WHERE version = 1` — and the hold, its deadline and its attempt count are
+untouched, because the record is edited in place. The alternative a store used to
+have to write, a conditional `DELETE` followed by a `CREATE`, destroys the hold
+silently: the fields live **on** the record, so recreating it drops them with no
+error, and the work is claimable again while its first holder still believes it
+holds it.
 
 **`*` composes.** It may stand among the values written out —
 `SELECT *, price * quantity AS total FROM users` answers with the record **and**
@@ -5243,6 +5276,7 @@ same chunk — two files sharing bytes, which is not a defect anybody finds twic
 
 ```tessariql
 DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5;
+DEFINE QUEUE tasks TIMEOUT 10m SCHEMAFULL IN work;
 
 CREATE jobs = { url: 'https://example.test/report' };
 
@@ -5261,6 +5295,26 @@ a hold that lapses. Enqueueing is `CREATE` and finishing is `DELETE`, because
 the store already has both words: a record that should stop existing is deleted,
 and a second verb meaning *delete, but for a queue* would give one act two
 spellings.
+
+**A queue says whether it is strict and which graph it is in**, in the same
+words an ordinary table uses and with the same meaning. The flags come after
+`TIMEOUT` and `ATTEMPTS` — those are what a queue *is*, and the flags are
+adjectives on it — and they are order-free against each other, because there is
+no reading under which one has to precede the other. Neither is accepted twice.
+
+Leaving both out means what it has always meant: **lenient, and in no graph**.
+That is not a special case for queues; it is the rule a declaration carrying no
+columns already followed, since strictness constrains declared fields and a
+queue declares none until `DEFINE FIELD` arrives afterwards.
+
+The clauses exist because a work table usually needs both. A table that holds
+work is normally the one a schema is strictest about, and it is normally an end
+of a link — a task belongs to a goal, a job blocks another job. Without these
+words such a table could not be a queue at all, and not in a way you could work
+around: `DEFINE EDGE` refuses a table that belongs to no graph, declaring the
+table first and the queue second is refused because the name is taken, and
+`ALTER TABLE … SET SCHEMAFULL` does reach strictness but leaves a table
+`INFO FOR TABLE` can no longer write back as a statement.
 
 **`CLAIM` takes the first claimable records in identity order**, which is arrival
 order — both identity kinds this store issues are time-ordered, so the queue is
@@ -5423,13 +5477,41 @@ one `TIMEOUT` is the signature.
 |---|---|
 | `claimed_until` | the instant the current hold lapses; absent when nothing holds it |
 | `attempts` | how many times this record has been handed out |
+| `claimed_by` | the consumer and instance that hold it; absent when nothing does |
 
-A `CREATE` or `UPDATE` that sets either is **refused, naming the field**. This is
-the bucket's rule in a second place and for the identical reason: engine metadata
-a caller can write is metadata that can lie, and a hold whose deadline the holder
-chose is not a hold. The names are ordinary and visible, so a table that is not a
-queue may use them freely; on a queue they collide, and the refusal says so
-rather than silently dropping the field.
+**A write that says nothing about them leaves them alone.** A whole-record
+`UPDATE jobs:1 = { url: 'b' }` removes every field it does not mention, and on a
+queue these three are carried forward instead — because a caller may not
+introduce or change them, and it follows that a caller may not remove them. That
+is what makes the compare-and-set safe for a worker holding the record: writing
+the whole record back is how a consumer that versions its records performs one,
+and it must not cost the hold. It is also what makes `ATTEMPTS` a ceiling rather
+than a suggestion, since a count a caller could clear by rewriting the record
+would let a record that has poisoned three workers be recycled by the fourth.
+
+A `CREATE` or `UPDATE` that sets either is **refused, naming the field**, and so
+is one that sets `claimed_by`. This is the bucket's rule in a second place and
+for the identical reason: engine metadata a caller can write is metadata that can
+lie, and a hold whose deadline the holder chose is not a hold. The names are
+ordinary and visible, so a table that is not a queue may use them freely; on a
+queue they collide, and the refusal says so rather than silently dropping the
+field.
+
+**Work you hold is still work you can write to.** The rule is that you may not
+introduce or change one of these fields — carrying one forward untouched is not
+writing it — so a worker that takes a job and then records something on it is
+writing its own field on a record it holds, and that is allowed:
+
+```tessariql
+USE CONSUMER 'billing';
+CLAIM jobs:7;
+UPDATE jobs:7 SET stage = 'fetched';
+```
+
+The hold, its deadline and its attempt count are exactly where `CLAIM` left them
+afterwards. Saying this out loud because the opposite would be quiet: a queue
+whose records went read-only the moment they were claimed would refuse the one
+thing claiming them was for.
 
 **A lapsed record is not rewritten**, so a read meaning *unclaimed* compares
 rather than testing for absence:
@@ -6223,7 +6305,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.1.0", "build": "0.1.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.1.1", "build": "0.1.1-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000"}]}}
 ```
 

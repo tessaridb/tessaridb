@@ -876,12 +876,15 @@ impl Parser<'_> {
         })
     }
 
-    /// `DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5`
+    /// `DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5 SCHEMAFULL IN work`
     ///
-    /// One required clause and one optional one, read in a fixed order for the
-    /// reason `DEFINE VECTOR`'s two are: two clauses is too few to be worth an
-    /// order-free reader, and a fixed order is what makes the statement read the
-    /// same way in every store that has one.
+    /// Two clauses and two flags, and they are read differently on purpose. The
+    /// **clauses** — `TIMEOUT` and `ATTEMPTS` — keep their fixed order for the
+    /// reason `DEFINE VECTOR`'s two do: they are what a queue is, two is too few
+    /// to be worth an order-free reader, and a fixed order is what makes the
+    /// statement read the same way in every store that has one. The **flags**
+    /// are order-free against each other, because they are adjectives and
+    /// `DEFINE TABLE` already reads its own that way.
     ///
     /// The timeout is a literal duration rather than an expression, the rule the
     /// query timeout already keeps: a budget a bound value could set is a budget
@@ -916,10 +919,34 @@ impl Parser<'_> {
         } else {
             None
         };
+        // The flags come after the clauses that are the subject of the
+        // statement, and they are order-free against each other — both rules
+        // read off `DEFINE TABLE`, where the same comment explains why: the
+        // timeout and the ceiling are what a queue *is*, the flags are
+        // adjectives on it, and a grammar that insisted on an order between two
+        // adjectives would only be remembered wrong.
+        let mut strictness: Option<bool> = None;
+        let mut graph: Option<Name> = None;
+        loop {
+            if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
+                strictness = Some(true);
+            } else if strictness.is_none() && self.eat_keyword(Keyword::Schemaless) {
+                strictness = Some(false);
+            } else if graph.is_none() && self.eat_keyword(Keyword::In) {
+                graph = Some(self.name()?);
+            } else {
+                break;
+            }
+        }
         Ok(StatementKind::DefineQueue {
             name,
             timeout,
             attempts,
+            // Lenient unless the word says otherwise, which is `DEFINE TABLE`'s
+            // own default for a declaration carrying no columns. A queue never
+            // carries any, so there is no reading under which it starts strict.
+            schemafull: strictness.unwrap_or(false),
+            graph,
             if_not_exists,
         })
     }
@@ -2146,20 +2173,41 @@ impl Parser<'_> {
                 assignments.push(self.assignment()?);
             }
             let edit = Edit::Fields(assignments);
-            return Ok(Self::changed(verb, target, edit, self.answer(verb)?));
+            let condition = self.edit_condition(verb)?;
+            return Ok(Self::changed(
+                verb,
+                target,
+                edit,
+                condition,
+                self.answer(verb)?,
+            ));
         }
         if edits && self.eat_keyword(Keyword::Merge) {
             // The **value** position, unlike `SET`'s right-hand sides: this is
             // one whole object standing for the change, not a route computed
             // from the record it is changing.
             let edit = Edit::Merge(self.expression()?);
-            return Ok(Self::changed(verb, target, edit, self.answer(verb)?));
+            let condition = self.edit_condition(verb)?;
+            return Ok(Self::changed(
+                verb,
+                target,
+                edit,
+                condition,
+                self.answer(verb)?,
+            ));
         }
         self.expect_punct(Punct::Equals, "`=` and the value to write")?;
         let value = self.expression()?;
         Ok(match verb {
             Keyword::Update | Keyword::Upsert => {
-                Self::changed(verb, target, Edit::Whole(value), self.answer(verb)?)
+                let condition = self.edit_condition(verb)?;
+                Self::changed(
+                    verb,
+                    target,
+                    Edit::Whole(value),
+                    condition,
+                    self.answer(verb)?,
+                )
             }
             Keyword::Set => StatementKind::Set { target, value },
             _ => StatementKind::Create {
@@ -2292,7 +2340,13 @@ impl Parser<'_> {
     }
 
     /// The statement a change verb makes of a target, an edit and an answer.
-    fn changed(verb: Keyword, target: RecordTarget, edit: Edit, answer: Answer) -> StatementKind {
+    fn changed(
+        verb: Keyword,
+        target: RecordTarget,
+        edit: Edit,
+        condition: Option<Expr>,
+        answer: Answer,
+    ) -> StatementKind {
         if verb == Keyword::Upsert {
             StatementKind::Upsert {
                 target,
@@ -2303,9 +2357,36 @@ impl Parser<'_> {
             StatementKind::Update {
                 target,
                 edit,
+                condition,
                 answer,
             }
         }
+    }
+
+    /// `WHERE <condition>` after an edit — the compare-and-set clause.
+    ///
+    /// `UPDATE` only. `UPSERT` asserts nothing about the record it writes, so a
+    /// condition on it has no meaning to give; it is refused here rather than
+    /// parsed and ignored, because a clause that parses and does nothing is the
+    /// shape a caller trusts.
+    fn edit_condition(&mut self, verb: Keyword) -> Result<Option<Expr>> {
+        if self.peek_keyword() != Some(Keyword::Where) {
+            return Ok(None);
+        }
+        if verb == Keyword::Upsert {
+            return Err(self.error_here(
+                "no `WHERE` — `UPSERT` writes the record whether or not it is                  there, so there is no prior state to test; use `UPDATE` to                  change a record only when it already says something",
+            ));
+        }
+        self.advance();
+        // `condition()` and not `expression()`, and the difference is the whole
+        // clause: in a **condition** position a bare name is a route into the
+        // record, and in a value position it is a table. Parsed as an
+        // expression, `WHERE visits = 3` asks for a table called `visits`.
+        let condition = self.condition()?;
+        super::shape::no_fold(&condition)?;
+        super::shape::check_several(&condition)?;
+        Ok(Some(condition))
     }
 
     /// `name = 'grace'` — one route and what it becomes.
