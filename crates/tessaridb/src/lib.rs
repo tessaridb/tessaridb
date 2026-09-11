@@ -89,7 +89,7 @@ pub use tessari_session::{
     AccessPath, Error, Exactness, Nearest, Note, Outcome, Parameters, Result, Session, Suggestion,
     Ticket,
 };
-pub use tessari_storage::{BUILD_VERSION, Change, ChangeKind, Changes, Subscription, Watch};
+pub use tessari_storage::{BUILD_VERSION, Change, ChangeKind, Changes, Lease, Subscription, Watch};
 pub use tessari_types::{
     DatabaseId, Datetime, Duration, FieldKind, Geometry, NamespaceId, Number, Path as FieldPath,
     Polygon, Position, RecordId, RecordRef, Ring, Sequence, Step, TableId, Value, from_geojson,
@@ -207,6 +207,20 @@ impl Db {
     /// it is not a leader running out of time.
     pub fn hold_lease(&self, ttl: core::time::Duration) {
         self.store.hold_lease(ttl);
+    }
+
+    /// Hold a lease a majority granted, exactly as it was granted.
+    ///
+    /// The form a cluster uses, and the difference from [`Db::hold_lease`] is
+    /// the instant. A granted lease is dated from when its round **opened**, so
+    /// a slow round yields a shorter window; a span arriving here instead would
+    /// restart that clock on installation and spend the collection delay out of
+    /// the voters' window rather than this node's.
+    ///
+    /// A node nobody granted leadership to never calls either form and is not
+    /// fenced by one.
+    pub fn hold(&self, lease: Lease) {
+        self.store.hold(lease);
     }
 
     /// What changed from `from` onward, oldest first.

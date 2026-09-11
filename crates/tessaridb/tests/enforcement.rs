@@ -18,7 +18,7 @@
 //!
 //! # What is counted, and what is not
 //!
-//! Seven tables, carrying **70** paths. The original derivation counted 74 on
+//! Seven tables, carrying **73** paths. The original derivation counted 74 on
 //! the day it ran. This line said **66** while the assertion below said 68 —
 //! prose and number drifting apart is the very decay this test exists to catch,
 //! and it had happened to the sentence describing the test. Both now come from
@@ -204,7 +204,13 @@ const TABLES: &[Table] = &[
     Table {
         file: "crates/tessaridb/src/lib.rs",
         what: "public methods on `Db` — the embedded facade",
-        expected: 17,
+        // 18 since the grant seam: `Db::hold` installs a lease a majority
+        // granted, whole, so the instant its round opened survives into the
+        // fence. Classified **exempt** on exactly the ground `Db::hold_lease`
+        // is: it takes no reach, it reads and writes no record, no catalog entry
+        // and no grant, and what it touches is process memory that is never
+        // persisted and never queryable.
+        expected: 18,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -314,7 +320,21 @@ const TABLES: &[Table] = &[
         // exemption is therefore **conditional on having no remote caller**, and
         // that condition is written down so the next wave meets it rather than
         // inherits it.
-        expected: 24,
+        //
+        // 25 since the grant seam: `Store::hold` installs a lease a majority
+        // granted, WHOLE, so the instant its round opened reaches the fence
+        // instead of being restarted at installation. It is classified **exempt
+        // on the same ground and under the same condition** — no reach, no
+        // record, no catalog entry, no grant, and process memory that is never
+        // persisted and never queryable.
+        //
+        // It is also the method that condition was written for. `hold` is the
+        // shape a wire will call, and it is deliberately the one that carries
+        // the whole lease, so when a driver opens rounds on a timer this pair is
+        // where "who may grant leadership" stops being hypothetical. The
+        // condition is nearer to being met than it was, and it is still not met:
+        // nothing in this build opens a round but a test.
+        expected: 25,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -373,7 +393,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 71, "the counted tables no longer sum to 71");
+    assert_eq!(total, 73, "the counted tables no longer sum to 73");
 }
 
 /// Every `.rs` file under a directory.

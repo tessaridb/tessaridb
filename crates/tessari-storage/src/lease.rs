@@ -142,10 +142,31 @@ pub struct Held {
 }
 
 impl Held {
-    /// Take or renew the lease.
+    /// Take or renew the lease, for `ttl` from now.
+    ///
+    /// The local form, for a caller that has no round behind it. It delegates to
+    /// [`Held::hold`] rather than building a second lease, so there is one place
+    /// where the guard arithmetic happens.
     pub fn take(&self, ttl: Duration) {
+        self.hold(Lease::taken(ttl));
+    }
+
+    /// Hold a lease that was granted, exactly as it was granted.
+    ///
+    /// The distinction from [`Held::take`] is the one the grant rules exist to
+    /// preserve: a lease a majority agreed to is dated from the instant its
+    /// round **opened**, not from the instant the winner got around to
+    /// installing it. Passing the whole [`Lease`] is what carries that instant
+    /// across the seam — a duration cannot, because by the time it arrives the
+    /// collection delay has already been spent and would be spent again.
+    ///
+    /// So a round that took a long time hands its holder a shorter window, and a
+    /// round that took longer than the window hands it one that is already
+    /// fenced. Both are the safe direction: the delay comes out of the holder's
+    /// own time and never out of the voters'.
+    pub fn hold(&self, lease: Lease) {
         if let Ok(mut held) = self.lease.lock() {
-            *held = Some(Lease::taken(ttl));
+            *held = Some(lease);
         }
     }
 

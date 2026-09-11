@@ -358,3 +358,30 @@ fn currency_and_the_right_to_write_are_one_answer() {
         );
     }
 }
+
+#[test]
+fn a_lease_installed_whole_keeps_the_instant_it_was_taken_at() {
+    // The seam a cluster reaches through. A granted lease is dated from the
+    // instant its round OPENED, so installing it must not restart that clock:
+    // the collection delay comes out of the holder's own window and never out of
+    // the voters'. Passing the whole lease is what carries that instant; a span
+    // arriving here could only be measured from now.
+    let store = store();
+    let span = LEASE_GUARD
+        .checked_add(Duration::from_secs(60))
+        .expect("representable");
+    let opened = Instant::now().checked_sub(span).expect("representable");
+
+    store.hold(Lease::taken_at(opened, span));
+    assert!(
+        store.lease_spent().is_some(),
+        "a lease whose whole span was spent before it arrived is already fenced"
+    );
+    write(&store, "one").expect_err("and a node past its fence does not write");
+
+    // The control: the same span, taken now. What differs between the two is the
+    // instant and nothing else, so the difference is the dating.
+    store.hold(Lease::taken_at(Instant::now(), span));
+    assert_eq!(store.lease_spent(), None);
+    write(&store, "two").expect("inside the window it writes");
+}

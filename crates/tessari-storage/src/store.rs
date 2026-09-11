@@ -600,6 +600,24 @@ impl Store {
         self.lease.take(ttl);
     }
 
+    /// Hold a lease a majority granted, exactly as it was granted.
+    ///
+    /// The seam between the cluster and the engine, and the reason it takes a
+    /// whole [`Lease`] rather than a span: a granted lease is dated from the
+    /// instant its round **opened**, and a duration arriving here cannot carry
+    /// that instant — it would restart the clock at the moment of installation,
+    /// so every millisecond the round spent collecting would come out of the
+    /// **voters'** window instead of this node's. That is the split-brain the
+    /// dating rule exists to prevent, reached through the seam rather than
+    /// through the rule.
+    ///
+    /// Nothing is re-checked here. Whether the grant was legitimate was settled
+    /// by the round; a store asking again would be asking about a fact it has no
+    /// way to know.
+    pub fn hold(&self, lease: crate::lease::Lease) {
+        self.lease.hold(lease);
+    }
+
     /// How long this node's lease fence has been closed, if it is.
     ///
     /// `None` means writes may proceed — either because the fence is still open

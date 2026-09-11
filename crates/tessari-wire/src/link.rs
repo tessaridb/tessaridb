@@ -841,6 +841,54 @@ mod tests {
     }
 
     #[test]
+    fn the_lease_a_round_won_is_the_lease_the_node_holds() {
+        // The seam between a round and the fence, asserted without a socket
+        // because the socket is not what is in question. A granted lease is
+        // dated from the instant its round OPENED, and installing it has to
+        // carry that instant: a span cannot, because by the time one arrives the
+        // collection delay has already been spent, and restarting the clock here
+        // would spend it a second time out of the VOTERS' window instead of this
+        // node's — which is the split-brain the dating rule exists to prevent,
+        // reached through the seam rather than through the rule.
+        let store = tessaridb::Db::in_memory().expect("a store");
+        store
+            .session()
+            .run(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
+                  USE DATABASE orders; DEFINE COLLECTION users;",
+            )
+            .expect("a place to write");
+        let voter = [40_u8; NODE_ID_LEN];
+
+        // A round that opened now and was carried at once.
+        let mut prompt = Round::opened(Epoch::new(1), THERE, 1);
+        let won = prompt
+            .counts(voter, Vote::Granted)
+            .expect("one of one carries it");
+        store.hold(won.lease());
+        store
+            .session()
+            .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:1 = { name: 'ada' };")
+            .expect("a round that cost nothing hands over the whole window");
+
+        // The same round, opened a whole TTL ago. Nothing else differs.
+        let opened = std::time::Instant::now()
+            .checked_sub(tessari_storage::LEASE_TTL)
+            .expect("representable");
+        let mut slow = Round::opened_at(Epoch::new(2), THERE, 1, opened);
+        let won = slow
+            .counts(voter, Vote::Granted)
+            .expect("one of one carries it");
+        store.hold(won.lease());
+        let refused = store
+            .session()
+            .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
+            .expect_err("a round that took the whole TTL hands over no window at all");
+        let said = refused.to_string();
+        assert!(said.contains("lease"), "{said}");
+    }
+
+    #[test]
     fn a_connection_offering_no_credential_never_reaches_a_frame() {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
