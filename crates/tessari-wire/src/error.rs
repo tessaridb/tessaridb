@@ -37,6 +37,18 @@ pub enum Error {
         supported: u8,
     },
 
+    /// A frame this build knows, arriving where a different one belongs.
+    ///
+    /// Kept apart from [`Error::UnknownFrame`] because the remedies are
+    /// opposite: an unknown frame is a peer speaking a protocol this build does
+    /// not have, while this one is a peer speaking the same protocol in the
+    /// wrong order — a bug on the other side rather than a version to upgrade.
+    #[error("frame kind {tag} arrived where the peer link expected a different one")]
+    OutOfTurn {
+        /// The tag that arrived.
+        tag: u8,
+    },
+
     /// A frame kind this build does not have.
     ///
     /// The connection closes rather than the frame being skipped: a protocol

@@ -18,7 +18,11 @@
 //!
 //! # What is counted, and what is not
 //!
-//! Seven tables, carrying **66** of the derivation's 74 paths.
+//! Seven tables, carrying **69** paths. The original derivation counted 74 on
+//! the day it ran. This line said **66** while the assertion below said 68 —
+//! prose and number drifting apart is the very decay this test exists to catch,
+//! and it had happened to the sentence describing the test. Both now come from
+//! one place: change the table, change the assertion, change this line.
 //!
 //! # The path added by the vault, and how it was classified
 //!
@@ -30,6 +34,25 @@
 //! decryption; a caller holding the passphrase and no grant is refused at the
 //! door by the ordinary reach check. Neither passes by the other's route, which
 //! is criterion F3 of the vault goal stated as a coverage decision.
+//!
+//! # The path added by the cluster's lease, and how it was classified
+//!
+//! `Db::hold_lease` is the seventeenth method on the facade, and it is
+//! classified **exempt — not a data path**, on two grounds that are worth
+//! keeping apart.
+//!
+//! It reads and writes no record, no catalog entry and no grant: it hands the
+//! store a span of time, and the only thing the store does with it is decide
+//! when to stop accepting writes. Its effect on this node's authority is
+//! monotone in the safe direction — a call to it can only ever make the node
+//! write *less*.
+//!
+//! And it is not reachable from outside the process. No statement names it, no
+//! HTTP route reaches it, no frame kind carries it; the caller is the code that
+//! carried a leadership round to a majority. The exposure this classification
+//! depends on is exactly that, so the day a statement or a route can take a
+//! lease is the day this row is re-classified rather than re-counted — a
+//! remotely settable lease is a remotely disabled fence.
 //!
 //! The classification is recorded here rather than only in the count, because
 //! the count is a reminder and the classification is the work. The nine that are
@@ -152,7 +175,7 @@ const TABLES: &[Table] = &[
     Table {
         file: "crates/tessaridb/src/lib.rs",
         what: "public methods on `Db` — the embedded facade",
-        expected: 16,
+        expected: 17,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -321,7 +344,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 68, "the counted tables no longer sum to 68");
+    assert_eq!(total, 69, "the counted tables no longer sum to 69");
 }
 
 /// Every `.rs` file under a directory.

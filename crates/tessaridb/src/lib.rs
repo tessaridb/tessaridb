@@ -194,6 +194,21 @@ impl Db {
         Session::new(&self.store)
     }
 
+    /// Take or renew the lease this node writes under.
+    ///
+    /// The seam between the cluster and the engine: a candidate that carried a
+    /// round to a majority of voting members tells the store how long that
+    /// majority agreed it may write for, and the store closes its fence
+    /// `LEASE_GUARD` before the span runs out. Nothing here asks who granted it
+    /// — the round did that, and a store that re-checked would be checking a
+    /// fact it has no way to know.
+    ///
+    /// A node nobody granted leadership to never calls this and is not fenced:
+    /// it is not a leader running out of time.
+    pub fn hold_lease(&self, ttl: core::time::Duration) {
+        self.store.hold_lease(ttl);
+    }
+
     /// What changed from `from` onward, oldest first.
     ///
     /// A projection of the replication log: no state, no registration, and the

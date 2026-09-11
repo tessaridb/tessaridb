@@ -52,6 +52,10 @@ use crate::frame;
 pub enum PeerFrame {
     /// Who I am and what I hold, sent by both ends.
     Hello,
+    /// A candidate asking for one epoch.
+    Ballot,
+    /// A voting member's answer to one ballot.
+    Vote,
 }
 
 impl PeerFrame {
@@ -64,6 +68,8 @@ impl PeerFrame {
     pub const fn tag(self) -> u8 {
         match self {
             Self::Hello => 6,
+            Self::Ballot => 7,
+            Self::Vote => 8,
         }
     }
 
@@ -72,6 +78,8 @@ impl PeerFrame {
     pub const fn from_tag(tag: u8) -> Option<Self> {
         match tag {
             6 => Some(Self::Hello),
+            7 => Some(Self::Ballot),
+            8 => Some(Self::Vote),
             _ => None,
         }
     }

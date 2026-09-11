@@ -67,6 +67,9 @@ use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::{LEASE_TTL, Lease};
 use tessari_types::Epoch;
 
+use crate::error::{Error, Result};
+use crate::frame;
+
 /// What a candidate asks each voting member for.
 ///
 /// It names an epoch and a candidate and nothing else — in particular it does
@@ -79,6 +82,36 @@ pub struct Ballot {
     pub epoch: Epoch,
     /// Who is asking.
     pub candidate: [u8; NODE_ID_LEN],
+}
+
+impl Ballot {
+    /// The body of a [`crate::PeerFrame::Ballot`] frame.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut body = Vec::with_capacity(24);
+        frame::put_u64(&mut body, self.epoch.get());
+        body.extend_from_slice(&self.candidate);
+        body
+    }
+
+    /// Read one back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Malformed`] when the body is not the shape a ballot
+    /// takes.
+    pub fn decode(body: &[u8]) -> Result<Self> {
+        let (epoch, at) = frame::take_u64(body, 0)?;
+        let mut candidate = [0_u8; NODE_ID_LEN];
+        let rest = body
+            .get(at..at.saturating_add(NODE_ID_LEN))
+            .ok_or(Error::Malformed)?;
+        candidate.copy_from_slice(rest);
+        Ok(Self {
+            epoch: Epoch::new(epoch),
+            candidate,
+        })
+    }
 }
 
 /// Why a voter said no.
@@ -116,6 +149,78 @@ pub enum Vote {
     Granted,
     /// It will not grant this one, and says which rule stopped it.
     Refused(Refused),
+}
+
+impl Vote {
+    /// The body of a [`crate::PeerFrame::Vote`] frame.
+    ///
+    /// A refusal keeps its reason and its duration across the wire. *Wait six
+    /// seconds* and *you are re-running a decided epoch* send a candidate to
+    /// different places, and a wire that collapsed them into "no" would be less
+    /// informative than the rules behind it.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut body = Vec::with_capacity(9);
+        match self {
+            Self::Granted => body.push(0),
+            Self::Refused(Refused::EpochAlreadyDecided { granted }) => {
+                body.push(1);
+                frame::put_u64(&mut body, granted.get());
+            }
+            Self::Refused(Refused::EarlierGrantStillAlive { for_the_next }) => {
+                body.push(2);
+                frame::put_u64(&mut body, millis(*for_the_next));
+            }
+            Self::Refused(Refused::TooSoonAfterStarting { for_the_next }) => {
+                body.push(3);
+                frame::put_u64(&mut body, millis(*for_the_next));
+            }
+        }
+        body
+    }
+
+    /// Read one back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Malformed`] when the body is empty or short, and
+    /// [`Error::UnknownFrame`] when it names an answer this build does not
+    /// have — which is a newer peer rather than a broken one, and the tag it
+    /// carries is the answer it gave.
+    pub fn decode(body: &[u8]) -> Result<Self> {
+        let kind = *body.first().ok_or(Error::Malformed)?;
+        match kind {
+            0 => Ok(Self::Granted),
+            1 => {
+                let (granted, _) = frame::take_u64(body, 1)?;
+                Ok(Self::Refused(Refused::EpochAlreadyDecided {
+                    granted: Epoch::new(granted),
+                }))
+            }
+            2 => {
+                let (left, _) = frame::take_u64(body, 1)?;
+                Ok(Self::Refused(Refused::EarlierGrantStillAlive {
+                    for_the_next: Duration::from_millis(left),
+                }))
+            }
+            3 => {
+                let (left, _) = frame::take_u64(body, 1)?;
+                Ok(Self::Refused(Refused::TooSoonAfterStarting {
+                    for_the_next: Duration::from_millis(left),
+                }))
+            }
+            tag => Err(Error::UnknownFrame { tag }),
+        }
+    }
+}
+
+/// A duration as whole milliseconds, saturating.
+///
+/// The wire carries no more precision than an operator can act on, and a value
+/// too large to represent is reported as the largest one rather than wrapped
+/// into a small wait.
+fn millis(span: Duration) -> u64 {
+    u64::try_from(span.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// One voting member's memory of what it has granted.

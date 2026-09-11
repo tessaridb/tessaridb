@@ -69,7 +69,7 @@ pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]
 pub use crate::grant::{Ballot, Leadership, Refused, Round, Vote, Voter};
 #[cfg(feature = "server")]
-pub use crate::link::{Credential, Peers, call};
+pub use crate::link::{Credential, Met, Peers, call};
 #[cfg(feature = "server")]
 pub use crate::message::names_for;
 pub use crate::message::{Answer, Correction, Exact, Names, Remark, Request, Suggested, spell};
