@@ -937,3 +937,107 @@ fn the_queue_flags_are_order_free_and_neither_is_accepted_twice() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The write that drops a hold by saying nothing about it (W208c)
+//
+// `refuse_engine_fields` refuses a caller who INTRODUCES or CHANGES one of the
+// three fields the engine writes. It could not refuse a caller who **omits**
+// them, because omitting is not writing — and a whole-record `UPDATE t:1 = {…}`
+// omits everything it does not mention. So the record that came back had no
+// hold, no deadline and no attempt count, with nothing in an error state.
+//
+// That is the same sentence this engine's own changelog uses about the CAS it
+// replaced: the hold is dropped with no error at all, and the work is claimable
+// again while its first holder still believes it holds it. It arrived by a door
+// nobody checked, because every test of the guard used `SET`, which merges over
+// the stored record and therefore carries the three fields along by accident.
+//
+// The attempt count is the half with teeth of its own: a ceiling a caller can
+// reset by rewriting the record is not a ceiling, and a record that has poisoned
+// a worker three times can be recycled forever by the worker it poisons.
+// ---------------------------------------------------------------------------
+
+/// A whole-record write keeps the hold, the deadline and the attempt count.
+#[test]
+fn a_whole_record_write_cannot_drop_the_hold_or_the_attempt_count() {
+    let store = store();
+    let mut session = ready(&store, "TIMEOUT 30s");
+    run(&mut session, "USE CONSUMER 'billing'; CLAIM jobs:1;");
+
+    let held_by = holder(&mut session, "jobs:1");
+    let deadline = held_until(&mut session, "jobs:1");
+    let attempts = attempts_of(&mut session, "jobs:1");
+
+    // The form a consumer that stores whole records actually writes — the
+    // caller's own fields, and nothing said about the engine's.
+    session.run("UPDATE jobs:1 = { url: 'z' };").unwrap();
+
+    assert_eq!(
+        holder(&mut session, "jobs:1"),
+        held_by,
+        "a whole-record write dropped the hold"
+    );
+    assert_eq!(
+        held_until(&mut session, "jobs:1"),
+        deadline,
+        "a whole-record write dropped the deadline"
+    );
+    assert_eq!(
+        attempts_of(&mut session, "jobs:1"),
+        attempts,
+        "a whole-record write reset the attempt count"
+    );
+
+    // And the caller's own field did change, so this is preservation and not a
+    // write that was quietly refused.
+    let outcome = run(&mut session, "SELECT * FROM jobs:1;");
+    let Outcome::Records { records, .. } = outcome else {
+        panic!("expected records");
+    };
+    let Some((_, Value::Object(fields))) = records.first() else {
+        panic!("expected one record");
+    };
+    assert_eq!(format!("{:?}", fields.get("url")), "Some(String(\"z\"))");
+}
+
+/// A record nobody holds still remembers how often it has been handed out.
+///
+/// The ceiling is the reason: `ATTEMPTS` exists so a record that poisons a
+/// worker stops being handed out, and a count a caller can clear by rewriting
+/// the record protects nobody.
+#[test]
+fn a_whole_record_write_cannot_clear_the_attempt_count_of_a_free_record() {
+    let store = store();
+    let mut session = ready(&store, "TIMEOUT 30s ATTEMPTS 3");
+    run(&mut session, "USE CONSUMER 'billing'; CLAIM jobs:1;");
+    session
+        .run("RELEASE jobs:1 FOR CONSUMER 'billing';")
+        .unwrap();
+    let attempts = attempts_of(&mut session, "jobs:1");
+
+    session.run("UPDATE jobs:1 = { url: 'z' };").unwrap();
+    assert_eq!(
+        attempts_of(&mut session, "jobs:1"),
+        attempts,
+        "rewriting a free record cleared its attempt count, so the ceiling is not one"
+    );
+}
+
+/// The conditional form a consumer uses for its compare-and-set keeps the hold
+/// too — which is the whole point of the clause, and the shape `SET` never
+/// exercised.
+#[test]
+fn a_whole_record_compare_and_set_keeps_the_hold() {
+    let store = store();
+    let mut session = ready(&store, "TIMEOUT 30s");
+    run(&mut session, "USE CONSUMER 'billing'; CLAIM jobs:1;");
+    let held_by = holder(&mut session, "jobs:1");
+    let attempts = attempts_of(&mut session, "jobs:1");
+
+    session
+        .run("UPDATE jobs:1 = { url: 'z' } WHERE url = 'a';")
+        .unwrap();
+    assert_eq!(holder(&mut session, "jobs:1"), held_by);
+    assert_eq!(attempts_of(&mut session, "jobs:1"), attempts);
+}

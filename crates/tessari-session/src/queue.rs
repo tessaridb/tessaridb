@@ -581,21 +581,18 @@ fn attempts_of(fields: &BTreeMap<String, Value>) -> i64 {
 /// Returns [`Error::QueueFieldIsTheEngines`] naming the field, so a caller whose
 /// payload happens to use one of these names is told exactly what happened
 /// rather than silently losing it (Q-461).
-pub(crate) fn refuse_engine_fields(
+pub(crate) fn hold_engine_fields(
     transaction: &mut Transaction<'_>,
     address: &RecordAddress,
-    payload: &Value,
+    payload: &mut Value,
     span: Span,
 ) -> Result<()> {
     let Value::Object(fields) = payload else {
         return Ok(());
     };
-    if !fields.contains_key(QUEUE_CLAIMED_UNTIL)
-        && !fields.contains_key(QUEUE_ATTEMPTS)
-        && !fields.contains_key(QUEUE_CLAIMED_BY)
-    {
-        return Ok(());
-    }
+    // No early return on "the payload mentions none of them" any more, and that
+    // early return was the whole defect: a payload mentioning none of them is
+    // exactly a whole-record write, which is the one that drops all three.
     let is_queue = Catalog::new(transaction)
         .table(address.table)?
         .is_some_and(|found| matches!(found.kind, TableKind::Queue(_)));
@@ -630,18 +627,50 @@ pub(crate) fn refuse_engine_fields(
             .is_some_and(|value| stored.get(name) != Some(value))
     };
 
-    let field = if supplied(QUEUE_CLAIMED_UNTIL) {
-        QUEUE_CLAIMED_UNTIL
+    let refused = if supplied(QUEUE_CLAIMED_UNTIL) {
+        Some(QUEUE_CLAIMED_UNTIL)
     } else if supplied(QUEUE_ATTEMPTS) {
-        QUEUE_ATTEMPTS
+        Some(QUEUE_ATTEMPTS)
     } else if supplied(QUEUE_CLAIMED_BY) {
         // The strongest of the three to refuse. The other two are the engine's
         // bookkeeping; this one is an ASSERTION ABOUT WHO, and a caller able to
         // write it could sign a hold with another consumer's name and then have
         // that consumer's `RELEASE ALL` drop it.
-        QUEUE_CLAIMED_BY
+        Some(QUEUE_CLAIMED_BY)
     } else {
-        return Ok(());
+        None
     };
-    Err(Error::QueueFieldIsTheEngines { field, span })
+    if let Some(field) = refused {
+        return Err(Error::QueueFieldIsTheEngines { field, span });
+    }
+
+    // Carried forward, which is the other half of the same rule and the half
+    // that was missing. A caller may not introduce or change one of these; it
+    // follows that a caller may not REMOVE one either, and a whole-record
+    // `UPDATE t:1 = { … }` removes every field it does not mention. Refusing
+    // such a write would be the other reading and is the wrong one: the
+    // conditional whole-record write is exactly the compare-and-set a consumer
+    // holding work performs, so refusing it would take away the capability this
+    // clause was added for.
+    //
+    // Two things this protects, and they are not the same thing. The **hold**:
+    // a record rewritten by its holder came back unheld, so the work was
+    // claimable again while that holder still believed it held it — no error at
+    // any point, which is the failure the conditional update was built to
+    // prevent, reached by a door nobody had checked. And the **ceiling**: a
+    // caller that may write the record could clear `attempts`, so a record that
+    // had poisoned three workers could be recycled by the fourth. A count a
+    // caller can reset is not a ceiling.
+    //
+    // `UPDATE … SET` never showed this, because the payload reaching here is
+    // the merge over the stored record and therefore already carries all three.
+    // The two edit forms disagreed silently; now they agree.
+    for name in [QUEUE_CLAIMED_UNTIL, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY] {
+        if !fields.contains_key(name)
+            && let Some(kept) = stored.get(name)
+        {
+            fields.insert(name.to_owned(), kept.clone());
+        }
+    }
+    Ok(())
 }

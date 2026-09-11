@@ -5477,6 +5477,17 @@ one `TIMEOUT` is the signature.
 |---|---|
 | `claimed_until` | the instant the current hold lapses; absent when nothing holds it |
 | `attempts` | how many times this record has been handed out |
+| `claimed_by` | the consumer and instance that hold it; absent when nothing does |
+
+**A write that says nothing about them leaves them alone.** A whole-record
+`UPDATE jobs:1 = { url: 'b' }` removes every field it does not mention, and on a
+queue these three are carried forward instead — because a caller may not
+introduce or change them, and it follows that a caller may not remove them. That
+is what makes the compare-and-set safe for a worker holding the record: writing
+the whole record back is how a consumer that versions its records performs one,
+and it must not cost the hold. It is also what makes `ATTEMPTS` a ceiling rather
+than a suggestion, since a count a caller could clear by rewriting the record
+would let a record that has poisoned three workers be recycled by the fourth.
 
 A `CREATE` or `UPDATE` that sets either is **refused, naming the field**, and so
 is one that sets `claimed_by`. This is the bucket's rule in a second place and

@@ -20,6 +20,28 @@ Work landed after the tag was cut, and recorded here because this file's top
 section must name the version this package carries — so there is nowhere else
 for it to go until the next version is opened.
 
+**A write cannot drop a hold by saying nothing about it.** The store writes
+`claimed_until`, `attempts` and `claimed_by`, and a caller that names one of
+them is refused. A caller that **omits** them was not — and a whole-record
+`UPDATE jobs:1 = { url: 'b' }` omits every field it does not mention, so the
+record came back with no hold, no deadline and no attempt count. Nothing was in
+an error state, and the work was claimable again while its holder still believed
+it held it: the failure the conditional `UPDATE` below was built to prevent,
+reached by a door nobody had checked, because every test of the guard used
+`SET` — which merges over the stored record and so carries the three fields
+along by accident.
+
+The two halves are now one rule. A caller may not introduce or change one of
+those fields, and it follows that a caller may not remove one either, so a write
+that leaves them out carries them forward. Refusing such a write would have been
+the other reading and is the wrong one: the conditional whole-record write is
+exactly the compare-and-set a consumer holding work performs.
+
+The attempt count is the half with teeth of its own. A ceiling a caller can
+clear by rewriting the record is not a ceiling — a record that had poisoned
+three workers could be recycled by the fourth, indefinitely. That is fixed by
+the same rule.
+
 **`DEFINE QUEUE` says whether it is strict and which graph it is in.** A queue
 was described from the start as an ordinary table plus a hold that lapses, but
 its declaring word could say neither of the two things an ordinary table says
@@ -187,7 +209,7 @@ rather than the view's records.
 holder at a time under a hold that lapses — `DEFINE QUEUE jobs TIMEOUT 30s
 ATTEMPTS 5`, then `CLAIM FROM jobs`, `DELETE jobs:7` when the work is done and
 `RELEASE jobs:7` to hand it back early. That makes ten engines over one substrate
-rather than nine. **1343 conformance cases** define the language and run in the
+rather than nine. **1349 conformance cases** define the language and run in the
 build, up from 1237.
 
 The design is the part worth reading, because a queue is normally where a store

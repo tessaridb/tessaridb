@@ -286,3 +286,37 @@ CREATE chores:1 = { url: 'a', sneaky: 3 };
 CREATE chores:2 = { url: 'b' };
 CLAIM chores:2;
 --- expect: rows 1
+
+# A caller may not introduce or change the fields the engine writes, and it
+# follows that a caller may not remove one either — which is what a whole-record
+# write does to every field it does not mention.
+
+--- case: a record is claimed, and the hold is on the record
+DEFINE QUEUE errands3 TIMEOUT 30s ATTEMPTS 3;
+CREATE errands3:1 = { url: 'a' };
+USE CONSUMER 'night';
+CLAIM errands3:1;
+--- expect: rows 1
+
+--- case: a whole-record write says nothing about the hold and does not take it away
+UPDATE errands3:1 = { url: 'b' };
+SELECT id FROM errands3 WHERE claimed_until != NONE;
+--- expect: rows 1
+
+--- case: and the attempt count it did not mention is still there
+SELECT id FROM errands3 WHERE attempts = 1;
+--- expect: rows 1
+
+--- case: while the caller's own field did change, so nothing was quietly refused
+SELECT id FROM errands3 WHERE url = 'b';
+--- expect: rows 1
+
+--- case: a free record remembers how often it was handed out, whatever is written over it
+RELEASE errands3:1 FOR CONSUMER 'night';
+UPDATE errands3:1 = { url: 'c' };
+SELECT id FROM errands3 WHERE attempts = 1;
+--- expect: rows 1
+
+--- case: and naming one of those fields is still refused rather than carried
+UPDATE errands3:1 = { url: 'd', attempts: 0 };
+--- expect: error QueueFieldIsTheEngines

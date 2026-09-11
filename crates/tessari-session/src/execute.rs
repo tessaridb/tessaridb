@@ -910,12 +910,18 @@ impl Session<'_> {
     ) -> Result<()> {
         // Every **caller-driven** record write passes through here — the two
         // creates, the insert, the update, the upsert, the set and both vault
-        // edits — which is why the queue's engine-field refusal sits here rather
+        // edits — which is why the queue's engine-field rule sits here rather
         // than in each of them. One rule in one place, and a write path added
         // later inherits it instead of having to remember it. This placement was
         // not the first one tried: the guard sat one level up, in `put_record`,
         // and `UPDATE` reached the write without passing it.
-        crate::queue::refuse_engine_fields(transaction, &address, &payload, span)?;
+        //
+        // It takes the payload by value and hands it back because the rule has
+        // two halves: refuse a caller that introduces or changes one of the
+        // engine's fields, and carry forward the ones a whole-record write
+        // simply left out.
+        let mut payload = payload;
+        crate::queue::hold_engine_fields(transaction, &address, &mut payload, span)?;
         self.write_record(transaction, address, payload, partial, span)
     }
 
