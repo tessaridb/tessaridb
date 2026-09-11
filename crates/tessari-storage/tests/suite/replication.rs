@@ -50,6 +50,17 @@ fn delete(store: &Store, id: &str) -> Sequence {
     transaction.commit().unwrap()
 }
 
+/// One put, addressed like [`at`].
+fn mutation(id: &str, value: &[u8]) -> Mutation {
+    Mutation {
+        namespace: NamespaceId::new(1),
+        database: DatabaseId::new(1),
+        table: TableId::new(1),
+        id: RecordId::from(id),
+        value: RecordValue::Present(value.to_vec()),
+    }
+}
+
 /// Every key and value in one keyspace, as raw bytes.
 fn dump(backend: &Arc<dyn KvBackend>, keyspace: Keyspace) -> Vec<(Key, Value)> {
     backend
@@ -603,4 +614,103 @@ fn a_follower_catches_a_leader_that_is_still_writing() {
             "keyspace {keyspace} differs after a bootstrap against a live source"
         );
     }
+}
+
+/// G024 **S1.2**: a follower refuses the **first** record offered after its
+/// history parted from the sender's, rather than discovering it later.
+///
+/// W210 closed the overlapping case — a record offered at a position the store
+/// already holds under a different epoch is refused. This is the case it cannot
+/// see. The sender's log diverged from the follower's at sequence 4; it now
+/// offers sequence 6, which is `tail + 1` for the follower, so there is nothing
+/// at that position to compare and the old code **appends it**. The follower
+/// then holds 1-5 from one history and 6 from another with no error anywhere.
+///
+/// The fix is Raft's `AppendEntries` consistency check: the sender states the
+/// epoch of the record **before** the one it is offering, and the receiver
+/// compares that against what it actually holds there. The refusal names
+/// sequence **5** — where the histories part — and not 6, which is merely where
+/// the check ran.
+#[test]
+fn a_record_whose_predecessor_the_follower_never_wrote_is_refused_at_once() {
+    let follower_backend = backend();
+    let follower = store_on(&follower_backend);
+    for n in 1..=5_u64 {
+        let record = LogRecord::at(Epoch::new(1), vec![mutation(&format!("record-{n}"), b"v")]);
+        follower.apply_record(Sequence::new(n), &record).unwrap();
+    }
+    assert_eq!(follower.committed_tail().unwrap(), Sequence::new(5));
+
+    // The sender's sixth record. Its own record at 5 was written under epoch 2,
+    // because its history parted from this follower's at sequence 4.
+    let offered = LogRecord::at(
+        Epoch::new(2),
+        vec![mutation("record-6", b"from-the-other-history")],
+    );
+
+    let error = follower
+        .apply_from_stream(Sequence::new(6), Epoch::new(2), &offered)
+        .unwrap_err();
+    match error {
+        Error::LogDivergence {
+            sequence,
+            held,
+            offered,
+        } => {
+            assert_eq!(
+                sequence,
+                Sequence::new(5),
+                "the refusal named where the check ran, not where the histories parted"
+            );
+            assert_eq!(held, Epoch::new(1));
+            assert_eq!(offered, Epoch::new(2));
+        }
+        other => panic!("expected a divergence, got {other}"),
+    }
+
+    assert_eq!(
+        follower.committed_tail().unwrap(),
+        Sequence::new(5),
+        "the refused record was applied anyway"
+    );
+    assert_eq!(follower.health().unwrap().log_divergences, 1);
+}
+
+#[test]
+fn a_stream_whose_predecessor_matches_is_applied_like_any_other_record() {
+    let store_backend = backend();
+    let store = store_on(&store_backend);
+    for n in 1..=3_u64 {
+        let record = LogRecord::at(Epoch::new(7), vec![mutation(&format!("record-{n}"), b"v")]);
+        store.apply_record(Sequence::new(n), &record).unwrap();
+    }
+
+    let next = LogRecord::at(Epoch::new(7), vec![mutation("record-4", b"v")]);
+    store
+        .apply_from_stream(Sequence::new(4), Epoch::new(7), &next)
+        .unwrap();
+    assert_eq!(store.committed_tail().unwrap(), Sequence::new(4));
+    assert_eq!(store.health().unwrap().log_divergences, 0);
+}
+
+/// The first record of a fresh log has no predecessor, and a store that has
+/// elected nobody holds `Epoch::ZERO` — so the sender claiming zero is correct
+/// and needs no special case at the call site. A sender claiming anything else
+/// is telling this store about a history it does not have.
+#[test]
+fn the_first_record_of_a_log_claims_the_epoch_of_a_store_that_elected_nobody() {
+    let empty_backend = backend();
+    let empty = store_on(&empty_backend);
+    let first = LogRecord::at(Epoch::new(3), vec![mutation("record-1", b"v")]);
+    empty
+        .apply_from_stream(Sequence::new(1), Epoch::ZERO, &first)
+        .unwrap();
+    assert_eq!(empty.committed_tail().unwrap(), Sequence::new(1));
+
+    let other_backend = backend();
+    let other = store_on(&other_backend);
+    let error = other
+        .apply_from_stream(Sequence::new(1), Epoch::new(9), &first)
+        .unwrap_err();
+    assert!(matches!(error, Error::LogDivergence { .. }), "{error}");
 }

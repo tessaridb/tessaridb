@@ -18,7 +18,7 @@
 //!
 //! # What is counted, and what is not
 //!
-//! Seven tables, carrying **61** of the derivation's 70 paths.
+//! Seven tables, carrying **62** of the derivation's 70 paths.
 //!
 //! # The path added by the vault, and how it was classified
 //!
@@ -174,7 +174,23 @@ const TABLES: &[Table] = &[
         // built-in device is not in the list it exposes, so nothing reachable
         // through this can weaken the property it belongs to. That asymmetry is
         // the classification: a handle that can only tighten needs no gate.
-        expected: 16,
+        //
+        // 17 since the cluster: `Store::apply_from_stream` writes a record that
+        // arrived from a peer, after checking the predecessor it claims
+        // (ADR-0059, G024 S1.2). Classified **not enforced here, and gated one
+        // layer up by a gate that does not exist yet** — which is stated plainly
+        // rather than filed as exempt, because the difference matters. It takes
+        // no identity and applies no grant, exactly like `apply_record` beside
+        // it, and that is correct at this layer: a replicated write was already
+        // authorized where it was issued, and re-deciding it on the follower
+        // would let two nodes reach different verdicts about one record. What
+        // must be enforced is **who may open a stream into this store at all**,
+        // and that is G024 **S4.1** — an authenticated node with no subscription
+        // grant must be refused. Until S4.1 ships, the only thing standing here
+        // is that the method is reachable solely by a process that already holds
+        // the store handle, which is a property of the binary and not a
+        // permission. Recorded so that S4.1 is owed rather than assumed.
+        expected: 17,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -233,7 +249,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 62, "the counted tables no longer sum to 62");
+    assert_eq!(total, 63, "the counted tables no longer sum to 63");
 }
 
 /// Every `.rs` file under a directory.

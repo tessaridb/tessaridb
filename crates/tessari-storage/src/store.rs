@@ -448,6 +448,57 @@ impl Store {
             .collect()
     }
 
+    /// Apply a record that arrived from a peer, which claims what stands
+    /// before it.
+    ///
+    /// [`Self::apply_record`] refuses a divergence **only where the two logs
+    /// overlap** — a record offered at a position this store already holds. It
+    /// cannot see the case where they do not. A sender whose history parted
+    /// from this store's at sequence 4 offers sequence 6; that is `tail + 1`
+    /// here, so there is nothing at the position to compare and the record is
+    /// appended. This store then holds 1-5 from one history and 6 from another,
+    /// with no error anywhere and both nodes reporting healthy — which is the
+    /// failure ADR-0059 exists to remove, one position further back than the
+    /// record half reached.
+    ///
+    /// So the sender states the epoch of the record **before** the one it is
+    /// offering, and this compares that against what it actually holds there.
+    /// It is Raft's `AppendEntries` consistency check, which reads the
+    /// follower's own entry at `prevLogIndex` and compares its term — not the
+    /// follower's current term, and not the leader's.
+    ///
+    /// The refusal names **`at - 1`**: the position where the histories part,
+    /// rather than the one where the check happened to run. An operator reading
+    /// it needs the first number to know where to re-bootstrap from.
+    ///
+    /// The predecessor of sequence 1 is [`Epoch::ZERO`], which is what a store
+    /// that has elected nobody holds — so the first record of a fresh log needs
+    /// no special case at the call site.
+    ///
+    /// # Why this is a separate method and not a parameter
+    ///
+    /// A local commit knows its own predecessor by construction and has nothing
+    /// to claim; a record arriving from a peer carries a claim about a history
+    /// this store may not share. Those are different acts. An
+    /// `Option<Epoch>` on [`Self::apply_record`] would make *the local path*
+    /// and *a peer that said nothing* the same shape, and the check would then
+    /// be skippable by forgetting a field.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::LogDivergence`] when the predecessor this store holds
+    /// was written under a different leadership, and whatever
+    /// [`Self::apply_record`] returns otherwise.
+    pub fn apply_from_stream(
+        &self,
+        at: Sequence,
+        previous: Epoch,
+        record: &LogRecord,
+    ) -> Result<()> {
+        self.refuse_a_parted_history(at, previous)?;
+        self.apply_record(at, record)
+    }
+
     /// Apply one log record, at the sequence it carries.
     ///
     /// This is what a replica runs, and it is the same function a commit runs
@@ -527,6 +578,58 @@ impl Store {
     /// Costs one point read and a fixed eight-byte inspection — the epoch sits
     /// in front of the mutations precisely so this does not decode the record —
     /// and it runs only on the branch a duplicate delivery takes.
+    /// Refuse a record whose predecessor this store never wrote.
+    ///
+    /// The sibling of [`Self::refuse_a_divergence`], one position earlier. That
+    /// one compares the record being offered against what stands at its own
+    /// position; this one compares what the sender says stands **before** it
+    /// against what actually does — which is the only way to catch a divergence
+    /// that happened entirely behind this store's tail.
+    ///
+    /// Costs the same as its sibling: one point read and a fixed eight-byte
+    /// inspection, no decode of the mutations.
+    fn refuse_a_parted_history(&self, at: Sequence, previous: Epoch) -> Result<()> {
+        let Some(before) = at.get().checked_sub(1) else {
+            return Ok(());
+        };
+        let before = Sequence::new(before);
+        if before == Sequence::ZERO {
+            // Nothing precedes the first record, and a store that has elected
+            // nobody holds `Epoch::ZERO` — so a sender claiming anything else
+            // is describing a history this store does not have.
+            if previous == Epoch::ZERO {
+                return Ok(());
+            }
+            self.divergences.fetch_add(1, Ordering::Relaxed);
+            return Err(Error::LogDivergence {
+                sequence: before,
+                held: Epoch::ZERO,
+                offered: previous,
+            });
+        }
+        let stored = self
+            .backend
+            .get(LogKey::keyspace(), &LogKey::new(before).encode())?;
+        // Nothing to compare against — this store is behind the sender by more
+        // than one record, and `apply_record` refuses that with `LogGap`, which
+        // is the more accurate answer. The truncation case is Q-529's, the same
+        // hole the position check carries and the same decision: it belongs with
+        // retention, because there is one answer for both.
+        let Some(value) = stored else {
+            return Ok(());
+        };
+        let held = LogRecord::epoch_in(value.as_slice())?;
+        if held == previous {
+            return Ok(());
+        }
+        self.divergences.fetch_add(1, Ordering::Relaxed);
+        Err(Error::LogDivergence {
+            sequence: before,
+            held,
+            offered: previous,
+        })
+    }
+
     fn refuse_a_divergence(&self, at: Sequence, offered: Epoch) -> Result<()> {
         let stored = self
             .backend
