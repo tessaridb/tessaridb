@@ -3,7 +3,9 @@
 use core::num::NonZeroU32;
 
 use super::Parser;
-use tessari_types::{Assertion, FieldKind, Filter, IdentityKind, Number, Path, Replication, Step};
+use tessari_types::{
+    Assertion, FieldKind, Filter, IdentityKind, Number, Path, Replication, Step, parse_uuid,
+};
 
 use crate::ast::{
     Answer, Approximation, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, Direction,
@@ -1210,7 +1212,7 @@ impl Parser<'_> {
         Ok(StatementKind::DefineNode { roles, endpoints })
     }
 
-    /// `DEFINE REPLICA second AT 'host:9001' ROLES serving, writable`
+    /// `DEFINE REPLICA second AT 'host:9001' NODE '<id>' ROLES serving, writable`
     ///
     /// The endpoint is text rather than a name because a host and port is not an
     /// identifier, and it is stored as written: whether it resolves is a
@@ -1227,6 +1229,26 @@ impl Parser<'_> {
     /// takes no writes. That is the safe absence: the operator who forgot the
     /// clause gets a refusal naming it, where the opposite default would send a
     /// write to a node nobody said could take one.
+    ///
+    /// # `NODE`, and what saying it turns the row into
+    ///
+    /// `NODE` binds the row to one node by the id that node gave itself. It is
+    /// optional, and without it the statement means what it has always meant.
+    /// With it, the row stops being a note about somewhere else and becomes the
+    /// **desired role** of a named machine: the node whose own id this is reads
+    /// the row's `ROLES` as what it is supposed to be, and reconciles what it
+    /// actually holds toward it the next time it opens the store.
+    ///
+    /// The value is written as text and is the spelling `INFO FOR NODE` prints
+    /// for `id` — thirty-two hex digits — because an operator binds a node by
+    /// copying that field, and a clause that would not take what the answer
+    /// gives is a clause with a conversion step nobody documented. The canonical
+    /// hyphenated form is taken too, since one reader already accepts both and a
+    /// second reader would disagree with the first eventually.
+    ///
+    /// A malformed id is refused **here**, where the span is, rather than stored
+    /// and puzzled over later: a row naming a node nobody will ever be is
+    /// indistinguishable, afterwards, from a row nobody bound.
     fn define_replica(&mut self) -> Result<StatementKind> {
         let if_not_exists = self.eat_if_not_exists()?;
         let name = self.name()?;
@@ -1234,6 +1256,19 @@ impl Parser<'_> {
             return Err(self.error_here("`AT` and where the peer is reached"));
         }
         let (endpoint, _) = self.text("the endpoint, as text")?;
+        let node = if self.eat_word("node") {
+            let (written, at) = self.text("the node's id, as text")?;
+            // The same refusal a `uuid` literal gets, from the same reader, so
+            // the two spellings of one value cannot come to disagree about which
+            // texts are ids.
+            let bytes = parse_uuid(&written).ok_or(Error::InvalidUuid {
+                text: written.clone(),
+                span: at,
+            })?;
+            Some(bytes)
+        } else {
+            None
+        };
         let roles = if self.eat_word("roles") {
             let mut named = vec![self.name()?];
             while self.eat_punct(Punct::Comma) {
@@ -1247,6 +1282,7 @@ impl Parser<'_> {
             name,
             endpoint,
             roles,
+            node,
             if_not_exists,
         })
     }

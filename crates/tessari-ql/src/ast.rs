@@ -511,6 +511,13 @@ pub enum StatementKind {
         /// `None` when the declaration did not say, which reads as no roles: a
         /// peer nobody has said takes writes does not take them.
         roles: Option<Vec<Name>>,
+        /// Which node the row is about, when the declaration bound one.
+        ///
+        /// Already sixteen bytes rather than the text that was written: the
+        /// spelling is checked where the span is, so a mistyped id is refused
+        /// at the statement that wrote it instead of becoming a row that names
+        /// a node nobody will ever be.
+        node: Option<[u8; 16]>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

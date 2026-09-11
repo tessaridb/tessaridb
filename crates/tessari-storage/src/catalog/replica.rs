@@ -14,6 +14,15 @@
 //! elsewhere teaches that machine the same peers, which is correct. An endpoint
 //! replayed elsewhere tells peers to reach the wrong host, which is not.
 //!
+//! # A row may also be about this node
+//!
+//! Since the desired role arrived (`04_concept.md` §6.1), a row may carry the
+//! id of the node it is about — including this one's. That does not make the
+//! table local: the row still replicates, still describes topology, and still
+//! means the same thing on every node that holds it. What changes is that
+//! exactly one node finds its own id in it, and that node reads the row's roles
+//! as what it is *supposed* to be. See [`Catalog::desired_roles`].
+//!
 //! # What a replica does not carry yet
 //!
 //! Which ranges it holds, and how many copies of the data there should be. Both
@@ -23,7 +32,7 @@
 
 use std::collections::BTreeMap;
 
-use tessari_encoding::{Roles, decode_payload};
+use tessari_encoding::{NODE_ID_LEN, Roles, decode_payload};
 use tessari_types::{Number, RecordId, Value};
 
 use super::definition::{field_id, field_name, number, object};
@@ -34,6 +43,7 @@ const FIELD_ID: &str = "id";
 const FIELD_NAME: &str = "name";
 const FIELD_ENDPOINT: &str = "endpoint";
 const FIELD_ROLES: &str = "roles";
+const FIELD_NODE: &str = "node";
 
 const ENTITY: &str = "replica";
 
@@ -71,13 +81,40 @@ pub struct ReplicaDefinition {
     /// wrong is a refusal an operator can see and fix, where the other
     /// direction commits a write on a follower.
     pub roles: Roles,
+    /// Which node this row is about, when anybody knows.
+    ///
+    /// `None` is the row as it has always been: a peer an operator declared by
+    /// name and endpoint, before anything had spoken to it. Nothing can know
+    /// another node's generated id until first contact, so a row that names one
+    /// is a row somebody bound deliberately.
+    ///
+    /// # What the binding is for
+    ///
+    /// It is what makes [`roles`] a **desired role** rather than a note about
+    /// somebody else. A node compares this against its own id, and the row that
+    /// matches is the one the operator wrote about *it* — see
+    /// [`Catalog::desired_roles`].
+    ///
+    /// # Why the id and not the name
+    ///
+    /// The name is an operator's word and every node can read it, so a role
+    /// written against a name would arrive at whichever node happened to answer
+    /// to it. The id is sixteen bytes a node gave itself and never shares with
+    /// the log, so three things hold without a rule for any of them: the row
+    /// replicates to every follower and matches exactly one of them; a node that
+    /// restored a backup has a *fresh* id and therefore inherits no role, which
+    /// is ADR-0018 §1's property surviving this change untouched; and the value
+    /// an operator has to type is the one `INFO FOR NODE` already prints.
+    ///
+    /// [`roles`]: Self::roles
+    pub node: Option<[u8; NODE_ID_LEN]>,
 }
 
 impl ReplicaDefinition {
     /// The value written to the catalog.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        Value::Object(BTreeMap::from([
+        let mut fields = BTreeMap::from([
             (FIELD_ID.to_owned(), number(self.id)),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
             (
@@ -85,7 +122,14 @@ impl ReplicaDefinition {
                 Value::from(self.endpoint.as_str()),
             ),
             (FIELD_ROLES.to_owned(), number(u32::from(self.roles.bits()))),
-        ]))
+        ]);
+        // Written only when there is one, so an unbound row is byte-identical to
+        // the row this build's predecessor wrote. A stored `null` would be a
+        // second spelling of absent, and the reader would then have two.
+        if let Some(node) = self.node {
+            fields.insert(FIELD_NODE.to_owned(), Value::Uuid(node));
+        }
+        Value::Object(fields)
     }
 
     /// Read a definition back.
@@ -108,6 +152,7 @@ impl ReplicaDefinition {
             name: field_name(fields, ENTITY)?,
             endpoint: endpoint.clone(),
             roles: roles_in(fields)?,
+            node: node_in(fields)?,
         })
     }
 }
@@ -141,6 +186,25 @@ fn roles_in(fields: &BTreeMap<String, Value>) -> Result<Roles> {
         })
 }
 
+/// The node a stored definition names.
+///
+/// Absent reads as `None`, the rule every property added after the fact follows
+/// here. A value of the wrong type is **refused** rather than ignored, on
+/// `roles_in`'s reasoning and with more at stake: something well-formed that is
+/// not a node id would otherwise be read as *this row names nobody*, and a row
+/// that silently stops naming a node is a node that silently stops converging.
+fn node_in(fields: &BTreeMap<String, Value>) -> Result<Option<[u8; NODE_ID_LEN]>> {
+    match fields.get(FIELD_NODE) {
+        None => Ok(None),
+        Some(Value::Uuid(bytes)) => Ok(Some(*bytes)),
+        Some(found) => Err(Error::CatalogMalformed {
+            entity: ENTITY,
+            field: FIELD_NODE,
+            found: found.type_name(),
+        }),
+    }
+}
+
 impl Catalog<'_, '_> {
     /// Declare a peer.
     ///
@@ -152,6 +216,7 @@ impl Catalog<'_, '_> {
         name: &str,
         endpoint: &str,
         roles: Roles,
+        node: Option<[u8; NODE_ID_LEN]>,
     ) -> Result<ReplicaDefinition> {
         let qualified = qualify(Level::Replica, &[], name);
         self.reserve_name(&qualified)?;
@@ -161,6 +226,7 @@ impl Catalog<'_, '_> {
             name: name.to_owned(),
             endpoint: endpoint.to_owned(),
             roles,
+            node,
         };
         self.write(system::REPLICAS, id, &definition.to_value());
         self.claim_name(&qualified, id);
@@ -214,5 +280,43 @@ impl Catalog<'_, '_> {
         }
         found.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(found)
+    }
+
+    /// What the cluster says a node should be, if anything says so.
+    ///
+    /// The **desired** role of `04_concept.md` §6.1: a replicated catalog record
+    /// an operator writes, against which a node reconciles what it actually
+    /// holds. `None` when no membership row names this node — which is every
+    /// store until somebody binds one, and is why this changes nothing for a
+    /// node standing on its own.
+    ///
+    /// # One place, so the two readers cannot disagree
+    ///
+    /// Two callers ask this question — the node reconciling itself at open, and
+    /// `INFO FOR NODE` reporting what it will reconcile to — and they must never
+    /// answer it differently, because the whole value of reporting a desired
+    /// role is that it predicts the one that will be adopted. So the rule for
+    /// *which row is mine* lives here and is called twice, rather than being
+    /// written twice and kept in step by hand.
+    ///
+    /// # The first match, and why there can only be one
+    ///
+    /// Nothing stops an operator binding two rows to one node, and nothing here
+    /// tries to arbitrate: `replicas` hands them back in **name order**, so the
+    /// answer is stable rather than dependent on declaration order, which is the
+    /// property that matters when two nodes compare what they think the cluster
+    /// says. A second binding is an operator error and is visible in
+    /// `INFO FOR NODE`'s peer list, where both rows are shown carrying the same
+    /// id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a stored definition cannot be read.
+    pub fn desired_roles(&self, node: &[u8; NODE_ID_LEN]) -> Result<Option<Roles>> {
+        Ok(self
+            .replicas()?
+            .into_iter()
+            .find(|found| found.node.as_ref() == Some(node))
+            .map(|found| found.roles))
     }
 }

@@ -6345,6 +6345,50 @@ could take one. `INFO FOR NODE` reports each peer's roles for the same reason: a
 setting that decides routing but cannot be read back is one nobody can check
 before the bad day.
 
+### The role the cluster wants, beside the role the node has
+
+`DEFINE NODE ROLES` sets what this node *is* — immediately, locally, in the
+metadata a backup does not carry. That is the **effective** role. A cluster needs
+the other one as well: what the node is *supposed* to be, written once by
+whoever administers the cluster and readable on every node. That is the
+**desired** role, and it is a membership row bound to a node:
+
+```
+DEFINE REPLICA db_1 AT 'db-1.internal:9000'
+    NODE '9f2c4e1a70bb43d5a1c6e2f480937d55'
+    ROLES serving, writable;
+```
+
+`NODE` is optional. Without it the statement means what it always meant — a peer
+declared by name and address, which is all anyone can say about a machine they
+have not spoken to. With it, the row is about one specific node, named by the id
+that node gave itself and prints as `id` in `INFO FOR NODE`. Copy it from there;
+the clause reads back exactly what the report writes, and the hyphenated form
+too.
+
+Binding by the **id** rather than by the name is what makes a replicated role
+mean one machine. The row reaches every node, and every node compares it against
+its own id: exactly one matches. It also means a node that came up from a restore
+inherits no role at all — a restore reproduces the catalog but not the identity,
+so the restored node has a fresh id and matches nothing, which is the same
+property that stops it claiming the original's name.
+
+**The node reconciles when it opens the store.** Declaring a desired role does
+not move the running one; the next open does. So the two are allowed to disagree,
+and `INFO FOR NODE` reports both — `roles` for what this node holds, and
+`cluster.desired` for what the cluster says it should hold, `null` when no row
+names it. The gap between them is the useful part: it says an instruction has
+been given and not yet taken up. It follows that on a bound node
+`DEFINE NODE ROLES` is an override the next open discards, which is the point —
+a role is shared truth, and a local word that outlived the shared one is a
+disagreement nobody can see.
+
+A bound row with **no** `ROLES` clause desires no roles, and the node therefore
+drains at its next open. That is the same reading an absent `ROLES` already has
+for a peer — no roles means takes no writes — and no roles at all is how a node
+is drained without being stopped. One value, one meaning, and a sharp edge worth
+knowing about rather than a second spelling for absent.
+
 A node configured by a file beside a store configured by statements is **two
 sources of truth for one node** — they agree until the first restore and then do
 not. All three need an owner.
@@ -6360,6 +6404,7 @@ machine become confused about which one it is?*
 | `ROLES` | this node's local metadata | a replica that inherited `writable` would accept writes it must forward |
 | `ENDPOINTS` | this node's local metadata | peers would be told to reach this machine at the original's address |
 | a peer | the catalog, replicated | every node learns the peer exists, which is the point of declaring one |
+| a peer's `NODE` | the catalog, replicated | every node learns which machine the row is about, and exactly one of them finds its own id |
 
 So `INFO FOR NODE` reads both and answers them as **two named groups** rather
 than one flat object:
@@ -6367,7 +6412,9 @@ than one flat object:
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
  "version": "0.1.1", "build": "0.1.1-beta", "endpoints": ["db-1.internal:9000"],
- "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000"}]}}
+ "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
+                        "roles": ["serving"], "node": null}],
+             "desired": ["serving", "writable"]}}
 ```
 
 `version` and `build` are both here because they answer different questions.

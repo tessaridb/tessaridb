@@ -803,11 +803,17 @@ impl Session<'_> {
     /// second node to test against, is the mistake ADR-0018 §3 already made once.
     fn info_node(&self, transaction: &mut Transaction<'_>) -> Result<BTreeMap<String, Value>> {
         let identity = self.store.node_identity()?;
-        let peers = Catalog::new(transaction)
-            .replicas()?
-            .iter()
-            .map(described_replica)
-            .collect();
+        let catalog = Catalog::new(transaction);
+        let peers = catalog.replicas()?.iter().map(described_replica).collect();
+        // Asked of the catalog rather than computed from `peers` above, so that
+        // what is reported and what a reopen would adopt are one answer to one
+        // question. `null` when nothing names this node — which is a different
+        // statement from an empty role set, and the difference is the whole
+        // point: no row is *unbound*, an empty set is *drained*.
+        let desired = match catalog.desired_roles(&identity.id)? {
+            Some(roles) => Value::Array(roles.names().into_iter().map(Value::from).collect()),
+            None => Value::Null,
+        };
         Ok(BTreeMap::from([
             (
                 "id".to_owned(),
@@ -848,7 +854,14 @@ impl Session<'_> {
             ),
             (
                 "cluster".to_owned(),
-                Value::Object(BTreeMap::from([("peers".to_owned(), Value::Array(peers))])),
+                Value::Object(BTreeMap::from([
+                    ("peers".to_owned(), Value::Array(peers)),
+                    // On the replicated side of ADR-0018's line, because that is
+                    // where it comes from: `roles` above is what this machine
+                    // holds and a backup would not carry, `desired` is what the
+                    // cluster says and every node does carry.
+                    ("desired".to_owned(), desired),
+                ])),
             ),
         ]))
     }
@@ -1101,6 +1114,16 @@ fn described_replica(replica: &ReplicaDefinition) -> Value {
         (
             "roles".to_owned(),
             Value::Array(replica.roles.names().into_iter().map(Value::from).collect()),
+        ),
+        // Reported for the same reason `roles` is, one step further: a binding
+        // an operator can write and cannot read back is one they cannot check,
+        // and the mistake it hides is the quiet one — a row bound to the wrong
+        // id names a node that does not exist, so nothing converges and nothing
+        // complains. Rendered as the id's own spelling, which is what `id` above
+        // prints and what the `NODE` clause reads back.
+        (
+            "node".to_owned(),
+            replica.node.map_or(Value::Null, Value::Uuid),
         ),
     ]))
 }

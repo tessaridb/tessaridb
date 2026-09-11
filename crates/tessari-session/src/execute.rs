@@ -1,7 +1,7 @@
 //! Running one statement against the store.
 
 use std::collections::BTreeMap;
-use tessari_encoding::{Roles, decode_payload, encode_payload};
+use tessari_encoding::{NODE_ID_LEN, Roles, decode_payload, encode_payload};
 use tessari_ql::{
     Answer, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, EdgeClause, Edit,
     FieldMapping, FieldPath, Name, RecordTarget, Span, StatementKind, TableChange, TableRef,
@@ -168,12 +168,14 @@ impl Session<'_> {
                 name,
                 endpoint,
                 roles,
+                node,
                 if_not_exists,
             } => self.define_replica(
                 transaction,
                 name,
                 endpoint,
                 roles.as_deref(),
+                *node,
                 *if_not_exists,
             ),
             StatementKind::DefineConsumer {
@@ -2837,6 +2839,7 @@ impl Session<'_> {
         name: &Name,
         endpoint: &str,
         roles: Option<&[Name]>,
+        node: Option<[u8; NODE_ID_LEN]>,
         if_not_exists: bool,
     ) -> Result<Outcome> {
         let declared = Catalog::new(transaction)
@@ -2850,7 +2853,7 @@ impl Session<'_> {
         // leaves nothing behind: the statement either declares the peer it was
         // asked for or declares nothing.
         let roles = roles.map(named_roles).transpose()?.unwrap_or(Roles::NONE);
-        Catalog::new(transaction).create_replica(&name.text, endpoint, roles)?;
+        Catalog::new(transaction).create_replica(&name.text, endpoint, roles, node)?;
         Ok(Outcome::Done)
     }
 

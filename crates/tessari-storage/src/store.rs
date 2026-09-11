@@ -140,7 +140,7 @@ impl Store {
             None => write_initial_metadata(&backend)?,
         }
         crate::node::ensure(&backend)?;
-        Ok(Self {
+        let store = Self {
             backend,
             snapshots: Arc::new(Registry::default()),
             running: Arc::new(crate::running::Running::default()),
@@ -150,7 +150,77 @@ impl Store {
             audit: Arc::new(crate::audit::AuditTrail::default()),
             series: Arc::new(crate::series::SeriesRegistry::default()),
             divergences: Arc::new(AtomicU64::new(0)),
-        })
+        };
+        // Last, because it reads the catalog: the format is settled and the
+        // identity exists by the time this asks which node it is.
+        store.reconcile_roles()?;
+        Ok(store)
+    }
+
+    /// Adopt the role the cluster wants this node to have.
+    ///
+    /// The **effective** role of `04_concept.md` §6.1 moving toward the
+    /// **desired** one. A membership row bound to this node's id says what it is
+    /// supposed to be; `META` says what it currently is; this closes the gap.
+    ///
+    /// Answers the roles it adopted, or `None` when it adopted nothing — which
+    /// is both of the ordinary cases: no row names this node, or one does and
+    /// the two already agree.
+    ///
+    /// # Why here, and why only here
+    ///
+    /// *The panel assigns, the node reconciles* (§C-19). Opening the store is
+    /// the node's own reconcile point: it is the moment the process has a
+    /// catalog to read and has not yet answered anybody, so the role it serves
+    /// under is the role it settled on rather than one that changed underneath a
+    /// request. A node converging **while running** is a watch over a replicated
+    /// record, and that is the wire this goal has not built yet — so the window
+    /// in which desired and effective differ is, for now, exactly the span
+    /// between a declaration and the next open. That window is the thing S5.2
+    /// asks to be observable, and it is.
+    ///
+    /// It follows that `DEFINE NODE ROLES` on a **bound** node is an override
+    /// the next open discards. That is C-19's decision showing through rather
+    /// than an accident: a node's role is shared truth, and a local word that
+    /// outlived the shared one would be the split-brain this whole section
+    /// exists to prevent, in miniature.
+    ///
+    /// # A bound row with no roles drains the node
+    ///
+    /// An absent `ROLES` clause already means [`Roles::NONE`], which already
+    /// means *takes no writes* — and `Roles::NONE` is documented as how an
+    /// operator drains a node without stopping it. Applied to this node the same
+    /// value keeps the same meaning, so binding a row and saying nothing about
+    /// roles drains it at the next open. That is a sharp edge and it is the
+    /// price of one value meaning one thing; the alternative is a second
+    /// spelling for absent, and two spellings for absent disagree.
+    ///
+    /// # A membership row this build cannot read now refuses the open
+    ///
+    /// New, and deliberate. Before this, an unreadable row broke `INFO FOR NODE`
+    /// and a forward; now it stops the store opening at all, because the
+    /// question it makes unanswerable is *what is this node allowed to be*. The
+    /// two ways to be wrong are not symmetric: refusing is an outage an operator
+    /// sees immediately, and carrying on means running under a role the cluster
+    /// may not have given — which is a node accepting writes it was supposed to
+    /// forward, silently, which is the failure `roles` exists to prevent.
+    ///
+    /// # Errors
+    ///
+    /// Returns the substrate's failure, and a decoding failure when a stored
+    /// membership row or the node identity cannot be read.
+    fn reconcile_roles(&self) -> Result<Option<Roles>> {
+        let identity = self.node_identity()?;
+        let mut transaction = self.begin()?;
+        let desired = crate::catalog::Catalog::new(&mut transaction).desired_roles(&identity.id)?;
+        let Some(desired) = desired else {
+            return Ok(None);
+        };
+        if desired == identity.roles {
+            return Ok(None);
+        }
+        self.configure_node(Some(desired), None)?;
+        Ok(Some(desired))
     }
 
     /// Who this node is.

@@ -115,6 +115,45 @@ fn peers(report: &std::collections::BTreeMap<String, Value>) -> Vec<(String, Str
         .collect()
 }
 
+/// The id this node prints for itself.
+fn own_id(report: &std::collections::BTreeMap<String, Value>) -> String {
+    match report.get("id") {
+        Some(Value::String(text)) => text.clone(),
+        other => panic!("id is {other:?}"),
+    }
+}
+
+/// One role, as the text it is. `Display` would quote it.
+fn named(role: &Value) -> String {
+    match role {
+        Value::String(text) => text.clone(),
+        other => panic!("not a role name: {other:?}"),
+    }
+}
+
+/// The roles this node currently holds — the local half, from `META`.
+fn effective(report: &std::collections::BTreeMap<String, Value>) -> Vec<String> {
+    match report.get("roles") {
+        Some(Value::Array(found)) => found.iter().map(named).collect(),
+        other => panic!("roles is {other:?}"),
+    }
+}
+
+/// The roles the cluster says this node should hold — the replicated half.
+///
+/// `None` when no membership row names it, which is a different answer from an
+/// empty list and is asserted as such below.
+fn desired(report: &std::collections::BTreeMap<String, Value>) -> Option<Vec<String>> {
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    match cluster.get("desired") {
+        Some(Value::Null) => None,
+        Some(Value::Array(found)) => Some(found.iter().map(named).collect()),
+        other => panic!("desired is {other:?}"),
+    }
+}
+
 #[test]
 fn a_fresh_node_reports_both_halves_and_an_empty_topology() {
     // The shape before anything is configured, because that is what every later
@@ -380,4 +419,239 @@ fn a_table_called_node_is_still_an_ordinary_table() {
     // And the statement family still works beside it, which is what makes the
     // two genuinely unambiguous rather than merely both accepted.
     assert!(session.run("INFO FOR NODE;").is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// The role the panel writes, beside the role the node holds (G024 S5.2).
+//
+// `roles` is the **effective** role: what this process is running as, held in
+// `META`, which a backup does not carry. `cluster.desired` is the **desired**
+// role: the roles on the membership row bound to this node's id, which is an
+// ordinary catalog record and which every node therefore holds. They are two
+// values on purpose, they are allowed to differ, and the window in which they
+// do is what these tests read.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_node_no_membership_row_names_has_no_desired_role_at_all() {
+    // The baseline, and the reason this whole feature changes nothing for a
+    // store standing on its own. `null` rather than an empty list: nothing has
+    // an opinion about this node, which is a different statement from something
+    // having the opinion that it should do nothing.
+    let store = closed(&backend());
+    let report = reported(&store);
+    assert_eq!(desired(&report), None, "{report:?}");
+
+    // A peer that names no node leaves it that way — the row every existing
+    // declaration writes.
+    owner(&store)
+        .run("DEFINE REPLICA second AT 'there:9001' ROLES serving, writable;")
+        .unwrap();
+    let after = reported(&store);
+    assert_eq!(desired(&after), None, "{after:?}");
+}
+
+#[test]
+fn the_id_the_report_prints_is_the_id_the_clause_reads_back() {
+    // The property that makes binding a node something an operator can actually
+    // do: copy `id` out of the answer, paste it into the statement. A clause
+    // that would not take what the report gives has a conversion step in it, and
+    // an undocumented conversion step is where the first wrong binding comes
+    // from.
+    let store = closed(&backend());
+    let id = own_id(&reported(&store));
+    owner(&store)
+        .run(&format!(
+            "DEFINE REPLICA here AT 'here:9000' NODE '{id}' ROLES serving;"
+        ))
+        .unwrap();
+
+    let report = reported(&store);
+    assert_eq!(
+        desired(&report),
+        Some(vec!["serving".to_owned()]),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn declaring_a_desired_role_does_not_move_the_effective_one() {
+    // **The window S5.2 asks about.** The declaration commits, the catalog says
+    // what this node is supposed to be, and what it is actually running as has
+    // not moved — both readable, at the same instant, disagreeing.
+    let store = closed(&backend());
+    let id = own_id(&reported(&store));
+    let before = effective(&reported(&store));
+    assert_eq!(before, vec!["serving".to_owned(), "writable".to_owned()]);
+
+    owner(&store)
+        .run(&format!(
+            "DEFINE REPLICA here AT 'here:9000' NODE '{id}' ROLES serving, coordinating;"
+        ))
+        .unwrap();
+
+    let report = reported(&store);
+    assert_eq!(
+        effective(&report),
+        before,
+        "the effective role moved without the node reconciling: {report:?}"
+    );
+    assert_eq!(
+        desired(&report),
+        Some(vec!["serving".to_owned(), "coordinating".to_owned()]),
+        "{report:?}"
+    );
+    assert_ne!(
+        desired(&report).unwrap(),
+        effective(&report),
+        "the two halves cannot be observed differing: {report:?}"
+    );
+}
+
+#[test]
+fn reopening_the_store_converges_the_effective_role_on_the_desired_one() {
+    // The other half of the same window: the node reconciles at open, which is
+    // the moment it has a catalog to read and has answered nobody yet. Re-opened
+    // rather than re-read, for `what_the_statement_sets_survives_a_restart`'s
+    // reason — a live handle can answer from something it read earlier.
+    let held = backend();
+    let store = closed(&held);
+    let id = own_id(&reported(&store));
+    owner(&store)
+        .run(&format!(
+            "DEFINE REPLICA here AT 'here:9000' NODE '{id}' ROLES serving, coordinating;"
+        ))
+        .unwrap();
+    drop(store);
+
+    let reopened = Store::open(Arc::clone(&held)).unwrap();
+    let report = reported(&reopened);
+    assert_eq!(
+        effective(&report),
+        vec!["serving".to_owned(), "coordinating".to_owned()],
+        "{report:?}"
+    );
+    assert_eq!(
+        desired(&report).as_deref(),
+        Some(effective(&report).as_slice()),
+        "converged and then disagreed with itself: {report:?}"
+    );
+    // The id is what it was. Adopting a role is not becoming a different node.
+    assert_eq!(own_id(&report), id, "{report:?}");
+}
+
+#[test]
+fn a_row_bound_to_another_node_moves_nothing_here() {
+    // The property that lets a desired role replicate to every follower and
+    // still mean one machine. Without the id in the comparison this row would be
+    // *a* desired role and every node holding it would adopt it — which is the
+    // broadcast role that binding by id exists to make impossible.
+    let held = backend();
+    let store = closed(&held);
+    let before = effective(&reported(&store));
+    owner(&store)
+        .run(&format!(
+            "DEFINE REPLICA elsewhere AT 'there:9001' NODE '{}' ROLES coordinating;",
+            "ab".repeat(16)
+        ))
+        .unwrap();
+    drop(store);
+
+    let reopened = Store::open(Arc::clone(&held)).unwrap();
+    let report = reported(&reopened);
+    assert_eq!(
+        desired(&report),
+        None,
+        "somebody else's row was read as ours: {report:?}"
+    );
+    assert_eq!(effective(&report), before, "{report:?}");
+}
+
+#[test]
+fn a_bound_row_that_names_no_roles_drains_the_node() {
+    // The sharp edge, pinned so that it is a decision rather than a discovery.
+    // An absent `ROLES` already means `Roles::NONE`, and `Roles::NONE` is
+    // already documented as how an operator drains a node without stopping it.
+    // Binding a row and saying nothing therefore drains this node at its next
+    // open — one value keeping one meaning, at the price of an edge. The
+    // alternative is a second spelling for absent, and two spellings for absent
+    // come to disagree.
+    let held = backend();
+    let store = closed(&held);
+    let id = own_id(&reported(&store));
+    owner(&store)
+        .run(&format!("DEFINE REPLICA here AT 'here:9000' NODE '{id}';"))
+        .unwrap();
+    drop(store);
+
+    let reopened = Store::open(Arc::clone(&held)).unwrap();
+    let report = reported(&reopened);
+    assert!(
+        effective(&report).is_empty(),
+        "a bound row with no roles left the node serving: {report:?}"
+    );
+    assert_eq!(desired(&report), Some(Vec::new()), "{report:?}");
+}
+
+#[test]
+fn the_binding_is_reported_beside_the_peer_it_binds() {
+    // A binding an operator can write and cannot read back is one they cannot
+    // check, and the mistake it hides is silent: a row bound to an id nobody
+    // has converges nothing and complains about nothing.
+    let store = closed(&backend());
+    let id = own_id(&reported(&store));
+    owner(&store)
+        .run(&format!(
+            "DEFINE REPLICA here AT 'here:9000' NODE '{id}';             DEFINE REPLICA second AT 'there:9001';"
+        ))
+        .unwrap();
+
+    let report = reported(&store);
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    let Some(Value::Array(found)) = cluster.get("peers") else {
+        panic!("no peer list: {cluster:?}");
+    };
+    let bound: Vec<(String, Value)> = found
+        .iter()
+        .map(|peer| {
+            let Value::Object(fields) = peer else {
+                panic!("not a peer: {peer:?}");
+            };
+            let Some(Value::String(name)) = fields.get("name") else {
+                panic!("no name: {fields:?}");
+            };
+            (
+                name.clone(),
+                fields.get("node").cloned().unwrap_or(Value::Null),
+            )
+        })
+        .collect();
+    assert_eq!(bound[0].0, "here");
+    assert_eq!(bound[0].1.to_string(), format!("uuid:{id}"), "{bound:?}");
+    assert_eq!(bound[1].0, "second");
+    assert_eq!(
+        bound[1].1,
+        Value::Null,
+        "an unbound row named a node: {bound:?}"
+    );
+}
+
+#[test]
+fn a_node_id_that_is_not_one_is_refused_where_it_was_written() {
+    // Refused at the statement rather than stored: afterwards, a row naming a
+    // node nobody will ever be is indistinguishable from a row nobody bound.
+    let store = closed(&backend());
+    let failure = owner(&store)
+        .run("DEFINE REPLICA here AT 'here:9000' NODE 'not-an-id' ROLES serving;")
+        .unwrap_err();
+    assert!(
+        format!("{failure:?}").contains("Uuid"),
+        "refused for the wrong reason: {failure:?}"
+    );
+    assert!(
+        peers(&reported(&store)).is_empty(),
+        "a refused declaration left a row behind"
+    );
 }
