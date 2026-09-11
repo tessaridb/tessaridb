@@ -12,13 +12,13 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
-## 0.1.0-beta — 2026-09-10
+## 0.1.1-beta — 2026-09-11
 
-### Since the release
-
-Work landed after the tag was cut, and recorded here because this file's top
-section must name the version this package carries — so there is nowhere else
-for it to go until the next version is opened.
+A patch release, and the reason to cut one rather than wait is the first
+entry below: a write could drop a hold by saying nothing about it, and that
+defect is live in `0.1.0-beta`. Everything here is additive — every statement
+that parsed under `0.1.0-beta` parses here and means the same thing — which is
+why the middle number does not move.
 
 **A write cannot drop a hold by saying nothing about it.** The store writes
 `claimed_until`, `attempts` and `claimed_by`, and a caller that names one of
@@ -111,6 +111,12 @@ that carries all three whatever the statement said. It now refuses a caller who
 **introduces or changes** one of them; carrying one forward untouched is not
 writing it. The three refusals it existed for are unchanged, and the hold, its
 deadline and its attempt count survive the update.
+
+**Released.** Tagged `v0.1.1-beta` on `main`, and published as
+[`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb) —
+`0.1.1-beta` and `latest`, `linux/amd64` and `linux/arm64`.
+
+## 0.1.0-beta — 2026-09-10
 
 **Released.** Tagged `v0.1.0-beta` on `main`, and published as
 [`tessaridb/tessaridb`](https://hub.docker.com/r/tessaridb/tessaridb) —

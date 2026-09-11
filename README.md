@@ -10,7 +10,7 @@ A real-time multi-model database, written in Rust, built for AI agents and the
 products around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.1.0--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.1.1--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
 [![conformance](https://img.shields.io/badge/conformance-1349%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
@@ -22,7 +22,7 @@ products around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.1.0-beta`.** It is released, tested and published as
+> **TessariDB is a beta — `0.1.1-beta`.** It is released, tested and published as
 > a container image, and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of shape: before 1.0 the query
@@ -140,7 +140,7 @@ possible rather than aspirational.
 
 ## Status
 
-**Stage: active development · `0.1.0-beta` · not published to crates.io.** What
+**Stage: active development · `0.1.1-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
