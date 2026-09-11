@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tessari_encoding::{
-    AppliedPositionKey, FormatVersion, FormatVersionKey, LogKey, LogRecord, NodeIdentity, Roles,
-    StoreKey, StoreValue,
+    AppliedPositionKey, FormatVersion, FormatVersionKey, LogKey, LogRecord, NODE_ID_LEN,
+    NodeIdentity, Roles, StoreKey, StoreValue,
 };
 use tessari_kv::{KeyRange, KvBackend, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{Epoch, Sequence};
@@ -19,6 +19,7 @@ use tessari_types::{Epoch, Sequence};
 use crate::catalog::Reach;
 use crate::error::{Error, Result};
 use crate::feed::Changes;
+use crate::followers::{FollowerLag, Followers};
 use crate::snapshots::Registry;
 use crate::transaction::Transaction;
 
@@ -118,6 +119,13 @@ pub struct Store {
     /// two handles to one store are not two stores, and a count split between
     /// them is a count nobody can read.
     divergences: Arc<AtomicU64>,
+    /// What this process has given each follower, and when.
+    ///
+    /// Shared with every handle for the reason the registries above it are, and
+    /// held in memory for the reason `crate::followers` gives in its own
+    /// header: a follower's progress is a fact about a live relationship, and a
+    /// persisted copy of it would outlive the relationship it describes.
+    followers: Arc<Followers>,
 }
 
 impl Store {
@@ -150,6 +158,7 @@ impl Store {
             audit: Arc::new(crate::audit::AuditTrail::default()),
             series: Arc::new(crate::series::SeriesRegistry::default()),
             divergences: Arc::new(AtomicU64::new(0)),
+            followers: Arc::new(Followers::default()),
         };
         // Last, because it reads the catalog: the format is settled and the
         // identity exists by the time this asks which node it is.
@@ -423,6 +432,48 @@ impl Store {
             committed: self.committed_tail()?,
             log_divergences: self.divergences.load(Ordering::Relaxed),
         })
+    }
+
+    /// Record what a follower has been given.
+    ///
+    /// # Why the store holds this and not the door
+    ///
+    /// The door — `Session::replicate_from` — is where a follower names itself
+    /// and where the read happens, so it is where the call is made. But the
+    /// registry belongs to the store, because every handle to one store is one
+    /// leader: a follower recorded against a second handle is a follower the
+    /// first one would report as never having collected.
+    pub fn follower_served(&self, node: [u8; NODE_ID_LEN], reached: Sequence) {
+        self.followers.served(node, reached);
+    }
+
+    /// How far behind every follower this process has served is.
+    ///
+    /// Measured against this leader's own committed tail, from what it handed
+    /// out — no connection to the follower is opened, and none is needed,
+    /// because the leader served every byte the follower holds.
+    ///
+    /// A follower that has never collected is **absent** from this list rather
+    /// than present at zero. `INFO FOR NODE` draws the same distinction one
+    /// level up between a node no membership row names and one whose row names
+    /// no roles.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's failure when the committed tail cannot be read.
+    pub fn follower_lag(&self) -> Result<Vec<FollowerLag>> {
+        let tail = self.committed_tail()?;
+        Ok(self
+            .followers
+            .seen()
+            .into_iter()
+            .map(|(node, held)| FollowerLag {
+                node,
+                sequence: held.sequence,
+                behind: tail.get().saturating_sub(held.sequence.get()),
+                quiet_for: held.at.elapsed(),
+            })
+            .collect())
     }
 
     /// The highest sequence that has been committed.

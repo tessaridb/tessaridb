@@ -50,9 +50,9 @@ use tessari_ql::{
     Source, Span, StatementKind, TableRef,
 };
 use tessari_storage::{
-    BUILD_VERSION, Catalog, ConsumerDefinition, FieldDefinition, GEO_FIELD, GrantDefinition,
-    IndexDefinition, MEASURED_RELATION, Progress, Reach, ReplicaDefinition, TableDefinition,
-    TableKind, Transaction, UserDefinition,
+    BUILD_VERSION, Catalog, ConsumerDefinition, FieldDefinition, FollowerLag, GEO_FIELD,
+    GrantDefinition, IndexDefinition, MEASURED_RELATION, Progress, Reach, ReplicaDefinition,
+    TableDefinition, TableKind, Transaction, UserDefinition,
 };
 use tessari_types::{DatabaseId, NamespaceId, Number, TableId, Value};
 
@@ -814,6 +814,16 @@ impl Session<'_> {
             Some(roles) => Value::Array(roles.names().into_iter().map(Value::from).collect()),
             None => Value::Null,
         };
+        // Asked of the store rather than the catalog: `REPLICAS` is what the
+        // cluster was told, and this is what actually collected. A peer
+        // declared and never seen appears in `peers` and not here, which is
+        // the most useful thing either list says.
+        let followers = self
+            .store
+            .follower_lag()?
+            .into_iter()
+            .map(described_follower)
+            .collect();
         Ok(BTreeMap::from([
             (
                 "id".to_owned(),
@@ -861,6 +871,11 @@ impl Session<'_> {
                     // holds and a backup would not carry, `desired` is what the
                     // cluster says and every node does carry.
                     ("desired".to_owned(), desired),
+                    // Beside the peers rather than inside them: a row here is
+                    // about a follower that has collected, and `peers` is about
+                    // what was declared. Joining them would put a lag figure on
+                    // a peer that has never asked for anything.
+                    ("followers".to_owned(), Value::Array(followers)),
                 ])),
             ),
         ]))
@@ -1124,6 +1139,44 @@ fn described_replica(replica: &ReplicaDefinition) -> Value {
         (
             "node".to_owned(),
             replica.node.map_or(Value::Null, Value::Uuid),
+        ),
+    ]))
+}
+
+/// One follower, as the leader has experienced it.
+///
+/// Both units, because each has a blind spot the other covers. A follower that
+/// stopped collecting while this leader was idle is behind by nothing at all —
+/// `behind` reads zero and it looks well, because in sequences it *is* well;
+/// only `quiet_for` grows. A follower collecting steadily but unable to keep up
+/// has almost no `quiet_for`; only `behind` grows. That is why PostgreSQL
+/// publishes positions and lags from the primary rather than either alone.
+///
+/// `quiet_for` is time since this follower last collected — not the delay
+/// between a commit here and its application there, which needs either a time
+/// in the log or a report from the follower and this build has neither.
+fn described_follower(lag: FollowerLag) -> Value {
+    Value::Object(BTreeMap::from([
+        ("node".to_owned(), Value::Uuid(lag.node)),
+        (
+            "sequence".to_owned(),
+            Value::Number(tessari_types::Number::Integer(
+                i64::try_from(lag.sequence.get()).unwrap_or(i64::MAX),
+            )),
+        ),
+        (
+            "behind".to_owned(),
+            Value::Number(tessari_types::Number::Integer(
+                i64::try_from(lag.behind).unwrap_or(i64::MAX),
+            )),
+        ),
+        (
+            "quiet_for".to_owned(),
+            tessari_types::Duration::new(
+                i64::try_from(lag.quiet_for.as_secs()).unwrap_or(i64::MAX),
+                lag.quiet_for.subsec_nanos(),
+            )
+            .map_or(Value::Null, Value::Duration),
         ),
     ]))
 }

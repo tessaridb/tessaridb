@@ -6405,6 +6405,7 @@ machine become confused about which one it is?*
 | `ENDPOINTS` | this node's local metadata | peers would be told to reach this machine at the original's address |
 | a peer | the catalog, replicated | every node learns the peer exists, which is the point of declaring one |
 | a peer's `NODE` | the catalog, replicated | every node learns which machine the row is about, and exactly one of them finds its own id |
+| a follower's progress | this process only | nothing — it is never written down, so there is nothing to replay |
 
 So `INFO FOR NODE` reads both and answers them as **two named groups** rather
 than one flat object:
@@ -6414,8 +6415,45 @@ than one flat object:
  "version": "0.1.1", "build": "0.1.1-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
-             "desired": ["serving", "writable"]}}
+             "desired": ["serving", "writable"],
+             "followers": [{"node": "4b81…", "sequence": 812, "behind": 4,
+                            "quiet_for": "2s143ms"}]}}
 ```
+
+### What the leader knows about a follower it never calls
+
+`cluster.followers` is not `cluster.peers` seen from another angle. A peer is
+what somebody **declared**; a follower is what has actually **collected**. A
+peer that has never asked this node for anything appears in the first list and
+not the second, and that gap is the most useful thing either list says.
+
+A follower collects by asking, so the leader has handled every record that
+follower holds and needs no connection back to it to say how far it has got —
+which matters, because a leader that dialled out to measure lag would lose the
+measurement exactly when the follower became unreachable.
+
+Each row carries **two** numbers, and each is blind to a failure the other sees:
+
+| Field | What it says | The failure it catches alone |
+|---|---|---|
+| `sequence` | the highest log position this follower has been given | — |
+| `behind` | how many sequences short of this node's committed tail that is | a follower collecting steadily but unable to keep up |
+| `quiet_for` | how long since it last collected anything | a follower that has stopped, while this node is idle and there is nothing to be behind by |
+
+`quiet_for` is time since the last collection, not the delay between a commit
+here and its application there. A follower that is level was current as of that
+long ago; one that is behind has not been trying for that long.
+
+An empty collection still counts: a follower that is level asks and receives
+nothing, and reading that as silence would report the healthiest follower there
+is as absent. A follower that asks again from an **earlier** position is
+recorded at the earlier position rather than at its best-ever one — asking
+backwards is what recovering from a divergence looks like, and a high-water mark
+would hide it.
+
+The list is not persisted. A restarted node reports no followers until one asks
+it for something, because a stored row saying a follower reached position 812
+four seconds ago would outlive the relationship it describes.
 
 `version` and `build` are both here because they answer different questions.
 `version` is three ordered numbers: it is what the node **stored** and what an

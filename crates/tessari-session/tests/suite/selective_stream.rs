@@ -23,6 +23,10 @@ use tessari_session::{Outcome, Session};
 use tessari_storage::{Reach, Store};
 use tessari_types::{NamespaceId, Sequence};
 
+/// Any follower. These tests are about who may collect and what they receive,
+/// never about which node did the collecting, so one id serves them all.
+const A_FOLLOWER: [u8; 16] = [7; 16];
+
 const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
@@ -76,7 +80,7 @@ fn follow(leader: &Store, over: Reach, as_user: &str) -> Store {
     let mut node = Session::new(leader);
     node.sign_in(as_user, PASSWORD).unwrap();
     let carried = node
-        .replicate_from(leader, over, Sequence::new(1), 256)
+        .replicate_from(leader, A_FOLLOWER, over, Sequence::new(1), 256)
         .unwrap();
     let mut previous = tessari_types::Epoch::ZERO;
     for (sequence, record) in carried {
@@ -190,6 +194,7 @@ fn a_namespace_subscriber_does_not_receive_the_stores_credentials() {
     let carried = node
         .replicate_from(
             &leader,
+            A_FOLLOWER,
             Reach::Namespace(NamespaceId::new(1)),
             Sequence::new(1),
             256,
@@ -252,13 +257,14 @@ fn a_commit_entirely_outside_the_reach_arrives_empty_and_the_tail_advances() {
     let mut owner = Session::new(&leader);
     owner.sign_in("root", PASSWORD).unwrap();
     let whole = owner
-        .replicate_from(&leader, Reach::Store, Sequence::new(1), 256)
+        .replicate_from(&leader, A_FOLLOWER, Reach::Store, Sequence::new(1), 256)
         .unwrap();
     let mut node = Session::new(&leader);
     node.sign_in("node", PASSWORD).unwrap();
     let carried = node
         .replicate_from(
             &leader,
+            A_FOLLOWER,
             Reach::Namespace(NamespaceId::new(1)),
             Sequence::new(1),
             256,

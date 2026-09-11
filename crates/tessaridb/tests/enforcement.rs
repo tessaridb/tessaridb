@@ -18,7 +18,7 @@
 //!
 //! # What is counted, and what is not
 //!
-//! Seven tables, carrying **62** of the derivation's 70 paths.
+//! Seven tables, carrying **64** of the derivation's 72 paths.
 //!
 //! # The path added by the vault, and how it was classified
 //!
@@ -221,7 +221,31 @@ const TABLES: &[Table] = &[
         // enforcement point is that adding an identity check here would be the
         // change feed's mistake run backwards — two places deciding one
         // question, and the one that drifts is the one nobody is reading.
-        expected: 18,
+        //
+        // 20 since per-follower lag (G024 **S6.1**). Two paths, both classified
+        // **exempt, and by two different arguments** — which is why they are
+        // written out separately rather than counted together.
+        //
+        // `Store::follower_lag` reports no store content at all: no record, no
+        // catalog entry, no grant. It answers how far behind each follower is,
+        // which is the same class of question `Store::health` answers about the
+        // engine, and it is exempt on the same ground — the permission on it
+        // belongs to the statement above it, and `INFO FOR NODE` is refused to a
+        // viewer and to an editor by tests that say so.
+        //
+        // `Store::follower_served` is exempt on a narrower ground: it discloses
+        // nothing because it returns nothing, and it mutates nothing in the
+        // store because what it writes is process memory that is never
+        // persisted and never read back by any query. Its one caller is
+        // `Session::replicate_from`, *after* `may_replicate` has already been
+        // asked — so a caller who reaches it has by construction already passed
+        // the check that governs the log.
+        //
+        // What would change both classifications is the same event: a follower
+        // row that carried anything about the CONTENT a follower received
+        // rather than how much of it. It carries a node id, a position and two
+        // measurements, and none of those is a record.
+        expected: 20,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -280,7 +304,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 64, "the counted tables no longer sum to 64");
+    assert_eq!(total, 66, "the counted tables no longer sum to 66");
 }
 
 /// Every `.rs` file under a directory.

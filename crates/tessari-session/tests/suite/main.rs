@@ -38,6 +38,7 @@ mod fetch;
 mod file_ranges;
 mod files;
 mod folds;
+mod follower_lag;
 mod full_tuple;
 mod fuzzy;
 mod generated;

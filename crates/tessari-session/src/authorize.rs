@@ -28,7 +28,7 @@
 //! authorization holes on the change feed, and the answer is that both questions
 //! are asked here rather than a second time somewhere else.
 
-use tessari_encoding::LogRecord;
+use tessari_encoding::{LogRecord, NODE_ID_LEN};
 use tessari_ql::StatementKind;
 use tessari_storage::{Catalog, Kind, Reach, Role, Store, Verb};
 use tessari_types::{Sequence, TableId};
@@ -174,6 +174,23 @@ impl<'a> Session<'a> {
     /// the users, credentials and grants that are not its tenancy's, which is
     /// the disclosure [`Reach`] is carrying here rather than merely naming.
     ///
+    /// # The follower names itself, by the id it gave itself
+    ///
+    /// `node` is not decoration and it is not optional. A membership row that
+    /// names no node is a statement about every node holding the log; a pull
+    /// that names no follower is progress belonging to nobody, and a leader
+    /// cannot report per-follower lag over rows that are not per follower. The
+    /// id is the node's own sixteen bytes, so a follower restored from a backup
+    /// arrives as a new follower with no inherited progress — the same property
+    /// the desired-role binding relies on one level up.
+    ///
+    /// # An empty answer is still a collection
+    ///
+    /// A follower that is level asks and receives nothing. That pull is
+    /// recorded, because `from` is the follower's own assertion that it holds
+    /// `from - 1`, and because treating silence and being-up-to-date as the
+    /// same event would report a healthy follower as absent.
+    ///
     /// # Errors
     ///
     /// Returns whatever [`Session::may_replicate`] refuses with, or an error
@@ -181,12 +198,24 @@ impl<'a> Session<'a> {
     pub fn replicate_from(
         &mut self,
         store: &Store,
+        node: [u8; NODE_ID_LEN],
         over: Reach,
         from: Sequence,
         limit: usize,
     ) -> Result<Vec<(Sequence, LogRecord)>> {
         self.may_replicate(store, over)?;
-        Ok(store.log_records_within(over, from, limit)?)
+        let records = store.log_records_within(over, from, limit)?;
+        // What the follower now holds: the last sequence it was handed, or —
+        // when it was handed nothing — the position it told us it was at.
+        let reached = records.last().map_or_else(
+            || Sequence::new(from.get().saturating_sub(1)),
+            |(sequence, _)| *sequence,
+        );
+        // Recorded here because the door is the only way through, so a peer
+        // read that goes unrecorded is not expressible. That is the same
+        // argument the door itself was built on.
+        store.follower_served(node, reached);
+        Ok(records)
     }
 
     /// Which tables this session may read, when its user is grant-governed.

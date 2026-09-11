@@ -32,6 +32,10 @@ use tessari_session::{Outcome, Session};
 use tessari_storage::{Reach, Store};
 use tessari_types::Value;
 
+/// Any follower. These tests are about who may collect and what they receive,
+/// never about which node did the collecting, so one id serves them all.
+const A_FOLLOWER: [u8; 16] = [7; 16];
+
 const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
@@ -776,7 +780,13 @@ fn a_node_with_credentials_and_no_authority_may_not_take_the_log() {
 
     let mut node = signed_in(&store, "node");
     let refusal = node
-        .replicate_from(&store, Reach::Store, tessari_types::Sequence::new(1), 16)
+        .replicate_from(
+            &store,
+            A_FOLLOWER,
+            Reach::Store,
+            tessari_types::Sequence::new(1),
+            16,
+        )
         .unwrap_err();
     assert!(
         matches!(refusal, tessari_session::Error::RoleForbids { needs, .. } if needs == "replicate"),
@@ -799,7 +809,13 @@ fn a_node_granted_replication_over_the_store_receives_the_log() {
 
     let mut node = signed_in(&store, "node");
     let records = node
-        .replicate_from(&store, Reach::Store, tessari_types::Sequence::new(1), 64)
+        .replicate_from(
+            &store,
+            A_FOLLOWER,
+            Reach::Store,
+            tessari_types::Sequence::new(1),
+            64,
+        )
         .unwrap();
     assert!(
         !records.is_empty(),
@@ -823,7 +839,13 @@ fn reading_every_record_is_not_authority_to_take_the_log() {
 
     let mut watcher = signed_in(&store, "watcher");
     let refusal = watcher
-        .replicate_from(&store, Reach::Store, tessari_types::Sequence::new(1), 16)
+        .replicate_from(
+            &store,
+            A_FOLLOWER,
+            Reach::Store,
+            tessari_types::Sequence::new(1),
+            16,
+        )
         .unwrap_err();
     assert!(
         matches!(refusal, tessari_session::Error::RoleForbids { needs, .. } if needs == "replicate"),
@@ -844,7 +866,13 @@ fn operating_the_node_is_not_authority_to_take_the_log() {
 
     let mut ops = signed_in(&store, "ops");
     let refusal = ops
-        .replicate_from(&store, Reach::Store, tessari_types::Sequence::new(1), 16)
+        .replicate_from(
+            &store,
+            A_FOLLOWER,
+            Reach::Store,
+            tessari_types::Sequence::new(1),
+            16,
+        )
         .unwrap_err();
     assert!(
         matches!(refusal, tessari_session::Error::RoleForbids { needs, .. } if needs == "replicate"),
@@ -868,7 +896,13 @@ fn replication_over_one_namespace_does_not_authorize_the_whole_store() {
 
     let mut partial = signed_in(&store, "partial");
     let refusal = partial
-        .replicate_from(&store, Reach::Store, tessari_types::Sequence::new(1), 16)
+        .replicate_from(
+            &store,
+            A_FOLLOWER,
+            Reach::Store,
+            tessari_types::Sequence::new(1),
+            16,
+        )
         .unwrap_err();
     assert!(
         matches!(refusal, tessari_session::Error::NotTheWholeStore { .. }),
@@ -891,13 +925,25 @@ fn a_revoked_replication_authority_stops_a_node_that_was_already_reading() {
         .unwrap();
 
     let mut node = signed_in(&store, "node");
-    node.replicate_from(&store, Reach::Store, tessari_types::Sequence::new(1), 16)
-        .expect("granted, so the first read is served");
+    node.replicate_from(
+        &store,
+        A_FOLLOWER,
+        Reach::Store,
+        tessari_types::Sequence::new(1),
+        16,
+    )
+    .expect("granted, so the first read is served");
 
     root.run("REVOKE replicate ON STORE FROM node;").unwrap();
 
     let refusal = node
-        .replicate_from(&store, Reach::Store, tessari_types::Sequence::new(1), 16)
+        .replicate_from(
+            &store,
+            A_FOLLOWER,
+            Reach::Store,
+            tessari_types::Sequence::new(1),
+            16,
+        )
         .unwrap_err();
     assert!(
         matches!(refusal, tessari_session::Error::RoleForbids { needs, .. } if needs == "replicate"),
@@ -926,7 +972,13 @@ fn an_open_store_hands_out_its_log_because_an_open_store_hands_out_everything() 
 
     let mut anybody = Session::new(&store);
     let records = anybody
-        .replicate_from(&store, Reach::Store, tessari_types::Sequence::new(1), 64)
+        .replicate_from(
+            &store,
+            A_FOLLOWER,
+            Reach::Store,
+            tessari_types::Sequence::new(1),
+            64,
+        )
         .unwrap();
     assert!(
         !records.is_empty(),
