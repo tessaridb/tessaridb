@@ -3617,11 +3617,13 @@ fn table_named(source: &Source) -> Option<&str> {
 fn node_row(store: &Store) -> Result<(RecordId, Value)> {
     let identity = store.node_identity()?;
     let mut fields = BTreeMap::new();
+    // The effective role, matching `INFO FOR NODE` — both are reports of the
+    // same fact, and a reader comparing them is entitled to one answer.
     fields.insert(
         "roles".to_owned(),
         Value::Array(
-            identity
-                .roles
+            store
+                .effective_roles()?
                 .names()
                 .into_iter()
                 .map(Value::from)

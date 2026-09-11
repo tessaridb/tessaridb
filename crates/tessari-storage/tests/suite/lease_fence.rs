@@ -23,6 +23,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tessari_encoding::Roles;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_storage::{Error, LEASE_GUARD, Lease, RecordAddress, Store};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
@@ -257,4 +258,58 @@ fn the_remainder_and_the_refusal_are_one_question_asked_twice() {
     assert!(live.health().unwrap().lease_remaining > Some(Duration::ZERO));
     assert!(live.lease_spent().is_none());
     assert!(write(&live, "taken").is_ok());
+}
+
+#[test]
+fn a_node_whose_lease_lapsed_stops_reporting_that_it_may_write() {
+    // §6.1 says effective role *is* the lease. Before this, a node whose lease
+    // had lapsed refused every write and went on reporting `writable` — the
+    // behaviour was already the lease and only the report disagreed.
+    let store = store();
+    let adopted = store.node_identity().unwrap().roles;
+    assert!(
+        adopted.has(Roles::WRITABLE),
+        "a fresh store adopts a writable role, which is what makes this test mean anything"
+    );
+
+    store.hold_lease(Duration::ZERO);
+    assert!(!store.effective_roles().unwrap().has(Roles::WRITABLE));
+    // The adopted set is untouched: what the lease takes away is what this node
+    // is *serving under*, not what it was configured to be.
+    assert_eq!(store.node_identity().unwrap().roles, adopted);
+}
+
+#[test]
+fn a_node_nobody_granted_a_lease_reports_every_role_it_adopted() {
+    // The control the whole workspace leans on. `None` from the lease is not a
+    // spent lease, and a node standing alone is not a leader running out of one.
+    let store = store();
+    assert_eq!(
+        store.effective_roles().unwrap(),
+        store.node_identity().unwrap().roles
+    );
+}
+
+#[test]
+fn the_role_reported_and_the_write_refused_cannot_disagree() {
+    // One derivation, asserted as one. A node saying *you may write* while the
+    // next write is refused sends whoever reads it to look for a bug in the
+    // write path, which is the most expensive place to look.
+    for ttl in [
+        None,
+        Some(Duration::ZERO),
+        Some(LEASE_GUARD),
+        Some(LEASE_GUARD.saturating_add(Duration::from_secs(60))),
+    ] {
+        let store = store();
+        if let Some(ttl) = ttl {
+            store.hold_lease(ttl);
+        }
+        let writable = store.effective_roles().unwrap().has(Roles::WRITABLE);
+        let refused = write(&store, "probe").is_err();
+        assert_eq!(
+            writable, !refused,
+            "reported writable={writable} while the write refused={refused}, at ttl={ttl:?}"
+        );
+    }
 }

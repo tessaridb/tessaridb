@@ -184,6 +184,50 @@ impl Store {
         Ok(store)
     }
 
+    /// The roles this node is actually serving under, which is the adopted set
+    /// as the lease leaves it.
+    ///
+    /// `04_concept.md` §6.1 says *effective role is the lease*, and until this
+    /// existed the two disagreed in the one situation that matters: a node whose
+    /// lease had lapsed refused every write and went on reporting `writable`.
+    /// The behaviour was already the lease — the fence is at the head of
+    /// [`crate::Transaction::settle`] — so what was missing was that the report
+    /// said so.
+    ///
+    /// # The refusal stays where it is, and the report follows it
+    ///
+    /// It would be one line to feed this set into the write gate instead of
+    /// letting the fence refuse, and it would be wrong twice. The caller would
+    /// get *this node is not writable*, which reads as a role misconfiguration
+    /// and blames the write, in place of a refusal that says the **cluster** is
+    /// what is wrong, carries how long the fence has been shut, and is
+    /// categorised `unavailable`. And a node that is not writable is a node
+    /// whose writes get forwarded to the writable peer — which, on a leader
+    /// whose lease has lapsed, is itself.
+    ///
+    /// So there is one derivation and the report is downstream of it: this reads
+    /// the same [`Held::spent`] the fence reads, which makes *reports writable
+    /// while refusing writes* unrepresentable rather than merely unlikely.
+    ///
+    /// # A node with no lease keeps everything it adopted
+    ///
+    /// `None` from the lease is not a spent lease. A store nobody granted
+    /// leadership to is not a leader running out of it, and every single-node
+    /// deployment reaches this function and leaves it unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns the substrate's failure, and a decoding failure when the node
+    /// identity cannot be read.
+    pub fn effective_roles(&self) -> Result<Roles> {
+        let adopted = self.node_identity()?.roles;
+        if self.lease.spent().is_none() {
+            return Ok(adopted);
+        }
+        let without_writing = adopted.bits() & !Roles::WRITABLE.bits();
+        Ok(Roles::from_bits(without_writing).unwrap_or(Roles::NONE))
+    }
+
     /// Adopt the role the cluster wants this node to have.
     ///
     /// The **effective** role of `04_concept.md` §6.1 moving toward the

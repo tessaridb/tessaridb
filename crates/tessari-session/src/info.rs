@@ -841,10 +841,16 @@ impl Session<'_> {
                 Value::from(identity.record_id().to_string().as_str()),
             ),
             (
+                // The **effective** role of §6.1, which is the adopted set as
+                // the lease leaves it — asked of the store rather than read off
+                // the identity, so that a node cannot report `writable` while
+                // its fence refuses every write. `cluster.desired` below is
+                // untouched by the lease and must be: the pair is only worth
+                // anything while the two can differ.
                 "roles".to_owned(),
                 Value::Array(
-                    identity
-                        .roles
+                    self.store
+                        .effective_roles()?
                         .names()
                         .into_iter()
                         .map(Value::from)

@@ -695,3 +695,77 @@ fn a_node_id_that_is_not_one_is_refused_where_it_was_written() {
         "a refused declaration left a row behind"
     );
 }
+
+#[test]
+fn a_lapsed_lease_takes_writable_out_of_the_role_the_node_reports() {
+    // §6.1's *effective role is the lease*, read where an operator reads it.
+    // The desired row beside it is untouched, and must be: the pair is only
+    // worth anything while the two can differ, which is the half of S5.2 that
+    // was already true.
+    let store = closed(&backend());
+    let mut session = owner(&store);
+    session.run("DEFINE NODE ROLES serving, writable;").unwrap();
+    assert_eq!(
+        reported(&store).get("roles"),
+        Some(&Value::Array(vec![
+            Value::from("serving"),
+            Value::from("writable")
+        ]))
+    );
+
+    store.hold_lease(Duration::ZERO);
+    assert_eq!(
+        reported(&store).get("roles"),
+        Some(&Value::Array(vec![Value::from("serving")])),
+        "a node whose lease has lapsed may not write, and now says so"
+    );
+}
+
+#[test]
+fn the_node_record_and_the_node_report_give_one_answer_about_roles() {
+    // Two reports of one fact. A reader who compared them is entitled to the
+    // same answer, and before the lease reached the report they would not have
+    // got one.
+    let store = closed(&backend());
+    owner(&store)
+        .run("DEFINE NODE ROLES serving, writable;")
+        .unwrap();
+    store.hold_lease(Duration::ZERO);
+
+    let reported_roles = reported(&store).get("roles").cloned();
+    let selected = owner(&store).run("SELECT roles FROM $node;").unwrap();
+    let rendered = format!("{selected:?}");
+    assert!(!rendered.contains("writable"), "{rendered}");
+    assert_eq!(
+        reported_roles,
+        Some(Value::Array(vec![Value::from("serving")]))
+    );
+}
+
+#[test]
+fn a_lapsed_lease_refuses_a_write_as_the_clusters_fault_and_not_the_nodes_role() {
+    // The distinction the whole design of `effective_roles` rests on, and until
+    // this test existed nothing at the session level held it. Both refusals are
+    // available here and they say opposite things: *this node does not accept
+    // writes* blames a role an operator configured, while the lease refusal says
+    // the cluster took the leadership back and carries how long ago.
+    //
+    // Feeding the lease-adjusted roles into the write gate would have swapped
+    // one for the other and broken no test at all — which is exactly why this
+    // one is here.
+    let store = closed(&backend());
+    owner(&store)
+        .run("DEFINE NODE ROLES serving, writable;")
+        .unwrap();
+    store.hold_lease(Duration::ZERO);
+
+    let refused = owner(&store)
+        .run("DEFINE NAMESPACE prod;")
+        .expect_err("a node whose lease has lapsed takes no writes");
+    let said = refused.to_string();
+    assert!(said.contains("lease"), "{said}");
+    assert!(
+        !said.contains("does not accept writes (at"),
+        "the role refusal stood in for the lease refusal: {said}"
+    );
+}

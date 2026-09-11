@@ -18,7 +18,7 @@
 //!
 //! # What is counted, and what is not
 //!
-//! Seven tables, carrying **69** paths. The original derivation counted 74 on
+//! Seven tables, carrying **70** paths. The original derivation counted 74 on
 //! the day it ran. This line said **66** while the assertion below said 68 —
 //! prose and number drifting apart is the very decay this test exists to catch,
 //! and it had happened to the sentence describing the test. Both now come from
@@ -34,6 +34,19 @@
 //! decryption; a caller holding the passphrase and no grant is refused at the
 //! door by the ordinary reach check. Neither passes by the other's route, which
 //! is criterion F3 of the vault goal stated as a coverage decision.
+//!
+//! # The path added by the effective role, and how it was classified
+//!
+//! `Store::effective_roles` is the twenty-third method on the substrate, and it
+//! is classified **enforced, by adding no reach of its own**. It returns the
+//! adopted role set minus `writable` when the lease has lapsed — a **subset** of
+//! a value every caller that can reach it could already read from
+//! `node_identity`, at the same place, through the same statement. It discloses
+//! nothing new and grants nothing new, and the direction it can move a caller's
+//! authority is downward.
+//!
+//! Its two callers are `INFO FOR NODE` and `$node`, both of which are statements
+//! that have already passed the session's own checks before reaching it.
 //!
 //! # The path added by the cluster's lease, and how it was classified
 //!
@@ -285,7 +298,7 @@ const TABLES: &[Table] = &[
         // exemption is therefore **conditional on having no remote caller**, and
         // that condition is written down so the next wave meets it rather than
         // inherits it.
-        expected: 22,
+        expected: 23,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -344,7 +357,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 69, "the counted tables no longer sum to 69");
+    assert_eq!(total, 70, "the counted tables no longer sum to 70");
 }
 
 /// Every `.rs` file under a directory.
