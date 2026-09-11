@@ -167,6 +167,19 @@ impl Transaction<'_> {
         if self.writes.is_empty() {
             return Ok(self.snapshot);
         }
+        // First, and after the empty check rather than before it. First because
+        // a node that has run out of leadership should not be doing schema
+        // validation on work it is about to refuse; after the empty check
+        // because a transaction that writes nothing has nothing to fence, and
+        // refusing it would make a fenced node fail its readers' commits.
+        //
+        // Here rather than at the statement layer so that `dry_run` rehearses
+        // it — this function's own header is the argument, and a fence a
+        // `VERIFY` cannot see is a refusal an operator meets for the first time
+        // in production.
+        if let Some(for_the_last) = self.store.lease_spent() {
+            return Err(Error::LeaseSpent { for_the_last });
+        }
         let record = self.log_record();
 
         let mut attempt = 0_u32;

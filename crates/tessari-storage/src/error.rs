@@ -148,6 +148,23 @@ pub enum Error {
         attempts: u32,
     },
 
+    /// The lease this node writes under has run out.
+    ///
+    /// Not a defect and not a conflict: this node was the leader and can no
+    /// longer prove it still is, so it stops writing rather than accepting work
+    /// the next leader will never see. The duration is how long the fence has
+    /// been closed, because a caller one second past it and a caller an hour
+    /// past it are in very different situations and the bare refusal spells
+    /// them the same way.
+    #[error(
+        "the lease this node writes under ran out {for_the_last:?} ago: \
+         it is no longer accepting writes"
+    )]
+    LeaseSpent {
+        /// How long the fence has been closed.
+        for_the_last: std::time::Duration,
+    },
+
     /// A log record was offered out of order.
     ///
     /// State is a deterministic function of the log, so a gap is not something
@@ -506,6 +523,11 @@ impl Error {
         match self {
             Self::Conflict { .. } | Self::LogDivergence { .. } => ErrorCategory::Conflict,
             Self::CommitContention { .. } => ErrorCategory::Busy,
+            // Unavailable rather than Busy or Conflict, because it is the only
+            // one of the three that is true: the write was not wrong and
+            // retrying *here* will not help, but the cluster may well accept it
+            // somewhere else a moment from now.
+            Self::LeaseSpent { .. } => ErrorCategory::Unavailable,
             Self::LogGap { .. }
             | Self::NameTaken { .. }
             | Self::NoSuchParent { .. }

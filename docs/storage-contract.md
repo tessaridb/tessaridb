@@ -115,7 +115,7 @@ help. Callers branch on the category, never on the message text.
 | `conflict` | no | a precondition did not hold; re-read and decide again |
 | `validation` | no | the request was malformed |
 | `busy` | **yes** | contention or a stall; the caller owns the backoff |
-| `unavailable` | **yes** | a dependency is temporarily unreachable |
+| `unavailable` | **yes** | a dependency is temporarily unreachable — including this node's own leadership, when the lease it writes under has run out |
 | `corruption` | no | stored data failed an integrity check; an operator decision |
 | `lifecycle` | no | shutting down, or the keyspace was dropped |
 | `incompatible` | no | the data is intact but written in a format this binary does not support; deploy a newer binary rather than repair the store |

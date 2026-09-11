@@ -126,6 +126,13 @@ pub struct Store {
     /// header: a follower's progress is a fact about a live relationship, and a
     /// persisted copy of it would outlive the relationship it describes.
     followers: Arc<Followers>,
+    /// The lease this process is writing under, if it was given one.
+    ///
+    /// Shared with every handle for the reason the registries above it are, and
+    /// held in memory for a sharper one: a persisted fence is an unreplicated
+    /// file asserting a cluster-wide fact, which is the split-brain ADR-0018 §1
+    /// keeps out of `META`.
+    lease: Arc<crate::lease::Held>,
 }
 
 impl Store {
@@ -159,6 +166,7 @@ impl Store {
             series: Arc::new(crate::series::SeriesRegistry::default()),
             divergences: Arc::new(AtomicU64::new(0)),
             followers: Arc::new(Followers::default()),
+            lease: Arc::new(crate::lease::Held::default()),
         };
         // Last, because it reads the catalog: the format is settled and the
         // identity exists by the time this asks which node it is.
@@ -474,6 +482,29 @@ impl Store {
                 quiet_for: held.at.elapsed(),
             })
             .collect())
+    }
+
+    /// Take or renew the lease this process writes under.
+    ///
+    /// The fence closes `LEASE_GUARD` before the lease expires, so this node
+    /// stops writing strictly before the cluster is entitled to give the
+    /// leadership to somebody else. See [`crate::lease`] for why the two
+    /// instants are deliberately not the same one.
+    ///
+    /// Nothing in this build calls it but a test: granting a lease is a cluster
+    /// act and needs a wire. What exists here is the fence.
+    pub fn hold_lease(&self, ttl: std::time::Duration) {
+        self.lease.take(ttl);
+    }
+
+    /// How long this node's lease fence has been closed, if it is.
+    ///
+    /// `None` means writes may proceed — either because the fence is still open
+    /// or because this node was never given a lease at all. A node nobody
+    /// granted leadership to is not a leader running out of it.
+    #[must_use]
+    pub fn lease_spent(&self) -> Option<std::time::Duration> {
+        self.lease.spent()
     }
 
     /// The highest sequence that has been committed.

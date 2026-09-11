@@ -18,7 +18,7 @@
 //!
 //! # What is counted, and what is not
 //!
-//! Seven tables, carrying **64** of the derivation's 72 paths.
+//! Seven tables, carrying **66** of the derivation's 74 paths.
 //!
 //! # The path added by the vault, and how it was classified
 //!
@@ -245,7 +245,24 @@ const TABLES: &[Table] = &[
         // row that carried anything about the CONTENT a follower received
         // rather than how much of it. It carries a node id, a position and two
         // measurements, and none of those is a record.
-        expected: 20,
+        //
+        // 22 since the lease fence (G024 **S5.1**). `Store::hold_lease` and
+        // `Store::lease_spent` are classified **exempt, and this pair is the
+        // clearest case in the table**: neither takes a reach, neither reads or
+        // writes a record, a catalog entry or a grant, and what they touch is
+        // process memory that is never persisted and never queryable. The
+        // permission question they raise is *who may grant leadership*, and that
+        // question has no caller yet — nothing in this build takes a lease but a
+        // test, because granting is a cluster act over a wire that does not
+        // exist.
+        //
+        // Recorded here rather than deferred, because the day that wire lands is
+        // the day `hold_lease` becomes an enforcement point of the first
+        // importance: a caller who can take a lease can take leadership. Its
+        // exemption is therefore **conditional on having no remote caller**, and
+        // that condition is written down so the next wave meets it rather than
+        // inherits it.
+        expected: 22,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -304,7 +321,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 66, "the counted tables no longer sum to 66");
+    assert_eq!(total, 68, "the counted tables no longer sum to 68");
 }
 
 /// Every `.rs` file under a directory.

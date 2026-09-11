@@ -13,6 +13,7 @@ mod feed;
 mod index_maintenance;
 mod index_sweep;
 mod isolation;
+mod lease_fence;
 mod queue_definitions;
 mod range_batches;
 mod record_counts;
