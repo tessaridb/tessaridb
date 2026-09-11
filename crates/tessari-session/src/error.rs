@@ -531,6 +531,26 @@ pub enum Error {
         span: Span,
     },
 
+    /// `UPDATE … WHERE` over a record that does not say what the caller asserted.
+    ///
+    /// A **refusal** and not a count, because that is what this verb already is:
+    /// [`Error::NoSuchRecord`] above refuses an `UPDATE` over a record that is
+    /// not there, so refusing one over a record that is not in the asserted
+    /// state is the same assertion one step further in. The failure discards the
+    /// work above it in the transaction, which is what makes the clause a
+    /// compare-and-set rather than a filter — a caller can act on a lost race
+    /// without having remembered to read a number.
+    #[error(
+        "record {id} does not say what the condition asserts (at {span}) — \
+         the `WHERE` on an `UPDATE` is a compare-and-set, so nothing was written"
+    )]
+    ConditionNotMet {
+        /// The identity as written.
+        id: String,
+        /// Where the condition was written.
+        span: Span,
+    },
+
     /// A table used as an edge table that was not declared as one.
     ///
     /// Refused rather than accommodated: an edge table carries an index on each

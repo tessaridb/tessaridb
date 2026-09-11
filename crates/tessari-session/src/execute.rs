@@ -18,9 +18,10 @@ use tessari_types::{
     TableId, Value,
 };
 
+use crate::condition::boolean;
 use crate::context::Context;
 use crate::error::{Depended, Error, Result};
-use crate::evaluate::{key_bound, within};
+use crate::evaluate::{Scope, key_bound, within};
 use crate::generate;
 use crate::geometry::on_the_grid;
 use crate::outcome::Outcome;
@@ -440,6 +441,7 @@ impl Session<'_> {
             StatementKind::Update {
                 target,
                 edit,
+                condition,
                 answer,
             } => {
                 let (_, address) = self.writable(transaction, target)?;
@@ -450,6 +452,27 @@ impl Session<'_> {
                     });
                 };
                 let before = decode_payload(&existing)?;
+                // The condition is tested against the record **as stored**, and
+                // before the edit is computed at all — so a refused update
+                // writes nothing, touches no index, and never reaches the queue
+                // guard or the sealing path.
+                //
+                // Against the stored record rather than against the payload,
+                // which is the rule W205 had to find from the other side: a
+                // guard that judges what is about to be written is not judging
+                // what the caller said. `WHERE version = 1` beside
+                // `SET version = 2` must compare the one already there, and
+                // reading the payload would compare it against the value this
+                // very statement is setting — always false, and silently.
+                if let Some(condition) = condition {
+                    let held = self.evaluate_in(transaction, condition, Scope::of(&before))?;
+                    if !boolean(&held, condition.span)? {
+                        return Err(Error::ConditionNotMet {
+                            id: address.id.to_string(),
+                            span: condition.span,
+                        });
+                    }
+                }
                 let (payload, partial) =
                     self.applied(transaction, edit, before.clone(), target.span)?;
                 // One rule rather than two: the result of either shape is a

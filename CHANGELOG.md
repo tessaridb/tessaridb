@@ -20,6 +20,26 @@ Work landed after the tag was cut, and recorded here because this file's top
 section must name the version this package carries — so there is nowhere else
 for it to go until the next version is opened.
 
+**`UPDATE … WHERE` — the language has a compare-and-set.** Until now TessariQL
+offered exactly one: a conditional `DELETE` as the guard followed by a `CREATE`
+as the failure signal, because a create over a record that is still there is
+refused and discards the transaction. It is correct, and against a queue it is a
+silent disaster — a claim lives **on** the record, so recreating the record drops
+the hold with no error at all, and the work is claimable again while its first
+holder still believes it holds it. Any store that versions its records and wants
+the queue hits this, so the fix is in the language rather than in a consumer.
+
+`UPDATE orders:7 SET status = 'paid', version = 4 WHERE version = 3` changes the
+record only if it still says what the caller last read. A condition that does not
+hold is a **refusal** and not a count, which follows from what this verb already
+is: `UPDATE` asserts the record is present and refuses when it is not, so
+asserting it is in a particular state is the same assertion one step further in.
+The failure discards the work above it in the transaction, which is what makes
+the clause a guard rather than a filter — a guard a caller can forget to check is
+not one. The condition reads the record **as stored**, so `WHERE version = 3`
+beside `SET version = 4` compares the value that is there. `UPSERT` takes no such
+clause and says so, because it asserts nothing about the record it writes.
+
 **A file route cannot delete a record out of an ordinary table.**
 `DELETE /files/{ns}/{db}/{name}/{path}` ran a plain record delete, which asks
 nothing about whether the name is a bucket — so it answered `204` against any
@@ -147,7 +167,7 @@ rather than the view's records.
 holder at a time under a hold that lapses — `DEFINE QUEUE jobs TIMEOUT 30s
 ATTEMPTS 5`, then `CLAIM FROM jobs`, `DELETE jobs:7` when the work is done and
 `RELEASE jobs:7` to hand it back early. That makes ten engines over one substrate
-rather than nine. **1325 conformance cases** define the language and run in the
+rather than nine. **1335 conformance cases** define the language and run in the
 build, up from 1237.
 
 The design is the part worth reading, because a queue is normally where a store

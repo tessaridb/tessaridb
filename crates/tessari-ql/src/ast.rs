@@ -1222,6 +1222,25 @@ pub enum StatementKind {
         target: RecordTarget,
         /// How it changes.
         edit: Edit,
+        /// What the record must already say for the change to happen.
+        ///
+        /// `UPDATE tasks:'t1' SET title = 'b' WHERE version = 1` — the language's
+        /// compare-and-set. Evaluated against the record **as stored**, never
+        /// against the payload the edit produces, so `WHERE version = 1` beside
+        /// `SET version = 2` means what it reads as.
+        ///
+        /// A condition that does not hold is a **refusal**, and the failure
+        /// discards the work above it in the transaction. That follows from what
+        /// this verb already is: `UPDATE` asserts the record is present and
+        /// refuses when it is not, so asserting it is also in a particular state
+        /// is the same assertion one step further in. A count would make it the
+        /// only assertion here a caller can ignore by forgetting to read a
+        /// number, and forgetting costs two workers holding one job.
+        ///
+        /// [`StatementKind::Upsert`] deliberately has no such field: it asserts
+        /// nothing about the record, so a condition on it would have to invent a
+        /// meaning.
+        condition: Option<Expr>,
         /// What the statement answers with.
         answer: Answer,
     },

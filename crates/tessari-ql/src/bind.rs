@@ -187,18 +187,25 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // Both shapes of an update hold expressions, and the field shape holds
         // one per assignment: a parameter is legal in each of them, the same as
         // it is anywhere else a value may stand.
-        StatementKind::Update { target, edit, .. }
-        | StatementKind::Upsert { target, edit, .. } => {
+        StatementKind::Update {
+            target,
+            edit,
+            condition,
+            ..
+        } => {
             bind_target(target, binding)?;
-            match edit {
-                Edit::Whole(value) | Edit::Merge(value) => bind_expr(value, binding),
-                Edit::Fields(assignments) => {
-                    for assignment in assignments {
-                        bind_expr(&mut assignment.value, binding)?;
-                    }
-                    Ok(())
-                }
+            // The condition before the edit, because a compare-and-set carries
+            // its expected value as a parameter far more often than it carries
+            // the new one — `WHERE version = $expected` is the shape — and a
+            // binding failure should name the clause the caller was writing.
+            if let Some(condition) = condition {
+                bind_expr(condition, binding)?;
             }
+            bind_edit(edit, binding)
+        }
+        StatementKind::Upsert { target, edit, .. } => {
+            bind_target(target, binding)?;
+            bind_edit(edit, binding)
         }
         // `REVEAL` binds its target like every other statement that names one
         // record. Its field list is names, and its passphrase sibling below is
@@ -368,6 +375,19 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
 }
 
 /// A record target's **id** may be supplied; its table may not.
+/// The expressions an edit holds, whichever of the three shapes it is.
+fn bind_edit(edit: &mut Edit, binding: &Binding<'_>) -> Result<()> {
+    match edit {
+        Edit::Whole(value) | Edit::Merge(value) => bind_expr(value, binding),
+        Edit::Fields(assignments) => {
+            for assignment in assignments {
+                bind_expr(&mut assignment.value, binding)?;
+            }
+            Ok(())
+        }
+    }
+}
+
 fn bind_target(target: &mut RecordTarget, binding: &Binding<'_>) -> Result<()> {
     let at = target.span;
     bind_identity(&mut target.id, at, binding)

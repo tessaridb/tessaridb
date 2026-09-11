@@ -362,3 +362,129 @@ fn retryable(error: &tessari_session::Error) -> bool {
         )
     )
 }
+
+// --- the compare-and-set clause (Q-513, W207) ----------------------------
+
+/// A condition that holds applies the edit, and one that does not writes nothing.
+///
+/// # Why a refusal rather than a count
+///
+/// `UPDATE` already asserts the record is **present** and refuses when it is not
+/// — `NoSuchRecord`. Asserting it is also in a particular state is the same
+/// assertion one step further in, so it refuses the same way. A count would make
+/// this the only assertion in the language a caller can ignore by forgetting to
+/// read a number, and the case the clause exists for is two workers holding one
+/// job.
+#[test]
+fn a_condition_that_holds_applies_and_one_that_does_not_writes_nothing() {
+    let store = store();
+    let mut session = ready(&store);
+
+    session
+        .run("UPDATE users:1 SET city = 'Lyon' WHERE visits = 3;")
+        .unwrap();
+    assert_eq!(
+        field(&mut session, "SELECT city FROM users:1;", "city"),
+        "String(\"Lyon\")"
+    );
+
+    let before = record(&mut session, "SELECT * FROM users:1;");
+    let refused = session
+        .run("UPDATE users:1 SET city = 'Nice' WHERE visits = 99;")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("does not say what the condition asserts"),
+        "{refused}"
+    );
+    assert_eq!(
+        record(&mut session, "SELECT * FROM users:1;"),
+        before,
+        "a refused update changed the record"
+    );
+}
+
+/// The condition reads the record **as stored**, not the payload being written.
+///
+/// This is the case that fails if the check is ever moved after the edit is
+/// computed: `WHERE version = 1` beside `SET version = 2` would then compare the
+/// new value against the old expectation and be false for every caller, every
+/// time, with nothing in an error state to say why.
+#[test]
+fn the_condition_reads_the_stored_record_and_not_the_payload_being_written() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("UPDATE users:1 SET visits = 4 WHERE visits = 3;")
+        .unwrap();
+    assert_eq!(
+        field(&mut session, "SELECT visits FROM users:1;", "visits"),
+        "Number(Integer(4))"
+    );
+}
+
+/// A lost race discards the work above it, which is what makes it a guard.
+///
+/// A count would not: a script that read a count and forgot to act on it would
+/// commit whatever the statements above had already done. That is the failure
+/// this clause exists to make impossible, so it is asserted rather than assumed.
+#[test]
+fn a_lost_race_discards_the_work_above_it_in_the_transaction() {
+    let store = store();
+    let mut session = ready(&store);
+
+    let refused = session
+        .run(
+            "BEGIN;\n\
+             UPDATE users:2 SET city = 'Nice';\n\
+             UPDATE users:1 SET city = 'Nice' WHERE visits = 99;\n\
+             COMMIT;",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("does not say what the condition asserts"),
+        "{refused}"
+    );
+    assert_eq!(
+        field(&mut session, "SELECT city FROM users:2;", "city"),
+        "String(\"Lyon\")",
+        "the write above the lost race was committed anyway"
+    );
+}
+
+/// The clause takes a parameter, because that is the shape every caller writes.
+#[test]
+fn the_condition_takes_a_parameter() {
+    let store = store();
+    let mut session = ready(&store);
+    let mut given = tessari_session::Parameters::new();
+    given.insert("expected".to_owned(), Value::from(3_i64));
+    session
+        .run_with(
+            "UPDATE users:1 SET city = 'Nice' WHERE visits = $expected;",
+            &given,
+        )
+        .unwrap();
+    assert_eq!(
+        field(&mut session, "SELECT city FROM users:1;", "city"),
+        "String(\"Nice\")"
+    );
+}
+
+/// `UPSERT` is refused the clause rather than given a meaning it cannot have.
+///
+/// It writes the record whether or not it is there, so there is no prior state
+/// to test. Parsing the clause and ignoring it would be worse than refusing it:
+/// a clause that parses and does nothing is the shape a caller trusts.
+#[test]
+fn upsert_takes_no_condition() {
+    let store = store();
+    let mut session = ready(&store);
+    let refused = session
+        .run("UPSERT users:9 SET city = 'Nice' WHERE visits = 1;")
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("UPSERT"), "{refused}");
+    assert!(refused.contains("no prior state"), "{refused}");
+}

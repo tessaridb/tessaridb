@@ -720,3 +720,85 @@ fn attempts_of(session: &mut Session<'_>, record: &str) -> String {
         .get("attempts")
         .map_or_else(|| "none".to_owned(), |count| format!("{count}"))
 }
+
+/// A compare-and-set on a held record keeps the hold — the case Q-513 exists for.
+///
+/// # What this replaces, and why the replacement had to be in the language
+///
+/// A consumer that versions its records has exactly one way to write safely, and
+/// until this clause existed TessariQL offered only one compare-and-set: a
+/// conditional `DELETE` as the guard followed by a `CREATE` as the failure
+/// signal, because a create over a record that is still there is refused and
+/// discards the transaction. It is correct, and on a queue it is a disaster —
+/// the hold lives **on the record**, so delete-and-recreate destroys it with no
+/// error at all, and the work is claimable again while its first holder still
+/// believes it holds it. That was measured against a real engine before this was
+/// built, not argued.
+///
+/// So the assertion that matters here is not that the update applied. It is that
+/// all three engine fields are **exactly** what they were: the same holder, the
+/// same deadline, the same attempt count.
+#[test]
+fn a_compare_and_set_on_held_work_keeps_the_hold() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE QUEUE jobs TIMEOUT 30s;\n\
+             CREATE jobs:1 = { url: 'a', version: 1 };",
+        )
+        .unwrap();
+    session.run("USE CONSUMER 'billing';").unwrap();
+    let taken = claimed(&run(&mut session, "CLAIM FROM jobs;"));
+    assert_eq!(taken, vec!["1".to_owned()]);
+
+    let held_by = holder(&mut session, "jobs:1");
+    let deadline = held_until(&mut session, "jobs:1");
+    let attempts = attempts_of(&mut session, "jobs:1");
+
+    // The compare-and-set a versioned consumer writes, in one statement.
+    session
+        .run("UPDATE jobs:1 SET url = 'b', version = 2 WHERE version = 1;")
+        .unwrap();
+
+    assert_eq!(
+        holder(&mut session, "jobs:1"),
+        held_by,
+        "the hold changed hands across a compare-and-set"
+    );
+    assert_eq!(
+        held_until(&mut session, "jobs:1"),
+        deadline,
+        "the deadline moved across a compare-and-set"
+    );
+    assert_eq!(
+        attempts_of(&mut session, "jobs:1"),
+        attempts,
+        "the attempt count moved across a compare-and-set"
+    );
+
+    // And the loser of the race is refused rather than told a number.
+    let refused = session
+        .run("UPDATE jobs:1 SET url = 'c', version = 3 WHERE version = 1;")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("does not say what the condition asserts"),
+        "{refused}"
+    );
+    still_reads_b(&mut session);
+}
+
+/// The record a lost race left alone still reads as it did.
+fn still_reads_b(session: &mut Session<'_>) {
+    let outcome = run(session, "SELECT * FROM jobs:1;");
+    let Outcome::Records { records, .. } = outcome else {
+        panic!("expected records");
+    };
+    let Some((_, Value::Object(fields))) = records.first() else {
+        panic!("expected one record");
+    };
+    assert_eq!(format!("{:?}", fields.get("url")), "Some(String(\"b\"))");
+}

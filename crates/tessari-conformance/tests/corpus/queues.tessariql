@@ -229,3 +229,15 @@ UPDATE strict:1 SET claimed_until = 1;
 --- case: and so does the one that says who
 UPDATE strict:1 SET claimed_by = 'someone';
 --- expect: error QueueFieldIsTheEngines
+
+--- case: work a caller holds may be compare-and-set without losing the hold
+UPDATE strict:1 SET url = 'c' WHERE url = 'b';
+--- expect: ok
+
+--- case: and the hold is still the engine's own afterwards
+SELECT id FROM strict WHERE claimed_until != NONE;
+--- expect: rows 1
+
+--- case: while a caller asserting what the record no longer says is refused
+UPDATE strict:1 SET url = 'd' WHERE url = 'b';
+--- expect: error ConditionNotMet

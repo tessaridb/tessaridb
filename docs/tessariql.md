@@ -2611,10 +2611,43 @@ UPDATE users:1 SET email = 'ada2@example.com';
 UPDATE users:1 SET visits = visits + 1, seen = time::now();
 UPDATE users:1 SET address.city = 'Lyon';
 UPDATE users:1 MERGE { address: { city: 'Lyon' } };
+UPDATE users:1 SET email = 'ada2@example.com', version = 2 WHERE version = 1;
 UPSERT users:1 = { name: 'ada' };
 UPSERT users:1 SET visits = 1;
 DELETE users:1;
 ```
+
+**`WHERE` on an `UPDATE` is a compare-and-set, and a lost race is a refusal.**
+It is the clause a caller writes when somebody else may be writing the same
+record: `UPDATE orders:7 SET status = 'paid', version = 4 WHERE version = 3`
+changes the record only if it still says what you last read, and **refuses** if it
+does not — `record 7 does not say what the condition asserts`. Nothing is
+written, no index moves, and because it is a refusal rather than a count, the
+failure discards the work above it in the transaction. That is the difference
+that makes it worth having: a guard you can forget to check is not a guard.
+
+The clause follows from what `UPDATE` already is. This verb asserts the record is
+**present** and refuses when it is not, which is the whole of how it differs from
+`UPSERT`; asserting the record is also in a particular state is that same
+assertion one step further in, so it fails the same way. `UPSERT` therefore takes
+no `WHERE` at all — it writes the record whether or not it is there, so there is
+no prior state to test — and says so rather than accepting the clause and
+ignoring it.
+
+**The condition reads the record as stored, never the record being written.**
+`WHERE version = 3` beside `SET version = 4` compares the **3** that is there
+against the 3 you expected. It has to: reading the payload would compare the 4
+this very statement is setting, so every compare-and-set in every program would
+be false, and nothing would be in an error state to say why.
+
+It composes with a queue, which is the reason it exists. A worker that holds a
+job may compare-and-set it — `UPDATE jobs:7 SET stage = 'fetched', version = 2
+WHERE version = 1` — and the hold, its deadline and its attempt count are
+untouched, because the record is edited in place. The alternative a store used to
+have to write, a conditional `DELETE` followed by a `CREATE`, destroys the hold
+silently: the fields live **on** the record, so recreating it drops them with no
+error, and the work is claimable again while its first holder still believes it
+holds it.
 
 **`*` composes.** It may stand among the values written out —
 `SELECT *, price * quantity AS total FROM users` answers with the record **and**

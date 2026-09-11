@@ -2146,20 +2146,41 @@ impl Parser<'_> {
                 assignments.push(self.assignment()?);
             }
             let edit = Edit::Fields(assignments);
-            return Ok(Self::changed(verb, target, edit, self.answer(verb)?));
+            let condition = self.edit_condition(verb)?;
+            return Ok(Self::changed(
+                verb,
+                target,
+                edit,
+                condition,
+                self.answer(verb)?,
+            ));
         }
         if edits && self.eat_keyword(Keyword::Merge) {
             // The **value** position, unlike `SET`'s right-hand sides: this is
             // one whole object standing for the change, not a route computed
             // from the record it is changing.
             let edit = Edit::Merge(self.expression()?);
-            return Ok(Self::changed(verb, target, edit, self.answer(verb)?));
+            let condition = self.edit_condition(verb)?;
+            return Ok(Self::changed(
+                verb,
+                target,
+                edit,
+                condition,
+                self.answer(verb)?,
+            ));
         }
         self.expect_punct(Punct::Equals, "`=` and the value to write")?;
         let value = self.expression()?;
         Ok(match verb {
             Keyword::Update | Keyword::Upsert => {
-                Self::changed(verb, target, Edit::Whole(value), self.answer(verb)?)
+                let condition = self.edit_condition(verb)?;
+                Self::changed(
+                    verb,
+                    target,
+                    Edit::Whole(value),
+                    condition,
+                    self.answer(verb)?,
+                )
             }
             Keyword::Set => StatementKind::Set { target, value },
             _ => StatementKind::Create {
@@ -2292,7 +2313,13 @@ impl Parser<'_> {
     }
 
     /// The statement a change verb makes of a target, an edit and an answer.
-    fn changed(verb: Keyword, target: RecordTarget, edit: Edit, answer: Answer) -> StatementKind {
+    fn changed(
+        verb: Keyword,
+        target: RecordTarget,
+        edit: Edit,
+        condition: Option<Expr>,
+        answer: Answer,
+    ) -> StatementKind {
         if verb == Keyword::Upsert {
             StatementKind::Upsert {
                 target,
@@ -2303,9 +2330,36 @@ impl Parser<'_> {
             StatementKind::Update {
                 target,
                 edit,
+                condition,
                 answer,
             }
         }
+    }
+
+    /// `WHERE <condition>` after an edit — the compare-and-set clause.
+    ///
+    /// `UPDATE` only. `UPSERT` asserts nothing about the record it writes, so a
+    /// condition on it has no meaning to give; it is refused here rather than
+    /// parsed and ignored, because a clause that parses and does nothing is the
+    /// shape a caller trusts.
+    fn edit_condition(&mut self, verb: Keyword) -> Result<Option<Expr>> {
+        if self.peek_keyword() != Some(Keyword::Where) {
+            return Ok(None);
+        }
+        if verb == Keyword::Upsert {
+            return Err(self.error_here(
+                "no `WHERE` — `UPSERT` writes the record whether or not it is                  there, so there is no prior state to test; use `UPDATE` to                  change a record only when it already says something",
+            ));
+        }
+        self.advance();
+        // `condition()` and not `expression()`, and the difference is the whole
+        // clause: in a **condition** position a bare name is a route into the
+        // record, and in a value position it is a table. Parsed as an
+        // expression, `WHERE visits = 3` asks for a table called `visits`.
+        let condition = self.condition()?;
+        super::shape::no_fold(&condition)?;
+        super::shape::check_several(&condition)?;
+        Ok(Some(condition))
     }
 
     /// `name = 'grace'` — one route and what it becomes.
