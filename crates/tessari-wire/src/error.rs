@@ -49,6 +49,27 @@ pub enum Error {
         tag: u8,
     },
 
+    /// A ballot naming a candidate other than the peer that presented it.
+    ///
+    /// The same family as [`Error::OutOfTurn`] and refused for the same reason:
+    /// a peer speaking this protocol incorrectly, rather than a vote to answer.
+    /// §C-07 settled that no node proxies, so there is no legitimate sender of
+    /// somebody else's ballot — and a refusal would be the wrong shape anyway,
+    /// because a `Vote` is an answer *about* a candidate and this frame has not
+    /// established which candidate it is about.
+    ///
+    /// # Why this is load-bearing and was not before
+    ///
+    /// A voter now grants a ballot from the node it is **already holding a
+    /// grant for**, even while that grant is alive, because re-granting to the
+    /// holder adds no second holder. That makes the name in the ballot decide a
+    /// grant. A peer free to write the incumbent's id into its own ballot would
+    /// collect exactly the grants the liveness rule exists to withhold, and the
+    /// cluster would have two holders — reached through the one door opened to
+    /// let the incumbent keep the lease it already had.
+    #[error("a ballot named a candidate other than the peer that proved itself")]
+    NotItsOwnBallot,
+
     /// A frame kind this build does not have.
     ///
     /// The connection closes rather than the frame being skipped: a protocol

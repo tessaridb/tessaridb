@@ -157,6 +157,15 @@ impl Peers {
             Some((tag, body)) => match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::Ballot) => {
                     let asked = Ballot::decode(&body)?;
+                    // The identity that decides a grant is the one the
+                    // handshake proved, never the one the frame claims. Checked
+                    // here rather than inside the voter because this is the only
+                    // place both are in scope, and because a rule that took a
+                    // proved identity as an argument would be a rule that could
+                    // be handed an unproved one.
+                    if asked.candidate != said.node {
+                        return Err(Error::NotItsOwnBallot);
+                    }
                     let vote = voter.asked(&asked, std::time::Instant::now());
                     frame::write_tagged(&mut link, PeerFrame::Vote.tag(), &vote.encode())?;
                     Some(vote)
@@ -508,6 +517,54 @@ mod tests {
     }
 
     #[test]
+    fn a_ballot_naming_somebody_else_never_reaches_the_voter() {
+        // The hole W228 opens and closes in the same wave. A voter now grants a
+        // ballot from the node it is already holding a grant for — so a peer
+        // free to write the incumbent's id into its own ballot would collect
+        // exactly the grants the liveness rule exists to withhold, and the
+        // cluster would have two holders.
+        //
+        // The credential says THERE and the ballot says HERE. Refused at the
+        // door, before the voter is asked anything at all.
+        let authority = Authority::new();
+        let peers = Peers::bind(
+            "127.0.0.1:0",
+            authority.issue(HERE, Purpose::Peer),
+            &authority.der(),
+        )
+        .expect("a peer door on loopback");
+        let address = peers.address().expect("the door's address");
+
+        let mine = hello(HERE);
+        let answering = std::thread::spawn(move || {
+            let mut voter = settled();
+            let met = peers.greet(&mine, &mut voter);
+            // The voter is handed back untouched: nothing was decided, which is
+            // the half a refusal-shaped answer would not have given.
+            (met, voter.decided())
+        });
+
+        let _ = call(
+            address,
+            authority.issue(THERE, Purpose::Peer),
+            &authority.der(),
+            HERE,
+            &hello(THERE),
+            Some(&Ballot {
+                epoch: Epoch::new(1),
+                candidate: HERE,
+            }),
+        );
+
+        let (met, decided) = answering.join().expect("the door's thread");
+        assert!(
+            matches!(met, Err(Error::NotItsOwnBallot)),
+            "expected the door to refuse the ballot outright, got {met:?}"
+        );
+        assert_eq!(decided, None, "the voter was never asked");
+    }
+
+    #[test]
     fn a_refusal_keeps_its_reason_and_its_wait_across_the_wire() {
         let authority = Authority::new();
         let peers = Peers::bind(
@@ -518,34 +575,30 @@ mod tests {
         .expect("a peer door on loopback");
         let address = peers.address().expect("the door's address");
 
-        // One voter, two rounds, and the second arrives while the first grant
-        // is unmistakably still alive.
+        // A grant this voter is already holding for somebody ELSE, so what
+        // crosses the wire is a challenger and not a renewal. W228 made that
+        // distinction decide the vote: the same candidate asking again is
+        // granted, because re-granting to the holder adds no second holder.
         let mine = hello(HERE);
         let answering = std::thread::spawn(move || {
-            let mut voter = settled();
-            let first = peers.greet(&mine, &mut voter);
-            let second = peers.greet(&mine, &mut voter);
-            (first, second)
+            let mut voter = incumbent();
+            peers.greet(&mine, &mut voter)
         });
 
-        let ask = |epoch: u64| {
-            call(
-                address,
-                authority.issue(THERE, Purpose::Peer),
-                &authority.der(),
-                HERE,
-                &hello(THERE),
-                Some(&Ballot {
-                    epoch: Epoch::new(epoch),
-                    candidate: THERE,
-                }),
-            )
-            .expect("a peer that proved itself may ask")
-            .1
-        };
-
-        assert_eq!(ask(1), Some(Vote::Granted));
-        let refused = ask(2).expect("a vote came back");
+        let refused = call(
+            address,
+            authority.issue(THERE, Purpose::Peer),
+            &authority.der(),
+            HERE,
+            &hello(THERE),
+            Some(&Ballot {
+                epoch: Epoch::new(2),
+                candidate: THERE,
+            }),
+        )
+        .expect("a peer that proved itself may ask")
+        .1
+        .expect("a vote came back");
         drop(answering.join().expect("the door's thread"));
 
         // The reason survives, and so does the wait: a candidate told only "no"
