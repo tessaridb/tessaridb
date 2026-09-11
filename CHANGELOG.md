@@ -20,6 +20,25 @@ Work landed after the tag was cut, and recorded here because this file's top
 section must name the version this package carries — so there is nowhere else
 for it to go until the next version is opened.
 
+**A file route cannot delete a record out of an ordinary table.**
+`DELETE /files/{ns}/{db}/{name}/{path}` ran a plain record delete, which asks
+nothing about whether the name is a bucket — so it answered `204` against any
+table at all, reporting a file removed from a bucket that does not exist, and
+removed the record outright whenever one carried that path as its id. `PUT` and
+`GET` were never exposed to this because they are file statements and resolve the
+bucket themselves; a delete is not one, and nothing re-checked it when the
+listing route was fixed. It now asks `INFO FOR BUCKET` first, so all four routes
+agree at last about what a bucket is.
+
+**A bucket that is not there answers `404`.** All four `/files` routes refused a
+name that is not a bucket with `400`, and nothing had chosen `400` — it is where
+the error map sends everything it has no arm for. A request for a bucket that is
+not there is not a malformed request, and `400` told a caller they had written it
+wrongly, which was the one thing they had not done. The whole file surface now
+reads one way: **`404` means it is not here**, whether the missing part is the
+file or the bucket, and the sentence in the body says which. A missing namespace
+or database is unchanged, and the protocol specification now states all of this.
+
 **A claimed queue record can be written to again.** Taking a job and then
 recording anything on it was refused — `UPDATE jobs:7 SET stage = 'fetched'` on a
 record you hold came back naming `claimed_until`, a field you had not typed,
