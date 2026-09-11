@@ -173,10 +173,18 @@ pub enum Error {
     ///
     /// Not retryable: the same record will still be from the other branch. The
     /// node re-bootstraps (ADR-0059).
+    ///
+    /// Named for what the databases call it. Kafka added a leader epoch to the
+    /// log for exactly this failure (KIP-101) after the high-watermark protocol
+    /// was found to diverge logs silently; PostgreSQL increments a timeline on
+    /// promotion; MongoDB carries a term in each oplog entry and rolls back to
+    /// the common point. It is not a chain's fork and the epoch is not a block
+    /// height.
     #[error(
-        "log fork at {sequence}: this store holds epoch {held}, and epoch {offered} was offered"
+        "log divergence at {sequence}: this store holds epoch {held}, \
+         and epoch {offered} was offered"
     )]
-    LogFork {
+    LogDivergence {
         /// The position both leaderships wrote.
         sequence: Sequence,
         /// The leadership whose record this store already applied.
@@ -496,7 +504,7 @@ impl Error {
     #[must_use]
     pub fn category(&self) -> ErrorCategory {
         match self {
-            Self::Conflict { .. } | Self::LogFork { .. } => ErrorCategory::Conflict,
+            Self::Conflict { .. } | Self::LogDivergence { .. } => ErrorCategory::Conflict,
             Self::CommitContention { .. } => ErrorCategory::Busy,
             Self::LogGap { .. }
             | Self::NameTaken { .. }

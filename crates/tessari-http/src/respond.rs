@@ -223,13 +223,16 @@ pub(crate) fn metrics(
         ));
         // Any value above zero means this node was offered a record from a
         // leadership other than the one it applied at that position, and refused
-        // it. It does not fall back to zero: the fork an operator most needs to
-        // see is the one that stopped happening on its own.
+        // it. It does not fall back to zero: the divergence an operator most
+        // needs to see is the one that stopped happening on its own.
         out.push_str(
-            "# HELP tessari_log_forks Log positions another leadership tried to rewrite.\n",
+            "# HELP tessari_log_divergences Log positions another leadership tried to rewrite.\n",
         );
-        out.push_str("# TYPE tessari_log_forks counter\n");
-        out.push_str(&format!("tessari_log_forks {}\n", held.log_forks));
+        out.push_str("# TYPE tessari_log_divergences counter\n");
+        out.push_str(&format!(
+            "tessari_log_divergences {}\n",
+            held.log_divergences
+        ));
     }
 
     // Worth a line of its own because it is the one number that says whether

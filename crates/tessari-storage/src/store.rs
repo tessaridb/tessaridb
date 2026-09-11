@@ -40,14 +40,14 @@ pub struct Health {
     /// Carried because "the process is up" and "the store is readable" are
     /// different claims and only the second one is useful.
     pub committed: Sequence,
-    /// Log forks this process has refused.
+    /// Log divergences this process has refused.
     ///
     /// Not persisted, for the reason `crate::running`'s header gives about
     /// anything else that describes a process rather than a store: a count that
     /// outlived the process that observed it would be a claim nobody can check.
     /// It is here rather than nowhere because a detector added after the first
     /// incident is a detector that was absent during it.
-    pub log_forks: u64,
+    pub log_divergences: u64,
 }
 
 impl Health {
@@ -111,12 +111,12 @@ pub struct Store {
     /// path there is, and a catalog read there would charge every table for a
     /// feature only a series has.
     series: Arc<crate::series::SeriesRegistry>,
-    /// Log forks refused since this process opened the store.
+    /// Log divergences refused since this process opened the store.
     ///
     /// Shared with every handle for the same reason the snapshot registry is:
     /// two handles to one store are not two stores, and a count split between
     /// them is a count nobody can read.
-    forks: Arc<AtomicU64>,
+    divergences: Arc<AtomicU64>,
 }
 
 impl Store {
@@ -148,7 +148,7 @@ impl Store {
             vault: Arc::new(crate::vault::OpenVault::sealed()),
             audit: Arc::new(crate::audit::AuditTrail::default()),
             series: Arc::new(crate::series::SeriesRegistry::default()),
-            forks: Arc::new(AtomicU64::new(0)),
+            divergences: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -350,7 +350,7 @@ impl Store {
         Ok(Health {
             background_errors: self.backend.background_errors()?,
             committed: self.committed_tail()?,
-            log_forks: self.forks.load(Ordering::Relaxed),
+            log_divergences: self.divergences.load(Ordering::Relaxed),
         })
     }
 
@@ -459,7 +459,7 @@ impl Store {
     /// incident. Skipping *forward* is refused, because a gap means the state
     /// would no longer be explained by any log.
     ///
-    /// # A retry and a fork arrive the same way
+    /// # A retry and a divergence arrive the same way
     ///
     /// Both land on a position this store already holds, and until the log
     /// record carried an epoch there was nothing to tell them apart — so the
@@ -468,17 +468,17 @@ impl Store {
     /// epoch held **at that sequence**, read from the log, and not against the
     /// store's latest epoch: a follower catching up legitimately replays records
     /// from leaderships that have since ended, and every one of them would be a
-    /// false fork against the latest.
+    /// false divergence against the latest.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::LogFork`] when another leadership wrote this position,
+    /// Returns [`Error::LogDivergence`] when another leadership wrote this position,
     /// [`Error::LogGap`] when the record is not the next one, and the mapped
     /// backend or decoding failure otherwise.
     pub fn apply_record(&self, at: Sequence, record: &LogRecord) -> Result<()> {
         let applied = self.committed_tail()?;
         if at.get() <= applied.get() {
-            self.refuse_a_fork(at, record.epoch())?;
+            self.refuse_a_divergence(at, record.epoch())?;
             return Ok(());
         }
         let expected = Sequence::new(applied.get().saturating_add(1));
@@ -518,10 +518,16 @@ impl Store {
 
     /// Refuse a record from a leadership other than the one held at `at`.
     ///
+    /// The vocabulary is the databases', not the chains': Kafka calls this log
+    /// divergence and fixed it by putting a leader epoch in the log (KIP-101),
+    /// PostgreSQL calls it a diverging timeline, MongoDB reaches the common
+    /// point and rolls back. Only a leaderless design escapes it, by paying
+    /// conflict resolution instead.
+    ///
     /// Costs one point read and a fixed eight-byte inspection — the epoch sits
     /// in front of the mutations precisely so this does not decode the record —
     /// and it runs only on the branch a duplicate delivery takes.
-    fn refuse_a_fork(&self, at: Sequence, offered: Epoch) -> Result<()> {
+    fn refuse_a_divergence(&self, at: Sequence, offered: Epoch) -> Result<()> {
         let stored = self
             .backend
             .get(LogKey::keyspace(), &LogKey::new(at).encode())?;
@@ -536,8 +542,8 @@ impl Store {
         if held == offered {
             return Ok(());
         }
-        self.forks.fetch_add(1, Ordering::Relaxed);
-        Err(Error::LogFork {
+        self.divergences.fetch_add(1, Ordering::Relaxed);
+        Err(Error::LogDivergence {
             sequence: at,
             held,
             offered,
