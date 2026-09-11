@@ -175,3 +175,86 @@ fn a_transaction_that_writes_nothing_is_not_fenced() {
         .commit()
         .expect("an empty commit writes nothing, so there is nothing to refuse");
 }
+
+#[test]
+fn a_node_nobody_made_a_leader_publishes_no_remainder_at_all() {
+    // `None` rather than zero, and the distinction is the whole reason this is
+    // an `Option`: a store standing alone is not a leader whose time has run
+    // out, and reporting it as one would leave every single-node deployment
+    // permanently at the alarm value.
+    let store = store();
+    assert!(store.health().unwrap().lease_remaining.is_none());
+}
+
+#[test]
+fn a_lease_with_room_in_it_publishes_how_much() {
+    let store = store();
+    let ttl = LEASE_GUARD.saturating_add(Duration::from_secs(60));
+    store.hold_lease(ttl);
+    let left = store
+        .health()
+        .unwrap()
+        .lease_remaining
+        .expect("a lease was granted");
+    // Bounded on both sides rather than compared to one number: the remainder
+    // is measured to the fence, so it can never exceed `ttl - δ`, and it should
+    // not have lost a whole second to the work between the two calls.
+    assert!(
+        left <= ttl.saturating_sub(LEASE_GUARD),
+        "the remainder {left:?} reaches past the fence"
+    );
+    assert!(
+        left >= ttl
+            .saturating_sub(LEASE_GUARD)
+            .saturating_sub(Duration::from_secs(1)),
+        "the remainder {left:?} is implausibly short for a {ttl:?} lease"
+    );
+}
+
+#[test]
+fn the_remainder_runs_out_at_the_fence_and_not_at_the_expiry() {
+    // The sharp property, against a stated instant so it needs no clock: at the
+    // fence there is nothing left, while the grant itself still has δ to run.
+    // A remainder measured to the expiry would show a writable window this node
+    // is already forbidden to use.
+    let taken = Instant::now();
+    for seconds in [3_u64, 5, 10, 30, 300] {
+        let ttl = Duration::from_secs(seconds);
+        let lease = Lease::taken_at(taken, ttl);
+        assert_eq!(
+            lease.left(lease.fence()),
+            Duration::ZERO,
+            "a {ttl:?} lease still reports time left at its own fence"
+        );
+        assert!(
+            lease.left(taken) <= ttl.saturating_sub(LEASE_GUARD),
+            "a {ttl:?} lease reports a window wider than the fence allows"
+        );
+        assert!(
+            lease.expiry() > lease.fence(),
+            "a {ttl:?} lease has nothing between its fence and its expiry"
+        );
+    }
+}
+
+#[test]
+fn the_remainder_and_the_refusal_are_one_question_asked_twice() {
+    // They are derived from the same `fenced(now)`, and they must never
+    // disagree: a diagnostic reporting time left while the commit is already
+    // refusing is worse than no diagnostic, because it sends whoever reads it
+    // to look for a bug in the write path.
+    let spent = store();
+    spent.hold_lease(Duration::ZERO);
+    assert_eq!(
+        spent.health().unwrap().lease_remaining,
+        Some(Duration::ZERO)
+    );
+    assert!(spent.lease_spent().is_some());
+    assert!(write(&spent, "refused").is_err());
+
+    let live = store();
+    live.hold_lease(LEASE_GUARD.saturating_add(Duration::from_secs(60)));
+    assert!(live.health().unwrap().lease_remaining > Some(Duration::ZERO));
+    assert!(live.lease_spent().is_none());
+    assert!(write(&live, "taken").is_ok());
+}

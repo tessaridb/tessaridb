@@ -818,6 +818,17 @@ impl Session<'_> {
         // cluster was told, and this is what actually collected. A peer
         // declared and never seen appears in `peers` and not here, which is
         // the most useful thing either list says.
+        // Asked through `health()` rather than of the lease directly, so that
+        // this and `/metrics` are one answer to one question rather than two
+        // that can drift.
+        let lease = match self.store.health()?.lease_remaining {
+            Some(left) => tessari_types::Duration::new(
+                i64::try_from(left.as_secs()).unwrap_or(i64::MAX),
+                left.subsec_nanos(),
+            )
+            .map_or(Value::Null, Value::Duration),
+            None => Value::Null,
+        };
         let followers = self
             .store
             .follower_lag()?
@@ -876,6 +887,13 @@ impl Session<'_> {
                     // what was declared. Joining them would put a lag figure on
                     // a peer that has never asked for anything.
                     ("followers".to_owned(), Value::Array(followers)),
+                    // `null` on a node nobody made a leader, which is a
+                    // different statement from zero: a store standing alone is
+                    // not a leader whose time has run out. When it is a
+                    // duration it is the one the concept names as the
+                    // split-brain signal — this at zero while writes are still
+                    // being taken is the state the fence exists to prevent.
+                    ("lease".to_owned(), lease),
                 ])),
             ),
         ]))

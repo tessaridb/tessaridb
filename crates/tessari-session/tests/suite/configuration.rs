@@ -154,6 +154,46 @@ fn desired(report: &std::collections::BTreeMap<String, Value>) -> Option<Vec<Str
     }
 }
 
+/// How long this node says it may still write, as `INFO FOR NODE` answers it.
+///
+/// `None` when the field is `null` — a node nobody made a leader — which is a
+/// different answer from a duration of zero and is asserted as such below.
+fn lease(report: &std::collections::BTreeMap<String, Value>) -> Option<Value> {
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    match cluster.get("lease") {
+        Some(Value::Null) => None,
+        Some(found) => Some(found.clone()),
+        None => panic!("no lease field: {cluster:?}"),
+    }
+}
+
+#[test]
+fn a_node_nobody_made_a_leader_reports_no_lease_rather_than_none_left() {
+    // The field is present and `null`, not absent. An operator reading this has
+    // to be able to tell "no leadership here" from "leadership about to lapse",
+    // and a missing key answers neither.
+    let store = closed(&backend());
+    assert_eq!(lease(&reported(&store)), None);
+}
+
+#[test]
+fn a_node_holding_a_lease_reports_the_time_it_has_left() {
+    let store = closed(&backend());
+    store.hold_lease(Duration::from_secs(120));
+    let Some(Value::Duration(left)) = lease(&reported(&store)) else {
+        panic!("a granted lease is reported as a duration");
+    };
+    // Positive, and inside the fence rather than inside the grant: the δ the
+    // cluster waits before reassigning is not time this node may write in.
+    assert!(left.seconds() > 0, "the lease reports {left:?} remaining");
+    assert!(
+        left.seconds() <= 118,
+        "the lease reports {left:?}, which reaches past its own fence"
+    );
+}
+
 #[test]
 fn a_fresh_node_reports_both_halves_and_an_empty_topology() {
     // The shape before anything is configured, because that is what every later

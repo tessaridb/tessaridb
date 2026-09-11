@@ -50,6 +50,16 @@ pub struct Health {
     /// It is here rather than nowhere because a detector added after the first
     /// incident is a detector that was absent during it.
     pub log_divergences: u64,
+    /// How long this node may still write under its lease, or `None` when it
+    /// holds none.
+    ///
+    /// Here beside the divergence count and for the same reason: this is where
+    /// the detectors live, and the concept names *lease remaining* as the
+    /// split-brain signal because the dangerous state is exactly this reaching
+    /// zero while writes are still being accepted. `None` says no lease was
+    /// granted, which is the ordinary state of a store standing alone and is
+    /// not a value of zero.
+    pub lease_remaining: Option<std::time::Duration>,
 }
 
 impl Health {
@@ -439,6 +449,7 @@ impl Store {
             background_errors: self.backend.background_errors()?,
             committed: self.committed_tail()?,
             log_divergences: self.divergences.load(Ordering::Relaxed),
+            lease_remaining: self.lease.remaining(),
         })
     }
 

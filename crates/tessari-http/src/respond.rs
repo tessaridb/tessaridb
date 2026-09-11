@@ -233,6 +233,22 @@ pub(crate) fn metrics(
             "tessari_log_divergences {}\n",
             held.log_divergences
         ));
+        // Absent rather than zero on a node holding no lease, because a series
+        // that is always zero on every standalone store would train whoever
+        // watches it to ignore the one reading that matters. When it is here it
+        // is the split-brain signal: it heads toward zero, and zero while the
+        // node is still accepting writes is the state the lease exists to
+        // prevent.
+        if let Some(left) = held.lease_remaining {
+            out.push_str(
+                "# HELP tessari_lease_remaining_seconds Writable time left under this node's lease.\n",
+            );
+            out.push_str("# TYPE tessari_lease_remaining_seconds gauge\n");
+            out.push_str(&format!(
+                "tessari_lease_remaining_seconds {}\n",
+                left.as_secs_f64()
+            ));
+        }
     }
 
     // Worth a line of its own because it is the one number that says whether

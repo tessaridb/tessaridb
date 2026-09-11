@@ -105,6 +105,17 @@ impl Lease {
     pub fn spent_for(&self, now: Instant) -> Duration {
         now.saturating_duration_since(self.fence)
     }
+
+    /// How much writable time is left as of `now`, or zero.
+    ///
+    /// Measured to the **fence** and not to the expiry, because the fence is
+    /// what actually stops this node writing. The δ between them belongs to the
+    /// cluster, not to the holder, and a holder shown the larger number would be
+    /// shown a window it may not use.
+    #[must_use]
+    pub fn left(&self, now: Instant) -> Duration {
+        self.fence.saturating_duration_since(now)
+    }
 }
 
 /// The lease this process is writing under, if it was given one.
@@ -143,6 +154,36 @@ impl Held {
                 let lease = (*held)?;
                 let now = Instant::now();
                 lease.fenced(now).then(|| lease.spent_for(now))
+            }
+            Err(_) => Some(Duration::ZERO),
+        }
+    }
+
+    /// How long this node may still write, or `None` if it was never made a
+    /// leader.
+    ///
+    /// The counterpart of [`Held::spent`] and the one an operator watches: a
+    /// signal that appears only once the window has shut is a post-mortem, while
+    /// a number that is normally positive and heads toward zero is an alarm. The
+    /// split-brain window is exactly *this reached zero and the node is still
+    /// writing*.
+    ///
+    /// `None` is a different statement from `Some(0)`. A node nobody granted
+    /// leadership to is not a leader running out of time, and reporting it as
+    /// one would put every single-node store permanently at zero.
+    ///
+    /// # A poisoned lock reports zero, not absence
+    ///
+    /// Matching [`Held::spent`] rather than [`crate::followers`]. The two are
+    /// one question asked twice, so they must never disagree: a diagnostic
+    /// saying *you have time left* while the fence has already closed is worse
+    /// than no diagnostic. The invariant is that this reads `Some(0)` in exactly
+    /// the cases `spent` reads `Some`.
+    pub fn remaining(&self) -> Option<Duration> {
+        match self.lease.lock() {
+            Ok(held) => {
+                let lease = (*held)?;
+                Some(lease.left(Instant::now()))
             }
             Err(_) => Some(Duration::ZERO),
         }
