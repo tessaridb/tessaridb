@@ -67,7 +67,7 @@ pub use error::{Error, Result};
 pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
 pub use followers::FollowerLag;
 pub use graph::vector_of;
-pub use lease::{GUARD as LEASE_GUARD, Lease};
+pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};
 pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
 pub use schema::{Violation, violations};

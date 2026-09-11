@@ -49,6 +49,8 @@ mod credential;
 mod error;
 mod frame;
 #[cfg(feature = "server")]
+mod grant;
+#[cfg(feature = "server")]
 mod link;
 mod message;
 #[cfg(feature = "server")]
@@ -64,6 +66,8 @@ pub use crate::client::{Client, Feed};
 #[cfg(feature = "server")]
 pub use crate::credential::{fingerprint, names, presented};
 pub use crate::error::{Error, Result};
+#[cfg(feature = "server")]
+pub use crate::grant::{Ballot, Leadership, Refused, Round, Vote, Voter};
 #[cfg(feature = "server")]
 pub use crate::link::{Credential, Peers, call};
 #[cfg(feature = "server")]

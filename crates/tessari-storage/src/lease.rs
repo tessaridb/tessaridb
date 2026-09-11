@@ -33,11 +33,13 @@
 //!
 //! # What is not here
 //!
-//! **Nothing grants a lease.** Granting is a cluster act and needs the wire that
-//! does not exist yet. This module is the fence, and a store that has never been
-//! given a lease is not fenced by it — a node nobody granted leadership to is
-//! not a leader running out of it. Once granting exists, *writing without a
-//! lease* becomes the thing to refuse, and that is a different wave.
+//! **Nothing here grants a lease.** Granting is a cluster act, and the rules for
+//! it live beside the peer link that carries them rather than in the storage
+//! engine — this side owns the fence and the constants both ends have to agree
+//! on, and nothing more. A store that has never been given a lease is not fenced
+//! by it: a node nobody granted leadership to is not a leader running out of it.
+//! Once a node is *wired* to a grantor, *writing without a lease* becomes the
+//! thing to refuse, and that is a different wave again.
 //!
 //! Nothing here is persisted either, and the reason is [`crate::store`]'s own:
 //! an unreplicated file asserting a cluster-wide fact **is** the split-brain. A
@@ -53,6 +55,18 @@ use std::time::{Duration, Instant};
 /// a value somebody will lower to zero the day a lease refuses a write they
 /// wanted.
 pub const GUARD: Duration = Duration::from_secs(2);
+
+/// How long a leadership grant is good for.
+///
+/// A cluster constant rather than a field on a request, because a candidate that
+/// could name its own TTL could name a long one, and the value has to mean the
+/// same thing to the holder and to everyone who granted it — a lease whose
+/// length the two ends disagree about is not a lease.
+///
+/// The holder's usable window is `TTL - GUARD`, so a renewal has eight seconds
+/// to succeed. Making this an operator policy is a real question and a later
+/// one; the first cluster gets one value that every node already agrees on.
+pub const TTL: Duration = Duration::from_secs(10);
 
 /// Leadership held for a bounded time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
