@@ -11,7 +11,7 @@
 //! be to do nothing.
 
 use tessari_kv::ErrorCategory;
-use tessari_types::{FieldKind, RecordId, Sequence, article};
+use tessari_types::{Epoch, FieldKind, RecordId, Sequence, article};
 
 /// Result alias for every fallible operation in this crate.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -159,6 +159,30 @@ pub enum Error {
         expected: Sequence,
         /// The sequence that was offered instead.
         found: Sequence,
+    },
+
+    /// Two leaderships wrote the same log position.
+    ///
+    /// The already-applied branch exists for an ordinary retry, and for a store
+    /// with one writer a retry is the only thing that can arrive at a position
+    /// it already holds. A cluster makes a second writer possible for the window
+    /// between a leader failing and being noticed, and the records those two
+    /// wrote collide. Accepting the offered one silently keeps whichever data
+    /// this node happened to have, with no error and no gap, so two nodes answer
+    /// differently while both report healthy.
+    ///
+    /// Not retryable: the same record will still be from the other branch. The
+    /// node re-bootstraps (ADR-0059).
+    #[error(
+        "log fork at {sequence}: this store holds epoch {held}, and epoch {offered} was offered"
+    )]
+    LogFork {
+        /// The position both leaderships wrote.
+        sequence: Sequence,
+        /// The leadership whose record this store already applied.
+        held: Epoch,
+        /// The leadership whose record was offered instead.
+        offered: Epoch,
     },
 
     /// A catalog name is already in use at that level.
@@ -472,7 +496,7 @@ impl Error {
     #[must_use]
     pub fn category(&self) -> ErrorCategory {
         match self {
-            Self::Conflict { .. } => ErrorCategory::Conflict,
+            Self::Conflict { .. } | Self::LogFork { .. } => ErrorCategory::Conflict,
             Self::CommitContention { .. } => ErrorCategory::Busy,
             Self::LogGap { .. }
             | Self::NameTaken { .. }

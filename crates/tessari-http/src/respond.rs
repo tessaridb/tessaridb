@@ -221,6 +221,15 @@ pub(crate) fn metrics(
             "tessari_background_errors {}\n",
             held.background_errors
         ));
+        // Any value above zero means this node was offered a record from a
+        // leadership other than the one it applied at that position, and refused
+        // it. It does not fall back to zero: the fork an operator most needs to
+        // see is the one that stopped happening on its own.
+        out.push_str(
+            "# HELP tessari_log_forks Log positions another leadership tried to rewrite.\n",
+        );
+        out.push_str("# TYPE tessari_log_forks counter\n");
+        out.push_str(&format!("tessari_log_forks {}\n", held.log_forks));
     }
 
     // Worth a line of its own because it is the one number that says whether

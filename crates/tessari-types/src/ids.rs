@@ -140,6 +140,50 @@ impl fmt::Display for Sequence {
     }
 }
 
+/// Which leadership wrote a log position.
+///
+/// It increments once per leadership change and never decreases. The sequence
+/// alone cannot tell a re-sent record from a divergent one, because both arrive
+/// at a position the store already holds; the epoch is what makes those two
+/// cases distinguishable, and it is deliberately a separate number rather than
+/// a wider sequence so that record versions — which are sequences, in the key —
+/// are untouched by a leadership change (ADR-0059).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Epoch(u64);
+
+impl Epoch {
+    /// The leadership a store has before anything elects one.
+    ///
+    /// Everything written before this store could form a cluster belongs here,
+    /// which is why it is the value an older record decodes as rather than an
+    /// error.
+    pub const ZERO: Self = Self(0);
+
+    /// Wrap a raw epoch number.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// The raw epoch number.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for Epoch {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl fmt::Display for Epoch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

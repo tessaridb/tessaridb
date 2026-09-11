@@ -129,7 +129,7 @@ fn stored_values_match_their_fixtures() {
     );
     assert_eq!(
         FormatVersion::CURRENT.encode().into_bytes(),
-        vec![0x01, 0x00, 0x00, 0x00, 0x00, 0x01]
+        vec![0x01, 0x00, 0x00, 0x00, 0x00, 0x02]
     );
     assert_eq!(
         Sequence::new(258).encode().into_bytes(),
@@ -168,8 +168,11 @@ fn fixtures_still_decode_to_what_they_were_written_as() {
         RecordValue::decode(&[0x01, 0x01]).unwrap(),
         RecordValue::Tombstone
     );
+    // Version 1 rather than CURRENT: these are the bytes a store written before
+    // the log record carried an epoch holds, and this build still opens it.
     assert_eq!(
         FormatVersion::decode(&[0x01, 0x00, 0x00, 0x00, 0x00, 0x01]).unwrap(),
-        FormatVersion::CURRENT
+        FormatVersion::new(1)
     );
+    assert!(FormatVersion::new(1).check_supported().is_ok());
 }

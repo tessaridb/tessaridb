@@ -7,13 +7,14 @@
 
 use std::ops::Bound;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tessari_encoding::{
     AppliedPositionKey, FormatVersion, FormatVersionKey, LogKey, LogRecord, NodeIdentity, Roles,
     StoreKey, StoreValue,
 };
 use tessari_kv::{KeyRange, KvBackend, ScanDirection, ScanRequest, WriteBatch};
-use tessari_types::Sequence;
+use tessari_types::{Epoch, Sequence};
 
 use crate::error::{Error, Result};
 use crate::feed::Changes;
@@ -39,6 +40,14 @@ pub struct Health {
     /// Carried because "the process is up" and "the store is readable" are
     /// different claims and only the second one is useful.
     pub committed: Sequence,
+    /// Log forks this process has refused.
+    ///
+    /// Not persisted, for the reason `crate::running`'s header gives about
+    /// anything else that describes a process rather than a store: a count that
+    /// outlived the process that observed it would be a claim nobody can check.
+    /// It is here rather than nowhere because a detector added after the first
+    /// incident is a detector that was absent during it.
+    pub log_forks: u64,
 }
 
 impl Health {
@@ -102,6 +111,12 @@ pub struct Store {
     /// path there is, and a catalog read there would charge every table for a
     /// feature only a series has.
     series: Arc<crate::series::SeriesRegistry>,
+    /// Log forks refused since this process opened the store.
+    ///
+    /// Shared with every handle for the same reason the snapshot registry is:
+    /// two handles to one store are not two stores, and a count split between
+    /// them is a count nobody can read.
+    forks: Arc<AtomicU64>,
 }
 
 impl Store {
@@ -133,6 +148,7 @@ impl Store {
             vault: Arc::new(crate::vault::OpenVault::sealed()),
             audit: Arc::new(crate::audit::AuditTrail::default()),
             series: Arc::new(crate::series::SeriesRegistry::default()),
+            forks: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -334,6 +350,7 @@ impl Store {
         Ok(Health {
             background_errors: self.backend.background_errors()?,
             committed: self.committed_tail()?,
+            log_forks: self.forks.load(Ordering::Relaxed),
         })
     }
 
@@ -442,13 +459,26 @@ impl Store {
     /// incident. Skipping *forward* is refused, because a gap means the state
     /// would no longer be explained by any log.
     ///
+    /// # A retry and a fork arrive the same way
+    ///
+    /// Both land on a position this store already holds, and until the log
+    /// record carried an epoch there was nothing to tell them apart — so the
+    /// second writer's record was discarded in silence and two nodes diverged
+    /// while both reported healthy (ADR-0059). The comparison is against the
+    /// epoch held **at that sequence**, read from the log, and not against the
+    /// store's latest epoch: a follower catching up legitimately replays records
+    /// from leaderships that have since ended, and every one of them would be a
+    /// false fork against the latest.
+    ///
     /// # Errors
     ///
-    /// Returns [`Error::LogGap`] when the record is not the next one, and the
-    /// mapped backend or decoding failure otherwise.
+    /// Returns [`Error::LogFork`] when another leadership wrote this position,
+    /// [`Error::LogGap`] when the record is not the next one, and the mapped
+    /// backend or decoding failure otherwise.
     pub fn apply_record(&self, at: Sequence, record: &LogRecord) -> Result<()> {
         let applied = self.committed_tail()?;
         if at.get() <= applied.get() {
+            self.refuse_a_fork(at, record.epoch())?;
             return Ok(());
         }
         let expected = Sequence::new(applied.get().saturating_add(1));
@@ -484,6 +514,34 @@ impl Store {
         let batch = crate::cardinality::maintain(self, record, batch, at)?;
         self.backend.apply(batch)?;
         Ok(())
+    }
+
+    /// Refuse a record from a leadership other than the one held at `at`.
+    ///
+    /// Costs one point read and a fixed eight-byte inspection — the epoch sits
+    /// in front of the mutations precisely so this does not decode the record —
+    /// and it runs only on the branch a duplicate delivery takes.
+    fn refuse_a_fork(&self, at: Sequence, offered: Epoch) -> Result<()> {
+        let stored = self
+            .backend
+            .get(LogKey::keyspace(), &LogKey::new(at).encode())?;
+        // Nothing to compare against. Unreachable today because the log keyspace
+        // is never truncated, and it becomes reachable the day retention reaches
+        // it — at which point a node that was away long enough is exactly the
+        // node this check was written for (Q-529).
+        let Some(value) = stored else {
+            return Ok(());
+        };
+        let held = LogRecord::epoch_in(value.as_slice())?;
+        if held == offered {
+            return Ok(());
+        }
+        self.forks.fetch_add(1, Ordering::Relaxed);
+        Err(Error::LogFork {
+            sequence: at,
+            held,
+            offered,
+        })
     }
 
     /// The backend, for the transaction's read and commit paths.
@@ -562,6 +620,44 @@ mod tests {
         assert_eq!(
             read_format_version(second.backend()).unwrap(),
             Some(FormatVersion::CURRENT)
+        );
+    }
+
+    #[test]
+    fn a_store_written_before_the_epoch_opens_and_is_not_rewritten() {
+        // The half of the format move that matters operationally: version 2 must
+        // not orphan the stores version 1 already wrote, and opening one must
+        // not quietly upgrade it either — an upgrade on open is a one-way door
+        // taken by a process that was only asked to read.
+        let shared = backend();
+        Store::open(Arc::clone(&shared)).unwrap();
+        shared
+            .apply(WriteBatch::new().put(
+                FormatVersionKey::keyspace(),
+                FormatVersionKey.encode(),
+                FormatVersion::new(1).encode(),
+            ))
+            .unwrap();
+
+        let store = Store::open(Arc::clone(&shared)).unwrap();
+        assert_eq!(
+            read_format_version(store.backend()).unwrap(),
+            Some(FormatVersion::new(1)),
+            "opening an older store left its recorded format alone"
+        );
+
+        store
+            .apply_record(Sequence::new(1), &LogRecord::new(Vec::new()))
+            .unwrap();
+        let (_, record) = store
+            .log_records(Sequence::new(1), 1)
+            .unwrap()
+            .pop()
+            .expect("the record just applied");
+        assert_eq!(
+            record.epoch(),
+            tessari_types::Epoch::ZERO,
+            "a build that elects nobody writes the first and only leadership"
         );
     }
 

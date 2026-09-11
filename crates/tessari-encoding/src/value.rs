@@ -17,7 +17,7 @@
 //! is an error rather than something to ignore.
 
 use tessari_kv::Value;
-use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
+use tessari_types::{DatabaseId, Epoch, NamespaceId, RecordId, Sequence, TableId};
 
 use crate::error::{Error, Result};
 use crate::order::{KeyReader, KeyWriter};
@@ -28,8 +28,24 @@ pub const CODEC_VERSION: u8 = 1;
 /// Bit 0 of the flags byte: the record was deleted at this version.
 const FLAG_TOMBSTONE: u8 = 0b0000_0001;
 
+/// Bit 1 of the flags byte: a log record names the leadership that wrote it.
+///
+/// A separate bit rather than bit 0 even though the flags byte is per value
+/// type: a decode routed to the wrong type is a thing that happens, and two
+/// meanings sharing one bit turn that mistake into a plausible wrong answer
+/// instead of an error.
+///
+/// Clear means epoch zero, which is what every record written before there was
+/// a cluster means, so nothing already on disk is rewritten. It is a flag and
+/// not a codec-version bump because the version is shared by every value in the
+/// store: bumping it to add a field to one of them would refuse all the others.
+const FLAG_EPOCH: u8 = 0b0000_0010;
+
 /// Bytes of header that precede every payload.
 const HEADER_LEN: usize = 2;
+
+/// Bytes an epoch occupies when a log record carries one.
+const EPOCH_LEN: usize = 8;
 
 /// A value that can be stored under a [`StoreKey`](crate::StoreKey).
 pub trait StoreValue: Sized {
@@ -159,6 +175,7 @@ pub struct Mutation {
 /// same no-unordered-iteration rule the apply path is.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LogRecord {
+    epoch: Epoch,
     mutations: Vec<Mutation>,
 }
 
@@ -170,7 +187,17 @@ impl LogRecord {
     /// the same state but not to the same bytes — and byte-identical replay is
     /// the property being protected.
     #[must_use]
-    pub fn new(mut mutations: Vec<Mutation>) -> Self {
+    pub fn new(mutations: Vec<Mutation>) -> Self {
+        Self::at(Epoch::ZERO, mutations)
+    }
+
+    /// Build a record written under a named leadership.
+    ///
+    /// `new` is the same call at [`Epoch::ZERO`], which is the honest value for
+    /// a store that has never elected anybody: this build allocates no epochs,
+    /// so every record it writes belongs to the first and only leadership.
+    #[must_use]
+    pub fn at(epoch: Epoch, mut mutations: Vec<Mutation>) -> Self {
         mutations.sort_by(|left, right| {
             (left.namespace, left.database, left.table, &left.id).cmp(&(
                 right.namespace,
@@ -179,7 +206,13 @@ impl LogRecord {
                 &right.id,
             ))
         });
-        Self { mutations }
+        Self { epoch, mutations }
+    }
+
+    /// The leadership that wrote this record.
+    #[must_use]
+    pub const fn epoch(&self) -> Epoch {
+        self.epoch
     }
 
     /// The mutations this record applies, in address order.
@@ -187,6 +220,44 @@ impl LogRecord {
     pub fn mutations(&self) -> &[Mutation] {
         &self.mutations
     }
+
+    /// Read the leadership out of encoded bytes without decoding the record.
+    ///
+    /// This is what the fixed offset was bought for. A store comparing the
+    /// record it holds at a position against the one it is offered needs one
+    /// number, and decoding the whole record to get it would put the cost of
+    /// every mutation on a path that exists to be cheap.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bytes are truncated, carry an unsupported
+    /// codec version, or set a reserved flag bit.
+    pub fn epoch_in(bytes: &[u8]) -> Result<Epoch> {
+        Ok(split_epoch(bytes)?.0)
+    }
+}
+
+/// Split the optional epoch off an encoded log record.
+///
+/// One splitter rather than one in `decode` and another in `epoch_in`: two
+/// readings of the same bytes is a thing that can disagree with itself, which is
+/// the reason this record carries no mutation count either.
+fn split_epoch(bytes: &[u8]) -> Result<(Epoch, &[u8])> {
+    let (flags, payload) = split_header(bytes, FLAG_EPOCH)?;
+    if flags & FLAG_EPOCH == 0 {
+        return Ok((Epoch::ZERO, payload));
+    }
+    let raw: [u8; EPOCH_LEN] = payload
+        .get(..EPOCH_LEN)
+        .and_then(|head| head.try_into().ok())
+        .ok_or(Error::ValueTruncated {
+            len: bytes.len(),
+            needed: HEADER_LEN.saturating_add(EPOCH_LEN),
+        })?;
+    Ok((
+        Epoch::new(u64::from_be_bytes(raw)),
+        payload.get(EPOCH_LEN..).unwrap_or_default(),
+    ))
 }
 
 impl StoreValue for LogRecord {
@@ -212,13 +283,24 @@ impl StoreValue for LogRecord {
                 .put_fixed(encoded.as_slice());
         }
         let payload = writer.finish();
-        let mut buffer = with_header(0, payload.len());
+        // The epoch goes in front of the mutations rather than into them, so a
+        // reader that only wants to know which leadership wrote this record
+        // reads a fixed offset instead of walking every mutation in it.
+        let (flags, epoch) = if self.epoch == Epoch::ZERO {
+            (0, None)
+        } else {
+            (FLAG_EPOCH, Some(self.epoch.get().to_be_bytes()))
+        };
+        let mut buffer = with_header(flags, payload.len().saturating_add(EPOCH_LEN));
+        if let Some(epoch) = epoch {
+            buffer.extend_from_slice(&epoch);
+        }
         buffer.extend_from_slice(&payload);
         Value::from(buffer)
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
-        let (_, payload) = split_header(bytes, 0)?;
+        let (epoch, payload) = split_epoch(bytes)?;
         // The reader is the crate's bounds-checked byte cursor. The kind it is
         // built with only names the entity in a truncation error, and no kind
         // tag is consumed here — this is a value payload, not a key.
@@ -239,7 +321,7 @@ impl StoreValue for LogRecord {
                 value: RecordValue::decode(&encoded)?,
             });
         }
-        Ok(Self { mutations })
+        Ok(Self { epoch, mutations })
     }
 }
 
@@ -263,7 +345,14 @@ pub struct FormatVersion(u32);
 
 impl FormatVersion {
     /// The format this build writes.
-    pub const CURRENT: Self = Self(1);
+    ///
+    /// Moved to 2 when the log record gained its epoch (ADR-0059). A store
+    /// already on version 1 is still opened and is not rewritten — its records
+    /// read as the first leadership, which is what they are — so the bump buys
+    /// one thing: a store *created* by this build is refused by an older one at
+    /// `open`, rather than at whichever read first meets a flag bit it does not
+    /// know.
+    pub const CURRENT: Self = Self(2);
 
     /// Wrap a raw format version.
     #[must_use]
@@ -333,7 +422,7 @@ impl StoreValue for Sequence {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::panic, clippy::unwrap_used)]
 
     use super::*;
 
@@ -409,13 +498,16 @@ mod tests {
             FormatVersion::CURRENT
         );
         assert!(FormatVersion::CURRENT.check_supported().is_ok());
-        assert!(matches!(
-            FormatVersion::new(99).check_supported().unwrap_err(),
-            Error::UnsupportedFormatVersion {
-                found: 99,
-                supported: 1
+        // Derived from CURRENT rather than written as a literal: a version this
+        // test restates is a version this test stops checking the moment the
+        // format moves.
+        match FormatVersion::new(99).check_supported().unwrap_err() {
+            Error::UnsupportedFormatVersion { found, supported } => {
+                assert_eq!(found, 99);
+                assert_eq!(supported, FormatVersion::CURRENT.get());
             }
-        ));
+            other => panic!("expected an unsupported-format error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -534,5 +626,110 @@ mod tests {
         let last = bytes.len().saturating_sub(3);
         bytes[last] = 0xff;
         assert!(LogRecord::decode(&bytes).is_err());
+    }
+
+    #[test]
+    fn a_record_at_the_first_leadership_is_byte_identical_to_one_written_before_epochs_existed() {
+        // The whole point of spending a flag bit rather than widening every
+        // record: a store that has never elected anybody keeps the bytes it
+        // already has, so no existing log entry is rewritten and byte-identical
+        // replay across builds survives the format change.
+        let record = LogRecord::new(vec![mutation(
+            RecordId::from("r"),
+            RecordValue::Present(b"v".to_vec()),
+        )]);
+        assert_eq!(record.epoch(), Epoch::ZERO);
+        let bytes = record.encode().into_bytes();
+        assert_eq!(bytes[1], 0, "no flag bit is set at the first leadership");
+        assert_eq!(
+            LogRecord::decode(&bytes).unwrap(),
+            record,
+            "and it decodes back to itself"
+        );
+    }
+
+    #[test]
+    fn a_record_carries_its_epoch_through_a_round_trip() {
+        let record = LogRecord::at(
+            Epoch::new(0x0102_0304_0506_0708),
+            vec![mutation(
+                RecordId::from("r"),
+                RecordValue::Present(b"v".to_vec()),
+            )],
+        );
+        let decoded = LogRecord::decode(record.encode().as_slice()).unwrap();
+        assert_eq!(decoded.epoch(), Epoch::new(0x0102_0304_0506_0708));
+        assert_eq!(decoded.mutations(), record.mutations());
+        assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn the_epoch_sits_in_front_of_the_mutations_so_a_reader_need_not_scan() {
+        let bytes = LogRecord::at(
+            Epoch::new(0x0102_0304_0506_0708),
+            vec![mutation(
+                RecordId::from("r"),
+                RecordValue::Present(b"v".to_vec()),
+            )],
+        )
+        .encode()
+        .into_bytes();
+        assert_eq!(bytes[1], FLAG_EPOCH);
+        assert_eq!(
+            &bytes[HEADER_LEN..HEADER_LEN + 8],
+            &0x0102_0304_0506_0708_u64.to_be_bytes(),
+            "fixed width, big-endian, immediately after the header"
+        );
+    }
+
+    #[test]
+    fn a_record_written_before_epochs_existed_decodes_as_the_first_leadership() {
+        // Not a round trip: these are bytes as an older build wrote them, with
+        // the flags byte clear and no epoch field at all.
+        // A literal, not a round trip: these are the bytes an older build
+        // wrote — flags clear, the mutations starting immediately after the
+        // header — and a round trip against today's encoder could not tell the
+        // difference if the decoder silently required an epoch.
+        let legacy = [
+            CODEC_VERSION,
+            0, // flags: no epoch field follows
+            0,
+            0,
+            0,
+            1, // namespace
+            0,
+            0,
+            0,
+            2, // database
+            0,
+            0,
+            0,
+            3, // table
+            0x02,
+            b'r',
+            0x00,
+            0x01, // a string record id, terminated
+            0,
+            0,
+            0,
+            3, // the value's length
+            CODEC_VERSION,
+            0,
+            b'v', // the value
+        ];
+        let decoded = LogRecord::decode(&legacy).unwrap();
+        assert_eq!(decoded.epoch(), Epoch::ZERO);
+        assert_eq!(decoded.mutations().len(), 1);
+        assert_eq!(decoded.mutations()[0].id, RecordId::from("r"));
+    }
+
+    #[test]
+    fn a_record_claiming_an_epoch_it_did_not_write_is_truncated_not_guessed() {
+        let mut bytes = LogRecord::new(Vec::new()).encode().into_bytes();
+        bytes[1] = FLAG_EPOCH;
+        assert!(
+            LogRecord::decode(&bytes).is_err(),
+            "the flag promises eight bytes that are not there"
+        );
     }
 }

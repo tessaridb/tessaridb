@@ -15,7 +15,7 @@ use tessari_encoding::{LogRecord, Mutation, RecordValue, encode_payload};
 use tessari_kv::{Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value};
 use tessari_storage::{Catalog, EDGE_IN, EDGE_OUT, Error, RecordAddress, Store, TableShape};
 use tessari_types::{
-    DatabaseId, NamespaceId, RecordId, RecordRef, Sequence, TableId, Value as FieldValue,
+    DatabaseId, Epoch, NamespaceId, RecordId, RecordRef, Sequence, TableId, Value as FieldValue,
 };
 
 /// How many records the log is read in one go. Larger than any test writes.
@@ -238,6 +238,120 @@ fn a_gap_in_the_log_is_refused_rather_than_skipped() {
     }
     assert!(!error.is_retryable(), "the same record will still be wrong");
     assert_eq!(replica.committed_tail().unwrap(), Sequence::new(1));
+}
+
+#[test]
+fn two_leaderships_writing_one_sequence_are_refused_rather_than_silently_dropped() {
+    // S1.1. The failure this test exists for is not a wrong answer — it is the
+    // absence of one. Before the epoch, a node fed a record at a sequence it had
+    // already written took the already-applied branch and returned `Ok`, keeping
+    // its own divergent data with no error, no gap and no signal. Two nodes then
+    // answered differently while both reported healthy.
+    let held = store_on(&backend());
+    let offered = LogRecord::at(
+        Epoch::new(2),
+        vec![Mutation {
+            namespace: NamespaceId::new(1),
+            database: DatabaseId::new(1),
+            table: TableId::new(1),
+            id: RecordId::from("contested"),
+            value: RecordValue::Present(b"from-the-new-leader".to_vec()),
+        }],
+    );
+    held.apply_record(
+        Sequence::new(1),
+        &LogRecord::at(
+            Epoch::new(1),
+            vec![Mutation {
+                namespace: NamespaceId::new(1),
+                database: DatabaseId::new(1),
+                table: TableId::new(1),
+                id: RecordId::from("contested"),
+                value: RecordValue::Present(b"from-the-old-leader".to_vec()),
+            }],
+        ),
+    )
+    .unwrap();
+
+    let error = held.apply_record(Sequence::new(1), &offered).unwrap_err();
+    match error {
+        Error::LogFork {
+            sequence,
+            held: was,
+            offered: now,
+        } => {
+            assert_eq!(sequence, Sequence::new(1));
+            assert_eq!(was, Epoch::new(1));
+            assert_eq!(now, Epoch::new(2));
+        }
+        other => panic!("expected a fork, got {other}"),
+    }
+    assert!(
+        !error.is_retryable(),
+        "re-sending the same record cannot resolve a fork — the node re-bootstraps"
+    );
+    assert_eq!(
+        held.health().unwrap().log_forks,
+        1,
+        "S1.3 — a fork nobody can count is a fork nobody notices"
+    );
+}
+
+#[test]
+fn re_sending_a_record_the_store_already_holds_stays_a_free_no_op() {
+    // The other half, and the one that must not regress: an ordinary retry is
+    // not a fork, and refusing it would turn re-delivery into an incident.
+    let held = store_on(&backend());
+    let record = LogRecord::at(
+        Epoch::new(1),
+        vec![Mutation {
+            namespace: NamespaceId::new(1),
+            database: DatabaseId::new(1),
+            table: TableId::new(1),
+            id: RecordId::from("repeated"),
+            value: RecordValue::Present(b"v".to_vec()),
+        }],
+    );
+    held.apply_record(Sequence::new(1), &record).unwrap();
+    held.apply_record(Sequence::new(1), &record).unwrap();
+    held.apply_record(Sequence::new(1), &record).unwrap();
+    assert_eq!(held.committed_tail().unwrap(), Sequence::new(1));
+    assert_eq!(held.health().unwrap().log_forks, 0);
+}
+
+#[test]
+fn replaying_an_older_record_from_an_older_leadership_is_not_a_fork() {
+    // The trap a current-epoch counter would fall into: a follower catching up
+    // from the start of the log legitimately offers records written under
+    // leaderships that have since ended. Compared against the epoch the store
+    // holds *at that sequence*, they match; compared against the store's latest
+    // epoch, every one of them would be a false fork.
+    let held = store_on(&backend());
+    let first = LogRecord::at(
+        Epoch::new(1),
+        vec![Mutation {
+            namespace: NamespaceId::new(1),
+            database: DatabaseId::new(1),
+            table: TableId::new(1),
+            id: RecordId::from("old"),
+            value: RecordValue::Present(b"a".to_vec()),
+        }],
+    );
+    let second = LogRecord::at(
+        Epoch::new(4),
+        vec![Mutation {
+            namespace: NamespaceId::new(1),
+            database: DatabaseId::new(1),
+            table: TableId::new(1),
+            id: RecordId::from("new"),
+            value: RecordValue::Present(b"b".to_vec()),
+        }],
+    );
+    held.apply_record(Sequence::new(1), &first).unwrap();
+    held.apply_record(Sequence::new(2), &second).unwrap();
+
+    held.apply_record(Sequence::new(1), &first).unwrap();
+    assert_eq!(held.health().unwrap().log_forks, 0);
 }
 
 #[test]
