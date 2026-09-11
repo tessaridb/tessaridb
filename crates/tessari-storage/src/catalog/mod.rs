@@ -21,6 +21,7 @@
 
 mod analyzer;
 mod authority;
+mod carried;
 mod change;
 mod consumer;
 // `pub(crate)` for the counter helpers: `crate::cardinality` stores a record
@@ -43,6 +44,7 @@ use tessari_types::{
 
 pub use analyzer::AnalyzerDefinition;
 pub use authority::{Authority, Held, Kind, Reach};
+pub(crate) use carried::carried_to;
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{
@@ -861,6 +863,38 @@ fn id_key(id: u32) -> i64 {
 /// the same string, and one would be refused as a duplicate of something
 /// unrelated. Parent ids are numeric, so a `/` inside a name can never be
 /// mistaken for a separator that precedes it.
+/// Read a qualified name back into the level and parent ids it was built from.
+///
+/// The inverse of [`qualify`], and it lives beside it for the reason
+/// `Reach::of` and `Reach::parts` live beside each other: one format written in
+/// two places drifts, and the copy that drifts is the one nobody is reading.
+///
+/// `None` for anything this build did not write — an unknown tag, a missing
+/// separator, a parent that is not a number. A caller gets *cannot tell* rather
+/// than a guess, because the caller asking is the replication filter and its
+/// answer to *cannot tell* is to withhold.
+///
+/// The name itself is deliberately not returned. The one caller needs the
+/// tenancy and nothing else, and handing back a borrowed name would invite a
+/// second caller to compare strings the catalog compares by id.
+fn parse_qualified(qualified: &str) -> Option<(Level, Vec<u32>)> {
+    let (tag, rest) = qualified.split_once(':')?;
+    let level = Level::from_tag(tag)?;
+    let mut parents = Vec::new();
+    let mut rest = rest;
+    // A name may itself contain '/', which is why the parents are counted from
+    // the left rather than split from the right: every parent is a number, and
+    // the first segment that is not one is where the name begins.
+    while let Some((head, tail)) = rest.split_once('/') {
+        let Ok(parent) = head.parse::<u32>() else {
+            break;
+        };
+        parents.push(parent);
+        rest = tail;
+    }
+    Some((level, parents))
+}
+
 fn qualify(level: Level, parents: &[u32], name: &str) -> String {
     let mut qualified = String::from(level.tag());
     qualified.push(':');
@@ -874,7 +908,60 @@ fn qualify(level: Level, parents: &[u32], name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
+
+    /// The two directions of one format, asserted against each other.
+    ///
+    /// Written as a round trip rather than against literals because a literal
+    /// pins what somebody typed and a round trip pins what `qualify` produces —
+    /// and the reader exists to read exactly that.
+    #[test]
+    fn a_qualified_name_reads_back_as_the_level_and_parents_it_was_built_from() {
+        for (level, parents) in [
+            (Level::Namespace, vec![]),
+            (Level::Database, vec![7]),
+            (Level::Table, vec![7, 3]),
+            (Level::Index, vec![7, 3, 12]),
+            (Level::Field, vec![7, 3, 12]),
+            (Level::Graph, vec![7, 3]),
+            (Level::EdgeKind, vec![7, 3]),
+            (Level::Analyzer, vec![]),
+            (Level::User, vec![]),
+            (Level::Replica, vec![]),
+            (Level::Consumer, vec![]),
+        ] {
+            let qualified = qualify(level, &parents, "orders");
+            assert_eq!(
+                parse_qualified(&qualified),
+                Some((level, parents.clone())),
+                "{qualified} must read back as what built it"
+            );
+        }
+    }
+
+    /// A name that itself begins with a number and a slash is the case the level
+    /// tag was introduced for, and the reader must not mistake it for a parent
+    /// it does not have. Over-reading is harmless because the true parents are
+    /// always leftmost — but that is an argument, and this is the evidence.
+    #[test]
+    fn a_name_that_looks_like_a_parent_does_not_move_the_real_ones() {
+        let qualified = qualify(Level::Table, &[7, 3], "9/orders");
+        let (level, parents) = parse_qualified(&qualified).unwrap();
+        assert_eq!(level, Level::Table);
+        assert_eq!(parents.first(), Some(&7));
+        assert_eq!(parents.get(1), Some(&3));
+    }
+
+    /// Anything this build did not write reads as *cannot tell*, never as a
+    /// guess — the caller is the replication filter and its answer to that is to
+    /// withhold.
+    #[test]
+    fn an_unknown_qualified_name_reads_as_cannot_tell() {
+        assert_eq!(parse_qualified("orders"), None);
+        assert_eq!(parse_qualified("zz:7/orders"), None);
+    }
 
     #[test]
     fn the_level_tag_keeps_a_namespace_name_from_colliding_with_a_database_name() {

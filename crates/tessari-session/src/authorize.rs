@@ -160,15 +160,19 @@ impl<'a> Session<'a> {
     /// read are one call, and a surface that wants the log for a peer cannot get
     /// it without passing through here.
     ///
-    /// # Whole store only, and that is a scope rather than an oversight
+    /// # The subscription's scope is the same object the authority is
     ///
-    /// The subscription served here is the whole store's log. A narrower
-    /// subscription — one namespace, one database — needs a filter that
-    /// preserves sequence numbers across the records it drops, because a
-    /// follower's position check compares against the record before the one it
-    /// is offered. That filter is the selective-replication work and it does not
-    /// exist yet, so a narrower authority is grantable and is refused here by
-    /// [`Reach::Store`] rather than served unfiltered.
+    /// `over` is both halves of the question: what the caller must be permitted
+    /// for, and what the stream then carries. That is not a convenience — it is
+    /// what makes the two impossible to disagree. A design in which the check
+    /// took one value and the filter took another would have a state in which a
+    /// caller authorized for one namespace is served another, and nothing in
+    /// either call would be wrong on its own.
+    ///
+    /// A store-reach subscriber receives the whole log. A narrower one receives
+    /// every sequence, with the mutations outside its reach elided — including
+    /// the users, credentials and grants that are not its tenancy's, which is
+    /// the disclosure [`Reach`] is carrying here rather than merely naming.
     ///
     /// # Errors
     ///
@@ -177,11 +181,12 @@ impl<'a> Session<'a> {
     pub fn replicate_from(
         &mut self,
         store: &Store,
+        over: Reach,
         from: Sequence,
         limit: usize,
     ) -> Result<Vec<(Sequence, LogRecord)>> {
-        self.may_replicate(store, Reach::Store)?;
-        Ok(store.log_records(from, limit)?)
+        self.may_replicate(store, over)?;
+        Ok(store.log_records_within(over, from, limit)?)
     }
 
     /// Which tables this session may read, when its user is grant-governed.

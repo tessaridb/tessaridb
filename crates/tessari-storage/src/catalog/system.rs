@@ -222,6 +222,30 @@ impl Level {
             Self::EdgeKind => "ek",
         }
     }
+
+    /// The level a tag names, the inverse of [`Self::tag`].
+    ///
+    /// Paired with it so the two directions cannot drift, which is the reason
+    /// `Reach::of` and `Reach::parts` are written as a pair: a reader of a
+    /// qualified name that rebuilt this mapping by hand would be a second place
+    /// for one fact, and the one that drifts is the one nobody is reading.
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        Some(match tag {
+            "ns" => Self::Namespace,
+            "db" => Self::Database,
+            "tb" => Self::Table,
+            "ix" => Self::Index,
+            "fd" => Self::Field,
+            "an" => Self::Analyzer,
+            "us" => Self::User,
+            "rp" => Self::Replica,
+            "cs" => Self::Consumer,
+            "gr" => Self::Graph,
+            "ek" => Self::EdgeKind,
+            _ => return None,
+        })
+    }
 }
 
 #[cfg(test)]

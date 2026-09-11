@@ -201,7 +201,27 @@ const TABLES: &[Table] = &[
         // store handle, which is a property of the binary and not a permission.
         // Re-pointed rather than ticked off, because S4.1 closing does not make
         // this path enforced.
-        expected: 17,
+        //
+        // 18 since the selective stream: `Store::log_records_within` reads the
+        // log for a subscription and drops the mutations outside its reach
+        // (G024 S3.2). Classified **not enforced here, and enforced one layer up
+        // by a gate that now exists** — which is a different sentence from the
+        // one above it and the difference is the whole point. It takes a `Reach`
+        // and no identity, so on its own it will filter for anybody who can name
+        // one; what makes that safe is that the only caller in the workspace is
+        // `Session::replicate_from`, which asks `may_replicate` for **the same
+        // `Reach` value** before it reads. One value answering both halves is
+        // what makes the check and the filter unable to disagree: there is no
+        // state in which a caller authorized for one namespace is served
+        // another, because there is only one namespace named.
+        //
+        // The reason it is public at all is that a follower is a separate
+        // process from the session that will one day feed it, and the crate
+        // boundary is where that split lands. The reason it is not a second
+        // enforcement point is that adding an identity check here would be the
+        // change feed's mistake run backwards — two places deciding one
+        // question, and the one that drifts is the one nobody is reading.
+        expected: 18,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -260,7 +280,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 63, "the counted tables no longer sum to 63");
+    assert_eq!(total, 64, "the counted tables no longer sum to 64");
 }
 
 /// Every `.rs` file under a directory.

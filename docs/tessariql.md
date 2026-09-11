@@ -615,6 +615,24 @@ DEFINE USER replica AUTHORITIES replicate PASSWORD 'a long one';
 Nothing is granted by default: a node that has joined and been given no
 `replicate` may ask for the log and is refused.
 
+The reach the authority is given at is also the reach of the stream. A peer
+granted `replicate` over the whole store receives the whole log; one granted it
+over a namespace receives that namespace's definitions and records, and the
+users declared inside it, and nothing else:
+
+```
+DEFINE USER shop_replica ON NAMESPACE prod AUTHORITIES replicate
+    PASSWORD 'a long one';
+```
+
+Such a peer receives **every** position in the log — the commits outside its
+reach arrive carrying nothing, so its position in the stream is the leader's
+position and not a count of what it was sent. What it does not receive is the
+rest of the store: another tenant's tables cannot be named on it, because they
+were never declared there, and the credentials of users outside its namespace
+never leave the store. A store-wide subscription is asked for separately and is
+not the sum of the namespaces.
+
 Authority moves the way a grant does, and the statements are the same two words:
 
 ```

@@ -16,6 +16,7 @@ use tessari_encoding::{
 use tessari_kv::{KeyRange, KvBackend, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{Epoch, Sequence};
 
+use crate::catalog::Reach;
 use crate::error::{Error, Result};
 use crate::feed::Changes;
 use crate::snapshots::Registry;
@@ -446,6 +447,63 @@ impl Store {
                 Ok((sequence, record))
             })
             .collect()
+    }
+
+    /// Log records for a subscriber, carrying only what its reach reaches.
+    ///
+    /// # Every sequence arrives, and that is the whole of the design
+    ///
+    /// The leader does not skip a record it filtered to nothing — it delivers it
+    /// empty. A follower's position check compares the epoch of the record
+    /// **before** the one it is offered (ADR-0059), so a record that simply
+    /// vanished from the numbering would read as a parted history and refuse the
+    /// stream. Delivering it empty costs a frame and keeps the arithmetic the
+    /// gap rule already does: [`Self::apply_record`] advances `committed_tail`
+    /// over a record with no mutations exactly as it does over a full one.
+    ///
+    /// The cost is stated rather than discovered: a selective follower's stream
+    /// is O(all commits) in **frames** while being O(its own commits) in bytes.
+    /// Bounded by commits rather than by data.
+    ///
+    /// # The filter is on the leader, deliberately
+    ///
+    /// A follower could be sent everything and asked to keep what it is entitled
+    /// to. That is a confidentiality model in which the party being restricted
+    /// is the one applying the restriction, and it is the arrangement this store
+    /// refuses everywhere else. The epoch is preserved across the rebuild
+    /// because it identifies the leadership that wrote the commit, not its
+    /// contents.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever [`Self::log_records`] returns, and
+    /// [`Error::CatalogMalformed`] when a catalog record in the log is present
+    /// and cannot be decoded.
+    pub fn log_records_within(
+        &self,
+        subscription: Reach,
+        from: Sequence,
+        limit: usize,
+    ) -> Result<Vec<(Sequence, LogRecord)>> {
+        if subscription == Reach::Store {
+            // Not an optimisation with a caveat — a statement. A store-reach
+            // subscription receives the log unchanged, so rebuilding every
+            // record to arrive at the same bytes would cost a clone per mutation
+            // on the path every follower that exists today takes, to prove
+            // something the type already says.
+            return self.log_records(from, limit);
+        }
+        let mut carried = Vec::new();
+        for (sequence, record) in self.log_records(from, limit)? {
+            let mut kept = Vec::new();
+            for mutation in record.mutations() {
+                if crate::catalog::carried_to(mutation)?.reaches(subscription) {
+                    kept.push(mutation.clone());
+                }
+            }
+            carried.push((sequence, LogRecord::at(record.epoch(), kept)));
+        }
+        Ok(carried)
     }
 
     /// Apply a record that arrived from a peer, which claims what stands
