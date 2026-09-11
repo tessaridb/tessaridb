@@ -582,6 +582,7 @@ So an authority is a pair: a **kind**, and the **reach** it holds over.
 | `manage` | create and drop the container's children — databases in a namespace, tables in a database — and define structure on them |
 | `govern` | declare users and move authority around |
 | `operate` | topology, replicas and the backup file: running the thing rather than using it |
+| `replicate` | take the log itself: subscribe as a peer and receive the store's mutations as they were written |
 
 The reach is `STORE`, `NAMESPACE <name>` or `DATABASE <namespace>.<name>`, and
 it is written as a keyword so that no table name can be read as a reach. A kind
@@ -598,6 +599,21 @@ DEFINE USER nadia ON NAMESPACE prod AUTHORITIES manage PASSWORD 'a long one';
 `ops` runs the node and reads no records. `ingest` writes into one database and
 cannot define a table there. `nadia` creates and drops databases in `prod` and
 reads nothing in them — the headline rule, said in one statement.
+
+`replicate` is the one kind nothing else implies, and the reason is what the log
+holds. It is not the records: it carries the definitions too, and the users,
+credentials and grants that a subscriber needs in order to admit anybody. So a
+caller holding `read` over the whole store may read every record and still not
+take the log, and a caller holding `operate` may run the node, read what the
+cluster is doing and still not take it. A peer that replicates is declared as
+one:
+
+```
+DEFINE USER replica AUTHORITIES replicate PASSWORD 'a long one';
+```
+
+Nothing is granted by default: a node that has joined and been given no
+`replicate` may ask for the log and is refused.
 
 Authority moves the way a grant does, and the statements are the same two words:
 

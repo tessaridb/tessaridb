@@ -40,9 +40,12 @@ const ENTITY: &str = "authority";
 
 /// What an authority permits.
 ///
-/// Five, and each names a different thing that can be taken away on its own.
+/// Six, and each names a different thing that can be taken away on its own.
 /// The set is closed: a new kind is a new thing a store can refuse, which is a
-/// decision rather than an addition.
+/// decision rather than an addition. [`Kind::Replicate`] was the sixth and is
+/// the worked example of that sentence — it was added because taking the log is
+/// not reading the records and not operating the node, and neither of those two
+/// could be stretched to mean it without granting more than anybody asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
     /// Read records.
@@ -57,6 +60,19 @@ pub enum Kind {
     /// Topology, replicas and the backup file: running the thing rather than
     /// using it.
     Operate,
+    /// Take the log itself: subscribe as a peer and receive the store's
+    /// mutations as they were written.
+    ///
+    /// Separate from [`Self::Read`] because the log is not the records. It
+    /// carries the system tenancy as well — the definitions, and the users,
+    /// credentials and grants that travel to every subscriber — so a reader who
+    /// could subscribe would hold every credential hash in the store.
+    ///
+    /// Separate from [`Self::Operate`] because receiving the log and reading
+    /// what the cluster is doing are two different permissions, and a node
+    /// should be able to hold either without the other: a replica that is not
+    /// an operator, an observer that is not a replica.
+    Replicate,
 }
 
 impl Kind {
@@ -67,6 +83,7 @@ impl Kind {
         Self::Manage,
         Self::Govern,
         Self::Operate,
+        Self::Replicate,
     ];
 
     /// How the kind is written.
@@ -78,6 +95,7 @@ impl Kind {
             Self::Manage => "manage",
             Self::Govern => "govern",
             Self::Operate => "operate",
+            Self::Replicate => "replicate",
         }
     }
 
@@ -296,6 +314,28 @@ impl Held {
     /// exists was declared under a promise that they may define structure, and
     /// narrowing them on upgrade is an outage delivered as a migration. What the
     /// change buys is that nobody has to accept the bundle any more.
+    ///
+    /// # An owner gained [`Kind::Replicate`] when the sixth kind arrived
+    ///
+    /// The mirror of the paragraph above — widening an existing principal on
+    /// upgrade is an escalation delivered as a migration — so it was decided
+    /// rather than inherited from [`Self::every_kind_at`].
+    ///
+    /// It stands, for two reasons and a residue. An owner **at the store**
+    /// already holds `read` and `operate` there, which together are `BACKUP`:
+    /// every record and every definition, in one file. The log discloses nothing
+    /// to them that they could not already take, so this widens what they may
+    /// *do* and not what they may *see*. And excluding it would make the kind
+    /// unreachable rather than merely explicit: nobody hands out what they do
+    /// not hold, so a store whose users were all declared by role could never
+    /// grant `replicate` to anybody, including to itself.
+    ///
+    /// The residue is an owner of one **namespace**, who gains an authority that
+    /// today authorises nothing — the only subscription that can be served is
+    /// the whole store's — and that must not, when a selective stream exists,
+    /// carry the identity class with it. A namespace's owner receiving every
+    /// credential hash in the store would be this decision's cost, and it is
+    /// recorded against the wave that builds the stream rather than left here.
     #[must_use]
     pub fn from_role(role: Role, reach: Reach) -> Self {
         match role {

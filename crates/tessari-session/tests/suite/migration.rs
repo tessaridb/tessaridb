@@ -35,12 +35,30 @@ const PASSWORD: &str = "correct horse battery";
 /// What each ladder role stood for, written from the ladder rather than from
 /// `Held::from_role` — the second source is the point, exactly as it is in the
 /// differential. `@R` is the reach the user was declared at.
+///
+/// # `owner` is written with a sixth entry the ladder never had
+///
+/// And that is the one edit this table is allowed. The ladder's `owner` meant
+/// *everything*, so a kind added to the closed set joins it — which widens every
+/// owner a migrated store already holds. This assertion is what stops that
+/// happening in silence: it fired when `replicate` arrived, and the decision
+/// behind adding the entry rather than carving the kind out of the bundle is
+/// recorded in `Held::from_role`. Narrowing a role on upgrade is an outage;
+/// widening one is an escalation; both have to be somebody's decision, and this
+/// table is where they are made to be.
 const LADDER: [(&str, &[&str]); 3] = [
     ("viewer", &["read@R"]),
     ("editor", &["manage@R", "read@R", "write@R"]),
     (
         "owner",
-        &["govern@R", "manage@R", "operate@R", "read@R", "write@R"],
+        &[
+            "govern@R",
+            "manage@R",
+            "operate@R",
+            "read@R",
+            "replicate@R",
+            "write@R",
+        ],
     ),
 ];
 

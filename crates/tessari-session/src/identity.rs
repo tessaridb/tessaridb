@@ -1141,8 +1141,8 @@ impl Session<'_> {
 /// The kind a word names, refused when it names none.
 ///
 /// The refusal carries the whole set rather than only the rejection, because
-/// there are five of them and a reader who mistyped one is a reader who does not
-/// yet know which five.
+/// there are six of them and a reader who mistyped one is a reader who does not
+/// yet know which six.
 fn kind_named(named: &Name) -> Result<Kind> {
     Kind::parse(&named.text).ok_or_else(|| Error::NoSuchAuthority {
         name: named.text.clone(),

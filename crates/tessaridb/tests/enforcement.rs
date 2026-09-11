@@ -184,12 +184,23 @@ const TABLES: &[Table] = &[
         // it, and that is correct at this layer: a replicated write was already
         // authorized where it was issued, and re-deciding it on the follower
         // would let two nodes reach different verdicts about one record. What
-        // must be enforced is **who may open a stream into this store at all**,
-        // and that is G024 **S4.1** — an authenticated node with no subscription
-        // grant must be refused. Until S4.1 ships, the only thing standing here
-        // is that the method is reachable solely by a process that already holds
-        // the store handle, which is a property of the binary and not a
-        // permission. Recorded so that S4.1 is owed rather than assumed.
+        // must be enforced is **who may open a stream at all**, and that debt is
+        // now half paid. S4.1 shipped the reading half: `Session::replicate_from`
+        // is the one authorized door to the log, and a peer holding no
+        // `replicate` authority is refused there rather than here. That is the
+        // right side for it — the leader decides who may take its log, and a
+        // follower re-deciding a write it has already accepted is the divergence
+        // this layer exists to avoid.
+        //
+        // The half still owed is the other direction: **which peers this store
+        // will accept a stream FROM**. Nothing above `apply_from_stream` asks
+        // that question yet, and it is G024 **S4.2** — the inter-node link is
+        // mutually authenticated and a certificate for the wrong role cannot
+        // join as a peer. Until it ships, the only thing standing here is that
+        // the method is reachable solely by a process that already holds the
+        // store handle, which is a property of the binary and not a permission.
+        // Re-pointed rather than ticked off, because S4.1 closing does not make
+        // this path enforced.
         expected: 17,
         count: |text| public_functions(&block(text, "impl Store")),
     },
