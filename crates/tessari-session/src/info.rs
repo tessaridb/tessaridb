@@ -1355,6 +1355,10 @@ fn reading(table: &TableRef) -> StatementKind {
         using: None,
         timeout: None,
         version: None,
+        // This statement is never sent anywhere: it exists to be judged against
+        // a grant. A tolerance for how stale an answering node may be has no
+        // bearing on whether the read would be permitted.
+        staleness: None,
         span: table.span,
     }))
 }

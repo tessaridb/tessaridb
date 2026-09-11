@@ -284,6 +284,45 @@ pub const MAX_CONNECTIONS: usize = 400;
 /// cannot deliver them in ten seconds cannot carry a query either.
 pub const GREETING_SECONDS: u64 = 10;
 
+/// How often a node is expected to learn something about its peers.
+///
+/// Unit: seconds.
+///
+/// Nothing exchanges anything yet — the inter-node link is a design note and the
+/// decision that gates it is the owner's. This is a **declaration** rather than
+/// a measurement, which is the same thing MongoDB's `heartbeatFrequencyMS` is:
+/// the number the floor below is derived from is configured, never observed.
+/// When the control round ships, this becomes its period.
+///
+/// Ten seconds for the reason [`GREETING_SECONDS`] is ten: it is short enough
+/// that a failure is noticed while somebody still cares, and long enough that a
+/// cluster of any size is not spending its bandwidth on being sure of itself.
+pub const AWARENESS_SECONDS: u64 = 10;
+
+/// The tightest staleness bound a read may ask for.
+///
+/// Unit: seconds.
+///
+/// # Why a floor exists at all
+///
+/// A read may say how far behind a node answering it is allowed to be. A bound
+/// tighter than the interval at which this node learns anything about its peers
+/// is a promise nothing can check — it would be enforced against a picture whose
+/// age exceeds the tolerance it is being compared to. Refusing it, with the
+/// floor named, is what keeps the bound a guarantee rather than a hope.
+///
+/// # Twice the interval, and why not MongoDB's ninety
+///
+/// One interval to learn something, and one more to notice that we did not.
+///
+/// MongoDB refuses a `maxStalenessSeconds` below **90 seconds**, and that number
+/// comes from its client-side topology refresh and its idle-write period — two
+/// mechanisms this engine does not have. Taking the 90 would be taking a value
+/// whose derivation is absent, so what is taken is the **shape**: a floor
+/// derived from the interval at which the system learns, published in the
+/// refusal, and refused rather than silently raised.
+pub const STALENESS_FLOOR_SECONDS: u64 = AWARENESS_SECONDS * 2;
+
 /// The largest reassembled WebSocket message this node will read from a client.
 ///
 /// Unit: bytes.

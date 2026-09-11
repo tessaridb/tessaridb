@@ -95,6 +95,7 @@ mod sign_in_throttle;
 mod spatial_index;
 mod spatial_nearest_reads;
 mod spatial_reads;
+mod staleness;
 mod store_named_records;
 mod store_wide;
 mod strictness;

@@ -752,6 +752,29 @@ pub enum Error {
         span: Span,
     },
 
+    /// A read asked to be answered by a node fresher than this cluster can know.
+    ///
+    /// A staleness bound says how far behind an answering node may be. A bound
+    /// tighter than the interval at which a node learns anything about its peers
+    /// is a promise nothing can check — it would be enforced against a picture
+    /// whose own age exceeds the tolerance being compared to it.
+    ///
+    /// **The floor is named in the refusal, and that is the half that matters.**
+    /// A caller told only that their bound was too tight cannot write a
+    /// statement that would be accepted; a caller told the floor can.
+    #[error(
+        "a staleness bound of {written} (at {span}) is tighter than this cluster \
+         can know about itself: the floor is {floor}s"
+    )]
+    StalenessBelowFloor {
+        /// The bound as the statement wrote it.
+        written: String,
+        /// The tightest bound that would have been accepted, in seconds.
+        floor: u64,
+        /// Where the clause is.
+        span: Span,
+    },
+
     /// A `SELECT` named a vault as its source.
     ///
     /// Refused rather than answered, and what it would have answered is worth

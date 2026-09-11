@@ -312,6 +312,35 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `STALENESS` names a tolerance no node could satisfy.
+    ///
+    /// `STALENESS 0s` and `STALENESS -5s` admit no node at all, including the
+    /// one being asked, so the clause can only refuse. Caught where the
+    /// statement is read, the way `TIMEOUT`'s own zero is.
+    #[error(
+        "a staleness bound of {written} (at {span}) admits no node at all; \
+         a tolerance is a positive duration"
+    )]
+    EmptyStaleness {
+        /// The tolerance as it was written.
+        written: String,
+        /// Where the clause is.
+        span: Span,
+    },
+
+    /// A read named both an exact version and a tolerance for staleness.
+    ///
+    /// `VERSION` names one point in this store's history; `STALENESS` says how
+    /// old the answering node's copy may be. The second is not a narrowing of
+    /// the first — it is a second answer to a question already answered, and
+    /// there is no reading of the pair that is not a guess about which was
+    /// meant.
+    #[error("`STALENESS` (at {span}) cannot qualify a read that already names a `VERSION`")]
+    StalenessBesideAVersion {
+        /// Where the staleness clause is.
+        span: Span,
+    },
+
     /// A `RETAIN` names a floor that would leave nothing to answer with.
     ///
     /// `RETAIN 0s` and `RETAIN -1d` put the floor at or ahead of the present, so
@@ -759,6 +788,8 @@ impl Error {
             | Self::Unrenderable { span, .. }
             | Self::MalformedGeometry { span, .. }
             | Self::ComputedGeometry { span, .. }
+            | Self::EmptyStaleness { span, .. }
+            | Self::StalenessBesideAVersion { span }
             | Self::CursorBesideAnOffset { span }
             | Self::CursorBesideAReshaping { span, .. }
             | Self::AnchorFromAnotherTable { span, .. }

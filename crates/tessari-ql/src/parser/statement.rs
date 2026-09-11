@@ -2802,6 +2802,13 @@ impl Parser<'_> {
         // do, and a reader who has taken in the question is then told which
         // state answered it.
         let version = self.version()?;
+        // After `VERSION`, because it is the clause that may disagree with it:
+        // a read naming one exact point in history has no room for a tolerance
+        // about how old that point is.
+        let staleness = self.staleness()?;
+        if let (Some(_), Some(bound)) = (version.as_ref(), staleness.as_ref()) {
+            return Err(Error::StalenessBesideAVersion { span: bound.span });
+        }
         super::shape::check_grouping(&projection, &group)?;
         super::shape::check_fold_positions(&from, &group, &order)?;
         super::shape::check_cursor(
@@ -2867,6 +2874,7 @@ impl Parser<'_> {
             using,
             timeout,
             version,
+            staleness,
             span: start.to(self.span_behind()),
         })
     }

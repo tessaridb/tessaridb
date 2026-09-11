@@ -6059,6 +6059,50 @@ transaction's own snapshot.
 by whether a sequence follows, the same way every other contextual word in this
 grammar is settled.
 
+## 7b‴″. Saying how stale an answer may be
+
+```
+SELECT * FROM orders STALENESS 30s;
+SELECT * FROM events WHERE at > 0 STALENESS 5m;
+```
+
+`STALENESS` is **optional** and says how far behind the node answering this read
+is allowed to be. It is a **candidate filter, never a marker**: it does not ask
+to be told that an answer was stale, it says which nodes may answer at all. A
+marker nobody is obliged to read is not a guarantee, which is also why a read no
+node can satisfy is refused rather than quietly promoted to the one node that
+certainly can.
+
+On a node standing alone the bound is **satisfied rather than ignored** — a
+node's own answer is never stale relative to itself.
+
+### There is a floor, and the refusal names it
+
+A bound tighter than the interval at which this node learns anything about its
+peers is a promise nothing can check: it would be enforced against a picture
+whose own age exceeds the tolerance being compared to it. Such a bound is
+refused, and the refusal **names the floor**, because a caller told only that
+their bound was too tight cannot write a statement that would be accepted.
+
+The floor is twice the awareness interval — one interval to learn something, and
+one more to notice that you did not.
+
+`STALENESS 0s`, and any negative span, admit no node at all including the one
+being asked, so they can only ever refuse. That is a mistake in the statement and
+is caught where the statement is read, exactly as `TIMEOUT 0s` is.
+
+### It cannot be combined with `VERSION`
+
+`VERSION` names one exact point in this store's history. A tolerance for how old
+that point may be is not a narrowing of it — it is a second answer to a question
+already answered, and there is no reading of the pair that is not a guess about
+which was meant. The two together are refused.
+
+`staleness` is **not** a reserved word — a field may still be called `staleness`,
+and `SELECT staleness FROM readings` still reads it. Which reading is meant is
+settled by whether a duration follows, the same way every other contextual word
+in this grammar is settled.
+
 ## 7b′. What the answer says without being asked
 
 `EXPLAIN` answers a question you have to know to ask. A **note** is the other

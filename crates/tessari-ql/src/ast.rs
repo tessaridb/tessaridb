@@ -2023,7 +2023,31 @@ pub struct Select {
     ///
     /// `None` is the ordinary case: the read answers from the committed tail.
     pub version: Option<Version>,
+    /// How far behind the node answering this read is allowed to be.
+    ///
+    /// `None` is the ordinary case: a read has no tolerance because it is
+    /// answered here, and a node's own answer is never stale relative to itself.
+    pub staleness: Option<Staleness>,
     /// Where the statement sits in the source.
+    pub span: Span,
+}
+
+/// How far behind the node answering a read is allowed to be.
+///
+/// **A candidate filter, never a marker.** It does not ask to be told that an
+/// answer was stale; it says which nodes may answer at all. A marker nobody is
+/// obliged to read is not a guarantee, which is why a read no node can satisfy
+/// is refused rather than quietly promoted to the leader.
+///
+/// The bound is a literal duration and a parameter is not accepted in its place,
+/// the rule `TIMEOUT` already keeps: a tolerance a bound value could set is a
+/// tolerance a caller could widen, and this one is meant to be readable in the
+/// statement that asked for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Staleness {
+    /// The tolerance, as the statement wrote it.
+    pub within: Duration,
+    /// Where the clause sits, for the refusal to point at.
     pub span: Span,
 }
 

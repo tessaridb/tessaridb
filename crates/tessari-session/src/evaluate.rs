@@ -537,6 +537,24 @@ impl Session<'_> {
         // it, and a note reported against the *next* answer is worse than no note
         // at all.
         let mut notes = Vec::new();
+        // Before anything is read, and here rather than in the parser: the floor
+        // is a fact about the cluster and the parser has no cluster. A subquery
+        // carrying its own bound is checked by the same line, because it asks
+        // the same impossible thing.
+        if let Some(bound) = select.staleness {
+            let floor = tessari_constants::STALENESS_FLOOR_SECONDS;
+            // The parser has already refused a bound of zero or less, so the
+            // only comparison left here is against the floor. A sub-second
+            // remainder can only widen the bound, never narrow it, so whole
+            // seconds decide it.
+            if bound.within.seconds() < i64::try_from(floor).unwrap_or(i64::MAX) {
+                return Err(Error::StalenessBelowFloor {
+                    written: bound.within.to_literal(),
+                    floor,
+                    span: bound.span,
+                });
+            }
+        }
         // Narrowed by this statement's own clause, and never widened by it: a
         // subquery may set a tighter ceiling than the read holding it and may
         // not set a looser one.
