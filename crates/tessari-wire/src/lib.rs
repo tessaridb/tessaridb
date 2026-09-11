@@ -49,6 +49,8 @@ mod frame;
 mod message;
 #[cfg(feature = "server")]
 mod node;
+#[cfg(feature = "server")]
+mod peer;
 mod push;
 
 #[cfg(feature = "server")]
@@ -61,6 +63,8 @@ pub use crate::message::names_for;
 pub use crate::message::{Answer, Correction, Exact, Names, Remark, Request, Suggested, spell};
 #[cfg(feature = "server")]
 pub use crate::node::Node;
+#[cfg(feature = "server")]
+pub use crate::peer::{Hello, PeerFrame, Presented, Purpose, admit};
 pub use crate::push::{Became, Follow, Happened};
 
 /// How long the node will wait for a subscriber to accept a change.

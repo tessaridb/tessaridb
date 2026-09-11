@@ -87,4 +87,45 @@ pub enum Error {
         /// The store's own words.
         message: String,
     },
+
+    /// A peer connection arrived having proved nothing at all.
+    ///
+    /// Refused rather than defaulted: a handshake that admitted an unproven
+    /// peer would make every check after it a formality performed on whoever
+    /// asked. On a link that carries the whole log of every tenant, absence of
+    /// proof is the one answer that must never be treated as an omission.
+    #[error("that connection proved no identity, and this link admits no strangers")]
+    Unidentified,
+
+    /// A credential that was never issued for peering.
+    ///
+    /// Separate from a disagreeing id because the id may be perfectly correct:
+    /// what went wrong is that a credential meant for one link was presented on
+    /// another, which is a mis-issue or a copied file rather than an imposture.
+    #[error("that credential was not issued for the peer link")]
+    NotAPeerCredential,
+
+    /// The id in the frame is not the id the credential names.
+    ///
+    /// Both are named, because whoever reads this needs to know which of the
+    /// two is the node they configured. A node that could claim any id in a
+    /// frame would make the credential decorative.
+    #[error("that node's greeting claims {said} while its credential names {presented}")]
+    IdentityDisagrees {
+        /// What the frame said.
+        said: String,
+        /// What the transport proved.
+        presented: String,
+    },
+
+    /// A role set carrying a bit this build does not assign.
+    ///
+    /// Not a malformed frame — the body is exactly the shape a greeting takes.
+    /// It carries a fact from a build that knows more than this one, and
+    /// reporting that as corruption would send somebody to the wrong question.
+    #[error("that node holds role bits {bits:#010b}, which this build does not know")]
+    UnknownRoles {
+        /// The bits that arrived.
+        bits: u8,
+    },
 }
