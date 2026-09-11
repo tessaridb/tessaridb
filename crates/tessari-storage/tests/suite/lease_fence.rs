@@ -313,3 +313,48 @@ fn the_role_reported_and_the_write_refused_cannot_disagree() {
         );
     }
 }
+
+#[test]
+fn a_node_that_may_write_is_current_as_of_now() {
+    // Currency here is an identity and not a measurement: a node that may write
+    // is the origin of what it holds, so there is nothing for it to be stale
+    // relative to. The zero is the whole claim.
+    let store = store();
+    assert_eq!(store.current_as_of().unwrap(), Some(Duration::ZERO));
+}
+
+#[test]
+fn a_copy_this_node_did_not_write_has_no_known_age() {
+    // The refusal §C-05 asks for, at the value. This build has no follower loop,
+    // so a collected copy has no last collection to be measured from, and
+    // `None` is the honest answer rather than a cautious one.
+    let store = store();
+    store.hold_lease(Duration::ZERO);
+    assert_eq!(store.current_as_of().unwrap(), None);
+}
+
+#[test]
+fn currency_and_the_right_to_write_are_one_answer() {
+    // The same shape as `the_role_reported_and_the_write_refused_cannot_disagree`
+    // and for the same reason: two derivations of one fact drift, and this pair
+    // drifting would serve a bounded read from a node that had stopped being the
+    // origin of its own data — which is exactly the read the bound was asked to
+    // prevent.
+    for ttl in [
+        None,
+        Some(Duration::ZERO),
+        Some(LEASE_GUARD),
+        Some(LEASE_GUARD.saturating_add(Duration::from_secs(60))),
+    ] {
+        let store = store();
+        if let Some(ttl) = ttl {
+            store.hold_lease(ttl);
+        }
+        let writable = store.effective_roles().unwrap().has(Roles::WRITABLE);
+        let current = store.current_as_of().unwrap().is_some();
+        assert_eq!(
+            writable, current,
+            "reported writable={writable} while current_as_of said {current}, at ttl={ttl:?}"
+        );
+    }
+}

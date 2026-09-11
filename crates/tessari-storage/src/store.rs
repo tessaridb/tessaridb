@@ -228,6 +228,54 @@ impl Store {
         Ok(Roles::from_bits(without_writing).unwrap_or(Roles::NONE))
     }
 
+    /// How current this node's copy is known to be, or `None` when that cannot
+    /// be established.
+    ///
+    /// A staleness bound is a promise about age, and `05_blocking-decisions.md`
+    /// §C-05 decided that routing **excludes** a node beyond the bound rather
+    /// than serving it with a marker — *a marker nobody is obliged to read is
+    /// not a guarantee*. Excluding needs an age to compare, and this is the only
+    /// one this build can honestly produce.
+    ///
+    /// # Currency here is an identity, not a measurement
+    ///
+    /// A node whose effective roles carry `writable` is the origin of the data
+    /// it holds: there is nothing for it to be stale *relative to*, so its copy
+    /// is current as of now. Reading [`Self::effective_roles`] rather than the
+    /// adopted set is what makes that keep being true — a leader whose lease has
+    /// lapsed stops being current in the same instant it stops being writable,
+    /// which is the answer that is true, because from that moment somebody else
+    /// may be taking writes it has not seen.
+    ///
+    /// # Unknown is outside every bound
+    ///
+    /// A node that may not write holds a copy of somebody else's writes, and
+    /// nothing in this build can say how old that copy is. There is no follower
+    /// loop: `Session::replicate_from` is the door on the **leader's** side and
+    /// no part of this process pulls through it, so a collected copy has no last
+    /// collection to be measured from. `None` is therefore the honest answer and
+    /// a caller must treat it as beyond every bound — which refuses something
+    /// that might have been fine rather than serving something that might not
+    /// be, the same direction [`crate::Lease`] errs.
+    ///
+    /// # What will make this a measurement
+    ///
+    /// The leader's half already exists and already says so:
+    /// [`crate::FollowerLag::quiet_for`] is an age **only** while `behind` is
+    /// zero. When a node can be told how current a peer is, that pair is what it
+    /// will be told, and this function is where the answer arrives.
+    ///
+    /// # Errors
+    ///
+    /// Returns the substrate's failure, and a decoding failure when the node
+    /// identity cannot be read.
+    pub fn current_as_of(&self) -> Result<Option<std::time::Duration>> {
+        Ok(self
+            .effective_roles()?
+            .has(Roles::WRITABLE)
+            .then_some(std::time::Duration::ZERO))
+    }
+
     /// Adopt the role the cluster wants this node to have.
     ///
     /// The **effective** role of `04_concept.md` §6.1 moving toward the

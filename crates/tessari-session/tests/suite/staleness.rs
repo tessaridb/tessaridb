@@ -170,3 +170,96 @@ fn a_field_called_staleness_is_still_a_field() {
         .run("SELECT staleness FROM readings;")
         .expect("`staleness` with no duration after it is an ordinary field name");
 }
+
+#[test]
+fn a_node_whose_copy_has_no_known_age_refuses_a_bounded_read() {
+    // §C-05's *exclude, never mark*, at the only candidate that exists. A node
+    // that may not write holds a copy of somebody else's writes, and nothing in
+    // this build can say how old that copy is — so it is outside every bound
+    // rather than inside the ones it might happen to satisfy.
+    //
+    // The unbounded read beside it is what makes this about the BOUND. Without
+    // it the test would pass just as well against a node that had stopped
+    // answering reads altogether.
+    let store = store();
+    let mut session = ready(&store);
+    session.run("DEFINE NODE ROLES serving;").unwrap();
+
+    session
+        .run("SELECT * FROM orders;")
+        .expect("a read that names no tolerance is unaffected");
+
+    let refusal = session
+        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .expect_err("a copy with no known age is beyond every bound");
+
+    assert!(
+        matches!(refusal, Error::NoCopyWithinStaleness { .. }),
+        "expected the staleness refusal, got {refusal:?}"
+    );
+}
+
+#[test]
+fn a_leader_whose_lease_lapsed_is_no_longer_a_copy_within_any_bound() {
+    // The one case that separates *the roles this node adopted* from *the roles
+    // its lease leaves it*. A node configured `writable` whose fence has shut
+    // still reads `writable` in the adopted set, and answering a bounded read
+    // from it would serve data that somebody else may already have written past.
+    let store = store();
+    let mut session = ready(&store);
+    session.run("DEFINE NODE ROLES serving, writable;").unwrap();
+
+    session
+        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .expect("while the fence is open this node is its own origin");
+
+    store.hold_lease(core::time::Duration::ZERO);
+
+    let refusal = session
+        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .expect_err("a lapsed leader is no longer the origin of what it holds");
+
+    assert!(
+        matches!(refusal, Error::NoCopyWithinStaleness { .. }),
+        "expected the staleness refusal, got {refusal:?}"
+    );
+}
+
+#[test]
+fn the_bounded_refusal_blames_the_cluster_and_not_the_statement() {
+    // The decision this refusal carries, asserted rather than left to wording
+    // that a later edit could quietly invert. The bound cleared the floor, so
+    // the statement was never wrong; what is missing is a copy young enough.
+    //
+    // And it says what it did NOT do — §C-05's other half. A caller who cannot
+    // tell a refusal from a silent promotion has no way to know whether the
+    // leader is now carrying their read.
+    let store = store();
+    let mut session = ready(&store);
+    session.run("DEFINE NODE ROLES serving;").unwrap();
+
+    let refusal = session
+        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .expect_err("a copy with no known age is beyond every bound");
+    let said = refusal.to_string();
+
+    // `Duration::to_literal` normalises, so the refusal spells the tolerance
+    // the engine's way rather than the statement's. Derived from the same
+    // constant as `allowed()` so the suite still asserts no number of its own.
+    let as_written = tessari_types::Duration::from_seconds(
+        i64::try_from(STALENESS_FLOOR_SECONDS.saturating_mul(3)).unwrap(),
+    )
+    .to_literal();
+    assert!(
+        said.contains(&as_written),
+        "the refusal names the bound that was asked for ({as_written}): {said}"
+    );
+    assert!(
+        said.contains("rather than sent to the leader"),
+        "the refusal says the read was not promoted: {said}"
+    );
+    assert!(
+        !said.contains("floor"),
+        "this bound cleared the floor, so the refusal must not read as that one: {said}"
+    );
+}

@@ -775,6 +775,33 @@ pub enum Error {
         span: Span,
     },
 
+    /// A read named a tolerance for staleness that no copy in reach satisfies.
+    ///
+    /// `05_blocking-decisions.md` §C-05 decided both halves of this. Routing
+    /// **excludes** a node beyond the bound rather than serving it with a
+    /// marker, because a marker nobody is obliged to read is not a guarantee —
+    /// so a node outside the bound does not answer. And a read no node can
+    /// satisfy is **refused**, not sent to the leader: a silent promotion turns
+    /// a latency feature into a leader stampede exactly when the cluster is
+    /// already struggling, which is when every replica is behind at once.
+    ///
+    /// **It is the cluster that is short, not the statement.** The bound cleared
+    /// the floor, so it is a bound this cluster could in principle honour; what
+    /// is missing is a copy young enough to honour it with. A refusal that read
+    /// as a grammar complaint would send the caller to rewrite a statement that
+    /// was never wrong.
+    #[error(
+        "a staleness bound of {written} (at {span}) admits no copy in reach: \
+         this node's own copy has no known age, and a read no node can satisfy \
+         is refused rather than sent to the leader"
+    )]
+    NoCopyWithinStaleness {
+        /// The bound as the statement wrote it.
+        written: String,
+        /// Where the clause is.
+        span: Span,
+    },
+
     /// A `SELECT` named a vault as its source.
     ///
     /// Refused rather than answered, and what it would have answered is worth

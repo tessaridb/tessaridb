@@ -554,6 +554,31 @@ impl Session<'_> {
                     span: bound.span,
                 });
             }
+            // The bound clears the floor, so it is one this cluster could in
+            // principle honour. Whether it can is a question about copies rather
+            // than about grammar, and §C-05 answers it by EXCLUDING: a node
+            // beyond the bound does not answer, and when that leaves nothing the
+            // read is refused rather than sent to the leader. A node whose copy
+            // has no known age is beyond every bound — see
+            // `Store::current_as_of` for why that is the honest reading and not
+            // a conservative one.
+            //
+            // Whole seconds again, and for the opposite reason to the floor's: a
+            // sub-second remainder can only widen the bound, so dropping it can
+            // only refuse a read that a wider bound would have admitted, which
+            // is the direction this refusal is already erring.
+            let within_bound =
+                core::time::Duration::from_secs(u64::try_from(bound.within.seconds()).unwrap_or(0));
+            if self
+                .store
+                .current_as_of()?
+                .is_none_or(|age| age > within_bound)
+            {
+                return Err(Error::NoCopyWithinStaleness {
+                    written: bound.within.to_literal(),
+                    span: bound.span,
+                });
+            }
         }
         // Narrowed by this statement's own clause, and never widened by it: a
         // subquery may set a tighter ceiling than the read holding it and may

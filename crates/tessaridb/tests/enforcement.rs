@@ -48,6 +48,22 @@
 //! Its two callers are `INFO FOR NODE` and `$node`, both of which are statements
 //! that have already passed the session's own checks before reaching it.
 //!
+//! # The path added by the copy's age, and how it was classified
+//!
+//! `Store::current_as_of` is the twenty-fourth method on the substrate, and it
+//! is classified **enforced, by disclosing strictly less than its own input**.
+//! It is a function of `effective_roles` and nothing else: it answers `Some(0)`
+//! when that set carries `writable` and `None` otherwise, so every caller that
+//! can reach it could already read the whole of the value it is derived from,
+//! at the same place, through the same statement. A boolean fact about a value
+//! already disclosed is not a disclosure.
+//!
+//! Its authority direction is downward for a second reason worth writing down.
+//! Its one caller is the staleness check in `evaluate`, and the only thing that
+//! check can do with the answer is **refuse** a read the engine would otherwise
+//! have served. A path that can subtract a read and never add one cannot be
+//! walked into more reach than the caller arrived with.
+//!
 //! # The path added by the cluster's lease, and how it was classified
 //!
 //! `Db::hold_lease` is the seventeenth method on the facade, and it is
@@ -298,7 +314,7 @@ const TABLES: &[Table] = &[
         // exemption is therefore **conditional on having no remote caller**, and
         // that condition is written down so the next wave meets it rather than
         // inherits it.
-        expected: 23,
+        expected: 24,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -357,7 +373,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 70, "the counted tables no longer sum to 70");
+    assert_eq!(total, 71, "the counted tables no longer sum to 71");
 }
 
 /// Every `.rs` file under a directory.
