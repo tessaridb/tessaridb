@@ -79,6 +79,8 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // a selection or a transaction verb.
         | StatementKind::Use { .. }
         | StatementKind::DefineNamespace { .. }
+        // A replication policy is a property of the tenancy, not of anything in it.
+        | StatementKind::AlterNamespace { .. }
         | StatementKind::DefineDatabase { .. }
         | StatementKind::DefineAnalyzer { .. }
         // Undeclaring one names no table either. That an analyzer is still

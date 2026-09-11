@@ -720,30 +720,46 @@ fn a_database_scoped_user_lists_only_their_own_database() {
 #[test]
 fn a_listing_carries_the_names_and_nothing_that_counts_what_was_dropped() {
     // The ratchet under the two tests above. Both statements filter a scan
-    // rather than narrowing the read, and that is safe only while the report has
-    // no second field — a total, a page or an "of N" would report the tenancies
-    // the filter removed, in the one number nobody would think to redact.
+    // rather than narrowing the read, and that is safe only while every other
+    // field on the report is independent of what the filter removed — a total,
+    // a page or an "of N" would report the tenancies it dropped, in the one
+    // number nobody would think to redact.
     //
     // This fails the day a field is added, which is the point: adding one is a
-    // decision, and this is where it gets made rather than noticed later.
+    // decision, and this is where it gets made rather than noticed later. It
+    // has fired once. `INFO FOR NAMESPACE` gained `replication`, and the
+    // decision taken was that it may stand there, because it is a property of
+    // **the namespace the caller is already inside** rather than a count over
+    // the databases beneath it: it does not move when a database is filtered
+    // out, so it cannot report one. The list below is the whole report and it
+    // is written out per statement rather than as "the names plus anything",
+    // so the next field fires this again.
     let store = store();
     two_scopes(&store);
     let mut nina = signed_in(&store, "nina");
 
     for (statement, expected) in [
-        ("INFO FOR STORE;", "namespaces"),
-        ("INFO FOR NAMESPACE;", "databases"),
+        ("INFO FOR STORE;", vec!["namespaces"]),
+        ("INFO FOR NAMESPACE;", vec!["databases", "replication"]),
     ] {
         let Value::Object(fields) = report(&mut nina, statement) else {
             panic!("expected an object from {statement}");
         };
         let keys: Vec<&str> = fields.keys().map(String::as_str).collect();
-        assert_eq!(
-            keys,
-            vec![expected],
-            "{statement} grew a field beside the names"
-        );
+        assert_eq!(keys, expected, "{statement} grew a field beside the names");
     }
+
+    // And the half the sentence above rests on: the field is the same whichever
+    // caller reads it, so nothing about it varies with what the filter removed.
+    let mut ada = signed_in(&store, "ada");
+    let Value::Object(narrowed) = report(&mut ada, "INFO FOR NAMESPACE;") else {
+        panic!("expected an object");
+    };
+    assert_eq!(
+        narrowed.get("replication"),
+        Some(&Value::None),
+        "a database-scoped caller read a different policy than the store-wide one"
+    );
 }
 
 // Every part the report shows, and the statement that changes it.
@@ -1106,4 +1122,109 @@ fn info_for_bucket_refuses_a_name_nothing_declared() {
     session
         .run("INFO FOR BUCKET absent;")
         .expect_err("nothing declared that name");
+}
+
+// ------------------------------------------------- namespace replication
+
+/// G024 **S2.1**: the clause is declared with the namespace, read back, and
+/// moved in both directions.
+///
+/// The half that carries the weight is the third assertion. A namespace that
+/// never stated a policy reads as `NONE` — the empty value, meaning *nothing
+/// was said* — and a namespace that declined reads as the word `none`. On one
+/// node the two describe the same arrangement, which is exactly why they have
+/// to be different **values** now: the day a second node exists, one is
+/// honoured and the other is refused, and by then the namespaces already exist
+/// and nothing can tell them apart (ADR-0060).
+#[test]
+fn a_namespace_declares_its_replication_and_reads_it_back() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE archive REPLICATION FACTOR 3;\n\
+             DEFINE NAMESPACE scratch REPLICATION NONE;\n\
+             DEFINE NAMESPACE unsaid;",
+        )
+        .unwrap();
+
+    let policy = |session: &mut Session<'_>, namespace: &str| {
+        let script = format!("USE NAMESPACE {namespace}; INFO FOR NAMESPACE;");
+        let Value::Object(fields) = report(session, &script) else {
+            panic!("expected an object");
+        };
+        fields.get("replication").cloned().unwrap()
+    };
+
+    assert_eq!(policy(&mut session, "archive"), Value::from(3_i64));
+    assert_eq!(policy(&mut session, "scratch"), Value::from("none"));
+    assert_eq!(
+        policy(&mut session, "unsaid"),
+        Value::None,
+        "a namespace that said nothing must not read as one that declined"
+    );
+}
+
+/// G024 **S2.1**, the other direction: owner requirement D12 — a namespace
+/// starts unreplicated and is switched on later, and the statement that
+/// switches it on can switch it off again. A policy that cannot be withdrawn is
+/// one an operator hesitates to set.
+#[test]
+fn replication_is_turned_on_after_the_fact_and_off_again() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod;")
+        .unwrap();
+
+    let policy = |session: &mut Session<'_>| {
+        let Value::Object(fields) = report(session, "INFO FOR NAMESPACE;") else {
+            panic!("expected an object");
+        };
+        fields.get("replication").cloned().unwrap()
+    };
+
+    assert_eq!(policy(&mut session), Value::None);
+
+    session
+        .run("ALTER NAMESPACE prod REPLICATION FACTOR 2;")
+        .unwrap();
+    assert_eq!(policy(&mut session), Value::from(2_i64));
+
+    session
+        .run("ALTER NAMESPACE prod REPLICATION NONE;")
+        .unwrap();
+    assert_eq!(
+        policy(&mut session),
+        Value::from("none"),
+        "withdrawing replication must be a statement, not a return to silence"
+    );
+
+    session
+        .run("ALTER NAMESPACE prod REPLICATION FACTOR 5;")
+        .unwrap();
+    assert_eq!(policy(&mut session), Value::from(5_i64));
+}
+
+/// A re-run of a definition does not quietly re-set a policy on a namespace it
+/// did not create. `IF NOT EXISTS` means *this statement did nothing*, and a
+/// `DEFINE` that changed an existing namespace's replication would be an
+/// `ALTER` wearing a `DEFINE`'s spelling — which is how a redeployed schema
+/// script silently reverts an operator's change.
+#[test]
+fn a_definition_that_did_nothing_changes_no_policy() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod REPLICATION FACTOR 4;\n\
+             DEFINE NAMESPACE IF NOT EXISTS prod REPLICATION FACTOR 1;\n\
+             USE NAMESPACE prod;",
+        )
+        .unwrap();
+
+    let Value::Object(fields) = report(&mut session, "INFO FOR NAMESPACE;") else {
+        panic!("expected an object");
+    };
+    assert_eq!(fields.get("replication"), Some(&Value::from(4_i64)));
 }

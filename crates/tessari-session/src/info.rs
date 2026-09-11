@@ -117,7 +117,15 @@ impl Session<'_> {
         Ok(BTreeMap::from([("namespaces".to_owned(), by_name(names))]))
     }
 
-    /// The databases in the selected namespace.
+    /// The databases in the selected namespace, and how many copies of it the
+    /// cluster is asked to keep.
+    ///
+    /// The replication key is **present either way**, and answers `NONE` — the
+    /// `Value::None` that means *no value here*, not the policy spelled
+    /// `REPLICATION NONE` — for a namespace that never stated one. Reporting it
+    /// only when it was set would make silence look like a missing feature
+    /// rather than an unanswered question, and this answer is the only place an
+    /// operator can see which of the two they have (ADR-0060).
     fn info_namespace(
         &self,
         transaction: &mut Transaction<'_>,
@@ -125,6 +133,10 @@ impl Session<'_> {
     ) -> Result<BTreeMap<String, Value>> {
         let namespace = self.namespace_id(transaction, span)?;
         let own = self.identity.user().and_then(|user| user.database);
+        let replication = Catalog::new(transaction)
+            .namespace(namespace)?
+            .and_then(|definition| definition.replication)
+            .map_or(Value::None, tessari_types::Replication::to_value);
         let mut names = Vec::new();
         for database in Catalog::new(transaction).databases_in(namespace)? {
             if own.is_some_and(|id| id != database.id) {
@@ -132,7 +144,10 @@ impl Session<'_> {
             }
             names.push(database.name);
         }
-        Ok(BTreeMap::from([("databases".to_owned(), by_name(names))]))
+        Ok(BTreeMap::from([
+            ("databases".to_owned(), by_name(names)),
+            ("replication".to_owned(), replication),
+        ]))
     }
 
     /// The tables in the selected database, narrowed to those this session may

@@ -14,8 +14,8 @@ use tessari_storage::{
 };
 
 use tessari_types::{
-    Analyzer, FieldId, FieldKind, Filter, GraphId, IdentityKind, Path, RecordId, RecordRef, Step,
-    TableId, Value,
+    Analyzer, FieldId, FieldKind, Filter, GraphId, IdentityKind, Path, RecordId, RecordRef,
+    Replication, Step, TableId, Value,
 };
 
 use crate::condition::boolean;
@@ -62,7 +62,11 @@ impl Session<'_> {
             StatementKind::DefineNamespace {
                 name,
                 if_not_exists,
-            } => self.define_namespace(transaction, name, *if_not_exists),
+                replication,
+            } => self.define_namespace(transaction, name, *if_not_exists, *replication),
+            StatementKind::AlterNamespace { name, replication } => {
+                self.alter_namespace(transaction, name, *replication)
+            }
             StatementKind::DefineDatabase {
                 name,
                 if_not_exists,
@@ -1518,15 +1522,53 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         name: &Name,
         if_not_exists: bool,
+        replication: Option<Replication>,
     ) -> Result<Outcome> {
         if if_not_exists
             && Catalog::new(transaction)
                 .namespace_id(&name.text)?
                 .is_some()
         {
+            // The clause is not applied on this branch, and that is the same
+            // reading `IF NOT EXISTS` already has everywhere else: the
+            // statement did nothing because the namespace was there, so it
+            // changes nothing about it either. A definition that quietly
+            // re-set a policy on a namespace it did not create would be an
+            // `ALTER` wearing a `DEFINE`'s spelling.
             return Ok(Outcome::Done);
         }
-        Catalog::new(transaction).create_namespace(&name.text)?;
+        let definition = Catalog::new(transaction).create_namespace(&name.text)?;
+        if let Some(replication) = replication {
+            // Through the same call an `ALTER` makes, so the two statements
+            // cannot set this field differently.
+            Catalog::new(transaction).set_replication(definition.id, replication)?;
+        }
+        Ok(Outcome::Done)
+    }
+
+    /// `ALTER NAMESPACE prod REPLICATION FACTOR 3`
+    ///
+    /// Turning replication on for a namespace that already holds data, and off
+    /// again (owner requirement D12). **Nothing is redistributed**, and the
+    /// absence of a repair step is the point rather than an omission: the log
+    /// already holds every write the namespace ever took, so a follower that
+    /// begins subscribing replays it from origin. Cassandra's `ALTER KEYSPACE`
+    /// needs a `nodetool repair` afterwards because its replicas hold data
+    /// rather than a history; ours needs none because the history is the store.
+    fn alter_namespace(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        replication: Replication,
+    ) -> Result<Outcome> {
+        let Some(namespace) = Catalog::new(transaction).namespace_id(&name.text)? else {
+            return Err(Error::Unknown {
+                entity: "namespace",
+                name: name.text.clone(),
+                span: name.span,
+            });
+        };
+        Catalog::new(transaction).set_replication(namespace, replication)?;
         Ok(Outcome::Done)
     }
 

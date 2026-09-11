@@ -380,6 +380,8 @@ strict, so a field nobody can declare is a field it cannot hold at all. The
 
 ```
 DEFINE NAMESPACE prod;
+DEFINE NAMESPACE archive REPLICATION FACTOR 3;
+DEFINE NAMESPACE scratch REPLICATION NONE;
 DEFINE DATABASE orders;
 DEFINE COLLECTION users;
 DEFINE SPACE sessions;
@@ -418,6 +420,9 @@ ALTER TABLE notes SET SCHEMALESS;
 ALTER USER grace SET ROLE editor;
 ALTER USER grace SET PASSWORD 'a longer one';
 
+ALTER NAMESPACE prod REPLICATION FACTOR 2;
+ALTER NAMESPACE prod REPLICATION NONE;
+
 DEFINE KAFKA CONSUMER orders_in
     FROM 'broker-1:9092', 'broker-2:9092'
     TOPIC 'orders'
@@ -438,6 +443,28 @@ credential. Two statements rather than one with two optional halves, because a
 statement that changed only what it named would make *leave the role alone* and
 *reset the role* the same sentence — the reason `ALTER FIELD` replaces a
 declaration whole is the reason this one does not.
+
+**`REPLICATION` says how many copies of a namespace the cluster keeps**, and it
+is declared where the namespace is declared rather than inherited from a
+store-wide setting — a default nobody chose is indistinguishable, afterwards,
+from a choice somebody made. `REPLICATION NONE` declines replication and
+`REPLICATION FACTOR 3` asks for three copies; `FACTOR 1` is accepted and
+describes the same number of copies as `NONE`, kept apart because one is a
+count and the other is a refusal.
+
+**A namespace that never said is not a namespace that said `NONE`.** The clause
+is optional, so `DEFINE NAMESPACE prod;` states nothing, and `INFO FOR
+NAMESPACE` reports `replication: NONE` — the empty value, not the policy — for
+such a namespace. The two are kept as different stored facts because the
+difference cannot be recovered later: on a cluster, a namespace that declined is
+honoured and a namespace nobody asked is refused rather than quietly given one
+copy.
+
+**`ALTER NAMESPACE … REPLICATION …` moves it in both directions**, so a
+namespace can start unreplicated and be switched on afterwards, and switched off
+again. Nothing is redistributed by the statement and no repair step follows it:
+the log already holds every write the namespace ever took, so a node that begins
+replicating it replays that history from origin.
 
 **A consumer is ingestion the catalog holds rather than a script somebody
 remembered to start.** One `DEFINE KAFKA CONSUMER` says what to read (`FROM` brokers,

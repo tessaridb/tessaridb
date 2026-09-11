@@ -37,7 +37,9 @@ mod user;
 mod vault;
 
 use tessari_encoding::{decode_payload, encode_payload};
-use tessari_types::{DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId, TableId, Value};
+use tessari_types::{
+    DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId, Replication, TableId, Value,
+};
 
 pub use analyzer::AnalyzerDefinition;
 pub use authority::{Authority, Held, Kind, Reach};
@@ -94,9 +96,51 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         let definition = NamespaceDefinition {
             id,
             name: name.to_owned(),
+            // A namespace is created having said nothing about replication, and
+            // the clause is applied by [`Self::set_replication`] whether it
+            // arrived with the `DEFINE` or with a later `ALTER`. One write path
+            // rather than two: the two statements set the same field, and a
+            // second route for the creating case is a route that can disagree
+            // with the altering one. Both run inside the caller's transaction,
+            // whose pending writes are keyed by address, so a definition
+            // written and then amended still reaches the log as one mutation.
+            replication: None,
         };
         self.write(system::NAMESPACES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
+        Ok(definition)
+    }
+
+    /// Set how many copies of a namespace the cluster is asked to keep.
+    ///
+    /// Moves between **stated** values in both directions (owner requirement
+    /// D12) and never back to never-stated: a namespace that was once asked has
+    /// been asked, and silence is a fact about its history rather than a
+    /// setting to restore.
+    ///
+    /// Nothing is redistributed here, and nothing needs to be. The log already
+    /// holds every write the namespace ever took, so a follower that begins
+    /// subscribing replays it, and this statement has nothing to do but record
+    /// the policy. See `Session::alter_namespace` for why that is a property of
+    /// the design rather than a step left out.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoSuchParent`] when the namespace does not exist, and a
+    /// substrate or decoding failure otherwise.
+    pub fn set_replication(
+        &mut self,
+        namespace: NamespaceId,
+        replication: Replication,
+    ) -> Result<NamespaceDefinition> {
+        let Some(mut definition) = self.namespace(namespace)? else {
+            return Err(Error::NoSuchParent {
+                entity: "namespace",
+                id: namespace.get(),
+            });
+        };
+        definition.replication = Some(replication);
+        self.write(system::NAMESPACES, namespace.get(), &definition.to_value());
         Ok(definition)
     }
 

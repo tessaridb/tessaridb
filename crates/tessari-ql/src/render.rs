@@ -99,6 +99,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DefineAnalyzer { .. } => Err(unrenderable("DEFINE ANALYZER", span)),
         StatementKind::DefineUser { .. } => Err(unrenderable("DEFINE USER", span)),
         StatementKind::AlterUser { .. } => Err(unrenderable("ALTER USER", span)),
+        StatementKind::AlterNamespace { .. } => Err(unrenderable("ALTER NAMESPACE", span)),
         StatementKind::DefineNode { .. } => Err(unrenderable("DEFINE NODE", span)),
         StatementKind::DefineReplica { .. } => Err(unrenderable("DEFINE REPLICA", span)),
         StatementKind::DefineConsumer { .. } => Err(unrenderable("DEFINE KAFKA CONSUMER", span)),

@@ -13,7 +13,8 @@
 use std::collections::BTreeMap;
 
 use tessari_types::{
-    DatabaseId, Duration, GraphId, IdentityKind, IndexId, NamespaceId, Number, Path, TableId, Value,
+    DatabaseId, Duration, GraphId, IdentityKind, IndexId, NamespaceId, Number, Path, Replication,
+    TableId, Value,
 };
 
 use tessari_vault::{KeyId, Wrapped};
@@ -55,6 +56,7 @@ const FIELD_SERIES: &str = "series";
 const FIELD_RETAIN: &str = "retain";
 const FIELD_DIMENSION: &str = "dimension";
 const FIELD_DISTANCE: &str = "distance";
+const FIELD_REPLICATION: &str = "replication";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +65,24 @@ pub struct NamespaceDefinition {
     pub id: NamespaceId,
     /// Its name, which may change without moving anything.
     pub name: String,
+    /// How many copies the cluster is asked to keep of it (ADR-0060).
+    ///
+    /// `None` is **never stated**, and every namespace in every store that
+    /// existed before this field did reads that way — which is the correct
+    /// reading and not a fallback, exactly as an absent epoch flag is epoch
+    /// zero. It is deliberately not [`Replication::None`]: a namespace that
+    /// declined replication is honoured, and a namespace nobody ever asked is
+    /// refused at the moment a second node would hold it. That difference is
+    /// unrecoverable once namespaces exist, which is why the field lands before
+    /// the cluster does rather than with it.
+    ///
+    /// The counter-argument is on the record and it is `replica.rs`'s own: a
+    /// field nothing reads is a decision taken with no way to find out it was
+    /// wrong. It applies to a copy count held on a **replica**, where the value
+    /// can be derived later from the peers that exist. It does not apply here,
+    /// because what is bought is not the number — it is the distinction between
+    /// silence and a stated answer, and silence cannot be reconstructed.
+    pub replication: Option<Replication>,
 }
 
 /// A database within a namespace.
@@ -226,12 +246,21 @@ impl TableDefinition {
 
 impl NamespaceDefinition {
     /// The value written to the catalog.
+    ///
+    /// The replication field is written **only when it was stated**, so a
+    /// namespace that said nothing encodes to the exact object it encoded to
+    /// before this field existed. Nothing already stored is rewritten, and the
+    /// absence carries the meaning instead of a placeholder standing in for it.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        Value::Object(BTreeMap::from([
+        let mut fields = BTreeMap::from([
             (FIELD_ID.to_owned(), number(self.id.get())),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
-        ]))
+        ]);
+        if let Some(replication) = self.replication {
+            fields.insert(FIELD_REPLICATION.to_owned(), replication.to_value());
+        }
+        Value::Object(fields)
     }
 
     /// Read a definition back.
@@ -239,12 +268,26 @@ impl NamespaceDefinition {
     /// # Errors
     ///
     /// Returns [`Error::CatalogMalformed`] when a field is missing or holds the
-    /// wrong type.
+    /// wrong type — including a replication policy this build does not
+    /// recognise, which refuses rather than reading as never-stated. A
+    /// namespace written by a later build under a placement policy must not be
+    /// served here as though nobody had ever declared one.
     pub fn from_value(value: &Value) -> Result<Self> {
         let fields = object(value, "namespace")?;
+        let replication = match fields.get(FIELD_REPLICATION) {
+            None => None,
+            Some(held) => Some(
+                Replication::from_value(held).ok_or(Error::CatalogMalformed {
+                    entity: "namespace",
+                    field: FIELD_REPLICATION,
+                    found: "a replication policy this build does not have",
+                })?,
+            ),
+        };
         Ok(Self {
             id: NamespaceId::new(field_id(fields, FIELD_ID, "namespace")?),
             name: field_name(fields, "namespace")?,
+            replication,
         })
     }
 }
@@ -1707,11 +1750,73 @@ mod tests {
 
     use super::*;
 
+    /// The bytes a namespace held before the replication clause existed.
+    ///
+    /// Pinned as a literal rather than produced by an encoder, so that this is
+    /// genuinely a stored value from an older build and not a round trip of
+    /// today's. A namespace written then must read as **never stated** — which
+    /// is the true reading of a store that had no way to say anything, not a
+    /// fallback — and must encode back to exactly the same object, so nothing
+    /// already on disk is rewritten by being read.
+    #[test]
+    fn a_namespace_stored_before_the_clause_reads_as_never_stated() {
+        let stored = Value::Object(BTreeMap::from([
+            ("id".to_owned(), number(7)),
+            ("name".to_owned(), Value::from("prod")),
+        ]));
+        let read = NamespaceDefinition::from_value(&stored).unwrap();
+        assert_eq!(read.replication, None);
+        assert_eq!(read.to_value(), stored, "a read must not rewrite it");
+    }
+
+    #[test]
+    fn a_stated_policy_round_trips_and_is_not_silence() {
+        for policy in [
+            Replication::None,
+            Replication::Factor(core::num::NonZeroU32::new(3).unwrap()),
+        ] {
+            let namespace = NamespaceDefinition {
+                id: NamespaceId::new(7),
+                name: "prod".to_owned(),
+                replication: Some(policy),
+            };
+            let read = NamespaceDefinition::from_value(&namespace.to_value()).unwrap();
+            assert_eq!(read, namespace, "{policy}");
+            assert_ne!(read.replication, None, "{policy}");
+        }
+    }
+
+    /// A policy a later build understands and this one does not refuses rather
+    /// than reading as silence — the same refusal a table's unknown identity
+    /// scheme takes, and for the same reason: serving a namespace as *nobody
+    /// ever declared one* when somebody did is the wrong answer given
+    /// confidently.
+    #[test]
+    fn a_policy_this_build_does_not_know_refuses() {
+        let stored = Value::Object(BTreeMap::from([
+            ("id".to_owned(), number(7)),
+            ("name".to_owned(), Value::from("prod")),
+            ("replication".to_owned(), Value::from("every-rack")),
+        ]));
+        let error = NamespaceDefinition::from_value(&stored).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::CatalogMalformed {
+                    field: "replication",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+    }
+
     #[test]
     fn every_definition_round_trips_through_its_value() {
         let namespace = NamespaceDefinition {
             id: NamespaceId::new(7),
             name: "prod".to_owned(),
+            replication: None,
         };
         assert_eq!(
             NamespaceDefinition::from_value(&namespace.to_value()).unwrap(),

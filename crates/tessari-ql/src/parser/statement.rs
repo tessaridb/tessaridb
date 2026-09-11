@@ -1,7 +1,9 @@
 //! One statement at a time.
 
+use core::num::NonZeroU32;
+
 use super::Parser;
-use tessari_types::{Assertion, FieldKind, Filter, IdentityKind, Number, Path, Step};
+use tessari_types::{Assertion, FieldKind, Filter, IdentityKind, Number, Path, Replication, Step};
 
 use crate::ast::{
     Answer, Approximation, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, Direction,
@@ -346,6 +348,35 @@ impl Parser<'_> {
     }
 
     /// A contextual word this statement requires.
+    /// `REPLICATION NONE` or `REPLICATION FACTOR 3`, when one stands here.
+    ///
+    /// `REPLICATION` and `FACTOR` are read as **contextual words** rather than
+    /// added to the keyword table, which is not a shortcut: `DEFINE NAMESPACE`
+    /// appears 333 times across this engine and four sibling repositories, and
+    /// reserving a word retroactively refuses every script that used it as a
+    /// name. Nothing here is ambiguous — a bare word after a namespace's name
+    /// has no other reading — so the reservation would buy nothing and cost the
+    /// corpus.
+    ///
+    /// Answers `None` when no clause stands here, which is what a namespace
+    /// that said nothing is; see [`StatementKind::DefineNamespace`] for why
+    /// that is not [`Replication::None`].
+    fn replication_clause(&mut self) -> Result<Option<Replication>> {
+        if !self.eat_word("replication") {
+            return Ok(None);
+        }
+        if self.eat_keyword(Keyword::None) {
+            return Ok(Some(Replication::None));
+        }
+        self.expect_word("factor", "`NONE` or `FACTOR` and a count")?;
+        // `whole_number` already refuses zero and says so at the author's own
+        // span, which is the answer this clause needs: a factor of zero is not
+        // a policy, it says the data is kept nowhere.
+        let factor = NonZeroU32::new(self.whole_number("a replication factor of at least one")?)
+            .ok_or_else(|| self.error_here("a replication factor of at least one"))?;
+        Ok(Some(Replication::Factor(factor)))
+    }
+
     fn expect_word(&mut self, word: &str, expected: &'static str) -> Result<()> {
         if self.eat_word(word) {
             return Ok(());
@@ -642,9 +673,11 @@ impl Parser<'_> {
             Some(Keyword::Namespace) => {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
+                let name = self.name()?;
                 Ok(StatementKind::DefineNamespace {
-                    name: self.name()?,
+                    name,
                     if_not_exists,
+                    replication: self.replication_clause()?,
                 })
             }
             Some(Keyword::Database) => {
@@ -1601,8 +1634,15 @@ impl Parser<'_> {
             };
             return Ok(StatementKind::AlterTable { table, change });
         }
+        if self.eat_keyword(Keyword::Namespace) {
+            let name = self.name()?;
+            let Some(replication) = self.replication_clause()? else {
+                return Err(self.error_here("`REPLICATION` and the policy to set"));
+            };
+            return Ok(StatementKind::AlterNamespace { name, replication });
+        }
         if !self.eat_keyword(Keyword::User) {
-            return Err(self.error_here("`USER` or `TABLE` and the thing to change"));
+            return Err(self.error_here("`NAMESPACE`, `USER` or `TABLE` and the thing to change"));
         }
         let name = self.name()?;
         self.expect_keyword(Keyword::Set, "`SET` and the one thing to change")?;

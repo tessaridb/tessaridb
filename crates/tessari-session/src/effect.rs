@@ -144,6 +144,7 @@ impl Effect {
             | StatementKind::DropAnalyzer { .. }
             | StatementKind::DropDatabase { .. }
             | StatementKind::DropNamespace { .. }
+            | StatementKind::AlterNamespace { .. }
             | StatementKind::AlterTable { .. }
             | StatementKind::AlterField { .. }
             | StatementKind::RebuildIndex { .. } => Self::Write,

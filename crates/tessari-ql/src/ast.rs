@@ -20,7 +20,9 @@
 //!
 //! [`TableId`]: tessari_types::TableId
 
-use tessari_types::{Assertion, Duration, FieldKind, Filter, IdentityKind, Path, RecordId, Value};
+use tessari_types::{
+    Assertion, Duration, FieldKind, Filter, IdentityKind, Path, RecordId, Replication, Value,
+};
 
 use crate::function::Function;
 use crate::token::Span;
@@ -68,12 +70,30 @@ pub enum StatementKind {
         /// engine mints beside this, never this.
         consumer: Option<String>,
     },
-    /// `DEFINE NAMESPACE prod`
+    /// `DEFINE NAMESPACE prod REPLICATION FACTOR 3`
     DefineNamespace {
         /// The name to create.
         name: Name,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
+        /// How many copies the cluster is asked to keep, when the statement
+        /// said.
+        ///
+        /// `None` is a namespace that **said nothing**, which is not the same
+        /// as [`Replication::None`] and is deliberately not defaulted to it
+        /// (ADR-0060). The difference is the whole point of carrying the
+        /// clause this early: a namespace that declined replication is
+        /// honoured, and a namespace nobody asked is refused at the moment a
+        /// second node would hold it. Collapsing the two here would make that
+        /// distinction unrecoverable, because by then the namespaces exist.
+        ///
+        /// The clause is **optional today and mandatory later**. ADR-0060 asks
+        /// for mandatory, and this is a sequencing departure recorded in W211's
+        /// plan rather than a reversal: a clause made mandatory before there
+        /// are nodes to place copies on could only be answered with `NONE`,
+        /// which trains an operator to decline without thinking — the
+        /// inherited default the ADR exists to abolish, wearing a costume.
+        replication: Option<Replication>,
     },
     /// `DEFINE DATABASE orders`
     DefineDatabase {
@@ -429,6 +449,27 @@ pub enum StatementKind {
         name: Name,
         /// What about them.
         change: UserChange,
+    },
+    /// `ALTER NAMESPACE prod REPLICATION FACTOR 3`
+    ///
+    /// Turning replication on for a namespace that already holds data, and off
+    /// again — both directions, because a policy you cannot withdraw is a
+    /// policy you will hesitate to set (owner requirement D12).
+    ///
+    /// It carries only the replication, rather than a record of optional
+    /// fields, for the reason [`UserChange`] gives: a struct of `Option`s makes
+    /// *leave this alone* and *set this to nothing* the same shape, and the
+    /// executor is then trusted to tell them apart. Here there is nothing else
+    /// the statement can touch.
+    ///
+    /// There is no way to say *un-state it* — the clause moves between stated
+    /// values and never back to never-stated, because never-stated is a fact
+    /// about a namespace's history and not a setting.
+    AlterNamespace {
+        /// The namespace being changed.
+        name: Name,
+        /// What its replication becomes.
+        replication: Replication,
     },
     /// `DEFINE NODE ROLES serving, writable ENDPOINTS 'host:9000'`
     ///

@@ -219,6 +219,7 @@ fn erase_statement(statement: &mut Statement) {
                 erase_name(role);
             }
         }
+        StatementKind::AlterNamespace { name, .. } => erase_name(name),
         StatementKind::DefineNode { roles, .. } => erase_names(roles.as_deref_mut()),
         StatementKind::DefineReplica { name, roles, .. } => {
             erase_name(name);

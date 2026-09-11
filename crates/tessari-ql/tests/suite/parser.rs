@@ -11,7 +11,12 @@ use tessari_ql::{
     Approximation, BinaryOp, EdgeClause, Error, ExprKind, Identity, InfoSubject, Projection,
     RecordTarget, Script, Source, StatementKind, parse,
 };
-use tessari_types::{Datetime, FieldKind, Number, RecordId, Value};
+use tessari_types::{Datetime, FieldKind, Number, RecordId, Replication, Value};
+
+/// A replication factor, which is never zero.
+fn factor(n: u32) -> Replication {
+    Replication::Factor(std::num::NonZeroU32::new(n).unwrap())
+}
 
 fn script(source: &str) -> Script {
     match parse(source) {
@@ -1307,4 +1312,99 @@ fn a_walk_keeps_at_least_one_candidate() {
 fn effort_stays_a_name_a_caller_may_use() {
     assert!(parse("SELECT effort FROM tasks;").is_ok());
     assert!(parse("DEFINE FIELD effort ON tasks TYPE int;").is_ok());
+}
+
+// ------------------------------------------------- §4 namespace replication
+
+/// The clause a namespace declares its copies with, and the one thing it must
+/// keep apart: a namespace that said nothing is not a namespace that said
+/// `NONE` (ADR-0060). Absence has to survive as a value, because the day a
+/// second node exists is the day the difference decides whether the namespace
+/// is refused or honoured — and by then the namespaces already exist.
+#[test]
+fn a_namespace_declares_how_many_copies_it_wants() {
+    let StatementKind::DefineNamespace { replication, .. } = one("DEFINE NAMESPACE prod;") else {
+        panic!("DEFINE NAMESPACE");
+    };
+    assert_eq!(replication, None, "a bare definition states nothing");
+
+    let StatementKind::DefineNamespace { replication, .. } =
+        one("DEFINE NAMESPACE prod REPLICATION NONE;")
+    else {
+        panic!("DEFINE NAMESPACE REPLICATION NONE");
+    };
+    assert_eq!(replication, Some(Replication::None));
+
+    let StatementKind::DefineNamespace { replication, .. } =
+        one("DEFINE NAMESPACE prod REPLICATION FACTOR 3;")
+    else {
+        panic!("DEFINE NAMESPACE REPLICATION FACTOR");
+    };
+    assert_eq!(replication, Some(factor(3)));
+}
+
+#[test]
+fn the_clause_follows_if_not_exists_rather_than_displacing_it() {
+    let StatementKind::DefineNamespace {
+        if_not_exists,
+        replication,
+        ..
+    } = one("DEFINE NAMESPACE IF NOT EXISTS prod REPLICATION FACTOR 2;")
+    else {
+        panic!("DEFINE NAMESPACE IF NOT EXISTS … REPLICATION");
+    };
+    assert!(if_not_exists);
+    assert_eq!(replication, Some(factor(2)));
+}
+
+#[test]
+fn replication_moves_in_both_directions() {
+    // D12: a namespace starts unreplicated and is switched on later, and the
+    // statement that switches it on must be able to switch it off again.
+    let StatementKind::AlterNamespace { name, replication } =
+        one("ALTER NAMESPACE prod REPLICATION FACTOR 3;")
+    else {
+        panic!("ALTER NAMESPACE REPLICATION FACTOR");
+    };
+    assert_eq!(name.text, "prod");
+    assert_eq!(replication, factor(3));
+
+    let StatementKind::AlterNamespace { replication, .. } =
+        one("ALTER NAMESPACE prod REPLICATION NONE;")
+    else {
+        panic!("ALTER NAMESPACE REPLICATION NONE");
+    };
+    assert_eq!(replication, Replication::None);
+}
+
+#[test]
+fn no_copies_at_all_is_refused_where_it_is_written() {
+    // A factor of zero decodes as a count and means the data is kept nowhere,
+    // so it is refused at the span the author can see rather than stored.
+    assert!(parse("DEFINE NAMESPACE prod REPLICATION FACTOR 0;").is_err());
+    assert!(parse("ALTER NAMESPACE prod REPLICATION FACTOR 0;").is_err());
+}
+
+#[test]
+fn an_alter_that_names_nothing_to_change_is_refused() {
+    // `ALTER NAMESPACE prod;` has no reading — the statement carries only what
+    // it came to change, so there is nothing for it to mean.
+    assert!(parse("ALTER NAMESPACE prod;").is_err());
+    assert!(parse("ALTER NAMESPACE prod REPLICATION;").is_err());
+}
+
+/// `replication` is a contextual word, not a reserved one — so every script
+/// written before the clause existed still parses, including the ones that use
+/// the word as a name. The 333 `DEFINE NAMESPACE` sites across five
+/// repositories are the source set this protects (BGV-FIDELITY-001).
+#[test]
+fn the_new_words_are_still_usable_as_names() {
+    assert!(matches!(
+        one("DEFINE TABLE replication (factor int);"),
+        StatementKind::DefineTable { .. }
+    ));
+    assert!(matches!(
+        one("DEFINE NAMESPACE factor;"),
+        StatementKind::DefineNamespace { .. }
+    ));
 }

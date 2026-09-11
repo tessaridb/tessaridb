@@ -23,6 +23,7 @@ mod ids;
 mod number;
 mod path;
 mod record_id;
+mod replication;
 mod stemmer;
 mod text;
 mod time;
@@ -43,6 +44,7 @@ pub use ids::{
 pub use number::Number;
 pub use path::{Path, Step};
 pub use record_id::RecordId;
+pub use replication::Replication;
 pub use stemmer::stem;
 pub use text::{article, parse_uuid, string_to_literal, uuid_to_text};
 pub use time::{Datetime, Duration};

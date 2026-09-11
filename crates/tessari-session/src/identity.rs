@@ -506,9 +506,16 @@ impl Needs {
             // authority as adding to it, and an `editor` of one database
             // undeclaring a namespace they hold no tenancy in is exactly what
             // this level exists to refuse.
-            StatementKind::DefineNamespace { .. } | StatementKind::DropNamespace { .. } => {
-                Self::MANAGE_STORE
-            }
+            //
+            // `ALTER NAMESPACE` joins them for the same reason a third time: it
+            // changes how many copies of a top-level container the cluster
+            // keeps, which is a decision about the store's shape rather than
+            // about anything stored in it. An `editor` of one database
+            // withdrawing replication from the namespace holding it would be a
+            // caller emptying a safety property they hold no tenancy over.
+            StatementKind::DefineNamespace { .. }
+            | StatementKind::AlterNamespace { .. }
+            | StatementKind::DropNamespace { .. } => Self::MANAGE_STORE,
             // **The fifteen that were `Write`, and this line is the owner's
             // fourth rule.** Creating and dropping the containers records live
             // in is `manage`, and changing the records is `write`, and neither
