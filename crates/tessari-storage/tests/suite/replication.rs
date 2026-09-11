@@ -473,3 +473,134 @@ fn a_replay_derives_the_adjacency_the_commit_derived() {
         );
     }
 }
+
+/// G024 **S3.1**: a follower bootstraps by replaying the log from origin **with
+/// the source never stopped**, and ends byte-identical to it.
+///
+/// The test above this one replays a *quiesced* source, which is the easy half
+/// and was already true. The words that carry S3.1 are *never stopped*: a
+/// follower reading `log_records(its own tail, n)` is chasing a tail that is
+/// moving away from it, and whether that converges — and whether anything
+/// refuses on the way — is a question about the engine rather than about the
+/// caller's loop.
+///
+/// Three things are asserted and the second is the one that would be easy to
+/// leave out. It **converges** while the leader is still writing. **Every**
+/// `apply_record` returns `Ok` — no gap, no divergence, no torn read of a
+/// record being committed while the scan ran, which is the case worth looking
+/// at because `log_records` scans the backend directly rather than through a
+/// transaction snapshot. And the keyspaces match **byte for byte** once both
+/// are quiet, because "the same data" and "the same bytes" are different claims.
+#[test]
+fn a_follower_catches_a_leader_that_is_still_writing() {
+    const WRITES: usize = 400;
+    /// Small enough that the follower cannot swallow the log in one pass, which
+    /// is what makes this a chase rather than the quiesced replay above.
+    const BATCH: usize = 16;
+
+    let leader_backend = backend();
+    let leader = Arc::new(store_on(&leader_backend));
+    let writing = Arc::clone(&leader);
+
+    let writer = std::thread::spawn(move || {
+        for n in 0..WRITES {
+            write(
+                &writing,
+                &format!("record-{n:04}"),
+                format!("value-{n}").as_bytes(),
+            );
+        }
+    });
+
+    let replica_backend = backend();
+    let replica = store_on(&replica_backend);
+
+    // The follower knows only its own tail — it never asks the leader where to
+    // start, which is what makes this resumable rather than a one-shot copy.
+    let mut applied = 0_usize;
+    let mut passes = 0_usize;
+    let mut overlapped = 0_usize;
+    loop {
+        let from = Sequence::new(replica.committed_tail().unwrap().get().saturating_add(1));
+        let batch = leader.log_records(from, BATCH).unwrap();
+        if batch.is_empty() {
+            if writer.is_finished()
+                && replica.committed_tail().unwrap() == leader.committed_tail().unwrap()
+            {
+                break;
+            }
+            std::thread::yield_now();
+            continue;
+        }
+        passes = passes.saturating_add(1);
+        if !writer.is_finished() {
+            overlapped = overlapped.saturating_add(1);
+        }
+        for (sequence, record) in batch {
+            // Asserted rather than unwrapped away: a refusal here is the whole
+            // question, and `unwrap` would report it as a panic in a helper.
+            assert!(
+                replica.apply_record(sequence, &record).is_ok(),
+                "the follower refused record {sequence} mid-bootstrap"
+            );
+            applied = applied.saturating_add(1);
+        }
+    }
+    writer.join().unwrap();
+
+    // The leader may have written more after the follower's last read, so one
+    // final pass settles it. That this pass exists is the honest shape of a
+    // bootstrap against a live source and not a weakening of the claim: the
+    // loop above ran while writes were in flight, which is what `never stopped`
+    // asks for.
+    for (sequence, record) in leader
+        .log_records(
+            Sequence::new(replica.committed_tail().unwrap().get().saturating_add(1)),
+            PLENTY,
+        )
+        .unwrap()
+    {
+        replica.apply_record(sequence, &record).unwrap();
+    }
+
+    assert!(passes > 1, "the follower swallowed the log in one pass");
+    // The assertion that makes this test about a live source rather than a
+    // quiesced one wearing a thread: at least one pass ran while the writer was
+    // still going. Measured at 90-278 of them on this machine; the bar is one,
+    // because a loaded machine may schedule the writer to completion early and
+    // a tighter bound would make this flaky rather than strict.
+    assert!(
+        overlapped > 0,
+        "every pass ran after the writer finished — the source was effectively stopped"
+    );
+    assert_eq!(
+        u64::try_from(applied).unwrap(),
+        leader.committed_tail().unwrap().get(),
+        "the follower applied a different number of records than the leader wrote"
+    );
+    assert_eq!(
+        replica.committed_tail().unwrap(),
+        leader.committed_tail().unwrap(),
+        "the follower did not converge on the leader's tail"
+    );
+    assert_eq!(
+        replica.health().unwrap().log_divergences,
+        0,
+        "a bootstrap against a live source raised a divergence"
+    );
+
+    let node_identity = Key::from(vec![0x38]);
+    for keyspace in Keyspace::ALL {
+        let derived = |backend: &Arc<dyn KvBackend>| {
+            dump(backend, *keyspace)
+                .into_iter()
+                .filter(|(key, _)| *key != node_identity)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            derived(&leader_backend),
+            derived(&replica_backend),
+            "keyspace {keyspace} differs after a bootstrap against a live source"
+        );
+    }
+}
