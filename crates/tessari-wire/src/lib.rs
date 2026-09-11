@@ -44,8 +44,12 @@
 #![forbid(unsafe_code)]
 
 mod client;
+#[cfg(feature = "server")]
+mod credential;
 mod error;
 mod frame;
+#[cfg(feature = "server")]
+mod link;
 mod message;
 #[cfg(feature = "server")]
 mod node;
@@ -57,7 +61,11 @@ mod push;
 use std::time::Duration;
 
 pub use crate::client::{Client, Feed};
+#[cfg(feature = "server")]
+pub use crate::credential::{fingerprint, names, presented};
 pub use crate::error::{Error, Result};
+#[cfg(feature = "server")]
+pub use crate::link::{Credential, Peers, call};
 #[cfg(feature = "server")]
 pub use crate::message::names_for;
 pub use crate::message::{Answer, Correction, Exact, Names, Remark, Request, Suggested, spell};

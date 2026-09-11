@@ -122,11 +122,20 @@ impl Kind {
 /// ceiling — refused on the way out as well as in, because a server that emits
 /// what it would refuse to read has two protocols.
 pub(crate) fn write(out: &mut impl Write, kind: Kind, body: &[u8]) -> Result<()> {
+    write_tagged(out, kind.tag(), body)
+}
+
+/// Write one frame under a tag this module does not interpret.
+///
+/// The peer link has its own tag space (see [`crate::peer::PeerFrame`]) and the
+/// same header, so it shares the ceiling rather than carrying a second copy of
+/// it — a second copy is how two limits come to disagree.
+pub(crate) fn write_tagged(out: &mut impl Write, tag: u8, body: &[u8]) -> Result<()> {
     let length = u32::try_from(body.len()).unwrap_or(u32::MAX);
     if length > CEILING {
         return Err(Error::TooLarge { length });
     }
-    out.write_all(&[kind.tag()])?;
+    out.write_all(&[tag])?;
     out.write_all(&length.to_be_bytes())?;
     out.write_all(body)?;
     out.flush()?;
@@ -141,6 +150,21 @@ pub(crate) fn write(out: &mut impl Write, kind: Kind, body: &[u8]) -> Result<()>
 /// above the ceiling, [`Error::UnknownFrame`] for a kind this build does not
 /// have, and the stream's own failure otherwise.
 pub(crate) fn read(input: &mut impl Read) -> Result<Option<(Kind, Vec<u8>)>> {
+    let Some((tag, body)) = read_tagged(input)? else {
+        return Ok(None);
+    };
+    let Some(kind) = Kind::from_tag(tag) else {
+        return Err(Error::UnknownFrame { tag });
+    };
+    Ok(Some((kind, body)))
+}
+
+/// Read one frame without deciding what its tag means.
+///
+/// The tag is handed back raw because the peer link's tags are not this
+/// module's to know; the ceiling, the header shape and the clean-goodbye rule
+/// are, and they are the parts worth having in one place.
+pub(crate) fn read_tagged(input: &mut impl Read) -> Result<Option<(u8, Vec<u8>)>> {
     let mut header = [0_u8; 5];
     let mut held = 0;
     while held < header.len() {
@@ -159,9 +183,6 @@ pub(crate) fn read(input: &mut impl Read) -> Result<Option<(Kind, Vec<u8>)>> {
         held = held.saturating_add(read);
     }
 
-    let Some(kind) = Kind::from_tag(header[0]) else {
-        return Err(Error::UnknownFrame { tag: header[0] });
-    };
     let length = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
     // Checked before the allocation, which is the whole point of the ceiling.
     if length > CEILING {
@@ -169,7 +190,7 @@ pub(crate) fn read(input: &mut impl Read) -> Result<Option<(Kind, Vec<u8>)>> {
     }
     let mut body = vec![0_u8; usize::try_from(length).unwrap_or(0)];
     input.read_exact(&mut body).map_err(|_| Error::Truncated)?;
-    Ok(Some((kind, body)))
+    Ok(Some((header[0], body)))
 }
 
 /// Say hello, and hear one back.

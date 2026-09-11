@@ -118,6 +118,36 @@ pub enum Error {
         presented: String,
     },
 
+    /// The transport itself refused, and this is what it said.
+    ///
+    /// A handshake that fails has already decided the connection is not
+    /// happening, and the reasons are the transport's vocabulary rather than
+    /// this protocol's — an untrusted issuer, an expired certificate, a name the
+    /// server does not carry. Carried through as its own words for the same
+    /// reason [`Self::Refused`] is: rewording somebody else's diagnosis gives an
+    /// operator two accounts of one event.
+    #[error("the peer link's transport refused this connection: {0}")]
+    Transport(String),
+
+    /// A credential the transport accepted, which does not name this node.
+    ///
+    /// Distinct from [`Self::IdentityDisagrees`] by what it is able to say.
+    /// That one is raised where the transport hands over an id it extracted, so
+    /// both ids can be named. Here the credential was *asked* whether it speaks
+    /// for the id the greeting claims and said no, and asking cannot report
+    /// which id it would have said yes to. The fingerprint is the better half of
+    /// that answer regardless: it names exactly one file on exactly one machine,
+    /// which is what an operator chasing a mis-issued credential has to find.
+    #[error(
+        "that node's greeting claims {said}, and the credential it presented (sha256 {fingerprint}) does not name it"
+    )]
+    CredentialNamesAnother {
+        /// What the frame said.
+        said: String,
+        /// The SHA-256 of the certificate that was presented, lowercase hex.
+        fingerprint: String,
+    },
+
     /// A role set carrying a bit this build does not assign.
     ///
     /// Not a malformed frame — the body is exactly the shape a greeting takes.

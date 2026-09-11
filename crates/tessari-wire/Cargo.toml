@@ -26,6 +26,9 @@ server = [
     "dep:tessari-session",
     "dep:tessari-storage",
     "dep:log",
+    "dep:rustls",
+    "dep:rustls-webpki",
+    "dep:sha2",
 ]
 
 [dependencies]
@@ -42,6 +45,13 @@ tessari-types.workspace = true
 # Server-side only: a client that logs nothing keeps the crate count the lean
 # build is measured by.
 log = { workspace = true, optional = true }
+# Server-side only, and the peer link is the only caller: a client speaks to a
+# node over the wire's own framing and has no peer to authenticate.
+rustls = { workspace = true, optional = true }
+rustls-webpki = { workspace = true, optional = true }
+# The fingerprint a refusal names when a credential does not name the node the
+# greeting claims. Already in the tree.
+sha2 = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -51,6 +61,8 @@ tessari-constants.workspace = true
 # than by waiting for a driver that does not exist.
 tessari-backup.workspace = true
 rust_decimal.workspace = true
+# The test certificate authority, minted in memory per test.
+rcgen.workspace = true
 
 # These four drive a node, so without the server half there is nothing for them
 # to drive. Declared as `required-features` rather than gated with an inner

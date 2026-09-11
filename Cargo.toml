@@ -60,6 +60,25 @@ getrandom = "0.4"
 # compiler is entitled to delete a wipe that nothing afterwards observes, and a
 # hand-written `for b in buf { *b = 0 }` is exactly that wipe.
 zeroize = { version = "1.9", features = ["zeroize_derive"] }
+# TLS for the inter-node link, and nothing else in this workspace speaks it.
+# `rustls` with the `ring` provider rather than `aws-lc-rs`: the provider is the
+# whole build-system question, and `ring` asks only for the `cc` that
+# `rust:1.98-slim-bookworm` already carries, where `aws-lc-rs` wants cmake and
+# brings the OpenSSL licence with it — a licence `deny.toml` does not allow.
+# Measured before it was chosen: six crates net-new to this workspace and a 6.5 s
+# cold build. `native-tls` was refused for the opposite reason — a C build and a
+# platform certificate store in an image that is deliberately one binary on a
+# slim base.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# Already inside rustls's own tree, declared here because the peer link calls it
+# directly: it is what lets a credential be ASKED whether it is valid for a name
+# instead of being parsed for one. Naming it costs no crate and makes the
+# dependency visible where it is used.
+rustls-webpki = { version = "0.103", default-features = false, features = ["std", "ring"] }
+# Test-only, and deliberately never a dependency: the peer tests mint their own
+# certificate authority in memory, so no key material is ever written to this
+# repository and no fixture can go stale.
+rcgen = "0.13"
 # Facade only. The binary picks the implementation, so a library caller keeps
 # control of whether anything is emitted at all, and `log` pulls in nothing.
 log = { version = "0.4", features = ["std"] }
