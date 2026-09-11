@@ -652,22 +652,36 @@ impl Session<'_> {
                 name,
                 timeout,
                 attempts,
+                schemafull,
+                graph,
                 if_not_exists,
-            } => self.define_table(
-                transaction,
-                name,
-                TableShape {
-                    schemafull: false,
-                    kind: TableKind::Queue(QueueDeclaration {
-                        timeout: *timeout,
-                        attempts: *attempts,
-                    }),
-                    identity: IdentityKind::default(),
-                    graph: None,
-                },
-                *if_not_exists,
-                span,
-            ),
+            } => {
+                // Resolved before the queue is created, on `DEFINE TABLE`'s own
+                // rule and for its reason: a table left standing with a
+                // membership nothing resolves belongs to no graph anyone can
+                // name, and `INFO FOR GRAPH` would never list it.
+                let graph = self.resolve_graph(transaction, graph.as_ref())?;
+                self.define_table(
+                    transaction,
+                    name,
+                    TableShape {
+                        // Both taken from the statement rather than fixed here.
+                        // They were fixed until W208b¹, and what that cost was
+                        // not theoretical: a table that is strict and is an end
+                        // of a link — which is what a record model's work table
+                        // normally is — could not be a queue at all.
+                        schemafull: *schemafull,
+                        kind: TableKind::Queue(QueueDeclaration {
+                            timeout: *timeout,
+                            attempts: *attempts,
+                        }),
+                        identity: IdentityKind::default(),
+                        graph,
+                    },
+                    *if_not_exists,
+                    span,
+                )
+            }
             StatementKind::DropQueue { name } => self.drop_queue(transaction, name, span),
             StatementKind::DefineSeries {
                 name,

@@ -5276,6 +5276,7 @@ same chunk — two files sharing bytes, which is not a defect anybody finds twic
 
 ```tessariql
 DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5;
+DEFINE QUEUE tasks TIMEOUT 10m SCHEMAFULL IN work;
 
 CREATE jobs = { url: 'https://example.test/report' };
 
@@ -5294,6 +5295,26 @@ a hold that lapses. Enqueueing is `CREATE` and finishing is `DELETE`, because
 the store already has both words: a record that should stop existing is deleted,
 and a second verb meaning *delete, but for a queue* would give one act two
 spellings.
+
+**A queue says whether it is strict and which graph it is in**, in the same
+words an ordinary table uses and with the same meaning. The flags come after
+`TIMEOUT` and `ATTEMPTS` — those are what a queue *is*, and the flags are
+adjectives on it — and they are order-free against each other, because there is
+no reading under which one has to precede the other. Neither is accepted twice.
+
+Leaving both out means what it has always meant: **lenient, and in no graph**.
+That is not a special case for queues; it is the rule a declaration carrying no
+columns already followed, since strictness constrains declared fields and a
+queue declares none until `DEFINE FIELD` arrives afterwards.
+
+The clauses exist because a work table usually needs both. A table that holds
+work is normally the one a schema is strictest about, and it is normally an end
+of a link — a task belongs to a goal, a job blocks another job. Without these
+words such a table could not be a queue at all, and not in a way you could work
+around: `DEFINE EDGE` refuses a table that belongs to no graph, declaring the
+table first and the queue second is refused because the name is taken, and
+`ALTER TABLE … SET SCHEMAFULL` does reach strictness but leaves a table
+`INFO FOR TABLE` can no longer write back as a statement.
 
 **`CLAIM` takes the first claimable records in identity order**, which is arrival
 order — both identity kinds this store issues are time-ordered, so the queue is

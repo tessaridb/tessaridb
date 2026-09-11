@@ -241,3 +241,48 @@ SELECT id FROM strict WHERE claimed_until != NONE;
 --- case: while a caller asserting what the record no longer says is refused
 UPDATE strict:1 SET url = 'd' WHERE url = 'b';
 --- expect: error ConditionNotMet
+
+# The two clauses a queue could not say until W208b¹. The first consumer to
+# reach for `DEFINE QUEUE` needed both at once — a work table that is strict and
+# is an end of a link — and could declare neither, so it could not be a queue at
+# all.
+
+--- case: a queue joins a graph and is an end of a link like any other table
+DEFINE GRAPH flow;
+DEFINE QUEUE errands TIMEOUT 30s IN flow;
+DEFINE TABLE crews SCHEMALESS IN flow;
+DEFINE EDGE runs IN flow FROM crews TO errands;
+CREATE errands:1 = { url: 'a' };
+CREATE crews:1 = { name: 'night' };
+RELATE crews:1 -> runs -> errands:1;
+--- expect: ok
+
+--- case: and the walk reaches across it
+SELECT * FROM crews:1 -> runs -> errands;
+--- expect: rows 1
+
+--- case: while the hold still works on the far end of that link
+CLAIM errands:1;
+--- expect: rows 1
+
+--- case: a queue that named no graph cannot be an end of a link
+DEFINE EDGE carries IN flow FROM crews TO jobs;
+--- expect: error EndpointOutsideGraph
+
+--- case: the two flags are order-free against each other
+DEFINE QUEUE chores TIMEOUT 30s IN flow SCHEMAFULL;
+--- expect: ok
+
+--- case: and a repeated flag is refused rather than read twice
+DEFINE QUEUE errands2 TIMEOUT 30s SCHEMAFULL SCHEMALESS;
+--- expect: error UnexpectedToken
+
+--- case: a strict queue refuses a field nobody declared
+DEFINE FIELD url ON chores TYPE string REQUIRED;
+CREATE chores:1 = { url: 'a', sneaky: 3 };
+--- expect: error UndeclaredField
+
+--- case: while the fields the engine writes for itself still land on it
+CREATE chores:2 = { url: 'b' };
+CLAIM chores:2;
+--- expect: rows 1

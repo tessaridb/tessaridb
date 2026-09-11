@@ -876,12 +876,15 @@ impl Parser<'_> {
         })
     }
 
-    /// `DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5`
+    /// `DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5 SCHEMAFULL IN work`
     ///
-    /// One required clause and one optional one, read in a fixed order for the
-    /// reason `DEFINE VECTOR`'s two are: two clauses is too few to be worth an
-    /// order-free reader, and a fixed order is what makes the statement read the
-    /// same way in every store that has one.
+    /// Two clauses and two flags, and they are read differently on purpose. The
+    /// **clauses** — `TIMEOUT` and `ATTEMPTS` — keep their fixed order for the
+    /// reason `DEFINE VECTOR`'s two do: they are what a queue is, two is too few
+    /// to be worth an order-free reader, and a fixed order is what makes the
+    /// statement read the same way in every store that has one. The **flags**
+    /// are order-free against each other, because they are adjectives and
+    /// `DEFINE TABLE` already reads its own that way.
     ///
     /// The timeout is a literal duration rather than an expression, the rule the
     /// query timeout already keeps: a budget a bound value could set is a budget
@@ -916,10 +919,34 @@ impl Parser<'_> {
         } else {
             None
         };
+        // The flags come after the clauses that are the subject of the
+        // statement, and they are order-free against each other — both rules
+        // read off `DEFINE TABLE`, where the same comment explains why: the
+        // timeout and the ceiling are what a queue *is*, the flags are
+        // adjectives on it, and a grammar that insisted on an order between two
+        // adjectives would only be remembered wrong.
+        let mut strictness: Option<bool> = None;
+        let mut graph: Option<Name> = None;
+        loop {
+            if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
+                strictness = Some(true);
+            } else if strictness.is_none() && self.eat_keyword(Keyword::Schemaless) {
+                strictness = Some(false);
+            } else if graph.is_none() && self.eat_keyword(Keyword::In) {
+                graph = Some(self.name()?);
+            } else {
+                break;
+            }
+        }
         Ok(StatementKind::DefineQueue {
             name,
             timeout,
             attempts,
+            // Lenient unless the word says otherwise, which is `DEFINE TABLE`'s
+            // own default for a declaration carrying no columns. A queue never
+            // carries any, so there is no reading under which it starts strict.
+            schemafull: strictness.unwrap_or(false),
+            graph,
             if_not_exists,
         })
     }

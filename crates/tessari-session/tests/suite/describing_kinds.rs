@@ -197,3 +197,97 @@ fn a_queue_description_re_executes_into_a_queue_and_not_into_a_table() {
         other => panic!("the restored declaration is not a queue: {other:?}"),
     }
 }
+
+/// A strict queue is described with the word, and the description restores a
+/// strict queue (W208b¹).
+///
+/// The assertion is the **round trip** and not the string. A test that read the
+/// script for `SCHEMAFULL` would pass against an arm that wrote the word and a
+/// `define_table` that dropped it on the way back in, which is the same shape of
+/// failure Q-475 describes — a statement that re-executes happily and restores
+/// something weaker.
+#[test]
+fn a_strict_queue_is_described_with_the_word_and_restores_a_strict_queue() {
+    let first = store();
+    let mut session = Session::new(&first);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE QUEUE t TIMEOUT 30s SCHEMAFULL;\n\
+             DEFINE FIELD url ON t TYPE string REQUIRED;",
+        )
+        .unwrap();
+    let script = described(&mut session).unwrap();
+
+    let second = store();
+    let mut restored = Session::new(&second);
+    restored
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;",
+        )
+        .unwrap();
+    // The description carries the field declarations with the table, so nothing
+    // is re-declared here — and that is part of what is being asserted: a
+    // strict table restored without its fields would refuse every write rather
+    // than accept the wrong ones.
+    restored.run(&script).unwrap();
+    restored.run("CREATE t:1 = { url: 'a' };").unwrap();
+
+    // Two properties, each of which a dropped clause would take away.
+    let claimed = restored.run("CLAIM FROM t;").unwrap().pop().unwrap();
+    match claimed {
+        Outcome::Records { records, .. } => {
+            assert_eq!(records.len(), 1, "the restored queue handed out nothing");
+        }
+        other => panic!("the restored declaration is not a queue: {other:?}"),
+    }
+    assert!(
+        restored
+            .run("CREATE t:2 = { url: 'b', sneaky: 1 };")
+            .is_err(),
+        "the restored queue is lenient, so `SCHEMAFULL` was lost"
+    );
+}
+
+/// A queue in a graph is **honestly undefinable**, and for the reason every
+/// other kind in a graph is.
+///
+/// Recorded as a test rather than left implicit, because the interesting thing
+/// about it is that it is not a queue's problem: a plain
+/// `DEFINE TABLE staff SCHEMAFULL IN work` has been undefinable since graphs
+/// arrived, because this writer holds a `GraphId` and nothing that resolves one
+/// to a name (Q-521). W208b¹ made the clause **sayable**, which is what the
+/// consumer needed; making it **writable back** is a change to what `describe`
+/// is given and is not this wave's.
+#[test]
+fn a_queue_in_a_graph_says_so_rather_than_describing_itself_without_the_graph() {
+    let queued = store();
+    let mut session = Session::new(&queued);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE GRAPH work;\n\
+             DEFINE QUEUE t TIMEOUT 30s IN work;",
+        )
+        .unwrap();
+    let why = described(&mut session).unwrap_err();
+    assert!(why.contains("belongs to a graph"), "{why}");
+
+    // The same sentence for a plain table, which is the half that says this is
+    // uniform rather than a hole the new clause opened.
+    let ordinary = store();
+    let mut plain = Session::new(&ordinary);
+    plain
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE GRAPH work;\n\
+             DEFINE TABLE t SCHEMALESS IN work;",
+        )
+        .unwrap();
+    let same = described(&mut plain).unwrap_err();
+    assert!(same.contains("belongs to a graph"), "{same}");
+}

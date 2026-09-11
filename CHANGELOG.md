@@ -20,6 +20,26 @@ Work landed after the tag was cut, and recorded here because this file's top
 section must name the version this package carries — so there is nowhere else
 for it to go until the next version is opened.
 
+**`DEFINE QUEUE` says whether it is strict and which graph it is in.** A queue
+was described from the start as an ordinary table plus a hold that lapses, but
+its declaring word could say neither of the two things an ordinary table says
+about itself. That cost more than symmetry: a work table in a record model is
+normally strict and is normally an end of a link, and such a table could not be
+a queue at all — `DEFINE EDGE` refuses a table belonging to no graph, declaring
+the table first and the queue second is refused because the name is taken, and
+reaching strictness through `ALTER TABLE` leaves a table `INFO FOR TABLE` can no
+longer write back as a statement.
+
+`DEFINE QUEUE tasks TIMEOUT 10m SCHEMAFULL IN work` now says both. The flags
+follow `TIMEOUT` and `ATTEMPTS`, are order-free against each other, and neither
+is accepted twice — the same reading `DEFINE TABLE` gives its own. **A queue
+that names no flag means exactly what it meant before**: lenient, and in no
+graph, which is the rule a declaration carrying no columns already followed.
+`INFO FOR TABLE` writes the strictness word back with the rest; a queue in a
+graph is still reported as undefinable, in the same sentence as every other kind
+in a graph, because that writer holds a graph id and nothing that resolves one
+to a name.
+
 **`UPDATE … WHERE` — the language has a compare-and-set.** Until now TessariQL
 offered exactly one: a conditional `DELETE` as the guard followed by a `CREATE`
 as the failure signal, because a create over a record that is still there is
@@ -167,7 +187,7 @@ rather than the view's records.
 holder at a time under a hold that lapses — `DEFINE QUEUE jobs TIMEOUT 30s
 ATTEMPTS 5`, then `CLAIM FROM jobs`, `DELETE jobs:7` when the work is done and
 `RELEASE jobs:7` to hand it back early. That makes ten engines over one substrate
-rather than nine. **1335 conformance cases** define the language and run in the
+rather than nine. **1343 conformance cases** define the language and run in the
 build, up from 1237.
 
 The design is the part worth reading, because a queue is normally where a store

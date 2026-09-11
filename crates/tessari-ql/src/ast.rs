@@ -743,7 +743,7 @@ pub enum StatementKind {
         /// The vault to undefine.
         name: Name,
     },
-    /// `DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5`
+    /// `DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5 SCHEMAFULL IN work`
     ///
     /// The eighth word in the row, and the first one whose whole capability is
     /// a **hold that lapses**. Written out as what it stands for, a queue is an
@@ -772,6 +772,24 @@ pub enum StatementKind {
         /// cannot poison — and a visible one, because leaving the clause out is
         /// what says it.
         attempts: Option<u32>,
+        /// Whether a record carrying a field nobody declared is refused.
+        ///
+        /// The same flag [`StatementKind::DefineTable`] carries, and it is here
+        /// because the first consumer to reach for a queue needed it. A queue
+        /// declares no columns, so it is **lenient by default** — the rule a
+        /// declared table already keeps, read properly: strictness constrains
+        /// declared fields, and a word with no field list has nothing to
+        /// constrain until `DEFINE FIELD` arrives afterwards.
+        schemafull: bool,
+        /// The graph this queue belongs to, when it belongs to one.
+        ///
+        /// A queue is an ordinary table plus a hold, and there was never a
+        /// reason it could not be an end of a link. Before this clause a queue
+        /// could not: `DEFINE EDGE` refuses a table that belongs to no graph,
+        /// and declaring the table first and the queue second is refused
+        /// because the name is taken — so a table that had to be both was
+        /// simply unrepresentable.
+        graph: Option<Name>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

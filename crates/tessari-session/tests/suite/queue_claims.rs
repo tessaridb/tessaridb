@@ -802,3 +802,138 @@ fn still_reads_b(session: &mut Session<'_>) {
     };
     assert_eq!(format!("{:?}", fields.get("url")), "Some(String(\"b\"))");
 }
+
+// ---------------------------------------------------------------------------
+// The two clauses a queue could not say (W208b¹)
+//
+// A queue is "an ordinary table plus two rules the store enforces", and until
+// this wave the word could say neither of the two things an ordinary table says
+// about itself: whether it is strict, and which graph it belongs to. That was
+// not a gap on paper. The first consumer to reach for `DEFINE QUEUE` —
+// TessariDB Agent Memory's `tasks` — is `SCHEMAFULL` and is an end of two link
+// kinds, so it could not become a queue at all: `DEFINE EDGE … FROM tasks` was
+// refused because the table belonged to no graph, and declaring the table first
+// and the queue second was refused because the name was taken.
+// ---------------------------------------------------------------------------
+
+/// A queue in a graph is an end of a link like any other table.
+#[test]
+fn a_queue_can_be_an_end_of_a_link() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE GRAPH work;\n\
+             DEFINE QUEUE jobs TIMEOUT 30s IN work;\n\
+             DEFINE TABLE crews SCHEMALESS IN work;\n\
+             DEFINE EDGE runs IN work FROM crews TO jobs;\n\
+             CREATE jobs:1 = { url: 'a' };\n\
+             CREATE crews:1 = { name: 'night' };\n\
+             RELATE crews:1 -> runs -> jobs:1;",
+        )
+        .unwrap();
+
+    // The walk is the assertion: a membership that did not reach the catalog
+    // would leave this answering nothing, which is exactly how the absence
+    // failed before — quietly, with no record and no error.
+    let outcome = run(&mut session, "SELECT * FROM crews:1 -> runs -> jobs;");
+    let Outcome::Records { records, .. } = outcome else {
+        panic!("expected records");
+    };
+    assert_eq!(records.len(), 1, "the walk reached nothing: {records:?}");
+
+    // And the hold still works on the far end of that link.
+    let held = run(&mut session, "CLAIM jobs:1;");
+    assert_eq!(claimed(&held), vec!["1".to_owned()]);
+}
+
+/// A strict queue refuses a field nobody declared, and still takes the three
+/// the engine writes for itself.
+#[test]
+fn a_strict_queue_refuses_a_field_nobody_declared() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE QUEUE jobs TIMEOUT 30s SCHEMAFULL;\n\
+             DEFINE FIELD url ON jobs TYPE string REQUIRED;\n\
+             CREATE jobs:1 = { url: 'a' };",
+        )
+        .unwrap();
+
+    let refused = session
+        .run("CREATE jobs:2 = { url: 'b', sneaky: 3 };")
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("sneaky"), "{refused}");
+
+    // `claimed_by`, `claimed_until` and `attempts` are the store's own, so
+    // strictness must not be the thing that stops a claim working.
+    let held = run(&mut session, "USE CONSUMER 'billing'; CLAIM jobs:1;");
+    assert_eq!(claimed(&held), vec!["1".to_owned()]);
+}
+
+/// Leaving both clauses out means what it always meant.
+#[test]
+fn a_queue_declared_with_no_flags_is_lenient_and_in_no_graph() {
+    let store = store();
+    let mut session = ready(&store, "TIMEOUT 30s");
+    session
+        .run("CREATE jobs:9 = { url: 'd', anything: true };")
+        .unwrap();
+    let refused = session
+        .run("DEFINE GRAPH work; DEFINE TABLE crews SCHEMALESS IN work; DEFINE EDGE runs IN work FROM crews TO jobs;")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("does not belong to graph"),
+        "a queue that named no graph joined one anyway: {refused}"
+    );
+}
+
+/// The two clauses are order-free against each other, and neither is accepted
+/// twice — the rule `DEFINE TABLE`'s own flag loop keeps.
+#[test]
+fn the_queue_flags_are_order_free_and_neither_is_accepted_twice() {
+    for declaration in [
+        "DEFINE QUEUE jobs TIMEOUT 30s SCHEMAFULL IN work;",
+        "DEFINE QUEUE jobs TIMEOUT 30s IN work SCHEMAFULL;",
+        "DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5 IN work SCHEMAFULL;",
+    ] {
+        let store = store();
+        let mut session = Session::new(&store);
+        session
+            .run(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+                 DEFINE DATABASE shop; USE DATABASE shop;\n\
+                 DEFINE GRAPH work;",
+            )
+            .unwrap();
+        session
+            .run(declaration)
+            .unwrap_or_else(|error| panic!("{declaration} was refused: {error}"));
+    }
+
+    let alone = store();
+    let mut session = Session::new(&alone);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE GRAPH work;",
+        )
+        .unwrap();
+    for twice in [
+        "DEFINE QUEUE jobs TIMEOUT 30s SCHEMAFULL SCHEMALESS;",
+        "DEFINE QUEUE jobs TIMEOUT 30s IN work IN work;",
+    ] {
+        assert!(
+            session.run(twice).is_err(),
+            "a repeated flag was accepted: {twice}"
+        );
+    }
+}
