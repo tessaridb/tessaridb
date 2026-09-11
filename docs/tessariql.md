@@ -6450,6 +6450,7 @@ machine become confused about which one it is?*
 | a peer | the catalog, replicated | every node learns the peer exists, which is the point of declaring one |
 | a peer's `NODE` | the catalog, replicated | every node learns which machine the row is about, and exactly one of them finds its own id |
 | a follower's progress | this process only | nothing — it is never written down, so there is nothing to replay |
+| the lease this node writes under | this process only | nothing — leadership is not a fact a backup may carry |
 
 So `INFO FOR NODE` reads both and answers them as **two named groups** rather
 than one flat object:
@@ -6461,7 +6462,8 @@ than one flat object:
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],
              "followers": [{"node": "4b81…", "sequence": 812, "behind": 4,
-                            "quiet_for": "2s143ms"}]}}
+                            "quiet_for": "2s143ms"}],
+             "lease": "58s"}}
 ```
 
 ### What the leader knows about a follower it never calls
@@ -6498,6 +6500,40 @@ would hide it.
 The list is not persisted. A restarted node reports no followers until one asks
 it for something, because a stored row saying a follower reached position 812
 four seconds ago would outlive the relationship it describes.
+
+### How long this node may still write
+
+`cluster.lease` is the time left before this node stops accepting writes on its
+own. It is `null` when no lease was ever granted, which is the ordinary state of
+a node standing alone — and `null` is a different answer from `"0s"`. A node
+nobody made a leader is not a leader running out of time, and reporting it as one
+would leave every single-node deployment permanently at the value that is
+supposed to mean trouble.
+
+When it is a duration it is the number to watch, because the dangerous state is
+exactly **this at zero while the node is still taking writes**. A leader that has
+lost the rest of the cluster does not know it has; it keeps accepting writes, and
+every one of them is a write the next leader will not have. The lease is the
+answer: leadership is held for a bounded time, it must be renewed to continue,
+and a holder that has not renewed refuses writes without being told to.
+
+The figure counts down to the moment **this node** stops, which is deliberately
+earlier than the moment the cluster is entitled to hand the leadership to
+somebody else. The gap between the two covers the difference in rate between two
+clocks nobody synchronised: if they coincided, a holder whose clock ran slightly
+slow would still be writing at the instant another node was told to start. So the
+number here is always the smaller, honest one — the window this node may actually
+use, not the window the grant nominally covers.
+
+It is measured on elapsed time and never on a calendar clock. A clock that steps
+backwards would *extend* a lease that should already have died, and a fence that
+an NTP adjustment can widen is not a fence.
+
+`tessari_lease_remaining_seconds` on the metrics endpoint is the same number.
+There, a node holding no lease publishes **no series at all** rather than a zero,
+for the reason the `null` exists here: a series that reads zero on every
+standalone node teaches whoever watches it to ignore the one reading that
+matters.
 
 `version` and `build` are both here because they answer different questions.
 `version` is three ordered numbers: it is what the node **stored** and what an
