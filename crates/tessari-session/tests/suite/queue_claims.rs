@@ -1041,3 +1041,59 @@ fn a_whole_record_compare_and_set_keeps_the_hold() {
     assert_eq!(holder(&mut session, "jobs:1"), held_by);
     assert_eq!(attempts_of(&mut session, "jobs:1"), attempts);
 }
+
+/// The declaration the first real consumer of `DEFINE QUEUE` actually needs:
+/// strict, in a graph, and **both ends of one edge**.
+///
+/// `a_queue_can_be_an_end_of_a_link` puts a queue on the `TO` side and
+/// `the_queue_flags_are_order_free_and_neither_is_accepted_twice` accepts both
+/// flags on one statement. Neither asks a queue to be the `FROM` side, and the
+/// consumer's `blocks` edge is `FROM tasks TO tasks` — one table, both ends. The
+/// membership of the two ends is checked separately, so "the `TO` end works" is
+/// not evidence about the `FROM` end, and a queue that could only ever be
+/// pointed AT would still have been a queue this consumer could not use.
+///
+/// The walk is the assertion rather than the `DEFINE`, for the reason the
+/// sibling test gives: a membership that did not reach the catalog leaves the
+/// link answering nothing, quietly and with no error.
+#[test]
+fn a_strict_queue_in_a_graph_can_be_both_ends_of_one_edge() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE GRAPH work;\n\
+             DEFINE QUEUE tasks TIMEOUT 10m SCHEMAFULL IN work;\n\
+             DEFINE FIELD title ON tasks TYPE string REQUIRED;\n\
+             DEFINE EDGE blocks IN work FROM tasks TO tasks;\n\
+             CREATE tasks:'a' = { title: 'first' };\n\
+             CREATE tasks:'b' = { title: 'second' };\n\
+             RELATE tasks:'a' -> blocks -> tasks:'b';",
+        )
+        .unwrap();
+
+    let outcome = run(&mut session, "SELECT * FROM tasks:'a' -> blocks -> tasks;");
+    let Outcome::Records { records, .. } = outcome else {
+        panic!("expected records");
+    };
+    assert_eq!(
+        records.len(),
+        1,
+        "the self-edge reached nothing: {records:?}"
+    );
+
+    // Strictness is asserted on a table that now carries records AND edges,
+    // which is a different claim from the declaration being accepted: the two
+    // flags have been tested apart and together only at the `DEFINE`.
+    let refused = session
+        .run("CREATE tasks:'c' = { title: 'third', sneaky: 3 };")
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("sneaky"), "{refused}");
+
+    // And the hold still works on a table that is both ends of a link.
+    let held = run(&mut session, "USE CONSUMER 'planner'; CLAIM tasks:'a';");
+    assert_eq!(claimed(&held), vec!["a".to_owned()]);
+}
