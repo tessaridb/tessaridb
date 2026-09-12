@@ -79,7 +79,6 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["std"
 # DER has no container for one — a DER-only reader would force one file per
 # certificate and a flag that takes a list. From the rustls project, already
 # this tree's TLS vendor.
-rustls-pemfile = "2"
 # Test-only, and deliberately never a dependency: the peer tests mint their own
 # certificate authority in memory, so no key material is ever written to this
 # repository and no fixture can go stale.

@@ -43,10 +43,10 @@
 //! holding the wrong credential is a node joining a cluster nobody meant it to
 //! join. Reading a path that was named can only ever fail loudly.
 
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use rustls::pki_types::CertificateDer;
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 use crate::error::{Error, Result};
 use crate::link::Credential;
@@ -212,17 +212,23 @@ impl Joining {
                 wanted: "certificate",
             });
         }
-        let key = rustls_pemfile::private_key(&mut BufReader::new(key))
-            .map_err(|why| Error::CredentialUnreadable {
-                part: KEY,
-                path: shown(key_at),
-                reason: why.to_string(),
-            })?
-            .ok_or_else(|| Error::CredentialEmpty {
+        // The two refusals are distinct and the mapping is by VARIANT, not by a
+        // catch-all: a well-formed file that holds no key is a CONTENT problem
+        // and reports `CredentialEmpty`, while anything the parser could not
+        // read at all is `CredentialUnreadable`. Collapsing them would send an
+        // operator looking for a bad path when what they have is a bad file.
+        let key = PrivateKeyDer::from_pem_slice(key).map_err(|why| match why {
+            rustls::pki_types::pem::Error::NoItemsFound => Error::CredentialEmpty {
                 part: KEY,
                 path: shown(key_at),
                 wanted: "private key",
-            })?;
+            },
+            why => Error::CredentialUnreadable {
+                part: KEY,
+                path: shown(key_at),
+                reason: why.to_string(),
+            },
+        })?;
         let found = certificates(authority, AUTHORITY, authority_at)?;
         // Exactly one, because the door trusts exactly one root. Two would leave
         // one of them silently ignored, and during a rotation the ignored one is
@@ -244,7 +250,7 @@ impl Joining {
 
 /// Every certificate a PEM file holds, in the order it holds them.
 fn certificates(pem: &[u8], part: &'static str, at: &Path) -> Result<Vec<CertificateDer<'static>>> {
-    rustls_pemfile::certs(&mut BufReader::new(pem))
+    CertificateDer::pem_slice_iter(pem)
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|why| Error::CredentialUnreadable {
             part,
@@ -441,9 +447,11 @@ mod tests {
     #[test]
     fn a_key_file_holding_no_key_is_refused_and_the_refusal_quotes_nothing() {
         // The authority's own certificate stands in the key slot deliberately.
-        // It is a WELL-FORMED PEM that holds no private key, so the parser
-        // answers `Ok(None)` and the "held no private key" refusal is the one
-        // under test. Malformed bytes answer `Err` instead and never reach it.
+        // It is a WELL-FORMED PEM that holds no private key, so the parser skips
+        // the section it cannot use, finds nothing, and answers
+        // `Err(NoItemsFound)` — which the mapping turns into the "held no
+        // private key" refusal that is the one under test. Any other parse error
+        // takes the `CredentialUnreadable` branch and never reaches it.
         let pem = minted();
         let failure = Joining::parse(
             pem.leaf.as_bytes(),
@@ -462,6 +470,73 @@ mod tests {
         assert!(
             !said.contains("BEGIN"),
             "a refusal about a key never quotes the file it read"
+        );
+    }
+
+    #[test]
+    fn a_certificate_file_that_will_not_parse_is_refused_rather_than_read_as_empty() {
+        // `certificates` is shared by the chain and the authority, and its error
+        // branch had no test either: a file with no certificate in it and a file
+        // whose certificate will not decode both ended at `chain.is_empty()`,
+        // which reports the wrong one. A section that opens and will not decode
+        // is unreadable, not absent.
+        let pem = minted();
+        let failure = Joining::parse(
+            b"-----BEGIN CERTIFICATE-----\n@@@@@@@@\n-----END CERTIFICATE-----\n",
+            &at("leaf.pem"),
+            pem.key.as_bytes(),
+            &at("key.pem"),
+            pem.authority.as_bytes(),
+            &at("ca.pem"),
+            DOOR.to_owned(),
+            vec!["one.example:9080".to_owned()],
+        )
+        .expect_err("a certificate that will not decode is not a certificate");
+        let said = failure.to_string();
+        assert!(said.contains("leaf.pem"), "names the file");
+        assert!(
+            !said.contains("held no certificate"),
+            "not the content refusal: the file held a section, it just would not read"
+        );
+    }
+
+    #[test]
+    fn a_key_file_that_will_not_parse_is_a_different_refusal_and_still_quotes_nothing() {
+        // The other half of the key mapping, and until W243 nothing exercised
+        // it: every fixture fed the parser PEM that was absent rather than PEM
+        // that was broken, so the two refusals were one tested branch and one
+        // argument. A section that opens and then holds nothing decodable is a
+        // file the parser could not READ, which is a different thing to tell an
+        // operator than a file that held nothing of its kind.
+        //
+        // The body has to be outside the base64 alphabet to reach this branch,
+        // and the first draft of this test did not know that. `not base64 at
+        // all` is, letter for letter, valid base64, and this layer DECODES
+        // rather than validates — so it parsed cheerfully into a `Pkcs8` key of
+        // fifteen meaningless bytes and the test failed by succeeding. Whether a
+        // key is a key is settled at the handshake, not here, and that was as
+        // true of the parser this wave removed.
+        let pem = minted();
+        let failure = Joining::parse(
+            pem.leaf.as_bytes(),
+            &at("leaf.pem"),
+            b"-----BEGIN PRIVATE KEY-----\n@@@@@@@@\n-----END PRIVATE KEY-----\n",
+            &at("key.pem"),
+            pem.authority.as_bytes(),
+            &at("ca.pem"),
+            DOOR.to_owned(),
+            vec!["one.example:9080".to_owned()],
+        )
+        .expect_err("a key that will not decode is not a key");
+        let said = failure.to_string();
+        assert!(said.contains("key.pem"), "names the file");
+        assert!(
+            !said.contains("held no private key"),
+            "not the content refusal: the file held a section, it just would not read"
+        );
+        assert!(
+            !said.contains("BEGIN") && !said.contains("@@@"),
+            "a refusal about a key never quotes the file it read, however it failed"
         );
     }
 
