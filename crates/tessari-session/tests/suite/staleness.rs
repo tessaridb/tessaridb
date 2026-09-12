@@ -29,9 +29,12 @@
 
 use std::sync::Arc;
 
+use core::time::Duration;
+
 use tessari_constants::STALENESS_FLOOR_SECONDS;
+use tessari_encoding::NODE_ID_LEN;
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_session::{Error, Session};
+use tessari_session::{Elsewhere, Error, Peer, Session};
 use tessari_storage::Store;
 
 fn store() -> Store {
@@ -55,6 +58,40 @@ fn ready(store: &Store) -> Session<'_> {
 /// A bound comfortably above the floor, written the way a statement would.
 fn allowed() -> String {
     format!("{}s", STALENESS_FLOOR_SECONDS.saturating_mul(3))
+}
+
+/// The node the made-up peer is, so the redirect has something to be checked
+/// against.
+const THERE: [u8; NODE_ID_LEN] = [3; NODE_ID_LEN];
+
+/// A cluster of exactly one peer, whose copy is `age` old.
+///
+/// Hand-written rather than a real `Directory`, and not because a stub is
+/// easier: `tessari-wire` depends on this crate and not the reverse, so a
+/// directory is not nameable here at all. What these tests own is the
+/// SESSION's half — that it asks, and that it uses the answer. That the
+/// directory picks the right peer is asserted where the directory lives.
+#[derive(Debug)]
+struct OnePeer {
+    endpoint: String,
+    age: Duration,
+}
+
+impl Elsewhere for OnePeer {
+    fn within(&self, bound: Duration) -> Option<Peer> {
+        (self.age <= bound).then(|| Peer {
+            endpoint: self.endpoint.clone(),
+            node: THERE,
+        })
+    }
+}
+
+/// One peer, `age` behind, at an address a redirect can name.
+fn one_peer(age: Duration) -> std::sync::Arc<dyn Elsewhere> {
+    std::sync::Arc::new(OnePeer {
+        endpoint: "two.example:9080".to_owned(),
+        age,
+    })
 }
 
 #[test]
@@ -261,5 +298,112 @@ fn the_bounded_refusal_blames_the_cluster_and_not_the_statement() {
     assert!(
         !said.contains("floor"),
         "this bound cleared the floor, so the refusal must not read as that one: {said}"
+    );
+}
+
+#[test]
+fn a_bounded_read_this_node_cannot_answer_is_sent_to_a_peer_that_can() {
+    // S6.2's routing half, and the whole of what this wave is for. The node
+    // itself may not write, so its copy is of no known age and outside every
+    // bound; a peer well inside the bound exists; C-07 says this node answers
+    // by naming the one that should rather than fetching on the client's
+    // behalf.
+    let store = store();
+    let mut session = ready(&store).among(one_peer(Duration::from_secs(1)));
+    session.run("DEFINE NODE ROLES serving;").unwrap();
+
+    let sent = session
+        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .expect_err("a redirect is an answer, and it arrives as one of these");
+
+    let Error::ReadIsElsewhere { endpoint, node, .. } = &sent else {
+        panic!("answered the wrong way: {sent}");
+    };
+    assert_eq!(endpoint, "two.example:9080");
+    assert_eq!(
+        *node, THERE,
+        "a redirect naming only a place cannot be checked on arrival"
+    );
+}
+
+#[test]
+fn a_redirect_says_that_this_node_did_not_fetch_on_the_callers_behalf() {
+    // C-07's *no node proxies*, asserted rather than left to wording a later
+    // edit could quietly invert. A caller who cannot tell a redirect from a
+    // silent proxy has no way to know whether this node is now holding their
+    // read open against a peer.
+    let store = store();
+    let mut session = ready(&store).among(one_peer(Duration::from_secs(1)));
+    session.run("DEFINE NODE ROLES serving;").unwrap();
+
+    let said = session
+        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .expect_err("this node cannot answer it")
+        .to_string();
+
+    assert!(
+        said.contains("two.example:9080"),
+        "the redirect names where to go: {said}"
+    );
+    assert!(
+        said.contains("redirects rather than fetching on your behalf"),
+        "the redirect says what it did not do: {said}"
+    );
+    assert!(
+        !said.contains("rather than sent to the leader"),
+        "this is a redirect, so it must not read as the refusal: {said}"
+    );
+}
+
+#[test]
+fn a_peer_beyond_the_bound_leaves_the_read_refused_and_not_redirected() {
+    // The other half of *exclude, never mark*. A cluster that knows of a peer
+    // and knows it is too far behind must refuse exactly as a cluster that
+    // knows of nobody — otherwise the bound is advisory.
+    let store = store();
+    let bound = Duration::from_secs(STALENESS_FLOOR_SECONDS.saturating_mul(3));
+    let mut session = ready(&store).among(one_peer(bound.saturating_add(Duration::from_secs(1))));
+    session.run("DEFINE NODE ROLES serving;").unwrap();
+
+    let refusal = session
+        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .expect_err("no copy in reach is within the bound");
+
+    assert!(
+        matches!(refusal, Error::NoCopyWithinStaleness { .. }),
+        "expected the refusal, got {refusal:?}"
+    );
+}
+
+#[test]
+fn a_node_that_can_answer_here_is_not_redirected_to_a_fresher_peer() {
+    // *Here first*, asserted at the session because this is where it is
+    // decided. A redirect this node did not need costs the client a round trip
+    // and teaches it about a node it had no reason to learn — and without this
+    // test, consulting the cluster BEFORE checking our own copy would pass
+    // every other test in this file.
+    let store = store();
+    let mut session = ready(&store).among(one_peer(Duration::ZERO));
+
+    session
+        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .expect("this node is its own origin and satisfies any bound it accepts");
+}
+
+#[test]
+fn a_node_told_about_no_peers_refuses_exactly_as_it_did_before() {
+    // The single-node deployment, which is every deployment today. The wave
+    // added a third answer and must not have moved the second one.
+    let store = store();
+    let mut session = ready(&store);
+    session.run("DEFINE NODE ROLES serving;").unwrap();
+
+    let refusal = session
+        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .expect_err("a copy with no known age is beyond every bound");
+
+    assert!(
+        matches!(refusal, Error::NoCopyWithinStaleness { .. }),
+        "expected the refusal, got {refusal:?}"
     );
 }

@@ -574,10 +574,35 @@ impl Session<'_> {
                 .current_as_of()?
                 .is_none_or(|age| age > within_bound)
             {
-                return Err(Error::NoCopyWithinStaleness {
-                    written: bound.within.to_literal(),
-                    span: bound.span,
-                });
+                // Asked only here, and asked only this. *Here* has already been
+                // decided by the line above, so the directory is handed the
+                // bound and nothing else — see `elsewhere.rs` for why letting it
+                // re-decide a question already answered is the thing being
+                // avoided. A node nobody told about peers holds `None` and
+                // refuses exactly as it always has.
+                let written = bound.within.to_literal();
+                return Err(
+                    match self
+                        .elsewhere
+                        .as_ref()
+                        .and_then(|known| known.within(within_bound))
+                    {
+                        // C-07: this node names the one that should answer and
+                        // does not fetch on the client's behalf.
+                        Some(peer) => Error::ReadIsElsewhere {
+                            written,
+                            endpoint: peer.endpoint,
+                            node: peer.node,
+                            span: bound.span,
+                        },
+                        // C-05's other half, unchanged: a read no node can
+                        // satisfy is refused rather than promoted to the leader.
+                        None => Error::NoCopyWithinStaleness {
+                            written,
+                            span: bound.span,
+                        },
+                    },
+                );
             }
         }
         // Narrowed by this statement's own clause, and never widened by it: a

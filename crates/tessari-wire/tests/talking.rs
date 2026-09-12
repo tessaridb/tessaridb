@@ -16,7 +16,20 @@ use tessaridb::{Db, Value};
 
 /// A node on a loopback port the operating system picked, plus its address.
 fn serving(db: Db) -> (Arc<Node>, String) {
-    let node = Arc::new(Node::bind(Arc::new(db), "127.0.0.1:0").unwrap());
+    started(Node::bind(Arc::new(db), "127.0.0.1:0").unwrap())
+}
+
+/// The same, among the peers `elsewhere` knows about.
+fn serving_among(db: Db, elsewhere: Arc<tessari_wire::Published>) -> (Arc<Node>, String) {
+    started(
+        Node::bind(Arc::new(db), "127.0.0.1:0")
+            .unwrap()
+            .among(elsewhere),
+    )
+}
+
+fn started(node: Node) -> (Arc<Node>, String) {
+    let node = Arc::new(node);
     let address = node.address().unwrap();
     let held = Arc::clone(&node);
     drop(std::thread::spawn(move || held.serve()));
@@ -333,4 +346,82 @@ fn two_clients_at_once_do_not_interfere() {
         held.get("held"),
         Some(&Value::Number(tessaridb::Number::from(40_i64)))
     );
+}
+
+#[test]
+fn a_bounded_read_this_node_cannot_answer_is_redirected_over_the_wire() {
+    // S6.2's routing half, along the whole chain rather than at either end of
+    // it: a real `Directory`, published the way the dialling thread publishes
+    // one, handed to a real node, asked by a real client over a real socket.
+    //
+    // The unit tests either side of this one assert that the directory picks
+    // the right peer and that the session uses the answer. Neither of them can
+    // catch a node that was given the directory and never passed it to the
+    // sessions it opens, which is the one thing this test is here for.
+    let mut directory = tessari_wire::Directory::new();
+    directory.heard(
+        "two.example:9080",
+        tessari_wire::Hello {
+            node: [3; tessari_encoding::NODE_ID_LEN],
+            build: tessari_encoding::NodeVersion {
+                major: 0,
+                minor: 1,
+                patch: 1,
+            },
+            epoch: tessari_types::Epoch::new(1),
+            roles: tessari_encoding::Roles::SERVING,
+            tail: tessari_types::Sequence::new(4096),
+            current_as_of: Some(std::time::Duration::from_secs(1)),
+        },
+        std::time::Instant::now(),
+    );
+
+    let db = Db::in_memory().unwrap();
+    {
+        // The schema first and the role second, in that order: a node that may
+        // not write cannot define a collection either, so the two lines are not
+        // interchangeable. A node that may not write holds somebody else's
+        // writes, and this build cannot say how old they are — which is what
+        // puts its own copy outside every bound and sends the read elsewhere.
+        let mut session = db.session();
+        session
+            .run(&format!("{READY} DEFINE COLLECTION users;"))
+            .unwrap();
+        session.run("DEFINE NODE ROLES serving;").unwrap();
+    }
+    let (_node, address) = serving_among(db, Arc::new(tessari_wire::Published::holding(directory)));
+    let mut client = Client::connect(&address).unwrap();
+
+    let redirect = client
+        .run(
+            "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users STALENESS 60s;",
+            None,
+        )
+        .expect_err("this node cannot answer it, so it names the node that can");
+    let said = redirect.to_string();
+    assert!(
+        said.contains("two.example:9080"),
+        "the redirect crossed the wire without the address to go to: {said}"
+    );
+    assert!(
+        said.contains("redirects rather than fetching on your behalf"),
+        "the redirect crossed the wire without saying it was one: {said}"
+    );
+    // The half that makes the redirect checkable on arrival. Derived rather
+    // than spelled out, so the test asserts *the id travels* and never a
+    // particular rendering of it.
+    let expect = tessari_types::RecordId::Uuid([3; tessari_encoding::NODE_ID_LEN]).to_string();
+    assert!(
+        said.contains(&expect),
+        "the redirect named a place but not the node to expect there ({expect}): {said}"
+    );
+
+    // And the connection lives, because a redirect is an answer.
+    let answers = client
+        .run(
+            "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users;",
+            None,
+        )
+        .unwrap();
+    assert_eq!(answers.len(), 3);
 }

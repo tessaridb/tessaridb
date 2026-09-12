@@ -260,10 +260,20 @@ fn serve(
                 seeds,
                 dialling,
                 authority,
+                routing: std::sync::Arc::new(tessari_wire::Published::holding(
+                    tessari_wire::Directory::new(),
+                )),
             })
         }
         None => None,
     };
+    // Taken here because `peers` is moved into the peer threads further down,
+    // while the surface that needs it is bound in between. Both ends hold the
+    // same `Published`: the dialling thread swaps a new round in, and every
+    // session this node opens reads whatever the last completed round left.
+    let routing = peers
+        .as_ref()
+        .map(|surface| std::sync::Arc::clone(&surface.routing));
     // Before anything is bound. A node that came up **open** because its
     // credentials were misconfigured should never have reached the point of
     // answering on a network, so this is a failure to start rather than a
@@ -274,10 +284,22 @@ fn serve(
     // is a failure to start rather than a surface that quietly went missing
     // while the other one answered.
     let wire = match &serving.wire {
-        Some(address) => Some(
-            tessari_wire::Node::bind(std::sync::Arc::clone(&db), address.as_str())
-                .map_err(|failure| format!("{address}: {failure}"))?,
-        ),
+        Some(address) => {
+            let node = tessari_wire::Node::bind(std::sync::Arc::clone(&db), address.as_str())
+                .map_err(|failure| format!("{address}: {failure}"))?;
+            // Only the wire surface, deliberately. `tessari-http` opens sessions
+            // too and does not depend on `tessari-wire`, so giving it the
+            // directory is a second wiring question rather than a line that fits
+            // here — recorded rather than smuggled in.
+            Some(match &routing {
+                // Spelled with the concrete type because the parameter is the
+                // trait: left to inference, `Arc::clone` would try to clone an
+                // `Arc<dyn Elsewhere>` this line does not hold. The unsizing
+                // happens at the argument, where it belongs.
+                Some(known) => node.among(std::sync::Arc::<tessari_wire::Published>::clone(known)),
+                None => node,
+            })
+        }
         None => None,
     };
     let mut http = match &serving.http {
@@ -399,6 +421,7 @@ fn serve(
             seeds: _,
             dialling,
             authority,
+            routing,
         } = surface;
         let answering = {
             let db = std::sync::Arc::clone(&db);
@@ -412,7 +435,7 @@ fn serve(
         let dialling = {
             let db = std::sync::Arc::clone(&db);
             let stopping = std::sync::Arc::clone(&peering);
-            std::thread::spawn(move || dial_peers(&db, &dialling, &authority, &stopping))
+            std::thread::spawn(move || dial_peers(&db, &dialling, &authority, &routing, &stopping))
         };
         (answering, dialling)
     });
@@ -484,6 +507,12 @@ struct Peering {
     dialling: tessari_wire::Credential,
     /// The one root every peer in this cluster is issued by.
     authority: tessari_wire::CertificateDer<'static>,
+    /// What the dialling thread writes and the client surface reads.
+    ///
+    /// One of these, shared, and that sharing is the point of the field: a
+    /// directory written by a thread nobody reads from is an accumulator, and
+    /// until this wave that is exactly what it was.
+    routing: std::sync::Arc<tessari_wire::Published>,
 }
 
 /// Greet every peer the catalog declares, once per awareness interval.
@@ -517,9 +546,9 @@ fn dial_peers(
     db: &Db,
     mine: &tessari_wire::Credential,
     authority: &tessari_wire::CertificateDer<'static>,
+    published: &tessari_wire::Published,
     stopping: &tessari_serve::Stopping,
 ) {
-    let published = tessari_wire::Published::holding(tessari_wire::Directory::new());
     tessari_wire::every(
         std::time::Duration::from_secs(tessari_constants::AWARENESS_SECONDS),
         stopping,

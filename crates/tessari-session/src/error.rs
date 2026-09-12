@@ -792,12 +792,49 @@ pub enum Error {
     /// was never wrong.
     #[error(
         "a staleness bound of {written} (at {span}) admits no copy in reach: \
-         this node's own copy has no known age, and a read no node can satisfy \
-         is refused rather than sent to the leader"
+         neither this node's own copy nor any peer it has heard from is within \
+         it, and a read no node can satisfy is refused rather than sent to the \
+         leader"
     )]
     NoCopyWithinStaleness {
         /// The bound as the statement wrote it.
         written: String,
+        /// Where the clause is.
+        span: Span,
+    },
+
+    /// A read carrying a staleness bound belongs on another node, and this is
+    /// which one.
+    ///
+    /// The third answer, and it is a *success* wearing an error's clothes. C-07
+    /// settled the shape: **any node answers any request by serving it or by
+    /// returning a redirect carrying the node that should, and no node proxies
+    /// on a client's behalf.** A client holding no routing state at all is
+    /// therefore always correct, which is what makes a minimal third-party
+    /// client possible; caching the map and refreshing it on a redirect is the
+    /// optimisation and never the contract.
+    ///
+    /// **The node id travels beside the address**, because a redirect naming
+    /// only a place cannot be checked on arrival: a client that dialled it and
+    /// met a different node would have no way to notice.
+    ///
+    /// **It says what it did not do.** A caller who cannot tell a redirect from
+    /// a silent proxy has no way to know whether this node is now holding their
+    /// read open against a peer, which is the failure mode that made *no node
+    /// proxies* worth deciding.
+    #[error(
+        "a staleness bound of {written} (at {span}) is not satisfied by this \
+         node's copy, and the copy at {endpoint} is: read it there. This node \
+         redirects rather than fetching on your behalf. The node to expect is {}",
+        tessari_types::RecordId::Uuid(*node)
+    )]
+    ReadIsElsewhere {
+        /// The bound as the statement wrote it.
+        written: String,
+        /// The address to dial — the same string the declaration carried.
+        endpoint: String,
+        /// Who was last heard there, so the redirect is checkable on arrival.
+        node: [u8; tessari_encoding::NODE_ID_LEN],
         /// Where the clause is.
         span: Span,
     },

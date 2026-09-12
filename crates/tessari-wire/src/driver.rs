@@ -43,7 +43,7 @@ use tessari_serve::Stopping;
 use tessari_storage::Lease;
 use tessari_types::{Epoch, Sequence};
 
-use crate::directory::Directory;
+use crate::directory::{Destination, Directory};
 use crate::grant::Leadership;
 
 /// How long to wait before the next pass, given when the last one started.
@@ -143,6 +143,37 @@ impl Published {
     /// unrelated failure elsewhere.
     fn held(&self) -> std::sync::MutexGuard<'_, Arc<Directory>> {
         self.current.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The routing question a bounded read asks, answered from the last round.
+///
+/// This is the join the whole directory was built for: the dialling thread
+/// writes a round every awareness interval, and until now nothing read one. The
+/// implementation adds no rule of its own — [`Directory::read_within`] already
+/// decides *here first, then freshest qualifying peer*, and repeating any part
+/// of that here would be a second place for the routing rule to live.
+///
+/// # Two things this method does that the directory cannot
+///
+/// It reads the **clock**. Every method on [`Directory`] takes `now` so its
+/// ageing rule can be tested without waiting, which means somebody has to be the
+/// edge where real time enters, and a production caller is the only honest
+/// candidate for it.
+///
+/// It passes `mine: None`. The session asks only once its own copy has already
+/// failed the bound, so *here* is decided; handing the directory this node's
+/// currency as well would invite it to answer `Here` to a question that was only
+/// asked because the answer was no.
+impl tessari_session::Elsewhere for Published {
+    fn within(&self, bound: Duration) -> Option<tessari_session::Peer> {
+        match self.current().read_within(None, bound, Instant::now()) {
+            Destination::There { endpoint, node } => Some(tessari_session::Peer { endpoint, node }),
+            // `Here` cannot arise with no currency of our own offered, and
+            // `Nowhere` is the answer the caller already holds. Both mean *not
+            // that I know of*, which is what `None` says.
+            Destination::Here | Destination::Nowhere => None,
+        }
     }
 }
 
@@ -353,6 +384,58 @@ mod tests {
             0,
             "a node already stopping still ran a cadence pass"
         );
+    }
+
+    #[test]
+    fn the_published_directory_answers_the_routing_question_a_read_asks() {
+        // The join this whole module was built for. Until this wave the rounds
+        // were written and read by nobody, so the test asserts the *reading*:
+        // what a session gets back when it asks the published answer, not what
+        // the greeting side put there.
+        use tessari_session::Elsewhere as _;
+
+        let mut directory = Directory::new();
+        directory.heard("two.example:9080", said(), Instant::now());
+        let published = Published::holding(directory);
+
+        let found = published
+            .within(Duration::from_secs(30))
+            .expect("a peer one second behind is within thirty");
+        assert_eq!(found.endpoint, "two.example:9080");
+        assert_eq!(
+            found.node, NODE,
+            "the redirect must carry who is there, or it cannot be checked on arrival"
+        );
+    }
+
+    #[test]
+    fn a_peer_beyond_the_bound_is_not_a_peer_the_routing_question_offers() {
+        // §C-05's *exclude, never mark*, at the surface a read actually asks.
+        // An implementation that answered with its freshest peer regardless
+        // would turn the bound from a promise back into a hope, and the caller
+        // has no way to tell the two apart.
+        use tessari_session::Elsewhere as _;
+
+        let mut directory = Directory::new();
+        directory.heard("two.example:9080", said(), Instant::now());
+        let published = Published::holding(directory);
+
+        assert!(
+            published.within(Duration::from_millis(500)).is_none(),
+            "a copy a second behind was offered to a read that would take half of one"
+        );
+    }
+
+    #[test]
+    fn a_node_that_has_greeted_nobody_offers_nowhere() {
+        // The single-node case, which is every deployment that was never told
+        // about peers. It must answer *not that I know of* rather than
+        // inventing a candidate, because the caller turns that answer straight
+        // into a refusal.
+        use tessari_session::Elsewhere as _;
+
+        let published = Published::holding(Directory::new());
+        assert!(published.within(Duration::from_secs(86_400)).is_none());
     }
 
     #[test]

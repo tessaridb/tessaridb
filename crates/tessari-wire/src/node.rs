@@ -60,6 +60,14 @@ pub struct Node {
     committed: Arc<Commits>,
     stopping: Arc<Stopping>,
     door: Arc<Admitting>,
+    /// What this node knows about the copies it does not hold, if anything.
+    ///
+    /// Held as the trait and not as the directory behind it: a node serving
+    /// clients does not care *how* the answer is arrived at, only that a bounded
+    /// read it cannot satisfy has somewhere to be sent. `None` on a node
+    /// standing alone, which is every deployment that was never told about
+    /// peers, and such a node refuses exactly as it did before.
+    elsewhere: Option<Arc<dyn tessari_session::Elsewhere>>,
 }
 
 impl Node {
@@ -75,7 +83,26 @@ impl Node {
             committed: Arc::new(Commits::default()),
             stopping: Stopping::new(),
             door: Admitting::to(MAX_CONNECTIONS),
+            elsewhere: None,
         })
+    }
+
+    /// Serve among the peers `elsewhere` knows about.
+    ///
+    /// Every session this node opens is given it, so a read carrying a staleness
+    /// bound this node's own copy cannot satisfy is redirected to a copy that
+    /// can rather than refused — C-07's *any node answers any request by serving
+    /// it or by returning a redirect*.
+    ///
+    /// Taken as a builder rather than an argument to [`Node::bind`] because the
+    /// thing that knows about peers is usually started *after* the door is open:
+    /// a process binds its surfaces, then spawns the thread that greets. A
+    /// required argument would force the two into an order the process does not
+    /// have.
+    #[must_use]
+    pub fn among(mut self, elsewhere: Arc<dyn tessari_session::Elsewhere>) -> Self {
+        self.elsewhere = Some(elsewhere);
+        self
     }
 
     /// Where it is listening, which a caller needs when it asked for port zero.
@@ -144,6 +171,7 @@ impl Node {
             let committed = Arc::clone(&self.committed);
             let stopping = Arc::clone(&self.stopping);
             let busy = self.stopping.busy();
+            let elsewhere = self.elsewhere.clone();
             log::info!("connection {id} accepted from {}", from_where(&stream));
             // A connection that goes wrong takes its own thread down and nothing
             // else: a node that could be stopped by one client's malformed frame
@@ -153,7 +181,15 @@ impl Node {
                 // Held for the conversation's whole life and released on drop,
                 // panic included.
                 let _place = place;
-                match converse(id, &db, &committed, &stopping, &mut busy, stream) {
+                match converse(
+                    id,
+                    &db,
+                    &committed,
+                    &stopping,
+                    elsewhere.as_ref(),
+                    &mut busy,
+                    stream,
+                ) {
                     Ok(()) => log::info!("connection {id} closed"),
                     // Not a warning. A client hanging up mid-frame is the
                     // ordinary end of a conversation, and reporting it as a
@@ -187,6 +223,7 @@ impl Node {
             &self.db,
             &self.committed,
             &self.stopping,
+            self.elsewhere.as_ref(),
             &mut busy,
             stream,
         )
@@ -232,6 +269,7 @@ fn converse(
     db: &Db,
     committed: &Commits,
     stopping: &Stopping,
+    elsewhere: Option<&Arc<dyn tessari_session::Elsewhere>>,
     busy: &mut Busy,
     stream: TcpStream,
 ) -> Result<()> {
@@ -257,7 +295,14 @@ fn converse(
     // what bounds it now is the door, not a clock.
     reader.get_ref().set_read_timeout(None)?;
 
-    let mut session = db.session();
+    // Given the cluster's answer once, at the session, rather than at each
+    // statement: what this node knows about its peers is a fact about the
+    // process and not about the request, and re-attaching it per statement would
+    // be a second place for the attachment to be forgotten.
+    let mut session = match elsewhere {
+        Some(known) => db.session().among(Arc::clone(known)),
+        None => db.session(),
+    };
     while let Some((kind, body)) = frame::read(&mut reader)? {
         if kind == frame::Kind::Subscribe {
             // The connection stops being a conversation and becomes a feed. See
