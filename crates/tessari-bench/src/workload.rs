@@ -160,6 +160,11 @@ pub const ALL: &[Workload] = &[
         run: crate::spread::spread,
     },
     Workload {
+        name: "scan-guard",
+        about: "a read that selects the whole table, with the planner's veto raised and lifted over one table — what the scan guard is worth",
+        run: crate::guard::guard,
+    },
+    Workload {
         name: "queue",
         about: "what a claim costs behind a prefix of held and of dead-lettered records, and a drain taken one at a time against one taken in a batch",
         run: crate::queue::queue,

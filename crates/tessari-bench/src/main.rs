@@ -35,6 +35,7 @@
 
 #[cfg(feature = "counting")]
 mod counting;
+mod guard;
 #[cfg(feature = "counting")]
 mod memory;
 mod paging;
