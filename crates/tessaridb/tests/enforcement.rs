@@ -340,7 +340,30 @@ const TABLES: &[Table] = &[
         // thread that would open rounds on a timer has not been written. The
         // exemption therefore still holds, on a ground one step narrower than
         // the one it held on before.
-        expected: 25,
+        //
+        // 26 and 27 since the follower: `Store::collected` records what this
+        // node collected for ITSELF and whether the answer brought it level, and
+        // `Store::collection` reads that back. Classified **exempt, and on a
+        // narrower ground than the pair above**, because neither touches a
+        // record. `collected` writes two facts about this process — a position
+        // and an instant — into memory that does not survive it, and
+        // `collection` reads them; no data leaves the node through either, and
+        // no identity could be checked at this layer that is not already checked
+        // where the collection was authorized, which is the peer link's mutual
+        // TLS and the leader's own `replicate` grant.
+        //
+        // What they DO decide is whether a bounded read may be answered here at
+        // all, because `current_as_of` is derived from them — so a caller that
+        // could set them arbitrarily could make a stale copy look current and
+        // collect reads the bound was written to send elsewhere. That is why the
+        // exemption is written down rather than assumed, and it names its own
+        // re-classification trigger: **the moment either becomes reachable from
+        // a network surface — a management statement, an HTTP route, a peer
+        // frame that lets one node write another's currency — this stops being
+        // a process-local fact and must be enforced.** Today the only caller is
+        // `Collector::collect`, which sets them from what it itself observed on
+        // a link it itself opened.
+        expected: 27,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -399,7 +422,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 73, "the counted tables no longer sum to 73");
+    assert_eq!(total, 75, "the counted tables no longer sum to 75");
 }
 
 /// Every `.rs` file under a directory.

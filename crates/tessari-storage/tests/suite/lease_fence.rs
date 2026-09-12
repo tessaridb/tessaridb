@@ -25,8 +25,8 @@ use std::time::{Duration, Instant};
 
 use tessari_encoding::Roles;
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_storage::{Error, LEASE_GUARD, Lease, RecordAddress, Store};
-use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
+use tessari_storage::{Currency, Error, LEASE_GUARD, Lease, RecordAddress, Store};
+use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
 fn store() -> Store {
     Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
@@ -325,21 +325,92 @@ fn a_node_that_may_write_is_current_as_of_now() {
 
 #[test]
 fn a_copy_this_node_did_not_write_has_no_known_age() {
-    // The refusal §C-05 asks for, at the value. This build has no follower loop,
-    // so a collected copy has no last collection to be measured from, and
-    // `None` is the honest answer rather than a cautious one.
+    // The refusal §C-05 asks for, at the value. This node has never collected,
+    // so its copy has no arrival to be measured from, and `None` is the honest
+    // answer rather than a cautious one.
     let store = store();
     store.hold_lease(Duration::ZERO);
     assert_eq!(store.current_as_of().unwrap(), None);
 }
 
 #[test]
-fn currency_and_the_right_to_write_are_one_answer() {
+fn a_level_collection_gives_the_copy_an_age() {
+    // The other half of the same rule, and the reason the one above says
+    // "never collected" rather than "cannot write". A node that asked and was
+    // told there is no more was current at that instant, and its copy has an
+    // age from then on.
+    let store = store();
+    store.hold_lease(Duration::ZERO);
+    store.collected(Sequence::new(9), Currency::Level);
+
+    let age = store
+        .current_as_of()
+        .unwrap()
+        .expect("a node that has been level knows how old its copy is");
+    assert!(age < Duration::from_secs(1), "{age:?}");
+}
+
+#[test]
+fn a_bounded_collection_that_filled_its_limit_is_not_a_catch_up() {
+    // The distinction this whole registry exists for. A collection that filled
+    // the bound it named proves the node ASKED; if the peer held more, the copy
+    // is older than the contact. Measuring from the contact would admit exactly
+    // the read a staleness bound is written to exclude.
+    let store = store();
+    store.hold_lease(Duration::ZERO);
+    store.collected(Sequence::new(9), Currency::Behind);
+
+    assert_eq!(
+        store.current_as_of().unwrap(),
+        None,
+        "a full answer is contact, not arrival"
+    );
+    // And the position is still recorded, because *how far it got* and *whether
+    // it arrived* are two facts and only one of them is unknown.
+    assert_eq!(
+        store.collection().expect("a collection happened").reached,
+        Sequence::new(9)
+    );
+}
+
+#[test]
+fn an_earlier_arrival_survives_a_later_collection_that_did_not_arrive() {
+    // The conservative direction, and it needs saying because the opposite
+    // reads as safer. A node that arrived and is now catching up has a copy
+    // that was current at the arrival and has only grown older; clearing the
+    // instant would report it as unknown forever, and unknown is excluded from
+    // every bounded read — so a follower that is steadily keeping up would be
+    // permanently unusable.
+    let store = store();
+    store.hold_lease(Duration::ZERO);
+    store.collected(Sequence::new(4), Currency::Level);
+    store.collected(Sequence::new(9), Currency::Behind);
+
+    assert!(
+        store.current_as_of().unwrap().is_some(),
+        "the arrival at 4 still dates this copy"
+    );
+    assert_eq!(
+        store.collection().expect("a collection happened").reached,
+        Sequence::new(9),
+        "and the position moved on"
+    );
+}
+
+#[test]
+fn an_uncollected_copys_currency_and_the_right_to_write_are_one_answer() {
     // The same shape as `the_role_reported_and_the_write_refused_cannot_disagree`
     // and for the same reason: two derivations of one fact drift, and this pair
     // drifting would serve a bounded read from a node that had stopped being the
     // origin of its own data — which is exactly the read the bound was asked to
     // prevent.
+    //
+    // RENAMED, because the claim narrowed the moment a follower could report an
+    // age of its own. Currency and the right to write are one answer only for a
+    // node that has never been level with anybody; for one that has, they are
+    // deliberately two — that is what a bounded read routed to a replica is FOR.
+    // The pair still cannot disagree here, and here is where every store in this
+    // workspace that never collects lives.
     for ttl in [
         None,
         Some(Duration::ZERO),

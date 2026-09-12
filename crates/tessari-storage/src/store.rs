@@ -136,6 +136,13 @@ pub struct Store {
     /// header: a follower's progress is a fact about a live relationship, and a
     /// persisted copy of it would outlive the relationship it describes.
     followers: Arc<Followers>,
+    /// What this node has collected for itself, and when it was last level.
+    ///
+    /// Held in memory for the reason `crate::collections` gives in its own
+    /// header, which is `crate::followers`' argument turned round: a restored
+    /// process would publish a currency claim about a relationship it has not
+    /// had for a week.
+    collections: Arc<crate::collections::Collections>,
     /// The lease this process is writing under, if it was given one.
     ///
     /// Shared with every handle for the reason the registries above it are, and
@@ -176,6 +183,7 @@ impl Store {
             series: Arc::new(crate::series::SeriesRegistry::default()),
             divergences: Arc::new(AtomicU64::new(0)),
             followers: Arc::new(Followers::default()),
+            collections: Arc::new(crate::collections::Collections::default()),
             lease: Arc::new(crate::lease::Held::default()),
         };
         // Last, because it reads the catalog: the format is settled and the
@@ -258,22 +266,33 @@ impl Store {
     /// that might have been fine rather than serving something that might not
     /// be, the same direction [`crate::Lease`] errs.
     ///
-    /// # What will make this a measurement
+    /// # Unknown until it has been level, and that is not the same as unknown
+    /// until it has collected
     ///
-    /// The leader's half already exists and already says so:
-    /// [`crate::FollowerLag::quiet_for`] is an age **only** while `behind` is
-    /// zero. When a node can be told how current a peer is, that pair is what it
-    /// will be told, and this function is where the answer arrives.
+    /// A node that may not write now answers the time since it was last
+    /// **level** with the peer it collects from — see [`crate::Collections`] for
+    /// why a collection that filled its bound proves only that this node asked.
+    /// A node that has collected and never arrived still answers `None`, because
+    /// its copy has no age anybody can state.
+    ///
+    /// It is the age of the last *arrival* and not of the data, so it is a lower
+    /// bound: the leader may have written since. That is the same caveat
+    /// [`crate::FollowerLag::quiet_for`] carries on the other side, and closing
+    /// it needs a time in the log, which is Q-542's.
     ///
     /// # Errors
     ///
     /// Returns the substrate's failure, and a decoding failure when the node
     /// identity cannot be read.
     pub fn current_as_of(&self) -> Result<Option<std::time::Duration>> {
+        if self.effective_roles()?.has(Roles::WRITABLE) {
+            return Ok(Some(std::time::Duration::ZERO));
+        }
         Ok(self
-            .effective_roles()?
-            .has(Roles::WRITABLE)
-            .then_some(std::time::Duration::ZERO))
+            .collections
+            .last()
+            .and_then(|collection| collection.level_at)
+            .map(|level| level.elapsed()))
     }
 
     /// Adopt the role the cluster wants this node to have.
@@ -556,6 +575,24 @@ impl Store {
     /// first one would report as never having collected.
     pub fn follower_served(&self, node: [u8; NODE_ID_LEN], reached: Sequence) {
         self.followers.served(node, reached);
+    }
+
+    /// Record what this node collected for itself, and whether it arrived.
+    ///
+    /// The follower's twin of [`Self::follower_served`], and the only way
+    /// [`Self::current_as_of`] ever answers anything but `None` on a node that
+    /// may not write. `currency` is the caller's observation and not a
+    /// judgement: a collection whose answer was shorter than the bound it named
+    /// is [`Currency::Level`], because a peer serves `min(limit, available)` and
+    /// a short answer means it had no more.
+    pub fn collected(&self, reached: Sequence, currency: crate::collections::Currency) {
+        self.collections.collected(reached, currency);
+    }
+
+    /// The last collection this node made for itself, if it has made one.
+    #[must_use]
+    pub fn collection(&self) -> Option<crate::collections::Collection> {
+        self.collections.last()
     }
 
     /// How far behind every follower this process has served is.

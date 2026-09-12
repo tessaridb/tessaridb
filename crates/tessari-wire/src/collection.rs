@@ -18,26 +18,29 @@
 //!
 //! # What is not here
 //!
-//! **No timer and no thread.** This performs ONE collection; deciding *when* to
-//! collect belongs with the node's lifecycle, for the reason
-//! [`crate::Standing`] gives about owning a clock.
-//!
-//! **No applying.** `Store::apply_from_stream` already exists and already takes
-//! the predecessor's epoch this answer carries. Wiring the two together is the
-//! next thing, and keeping them apart here means the transfer can be tested
-//! without a second store having to be right as well.
+//! **No timer and no thread.** [`Collector::collect`] performs ONE collection
+//! and applies what comes back; nothing calls it on a clock. Deciding *when* to
+//! collect belongs with the node's lifecycle, for the reason [`crate::Standing`]
+//! gives about owning a clock — and the cursor travels with that decision, which
+//! is why `collect` is told where to start rather than reading it here.
 //!
 //! **No bootstrap and no filtering.** A follower behind the retention floor
 //! needs the log as a backup rather than as a stream, and a selective follower
 //! needs the reach filter the store already has. Both are their own decisions;
 //! this serves [`Reach::Store`] and refuses what it cannot state.
 
+use std::net::SocketAddr;
+
+use rustls::pki_types::CertificateDer;
+
 use tessari_encoding::{LogRecord, NODE_ID_LEN, StoreValue};
-use tessari_storage::{Reach, Store};
+use tessari_storage::{Currency, Reach, Store};
 use tessari_types::{Epoch, Sequence};
 
 use crate::error::{Error, Result};
 use crate::frame;
+use crate::link::{Answered, Ask, Credential, call};
+use crate::peer::Hello;
 
 /// What a follower asks a leader for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,9 +224,115 @@ fn preceding(store: &Store, from: Sequence) -> Result<Epoch> {
     }
 }
 
+/// Everything a node holds in order to collect from a peer.
+///
+/// A struct rather than six more arguments, for the reason [`crate::Standing`]
+/// is one: [`call`] already takes six of its own.
+#[derive(Debug)]
+pub struct Collector<'a> {
+    /// What this node shows the peer, and the key proving it is ours.
+    pub mine: &'a Credential,
+    /// The authority the peer's credential must chain to.
+    pub authority: &'a CertificateDer<'a>,
+    /// The greeting that opens the connection.
+    pub said: &'a Hello,
+    /// The peer to collect from, by id and address.
+    pub peer: ([u8; NODE_ID_LEN], SocketAddr),
+    /// The most records one collection may carry.
+    ///
+    /// It is also what makes *level* observable: a peer serves
+    /// `min(limit, available)`, so an answer shorter than this is the peer
+    /// saying it had no more. See [`Currency`].
+    pub limit: u64,
+}
+
+impl Collector<'_> {
+    /// Collect once from the peer starting at `from`, apply what comes back,
+    /// and answer how far this node now reaches.
+    ///
+    /// # The cursor is the caller's and not this module's
+    ///
+    /// `from` is the first position this node does not hold — ordinarily its own
+    /// committed tail plus one. It is a parameter rather than something read
+    /// here, and the rule that made it one is worth keeping: no surface on the
+    /// network may reach the store's raw feed, `committed_tail` included, because
+    /// a serving surface able to read positions directly is one that can stream
+    /// records past every grant in the store. A collector is not a serving
+    /// surface, but that rule has no exemptions on purpose — and obeying it put
+    /// the cursor where the rest of this module already said it belonged, beside
+    /// the clock that decides *when* to collect.
+    ///
+    /// # The predecessor is derived down the batch, not carried per record
+    ///
+    /// The answer states the leadership before its FIRST record; every record
+    /// after that is preceded by the one just applied, so its epoch is the
+    /// claim. Deriving is what makes the batch self-checking — a chain compared
+    /// position by position refuses a substituted middle record, where a
+    /// predecessor carried alongside each record would only restate what the
+    /// record already says about itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Uncollectable`] when the peer cannot state what precedes
+    /// this node's position — which is the answer to *bootstrap me* and not to
+    /// *catch me up* — whatever [`call`] refuses with, and [`Error::Refused`]
+    /// carrying the store's own words when a record will not apply. A record
+    /// that disagrees with the history this node holds arrives as the store's
+    /// own divergence, unchanged: rewording it would give an operator two
+    /// accounts of one event.
+    pub fn collect(&self, into: &Store, from: Sequence) -> Result<Sequence> {
+        let held = Sequence::new(from.get().saturating_sub(1));
+        let (_, answered) = call(
+            self.peer.1,
+            self.mine.duplicate(),
+            self.authority,
+            self.peer.0,
+            self.said,
+            Ask::Records(Collect {
+                from,
+                limit: self.limit,
+            }),
+        )?;
+        let Answered::Collected(collected) = answered else {
+            return Err(Error::OutOfTurn {
+                tag: crate::peer::PeerFrame::Collected.tag(),
+            });
+        };
+
+        let carried = u64::try_from(collected.records.len()).unwrap_or(u64::MAX);
+        let mut previous = collected.previous;
+        let mut reached = held;
+        for (at, record) in &collected.records {
+            into.apply_from_stream(*at, previous, record)
+                .map_err(refused)?;
+            previous = record.epoch();
+            reached = *at;
+        }
+
+        // Short means the peer had no more, which is the one moment this node
+        // can observe that its copy was current. A full answer is contact and
+        // not arrival, and recording it as arrival would admit exactly the read
+        // a staleness bound exists to exclude.
+        let currency = if carried < self.limit {
+            Currency::Level
+        } else {
+            Currency::Behind
+        };
+        into.collected(reached, currency);
+        Ok(reached)
+    }
+}
+
+/// The store's own words, carried through rather than reworded.
+fn refused(why: tessari_storage::Error) -> Error {
+    Error::Refused {
+        message: why.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Collect, Collected};
+    use super::{Collect, Collected, Collector};
     use crate::error::Error;
     use crate::link::tests::{Authority, THERE, hello, settled};
     use crate::link::{Answered, Ask, Peers, call};
@@ -231,6 +340,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::thread::JoinHandle;
+    use std::time::Duration;
     use tessari_encoding::{LogRecord, NODE_ID_LEN};
     use tessari_types::{Epoch, Sequence};
     use tessaridb::Db;
@@ -475,5 +585,158 @@ mod tests {
         assert_eq!(seen.node, THERE);
         assert_eq!(seen.sequence, Sequence::new(2));
         assert_eq!(seen.behind, 1, "one commit stands beyond what it was given");
+    }
+
+    /// A follower that collects from `address`, with a bound of `limit`.
+    fn collector<'a>(
+        mine: &'a crate::link::Credential,
+        der: &'a rustls::pki_types::CertificateDer<'a>,
+        said: &'a crate::peer::Hello,
+        address: SocketAddr,
+        limit: u64,
+    ) -> Collector<'a> {
+        Collector {
+            mine,
+            authority: der,
+            said,
+            peer: (LEADER, address),
+            limit,
+        }
+    }
+
+    #[test]
+    fn a_follower_that_collects_applies_what_it_was_given() {
+        let authority = Authority::new();
+        let leader = logged(&[1, 1, 1]);
+        let (address, door) = serving(&authority, &leader, 1);
+
+        let follower = Db::in_memory().expect("an in-memory store");
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let reached = collector(&mine, &der, &said, address, 64)
+            .collect(follower.store(), Sequence::new(1))
+            .expect("a collection applies");
+        door.join().expect("the door's thread");
+
+        assert_eq!(reached, Sequence::new(3));
+        assert_eq!(
+            follower
+                .store()
+                .log_records(Sequence::new(1), 64)
+                .expect("the log can be read")
+                .len(),
+            3,
+            "the follower holds what it was given"
+        );
+    }
+
+    #[test]
+    fn a_batch_is_applied_against_the_record_before_each_one() {
+        let authority = Authority::new();
+        // Three leaderships in one batch. The answer states only what precedes
+        // the FIRST record; if every record were applied against that same
+        // epoch, the second would claim `Epoch::ZERO` stands at position 1 while
+        // the follower has just written epoch 1 there, and the store would
+        // refuse it as a divergence.
+        let leader = logged(&[1, 2, 3]);
+        let (address, door) = serving(&authority, &leader, 1);
+
+        let follower = Db::in_memory().expect("an in-memory store");
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let reached = collector(&mine, &der, &said, address, 64)
+            .collect(follower.store(), Sequence::new(1))
+            .expect("a batch of three leaderships applies");
+        door.join().expect("the door's thread");
+
+        assert_eq!(reached, Sequence::new(3));
+    }
+
+    #[test]
+    fn a_collection_whose_predecessor_disagrees_is_refused() {
+        let authority = Authority::new();
+        // The two histories agree on how FAR they go and disagree on who wrote
+        // it. Nothing about the offered record says so — the check is the
+        // predecessor, which is why the frame carries one at all.
+        let leader = logged(&[9, 9, 9]);
+        let (address, door) = serving(&authority, &leader, 1);
+
+        let follower = logged(&[1, 1]);
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let refused =
+            collector(&mine, &der, &said, address, 64).collect(follower.store(), Sequence::new(3));
+        door.join().expect("the door's thread");
+
+        assert!(
+            matches!(&refused, Err(Error::Refused { .. })),
+            "expected the store's own refusal, got {refused:?}"
+        );
+        let message = match refused {
+            Err(Error::Refused { message }) => message,
+            _ => String::new(),
+        };
+        // The store's own words, carried through: a reworded divergence gives
+        // an operator two accounts of one event.
+        assert!(
+            message.contains("epoch 1") && message.contains("epoch 9"),
+            "{message}"
+        );
+        assert_eq!(
+            follower
+                .store()
+                .log_records(Sequence::new(1), 64)
+                .expect("the log can be read")
+                .len(),
+            2,
+            "and nothing was appended"
+        );
+    }
+
+    #[test]
+    fn a_short_answer_tells_the_follower_how_old_its_copy_is() {
+        let authority = Authority::new();
+        let leader = logged(&[1, 1, 1]);
+        let (address, door) = serving(&authority, &leader, 2);
+
+        let follower = Db::in_memory().expect("an in-memory store");
+        // A node that may not write: the half of `current_as_of` this wave is
+        // about. A writable node answers zero by identity and would prove
+        // nothing here.
+        follower.hold_lease(Duration::ZERO);
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+
+        // Bound of two against a log of three: the answer fills the bound, so
+        // the follower asked and did not arrive.
+        collector(&mine, &der, &said, address, 2)
+            .collect(follower.store(), Sequence::new(1))
+            .expect("the first collection");
+        assert_eq!(
+            follower
+                .store()
+                .current_as_of()
+                .expect("a store can be asked"),
+            None,
+            "a full answer is contact, not arrival"
+        );
+
+        // The rest arrives inside the bound, so the peer had no more.
+        collector(&mine, &der, &said, address, 2)
+            .collect(follower.store(), Sequence::new(3))
+            .expect("the second collection");
+        door.join().expect("the door's thread");
+        assert!(
+            follower
+                .store()
+                .current_as_of()
+                .expect("a store can be asked")
+                .is_some(),
+            "a short answer is the peer saying it had no more"
+        );
     }
 }

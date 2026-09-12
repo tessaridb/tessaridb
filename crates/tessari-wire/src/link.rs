@@ -210,6 +210,21 @@ impl Peers {
     }
 }
 
+impl Credential {
+    /// A second copy of this credential, for the next door.
+    ///
+    /// [`call`] takes ownership because a TLS client configuration does, and a
+    /// node that speaks to more than one peer therefore needs one copy per
+    /// conversation. `pub(crate)` on purpose: duplicating key material is a
+    /// detail of speaking to N peers, not a capability worth publishing.
+    pub(crate) fn duplicate(&self) -> Self {
+        Self {
+            chain: self.chain.clone(),
+            key: self.key.clone_key(),
+        }
+    }
+}
+
 /// What one served connection produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Met {

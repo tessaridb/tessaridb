@@ -95,7 +95,7 @@ impl Standing<'_> {
         for (peer, address) in self.peers {
             let Ok((_, answered)) = call(
                 *address,
-                duplicate(self.mine),
+                self.mine.duplicate(),
                 self.authority,
                 *peer,
                 self.said,
@@ -121,18 +121,6 @@ impl Standing<'_> {
 /// header for why the subtrahend is two round times and not one.
 fn renew_in(held: Lease, round: Duration, now: Instant) -> Duration {
     held.left(now).saturating_sub(round.saturating_mul(2))
-}
-
-/// A second copy of this node's credential, for the next door.
-///
-/// The call takes ownership because a TLS client configuration does, and a
-/// canvass speaks to every member. Private on purpose: duplicating key material
-/// is a detail of speaking to N peers rather than a capability worth publishing.
-fn duplicate(mine: &Credential) -> Credential {
-    Credential {
-        chain: mine.chain.clone(),
-        key: mine.key.clone_key(),
-    }
 }
 
 #[cfg(test)]

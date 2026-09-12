@@ -70,7 +70,7 @@ use std::time::Duration;
 pub use crate::campaign::Standing;
 pub use crate::client::{Client, Feed};
 #[cfg(feature = "server")]
-pub use crate::collection::{Collect, Collected, Origin};
+pub use crate::collection::{Collect, Collected, Collector, Origin};
 #[cfg(feature = "server")]
 pub use crate::credential::{fingerprint, names, presented};
 pub use crate::error::{Error, Result};

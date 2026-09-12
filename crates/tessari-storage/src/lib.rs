@@ -25,6 +25,7 @@ mod adjacency;
 mod audit;
 mod cardinality;
 mod catalog;
+mod collections;
 mod covering;
 mod error;
 mod expiry;
@@ -58,6 +59,7 @@ pub use catalog::{
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
 pub use catalog::VaultRoot;
+pub use collections::{Collection, Collections, Currency};
 pub use covering::MEASURED_RELATION;
 pub use expiry::Expired;
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
