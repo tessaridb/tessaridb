@@ -269,6 +269,10 @@ mod tests {
             endpoint: endpoint.to_owned(),
             roles: Roles::SERVING,
             node,
+            // Routing is not subscription: which peers this node greets is a
+            // different question from what those peers may collect, so these
+            // rows deliberately grant nothing.
+            replicates: None,
         }
     }
 

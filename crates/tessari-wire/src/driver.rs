@@ -39,8 +39,9 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_serve::Stopping;
-use tessari_storage::Lease;
+use tessari_storage::{Lease, ReplicaDefinition};
 use tessari_types::{Epoch, Sequence};
 
 use crate::directory::{Destination, Directory};
@@ -213,6 +214,38 @@ impl Collecting {
     }
 }
 
+/// The peer this node collects from, if it should collect at all.
+///
+/// # A node that may write follows nobody
+///
+/// A node holding [`Roles::WRITABLE`] is the origin of what it holds — that is
+/// exactly what `Store::current_as_of` says when it answers `Some(0)` — so it
+/// has nothing to catch up to. Collecting into it would apply a peer's records
+/// beside its own, which is the divergence the log's epoch chain exists to
+/// refuse, discovered at apply time rather than prevented at the timer.
+///
+/// The roles are re-read every round rather than decided at start, so a node
+/// that is told to stop writing begins following without being restarted.
+///
+/// # A peer declared without a node cannot be dialled
+///
+/// A peer connection demands a certificate valid for a name derived from the
+/// peer's **id**, so an endpoint whose id nobody knows cannot be dialled at all
+/// — the same wall the seed address runs into. `None` here rather than a
+/// half-formed attempt: a row that says who but not where, or where but not
+/// who, is a declaration the operator has not finished.
+#[must_use]
+pub fn upstream(
+    mine: Roles,
+    writable: Option<ReplicaDefinition>,
+) -> Option<([u8; NODE_ID_LEN], String)> {
+    if mine.has(Roles::WRITABLE) {
+        return None;
+    }
+    let peer = writable?;
+    Some((peer.node?, peer.endpoint))
+}
+
 /// The leadership this node holds, and what a lost round does to it.
 #[derive(Debug)]
 pub struct Renewing {
@@ -262,7 +295,7 @@ mod tests {
     use tessari_storage::Lease;
     use tessari_types::{Epoch, Sequence};
 
-    use super::{Collecting, Published, Renewing, due_in, every};
+    use super::{Collecting, Published, Renewing, ReplicaDefinition, due_in, every, upstream};
     use crate::directory::Directory;
     use crate::grant::Leadership;
     use crate::peer::Hello;
@@ -283,6 +316,61 @@ mod tests {
             tail: Sequence::new(4096),
             current_as_of: Some(Duration::from_secs(1)),
         }
+    }
+
+    /// A declared peer row, as an operator would have written it.
+    fn peer(roles: Roles, node: Option<[u8; NODE_ID_LEN]>) -> ReplicaDefinition {
+        ReplicaDefinition {
+            id: 1,
+            name: "leader".to_owned(),
+            endpoint: "10.0.0.2:9000".to_owned(),
+            roles,
+            node,
+            // Not read by `upstream` and set anyway: what the peer grants *this*
+            // node lives on that peer's own catalog, not on this node's copy of
+            // the row, and a value here that mattered would mean the follower
+            // was deciding its own subscription.
+            replicates: None,
+        }
+    }
+
+    #[test]
+    fn a_node_that_may_write_collects_from_nobody() {
+        // It is the origin of what it holds, which is exactly what
+        // `current_as_of` says when it answers zero. Collecting into it would
+        // apply a peer's records beside its own — the divergence the epoch chain
+        // refuses at apply time, prevented here at the timer instead.
+        assert_eq!(
+            upstream(Roles::ALONE, Some(peer(Roles::WRITABLE, Some(NODE)))),
+            None
+        );
+        assert_eq!(
+            upstream(Roles::WRITABLE, Some(peer(Roles::WRITABLE, Some(NODE)))),
+            None
+        );
+        // And the same node with the role taken away follows the same peer, so
+        // the rule is the role and not something about the peer.
+        assert_eq!(
+            upstream(Roles::SERVING, Some(peer(Roles::WRITABLE, Some(NODE)))),
+            Some((NODE, "10.0.0.2:9000".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_follower_with_no_writable_peer_collects_from_nobody() {
+        assert_eq!(upstream(Roles::SERVING, None), None);
+    }
+
+    #[test]
+    fn a_writable_peer_nobody_has_identified_cannot_be_collected_from() {
+        // A peer connection demands a certificate valid for a name derived from
+        // the peer's id, so an endpoint whose id nobody knows cannot be dialled
+        // at all — the same wall the seed address runs into. `None` rather than
+        // a half-formed attempt.
+        assert_eq!(
+            upstream(Roles::SERVING, Some(peer(Roles::WRITABLE, None))),
+            None
+        );
     }
 
     #[test]

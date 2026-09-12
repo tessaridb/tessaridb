@@ -432,12 +432,31 @@ fn serve(
         // as no peer calls: a node that only answers learns nothing about a
         // cluster that has stopped calling it. They share one flag, so the peer
         // surface stops as one thing.
+        let collecting_credential = dialling.duplicate();
+        let collecting_authority = authority.clone();
         let dialling = {
             let db = std::sync::Arc::clone(&db);
             let stopping = std::sync::Arc::clone(&peering);
             std::thread::spawn(move || dial_peers(&db, &dialling, &authority, &routing, &stopping))
         };
-        (answering, dialling)
+        // A third, and for the reason `driver.rs` opens with: a missed greeting
+        // costs the freshness of a routing reading while a missed collection
+        // costs data, and a collection blocked on a dead peer's TCP connect
+        // would otherwise hold up a greeting round that has nothing to do with
+        // it.
+        let collecting = {
+            let db = std::sync::Arc::clone(&db);
+            let stopping = std::sync::Arc::clone(&peering);
+            std::thread::spawn(move || {
+                collect_from_upstream(
+                    &db,
+                    &collecting_credential,
+                    &collecting_authority,
+                    &stopping,
+                );
+            })
+        };
+        (answering, dialling, collecting)
     });
 
     match (wire, http) {
@@ -465,9 +484,10 @@ fn serve(
     // Before the store, not after, and for the reason the consumers are: this
     // thread holds an `Arc` on the store, so `drop(db)` below would release one
     // handle of two and flush nothing until it ended.
-    if let Some((answering, dialling)) = peer_threads {
+    if let Some((answering, dialling, collecting)) = peer_threads {
         drop(answering.join());
         drop(dialling.join());
+        drop(collecting.join());
     }
     // Before the store, not after. Stage 1 told the consumers to stop and did
     // not wait; this is the wait. Joining after `drop(db)` would flush the store
@@ -604,6 +624,113 @@ fn dial_peers(
     );
 }
 
+/// Collect the records this node does not hold, once per collection interval.
+///
+/// # What decides whether this node collects at all
+///
+/// [`tessari_wire::upstream`] does, from this node's own effective roles and
+/// the peer the catalog declares writable — and it is asked every round rather
+/// than once, so a node told to stop writing starts following without a
+/// restart, and one that has just been made writable stops following at the
+/// next tick instead of applying a peer's records beside its own.
+///
+/// # Why the cursor is held here
+///
+/// [`tessari_wire::Collecting`] keeps it, and its rule is the one worth having:
+/// a pass that failed leaves the cursor where it was. A cursor advanced past
+/// records that were never applied skips them permanently and silently, because
+/// no later pass ever asks for the gap and nothing is in an error state to say
+/// so.
+///
+/// The starting position is this node's own committed tail plus one — the first
+/// position it does not hold. It is read once, here, rather than every round:
+/// after the first pass the cursor is what the collections themselves reached,
+/// and re-reading the tail would hand a failed pass a fresh start it has not
+/// earned.
+///
+/// # What a refusal does, and does not do
+///
+/// Nothing. A peer that has not subscribed this node, a peer whose log no
+/// longer reaches back this far, a peer that is simply down — all of them leave
+/// the cursor alone and are logged. The node goes on serving what it holds, and
+/// its copy goes on ageing, which is exactly what a staleness bound is there to
+/// notice.
+fn collect_from_upstream(
+    db: &Db,
+    mine: &tessari_wire::Credential,
+    authority: &tessari_wire::CertificateDer<'static>,
+    stopping: &tessari_serve::Stopping,
+) {
+    let store = db.store();
+    let held = match store.committed_tail() {
+        Ok(tail) => tail,
+        Err(why) => {
+            log::warn!("this node cannot say how far its log reaches: {why}");
+            return;
+        }
+    };
+    let mut collecting =
+        tessari_wire::Collecting::from(tessari_types::Sequence::new(held.get().saturating_add(1)));
+    tessari_wire::every(
+        std::time::Duration::from_secs(tessari_constants::COLLECTION_SECONDS),
+        stopping,
+        |_| {
+            let store = db.store();
+            let roles = match store.effective_roles() {
+                Ok(roles) => roles,
+                Err(why) => {
+                    log::warn!("this node cannot say what it is for: {why}");
+                    return;
+                }
+            };
+            let writable = match db.writable_peer() {
+                Ok(writable) => writable,
+                // Two peers declared writable is reported rather than guessed
+                // past: picking either would be a routing decision taken by a
+                // sort order, and the message names both.
+                Err(why) => {
+                    log::warn!("this node cannot say which peer may write: {why}");
+                    return;
+                }
+            };
+            let Some((node, endpoint)) = tessari_wire::upstream(roles, writable) else {
+                return;
+            };
+            let address = match endpoint.parse() {
+                Ok(address) => address,
+                Err(why) => {
+                    log::warn!("the writable peer's endpoint {endpoint} is not an address: {why}");
+                    return;
+                }
+            };
+            let said = match greeting(db) {
+                Ok(said) => said,
+                Err(why) => {
+                    log::warn!("this node cannot say what it holds: {why}");
+                    return;
+                }
+            };
+            let collector = tessari_wire::Collector {
+                mine,
+                authority,
+                said: &said,
+                peer: (node, address),
+                limit: tessari_constants::COLLECTION_RECORDS,
+            };
+            let before = collecting.reached();
+            let reached = collecting.once(|at| collector.collect(store, at));
+            if reached == before {
+                log::info!(
+                    "nothing collected from {endpoint}; still at {}",
+                    before.get()
+                );
+            } else {
+                log::info!("collected to {} from {endpoint}", reached.get());
+            }
+        },
+    );
+}
+
 fn greet_peers(db: &Db, door: &tessari_wire::Peers, stopping: &tessari_serve::Stopping) {
     let mut voter = tessari_wire::Voter::started();
     while !stopping.asked() {
@@ -622,7 +749,14 @@ fn greet_peers(db: &Db, door: &tessari_wire::Peers, stopping: &tessari_serve::St
                 break;
             }
         };
-        match door.greet(&mine, &mut voter, &tessari_wire::NoLog) {
+        // The door serves the log at last, and serves it to exactly the peers
+        // this store's own catalog subscribed — `NoLog` was the honest answer
+        // only while nothing could ask the catalog that question.
+        match door.greet(
+            &mine,
+            &mut voter,
+            &tessari_wire::Serving::declared(db.store()),
+        ) {
             Ok(met) => log::info!(
                 "peer {} greeted at epoch {}, tail {}{}",
                 hex(&met.said.node),

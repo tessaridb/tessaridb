@@ -581,6 +581,25 @@ pub enum Error {
         span: Span,
     },
 
+    /// `DEFINE REPLICA … REPLICATES …` on a row that names no node.
+    ///
+    /// A subscription is a grant, and a grant needs somebody to hold it. Without
+    /// `NODE` the row is a peer an operator declared by name and address, which
+    /// is all anyone can say about a machine they have not spoken to — so a
+    /// subscription written on it belongs to nobody, and the peer door, which
+    /// looks a follower up by the id its certificate proved, would never find
+    /// it. Refused here, where the span is, rather than stored: afterwards a row
+    /// granting to nobody is indistinguishable from a row nobody granted.
+    #[error(
+        "`REPLICATES` grants to a node, and this declaration names none (at \
+         {span}) — add `NODE '<id>'` with the id `INFO FOR NODE` prints on the \
+         peer, or drop the clause"
+    )]
+    SubscriptionNamesNoNode {
+        /// Where the declaration was written.
+        span: Span,
+    },
+
     /// A `DROP TABLE` naming a graph's own node collection.
     ///
     /// Refused rather than allowed, and the refusal is what makes the node

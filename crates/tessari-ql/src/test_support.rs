@@ -221,9 +221,17 @@ fn erase_statement(statement: &mut Statement) {
         }
         StatementKind::AlterNamespace { name, .. } => erase_name(name),
         StatementKind::DefineNode { roles, .. } => erase_names(roles.as_deref_mut()),
-        StatementKind::DefineReplica { name, roles, .. } => {
+        StatementKind::DefineReplica {
+            name,
+            roles,
+            replicates,
+            ..
+        } => {
             erase_name(name);
             erase_names(roles.as_deref_mut());
+            if let Some(reach) = replicates {
+                erase_reach(reach);
+            }
         }
         StatementKind::DefineConsumer {
             name,

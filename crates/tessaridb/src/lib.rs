@@ -47,7 +47,7 @@ use std::sync::Arc;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_lsm::LsmBackend;
-use tessari_storage::{Catalog, Roles, Store};
+use tessari_storage::{Catalog, ReplicaDefinition, Roles, Store};
 
 /// The value a piece of text denotes, when it denotes one by itself.
 ///
@@ -339,7 +339,17 @@ impl Db {
     /// Returns an error when the catalog cannot be read, and
     /// [`Error::ManyWritablePeers`] when more than one peer is declared
     /// writable.
-    pub fn writable_peer(&self) -> Result<Option<String>> {
+    ///
+    /// # Why the whole row and not the endpoint
+    ///
+    /// Two callers want this peer and they want different fields of it: a
+    /// forwarded write needs somewhere to send the statement, and a follower
+    /// collecting the log needs the node id as well, because a peer connection
+    /// derives the name it demands of the peer's certificate from that id. A
+    /// second finder for the second field would be a second answer to *which
+    /// peer may write*, and the two would disagree the day somebody declared
+    /// two writable peers and only one of them checked.
+    pub fn writable_peer(&self) -> Result<Option<ReplicaDefinition>> {
         let mut transaction = self.store.begin()?;
         let mut writable = Catalog::new(&mut transaction)
             .replicas()?
@@ -354,7 +364,7 @@ impl Db {
                 also: second.name,
             });
         }
-        Ok(Some(found.endpoint))
+        Ok(Some(found))
     }
 
     /// Resolve the namespace and database a session has selected.

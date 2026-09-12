@@ -518,6 +518,14 @@ pub enum StatementKind {
         /// at the statement that wrote it instead of becoming a row that names
         /// a node nobody will ever be.
         node: Option<[u8; 16]>,
+        /// How far that peer may collect this store's log, when it may at all.
+        ///
+        /// `None` is the declaration saying nothing, which is the refusal: a
+        /// peer nobody subscribed receives no records. Spelled with the same
+        /// [`ReachRef`] a grant is spelled with, because a subscription **is** a
+        /// read grant over the addresses it names, and two spellings of one
+        /// thing are two things that can come to disagree.
+        replicates: Option<ReachRef>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

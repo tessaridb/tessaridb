@@ -183,6 +183,12 @@ impl Peers {
                                 &refused,
                             )?;
                         }
+                        // The same rule one step out: a node nobody
+                        // subscribed learns that, rather than watching its
+                        // socket close and reading it as a network fault.
+                        Err(Error::Unsubscribed) => {
+                            frame::write_tagged(&mut link, PeerFrame::Unsubscribed.tag(), &[])?
+                        }
                         Err(why) => return Err(why),
                     }
                     None
@@ -367,6 +373,7 @@ fn exchange(
                     let (from, _) = frame::take_u64(&body, 0)?;
                     Err(Error::Uncollectable { from })
                 }
+                Some(PeerFrame::Unsubscribed) => Err(Error::Unsubscribed),
                 Some(_) => Err(Error::OutOfTurn { tag }),
                 None => Err(Error::UnknownFrame { tag }),
             }

@@ -96,6 +96,20 @@ pub enum Error {
         from: u64,
     },
 
+    /// A peer asked for the log and nothing subscribed it.
+    ///
+    /// Distinct from [`Self::Uncollectable`] and from an empty collection,
+    /// because the three have three different repairs: a grant, a re-bootstrap,
+    /// and nothing at all. The message names the statement that grants one,
+    /// since an operator reading this is holding a cluster where one node
+    /// silently receives nothing.
+    #[error(
+        "no subscription is declared for this node — `DEFINE REPLICA <name> AT \
+         '<endpoint>' NODE '<id>' REPLICATES <STORE|NAMESPACE …|DATABASE …>` on \
+         the node that holds the original grants one"
+    )]
+    Unsubscribed,
+
     /// A frame kind this build does not have.
     ///
     /// The connection closes rather than the frame being skipped: a protocol

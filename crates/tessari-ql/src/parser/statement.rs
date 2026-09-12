@@ -1278,11 +1278,30 @@ impl Parser<'_> {
         } else {
             None
         };
+        // Read with the same reader `DEFINE USER … ON` uses, so the reach a
+        // subscription names and the reach a grant names cannot come to accept
+        // different spellings. `STORE`, `NAMESPACE x` and `DATABASE x.y` only —
+        // the bare `x.y` that `ON` also takes is not offered here, because after
+        // `REPLICATES` a bare pair would sit where a table name could and this
+        // clause has no history to keep.
+        let replicates = if self.eat_word("replicates") {
+            match self.reach_keyword()? {
+                Some(reach) => Some(reach),
+                None => {
+                    return Err(
+                        self.error_here("`STORE`, `NAMESPACE` or `DATABASE` after `REPLICATES`")
+                    );
+                }
+            }
+        } else {
+            None
+        };
         Ok(StatementKind::DefineReplica {
             name,
             endpoint,
             roles,
             node,
+            replicates,
             if_not_exists,
         })
     }

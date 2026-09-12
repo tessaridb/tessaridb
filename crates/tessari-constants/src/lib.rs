@@ -299,6 +299,39 @@ pub const GREETING_SECONDS: u64 = 10;
 /// cluster of any size is not spending its bandwidth on being sure of itself.
 pub const AWARENESS_SECONDS: u64 = 10;
 
+/// How often a follower collects the records it does not hold.
+///
+/// Unit: seconds.
+///
+/// # Its own constant, because it fails differently
+///
+/// It is numerically equal to [`AWARENESS_SECONDS`] today and it is not that
+/// constant: a missed greeting costs the freshness of a routing reading, and a
+/// missed collection costs data. Two mechanisms whose failures differ get two
+/// periods, so that changing one is not silently changing the other.
+///
+/// # Where the number comes from
+///
+/// The API refuses a staleness bound tighter than [`STALENESS_FLOOR_SECONDS`],
+/// so a follower has to be able to satisfy the tightest bound the API admits.
+/// One collection period plus the transfer has to fit inside that floor; at half
+/// of it, a follower that misses a whole round is still inside the promise. A
+/// period at or above the floor would mean advertising a bound this node cannot
+/// meet even when everything is working.
+pub const COLLECTION_SECONDS: u64 = AWARENESS_SECONDS;
+
+/// The most records one collection carries.
+///
+/// Unit: records.
+///
+/// It is also what makes *level* observable: a peer serves `min(limit,
+/// available)`, so an answer shorter than this is the peer saying it had no
+/// more, and an answer exactly this long is contact rather than arrival. A
+/// ceiling too high would make a catching-up follower hold one connection for a
+/// whole log; too low and a follower that fell behind never catches up, because
+/// each round carries less than the interval produced.
+pub const COLLECTION_RECORDS: u64 = 1024;
+
 /// The tightest staleness bound a read may ask for.
 ///
 /// Unit: seconds.

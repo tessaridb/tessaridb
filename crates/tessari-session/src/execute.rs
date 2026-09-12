@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 use tessari_encoding::{NODE_ID_LEN, Roles, decode_payload, encode_payload};
 use tessari_ql::{
     Answer, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, EdgeClause, Edit,
-    FieldMapping, FieldPath, Name, RecordTarget, Span, StatementKind, TableChange, TableRef,
+    FieldMapping, FieldPath, Name, ReachRef, RecordTarget, Span, StatementKind, TableChange,
+    TableRef,
 };
 use tessari_storage::{
     Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeOrder, FieldShape,
@@ -39,6 +40,20 @@ const FORMAT_JSON: &str = "json";
 /// is not only clippy's preference: passing them as one borrow means a field
 /// added to the statement cannot be silently dropped on the way to the catalog,
 /// which is exactly the failure a long positional argument list invites.
+/// What a `DEFINE REPLICA` says about a peer.
+///
+/// A struct for the reason [`Declared`] is one: the statement's clauses outgrew
+/// what a function signature carries legibly, and grouping them keeps the caller
+/// reading as the statement it is rather than as eight positional arguments in
+/// an order nothing checks.
+struct Peer<'a> {
+    name: &'a Name,
+    endpoint: &'a str,
+    roles: Option<&'a [Name]>,
+    node: Option<[u8; NODE_ID_LEN]>,
+    replicates: Option<&'a ReachRef>,
+}
+
 struct Declared<'a> {
     name: &'a Name,
     source: &'a ConsumerSource,
@@ -169,14 +184,19 @@ impl Session<'_> {
                 endpoint,
                 roles,
                 node,
+                replicates,
                 if_not_exists,
             } => self.define_replica(
                 transaction,
-                name,
-                endpoint,
-                roles.as_deref(),
-                *node,
+                &Peer {
+                    name,
+                    endpoint,
+                    roles: roles.as_deref(),
+                    node: *node,
+                    replicates: replicates.as_ref(),
+                },
                 *if_not_exists,
+                span,
             ),
             StatementKind::DefineConsumer {
                 name,
@@ -2836,24 +2856,42 @@ impl Session<'_> {
     fn define_replica(
         &self,
         transaction: &mut Transaction<'_>,
-        name: &Name,
-        endpoint: &str,
-        roles: Option<&[Name]>,
-        node: Option<[u8; NODE_ID_LEN]>,
+        peer: &Peer<'_>,
         if_not_exists: bool,
+        span: Span,
     ) -> Result<Outcome> {
         let declared = Catalog::new(transaction)
             .replicas()?
             .into_iter()
-            .any(|found| found.name == name.text);
+            .any(|found| found.name == peer.name.text);
         if if_not_exists && declared {
             return Ok(Outcome::Done);
         }
         // The words are read before the name is claimed, so a misspelled role
         // leaves nothing behind: the statement either declares the peer it was
         // asked for or declares nothing.
-        let roles = roles.map(named_roles).transpose()?.unwrap_or(Roles::NONE);
-        Catalog::new(transaction).create_replica(&name.text, endpoint, roles, node)?;
+        let roles = peer
+            .roles
+            .map(named_roles)
+            .transpose()?
+            .unwrap_or(Roles::NONE);
+        // A subscription grants to a node, so a declaration that names none is
+        // refused before anything is claimed — the order this statement already
+        // uses for a misspelled role, for the same reason.
+        let replicates = match peer.replicates {
+            None => None,
+            Some(_) if peer.node.is_none() => {
+                return Err(Error::SubscriptionNamesNoNode { span });
+            }
+            Some(named) => Some(self.reach_of(transaction, named)?),
+        };
+        Catalog::new(transaction).create_replica(
+            &peer.name.text,
+            peer.endpoint,
+            roles,
+            peer.node,
+            replicates,
+        )?;
         Ok(Outcome::Done)
     }
 

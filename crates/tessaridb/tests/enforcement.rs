@@ -460,11 +460,20 @@ const RAW_FEED: &[&str] = &[
     ".changes_since(",
     ".subscribe(",
     ".committed_tail(",
+    // Added the day the peer door began serving records. It is the scoped log
+    // reader, so it takes a reach and no identity — on its own it will filter
+    // for anybody who can name one — and the whole safety of that arrangement
+    // is that exactly one caller in a networked crate reaches it. A rule is what
+    // keeps "exactly one" true next year.
+    ".log_records_within(",
 ];
 
 /// Call sites classified as exempt, by file and by the EXACT line.
 ///
-/// One entry. The peer door's greeting says how far this node's log reaches,
+/// Three entries, and each one is a judgement about what that line discloses
+/// rather than about who wrote it.
+///
+/// **One.** The peer door's greeting says how far this node's log reaches,
 /// which is a field of the handshake frame — and `committed_tail` is the only
 /// call that answers it.
 ///
@@ -486,13 +495,51 @@ const RAW_FEED: &[&str] = &[
 /// withdraws its exemption — so the classification cannot drift away from the
 /// code it classified without somebody noticing.
 ///
-/// **Re-classification trigger:** the day the peer door serves a COLLECTION, or
-/// the day a tail is answered to anything that has not completed the peer
-/// handshake. Neither is true today.
-const CLASSIFIED: &[(&str, &str)] = &[(
-    "tessari-cli/src/main.rs",
-    "let tail = store.committed_tail().map_err(|why| why.to_string())?;",
-)];
+/// **Re-classification trigger, and half of it has now fired.** The door DOES
+/// serve a collection as of the wave that added the two entries below, and the
+/// exemption survives it: what a collection hands over is decided by the
+/// follower's subscription, not by what it knew about the tail, so a position
+/// number buys a peer nothing it could not already ask for. The other half
+/// stands unchanged — the day a tail is answered to anything that has not
+/// completed the peer handshake, this is wrong again.
+///
+/// **Two.** The follower's collection loop reads its OWN tail to know the first
+/// position it does not hold. It answers nobody: the value leaves this process
+/// only as the `from` of an outgoing ask, and what comes back is whatever the
+/// peer's own subscription check permits. The alternative was to have the
+/// cursor read inside the collector, which would have put the raw feed behind a
+/// network-facing type instead of in the process that owns the store.
+///
+/// **Three and four.** `Serving::collected` is the peer door's scoped log
+/// reader, and `preceding` reads the one record before the batch to state the
+/// leadership it follows. Both read at `over` — the subscription's own reach —
+/// and they are the only callers of `log_records_within` in any crate this test
+/// scans. The second one earned its place here: it read at `Reach::Store` until
+/// this rule was written, for an answer a scoped read gives identically, which
+/// is how a rule acquires a hole nobody would have looked for. It is the
+/// enforced path rather than a way past one: the reach it reads with is the
+/// subscription the follower's own catalog row declares, so the permission and
+/// the filter are one value and cannot disagree. Classified here rather than
+/// left off the list, so that a SECOND caller appearing in these crates fails
+/// this test — which is the property the one-caller argument rests on.
+const CLASSIFIED: &[(&str, &str)] = &[
+    (
+        "tessari-cli/src/main.rs",
+        "let tail = store.committed_tail().map_err(|why| why.to_string())?;",
+    ),
+    (
+        "tessari-cli/src/main.rs",
+        "let held = match store.committed_tail() {",
+    ),
+    (
+        "tessari-wire/src/collection.rs",
+        ".log_records_within(over, asked.from, limit)",
+    ),
+    (
+        "tessari-wire/src/collection.rs",
+        ".log_records_within(over, before, 1)",
+    ),
+];
 
 #[test]
 fn no_serving_surface_reaches_the_raw_change_feed() {

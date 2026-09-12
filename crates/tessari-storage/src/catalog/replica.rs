@@ -33,8 +33,9 @@
 use std::collections::BTreeMap;
 
 use tessari_encoding::{NODE_ID_LEN, Roles, decode_payload};
-use tessari_types::{Number, RecordId, Value};
+use tessari_types::{DatabaseId, NamespaceId, Number, RecordId, Value};
 
+use super::authority::Reach;
 use super::definition::{field_id, field_name, number, object};
 use super::{Catalog, Level, id_key, qualify, system};
 use crate::error::{Error, Result};
@@ -44,6 +45,14 @@ const FIELD_NAME: &str = "name";
 const FIELD_ENDPOINT: &str = "endpoint";
 const FIELD_ROLES: &str = "roles";
 const FIELD_NODE: &str = "node";
+const FIELD_REPLICATES: &str = "replicates";
+const FIELD_REACH: &str = "reach";
+const FIELD_NAMESPACE: &str = "namespace";
+const FIELD_DATABASE: &str = "database";
+
+const REACH_STORE: &str = "store";
+const REACH_NAMESPACE: &str = "namespace";
+const REACH_DATABASE: &str = "database";
 
 const ENTITY: &str = "replica";
 
@@ -108,6 +117,30 @@ pub struct ReplicaDefinition {
     ///
     /// [`roles`]: Self::roles
     pub node: Option<[u8; NODE_ID_LEN]>,
+    /// How far this peer may collect this store's log, when it may at all.
+    ///
+    /// `None` is *never asked* and it is the refusal. It is deliberately not
+    /// spelled as an empty reach: a peer declared before this field existed was
+    /// never granted anything, and collapsing that into *granted nothing* would
+    /// make the two indistinguishable the moment somebody wants to tell them
+    /// apart. The field is written only when the declaration said so, so such a
+    /// row encodes back byte-identical.
+    ///
+    /// # It is one value on purpose
+    ///
+    /// This is both halves of the question the peer door asks — whether that
+    /// node may take the log at all, and how much of it it then receives. A
+    /// design in which the permission and the filter were two values has a
+    /// state in which a peer authorized for one namespace is served another,
+    /// and neither of the two calls is wrong about its own argument.
+    ///
+    /// # What granting it discloses
+    ///
+    /// The log is a stream of mutations and the identity class is in it, so a
+    /// subscription hands over the users, credential hashes and grants **inside
+    /// its reach**. [`Reach::Store`] therefore hands over every tenancy's, which
+    /// is why it is an operator's explicit word and never a default.
+    pub replicates: Option<Reach>,
 }
 
 impl ReplicaDefinition {
@@ -128,6 +161,11 @@ impl ReplicaDefinition {
         // second spelling of absent, and the reader would then have two.
         if let Some(node) = self.node {
             fields.insert(FIELD_NODE.to_owned(), Value::Uuid(node));
+        }
+        // Written only when it was stated, for the same reason and with more at
+        // stake: an absent subscription *is* the refusal.
+        if let Some(reach) = self.replicates {
+            fields.insert(FIELD_REPLICATES.to_owned(), reach_value(reach));
         }
         Value::Object(fields)
     }
@@ -153,7 +191,82 @@ impl ReplicaDefinition {
             endpoint: endpoint.clone(),
             roles: roles_in(fields)?,
             node: node_in(fields)?,
+            replicates: replicates_in(fields)?,
         })
+    }
+}
+
+/// A subscription's reach, as it is stored.
+///
+/// Tagged rather than inferred from which ids are present, because
+/// [`Reach::Store`] carries no ids at all and an object with no ids would then
+/// be the same bytes as an object somebody wrote wrong. The tag makes the whole
+/// store a thing the operator said rather than a thing the reader assumed.
+fn reach_value(reach: Reach) -> Value {
+    let (namespace, database) = reach.parts();
+    let mut fields = BTreeMap::from([(
+        FIELD_REACH.to_owned(),
+        Value::from(match reach {
+            Reach::Store => REACH_STORE,
+            Reach::Namespace(_) => REACH_NAMESPACE,
+            Reach::Database(_, _) => REACH_DATABASE,
+        }),
+    )]);
+    if let Some(namespace) = namespace {
+        fields.insert(FIELD_NAMESPACE.to_owned(), number(namespace.get()));
+    }
+    if let Some(database) = database {
+        fields.insert(FIELD_DATABASE.to_owned(), number(database.get()));
+    }
+    Value::Object(fields)
+}
+
+/// The subscription a stored definition carries.
+///
+/// Absent reads as `None` — no subscription — which is the rule every property
+/// added after the fact follows here and, uniquely among them, the rule that is
+/// also the safe direction. Anything present and not readable as a reach is
+/// **refused**: something well-formed that is not a subscription would otherwise
+/// be read as *this peer was granted nothing*, and a grant that silently
+/// evaporates is a follower that silently stops receiving.
+fn replicates_in(fields: &BTreeMap<String, Value>) -> Result<Option<Reach>> {
+    let Some(found) = fields.get(FIELD_REPLICATES) else {
+        return Ok(None);
+    };
+    let malformed = || Error::CatalogMalformed {
+        entity: ENTITY,
+        field: FIELD_REPLICATES,
+        found: "reach",
+    };
+    let Value::Object(inner) = found else {
+        return Err(Error::CatalogMalformed {
+            entity: ENTITY,
+            field: FIELD_REPLICATES,
+            found: found.type_name(),
+        });
+    };
+    let Some(Value::String(tag)) = inner.get(FIELD_REACH) else {
+        return Err(malformed());
+    };
+    let id = |field: &'static str| -> Option<u32> {
+        match inner.get(field) {
+            Some(Value::Number(Number::Integer(raw))) => u32::try_from(*raw).ok(),
+            _ => None,
+        }
+    };
+    match tag.as_str() {
+        REACH_STORE => Ok(Some(Reach::Store)),
+        REACH_NAMESPACE => id(FIELD_NAMESPACE)
+            .map(|namespace| Some(Reach::Namespace(NamespaceId::new(namespace))))
+            .ok_or_else(malformed),
+        REACH_DATABASE => match (id(FIELD_NAMESPACE), id(FIELD_DATABASE)) {
+            (Some(namespace), Some(database)) => Ok(Some(Reach::Database(
+                NamespaceId::new(namespace),
+                DatabaseId::new(database),
+            ))),
+            _ => Err(malformed()),
+        },
+        _ => Err(malformed()),
     }
 }
 
@@ -217,6 +330,7 @@ impl Catalog<'_, '_> {
         endpoint: &str,
         roles: Roles,
         node: Option<[u8; NODE_ID_LEN]>,
+        replicates: Option<Reach>,
     ) -> Result<ReplicaDefinition> {
         let qualified = qualify(Level::Replica, &[], name);
         self.reserve_name(&qualified)?;
@@ -227,6 +341,7 @@ impl Catalog<'_, '_> {
             endpoint: endpoint.to_owned(),
             roles,
             node,
+            replicates,
         };
         self.write(system::REPLICAS, id, &definition.to_value());
         self.claim_name(&qualified, id);

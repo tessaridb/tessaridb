@@ -76,13 +76,13 @@ use std::time::Duration;
 pub use crate::campaign::Standing;
 pub use crate::client::{Client, Feed};
 #[cfg(feature = "server")]
-pub use crate::collection::{Collect, Collected, Collector, NoLog, Origin};
+pub use crate::collection::{Collect, Collected, Collector, NoLog, Origin, Serving, Subscriptions};
 #[cfg(feature = "server")]
 pub use crate::credential::{fingerprint, names, presented};
 #[cfg(feature = "server")]
 pub use crate::directory::{Destination, Directory, Heard};
 #[cfg(feature = "server")]
-pub use crate::driver::{Collecting, Published, Renewing, due_in, every};
+pub use crate::driver::{Collecting, Published, Renewing, due_in, every, upstream};
 pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]
 pub use crate::grant::{Ballot, Leadership, Refused, Round, Vote, Voter};

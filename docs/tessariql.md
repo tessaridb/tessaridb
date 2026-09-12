@@ -6433,6 +6433,50 @@ for a peer — no roles means takes no writes — and no roles at all is how a n
 is drained without being stopped. One value, one meaning, and a sharp edge worth
 knowing about rather than a second spelling for absent.
 
+### What that peer may collect, and the refusal that comes with saying nothing
+
+A peer that has proved who it is at the door may still take nothing. What it may
+take is a **subscription**, written on its own row:
+
+```
+DEFINE REPLICA db_2 AT 'db-2.internal:9000'
+    NODE '3f9a1c04b7e2489db5610af3d82c7e46'
+    REPLICATES NAMESPACE prod;
+```
+
+`REPLICATES` takes the same three spellings a grant takes — `STORE`,
+`NAMESPACE <name>`, `DATABASE <namespace>.<database>` — because a subscription
+**is** a read grant over the addresses it names, and two spellings of one thing
+are two things that can come to disagree.
+
+**Without the clause a peer is subscribed to nothing, and that is the refusal
+rather than an oversight.** A node asking for records it was never granted is
+told so in one sentence naming the statement that would grant them; it is not
+answered with an empty collection, because *you may not ask* and *you are level*
+must never look alike. Every peer declared before this clause existed therefore
+receives nothing until somebody says otherwise, which is the direction a
+permission should fail in.
+
+**`REPLICATES` needs `NODE`.** A subscription grants to a machine, and the door
+looks a follower up by the id its certificate proved — so a row that names no
+node holds a grant nobody can present. The statement is refused where it is
+written rather than stored, because afterwards a row that granted to nobody and
+a row nobody granted are the same row.
+
+**What a subscription hands over is more than records.** The log is a stream of
+mutations and the identity class is in it, so a subscription carries the users,
+their credential hashes and their grants **inside its reach**. `REPLICATES
+STORE` therefore hands over every tenancy's, which is why it is something an
+operator writes deliberately and never a default. A narrower subscription
+receives every sequence with the mutations outside its reach removed — the
+follower's own schema and data arrive, and nothing else does.
+
+`INFO FOR NODE` reports it beside `roles` and `node`, in the spelling the clause
+takes, so what the report prints can be pasted into the statement that would
+correct it. `null` means subscribed to nothing — the quietest failure a cluster
+has, because every node is up, every greeting lands, and one copy simply never
+changes.
+
 A node configured by a file beside a store configured by statements is **two
 sources of truth for one node** — they agree until the first restore and then do
 not. All three need an owner.

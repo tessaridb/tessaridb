@@ -68,6 +68,15 @@ pub enum PeerFrame {
     /// collection is the answer a follower that is **level** gets. Two
     /// conditions that must never look alike do not share a frame.
     Uncollectable,
+    /// A leader saying this node is subscribed to nothing.
+    ///
+    /// Its own tag for the same reason [`Self::Uncollectable`] has one, one step
+    /// further out: *you may not ask*, *I cannot state what precedes you* and
+    /// *you are level* are three conditions with three different repairs — a
+    /// `DEFINE REPLICA`, a re-bootstrap, and nothing at all. Sharing a frame
+    /// would send an operator to the wrong one of the three, and closing the
+    /// socket instead would send them to a packet capture.
+    Unsubscribed,
 }
 
 impl PeerFrame {
@@ -85,6 +94,7 @@ impl PeerFrame {
             Self::Collect => 9,
             Self::Collected => 10,
             Self::Uncollectable => 11,
+            Self::Unsubscribed => 12,
         }
     }
 
@@ -98,6 +108,7 @@ impl PeerFrame {
             9 => Some(Self::Collect),
             10 => Some(Self::Collected),
             11 => Some(Self::Uncollectable),
+            12 => Some(Self::Unsubscribed),
             _ => None,
         }
     }

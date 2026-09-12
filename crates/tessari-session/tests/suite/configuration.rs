@@ -115,6 +115,39 @@ fn peers(report: &std::collections::BTreeMap<String, Value>) -> Vec<(String, Str
         .collect()
 }
 
+/// What each named peer is subscribed to, as the report spells it.
+fn subscriptions(
+    report: &std::collections::BTreeMap<String, Value>,
+) -> Vec<(String, Option<String>)> {
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    let Some(Value::Array(found)) = cluster.get("peers") else {
+        panic!("no peer list: {cluster:?}");
+    };
+    found
+        .iter()
+        .map(|peer| {
+            let Value::Object(fields) = peer else {
+                panic!("not a peer: {peer:?}");
+            };
+            let name = match fields.get("name") {
+                Some(Value::String(value)) => value.clone(),
+                other => panic!("name is {other:?}"),
+            };
+            let granted = match fields.get("replicates") {
+                Some(Value::String(value)) => Some(value.clone()),
+                // Present either way, and `null` is the answer rather than a
+                // missing key: *subscribed to nothing* is a state an operator
+                // has to be able to see.
+                Some(Value::Null) => None,
+                other => panic!("replicates is {other:?}"),
+            };
+            (name, granted)
+        })
+        .collect()
+}
+
 /// The id this node prints for itself.
 fn own_id(report: &std::collections::BTreeMap<String, Value>) -> String {
     match report.get("id") {
@@ -768,4 +801,103 @@ fn a_lapsed_lease_refuses_a_write_as_the_clusters_fault_and_not_the_nodes_role()
         !said.contains("does not accept writes (at"),
         "the role refusal stood in for the lease refusal: {said}"
     );
+}
+
+/// The id a `NODE` clause takes: thirty-two hex digits.
+const SOMEBODY: &str = "9f2c4e1a70bb43d5a1c6e2f480937d55";
+
+#[test]
+fn a_peer_declared_without_the_clause_is_subscribed_to_nothing() {
+    // The refusal, and it is structural rather than a rule: the row every build
+    // before this one wrote carries no subscription, so every peer declared by
+    // an earlier build receives nothing until somebody says otherwise. Absent
+    // and *explicitly none* are the same answer here only because there is no
+    // way yet to say the second — and the field is written only when stated, so
+    // the day there is one, the two are still distinguishable.
+    let store = closed(&backend());
+    let mut session = owner(&store);
+    session
+        .run("DEFINE REPLICA second AT 'there:9001';")
+        .unwrap();
+
+    assert_eq!(
+        subscriptions(&reported(&store)),
+        vec![("second".to_owned(), None)]
+    );
+}
+
+#[test]
+fn a_subscription_reads_back_in_the_spelling_that_wrote_it() {
+    // Names and not ids, and the clause's own words: what the report prints is
+    // what would be pasted back into the statement that corrects it. The same
+    // property `NODE` has, for the same reason — a setting an operator can
+    // write and cannot read back is one they cannot check before the bad day.
+    let store = closed(&backend());
+    let mut session = owner(&store);
+    session
+        .run(&format!(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
+             DEFINE REPLICA whole AT 'a:9001' NODE '{SOMEBODY}' REPLICATES STORE; \
+             DEFINE REPLICA part AT 'b:9001' NODE '{SOMEBODY}' REPLICATES NAMESPACE prod; \
+             DEFINE REPLICA sliver AT 'c:9001' NODE '{SOMEBODY}' \
+                 REPLICATES DATABASE prod.orders;"
+        ))
+        .unwrap();
+
+    assert_eq!(
+        subscriptions(&reported(&store)),
+        vec![
+            ("part".to_owned(), Some("NAMESPACE prod".to_owned())),
+            ("sliver".to_owned(), Some("DATABASE prod.orders".to_owned())),
+            ("whole".to_owned(), Some("STORE".to_owned())),
+        ],
+        "in name order, which is how the catalog answers"
+    );
+}
+
+#[test]
+fn a_subscription_on_a_row_that_names_no_node_is_refused() {
+    // A grant needs somebody to hold it. Without `NODE` the row is a peer
+    // declared by name and address — all anyone can say about a machine they
+    // have not spoken to — so the door, which looks a follower up by the id its
+    // certificate proved, would never find this grant. Refused where the span
+    // is, because afterwards a row granting to nobody and a row nobody granted
+    // are the same row.
+    let store = closed(&backend());
+    let mut session = owner(&store);
+    session.run("DEFINE NAMESPACE prod;").unwrap();
+
+    let refused = session
+        .run("DEFINE REPLICA second AT 'there:9001' REPLICATES NAMESPACE prod;")
+        .unwrap_err();
+    assert!(
+        matches!(refused, Error::SubscriptionNamesNoNode { .. }),
+        "{refused}"
+    );
+    let said = refused.to_string();
+    assert!(said.contains("NODE"), "it names the clause to add: {said}");
+
+    // And nothing was declared: the statement either declares the peer it was
+    // asked for or declares nothing, which is the order this statement already
+    // uses for a misspelled role.
+    assert!(
+        subscriptions(&reported(&store)).is_empty(),
+        "a refused declaration left a row behind"
+    );
+}
+
+#[test]
+fn a_subscription_naming_a_namespace_that_is_not_there_is_refused() {
+    // Resolved with the same reader `DEFINE USER … ON` uses, so a subscription
+    // and a grant cannot come to disagree about which namespaces exist.
+    let store = closed(&backend());
+    let mut session = owner(&store);
+
+    let refused = session
+        .run(&format!(
+            "DEFINE REPLICA second AT 'there:9001' NODE '{SOMEBODY}' REPLICATES NAMESPACE ghost;"
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("ghost"), "{refused}");
 }

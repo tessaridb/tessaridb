@@ -442,10 +442,10 @@ fn forward(db: &Db, request: &Request) -> Result<(frame::Kind, Vec<u8>)> {
     let declared = db.writable_peer().map_err(|why| Error::Refused {
         message: why.to_string(),
     })?;
-    let Some(endpoint) = declared else {
+    let Some(peer_row) = declared else {
         return Err(Error::NoWritablePeer);
     };
-    let mut peer = client::Client::connect(endpoint)?;
+    let mut peer = client::Client::connect(peer_row.endpoint)?;
     peer.relay(request)
 }
 

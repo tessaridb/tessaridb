@@ -810,7 +810,14 @@ impl Session<'_> {
     /// existing reach check for `DEFINE USER … ON prod.orders` lives; the
     /// namespace spelling checks the same thing one level up, because a
     /// namespace nobody may reach is not a namespace they may grant in.
-    fn reach_of(&self, transaction: &mut Transaction<'_>, named: &ReachRef) -> Result<Reach> {
+    /// `pub(crate)` rather than private: `DEFINE REPLICA … REPLICATES` resolves
+    /// a subscription's reach and must resolve it with the same reader a grant
+    /// uses, or the two spellings of one thing acquire two meanings.
+    pub(crate) fn reach_of(
+        &self,
+        transaction: &mut Transaction<'_>,
+        named: &ReachRef,
+    ) -> Result<Reach> {
         match named {
             ReachRef::Store => Ok(Reach::Store),
             ReachRef::Namespace(name) => {

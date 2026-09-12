@@ -804,7 +804,12 @@ impl Session<'_> {
     fn info_node(&self, transaction: &mut Transaction<'_>) -> Result<BTreeMap<String, Value>> {
         let identity = self.store.node_identity()?;
         let catalog = Catalog::new(transaction);
-        let peers = catalog.replicas()?.iter().map(described_replica).collect();
+        let peers = catalog
+            .replicas()?
+            .iter()
+            .map(|replica| described_replica(replica, &catalog))
+            .collect::<Result<Vec<_>>>()?;
+        let peers = Value::Array(peers);
         // Asked of the catalog rather than computed from `peers` above, so that
         // what is reported and what a reopen would adopt are one answer to one
         // question. `null` when nothing names this node — which is a different
@@ -882,7 +887,7 @@ impl Session<'_> {
             (
                 "cluster".to_owned(),
                 Value::Object(BTreeMap::from([
-                    ("peers".to_owned(), Value::Array(peers)),
+                    ("peers".to_owned(), peers),
                     // On the replicated side of ADR-0018's line, because that is
                     // where it comes from: `roles` above is what this machine
                     // holds and a backup would not carry, `desired` is what the
@@ -1138,8 +1143,8 @@ fn running_state(progress: Option<&Progress>) -> Value {
 /// An object rather than a bare endpoint, because a peer has a name an operator
 /// wrote and an address they may change, and a list of addresses could not say
 /// which one moved.
-fn described_replica(replica: &ReplicaDefinition) -> Value {
-    Value::Object(BTreeMap::from([
+fn described_replica(replica: &ReplicaDefinition, catalog: &Catalog<'_, '_>) -> Result<Value> {
+    Ok(Value::Object(BTreeMap::from([
         ("name".to_owned(), Value::from(replica.name.as_str())),
         (
             "endpoint".to_owned(),
@@ -1164,7 +1169,51 @@ fn described_replica(replica: &ReplicaDefinition) -> Value {
             "node".to_owned(),
             replica.node.map_or(Value::Null, Value::Uuid),
         ),
-    ]))
+        // The third of three, and the one with the quietest failure: a peer
+        // subscribed to nothing receives nothing, and a cluster in that state
+        // reports no error anywhere — every node is up, every greeting lands,
+        // and one copy simply never changes. Written back in the spelling the
+        // clause takes, so what this prints can be pasted into the statement
+        // that would correct it.
+        (
+            "replicates".to_owned(),
+            match replica.replicates {
+                None => Value::Null,
+                Some(reach) => Value::from(spelled_reach(reach, catalog)?.as_str()),
+            },
+        ),
+    ])))
+}
+
+/// A subscription's reach, written the way the clause writes it.
+///
+/// Names and not ids: an id is a number the operator never typed and cannot act
+/// on, and the whole reason to report a setting is that somebody can compare it
+/// against what they meant. A name the catalog has lost is reported as the id it
+/// could not resolve rather than omitted — a row pointing at a namespace that no
+/// longer exists is precisely the state worth seeing.
+fn spelled_reach(reach: Reach, catalog: &Catalog<'_, '_>) -> Result<String> {
+    Ok(match reach {
+        Reach::Store => "STORE".to_owned(),
+        Reach::Namespace(namespace) => {
+            format!("NAMESPACE {}", namespace_named(namespace, catalog)?)
+        }
+        Reach::Database(namespace, database) => {
+            let held = catalog
+                .databases_in(namespace)?
+                .into_iter()
+                .find(|found| found.id == database)
+                .map_or_else(|| database.get().to_string(), |found| found.name);
+            format!("DATABASE {}.{held}", namespace_named(namespace, catalog)?)
+        }
+    })
+}
+
+/// One namespace's name, or its id when the catalog no longer holds it.
+fn namespace_named(namespace: NamespaceId, catalog: &Catalog<'_, '_>) -> Result<String> {
+    Ok(catalog
+        .namespace(namespace)?
+        .map_or_else(|| namespace.get().to_string(), |found| found.name))
 }
 
 /// One follower, as the leader has experienced it.

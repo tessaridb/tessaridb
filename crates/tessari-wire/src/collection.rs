@@ -34,7 +34,7 @@ use std::net::SocketAddr;
 use rustls::pki_types::CertificateDer;
 
 use tessari_encoding::{LogRecord, NODE_ID_LEN, StoreValue};
-use tessari_storage::{Currency, Reach, Store};
+use tessari_storage::{Catalog, Currency, Reach, Store};
 use tessari_types::{Epoch, Sequence};
 
 use crate::error::{Error, Result};
@@ -205,18 +205,108 @@ impl Origin for NoLog {
     }
 }
 
-impl Origin for Store {
+/// Who may collect this store's log, and how much of it.
+///
+/// A trait rather than a catalog read inlined into the door, for the reason
+/// [`NoLog`] exists: a test about the transfer would otherwise have to build a
+/// catalog to prove that a batch applies in order. The production answer has one
+/// implementation, on [`Store`], and it is the catalog — so the door cannot be
+/// given a second opinion by a call site.
+pub trait Subscriptions: core::fmt::Debug {
+    /// How far `follower` may collect, or `None` when it may not at all.
+    ///
+    /// `None` is the refusal and it is the default: it is what a peer nobody
+    /// subscribed answers, and what every peer declared before subscriptions
+    /// existed answers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Refused`] when the answer cannot be read.
+    fn granted(&self, follower: [u8; NODE_ID_LEN]) -> Result<Option<Reach>>;
+}
+
+/// The catalog's answer, which is the only one that governs.
+///
+/// Looked up by the id the peer certificate proved rather than by the name an
+/// operator wrote: a name is a word every node can read, so a subscription
+/// written against one would be held by whichever node answered to it. A row
+/// with no `NODE` therefore matches nobody, which is what makes every peer
+/// declaration written before this existed grant nothing.
+impl Subscriptions for Store {
+    fn granted(&self, follower: [u8; NODE_ID_LEN]) -> Result<Option<Reach>> {
+        let mut transaction = self.begin().map_err(refused)?;
+        let declared = Catalog::new(&mut transaction).replicas();
+        transaction.rollback();
+        Ok(declared
+            .map_err(refused)?
+            .into_iter()
+            .find(|row| row.node == Some(follower))
+            .and_then(|row| row.replicates))
+    }
+}
+
+/// A log, served to exactly the peers something says may have it.
+///
+/// # Why the reach is not an argument on the wire
+///
+/// The subscription answers both halves of the question — whether this node may
+/// take the log at all, and how much of it it then receives — and it answers
+/// them as **one value**. A design in which the follower named a reach and the
+/// door checked it against a grant has a state in which a peer authorized for
+/// one namespace is served another, with neither call wrong about its own
+/// argument. There is no such state here, because only one reach is ever named.
+///
+/// # Why there is no unsubscribed way to serve a log
+///
+/// Until this wave the implementation of [`Origin`] was on [`Store`] itself and
+/// served [`Reach::Store`] unconditionally, which is why no door was ever given
+/// one: it would hand every proven peer every tenancy's records, credential
+/// hashes included. That implementation is gone rather than kept beside this
+/// one, so default-deny is a property of what this crate can express rather
+/// than a rule a future wiring has to remember.
+#[derive(Debug)]
+pub struct Serving<'a> {
+    /// The log itself.
+    log: &'a Store,
+    /// Who may have it.
+    granted: &'a dyn Subscriptions,
+}
+
+impl<'a> Serving<'a> {
+    /// Serve `log` to the peers `log`'s own catalog subscribed.
+    #[must_use]
+    pub fn declared(log: &'a Store) -> Self {
+        Self { log, granted: log }
+    }
+
+    /// Serve `log`, asking `granted` who may have it.
+    ///
+    /// The seam a test uses, and the reason it is here rather than in a test
+    /// module: a test about whether a batch applies in order should not have to
+    /// declare a peer to find out.
+    #[must_use]
+    pub fn asking(log: &'a Store, granted: &'a dyn Subscriptions) -> Self {
+        Self { log, granted }
+    }
+}
+
+impl Origin for Serving<'_> {
     fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
-        let previous = preceding(self, asked.from)?;
+        let Some(over) = self.granted.granted(follower)? else {
+            // Not `Uncollectable`: *you may not ask* and *I cannot state what
+            // precedes your position* send an operator to two different people,
+            // one holding a `DEFINE REPLICA` and the other a backup.
+            return Err(Error::Unsubscribed);
+        };
+        let previous = preceding(self.log, over, asked.from)?;
         // A `u64` from a peer against a `usize` here: on a platform where the
         // two differ the ask is larger than anything this node could answer, so
         // the whole log is the honest ceiling.
         let limit = usize::try_from(asked.limit).unwrap_or(usize::MAX);
         let records = self
-            .log_records_within(Reach::Store, asked.from, limit)
-            .map_err(|why| Error::Refused {
-                message: why.to_string(),
-            })?;
+            .log
+            .log_records_within(over, asked.from, limit)
+            .map_err(refused)?;
         // What the follower now holds: the last position it was handed, or —
         // when it was handed nothing — the one it told us it was at. The same
         // rule the leader's own door uses, because it is the same event.
@@ -224,7 +314,7 @@ impl Origin for Store {
             || Sequence::new(asked.from.get().saturating_sub(1)),
             |(sequence, _)| *sequence,
         );
-        self.follower_served(follower, reached);
+        self.log.follower_served(follower, reached);
         Ok(Collected { previous, records })
     }
 }
@@ -234,7 +324,7 @@ impl Origin for Store {
 /// # Errors
 ///
 /// Returns [`Error::Uncollectable`] when this node holds nothing at `from - 1`.
-fn preceding(store: &Store, from: Sequence) -> Result<Epoch> {
+fn preceding(store: &Store, over: Reach, from: Sequence) -> Result<Epoch> {
     if from.get() <= 1 {
         // Nothing precedes the first position, and a store that never elected
         // anybody writes exactly this epoch — so the answer is the same value a
@@ -242,8 +332,14 @@ fn preceding(store: &Store, from: Sequence) -> Result<Epoch> {
         return Ok(Epoch::ZERO);
     }
     let before = Sequence::new(from.get().saturating_sub(1));
+    // At the follower's own reach and not the store's, which costs the answer
+    // nothing: a scoped read keeps every sequence and removes only the mutations
+    // outside the reach, so the record at this position and the epoch it carries
+    // are the same value either way. Reading wider bought exactly the disclosure
+    // the subscription exists to prevent, in the one place a reach was not
+    // threaded through — which is how a rule acquires a hole.
     let held = store
-        .log_records_within(Reach::Store, before, 1)
+        .log_records_within(over, before, 1)
         .map_err(|why| Error::Refused {
             message: why.to_string(),
         })?;
@@ -366,7 +462,7 @@ fn refused(why: tessari_storage::Error) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{Collect, Collected, Collector};
+    use super::{Collect, Collected, Collector, Reach, Result, Serving};
     use crate::error::Error;
     use crate::link::tests::{Authority, THERE, hello, settled};
     use crate::link::{Answered, Ask, Peers, call};
@@ -381,6 +477,22 @@ mod tests {
 
     /// The node every door in this module belongs to.
     const LEADER: [u8; NODE_ID_LEN] = [70_u8; NODE_ID_LEN];
+
+    /// A cluster in which everybody is subscribed to everything.
+    ///
+    /// The transfer is what this module's tests are about — that a batch
+    /// applies in order, that a chain refuses a substituted record, that a short
+    /// answer means level — and every one of them would otherwise have to
+    /// declare a peer in a catalog to say so. What the catalog actually answers
+    /// is tested where it is decided, against a real declaration.
+    #[derive(Debug)]
+    struct Everything;
+
+    impl super::Subscriptions for Everything {
+        fn granted(&self, _follower: [u8; NODE_ID_LEN]) -> Result<Option<Reach>> {
+            Ok(Some(Reach::Store))
+        }
+    }
 
     /// A store holding one empty record per epoch named, at 1, 2, 3…
     ///
@@ -406,6 +518,52 @@ mod tests {
         db
     }
 
+    /// A leader whose catalog actually grants, built by running statements.
+    ///
+    /// The other helper in this module applies log records directly, which is
+    /// the right shape for a test about the transfer and the wrong one here: a
+    /// subscription is a catalog record, so the only honest way to have one is
+    /// to have declared it.
+    fn granting(clause: &str) -> Arc<Db> {
+        let db = Arc::new(Db::in_memory().expect("an in-memory store"));
+        db.session()
+            .run(&format!(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
+                 USE DATABASE orders; DEFINE COLLECTION users; \
+                 CREATE users:1 = {{ name: 'ada' }}; \
+                 DEFINE NAMESPACE other; USE NAMESPACE other; DEFINE DATABASE ledger; \
+                 USE DATABASE ledger; DEFINE COLLECTION secrets; \
+                 CREATE secrets:1 = {{ word: 'shibboleth' }}; \
+                 DEFINE REPLICA follower AT '127.0.0.1:1' NODE '{}'{clause};",
+                spelled(THERE)
+            ))
+            .expect("the leader's own statements run");
+        db
+    }
+
+    /// A node id as a `NODE` clause takes it: thirty-two hex digits.
+    fn spelled(node: [u8; NODE_ID_LEN]) -> String {
+        node.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    /// A peer door for `LEADER` serving one connection, asking `db`'s own
+    /// catalog who may collect.
+    fn declaring(authority: &Authority, db: &Arc<Db>) -> (SocketAddr, JoinHandle<()>) {
+        let peers = Peers::bind(
+            "127.0.0.1:0",
+            authority.issue(LEADER, Purpose::Peer),
+            &authority.der(),
+        )
+        .expect("a peer door on loopback");
+        let address = peers.address().expect("the door's address");
+        let mine = hello(LEADER);
+        let db = Arc::clone(db);
+        let door = std::thread::spawn(move || {
+            drop(peers.greet(&mine, &mut settled(), &Serving::declared(db.store())));
+        });
+        (address, door)
+    }
+
     /// A peer door for `LEADER` that serves `rounds` connections out of `db`.
     fn serving(authority: &Authority, db: &Arc<Db>, rounds: usize) -> (SocketAddr, JoinHandle<()>) {
         let peers = Peers::bind(
@@ -419,7 +577,11 @@ mod tests {
         let db = Arc::clone(db);
         let door = std::thread::spawn(move || {
             for _ in 0..rounds {
-                drop(peers.greet(&mine, &mut settled(), db.store()));
+                drop(peers.greet(
+                    &mine,
+                    &mut settled(),
+                    &Serving::asking(db.store(), &Everything),
+                ));
             }
         });
         (address, door)
@@ -636,6 +798,135 @@ mod tests {
             peer: (LEADER, address),
             limit,
         }
+    }
+
+    #[test]
+    fn a_node_nobody_subscribed_is_refused_the_log_it_asks_for() {
+        // C-37's own cheapest decisive test, and the low-privilege probe the
+        // access-control discipline asks for: a node with a credential this
+        // cluster issued, proven at the door, asking directly over the protocol
+        // with nothing else in the loop.
+        let authority = Authority::new();
+        let leader = granting("");
+        let (address, door) = declaring(&authority, &leader);
+
+        let refused = collect(&authority, address, 1, 64)
+            .expect_err("a peer nobody subscribed may not take the log");
+        door.join().expect("the door's thread");
+
+        // The refusal it was, not a closed socket: a node whose connection
+        // ended mid-frame would be looking for a network fault instead of
+        // reading the one sentence that says what to do.
+        assert!(
+            matches!(refused, Error::Unsubscribed),
+            "a refusal, and not the same one a stranded follower gets: {refused}"
+        );
+        let said = refused.to_string();
+        assert!(
+            said.contains("DEFINE REPLICA") && said.contains("REPLICATES"),
+            "and it names the statement that grants one: {said}"
+        );
+    }
+
+    #[test]
+    fn a_subscriber_receives_its_namespace_and_not_the_one_beside_it() {
+        let authority = Authority::new();
+        let leader = granting(" REPLICATES NAMESPACE prod");
+        let (address, door) = declaring(&authority, &leader);
+
+        let follower = Db::in_memory().expect("an in-memory store");
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let reached = collector(&mine, &der, &said, address, 1024)
+            .collect(follower.store(), Sequence::new(1))
+            .expect("a subscribed peer collects");
+        assert!(reached.get() > 1, "the leader had a log to hand over");
+        door.join().expect("the door's thread");
+
+        // Read back through a session rather than through the log, because what
+        // the subscription is *for* is which records exist on the follower — and
+        // a log comparison would pass on a build that transferred the bytes and
+        // applied none of them.
+        let mut session = follower.session();
+        let held = session
+            .run("USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users;")
+            .expect("the subscribed namespace arrived");
+        assert_eq!(held.len(), 3, "three statements, three outcomes");
+
+        let missing = session
+            .run("USE NAMESPACE other; USE DATABASE ledger; SELECT * FROM secrets;")
+            .expect_err("the namespace beside the subscription must not have arrived");
+        assert!(
+            missing.to_string().contains("no namespace named \"other\""),
+            "the namespace beside the subscription never arrived, and the \
+             refusal names it: {missing}"
+        );
+    }
+
+    #[test]
+    fn a_bounded_read_this_node_could_not_answer_becomes_answerable_once_it_collects() {
+        // What the whole wave is for, stated as the one observable that changed.
+        // Before this build a follower's `current_as_of` could only ever be
+        // `None` — there was no code path by which a node that may not write
+        // became level with anything — so every bounded read on every follower
+        // was refused, and *this node is too far behind* could not be told apart
+        // from *this node has never heard from anybody*.
+        let authority = Authority::new();
+        let leader = granting(" REPLICATES STORE");
+        let (address, door) = declaring(&authority, &leader);
+
+        let follower = Db::in_memory().expect("an in-memory store");
+        // First, and it is not interchangeable with the lines that follow: a
+        // node that may not write may not define anything either, so the role
+        // has to be taken before there is a schema — which here there never is,
+        // because the schema arrives by collection.
+        follower
+            .session()
+            .run("DEFINE NODE ROLES serving;")
+            .expect("a node may say what it is for");
+        assert_eq!(
+            follower
+                .store()
+                .current_as_of()
+                .expect("a store can say how old its copy is"),
+            None,
+            "a node that has collected nothing has no known age, which is \
+             outside every bound rather than inside the ones nobody measured"
+        );
+
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let reached = collector(&mine, &der, &said, address, 1024)
+            .collect(follower.store(), Sequence::new(1))
+            .expect("a subscribed peer collects");
+        door.join().expect("the door's thread");
+        assert!(reached.get() > 1, "the leader had a log to hand over");
+
+        // A short answer is the one moment a follower can observe that its copy
+        // was current: the peer served fewer than the limit, so it had no more.
+        let age = follower
+            .store()
+            .current_as_of()
+            .expect("a store can say how old its copy is")
+            .expect("a follower that collected to the end knows how old it is");
+        assert!(
+            age < std::time::Duration::from_secs(tessari_constants::STALENESS_FLOOR_SECONDS),
+            "a copy that has just become level is inside the tightest bound the \
+             API admits, and this one reads {age:?}"
+        );
+
+        // And the read that could not be answered before is answered now, by
+        // this node, without leaving it.
+        let answered = follower
+            .session()
+            .run(&format!(
+                "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users STALENESS {}s;",
+                tessari_constants::STALENESS_FLOOR_SECONDS
+            ))
+            .expect("a copy inside the bound answers the read here");
+        assert_eq!(answered.len(), 3, "three statements, three outcomes");
     }
 
     #[test]
