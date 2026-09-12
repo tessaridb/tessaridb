@@ -76,6 +76,13 @@ const LIFTED: &str = "SELECT * FROM guarded WHERE n > 0 WITHOUT SCAN GUARD;";
 /// The same predicate over a table where no index was ever declared.
 const UNINDEXED: &str = "SELECT * FROM mirror WHERE n > 0;";
 
+/// The guarded table's own scan, read before its index exists.
+///
+/// Textually identical to [`GUARDED`] and named separately because the two are
+/// different measurements: this one runs while nothing has been indexed, and the
+/// only event between it and its twin is the index build.
+const BEFORE_INDEX: &str = "SELECT * FROM guarded WHERE n > 0;";
+
 /// What the scan guard is worth on a read that selects the whole table.
 ///
 /// # Errors
@@ -105,6 +112,22 @@ pub(crate) fn guard(db: &Db) -> Failable<Vec<Report>> {
         ))?;
     }
     let mut reports = vec![written.summarise("guard-write")];
+
+    // The same table's scan while no index exists anywhere in the store. This is
+    // the one comparison that cannot be confounded by layout: it is one table
+    // against itself, and the index build is the only event between the two
+    // readings. A drop-and-re-measure would leave tombstones behind and answer
+    // ambiguously in exactly the direction the question cares about.
+    session.run(BEFORE_INDEX)?;
+    let mut before = Samples::with_capacity(QUERIES);
+    let mut before_path = None;
+    for _ in 0..QUERIES {
+        let started = Instant::now();
+        let outcome = session.run(BEFORE_INDEX)?;
+        before.push(started.elapsed());
+        before_path = served_by(&outcome);
+    }
+    let unindexed_answer = answered(&session.run(BEFORE_INDEX)?);
 
     let mut built = Samples::with_capacity(1);
     let started = Instant::now();
@@ -143,6 +166,7 @@ pub(crate) fn guard(db: &Db) -> Failable<Vec<Report>> {
         mirrored_path = served_by(&outcome);
     }
 
+    let untouched = before.summarise("guard-before-any-index");
     let under_guard = guarded.summarise("guard-veto-raised");
     let without_guard = lifted.summarise("guard-lifted");
     let no_index = mirrored.summarise("guard-mirror-unindexed");
@@ -153,7 +177,8 @@ pub(crate) fn guard(db: &Db) -> Failable<Vec<Report>> {
     reports.push(Report::measurement(
         "  served by",
         &format!(
-            "veto raised: {} | lifted: {} | mirror: {}",
+            "before any index: {} | veto raised: {} | lifted: {} | mirror: {}",
+            before_path.unwrap_or("nothing"),
             guarded_path.unwrap_or("nothing"),
             lifted_path.unwrap_or("nothing"),
             mirrored_path.unwrap_or("nothing")
@@ -171,6 +196,20 @@ pub(crate) fn guard(db: &Db) -> Failable<Vec<Report>> {
         &format!(
             "{} — the shape the original measurement was taken in",
             ratio(without_guard.p50, no_index.p50)
+        ),
+    ));
+    reports.push(Report::measurement(
+        "  veto raised / before any index",
+        &format!(
+            "{} — one table against itself; what an index the planner REFUSES still costs",
+            ratio(under_guard.p50, untouched.p50)
+        ),
+    ));
+    reports.push(Report::measurement(
+        "  before any index / mirror",
+        &format!(
+            "{} — the two tables before either carries an index; far from 1 is a fixture defect",
+            ratio(untouched.p50, no_index.p50)
         ),
     ));
     reports.push(Report::measurement(
@@ -202,6 +241,14 @@ pub(crate) fn guard(db: &Db) -> Failable<Vec<Report>> {
         },
     ));
     reports.push(Report::measurement(
+        "  the one table across its index build",
+        if unindexed_answer == by_veto {
+            "identical, compared record by record"
+        } else {
+            "DIFFER — declaring an index changed what a scan of the table answers"
+        },
+    ));
+    reports.push(Report::measurement(
         "  the mirror",
         if by_mirror.len() == by_veto.len() {
             "same count; identities name a different table, so they are not compared"
@@ -210,6 +257,7 @@ pub(crate) fn guard(db: &Db) -> Failable<Vec<Report>> {
         },
     ));
 
+    reports.push(untouched);
     reports.push(under_guard);
     reports.push(without_guard);
     reports.push(no_index);
