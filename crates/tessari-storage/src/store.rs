@@ -325,11 +325,12 @@ impl Store {
     /// the node's own reconcile point: it is the moment the process has a
     /// catalog to read and has not yet answered anybody, so the role it serves
     /// under is the role it settled on rather than one that changed underneath a
-    /// request. A node converging **while running** is a watch over a replicated
-    /// record, and that is the wire this goal has not built yet — so the window
-    /// in which desired and effective differ is, for now, exactly the span
-    /// between a declaration and the next open. That window is the thing S5.2
-    /// asks to be observable, and it is.
+    /// request. A node converging **while running** would need a watch over the
+    /// replicated row, and nothing watches it: the peer cadences pull records
+    /// and exchange greetings, but no path re-adopts a role after open. So the
+    /// window in which desired and effective differ is, for now, exactly the
+    /// span between a declaration and the next open. That window is the thing
+    /// S5.2 asks to be observable, and it is.
     ///
     /// It follows that `DEFINE NODE ROLES` on a **bound** node is an override
     /// the next open discards. That is C-19's decision showing through rather

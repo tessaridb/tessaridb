@@ -288,11 +288,11 @@ pub const GREETING_SECONDS: u64 = 10;
 ///
 /// Unit: seconds.
 ///
-/// Nothing exchanges anything yet — the inter-node link is a design note and the
-/// decision that gates it is the owner's. This is a **declaration** rather than
-/// a measurement, which is the same thing MongoDB's `heartbeatFrequencyMS` is:
-/// the number the floor below is derived from is configured, never observed.
-/// When the control round ships, this becomes its period.
+/// This is the period a node greets its peers on: the serving process runs a
+/// cadence at exactly this interval, dialling every peer the catalog declares.
+/// It is a **declaration** rather than a measurement, which is the same thing
+/// MongoDB's `heartbeatFrequencyMS` is: the number the floor below is derived
+/// from is configured, never observed.
 ///
 /// Ten seconds for the reason [`GREETING_SECONDS`] is ten: it is short enough
 /// that a failure is noticed while somebody still cares, and long enough that a
