@@ -207,6 +207,69 @@ pub enum Error {
         fingerprint: String,
     },
 
+    /// A node told some of what a cluster takes, and not the rest.
+    ///
+    /// Refused at start rather than carried, for the reason
+    /// `bootstrap::first_user` already refuses a misconfigured credential: a node
+    /// that came up because nobody checked is a node answering on a network in a
+    /// state its operator did not ask for. Half a cluster configuration is that
+    /// same failure — it would leave a node believing it has peers it cannot
+    /// reach, or cannot prove itself to, while looking exactly like one that
+    /// started correctly.
+    #[error("this node was told {given} but not {missing}; half a cluster is not a configuration")]
+    ClusterHalfConfigured {
+        /// What was supplied, in the order the parts are named.
+        given: String,
+        /// What was left out.
+        missing: String,
+    },
+
+    /// A file a cluster configuration named could not be read.
+    ///
+    /// Names the path and the operating system's own words, and never the
+    /// contents — one of these files is a private key, and a refusal that quotes
+    /// what it failed to parse is a refusal that puts the key in a log.
+    #[error("{part} could not be read from {path}: {reason}")]
+    CredentialUnreadable {
+        /// Which of the parts this was.
+        part: &'static str,
+        /// The path as the operator gave it.
+        path: String,
+        /// What the operating system said.
+        reason: String,
+    },
+
+    /// A file was read, and held nothing of the kind it was named for.
+    ///
+    /// Distinct from [`Self::CredentialUnreadable`]: the file exists and was
+    /// readable, so the operator is looking for a content problem rather than a
+    /// path problem, and saying "not found" would send them to the wrong one.
+    #[error("{part} at {path} held no {wanted}")]
+    CredentialEmpty {
+        /// Which of the parts this was.
+        part: &'static str,
+        /// The path as the operator gave it.
+        path: String,
+        /// What was looked for and not found.
+        wanted: &'static str,
+    },
+
+    /// An authority file holding some number of certificates other than one.
+    ///
+    /// `Peers::bind` trusts **exactly one** root, so a file carrying two would
+    /// have one of them silently ignored — and the ignored one is as likely to
+    /// be the new authority during a rotation as the old. A trust gap that
+    /// reports success is worth refusing over.
+    #[error(
+        "the cluster authority at {path} holds {found} certificates; a cluster is issued by exactly one"
+    )]
+    AuthorityNotSingle {
+        /// The path as the operator gave it.
+        path: String,
+        /// How many were found.
+        found: usize,
+    },
+
     /// A role set carrying a bit this build does not assign.
     ///
     /// Not a malformed frame — the body is exactly the shape a greeting takes.

@@ -59,6 +59,8 @@ mod frame;
 #[cfg(feature = "server")]
 mod grant;
 #[cfg(feature = "server")]
+mod joining;
+#[cfg(feature = "server")]
 mod link;
 mod message;
 #[cfg(feature = "server")]
@@ -84,6 +86,8 @@ pub use crate::driver::{Collecting, Published, Renewing, due_in, every};
 pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]
 pub use crate::grant::{Ballot, Leadership, Refused, Round, Vote, Voter};
+#[cfg(feature = "server")]
+pub use crate::joining::{Joining, Told};
 #[cfg(feature = "server")]
 pub use crate::link::{Answered, Ask, Credential, Met, Peers, call};
 #[cfg(feature = "server")]
