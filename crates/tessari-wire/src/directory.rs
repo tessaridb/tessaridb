@@ -107,7 +107,7 @@ pub enum Destination {
 /// Keyed by endpoint; see the module header for why that and not the node id.
 /// A second greeting from the same address replaces the first, because the point
 /// of the record is the *latest* thing that address said.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Directory {
     seen: BTreeMap<String, Heard>,
 }
