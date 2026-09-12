@@ -387,7 +387,7 @@ fn hear(link: &mut impl std::io::Read) -> Result<Hello> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{Answered, Ask, Credential, Met, Peers, Result, call};
-    use crate::collection::{Collect, Collected, Origin};
+    use crate::collection::{Collect, NoLog};
     use crate::credential::names;
     use crate::error::Error;
     use crate::grant::{Ballot, Refused, Round, Vote, Voter};
@@ -440,24 +440,6 @@ pub(crate) mod tests {
                 chain: vec![CertificateDer::from(leaf.der().to_vec())],
                 key: PrivateKeyDer::try_from(key.serialize_der()).expect("a usable leaf key"),
             }
-        }
-    }
-
-    /// A door with no log behind it.
-    ///
-    /// Every test in this module is about the handshake, the ballot or the
-    /// refusal, and none of them asks for a record — so making them build a
-    /// storage engine would put an engine in the path of a test about a
-    /// greeting. It refuses rather than answering empty, because *nothing to
-    /// give* and *you are level* must never look alike (see
-    /// [`crate::Error::Uncollectable`]).
-    pub(crate) struct NoLog;
-
-    impl Origin for NoLog {
-        fn collected(&self, _: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
-            Err(Error::Uncollectable {
-                from: asked.from.get(),
-            })
         }
     }
 
@@ -538,6 +520,45 @@ pub(crate) mod tests {
         assert_eq!(heard.said.tail, Sequence::new(9));
         assert_eq!(heard.voted, None, "nobody asked for anything");
         assert_eq!(theirs.node, HERE);
+    }
+
+    #[test]
+    fn a_door_with_no_log_refuses_a_collection_as_a_refusal_and_not_by_hanging_up() {
+        let authority = Authority::new();
+        let (peers, mine) = door(&authority);
+        let address = peers.address().expect("the door's address");
+        let listening = std::thread::spawn(move || peers.greet(&mine, &mut settled(), &NoLog));
+
+        let failure = call(
+            address,
+            authority.issue(THERE, Purpose::Peer),
+            &authority.der(),
+            HERE,
+            &hello(THERE),
+            Ask::Records(Collect {
+                from: Sequence::new(7),
+                limit: 16,
+            }),
+        )
+        .expect_err("a door with no log behind it has nothing to hand over");
+
+        // The position it asked from, handed back. That is what tells the
+        // follower *not from here* apart from *you are level*, and it is the
+        // whole reason this is `Uncollectable` and not a dropped socket: a
+        // conversation that ends mid-frame reaches whoever reads it as a network
+        // fault and sends them to a packet capture.
+        assert!(
+            matches!(failure, Error::Uncollectable { from: 7 }),
+            "{failure}"
+        );
+        // And the door itself finished the conversation rather than failing:
+        // it served the greeting, refused the ask, and closed in order.
+        let heard = listening
+            .join()
+            .expect("the door's thread")
+            .expect("a refused collection is a served connection, not a failed one");
+        assert_eq!(heard.said.node, THERE);
+        assert_eq!(heard.voted, None, "a collection is not a vote");
     }
 
     #[test]

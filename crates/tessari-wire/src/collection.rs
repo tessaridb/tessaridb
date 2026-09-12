@@ -171,6 +171,40 @@ pub trait Origin {
     fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected>;
 }
 
+/// A door with no log behind it.
+///
+/// Two callers, one reason. **The peer door** answers three things today: who is
+/// there, how a ballot goes, and how far a log reaches. The fourth — handing
+/// over the records themselves — is an *authorization* question and not a wiring
+/// one: a follower's reach is the one its subscription grant gave it
+/// (`Reach::Namespace` for a selective follower), while [`Origin`] as
+/// implemented for [`Store`] answers at `Reach::Store`, which is every tenant's
+/// records regardless of what any grant said. Wiring that into the door would
+/// hand every proven peer the whole store, so until the grant reaches the door
+/// the door serves no log. **A test about a handshake** wants the same thing for
+/// a cheaper reason: making it build a storage engine would put an engine in the
+/// path of a test about a greeting.
+///
+/// It refuses rather than answering empty, because *nothing to give* and *you
+/// are level* must never look alike (see [`Error::Uncollectable`]) — and it
+/// refuses as `Uncollectable` rather than by ending the conversation, which is
+/// the difference between a follower learning *not from here* and a follower
+/// watching its socket close mid-frame and reading it as a network fault.
+///
+/// This goes the day the subscription grant reaches the peer door. It is not a
+/// placeholder for that work: it is the honest answer while the door cannot ask
+/// the question.
+#[derive(Debug, Clone, Copy)]
+pub struct NoLog;
+
+impl Origin for NoLog {
+    fn collected(&self, _follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
+        Err(Error::Uncollectable {
+            from: asked.from.get(),
+        })
+    }
+}
+
 impl Origin for Store {
     fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
         let previous = preceding(self, asked.from)?;

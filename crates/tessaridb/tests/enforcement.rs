@@ -462,6 +462,38 @@ const RAW_FEED: &[&str] = &[
     ".committed_tail(",
 ];
 
+/// Call sites classified as exempt, by file and by the EXACT line.
+///
+/// One entry. The peer door's greeting says how far this node's log reaches,
+/// which is a field of the handshake frame — and `committed_tail` is the only
+/// call that answers it.
+///
+/// **Classified exempt, and on what it discloses rather than on who calls it.**
+/// It returns a `Sequence`: one position, no record, no field, no value from any
+/// tenant. The three calls beside it on the list — `poll`, `changes_since`,
+/// `subscribe` — hand back RECORDS, which is what the whole assertion is about:
+/// *reaching past `feed::follow` streams records past every grant in the store*.
+/// A position number streams nothing, and a peer learns it anyway the moment it
+/// collects.
+///
+/// **It is also disclosed to a stranger by nobody.** The greeting is written
+/// only after a mutually authenticated handshake against a certificate this
+/// cluster issued for the peer link; a connection that proves nothing never
+/// reaches a frame.
+///
+/// **Matched on the exact line for a reason.** Any OTHER use of
+/// `committed_tail` in that file still fails this test, and editing this line
+/// withdraws its exemption — so the classification cannot drift away from the
+/// code it classified without somebody noticing.
+///
+/// **Re-classification trigger:** the day the peer door serves a COLLECTION, or
+/// the day a tail is answered to anything that has not completed the peer
+/// handshake. Neither is true today.
+const CLASSIFIED: &[(&str, &str)] = &[(
+    "tessari-cli/src/main.rs",
+    "let tail = store.committed_tail().map_err(|why| why.to_string())?;",
+)];
+
 #[test]
 fn no_serving_surface_reaches_the_raw_change_feed() {
     let mut reached = Vec::new();
@@ -473,9 +505,16 @@ fn no_serving_surface_reaches_the_raw_change_feed() {
                 if line.trim_start().starts_with("//") {
                     continue;
                 }
+                let shown = path.display().to_string();
+                let classified = CLASSIFIED
+                    .iter()
+                    .any(|(file, exact)| shown.ends_with(file) && line.trim() == *exact);
+                if classified {
+                    continue;
+                }
                 for call in RAW_FEED {
                     if line.contains(call) {
-                        reached.push(format!("{}:{} {}", path.display(), number + 1, line.trim()));
+                        reached.push(format!("{shown}:{} {}", number + 1, line.trim()));
                     }
                 }
             }

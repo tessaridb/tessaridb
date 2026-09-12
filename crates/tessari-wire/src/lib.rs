@@ -76,7 +76,7 @@ use std::time::Duration;
 pub use crate::campaign::Standing;
 pub use crate::client::{Client, Feed};
 #[cfg(feature = "server")]
-pub use crate::collection::{Collect, Collected, Collector, Origin};
+pub use crate::collection::{Collect, Collected, Collector, NoLog, Origin};
 #[cfg(feature = "server")]
 pub use crate::credential::{fingerprint, names, presented};
 #[cfg(feature = "server")]

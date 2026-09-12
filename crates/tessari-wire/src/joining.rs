@@ -5,8 +5,9 @@
 //! A node's identity and roles come from its own store — `NodeIdentity` is
 //! generated on first open and stable across restarts. Its declared membership
 //! comes from the catalog, where `ReplicaDefinition` already keeps it. What
-//! arrives here is the third thing: the **peer credential**, the **cluster
-//! authority** and the **seed addresses** to dial for a first contact.
+//! arrives here is the rest: the **peer credential**, the **cluster
+//! authority**, the **address this node's own door binds** and the **seed
+//! addresses** to dial for a first contact.
 //!
 //! Those three are configuration because the alternative fails twice. It fails
 //! on bootstrap order — the credential needed to *reach* a peer would be read
@@ -70,14 +71,23 @@ pub struct Told {
     pub key: PathBuf,
     /// The PEM file holding the one certificate every peer is issued by.
     pub authority: PathBuf,
+    /// Where this node's own peer door binds.
+    ///
+    /// A part like the other four, with no default, because there is no port
+    /// this engine claims — see `link.rs`, which takes an address for the same
+    /// reason. It is also the one part of a cluster configuration whose default
+    /// would have a security consequence: defaulted wide it is a door the
+    /// operator did not know they opened, and defaulted to loopback it is a
+    /// cluster that cannot form. An operator told to name it names it.
+    pub door: String,
     /// Addresses to dial for a first contact.
     pub seeds: Vec<String>,
 }
 
 impl Told {
-    /// What four flags amount to: all of it, none of it, or a refusal.
+    /// What five flags amount to: all of it, none of it, or a refusal.
     ///
-    /// A seed list is a part like the other three, and an empty one is absence
+    /// A seed list is a part like the others, and an empty one is absence
     /// rather than emptiness — a cluster runs three to seven voting members, so
     /// one address is a single point of failure at the moment a node most needs
     /// to succeed, and none is not a configuration at all.
@@ -90,12 +100,14 @@ impl Told {
         chain: Option<PathBuf>,
         key: Option<PathBuf>,
         authority: Option<PathBuf>,
+        door: Option<String>,
         seeds: Vec<String>,
     ) -> Result<Option<Self>> {
         let present = [
             ("a peer credential", chain.is_some()),
             ("a private key", key.is_some()),
             ("a cluster authority", authority.is_some()),
+            ("a peer address", door.is_some()),
             ("seed addresses", !seeds.is_empty()),
         ];
         let given: Vec<&str> = present.iter().filter(|p| p.1).map(|p| p.0).collect();
@@ -103,10 +115,11 @@ impl Told {
         if given.is_empty() {
             return Ok(None);
         }
-        // Destructured together rather than unwrapped one at a time: all four are
-        // present exactly when nothing is missing, and asking each `Option` again
-        // would be a second statement of a fact this list already carries.
-        let (Some(chain), Some(key), Some(authority)) = (chain, key, authority) else {
+        // Destructured together rather than unwrapped one at a time: all of them
+        // are present exactly when nothing is missing, and asking each `Option`
+        // again would be a second statement of a fact this list already carries.
+        let (Some(chain), Some(key), Some(authority), Some(door)) = (chain, key, authority, door)
+        else {
             return Err(Error::ClusterHalfConfigured {
                 given: given.join(", "),
                 missing: missing.join(", "),
@@ -117,6 +130,7 @@ impl Told {
                 chain,
                 key,
                 authority,
+                door,
                 seeds,
             }))
         } else {
@@ -135,6 +149,12 @@ pub struct Joining {
     pub mine: Credential,
     /// The one root every peer in this cluster is issued by.
     pub authority: CertificateDer<'static>,
+    /// Where this node's own peer door binds.
+    ///
+    /// Carried unparsed, because the one thing that can settle whether an
+    /// address is usable is binding it, and that happens where the door is
+    /// opened rather than here.
+    pub door: String,
     /// Addresses to dial for a first contact.
     pub seeds: Vec<String>,
 }
@@ -159,6 +179,7 @@ impl Joining {
             &told.key,
             &authority,
             &told.authority,
+            told.door.clone(),
             told.seeds.clone(),
         )
     }
@@ -180,6 +201,7 @@ impl Joining {
         key_at: &Path,
         authority: &[u8],
         authority_at: &Path,
+        door: String,
         seeds: Vec<String>,
     ) -> Result<Self> {
         let chain = certificates(chain, CHAIN, chain_at)?;
@@ -214,6 +236,7 @@ impl Joining {
         Ok(Self {
             mine: Credential { chain, key },
             authority,
+            door,
             seeds,
         })
     }
@@ -280,6 +303,10 @@ mod tests {
         }
     }
 
+    /// Where a test node's own door would bind. Any address will do — nothing
+    /// in this module binds one; that is `link.rs`'s and the binary's work.
+    const DOOR: &str = "0.0.0.0:9081";
+
     fn at(name: &str) -> PathBuf {
         PathBuf::from(name)
     }
@@ -292,13 +319,14 @@ mod tests {
             &at("key.pem"),
             pem.authority.as_bytes(),
             &at("ca.pem"),
+            DOOR.to_owned(),
             vec!["one.example:9080".to_owned()],
         )
     }
 
     #[test]
     fn a_node_told_none_of_it_is_a_node_that_is_not_in_a_cluster() {
-        let told = Told::from_parts(None, None, None, Vec::new()).unwrap();
+        let told = Told::from_parts(None, None, None, None, Vec::new()).unwrap();
         assert!(
             told.is_none(),
             "absent is the unclustered node, not a failure"
@@ -311,6 +339,7 @@ mod tests {
             Some(at("leaf.pem")),
             None,
             Some(at("ca.pem")),
+            Some(DOOR.to_owned()),
             vec!["one.example:9080".to_owned()],
         )
         .expect_err("half a cluster is refused");
@@ -328,6 +357,7 @@ mod tests {
             Some(at("leaf.pem")),
             Some(at("key.pem")),
             Some(at("ca.pem")),
+            Some(DOOR.to_owned()),
             Vec::new(),
         )
         .expect_err("a seed list is a part like the others");
@@ -343,14 +373,38 @@ mod tests {
             Some(at("leaf.pem")),
             Some(at("key.pem")),
             Some(at("ca.pem")),
+            Some(DOOR.to_owned()),
             vec!["one.example:9080".to_owned(), "two.example:9080".to_owned()],
         )
         .unwrap()
-        .expect("all four given");
+        .expect("all five given");
         assert_eq!(told.chain, at("leaf.pem"));
         assert_eq!(told.key, at("key.pem"));
         assert_eq!(told.authority, at("ca.pem"));
+        assert_eq!(told.door, DOOR, "the address its own door binds");
         assert_eq!(told.seeds.len(), 2, "both seeds, in the order given");
+    }
+
+    #[test]
+    fn a_cluster_with_nowhere_to_be_reached_is_half_configured() {
+        // The part an operator is likeliest to forget, because the other four
+        // are all about reaching somebody ELSE and this one is about being
+        // reachable. Told everything but this, a node would dial its seeds,
+        // learn the cluster, and be a member nothing could ever call back.
+        let failure = Told::from_parts(
+            Some(at("leaf.pem")),
+            Some(at("key.pem")),
+            Some(at("ca.pem")),
+            None,
+            vec!["one.example:9080".to_owned()],
+        )
+        .expect_err("a peer address is a part like the others");
+        let said = failure.to_string();
+        let (given, missing) = said
+            .split_once("but not")
+            .expect("the refusal separates what was given from what was missing");
+        assert!(missing.contains("a peer address"), "names what was missing");
+        assert!(given.contains("seed addresses"), "names what was given");
     }
 
     #[test]
@@ -375,6 +429,7 @@ mod tests {
             &at("key.pem"),
             pem.authority.as_bytes(),
             &at("ca.pem"),
+            DOOR.to_owned(),
             vec!["one.example:9080".to_owned()],
         )
         .expect_err("an empty chain is not a credential");
@@ -397,6 +452,7 @@ mod tests {
             &at("key.pem"),
             pem.authority.as_bytes(),
             &at("ca.pem"),
+            DOOR.to_owned(),
             vec!["one.example:9080".to_owned()],
         )
         .expect_err("a file with no key in it is not a key");
@@ -420,6 +476,7 @@ mod tests {
             &at("key.pem"),
             two.as_bytes(),
             &at("ca.pem"),
+            DOOR.to_owned(),
             vec!["one.example:9080".to_owned()],
         )
         .expect_err("the door trusts exactly one root");
@@ -434,6 +491,7 @@ mod tests {
             chain: at("/nowhere/that/exists/leaf.pem"),
             key: at("/nowhere/that/exists/key.pem"),
             authority: at("/nowhere/that/exists/ca.pem"),
+            door: DOOR.to_owned(),
             seeds: vec!["one.example:9080".to_owned()],
         };
         let failure = Joining::read(&told).expect_err("nothing to read");

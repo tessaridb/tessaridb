@@ -26,6 +26,15 @@ use tessari_wire::{Answer, Client};
 /// The binary this crate builds, which is the one an operator installs.
 const TESSARIDB: &str = env!("CARGO_BIN_EXE_tessaridb");
 
+/// The client surface of the node that also opens a peer door.
+///
+/// Its own port rather than a shared one, because every address in this file is
+/// fixed: two tests reaching for the same number fail on whichever ran second,
+/// for a reason that has nothing to do with what either asserts.
+const WIRE_WITH_PEERS: &str = "127.0.0.1:47826";
+/// That node's peer door.
+const PEERS: &str = "127.0.0.1:47827";
+
 /// Wait for the node to accept connections, or say it never did.
 ///
 /// Polled rather than slept on a guess: a fixed wait is either flaky on a loaded
@@ -507,4 +516,190 @@ fn the_binary_refuses_an_address_and_a_path_together() {
     assert!(!done.status.success());
     let said = String::from_utf8_lossy(&done.stderr);
     assert!(said.contains("two stores"), "{said}");
+}
+
+/// A certificate authority minted for one test, and a leaf it issues.
+///
+/// In memory and then written to the temporary directory, because the binary
+/// takes paths — but never a fixture committed to the repository, which would be
+/// key material with an expiry date nobody chose.
+struct Minted {
+    authority: rcgen::Certificate,
+    key: rcgen::KeyPair,
+}
+
+impl Minted {
+    fn new() -> Self {
+        let mut params = rcgen::CertificateParams::new(Vec::new()).unwrap();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let key = rcgen::KeyPair::generate().unwrap();
+        let authority = params.self_signed(&key).unwrap();
+        Self { authority, key }
+    }
+
+    /// A credential naming `node` on the peer link, as PEM.
+    fn issue(&self, node: [u8; 16]) -> (String, String) {
+        let name = tessari_wire::names(node, tessari_wire::Purpose::Peer);
+        let params = rcgen::CertificateParams::new(vec![name]).unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let leaf = params.signed_by(&key, &self.authority, &self.key).unwrap();
+        (leaf.pem(), key.serialize_pem())
+    }
+}
+
+/// Write a credential for `node`, plus the authority, into `into`.
+fn credentials(
+    minted: &Minted,
+    node: [u8; 16],
+    into: &std::path::Path,
+) -> (String, String, String) {
+    let (leaf, key) = minted.issue(node);
+    let at = |name: &str| into.join(name).to_string_lossy().into_owned();
+    std::fs::write(at("leaf.pem"), leaf).unwrap();
+    std::fs::write(at("key.pem"), key).unwrap();
+    std::fs::write(at("ca.pem"), minted.authority.pem()).unwrap();
+    (at("leaf.pem"), at("key.pem"), at("ca.pem"))
+}
+
+#[test]
+fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
+    // The wave's own claim, against the shipped binary: the five cluster flags
+    // reach `Peers::bind`, the door is listening at the address the operator
+    // named, and the client surface is unaffected by its presence. The wire
+    // crate proves what the door DOES once a peer arrives; nothing but this
+    // proves the flags ever reach it.
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("store");
+    let minted = Minted::new();
+    // Opened and closed again to learn the id the store generated for itself.
+    // The binary then starts on the same directory and is therefore the same
+    // node: an identity is generated once and is stable across restarts, which
+    // is exactly the property this relies on.
+    let db = tessaridb::Db::open(&store).unwrap();
+    let identity = db.store().node_identity().unwrap();
+    let node = identity.id;
+    let build = identity.version;
+    // One write, so the log this node will greet with is not empty. A fresh
+    // store's tail is legitimately zero — nothing is written on open, and the
+    // first-user bootstrap writes only when both environment variables are set —
+    // so without this the greeting's tail could not tell what the store holds
+    // apart from a constant somebody typed.
+    db.session().run("DEFINE NAMESPACE probe;").unwrap();
+    drop(db);
+    let (leaf, key, authority) = credentials(&minted, node, directory.path());
+
+    let child = Command::new(TESSARIDB)
+        .arg(&store)
+        .args(["--serve", WIRE_WITH_PEERS])
+        .args(["--cluster-credential", &leaf])
+        .args(["--cluster-key", &key])
+        .args(["--cluster-authority", &authority])
+        .args(["--cluster-address", PEERS])
+        .args(["--seed", "one.example:9080"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // Killed on the way out however this test ends, including a panic.
+    let _running = Running(child);
+
+    assert!(
+        listening(PEERS, Duration::from_secs(20)),
+        "the peer door never accepted a connection"
+    );
+    assert!(
+        listening(WIRE_WITH_PEERS, Duration::from_secs(20)),
+        "the client surface stopped serving because a peer door was opened"
+    );
+
+    // And it greets as ITSELF. The TLS handshake below only completes against a
+    // server whose certificate carries `<node id>.peer.tessari`, so reaching a
+    // greeting at all proves the binary loaded the credential the flags named;
+    // the greeting then proves it answered under the identity its own store
+    // holds rather than under anything it was told.
+    let caller = [7u8; 16];
+    let (their_leaf, their_key) = minted.issue(caller);
+    // Read through the same parser the binary uses, so the test cannot pass on
+    // a credential the node itself would have refused to load.
+    let ours = tessari_wire::Joining::parse(
+        their_leaf.as_bytes(),
+        std::path::Path::new("leaf.pem"),
+        their_key.as_bytes(),
+        std::path::Path::new("key.pem"),
+        minted.authority.pem().as_bytes(),
+        std::path::Path::new("ca.pem"),
+        PEERS.to_owned(),
+        vec![PEERS.to_owned()],
+    )
+    .expect("a credential this authority issued");
+    let (heard, answered) = tessari_wire::call(
+        PEERS,
+        ours.mine,
+        &ours.authority,
+        node,
+        &tessari_wire::Hello {
+            node: caller,
+            build,
+            epoch: tessari_types::Epoch::ZERO,
+            roles: tessari_storage::Roles::NONE,
+            tail: tessari_types::Sequence::new(0),
+            current_as_of: None,
+        },
+        tessari_wire::Ask::Nothing,
+    )
+    .expect("a peer holding a credential this cluster issued is answered");
+
+    assert_eq!(heard.node, node, "the node greets under its own identity");
+    // Read from the store at greeting time rather than fixed: this node wrote
+    // its first user during startup, so a tail of zero would mean the greeting
+    // carries a constant somebody typed instead of what the log actually holds.
+    assert!(
+        heard.tail.get() > 0,
+        "the greeting carries the log this node really holds, not a placeholder"
+    );
+    assert_eq!(
+        answered,
+        tessari_wire::Answered::Nothing,
+        "nothing was asked, so nothing was answered"
+    );
+}
+
+#[test]
+fn a_peer_address_that_cannot_be_taken_is_a_failure_to_start_and_not_a_warning() {
+    // Port 1 is not takeable by an unprivileged process, which is the cheapest
+    // unbindable address there is. What is asserted is the ORDER: a node that
+    // cannot take its peer address must not reach the point of answering
+    // clients, because a node silently outside its cluster looks exactly like
+    // one that started correctly.
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("store");
+    let minted = Minted::new();
+    let (leaf, key, authority) = credentials(&minted, [3u8; 16], directory.path());
+
+    let mut refused = Command::new(TESSARIDB)
+        .arg(&store)
+        .args(["--serve", "127.0.0.1:0"])
+        .args(["--cluster-credential", &leaf])
+        .args(["--cluster-key", &key])
+        .args(["--cluster-authority", &authority])
+        .args(["--cluster-address", "127.0.0.1:1"])
+        .args(["--seed", "one.example:9080"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(refused.stdin.take());
+    let done = refused.wait_with_output().unwrap();
+    assert!(
+        !done.status.success(),
+        "a door that cannot open is a failure"
+    );
+    let said = String::from_utf8_lossy(&done.stderr);
+    // The address it could not take, named — so the operator is not left
+    // comparing five flags against a bare permission error.
+    assert!(said.contains("127.0.0.1:1"), "{said}");
+    assert!(
+        !said.contains("wire protocol on"),
+        "the client surface must never have been announced: {said}"
+    );
 }

@@ -39,6 +39,10 @@ tessari-wire.workspace = true
 # Already in the tree through `tessari-types`; nothing new is fetched, and a test
 # that builds a decimal needs the type that holds one.
 rust_decimal.workspace = true
+# Already in the tree through `tessari-wire`'s own tests; a peer door needs a
+# credential, and a fixture on disk would be key material in a repository with
+# an expiry date nobody chose.
+rcgen.workspace = true
 tessari-kv.workspace = true
 # Already in the tree through `tessari-lsm`; the process-level test needs a
 # directory that cleans itself up when the node it served is killed.

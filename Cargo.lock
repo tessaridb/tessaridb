@@ -1365,6 +1365,7 @@ version = "0.1.1-beta"
 dependencies = [
  "libc",
  "log",
+ "rcgen",
  "rust_decimal",
  "tempfile",
  "tessari-backup",

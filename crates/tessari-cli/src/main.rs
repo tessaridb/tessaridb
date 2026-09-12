@@ -240,6 +240,21 @@ fn serve(
         }
         None => None,
     };
+    // Before the client doors, and before the store is touched, for the reason
+    // the credential read above gives: a node that cannot take the address its
+    // cluster will call it back on is a node that should fail to start, not one
+    // that answers clients while silently unreachable by its peers.
+    let peers = match cluster {
+        Some(joining) => {
+            let where_to = joining.door.clone();
+            let seeds = joining.seeds.len();
+            let door =
+                tessari_wire::Peers::bind(joining.door.as_str(), joining.mine, &joining.authority)
+                    .map_err(|failure| format!("{where_to}: {failure}"))?;
+            Some((door, seeds))
+        }
+        None => None,
+    };
     // Before anything is bound. A node that came up **open** because its
     // credentials were misconfigured should never have reached the point of
     // answering on a network, so this is a failure to start rather than a
@@ -277,12 +292,12 @@ fn serve(
     eprintln!("tessaridb — there is no TLS, so trust the network");
     // Said only when there is something to say. Every deployment today is a
     // single node, and a line printed on every start is a line operators stop
-    // reading.
-    if let Some(joining) = &cluster {
-        eprintln!(
-            "tessaridb — cluster credential held, {} seed address(es) to reach it through",
-            joining.seeds.len()
-        );
+    // reading. What was *bound* rather than what was asked for, the same as the
+    // two lines above, which is what makes `:0` usable here too.
+    if let Some((door, seeds)) = &peers {
+        let bound = door.address().map_err(|failure| failure.to_string())?;
+        eprintln!("tessaridb — peers on {bound}, {seeds} seed address(es) to reach the cluster");
+        eprintln!("tessaridb — the peer door serves greetings and ballots, and no collection yet");
     }
 
     // After both surfaces are bound and before either serves, so a node that
@@ -327,6 +342,25 @@ fn serve(
             wake: Box::new(move || halt.wake()),
         });
     }
+    // The peer door's own flag, made here rather than owned by the door,
+    // because `Peers` serves one connection per call and the loop that calls it
+    // lives in this binary. Counted alongside the others so a drain waits on it
+    // and a scrape reports it, for the reason the census is shared at all: what
+    // a shutdown waits on and what a reader sees must be one set of numbers.
+    let peering = tessari_serve::Stopping::new();
+    if let Some((door, _)) = &peers {
+        let bound = door.address().map_err(|failure| failure.to_string())?;
+        census.counting("peers", std::sync::Arc::clone(&peering));
+        surfaces.push(shutdown::Surface {
+            name: "the peer door",
+            stopping: std::sync::Arc::clone(&peering),
+            // The same throwaway connection the wire surface uses, and for the
+            // same reason: `accept` blocks and a flag does not wake it. Here the
+            // connection also fails its TLS handshake, which is the outcome
+            // being asked for — the loop checks the flag before waiting again.
+            wake: Box::new(move || drop(std::net::TcpStream::connect(bound))),
+        });
+    }
 
     // Installed once the census is complete, which is why it is a setter rather
     // than an argument to `bind`: one of the surfaces it names is this node.
@@ -338,6 +372,16 @@ fn serve(
     // Asked for before anything serves, so a signal arriving during startup is
     // counted rather than killing the process where it stands.
     shutdown::listen();
+
+    // Its own thread rather than an arm of the scope below, so that the peer
+    // door runs whichever of the two client surfaces was asked for — including
+    // neither combination the match has to spell out. It holds a handle on the
+    // store, so it is joined before the store is dropped and not after.
+    let peering_thread = peers.map(|(door, _)| {
+        let db = std::sync::Arc::clone(&db);
+        let stopping = std::sync::Arc::clone(&peering);
+        std::thread::spawn(move || greet_peers(&db, &door, &stopping))
+    });
 
     match (wire, http) {
         // A thread for one and this thread for the other: two listeners, one
@@ -361,6 +405,12 @@ fn serve(
         // are far enough apart to drift.
         (None, None) => return Err("--serve or --http wants an address".to_owned()),
     }
+    // Before the store, not after, and for the reason the consumers are: this
+    // thread holds an `Arc` on the store, so `drop(db)` below would release one
+    // handle of two and flush nothing until it ended.
+    if let Some(thread) = peering_thread {
+        drop(thread.join());
+    }
     // Before the store, not after. Stage 1 told the consumers to stop and did
     // not wait; this is the wait. Joining after `drop(db)` would flush the store
     // and release its lock while threads were still writing through it.
@@ -371,6 +421,93 @@ fn serve(
     drop(db);
     eprintln!("tessaridb — stopped");
     Ok(Ended::Fine)
+}
+
+/// Take peers, one at a time, until the process is asked to stop.
+///
+/// One connection per pass, because that is what [`tessari_wire::Peers::greet`]
+/// serves: a greeting, and one follow-up riding the connection it opened. A
+/// thread per peer would buy concurrency this node has no use for — a cluster
+/// runs three to seven voting members and a round is a handful of short
+/// conversations, not a client population.
+///
+/// A connection that goes wrong ends that connection and nothing else. A node
+/// that could be stopped by one malformed peer frame would be a node anybody
+/// holding a peer credential could stop.
+fn greet_peers(db: &Db, door: &tessari_wire::Peers, stopping: &tessari_serve::Stopping) {
+    let mut voter = tessari_wire::Voter::started();
+    while !stopping.asked() {
+        // Read before the wait rather than after it, because `greet` accepts
+        // inside itself — so a door that sat idle greets with the facts it held
+        // when it began waiting. Nothing routes on a greeting yet, which is why
+        // that is recorded as a question rather than fixed by changing a
+        // signature four tests depend on.
+        let mine = match greeting(db) {
+            Ok(mine) => mine,
+            // Not a connection failure: the store itself would not answer. The
+            // loop ends rather than spinning on it, and the client surfaces are
+            // untouched — a node that cannot greet can still serve.
+            Err(why) => {
+                log::warn!("the peer door cannot say what this node holds: {why}");
+                break;
+            }
+        };
+        match door.greet(&mine, &mut voter, &tessari_wire::NoLog) {
+            Ok(met) => log::info!(
+                "peer {} greeted at epoch {}, tail {}{}",
+                hex(&met.said.node),
+                met.said.epoch.get(),
+                met.said.tail.get(),
+                met.voted
+                    .map_or(String::new(), |vote| format!(", {vote:?}")),
+            ),
+            // Info and not warn. A peer hanging up, a wake-up connection, and a
+            // credential this cluster does not issue are all ordinary events on
+            // a door, and reporting them as problems makes the level useless for
+            // finding one.
+            Err(why) => log::info!("a peer connection ended: {why}"),
+        }
+    }
+}
+
+/// What this node would tell a peer about itself, right now.
+///
+/// Built through [`tessari_wire::Hello::about`] rather than field by field, so
+/// that a node cannot greet under an id, a role set or a build that disagree
+/// with what its own store holds.
+fn greeting(db: &Db) -> Result<tessari_wire::Hello, String> {
+    let store = db.store();
+    let identity = store.node_identity().map_err(|why| why.to_string())?;
+    let tail = store.committed_tail().map_err(|why| why.to_string())?;
+    let current_as_of = store.current_as_of().map_err(|why| why.to_string())?;
+    // `Epoch::ZERO`, and read from nothing on purpose.
+    //
+    // The first version of this read the newest log record and took its epoch,
+    // which is the general answer. It is not the answer this build can give: no
+    // epoch is ever allocated here — nothing campaigns in the serving path and
+    // nothing applies from a peer — so every record this node holds belongs to
+    // the first and only leadership, and `Epoch::ZERO` is exactly what a
+    // receiver computes for one anyway.
+    //
+    // So the record read bought a value that cannot differ from this constant in
+    // any state this build reaches, and it bought it by reading a log record at
+    // `Reach::Store` inside a process that answers a network. Reach that buys
+    // nothing is reach worth removing.
+    //
+    // The day a follower loop or a campaign runs in this path, the general
+    // answer comes back — and the test that catches its absence is the one that
+    // cannot be written today, because both values agree.
+    Ok(tessari_wire::Hello::about(
+        &identity,
+        tessari_types::Epoch::ZERO,
+        tail,
+        current_as_of,
+    ))
+}
+
+/// A node id as it is written in a log line.
+fn hex(id: &[u8]) -> String {
+    id.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Write the store's log to a file.

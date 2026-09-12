@@ -26,6 +26,7 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --cluster-credential <file> this node's peer credential, PEM, with --serve
   --cluster-key <file> its private key, PEM
   --cluster-authority <file> the one certificate this cluster trusts, PEM
+  --cluster-address <host:port> where this node's own peer door binds
   --seed <host:port> a node to reach the cluster through; repeatable
   --param <name>=<value> bind $name to <value>, written as TessariQL; repeatable
   -e, --execute <script> run this and exit
@@ -39,9 +40,11 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   -V, --version   say which build this is, and exit
   -h, --help      this
 
-the four cluster options are given together or not at all: told some of them a
+the five cluster options are given together or not at all: told some of them a
 node refuses to start rather than serving with credentials nobody checked, and
-told none of them it is the single node it is today.
+told none of them it is the single node it is today. there is no default peer
+address, because there is no port this engine claims and a defaulted listener is
+a door the operator did not know they opened.
 
 with neither -e nor -f, statements are read from standard input: a prompt when
 that is a terminal, a script when it is a pipe.
@@ -167,6 +170,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     let mut credential = None;
     let mut key = None;
     let mut authority = None;
+    let mut door = None;
     let mut seeds: Vec<String> = Vec::new();
     let mut arguments = arguments;
     while let Some(argument) = arguments.next() {
@@ -263,6 +267,13 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                     .ok_or_else(|| "--cluster-authority wants a path".to_owned())?;
                 authority = Some(PathBuf::from(path));
             }
+            "--cluster-address" => {
+                door = Some(
+                    arguments
+                        .next()
+                        .ok_or_else(|| "--cluster-address wants a host:port".to_owned())?,
+                );
+            }
             // Repeatable, because one seed is one point of failure at the
             // moment a cluster is least able to afford one.
             "--seed" => {
@@ -357,15 +368,18 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     }
     // Same reason as the line above, and what the operator believes here is
     // stronger: not that a port is open, but that this node joined a cluster.
-    let told_about_a_cluster =
-        credential.is_some() || key.is_some() || authority.is_some() || !seeds.is_empty();
+    let told_about_a_cluster = credential.is_some()
+        || key.is_some()
+        || authority.is_some()
+        || door.is_some()
+        || !seeds.is_empty();
     if told_about_a_cluster && !matches!(source, Source::Serve) {
         return Err("a cluster is something a node serves in, and this serves nothing".to_owned());
     }
     // Collected here, decided there. `Told::from_parts` owns the rule that
     // separates *told nothing* from *told half*, and a second copy of it in
     // this module would be a second rule the moment either is edited.
-    let cluster = tessari_wire::Told::from_parts(credential, key, authority, seeds)
+    let cluster = tessari_wire::Told::from_parts(credential, key, authority, door, seeds)
         .map_err(|refused| refused.to_string())?;
     Ok(Asked {
         store,
@@ -430,7 +444,9 @@ mod tests {
         parse(arguments.iter().map(|held| (*held).to_owned()))
     }
 
-    /// The four cluster flags, with `--serve` because they need it.
+    /// The four cluster flags that take a path or an address, with `--serve`
+    /// because they need it. `--seed` is left to the caller, since it is the
+    /// repeatable one.
     fn told_a_cluster(extra: &[&str]) -> Vec<String> {
         let mut given = vec![
             "--serve".to_owned(),
@@ -441,6 +457,8 @@ mod tests {
             "key.pem".to_owned(),
             "--cluster-authority".to_owned(),
             "ca.pem".to_owned(),
+            "--cluster-address".to_owned(),
+            "0.0.0.0:9081".to_owned(),
         ];
         given.extend(extra.iter().map(|held| (*held).to_owned()));
         given
@@ -458,11 +476,12 @@ mod tests {
     #[test]
     fn a_node_told_every_part_keeps_each_path_and_every_seed() {
         let given = told_a_cluster(&["--seed", "one.example:9080", "--seed", "two.example:9080"]);
-        let held = parse(given.into_iter()).expect("all four parts");
+        let held = parse(given.into_iter()).expect("all five parts");
         let cluster = held.cluster.expect("told about a cluster");
         assert_eq!(cluster.chain, std::path::PathBuf::from("leaf.pem"));
         assert_eq!(cluster.key, std::path::PathBuf::from("key.pem"));
         assert_eq!(cluster.authority, std::path::PathBuf::from("ca.pem"));
+        assert_eq!(cluster.door, "0.0.0.0:9081", "its own door's address");
         assert_eq!(
             cluster.seeds,
             vec!["one.example:9080".to_owned(), "two.example:9080".to_owned()],
@@ -491,6 +510,36 @@ mod tests {
         assert!(given.contains("a peer credential"), "names what was given");
         assert!(missing.contains("a private key"), "names what was missing");
         assert!(missing.contains("a cluster authority"), "names both gaps");
+        assert!(missing.contains("a peer address"), "and the address too");
+    }
+
+    #[test]
+    fn a_node_told_where_to_dial_but_not_where_to_answer_is_refused() {
+        // The asymmetric one: four flags are about reaching somebody else and
+        // this one is about being reachable, so it is the part an operator
+        // forgets without noticing. A node missing it would dial its seeds,
+        // learn the cluster, and be a member nothing could ever call back.
+        let given: Vec<String> = told_a_cluster(&["--seed", "one.example:9080"])
+            .into_iter()
+            .filter(|held| held != "--cluster-address" && held != "0.0.0.0:9081")
+            .collect();
+        let refused =
+            parse(given.into_iter()).expect_err("a cluster with nowhere to be reached at");
+        let (given, missing) = refused
+            .split_once("but not")
+            .expect("the refusal separates what was given from what was missing");
+        assert!(missing.contains("a peer address"), "names what was missing");
+        assert!(given.contains("seed addresses"), "names what was given");
+    }
+
+    #[test]
+    fn a_cluster_address_with_nothing_after_it_is_refused_rather_than_swallowing_the_next_flag() {
+        let refused = asked(&["--serve", "127.0.0.1:0", "--cluster-address"])
+            .expect_err("a flag that wants a value and got none");
+        assert!(
+            refused.contains("--cluster-address wants a host:port"),
+            "{refused}"
+        );
     }
 
     #[test]
