@@ -5,6 +5,7 @@
 //! target instead, so the cases sit beside this file and the crate pays that
 //! link once rather than once per case.
 
+mod a_catalog_record_is_not_a_users_row;
 mod advice;
 mod alone;
 mod alter_user;

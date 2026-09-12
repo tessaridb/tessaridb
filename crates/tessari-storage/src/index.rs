@@ -78,7 +78,7 @@ use tessari_encoding::{
 };
 use tessari_geo::{Bounds, Cell, Shape};
 use tessari_kv::{Key, KeyRange, Keyspace, ScanDirection, ScanRequest, WriteBatch, WriteOp};
-use tessari_types::{Analyzer, RecordId, TableId, Value};
+use tessari_types::{Analyzer, DatabaseId, NamespaceId, RecordId, TableId, Value};
 
 use crate::catalog::{Catalog, IndexDefinition, defined_index};
 use crate::covering;
@@ -183,7 +183,22 @@ pub(crate) fn maintain(
     mut batch: WriteBatch,
 ) -> Result<WriteBatch> {
     let mut view = store.begin()?;
-    let mut by_table: BTreeMap<TableId, Vec<IndexDefinition>> = BTreeMap::new();
+    // Keyed by the WHOLE tenancy and not by the table alone, because a `TableId`
+    // is not a key on its own. Ids are handed out store-wide from
+    // `system::FIRST_ID`, and the system catalog reserves the first eighteen at
+    // namespace 0, database 0 — `DATABASES` is 2, `TABLES` is 3. So the first
+    // eighteen tables anybody declares carry a number a system table also
+    // carries, and asking for "the indexes on table 2" answered with a user's
+    // index when the mutation was a `DEFINE DATABASE`.
+    //
+    // The entries then landed in the USER's keyspace, because `apply_one` builds
+    // its address from the definition — correctly. That is what made the two
+    // halves add up to a wrong answer: chosen with a partial key, applied with
+    // the whole one. Two databases in different namespaces could not share a
+    // name, and an application row could not hold a value that was also some
+    // database's name, both refused by an index neither statement mentioned.
+    let mut by_table: BTreeMap<(NamespaceId, DatabaseId, TableId), Vec<IndexDefinition>> =
+        BTreeMap::new();
     // The analyzer a search index uses is the **field's** declaration, not the
     // index's, so it is read from the schema here — once per table rather than
     // once per record. That is what makes a scan and an index answer the same
@@ -192,11 +207,19 @@ pub(crate) fn maintain(
     let mut pending = Pending::default();
 
     for mutation in record.mutations() {
-        let definitions = match by_table.get(&mutation.table) {
+        let at = (mutation.namespace, mutation.database, mutation.table);
+        let definitions = match by_table.get(&at) {
             Some(found) => found.clone(),
             None => {
-                let found = Catalog::new(&mut view).indexes_on(mutation.table)?;
-                by_table.insert(mutation.table, found.clone());
+                let found: Vec<IndexDefinition> = Catalog::new(&mut view)
+                    .indexes_on(mutation.table)?
+                    .into_iter()
+                    .filter(|definition| {
+                        definition.namespace == mutation.namespace
+                            && definition.database == mutation.database
+                    })
+                    .collect();
+                by_table.insert(at, found.clone());
                 found
             }
         };
