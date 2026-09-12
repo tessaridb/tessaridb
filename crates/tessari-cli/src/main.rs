@@ -128,7 +128,7 @@ fn run(asked: Asked) -> Result<Ended, String> {
         Source::Backup(path) => return backup(&db, path, sequence).map(|()| Ended::Fine),
         Source::Restore(path) => return restore(&db, path, sequence).map(|()| Ended::Fine),
         Source::Health => return health(&db),
-        Source::Serve => return serve(db, &asked.serving, started),
+        Source::Serve => return serve(db, &asked.serving, asked.cluster.as_ref(), started),
         Source::Verify(_)
         | Source::Version
         | Source::Help
@@ -223,7 +223,23 @@ fn statements(
 /// The same binary rather than a second one: what changes is where the store is,
 /// and that is an argument. It serves until it is stopped, so it never returns
 /// on the happy path.
-fn serve(db: Db, serving: &Serving, started: std::time::Instant) -> Result<Ended, String> {
+fn serve(
+    db: Db,
+    serving: &Serving,
+    cluster: Option<&tessari_wire::Told>,
+    started: std::time::Instant,
+) -> Result<Ended, String> {
+    // Read before anything is bound, and before the store is touched, for the
+    // reason the line below gives: an unreadable key file is a node that would
+    // have come up **open**. It also costs nothing to find a path typo here
+    // rather than at the first dial, which is minutes or hours later and looks
+    // like a network fault.
+    let cluster = match cluster {
+        Some(told) => {
+            Some(tessari_wire::Joining::read(told).map_err(|refused| refused.to_string())?)
+        }
+        None => None,
+    };
     // Before anything is bound. A node that came up **open** because its
     // credentials were misconfigured should never have reached the point of
     // answering on a network, so this is a failure to start rather than a
@@ -259,6 +275,15 @@ fn serve(db: Db, serving: &Serving, started: std::time::Instant) -> Result<Ended
         eprintln!("tessaridb — http on {}", node.address());
     }
     eprintln!("tessaridb — there is no TLS, so trust the network");
+    // Said only when there is something to say. Every deployment today is a
+    // single node, and a line printed on every start is a line operators stop
+    // reading.
+    if let Some(joining) = &cluster {
+        eprintln!(
+            "tessaridb — cluster credential held, {} seed address(es) to reach it through",
+            joining.seeds.len()
+        );
+    }
 
     // After both surfaces are bound and before either serves, so a node that
     // could not take its address does not connect to a broker on the way to
