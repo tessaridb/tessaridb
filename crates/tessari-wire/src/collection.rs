@@ -1,0 +1,479 @@
+//! A follower asks for what it does not have, and a leader answers out of its
+//! own log.
+//!
+//! # Why an answer carries a leadership the records do not
+//!
+//! A stream of bare records cannot tell a re-send from a divergence. Both arrive
+//! at a position the receiver already holds, and until a record carried an epoch
+//! the second writer's record was discarded in silence while two nodes drifted
+//! apart reporting perfect health. [`Collected::previous`] is the other half of
+//! that: the leadership that wrote the record **before** the first one carried
+//! here, which is what lets the receiver check that the two histories are the
+//! same one before it appends to it.
+//!
+//! It is read at `from - 1` and never from the leader's latest, because a
+//! follower catching up legitimately replays records from leaderships that have
+//! since ended — and every one of them would be a false divergence against the
+//! latest.
+//!
+//! # What is not here
+//!
+//! **No timer and no thread.** This performs ONE collection; deciding *when* to
+//! collect belongs with the node's lifecycle, for the reason
+//! [`crate::Standing`] gives about owning a clock.
+//!
+//! **No applying.** `Store::apply_from_stream` already exists and already takes
+//! the predecessor's epoch this answer carries. Wiring the two together is the
+//! next thing, and keeping them apart here means the transfer can be tested
+//! without a second store having to be right as well.
+//!
+//! **No bootstrap and no filtering.** A follower behind the retention floor
+//! needs the log as a backup rather than as a stream, and a selective follower
+//! needs the reach filter the store already has. Both are their own decisions;
+//! this serves [`Reach::Store`] and refuses what it cannot state.
+
+use tessari_encoding::{LogRecord, NODE_ID_LEN, StoreValue};
+use tessari_storage::{Reach, Store};
+use tessari_types::{Epoch, Sequence};
+
+use crate::error::{Error, Result};
+use crate::frame;
+
+/// What a follower asks a leader for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Collect {
+    /// The first position the follower does not hold — **inclusive**.
+    ///
+    /// It is also the follower's own assertion that it holds `from - 1`, which
+    /// is what makes the answer's [`Collected::previous`] meaningful: the leader
+    /// states the leadership at exactly that position, and the two either agree
+    /// or the histories parted.
+    pub from: Sequence,
+    /// The most records one answer may carry.
+    ///
+    /// The follower asks again from where the answer stopped. There is no
+    /// continuation state on the leader, for the same reason the client feed has
+    /// none: the cursor is a value the collector holds, and the buffer is the
+    /// log.
+    pub limit: u64,
+}
+
+impl Collect {
+    /// The body of a [`crate::PeerFrame::Collect`] frame.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut body = Vec::with_capacity(16);
+        frame::put_u64(&mut body, self.from.get());
+        frame::put_u64(&mut body, self.limit);
+        body
+    }
+
+    /// Read one back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Malformed`] when the body is not the shape an ask takes.
+    pub fn decode(body: &[u8]) -> Result<Self> {
+        let (from, at) = frame::take_u64(body, 0)?;
+        let (limit, _) = frame::take_u64(body, at)?;
+        Ok(Self {
+            from: Sequence::new(from),
+            limit,
+        })
+    }
+}
+
+/// What a leader answers a collection with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Collected {
+    /// The leadership that wrote the record **before** the first one carried
+    /// here, or [`Epoch::ZERO`] when the ask began at the first position and
+    /// nothing precedes it.
+    pub previous: Epoch,
+    /// The records, in log order, beginning at the position that was asked for.
+    ///
+    /// Empty is a real answer and means *you are level* — which is exactly why
+    /// a leader that cannot serve the position at all answers a different frame
+    /// rather than an empty one.
+    pub records: Vec<(Sequence, LogRecord)>,
+}
+
+impl Collected {
+    /// The body of a [`crate::PeerFrame::Collected`] frame.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut body = Vec::new();
+        frame::put_u64(&mut body, self.previous.get());
+        frame::put_u64(
+            &mut body,
+            u64::try_from(self.records.len()).unwrap_or(u64::MAX),
+        );
+        for (at, record) in &self.records {
+            frame::put_u64(&mut body, at.get());
+            // The store's own encoding, unchanged. A second codec for the same
+            // record is a second thing that has to stay true across a version.
+            frame::put_bytes(&mut body, record.encode().as_slice());
+        }
+        body
+    }
+
+    /// Read one back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Malformed`] when the body is not the shape an answer
+    /// takes, and the encoding's own failure when a record cannot be decoded.
+    pub fn decode(body: &[u8]) -> Result<Self> {
+        let (previous, at) = frame::take_u64(body, 0)?;
+        let (count, at) = frame::take_u64(body, at)?;
+        // Deliberately not `with_capacity(count)`: the count came from the other
+        // end, and a reader that allocated whatever it was told would be one
+        // frame away from being out of memory. The body is already bounded by
+        // the frame ceiling, so growing as records actually arrive costs nothing
+        // that matters and cannot be driven.
+        let mut records = Vec::new();
+        let mut at = at;
+        for _ in 0..count {
+            let (sequence, next) = frame::take_u64(body, at)?;
+            let (bytes, next) = frame::take_bytes(body, next)?;
+            at = next;
+            records.push((Sequence::new(sequence), LogRecord::decode(&bytes)?));
+        }
+        Ok(Self {
+            previous: Epoch::new(previous),
+            records,
+        })
+    }
+}
+
+/// What a peer door may do to the log it serves from.
+///
+/// One method, and that is the point. The door is handed this rather than a
+/// store, so what a peer connection can reach is a matter of what this trait
+/// says rather than of what the door's author remembered not to call. It also
+/// means a test about a handshake needs a handshake and not a storage engine.
+pub trait Origin {
+    /// Answer `asked` for the follower that asked it, and record the collection.
+    ///
+    /// Recording is part of the same call because the door is the only way
+    /// through: a peer read that goes unrecorded is then not expressible, which
+    /// is the argument [`tessari_session::Session::replicate_from`] was built on
+    /// one layer up.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Uncollectable`] when the leadership before `asked.from`
+    /// cannot be stated, and [`Error::Refused`] carrying the store's own words
+    /// when the log cannot be read.
+    fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected>;
+}
+
+impl Origin for Store {
+    fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
+        let previous = preceding(self, asked.from)?;
+        // A `u64` from a peer against a `usize` here: on a platform where the
+        // two differ the ask is larger than anything this node could answer, so
+        // the whole log is the honest ceiling.
+        let limit = usize::try_from(asked.limit).unwrap_or(usize::MAX);
+        let records = self
+            .log_records_within(Reach::Store, asked.from, limit)
+            .map_err(|why| Error::Refused {
+                message: why.to_string(),
+            })?;
+        // What the follower now holds: the last position it was handed, or —
+        // when it was handed nothing — the one it told us it was at. The same
+        // rule the leader's own door uses, because it is the same event.
+        let reached = records.last().map_or_else(
+            || Sequence::new(asked.from.get().saturating_sub(1)),
+            |(sequence, _)| *sequence,
+        );
+        self.follower_served(follower, reached);
+        Ok(Collected { previous, records })
+    }
+}
+
+/// The leadership that wrote the record before `from`.
+///
+/// # Errors
+///
+/// Returns [`Error::Uncollectable`] when this node holds nothing at `from - 1`.
+fn preceding(store: &Store, from: Sequence) -> Result<Epoch> {
+    if from.get() <= 1 {
+        // Nothing precedes the first position, and a store that never elected
+        // anybody writes exactly this epoch — so the answer is the same value a
+        // receiver would compute for itself rather than a stand-in for one.
+        return Ok(Epoch::ZERO);
+    }
+    let before = Sequence::new(from.get().saturating_sub(1));
+    let held = store
+        .log_records_within(Reach::Store, before, 1)
+        .map_err(|why| Error::Refused {
+            message: why.to_string(),
+        })?;
+    match held.first() {
+        // The log answers from `before` ONWARD, so a position it no longer holds
+        // comes back as the next one that does. Comparing the position is what
+        // tells *the record before yours* apart from *some later record*, and
+        // without it a follower behind the retention floor would be handed the
+        // wrong leadership with every appearance of a correct answer.
+        Some((at, record)) if *at == before => Ok(record.epoch()),
+        _ => Err(Error::Uncollectable { from: from.get() }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Collect, Collected};
+    use crate::error::Error;
+    use crate::link::tests::{Authority, THERE, hello, settled};
+    use crate::link::{Answered, Ask, Peers, call};
+    use crate::peer::Purpose;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::thread::JoinHandle;
+    use tessari_encoding::{LogRecord, NODE_ID_LEN};
+    use tessari_types::{Epoch, Sequence};
+    use tessaridb::Db;
+
+    /// The node every door in this module belongs to.
+    const LEADER: [u8; NODE_ID_LEN] = [70_u8; NODE_ID_LEN];
+
+    /// A store holding one empty record per epoch named, at 1, 2, 3…
+    ///
+    /// Empty records because what is being tested is the transfer and the
+    /// leadership it states, and a mutation would only make the assertions
+    /// longer. The epochs are what a run of leaderships actually looks like in
+    /// the log, and a commit path in this build cannot produce them — it writes
+    /// every record under [`Epoch::ZERO`], which is exactly the value that makes
+    /// *the epoch at this position* and *the leader's latest epoch* impossible
+    /// to tell apart.
+    fn logged(epochs: &[u64]) -> Arc<Db> {
+        let db = Arc::new(Db::in_memory().expect("an in-memory store"));
+        for (index, epoch) in epochs.iter().enumerate() {
+            let at = Sequence::new(
+                u64::try_from(index)
+                    .expect("a handful of records")
+                    .saturating_add(1),
+            );
+            db.store()
+                .apply_record(at, &LogRecord::at(Epoch::new(*epoch), Vec::new()))
+                .expect("an empty record applies at the next position");
+        }
+        db
+    }
+
+    /// A peer door for `LEADER` that serves `rounds` connections out of `db`.
+    fn serving(authority: &Authority, db: &Arc<Db>, rounds: usize) -> (SocketAddr, JoinHandle<()>) {
+        let peers = Peers::bind(
+            "127.0.0.1:0",
+            authority.issue(LEADER, Purpose::Peer),
+            &authority.der(),
+        )
+        .expect("a peer door on loopback");
+        let address = peers.address().expect("the door's address");
+        let mine = hello(LEADER);
+        let db = Arc::clone(db);
+        let door = std::thread::spawn(move || {
+            for _ in 0..rounds {
+                drop(peers.greet(&mine, &mut settled(), db.store()));
+            }
+        });
+        (address, door)
+    }
+
+    /// Ask the door at `address` for the records after `from`.
+    fn collect(
+        authority: &Authority,
+        address: SocketAddr,
+        from: u64,
+        limit: u64,
+    ) -> crate::error::Result<Answered> {
+        Ok(call(
+            address,
+            authority.issue(THERE, Purpose::Peer),
+            &authority.der(),
+            LEADER,
+            &hello(THERE),
+            Ask::Records(Collect {
+                from: Sequence::new(from),
+                limit,
+            }),
+        )?
+        .1)
+    }
+
+    /// The records in an answer, or `None` when the peer answered otherwise.
+    ///
+    /// An `Option` and not a panicking unwrap because the workspace denies
+    /// panicking paths, and `.expect` at the call site says what was expected
+    /// in the same place the assertion about it lives.
+    fn served(answered: Answered) -> Option<Collected> {
+        match answered {
+            Answered::Collected(collected) => Some(collected),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_collection_frame_round_trips() {
+        let asked = Collect {
+            from: Sequence::new(7),
+            limit: 64,
+        };
+        assert_eq!(Collect::decode(&asked.encode()).expect("an ask"), asked);
+
+        let answer = Collected {
+            previous: Epoch::new(3),
+            records: vec![
+                (Sequence::new(7), LogRecord::at(Epoch::new(4), Vec::new())),
+                (Sequence::new(8), LogRecord::at(Epoch::new(4), Vec::new())),
+            ],
+        };
+        let back = Collected::decode(&answer.encode()).expect("an answer");
+        assert_eq!(back, answer);
+        // The leadership before the batch travels separately from the ones
+        // inside it, and they differ here on purpose: a codec that carried one
+        // of them twice would pass a test where they were equal.
+        assert_eq!(back.previous, Epoch::new(3));
+    }
+
+    #[test]
+    fn a_follower_collects_the_records_it_does_not_have() {
+        let authority = Authority::new();
+        let leader = logged(&[1, 1, 1]);
+        let (address, door) = serving(&authority, &leader, 1);
+
+        let collected = served(
+            collect(&authority, address, 1, 64).expect("a peer that proved itself may collect"),
+        )
+        .expect("a collection came back");
+        door.join().expect("the door's thread");
+
+        assert_eq!(
+            collected
+                .records
+                .iter()
+                .map(|(at, _)| at.get())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "the whole log, in order, from the position asked for"
+        );
+        // Nothing precedes the first position, and the answer says so with the
+        // value a receiver would compute for itself.
+        assert_eq!(collected.previous, Epoch::ZERO);
+    }
+
+    #[test]
+    fn a_collection_states_the_epoch_that_precedes_it() {
+        let authority = Authority::new();
+        // Three leaderships, one record each. Asking from 3 makes the answer
+        // *2* while the leader's latest is *3* — which is the only arrangement
+        // in which reading the epoch at the position and reading the store's
+        // latest give different answers.
+        let leader = logged(&[1, 2, 3]);
+        let (address, door) = serving(&authority, &leader, 1);
+
+        let collected =
+            served(collect(&authority, address, 3, 64).expect("the door is up and answering"))
+                .expect("a collection came back");
+        door.join().expect("the door's thread");
+
+        assert_eq!(
+            collected.previous,
+            Epoch::new(2),
+            "the leadership at sequence 2, not the one at the tail"
+        );
+        assert_eq!(collected.records.len(), 1, "one record stands after 2");
+    }
+
+    #[test]
+    fn a_follower_that_asks_beyond_the_leaders_log_is_refused() {
+        let authority = Authority::new();
+        let leader = logged(&[1, 1, 1]);
+        let (address, door) = serving(&authority, &leader, 2);
+
+        // Level is not the same as beyond. A follower holding all three asks
+        // from 4, the leader holds 3, and the honest answer is an EMPTY
+        // collection — which is what makes the refusal below about the
+        // position rather than about emptiness.
+        let level = served(collect(&authority, address, 4, 64).expect("a level follower may ask"))
+            .expect("a collection came back");
+        assert!(level.records.is_empty(), "{:?}", level.records);
+        assert_eq!(level.previous, Epoch::new(1), "the leadership at the tail");
+
+        let refused = collect(&authority, address, 9, 64);
+        door.join().expect("the door's thread");
+
+        // And it crossed the wire as the refusal it was, not as a closed
+        // socket: `from` is the position that was asked for.
+        assert!(
+            matches!(refused, Err(Error::Uncollectable { from: 9 })),
+            "expected the position to be refused by name, got {refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_limit_bounds_one_collection_and_the_next_asks_from_where_it_stopped() {
+        let authority = Authority::new();
+        let leader = logged(&[1, 1, 1]);
+        let (address, door) = serving(&authority, &leader, 2);
+
+        let first = served(collect(&authority, address, 1, 2).expect("the first collection"))
+            .expect("a collection came back");
+        assert_eq!(
+            first
+                .records
+                .iter()
+                .map(|(at, _)| at.get())
+                .collect::<Vec<_>>(),
+            vec![1, 2],
+            "the bound the follower named, and not the whole log"
+        );
+
+        // No continuation state on the leader: the follower's cursor is the
+        // position it reached, and the next ask is an ordinary one.
+        let next = served(collect(&authority, address, 3, 2).expect("the second collection"))
+            .expect("a collection came back");
+        door.join().expect("the door's thread");
+        assert_eq!(
+            next.records
+                .iter()
+                .map(|(at, _)| at.get())
+                .collect::<Vec<_>>(),
+            vec![3],
+            "the rest, starting where the first collection stopped"
+        );
+    }
+
+    #[test]
+    fn a_collection_is_recorded_on_the_leader() {
+        let authority = Authority::new();
+        let leader = logged(&[1, 1, 1]);
+        let (address, door) = serving(&authority, &leader, 1);
+
+        assert!(
+            leader
+                .store()
+                .follower_lag()
+                .expect("a leader can be asked")
+                .is_empty(),
+            "nothing has collected yet"
+        );
+
+        drop(collect(&authority, address, 1, 2).expect("a collection"));
+        door.join().expect("the door's thread");
+
+        let lag = leader
+            .store()
+            .follower_lag()
+            .expect("a leader can be asked");
+        assert_eq!(lag.len(), 1, "{lag:?}");
+        let seen = lag.first().expect("one follower");
+        // By the id the HANDSHAKE proved, and at the position it was actually
+        // handed — which is 2 and not 3, because the bound stopped the answer
+        // short and the leader records what it gave rather than what it holds.
+        assert_eq!(seen.node, THERE);
+        assert_eq!(seen.sequence, Sequence::new(2));
+        assert_eq!(seen.behind, 1, "one commit stands beyond what it was given");
+    }
+}

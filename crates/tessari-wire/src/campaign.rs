@@ -45,7 +45,7 @@ use tessari_storage::Lease;
 use tessari_types::Epoch;
 
 use crate::grant::{Leadership, Round};
-use crate::link::{Credential, call};
+use crate::link::{Answered, Ask, Credential, call};
 use crate::peer::Hello;
 
 /// Everything a node holds in order to be able to stand for an epoch.
@@ -99,11 +99,11 @@ impl Standing<'_> {
                 self.authority,
                 *peer,
                 self.said,
-                Some(&round.ballot()),
+                Ask::Ballot(&round.ballot()),
             ) else {
                 continue;
             };
-            let Some(vote) = answered else {
+            let Answered::Voted(vote) = answered else {
                 continue;
             };
             if let Some(won) = round.counts(*peer, vote) {
@@ -140,7 +140,7 @@ mod tests {
     use super::Standing;
     use crate::grant::{Ballot, Vote};
     use crate::link::tests::{Authority, THERE, hello, settled, voting};
-    use crate::link::{Credential, Peers, call};
+    use crate::link::{Answered, Ask, Credential, Peers, call};
     use crate::peer::{Hello, Purpose};
     use rustls::pki_types::CertificateDer;
     use std::net::SocketAddr;
@@ -208,7 +208,7 @@ mod tests {
             &authority.der(),
             voter,
             &hello(THERE),
-            Some(&Ballot {
+            Ask::Ballot(&Ballot {
                 epoch: Epoch::new(2),
                 candidate: THERE,
             }),
@@ -216,7 +216,7 @@ mod tests {
         .expect("the door is still up, having been asked nothing");
         assert_eq!(
             vote,
-            Some(Vote::Granted),
+            Answered::Voted(Vote::Granted),
             "the epoch was never spent, so it is still grantable"
         );
         drop(answering.join().expect("the door's thread"));
@@ -304,7 +304,7 @@ mod tests {
             &authority.der(),
             spare,
             &hello(THERE),
-            Some(&Ballot {
+            Ask::Ballot(&Ballot {
                 epoch: Epoch::new(7),
                 candidate: THERE,
             }),
@@ -312,7 +312,7 @@ mod tests {
         .expect("the third door is still up, having been asked nothing");
         assert_eq!(
             vote,
-            Some(Vote::Granted),
+            Answered::Voted(Vote::Granted),
             "the third voter never saw the ballot the first two carried"
         );
         drop(untouched.join().expect("the door's thread"));

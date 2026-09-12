@@ -56,6 +56,16 @@ pub enum PeerFrame {
     Ballot,
     /// A voting member's answer to one ballot.
     Vote,
+    /// A follower asking for the records after the position it holds.
+    Collect,
+    /// A leader's answer: the records, and the leadership before them.
+    Collected,
+    /// A leader saying it cannot state what precedes the position asked for.
+    ///
+    /// Its own tag rather than an empty [`Self::Collected`], because an empty
+    /// collection is the answer a follower that is **level** gets. Two
+    /// conditions that must never look alike do not share a frame.
+    Uncollectable,
 }
 
 impl PeerFrame {
@@ -70,6 +80,9 @@ impl PeerFrame {
             Self::Hello => 6,
             Self::Ballot => 7,
             Self::Vote => 8,
+            Self::Collect => 9,
+            Self::Collected => 10,
+            Self::Uncollectable => 11,
         }
     }
 
@@ -80,6 +93,9 @@ impl PeerFrame {
             6 => Some(Self::Hello),
             7 => Some(Self::Ballot),
             8 => Some(Self::Vote),
+            9 => Some(Self::Collect),
+            10 => Some(Self::Collected),
+            11 => Some(Self::Uncollectable),
             _ => None,
         }
     }

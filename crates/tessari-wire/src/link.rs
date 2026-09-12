@@ -27,8 +27,10 @@
 //! No port is claimed: [`Peers::bind`] takes an address, because which port a
 //! cluster peers on is an operator's decision and not this module's. Nothing
 //! issues, rotates or revokes a certificate. One connection is served per call
-//! to [`Peers::greet`], and one ballot rides it — a node that accepts peers
-//! continuously, and holds the connection open between rounds, is a later wave.
+//! to [`Peers::greet`], and ONE follow-up rides it — a ballot or a collection,
+//! never both, which is why [`Ask`] is an enum rather than two optional
+//! arguments. A node that accepts peers continuously, and holds the connection
+//! open between rounds, is a later wave.
 //!
 //! Nothing decides **when** to stand for leadership or how often to renew. A
 //! round is opened by its caller. What this module owes is that the ballot can
@@ -45,6 +47,7 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, ServerConfig, Server
 use tessari_constants::GREETING_SECONDS;
 use tessari_encoding::NODE_ID_LEN;
 
+use crate::collection::{Collect, Collected, Origin};
 use crate::credential;
 use crate::error::{Error, Result};
 use crate::frame;
@@ -123,7 +126,7 @@ impl Peers {
     /// [`Error::CredentialNamesAnother`] when what was presented does not name
     /// the node the greeting claims, and [`Error::NotAPeerCredential`] when it
     /// names that node for the client link instead of this one.
-    pub fn greet(&self, mine: &Hello, voter: &mut Voter) -> Result<Met> {
+    pub fn greet(&self, mine: &Hello, voter: &mut Voter, log: &dyn Origin) -> Result<Met> {
         let (mut socket, _) = self.listener.accept()?;
         let bound = Some(Duration::from_secs(GREETING_SECONDS));
         socket.set_read_timeout(bound)?;
@@ -155,6 +158,35 @@ impl Peers {
         let voted = match asked {
             None => None,
             Some((tag, body)) => match PeerFrame::from_tag(tag) {
+                Some(PeerFrame::Collect) => {
+                    let asked = Collect::decode(&body)?;
+                    // The follower names itself by the id the handshake proved,
+                    // never by one it writes into a frame — so a peer cannot
+                    // record somebody else's progress, and the per-follower lag
+                    // report stays per follower.
+                    match log.collected(said.node, asked) {
+                        Ok(collected) => frame::write_tagged(
+                            &mut link,
+                            PeerFrame::Collected.tag(),
+                            &collected.encode(),
+                        )?,
+                        // A refusal crosses the wire as the refusal it was. The
+                        // alternative is closing the socket, which reaches the
+                        // other end as a truncated conversation and sends
+                        // whoever reads it to look for a network fault.
+                        Err(Error::Uncollectable { from }) => {
+                            let mut refused = Vec::with_capacity(8);
+                            frame::put_u64(&mut refused, from);
+                            frame::write_tagged(
+                                &mut link,
+                                PeerFrame::Uncollectable.tag(),
+                                &refused,
+                            )?;
+                        }
+                        Err(why) => return Err(why),
+                    }
+                    None
+                }
                 Some(PeerFrame::Ballot) => {
                     let asked = Ballot::decode(&body)?;
                     // The identity that decides a grant is the one the
@@ -183,8 +215,47 @@ impl Peers {
 pub struct Met {
     /// What the peer said it holds.
     pub said: Hello,
-    /// How this node voted, if the peer asked for anything.
+    /// How this node voted, when the peer asked for an epoch.
+    ///
+    /// `None` covers three different connections — a peer that asked nothing, a
+    /// peer that collected records, and one that vanished after its greeting —
+    /// because none of them produced a vote and this field is about votes. What
+    /// a collection produced is recorded against the follower in the store
+    /// rather than handed back here, since the report that matters is the
+    /// leader's per-follower lag and not one connection's outcome.
     pub voted: Option<Vote>,
+}
+
+/// What a caller asks for on the connection its greeting opened.
+///
+/// An enum and not two optional arguments, because one connection carries one
+/// follow-up: a caller able to pass both would be expressing a conversation the
+/// door cannot serve and nothing would refuse it.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum Ask<'a> {
+    /// Nothing — the caller only wanted to know who is there.
+    Nothing,
+    /// One epoch.
+    Ballot(&'a Ballot),
+    /// The records after a position this caller does not hold.
+    Records(Collect),
+}
+
+/// What the other end answered with.
+///
+/// Paired with [`Ask`] on purpose: an answer of the wrong kind is a peer
+/// speaking this protocol incorrectly and is refused as
+/// [`Error::OutOfTurn`], rather than accepted because it happened to decode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Answered {
+    /// Nothing was asked, so nothing was answered.
+    Nothing,
+    /// How the peer voted.
+    Voted(Vote),
+    /// What the peer's log held.
+    Collected(Collected),
 }
 
 /// Reach the peer `at` on `address`, and exchange greetings.
@@ -193,15 +264,17 @@ pub struct Met {
 ///
 /// Returns [`Error::Transport`] when the node reached does not hold a peer
 /// credential for `at` — the handshake refuses it, which is why this side needs
-/// no admission rule of its own.
+/// no admission rule of its own; [`Error::Uncollectable`] when a collection was
+/// asked for from a position the peer cannot state a predecessor for; and
+/// [`Error::OutOfTurn`] when the answer is not of the kind that was asked for.
 pub fn call(
     address: impl ToSocketAddrs,
     mine: Credential,
     authority: &CertificateDer<'_>,
     at: [u8; NODE_ID_LEN],
     said: &Hello,
-    asking: Option<&Ballot>,
-) -> Result<(Hello, Option<Vote>)> {
+    asking: Ask<'_>,
+) -> Result<(Hello, Answered)> {
     let mut roots = RootCertStore::empty();
     roots
         .add(authority.clone().into_owned())
@@ -230,29 +303,53 @@ pub fn call(
     exchanged
 }
 
-/// The greeting and the ballot, on a session that is already open.
+/// The greeting and the one follow-up, on a session that is already open.
 fn exchange(
     session: &mut ClientConnection,
     socket: &mut TcpStream,
     said: &Hello,
-    asking: Option<&Ballot>,
-) -> Result<(Hello, Option<Vote>)> {
+    asking: Ask<'_>,
+) -> Result<(Hello, Answered)> {
     let mut link = rustls::Stream::new(session, socket);
     say(&mut link, said)?;
     let heard = hear(&mut link)?;
 
-    let Some(ballot) = asking else {
-        return Ok((heard, None));
-    };
-    frame::write_tagged(&mut link, PeerFrame::Ballot.tag(), &ballot.encode())?;
-    let Some((tag, body)) = frame::read_tagged(&mut link)? else {
-        return Err(Error::Truncated);
-    };
-    match PeerFrame::from_tag(tag) {
-        Some(PeerFrame::Vote) => Ok((heard, Some(Vote::decode(&body)?))),
-        Some(_) => Err(Error::OutOfTurn { tag }),
-        None => Err(Error::UnknownFrame { tag }),
+    match asking {
+        Ask::Nothing => Ok((heard, Answered::Nothing)),
+        Ask::Ballot(ballot) => {
+            frame::write_tagged(&mut link, PeerFrame::Ballot.tag(), &ballot.encode())?;
+            let (tag, body) = answer(&mut link)?;
+            match PeerFrame::from_tag(tag) {
+                Some(PeerFrame::Vote) => Ok((heard, Answered::Voted(Vote::decode(&body)?))),
+                Some(_) => Err(Error::OutOfTurn { tag }),
+                None => Err(Error::UnknownFrame { tag }),
+            }
+        }
+        Ask::Records(collect) => {
+            frame::write_tagged(&mut link, PeerFrame::Collect.tag(), &collect.encode())?;
+            let (tag, body) = answer(&mut link)?;
+            match PeerFrame::from_tag(tag) {
+                Some(PeerFrame::Collected) => {
+                    Ok((heard, Answered::Collected(Collected::decode(&body)?)))
+                }
+                // The refusal the leader sent, rebuilt as the value it was on
+                // the other side. A follower that received this as a closed
+                // socket would be looking for a network fault instead of
+                // reading the one sentence that says what to do.
+                Some(PeerFrame::Uncollectable) => {
+                    let (from, _) = frame::take_u64(&body, 0)?;
+                    Err(Error::Uncollectable { from })
+                }
+                Some(_) => Err(Error::OutOfTurn { tag }),
+                None => Err(Error::UnknownFrame { tag }),
+            }
+        }
     }
+}
+
+/// The one frame that answers the one follow-up.
+fn answer(link: &mut rustls::Stream<'_, ClientConnection, TcpStream>) -> Result<(u8, Vec<u8>)> {
+    frame::read_tagged(link)?.ok_or(Error::Truncated)
 }
 
 /// Put one greeting on the link.
@@ -274,7 +371,8 @@ fn hear(link: &mut impl std::io::Read) -> Result<Hello> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{Credential, Met, Peers, Result, call};
+    use super::{Answered, Ask, Credential, Met, Peers, Result, call};
+    use crate::collection::{Collect, Collected, Origin};
     use crate::credential::names;
     use crate::error::Error;
     use crate::grant::{Ballot, Refused, Round, Vote, Voter};
@@ -330,6 +428,32 @@ pub(crate) mod tests {
         }
     }
 
+    /// A door with no log behind it.
+    ///
+    /// Every test in this module is about the handshake, the ballot or the
+    /// refusal, and none of them asks for a record — so making them build a
+    /// storage engine would put an engine in the path of a test about a
+    /// greeting. It refuses rather than answering empty, because *nothing to
+    /// give* and *you are level* must never look alike (see
+    /// [`crate::Error::Uncollectable`]).
+    pub(crate) struct NoLog;
+
+    impl Origin for NoLog {
+        fn collected(&self, _: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
+            Err(Error::Uncollectable {
+                from: asked.from.get(),
+            })
+        }
+    }
+
+    /// The vote inside an answer, or `None` when the peer answered otherwise.
+    pub(crate) fn voted(answered: &Answered) -> Option<Vote> {
+        match answered {
+            Answered::Voted(vote) => Some(*vote),
+            _ => None,
+        }
+    }
+
     fn identity(node: [u8; NODE_ID_LEN]) -> NodeIdentity {
         NodeIdentity::alone(node)
     }
@@ -369,7 +493,7 @@ pub(crate) mod tests {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
-        let listening = std::thread::spawn(move || peers.greet(&mine, &mut settled()));
+        let listening = std::thread::spawn(move || peers.greet(&mine, &mut settled(), &NoLog));
 
         let theirs = call(
             address,
@@ -377,7 +501,7 @@ pub(crate) mod tests {
             &authority.der(),
             HERE,
             &hello(THERE),
-            None,
+            Ask::Nothing,
         )
         .expect("a peer that proved itself is answered")
         .0;
@@ -401,7 +525,7 @@ pub(crate) mod tests {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
-        let listening = std::thread::spawn(move || peers.greet(&mine, &mut settled()));
+        let listening = std::thread::spawn(move || peers.greet(&mine, &mut settled(), &NoLog));
 
         // The id is perfectly correct. What is wrong is the link it was issued
         // for, which is the criterion's own sentence.
@@ -411,7 +535,7 @@ pub(crate) mod tests {
             &authority.der(),
             HERE,
             &hello(THERE),
-            None,
+            Ask::Nothing,
         ));
 
         let refused = listening
@@ -426,7 +550,7 @@ pub(crate) mod tests {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
-        let listening = std::thread::spawn(move || peers.greet(&mine, &mut settled()));
+        let listening = std::thread::spawn(move || peers.greet(&mine, &mut settled(), &NoLog));
 
         // Issued by the right authority, for the right link, for the wrong node.
         drop(call(
@@ -435,7 +559,7 @@ pub(crate) mod tests {
             &authority.der(),
             HERE,
             &hello(THERE),
-            None,
+            Ask::Nothing,
         ));
 
         let refused = listening
@@ -470,7 +594,7 @@ pub(crate) mod tests {
         .expect("a peer door on loopback");
         let address = peers.address().expect("the door's address");
         let mine = hello(id);
-        let answering = std::thread::spawn(move || peers.greet(&mine, &mut voter));
+        let answering = std::thread::spawn(move || peers.greet(&mine, &mut voter, &NoLog));
         (address, answering)
     }
 
@@ -504,11 +628,11 @@ pub(crate) mod tests {
             &authority.der(),
             HERE,
             &hello(THERE),
-            Some(&ballot),
+            Ask::Ballot(&ballot),
         )
         .expect("a peer that proved itself may ask");
 
-        assert_eq!(vote, Some(Vote::Granted));
+        assert_eq!(voted(&vote), Some(Vote::Granted));
         let met = answering
             .join()
             .expect("the door's thread")
@@ -538,7 +662,7 @@ pub(crate) mod tests {
         let mine = hello(HERE);
         let answering = std::thread::spawn(move || {
             let mut voter = settled();
-            let met = peers.greet(&mine, &mut voter);
+            let met = peers.greet(&mine, &mut voter, &NoLog);
             // The voter is handed back untouched: nothing was decided, which is
             // the half a refusal-shaped answer would not have given.
             (met, voter.decided())
@@ -550,7 +674,7 @@ pub(crate) mod tests {
             &authority.der(),
             HERE,
             &hello(THERE),
-            Some(&Ballot {
+            Ask::Ballot(&Ballot {
                 epoch: Epoch::new(1),
                 candidate: HERE,
             }),
@@ -582,7 +706,7 @@ pub(crate) mod tests {
         let mine = hello(HERE);
         let answering = std::thread::spawn(move || {
             let mut voter = incumbent();
-            peers.greet(&mine, &mut voter)
+            peers.greet(&mine, &mut voter, &NoLog)
         });
 
         let refused = call(
@@ -591,14 +715,14 @@ pub(crate) mod tests {
             &authority.der(),
             HERE,
             &hello(THERE),
-            Some(&Ballot {
+            Ask::Ballot(&Ballot {
                 epoch: Epoch::new(2),
                 candidate: THERE,
             }),
         )
         .expect("a peer that proved itself may ask")
-        .1
-        .expect("a vote came back");
+        .1;
+        let refused = voted(&refused).expect("a vote came back");
         drop(answering.join().expect("the door's thread"));
 
         // The reason survives, and so does the wait: a candidate told only "no"
@@ -635,10 +759,10 @@ pub(crate) mod tests {
                 &authority.der(),
                 *id,
                 &hello(THERE),
-                Some(&round.ballot()),
+                Ask::Ballot(&round.ballot()),
             )
             .expect("every door is up");
-            held = round.counts(*id, vote.expect("a door that was asked answers"));
+            held = round.counts(*id, voted(&vote).expect("a door that was asked answers"));
         }
 
         for (_, (_, answering)) in doors {
@@ -672,10 +796,10 @@ pub(crate) mod tests {
                 &authority.der(),
                 *id,
                 &hello(THERE),
-                Some(&round.ballot()),
+                Ask::Ballot(&round.ballot()),
             )
             .expect("every door is up and answering");
-            let vote = vote.expect("a door that was asked answers");
+            let vote = voted(&vote).expect("a door that was asked answers");
             assert!(
                 matches!(vote, Vote::Refused(Refused::EarlierGrantStillAlive { .. })),
                 "{vote:?}"
@@ -713,11 +837,11 @@ pub(crate) mod tests {
             &authority.der(),
             alive,
             &hello(THERE),
-            Some(&round.ballot()),
+            Ask::Ballot(&round.ballot()),
         )
         .expect("the one door that is up answers");
         assert_eq!(
-            round.counts(alive, vote.expect("it answered")),
+            round.counts(alive, voted(&vote).expect("it answered")),
             None,
             "one of three is not a majority"
         );
@@ -728,7 +852,7 @@ pub(crate) mod tests {
             &authority.der(),
             [21_u8; NODE_ID_LEN],
             &hello(THERE),
-            Some(&round.ballot()),
+            Ask::Ballot(&round.ballot()),
         );
         assert!(reached.is_err(), "a door that is gone answers nothing");
 
@@ -770,10 +894,10 @@ pub(crate) mod tests {
                 &authority.der(),
                 *id,
                 &hello(THERE),
-                Some(&round.ballot()),
+                Ask::Ballot(&round.ballot()),
             )
             .expect("every door is up");
-            held = round.counts(*id, vote.expect("it answered"));
+            held = round.counts(*id, voted(&vote).expect("it answered"));
         }
         let held = held.expect("three of three carried it");
 
@@ -810,7 +934,7 @@ pub(crate) mod tests {
                 &authority.der(),
                 *id,
                 &hello(THERE),
-                Some(&renewal.ballot()),
+                Ask::Ballot(&renewal.ballot()),
             );
             assert!(reached.is_err(), "the majority is unreachable");
         }
@@ -893,7 +1017,7 @@ pub(crate) mod tests {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
-        let listening = std::thread::spawn(move || peers.greet(&mine, &mut settled()));
+        let listening = std::thread::spawn(move || peers.greet(&mine, &mut settled(), &NoLog));
 
         let mut roots = rustls::RootCertStore::empty();
         roots.add(authority.der()).expect("the test authority");

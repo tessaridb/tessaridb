@@ -47,6 +47,8 @@
 mod campaign;
 mod client;
 #[cfg(feature = "server")]
+mod collection;
+#[cfg(feature = "server")]
 mod credential;
 mod error;
 mod frame;
@@ -68,12 +70,14 @@ use std::time::Duration;
 pub use crate::campaign::Standing;
 pub use crate::client::{Client, Feed};
 #[cfg(feature = "server")]
+pub use crate::collection::{Collect, Collected, Origin};
+#[cfg(feature = "server")]
 pub use crate::credential::{fingerprint, names, presented};
 pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]
 pub use crate::grant::{Ballot, Leadership, Refused, Round, Vote, Voter};
 #[cfg(feature = "server")]
-pub use crate::link::{Credential, Met, Peers, call};
+pub use crate::link::{Answered, Ask, Credential, Met, Peers, call};
 #[cfg(feature = "server")]
 pub use crate::message::names_for;
 pub use crate::message::{Answer, Correction, Exact, Names, Remark, Request, Suggested, spell};

@@ -70,6 +70,32 @@ pub enum Error {
     #[error("a ballot named a candidate other than the peer that proved itself")]
     NotItsOwnBallot,
 
+    /// A collection asked from a position whose predecessor this node cannot
+    /// state.
+    ///
+    /// A stream of records is only safe to apply if the receiver can be told
+    /// which leadership wrote the record *before* the first one carried — that
+    /// is what tells a re-send apart from a divergence, and without it a fork
+    /// and a retry arrive looking identical. The epoch is read at `from - 1`,
+    /// so a position this node holds nothing before cannot be served.
+    ///
+    /// # Two causes, one refusal, and that is deliberate
+    ///
+    /// A follower asking past the end of this node's log is either forked or
+    /// mistaken; a follower asking from behind the retention floor needs a
+    /// bootstrap rather than a collection. This node cannot tell which, and
+    /// naming one would be a guess. What it must not do is answer *nothing*,
+    /// because an empty collection is how a follower that is **level** is
+    /// answered — so silence here would report a forked or stranded node as
+    /// caught up.
+    #[error(
+        "this node cannot say what precedes sequence {from}, so it cannot be collected from there"
+    )]
+    Uncollectable {
+        /// The position that was asked for.
+        from: u64,
+    },
+
     /// A frame kind this build does not have.
     ///
     /// The connection closes rather than the frame being skipped: a protocol
