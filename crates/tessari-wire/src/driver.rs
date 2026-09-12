@@ -246,6 +246,70 @@ pub fn upstream(
     Some((peer.node?, peer.endpoint))
 }
 
+/// Whether this node is eligible to stand at all, from its own identity alone.
+///
+/// The half of [`voters`]'s question that needs no catalog. A node the operator
+/// never declared `WRITABLE` stands for nothing whoever its peers turn out to
+/// be, so a caller running on a cadence can settle that before opening a
+/// transaction to read every replica the catalog declares — a read it would
+/// otherwise pay once a tick, for the life of the process, to reach the same
+/// `return`.
+///
+/// [`voters`] asks this rather than repeating the test, so the rule is stated
+/// once and an early-out at a call site cannot drift away from the answer the
+/// round itself will give.
+#[must_use]
+pub fn stands(mine: Roles) -> bool {
+    mine.has(Roles::WRITABLE)
+}
+
+/// The voting members this node puts a ballot to, if it stands at all.
+///
+/// # Who stands
+///
+/// A node the operator declared `WRITABLE`, and nobody else. `04_concept.md`
+/// §6.1 separates the two halves deliberately — the **desired** role is a
+/// replicated catalog record the operator writes, the **effective** role is a
+/// lease the cluster grants — so a node promoting itself because a leader went
+/// quiet would be taking a decision the catalog is there to hold.
+///
+/// The roles asked for here are therefore the **declared** ones, never
+/// [`tessari_storage::Store::effective_roles`]. The effective set drops
+/// `WRITABLE` the instant the lease is spent, so a leader that missed one round
+/// would stop campaigning and could never stand again — and the failure would be
+/// indistinguishable from a correct demotion, which is what makes it worth
+/// naming here rather than leaving to the call site.
+///
+/// # A node with nobody to coordinate with stands for nothing
+///
+/// `None` rather than a round against an empty set. [`Roles::ALONE`] says it
+/// outright — *not `COORDINATING`, because there is nothing to coordinate with*
+/// — and the practical half matters more: every single-node deployment in
+/// existence would otherwise begin taking and defending a lease, which gives a
+/// store that has never needed one a brand-new way to stop accepting writes the
+/// day a thread dies.
+///
+/// # A peer nobody has identified is not a voter
+///
+/// The same wall [`upstream`] runs into. A ballot travels on a connection whose
+/// certificate must be valid for a name derived from the peer's id, so a row
+/// naming where but not who cannot be asked for anything at all.
+#[must_use]
+pub fn voters(
+    mine: Roles,
+    declared: &[ReplicaDefinition],
+) -> Option<Vec<([u8; NODE_ID_LEN], String)>> {
+    if !stands(mine) {
+        return None;
+    }
+    let voting: Vec<_> = declared
+        .iter()
+        .filter(|peer| peer.roles.has(Roles::COORDINATING))
+        .filter_map(|peer| Some((peer.node?, peer.endpoint.clone())))
+        .collect();
+    (!voting.is_empty()).then_some(voting)
+}
+
 /// The leadership this node holds, and what a lost round does to it.
 #[derive(Debug)]
 pub struct Renewing {
@@ -295,7 +359,9 @@ mod tests {
     use tessari_storage::Lease;
     use tessari_types::{Epoch, Sequence};
 
-    use super::{Collecting, Published, Renewing, ReplicaDefinition, due_in, every, upstream};
+    use super::{
+        Collecting, Published, Renewing, ReplicaDefinition, due_in, every, upstream, voters,
+    };
     use crate::directory::Directory;
     use crate::grant::Leadership;
     use crate::peer::Hello;
@@ -370,6 +436,60 @@ mod tests {
         assert_eq!(
             upstream(Roles::SERVING, Some(peer(Roles::WRITABLE, None))),
             None
+        );
+    }
+
+    #[test]
+    fn a_node_the_operator_did_not_make_writable_stands_for_nothing() {
+        // §6.1 keeps the two halves apart on purpose: the DESIRED role is a
+        // catalog record the operator writes, the EFFECTIVE role is a lease the
+        // cluster grants. A node promoting itself because a leader went quiet
+        // would be taking the decision the catalog exists to hold.
+        let coordinating = peer(Roles::SERVING.and(Roles::COORDINATING), Some(NODE));
+        assert_eq!(
+            voters(Roles::SERVING, std::slice::from_ref(&coordinating)),
+            None
+        );
+        assert_eq!(
+            voters(Roles::NONE, std::slice::from_ref(&coordinating)),
+            None
+        );
+        // The same node and the same peer with the role granted: it stands.
+        assert_eq!(
+            voters(Roles::ALONE, &[coordinating]),
+            Some(vec![(NODE, "10.0.0.2:9000".to_owned())])
+        );
+    }
+
+    #[test]
+    fn a_node_with_nobody_to_coordinate_with_stands_for_nothing() {
+        // `Roles::ALONE` says it outright, and the practical half matters more:
+        // every single-node deployment in existence would otherwise begin taking
+        // and defending a lease, which hands a store that never needed one a new
+        // way to stop accepting writes the day a thread dies.
+        assert_eq!(voters(Roles::ALONE, &[]), None);
+        // A declared peer that does not coordinate is not a voter either — it
+        // replicates, which is a different grant entirely.
+        assert_eq!(
+            voters(Roles::ALONE, &[peer(Roles::SERVING, Some(NODE))]),
+            None
+        );
+    }
+
+    #[test]
+    fn a_voting_peer_nobody_has_identified_cannot_be_balloted() {
+        // The wall `upstream` runs into, at the other cadence. A ballot travels
+        // on a connection whose certificate must be valid for a name derived
+        // from the peer's id, so a row naming where but not who cannot be asked
+        // for anything — and dropping it from the membership matters twice over,
+        // because a majority counted over members that cannot be asked is a
+        // majority of a fiction.
+        let named = peer(Roles::SERVING.and(Roles::COORDINATING), Some(NODE));
+        let nameless = peer(Roles::SERVING.and(Roles::COORDINATING), None);
+        assert_eq!(voters(Roles::ALONE, std::slice::from_ref(&nameless)), None);
+        assert_eq!(
+            voters(Roles::ALONE, &[nameless, named]),
+            Some(vec![(NODE, "10.0.0.2:9000".to_owned())])
         );
     }
 

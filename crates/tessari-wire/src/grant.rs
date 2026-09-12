@@ -337,6 +337,76 @@ impl Voter {
     }
 }
 
+/// One node's voting memory, reachable from every thread that can need it.
+///
+/// # Why the memory is shared rather than owned by the door
+///
+/// A node votes in two places. A peer's ballot arrives at the door; this node's
+/// own ballot, when it stands for an epoch of its own, is decided at home. Both
+/// are votes, and a voter grants an epoch **at most once** — which is the whole
+/// safety argument [`Voter`] rests on and it is a statement about the node, not
+/// about a variable.
+///
+/// A campaign that counted its own vote without recording it here would leave
+/// this node free to grant the same epoch to somebody else a moment later. Two
+/// candidates would then hold one epoch, each with an honest majority, and
+/// nothing anywhere would be in an error state. That is the split-brain this
+/// module opens by declaring impossible, arriving through the one voter the
+/// design forgot was also a candidate.
+///
+/// # The lock is taken to decide a vote, never to wait for one
+///
+/// [`crate::Peers::greet`] waits inside `accept`, so a door holding this lock
+/// across a whole call would block a campaign for as long as no peer happened to
+/// ring. It takes the lock where the vote is actually decided instead, which is
+/// a few comparisons long.
+#[derive(Debug)]
+pub struct Deciding {
+    voter: std::sync::Mutex<Voter>,
+}
+
+impl Deciding {
+    /// A voting memory that started now.
+    #[must_use]
+    pub fn started() -> Self {
+        Self::holding(Voter::started())
+    }
+
+    /// A voting memory around a voter whose start instant the caller stated.
+    #[must_use]
+    pub fn holding(voter: Voter) -> Self {
+        Self {
+            voter: std::sync::Mutex::new(voter),
+        }
+    }
+
+    /// Answer one ballot, from wherever it came.
+    ///
+    /// # A poisoned lock recovers rather than refusing
+    ///
+    /// The same decision [`crate::Published`] takes and for the same reason: what
+    /// the lock protects is one `Option` assigned whole, so a thread that
+    /// panicked mid-call left a complete memory behind and never half of one.
+    /// Refusing to read it would take this node out of every round for the rest
+    /// of the process's life over a panic elsewhere — a permanent availability
+    /// loss bought with no safety, because the value being guarded is sound.
+    pub fn asked(&self, ballot: &Ballot, now: Instant) -> Vote {
+        self.held().asked(ballot, now)
+    }
+
+    /// The highest epoch this node has granted, if any.
+    #[must_use]
+    pub fn decided(&self) -> Option<Epoch> {
+        self.held().decided()
+    }
+
+    fn held(&self) -> std::sync::MutexGuard<'_, Voter> {
+        self.voter
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 /// Leadership a majority agreed to.
 ///
 /// Named for the thing rather than for the holding, because the storage engine

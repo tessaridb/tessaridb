@@ -210,7 +210,25 @@ const TABLES: &[Table] = &[
         // is: it takes no reach, it reads and writes no record, no catalog entry
         // and no grant, and what it touches is process memory that is never
         // persisted and never queryable.
-        expected: 18,
+        //
+        // 19 since the campaign: `Db::leading` reads back the epoch a round
+        // granted this node, which `Db::hold` installed beside the lease.
+        // Classified **exempt on the same ground and one step weaker**, and the
+        // weakening is worth naming rather than glossing: `hold` only writes
+        // process memory, while `leading` READS it out, and what it reads now
+        // travels — a greeting carries it to every peer, which is the whole
+        // reason it exists. What travels is a single integer that the node
+        // asserts about itself, it is carried on a mutually authenticated link,
+        // and a peer that disbelieved it could check it against its own vote;
+        // no record, no catalog entry and no grant is reachable through it.
+        //
+        // **Re-classification trigger:** the day a caller outside this node can
+        // SET it — a management statement, an HTTP route, a peer frame that
+        // writes another node's leadership — the fact stops being one this
+        // process observed about itself and must be enforced where it is
+        // written. Today the only writer is the campaign thread, from a round it
+        // opened and counted itself.
+        expected: 19,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -363,7 +381,19 @@ const TABLES: &[Table] = &[
         // a process-local fact and must be enforced.** Today the only caller is
         // `Collector::collect`, which sets them from what it itself observed on
         // a link it itself opened.
-        expected: 27,
+        //
+        // 28 since the campaign: `Store::leading` reads back the epoch handed to
+        // `Store::hold`, whose signature grew to carry it. Classified **exempt**
+        // for `Db::leading`'s reasons, recorded there in full rather than twice
+        // — the facade method is this one and nothing else.
+        //
+        // What changed on the WRITE side is worth a line of its own: `hold` no
+        // longer installs only a fence, it installs the identity of the
+        // leadership that fence belongs to. Both arrive from one round and are
+        // read by two different readers — the fence by every commit, the epoch
+        // by every greeting — which is why they are stored together and neither
+        // is derived from the other.
+        expected: 28,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -422,7 +452,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 75, "the counted tables no longer sum to 75");
+    assert_eq!(total, 77, "the counted tables no longer sum to 77");
 }
 
 /// Every `.rs` file under a directory.

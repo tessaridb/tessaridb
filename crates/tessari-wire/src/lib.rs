@@ -82,10 +82,10 @@ pub use crate::credential::{fingerprint, names, presented};
 #[cfg(feature = "server")]
 pub use crate::directory::{Destination, Directory, Heard};
 #[cfg(feature = "server")]
-pub use crate::driver::{Collecting, Published, Renewing, due_in, every, upstream};
+pub use crate::driver::{Collecting, Published, Renewing, due_in, every, stands, upstream, voters};
 pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]
-pub use crate::grant::{Ballot, Leadership, Refused, Round, Vote, Voter};
+pub use crate::grant::{Ballot, Deciding, Leadership, Refused, Round, Vote, Voter};
 #[cfg(feature = "server")]
 pub use crate::joining::{Joining, Told};
 #[cfg(feature = "server")]

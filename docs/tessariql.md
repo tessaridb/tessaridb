@@ -6477,6 +6477,42 @@ correct it. `null` means subscribed to nothing — the quietest failure a cluste
 has, because every node is up, every greeting lands, and one copy simply never
 changes.
 
+
+### Which peers vote, and what a node that votes for nobody does
+
+A peer declared with the `coordinating` role is a **voting member**: a node that
+may write puts a ballot to every such peer when its lease approaches its fence,
+and leads for the next epoch if a majority grants it.
+
+```
+DEFINE REPLICA db_2 AT 'db-2.internal:9000'
+    NODE '3f9a1c04b7e2489db5610af3d82c7e46'
+    ROLES serving, coordinating;
+```
+
+**The majority is a majority of the membership, and the membership includes this
+node.** Three coordinating machines means a round is carried by two of them, one
+of which may be the candidate itself — so a cluster of three goes on electing
+after it loses one. The node counts its own ballot through the same memory a
+peer's ballot reaches, which is what stops it from granting one epoch twice.
+
+**A node with no coordinating peer declared stands for nothing, and is therefore
+never fenced.** A single machine has nothing to coordinate with, so it takes no
+lease, and a store that never needed leadership does not acquire a new way to
+stop accepting writes. Declaring the first coordinating peer is what turns the
+mechanism on.
+
+**Which roles let a node stand is what the catalog says, not what it is currently
+doing.** A leader that misses a round stops writing — that is the fence — but it
+goes on standing, because the role the operator wrote has not changed. A node the
+operator has not made writable never stands at all, however quiet the leader
+gets: which machine *should* lead is a decision the catalog holds.
+
+`INFO FOR NODE` reports the epoch this node is leading under beside the time left
+on its lease. The pair is the one an operator watches: a lease heading toward
+zero on a node that is still writing is the split-brain window, and it is the
+only shape in which that window is visible at all.
+
 A node configured by a file beside a store configured by statements is **two
 sources of truth for one node** — they agree until the first restore and then do
 not. All three need an owner.

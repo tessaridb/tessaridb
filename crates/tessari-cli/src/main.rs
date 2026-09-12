@@ -423,10 +423,18 @@ fn serve(
             authority,
             routing,
         } = surface;
+        // One voting memory, held by the door and by the campaign alike. A
+        // node votes in two places — a peer's ballot arrives at the door, its
+        // own arrives at home — and *a voter grants an epoch at most once* is a
+        // statement about the node rather than about whichever thread happens to
+        // hold the variable. Two memories would let this node grant one epoch
+        // twice and hand two candidates an honest majority each.
+        let deciding = std::sync::Arc::new(tessari_wire::Deciding::started());
         let answering = {
             let db = std::sync::Arc::clone(&db);
             let stopping = std::sync::Arc::clone(&peering);
-            std::thread::spawn(move || greet_peers(&db, &door, &stopping))
+            let deciding = std::sync::Arc::clone(&deciding);
+            std::thread::spawn(move || greet_peers(&db, &door, &deciding, &stopping))
         };
         // A second thread, because the first one is inside `accept` for as long
         // as no peer calls: a node that only answers learns nothing about a
@@ -434,6 +442,8 @@ fn serve(
         // surface stops as one thing.
         let collecting_credential = dialling.duplicate();
         let collecting_authority = authority.clone();
+        let standing_credential = dialling.duplicate();
+        let standing_authority = authority.clone();
         let dialling = {
             let db = std::sync::Arc::clone(&db);
             let stopping = std::sync::Arc::clone(&peering);
@@ -456,7 +466,26 @@ fn serve(
                 );
             })
         };
-        (answering, dialling, collecting)
+        // A fourth, and the last of the three cadences `driver.rs` names. A
+        // missed renewal costs *leadership*, and it costs it on the tightest
+        // deadline of the three — a fence that shuts whether or not anyone
+        // noticed. Sharing a thread with a collection blocked on a dead peer's
+        // TCP connect is precisely how a healthy leader would lose a lease it
+        // could have renewed.
+        let standing = {
+            let db = std::sync::Arc::clone(&db);
+            let stopping = std::sync::Arc::clone(&peering);
+            std::thread::spawn(move || {
+                stand_for_leadership(
+                    &db,
+                    &standing_credential,
+                    &standing_authority,
+                    &deciding,
+                    &stopping,
+                );
+            })
+        };
+        (answering, dialling, collecting, standing)
     });
 
     match (wire, http) {
@@ -484,10 +513,11 @@ fn serve(
     // Before the store, not after, and for the reason the consumers are: this
     // thread holds an `Arc` on the store, so `drop(db)` below would release one
     // handle of two and flush nothing until it ended.
-    if let Some((answering, dialling, collecting)) = peer_threads {
+    if let Some((answering, dialling, collecting, standing)) = peer_threads {
         drop(answering.join());
         drop(dialling.join());
         drop(collecting.join());
+        drop(standing.join());
     }
     // Before the store, not after. Stage 1 told the consumers to stop and did
     // not wait; this is the wait. Joining after `drop(db)` would flush the store
@@ -731,8 +761,139 @@ fn collect_from_upstream(
     );
 }
 
-fn greet_peers(db: &Db, door: &tessari_wire::Peers, stopping: &tessari_serve::Stopping) {
-    let mut voter = tessari_wire::Voter::started();
+/// Stand for the leadership this node is declared to hold, once per campaign
+/// interval.
+///
+/// # What decides whether this node stands at all
+///
+/// [`tessari_wire::voters`] does, from the roles this node's catalog **declares**
+/// and the peers it declares coordinating. The declared roles and not the
+/// effective ones: the effective set drops `WRITABLE` the moment the lease is
+/// spent, so a leader that lost one round would stop campaigning and could never
+/// stand again — a permanent demotion that looks exactly like a correct one.
+///
+/// It is asked every round rather than once, so a node the operator makes
+/// writable begins defending a lease without a restart, and one the operator
+/// stands down stops asking for epochs at the next tick.
+///
+/// # Why a node that holds no leadership starts from a spent lease
+///
+/// [`tessari_wire::Renewing`] holds a `Leadership` and asks whether its fence is
+/// near enough to need standing again. A node that holds none is, arithmetically,
+/// a node holding one that has already run out — so the cursor starts one whole
+/// lease in the past and the first pass stands immediately, rather than teaching
+/// the driver a second state that means the same thing.
+///
+/// # What a lost round does, and does not do
+///
+/// Nothing here. `Renewing` keeps the lease it holds when a round wins nothing,
+/// because a round wins nothing in the ordinary case too — a cadence that fired
+/// while there was still margin asked nobody at all. Standing down on that would
+/// make a healthy leader resign on a timer. What ends a leadership is the fence,
+/// which the store closes on its own.
+fn stand_for_leadership(
+    db: &Db,
+    mine: &tessari_wire::Credential,
+    authority: &tessari_wire::CertificateDer<'static>,
+    voter: &tessari_wire::Deciding,
+    stopping: &tessari_serve::Stopping,
+) {
+    let started = std::time::Instant::now();
+    let mut renewing = tessari_wire::Renewing::holding(tessari_wire::Leadership {
+        epoch: tessari_types::Epoch::ZERO,
+        // A lease taken a whole TTL ago is spent, so the first pass stands. If
+        // the subtraction cannot be represented — a process started before the
+        // clock had a lease's worth of history behind it — the node waits out
+        // one lease before its first round, which is the safe direction.
+        from: started
+            .checked_sub(tessari_storage::LEASE_TTL)
+            .unwrap_or(started),
+    });
+    tessari_wire::every(
+        std::time::Duration::from_secs(tessari_constants::CAMPAIGN_SECONDS),
+        stopping,
+        |now| {
+            let store = db.store();
+            // Identity first, and the catalog only once this node is known to
+            // stand. Reading the roles costs a record; reading every replica the
+            // catalog declares costs a transaction and a scan, and a node the
+            // operator never made writable would otherwise pay for that scan
+            // once a tick, for the life of the process, to reach a `return`.
+            let me = match store.node_identity() {
+                Ok(identity) => identity,
+                Err(why) => {
+                    log::warn!("this node cannot say who it is: {why}");
+                    return;
+                }
+            };
+            if !tessari_wire::stands(me.roles) {
+                return;
+            }
+            let declared = match store.begin().and_then(|mut transaction| {
+                tessari_storage::Catalog::new(&mut transaction).replicas()
+            }) {
+                Ok(declared) => declared,
+                Err(why) => {
+                    log::warn!("this node cannot say who its peers are: {why}");
+                    return;
+                }
+            };
+            let Some(voting) = tessari_wire::voters(me.roles, &declared) else {
+                return;
+            };
+            // A member whose endpoint will not parse is dropped from the set it
+            // is a member of, not silently skipped inside the round: a majority
+            // counted over members that cannot be asked is a majority of a
+            // fiction. The operator hears about it either way.
+            let mut peers = Vec::with_capacity(voting.len());
+            for (node, endpoint) in &voting {
+                match endpoint.parse() {
+                    Ok(address) => peers.push((*node, address)),
+                    Err(why) => {
+                        log::warn!(
+                            "the voting peer's endpoint {endpoint} is not an address: {why}"
+                        );
+                    }
+                }
+            }
+            if peers.is_empty() {
+                return;
+            }
+            let said = match greeting(db) {
+                Ok(said) => said,
+                Err(why) => {
+                    log::warn!("this node cannot say what it holds: {why}");
+                    return;
+                }
+            };
+            let standing = tessari_wire::Standing {
+                candidate: me.id,
+                mine,
+                authority,
+                said: &said,
+                peers: &peers,
+                round: std::time::Duration::from_secs(tessari_constants::ROUND_SECONDS),
+            };
+            let before = renewing.standing();
+            let held = renewing.once(|lease, next| standing.renew(voter, lease, next, now));
+            if held != before {
+                // Installed as it was granted, whole. The lease is dated from the
+                // instant the round opened, so handing the store a span instead
+                // would restart that clock here and spend the canvass out of the
+                // voters' window rather than this node's.
+                db.hold(held.epoch, held.lease());
+                log::info!("leading at epoch {}", held.epoch.get());
+            }
+        },
+    );
+}
+
+fn greet_peers(
+    db: &Db,
+    door: &tessari_wire::Peers,
+    voter: &tessari_wire::Deciding,
+    stopping: &tessari_serve::Stopping,
+) {
     while !stopping.asked() {
         // Read before the wait rather than after it, because `greet` accepts
         // inside itself — so a door that sat idle greets with the facts it held
@@ -752,11 +913,7 @@ fn greet_peers(db: &Db, door: &tessari_wire::Peers, stopping: &tessari_serve::St
         // The door serves the log at last, and serves it to exactly the peers
         // this store's own catalog subscribed — `NoLog` was the honest answer
         // only while nothing could ask the catalog that question.
-        match door.greet(
-            &mine,
-            &mut voter,
-            &tessari_wire::Serving::declared(db.store()),
-        ) {
+        match door.greet(&mine, voter, &tessari_wire::Serving::declared(db.store())) {
             Ok(met) => log::info!(
                 "peer {} greeted at epoch {}, tail {}{}",
                 hex(&met.said.node),
@@ -784,26 +941,28 @@ fn greeting(db: &Db) -> Result<tessari_wire::Hello, String> {
     let identity = store.node_identity().map_err(|why| why.to_string())?;
     let tail = store.committed_tail().map_err(|why| why.to_string())?;
     let current_as_of = store.current_as_of().map_err(|why| why.to_string())?;
-    // `Epoch::ZERO`, and read from nothing on purpose.
+    // The leadership this node is actually writing under — and the trigger the
+    // previous version of this line named has now fired.
     //
-    // The first version of this read the newest log record and took its epoch,
-    // which is the general answer. It is not the answer this build can give: no
-    // epoch is ever allocated here — nothing campaigns in the serving path and
-    // nothing applies from a peer — so every record this node holds belongs to
-    // the first and only leadership, and `Epoch::ZERO` is exactly what a
-    // receiver computes for one anyway.
+    // It used to be the constant `Epoch::ZERO`, which was true rather than lazy:
+    // no epoch was ever allocated in this path, so every record the node held
+    // belonged to the first and only leadership. A campaign now runs here, so
+    // the constant would be a node telling every peer it leads under an epoch it
+    // does not — and `Hello::epoch` is documented as *the leadership it believes
+    // is current*, which is a claim peers route on.
     //
-    // So the record read bought a value that cannot differ from this constant in
-    // any state this build reaches, and it bought it by reading a log record at
-    // `Reach::Store` inside a process that answers a network. Reach that buys
-    // nothing is reach worth removing.
+    // Read from the store rather than from the newest log record, which was the
+    // other candidate: the record read costs a `Reach::Store` scan inside a
+    // process that answers a network, and it answers a different question — what
+    // leadership WROTE the last thing here, not what leadership this node holds
+    // now. A follower holds records written under epochs it never led.
     //
-    // The day a follower loop or a campaign runs in this path, the general
-    // answer comes back — and the test that catches its absence is the one that
-    // cannot be written today, because both values agree.
+    // `None` becomes `Epoch::ZERO`, so a node that never campaigns greets
+    // byte-identically to every build before this one.
+    let leading = store.leading().unwrap_or(tessari_types::Epoch::ZERO);
     Ok(tessari_wire::Hello::about(
         &identity,
-        tessari_types::Epoch::ZERO,
+        leading,
         tail,
         current_as_of,
     ))

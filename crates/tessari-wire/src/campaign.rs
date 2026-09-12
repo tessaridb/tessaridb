@@ -44,7 +44,7 @@ use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::Lease;
 use tessari_types::Epoch;
 
-use crate::grant::{Leadership, Round};
+use crate::grant::{Deciding, Leadership, Round};
 use crate::link::{Answered, Ask, Credential, call};
 use crate::peer::Hello;
 
@@ -86,12 +86,53 @@ impl Standing<'_> {
     /// vote, is skipped rather than fatal — a round is carried by a majority of
     /// the members, not by all of them, and one node being down is the condition
     /// this whole mechanism exists to survive.
+    ///
+    /// # The voting set is the peers **and this node**
+    ///
+    /// `peers` is what an operator declared, and a node never appears in its own
+    /// peer list — it cannot pick itself out of one, which is why a routing
+    /// target is carried as a field rather than derived by matching. So the
+    /// membership is `peers.len() + 1`, and counting only the dialable part of
+    /// it gets the arithmetic backwards in the worst available direction: in a
+    /// cluster of three it would make `majority` two **of two**, so a round
+    /// would need every surviving peer and the loss of any single member would
+    /// end leadership permanently. A majority that cannot survive one failure is
+    /// not what a majority is for.
+    ///
+    /// # This node's own vote goes through its own memory
+    ///
+    /// The candidate asks [`Deciding`] first, with exactly the ballot a peer
+    /// receives. A self-vote counted *without* being recorded would leave this
+    /// node free to grant the same epoch to somebody else moments later — two
+    /// candidates, one epoch, each with an honest majority, and nothing anywhere
+    /// in an error state.
+    ///
+    /// It follows that a node can refuse to vote for itself, and that is the
+    /// rules working rather than a case to special-case: a voter restarted less
+    /// than one TTL ago cannot rule out having granted something it has
+    /// forgotten, and that is as true of a ballot it wrote as of one that
+    /// arrived on a socket.
     #[must_use]
-    pub fn renew(&self, held: Lease, next: Epoch, now: Instant) -> Option<Leadership> {
+    pub fn renew(
+        &self,
+        voter: &Deciding,
+        held: Lease,
+        next: Epoch,
+        now: Instant,
+    ) -> Option<Leadership> {
         if renew_in(held, self.round, now) > Duration::ZERO {
             return None;
         }
-        let mut round = Round::opened_at(next, self.candidate, self.peers.len(), now);
+        let mut round = Round::opened_at(
+            next,
+            self.candidate,
+            self.peers.len().saturating_add(1),
+            now,
+        );
+        let ballot = round.ballot();
+        if let Some(won) = round.counts(self.candidate, voter.asked(&ballot, now)) {
+            return Some(won);
+        }
         for (peer, address) in self.peers {
             let Ok((_, answered)) = call(
                 *address,
@@ -126,7 +167,7 @@ fn renew_in(held: Lease, round: Duration, now: Instant) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::Standing;
-    use crate::grant::{Ballot, Vote};
+    use crate::grant::{Ballot, Deciding, Refused, Vote, Voter};
     use crate::link::tests::{Authority, THERE, hello, settled, voting};
     use crate::link::{Answered, Ask, Credential, Peers, call};
     use crate::peer::{Hello, Purpose};
@@ -134,7 +175,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::time::{Duration, Instant};
     use tessari_encoding::NODE_ID_LEN;
-    use tessari_storage::{LEASE_GUARD, Lease};
+    use tessari_storage::{LEASE_GUARD, LEASE_TTL, Lease};
     use tessari_types::Epoch;
 
     /// A round that takes a tenth of a second — long enough that two of them is
@@ -156,6 +197,27 @@ mod tests {
             peers,
             round: ROUND,
         }
+    }
+
+    /// The candidate's own voting memory, settled as of `now`.
+    ///
+    /// A node votes for itself through the same memory a peer's ballot reaches,
+    /// so it is subject to the same rules — including the restart rule, which is
+    /// why a freshly started one refuses the candidate's own ballot and is used
+    /// deliberately in the test that asserts exactly that.
+    ///
+    /// It takes `now` rather than reading the clock, and the first draft did
+    /// read the clock: `settled()` starts a voter one TTL before **its own**
+    /// call, so a helper evaluated as an argument started fractionally after the
+    /// `now` the round was opened at, and the voter refused every self-vote on
+    /// the restart rule. Four tests failed at once and none of them was about
+    /// restarts. The instant a test states is the instant everything in it has
+    /// to be measured against.
+    fn mine_voting(now: Instant) -> Deciding {
+        Deciding::holding(Voter::started_at(
+            now.checked_sub(LEASE_TTL.saturating_mul(2))
+                .expect("this machine has been up for twenty seconds"),
+        ))
     }
 
     /// A lease with exactly `margin` of writable time left as of `now`.
@@ -183,7 +245,7 @@ mod tests {
         let now = Instant::now();
         let held = leaving(Duration::from_secs(5), now);
         assert_eq!(
-            standing.renew(held, Epoch::new(2), now),
+            standing.renew(&mine_voting(now), held, Epoch::new(2), now),
             None,
             "five seconds of margin against a tenth-second round"
         );
@@ -235,7 +297,7 @@ mod tests {
             now,
         );
         let won = standing
-            .renew(held, Epoch::new(2), now)
+            .renew(&mine_voting(now), held, Epoch::new(2), now)
             .expect("inside two round times, a leader stands");
         assert_eq!(won.epoch, Epoch::new(2));
         drop(answering.join().expect("the door's thread"));
@@ -265,8 +327,13 @@ mod tests {
 
         let now = Instant::now();
         let won = standing
-            .renew(leaving(Duration::ZERO, now), Epoch::new(7), now)
-            .expect("a majority of three granted it");
+            .renew(
+                &mine_voting(now),
+                leaving(Duration::ZERO, now),
+                Epoch::new(7),
+                now,
+            )
+            .expect("a majority of four — this node and two of its three peers");
         let answered = Instant::now();
 
         assert_eq!(won.epoch, Epoch::new(7));
@@ -277,11 +344,13 @@ mod tests {
         assert_eq!(won.from, now, "dated from the instant the round opened");
         assert!(answered > now, "and the collection delay was not nothing");
 
-        // A majority of three is two, so the round ended at the second door and
-        // the third was never asked. That is not an accident of iteration order
-        // — it is the round concluding the moment it is carried — and it shows
-        // in the third voter's untouched memory: the epoch is still grantable,
-        // which it would not be had the ballot reached it.
+        // The membership is four — three peers and this node — so a majority is
+        // three: this node's own vote and two peers'. The round therefore ended
+        // at the second door and the third was never asked. That is not an
+        // accident of iteration order — it is the round concluding the moment it
+        // is carried — and it shows in the third voter's untouched memory: the
+        // epoch is still grantable, which it would not be had the ballot reached
+        // it.
         let (spare, (address, untouched)) = doors.pop().expect("three doors");
         for (_, (_, door)) in doors {
             drop(door.join().expect("the door's thread"));
@@ -339,12 +408,144 @@ mod tests {
 
         let now = Instant::now();
         let won = standing
-            .renew(leaving(Duration::ZERO, now), Epoch::new(3), now)
-            .expect("two of three is a majority, and the third was never needed");
+            .renew(
+                &mine_voting(now),
+                leaving(Duration::ZERO, now),
+                Epoch::new(3),
+                now,
+            )
+            .expect("this node and the two that answered carry a membership of four");
         assert_eq!(won.epoch, Epoch::new(3));
 
         for (_, (_, door)) in doors {
             drop(door.join().expect("the door's thread"));
         }
+    }
+    #[test]
+    fn a_cluster_of_three_carries_a_round_with_one_member_down() {
+        // The arithmetic this wave exists for. The membership is three — this
+        // node and the two peers an operator declared — so a majority is two:
+        // this node's own vote and one peer's. Counting only the peers would
+        // make it two OF TWO, and a cluster of three that cannot survive a
+        // single loss has no majority in the sense a majority is for. That is
+        // not an inefficiency, it is the failover in S7.1 being impossible by
+        // arithmetic rather than by any missing mechanism.
+        let authority = Authority::new();
+
+        // A real address with nothing behind it, placed FIRST so a round that
+        // gave up on the error would not reach the live member either.
+        let gone = [60_u8; NODE_ID_LEN];
+        let absent = {
+            let door = Peers::bind(
+                "127.0.0.1:0",
+                authority.issue(gone, Purpose::Peer),
+                &authority.der(),
+            )
+            .expect("a door on loopback");
+            door.address().expect("its address")
+        };
+
+        let alive = [61_u8; NODE_ID_LEN];
+        let (address, answering) = voting(&authority, alive, settled());
+
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let peers = [(gone, absent), (alive, address)];
+        let standing = standing(&mine, &der, &said, &peers);
+
+        let now = Instant::now();
+        let won = standing
+            .renew(
+                &mine_voting(now),
+                leaving(Duration::ZERO, now),
+                Epoch::new(9),
+                now,
+            )
+            .expect("this node and the one peer that answered are two of three");
+        assert_eq!(won.epoch, Epoch::new(9));
+        drop(answering.join().expect("the door's thread"));
+    }
+
+    #[test]
+    fn a_node_that_voted_for_itself_refuses_that_epoch_to_a_rival() {
+        // The reason the self-vote goes through the node's own memory rather
+        // than being added to a tally. A vote counted but not recorded would
+        // leave this node free to grant the same epoch to somebody else moments
+        // later — two candidates holding one epoch, each with an honest
+        // majority, and nothing anywhere in an error state.
+        let authority = Authority::new();
+        let voter = [62_u8; NODE_ID_LEN];
+        let (address, answering) = voting(&authority, voter, settled());
+
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let peers = [(voter, address)];
+        let standing = standing(&mine, &der, &said, &peers);
+
+        let now = Instant::now();
+        let ours = mine_voting(now);
+        let won = standing
+            .renew(&ours, leaving(Duration::ZERO, now), Epoch::new(11), now)
+            .expect("this node and its one peer are two of two");
+        assert_eq!(won.epoch, Epoch::new(11));
+
+        // Asked exactly as a peer would ask, on the connection the door serves.
+        let rival = [63_u8; NODE_ID_LEN];
+        let vote = ours.asked(
+            &Ballot {
+                epoch: Epoch::new(11),
+                candidate: rival,
+            },
+            Instant::now(),
+        );
+        assert!(
+            matches!(
+                vote,
+                Vote::Refused(Refused::EpochAlreadyDecided { granted }) if granted == Epoch::new(11)
+            ),
+            "a node granted one epoch to two candidates: {vote:?}"
+        );
+        assert_eq!(
+            ours.decided(),
+            Some(Epoch::new(11)),
+            "the node's own ballot left no trace in its own memory"
+        );
+        drop(answering.join().expect("the door's thread"));
+    }
+
+    #[test]
+    fn a_node_that_will_not_vote_for_itself_does_not_count_itself() {
+        // A voter that has just started cannot rule out having granted something
+        // it has forgotten, so it sits out one TTL. That rule is about the NODE,
+        // which means it applies to a ballot the node wrote as surely as to one
+        // that arrived on a socket — and a candidate that exempted itself from
+        // it would be spending the exact safety the restart rule buys.
+        //
+        // One peer, so the membership is two and a majority is both. The peer
+        // grants; this node refuses itself; the round is not carried.
+        let authority = Authority::new();
+        let voter = [64_u8; NODE_ID_LEN];
+        let (address, answering) = voting(&authority, voter, settled());
+
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let peers = [(voter, address)];
+        let standing = standing(&mine, &der, &said, &peers);
+
+        let now = Instant::now();
+        assert_eq!(
+            standing.renew(
+                &Deciding::started(),
+                leaving(Duration::ZERO, now),
+                Epoch::new(13),
+                now
+            ),
+            None,
+            "a node just restarted counted a vote it had refused to cast"
+        );
+        drop(answering.join().expect("the door's thread"));
     }
 }

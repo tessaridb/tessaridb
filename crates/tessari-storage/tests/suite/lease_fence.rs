@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use tessari_encoding::Roles;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_storage::{Currency, Error, LEASE_GUARD, Lease, RecordAddress, Store};
-use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
+use tessari_types::{DatabaseId, Epoch, NamespaceId, RecordId, Sequence, TableId};
 
 fn store() -> Store {
     Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
@@ -431,6 +431,42 @@ fn an_uncollected_copys_currency_and_the_right_to_write_are_one_answer() {
 }
 
 #[test]
+fn a_node_reports_the_epoch_it_was_granted_and_nothing_before_one() {
+    // `None` and `Some(0)` are different statements, exactly as they are for the
+    // lease beside it. A node nobody elected is not leading under the first
+    // epoch — it is not leading at all, and a greeting that reported the
+    // constant zero for it would be telling every peer something about a
+    // leadership that does not exist.
+    let store = store();
+    assert_eq!(
+        store.leading(),
+        None,
+        "a store that never won a round claimed a leadership"
+    );
+
+    let span = LEASE_GUARD
+        .checked_add(Duration::from_secs(60))
+        .expect("representable");
+    store.hold(Epoch::new(7), Lease::taken_at(Instant::now(), span));
+    assert_eq!(store.leading(), Some(Epoch::new(7)));
+
+    // And a renewal moves it, because the epoch a node writes under is the one
+    // it most recently won and not the first one it ever did.
+    store.hold(Epoch::new(8), Lease::taken_at(Instant::now(), span));
+    assert_eq!(store.leading(), Some(Epoch::new(8)));
+
+    // The local form has no round behind it and therefore no epoch to report.
+    // It is the fence alone, which is all a test of the fence ever wanted.
+    let alone = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    alone.hold_lease(span);
+    assert_eq!(
+        alone.leading(),
+        None,
+        "a lease taken locally invented a leadership nobody granted"
+    );
+}
+
+#[test]
 fn a_lease_installed_whole_keeps_the_instant_it_was_taken_at() {
     // The seam a cluster reaches through. A granted lease is dated from the
     // instant its round OPENED, so installing it must not restart that clock:
@@ -443,7 +479,7 @@ fn a_lease_installed_whole_keeps_the_instant_it_was_taken_at() {
         .expect("representable");
     let opened = Instant::now().checked_sub(span).expect("representable");
 
-    store.hold(Lease::taken_at(opened, span));
+    store.hold(Epoch::new(4), Lease::taken_at(opened, span));
     assert!(
         store.lease_spent().is_some(),
         "a lease whose whole span was spent before it arrived is already fenced"
@@ -452,7 +488,7 @@ fn a_lease_installed_whole_keeps_the_instant_it_was_taken_at() {
 
     // The control: the same span, taken now. What differs between the two is the
     // instant and nothing else, so the difference is the dating.
-    store.hold(Lease::taken_at(Instant::now(), span));
+    store.hold(Epoch::new(5), Lease::taken_at(Instant::now(), span));
     assert_eq!(store.lease_spent(), None);
     write(&store, "two").expect("inside the window it writes");
 }

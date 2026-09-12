@@ -202,6 +202,51 @@ fn lease(report: &std::collections::BTreeMap<String, Value>) -> Option<Value> {
     }
 }
 
+/// Which leadership this node says it is writing under.
+fn epoch(report: &std::collections::BTreeMap<String, Value>) -> Option<Value> {
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    match cluster.get("epoch") {
+        Some(Value::Null) => None,
+        Some(found) => Some(found.clone()),
+        None => panic!("no epoch field: {cluster:?}"),
+    }
+}
+
+#[test]
+fn a_node_reports_the_leadership_it_writes_under_beside_the_time_left_on_it() {
+    // The pair, not either half. A lease heading toward zero says *how long*;
+    // the epoch says *what for*. Without the second a report cannot tell a node
+    // renewing the leadership it already held from one that has just taken it
+    // from somebody else — which is exactly the difference between a quiet
+    // cluster and a failover nobody observed.
+    let store = closed(&backend());
+    assert_eq!(
+        epoch(&reported(&store)),
+        None,
+        "a node no round ever granted anything to claimed a leadership"
+    );
+
+    // A lease taken locally has no round behind it, so it moves the lease and
+    // leaves the epoch alone: this is the fence without the cluster, which is
+    // what every single-node store runs.
+    store.hold_lease(Duration::from_secs(120));
+    assert!(lease(&reported(&store)).is_some());
+    assert_eq!(
+        epoch(&reported(&store)),
+        None,
+        "a locally taken lease invented a leadership nobody granted"
+    );
+
+    // And a granted one carries both across the seam together.
+    store.hold(
+        tessari_types::Epoch::new(6),
+        tessari_storage::Lease::taken(Duration::from_secs(120)),
+    );
+    assert_eq!(epoch(&reported(&store)), Some(Value::from(6_i64)));
+}
+
 #[test]
 fn a_node_nobody_made_a_leader_reports_no_lease_rather_than_none_left() {
     // The field is present and `null`, not absent. An operator reading this has

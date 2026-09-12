@@ -464,6 +464,7 @@ fn refused(why: tessari_storage::Error) -> Error {
 mod tests {
     use super::{Collect, Collected, Collector, Reach, Result, Serving};
     use crate::error::Error;
+    use crate::grant::Deciding;
     use crate::link::tests::{Authority, THERE, hello, settled};
     use crate::link::{Answered, Ask, Peers, call};
     use crate::peer::Purpose;
@@ -559,7 +560,11 @@ mod tests {
         let mine = hello(LEADER);
         let db = Arc::clone(db);
         let door = std::thread::spawn(move || {
-            drop(peers.greet(&mine, &mut settled(), &Serving::declared(db.store())));
+            drop(peers.greet(
+                &mine,
+                &Deciding::holding(settled()),
+                &Serving::declared(db.store()),
+            ));
         });
         (address, door)
     }
@@ -579,7 +584,7 @@ mod tests {
             for _ in 0..rounds {
                 drop(peers.greet(
                     &mine,
-                    &mut settled(),
+                    &Deciding::holding(settled()),
                     &Serving::asking(db.store(), &Everything),
                 ));
             }

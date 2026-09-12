@@ -51,7 +51,7 @@ use crate::collection::{Collect, Collected, Origin};
 use crate::credential;
 use crate::error::{Error, Result};
 use crate::frame;
-use crate::grant::{Ballot, Vote, Voter};
+use crate::grant::{Ballot, Deciding, Vote};
 use crate::peer::{Hello, PeerFrame, Purpose, admit};
 
 /// What this node shows a peer, and the key that proves it is ours.
@@ -126,7 +126,7 @@ impl Peers {
     /// [`Error::CredentialNamesAnother`] when what was presented does not name
     /// the node the greeting claims, and [`Error::NotAPeerCredential`] when it
     /// names that node for the client link instead of this one.
-    pub fn greet(&self, mine: &Hello, voter: &mut Voter, log: &dyn Origin) -> Result<Met> {
+    pub fn greet(&self, mine: &Hello, voter: &Deciding, log: &dyn Origin) -> Result<Met> {
         let (mut socket, _) = self.listener.accept()?;
         let bound = Some(Duration::from_secs(GREETING_SECONDS));
         socket.set_read_timeout(bound)?;
@@ -409,7 +409,7 @@ pub(crate) mod tests {
     use crate::collection::{Collect, NoLog};
     use crate::credential::names;
     use crate::error::Error;
-    use crate::grant::{Ballot, Refused, Round, Vote, Voter};
+    use crate::grant::{Ballot, Deciding, Refused, Round, Vote, Voter};
     use crate::peer::{Hello, Purpose};
     use rustls::pki_types::{CertificateDer, PrivateKeyDer};
     use std::net::{SocketAddr, TcpStream};
@@ -514,7 +514,8 @@ pub(crate) mod tests {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
-        let listening = std::thread::spawn(move || peers.greet(&mine, &mut settled(), &NoLog));
+        let listening =
+            std::thread::spawn(move || peers.greet(&mine, &Deciding::holding(settled()), &NoLog));
 
         let theirs = call(
             address,
@@ -546,7 +547,8 @@ pub(crate) mod tests {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
-        let listening = std::thread::spawn(move || peers.greet(&mine, &mut settled(), &NoLog));
+        let listening =
+            std::thread::spawn(move || peers.greet(&mine, &Deciding::holding(settled()), &NoLog));
 
         let failure = call(
             address,
@@ -585,7 +587,8 @@ pub(crate) mod tests {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
-        let listening = std::thread::spawn(move || peers.greet(&mine, &mut settled(), &NoLog));
+        let listening =
+            std::thread::spawn(move || peers.greet(&mine, &Deciding::holding(settled()), &NoLog));
 
         // The id is perfectly correct. What is wrong is the link it was issued
         // for, which is the criterion's own sentence.
@@ -610,7 +613,8 @@ pub(crate) mod tests {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
-        let listening = std::thread::spawn(move || peers.greet(&mine, &mut settled(), &NoLog));
+        let listening =
+            std::thread::spawn(move || peers.greet(&mine, &Deciding::holding(settled()), &NoLog));
 
         // Issued by the right authority, for the right link, for the wrong node.
         drop(call(
@@ -644,7 +648,7 @@ pub(crate) mod tests {
     pub(crate) fn voting(
         authority: &Authority,
         id: [u8; NODE_ID_LEN],
-        mut voter: Voter,
+        voter: Voter,
     ) -> (SocketAddr, JoinHandle<Result<Met>>) {
         let peers = Peers::bind(
             "127.0.0.1:0",
@@ -654,7 +658,8 @@ pub(crate) mod tests {
         .expect("a peer door on loopback");
         let address = peers.address().expect("the door's address");
         let mine = hello(id);
-        let answering = std::thread::spawn(move || peers.greet(&mine, &mut voter, &NoLog));
+        let deciding = Deciding::holding(voter);
+        let answering = std::thread::spawn(move || peers.greet(&mine, &deciding, &NoLog));
         (address, answering)
     }
 
@@ -721,8 +726,8 @@ pub(crate) mod tests {
 
         let mine = hello(HERE);
         let answering = std::thread::spawn(move || {
-            let mut voter = settled();
-            let met = peers.greet(&mine, &mut voter, &NoLog);
+            let voter = Deciding::holding(settled());
+            let met = peers.greet(&mine, &voter, &NoLog);
             // The voter is handed back untouched: nothing was decided, which is
             // the half a refusal-shaped answer would not have given.
             (met, voter.decided())
@@ -764,10 +769,8 @@ pub(crate) mod tests {
         // distinction decide the vote: the same candidate asking again is
         // granted, because re-granting to the holder adds no second holder.
         let mine = hello(HERE);
-        let answering = std::thread::spawn(move || {
-            let mut voter = incumbent();
-            peers.greet(&mine, &mut voter, &NoLog)
-        });
+        let answering =
+            std::thread::spawn(move || peers.greet(&mine, &Deciding::holding(incumbent()), &NoLog));
 
         let refused = call(
             address,
@@ -1049,7 +1052,7 @@ pub(crate) mod tests {
         let won = prompt
             .counts(voter, Vote::Granted)
             .expect("one of one carries it");
-        store.hold(won.lease());
+        store.hold(won.epoch, won.lease());
         store
             .session()
             .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:1 = { name: 'ada' };")
@@ -1063,7 +1066,7 @@ pub(crate) mod tests {
         let won = slow
             .counts(voter, Vote::Granted)
             .expect("one of one carries it");
-        store.hold(won.lease());
+        store.hold(won.epoch, won.lease());
         let refused = store
             .session()
             .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
@@ -1077,7 +1080,8 @@ pub(crate) mod tests {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
-        let listening = std::thread::spawn(move || peers.greet(&mine, &mut settled(), &NoLog));
+        let listening =
+            std::thread::spawn(move || peers.greet(&mine, &Deciding::holding(settled()), &NoLog));
 
         let mut roots = rustls::RootCertStore::empty();
         roots.add(authority.der()).expect("the test authority");

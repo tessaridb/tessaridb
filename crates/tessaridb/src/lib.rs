@@ -219,8 +219,20 @@ impl Db {
     ///
     /// A node nobody granted leadership to never calls either form and is not
     /// fenced by one.
-    pub fn hold(&self, lease: Lease) {
-        self.store.hold(lease);
+    ///
+    /// The epoch travels with the lease because they were granted together and
+    /// are read together: the fence answers *may I still write*, the epoch
+    /// answers *which leadership am I writing under*, and a greeting carries the
+    /// second to every peer that routes on it.
+    pub fn hold(&self, epoch: tessari_types::Epoch, lease: Lease) {
+        self.store.hold(epoch, lease);
+    }
+
+    /// The leadership epoch this node is writing under, if a round granted it
+    /// one.
+    #[must_use]
+    pub fn leading(&self) -> Option<tessari_types::Epoch> {
+        self.store.leading()
     }
 
     /// What changed from `from` onward, oldest first.

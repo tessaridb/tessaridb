@@ -834,6 +834,9 @@ impl Session<'_> {
             .map_or(Value::Null, Value::Duration),
             None => Value::Null,
         };
+        let leading = self.store.leading().map_or(Value::Null, |epoch| {
+            Value::from(i64::try_from(epoch.get()).unwrap_or(i64::MAX))
+        });
         let followers = self
             .store
             .follower_lag()?
@@ -905,6 +908,17 @@ impl Session<'_> {
                     // split-brain signal — this at zero while writes are still
                     // being taken is the state the fence exists to prevent.
                     ("lease".to_owned(), lease),
+                    // The other half of the pair an operator watches. A lease
+                    // heading toward zero says *how long*, and this says *what
+                    // for* — without it a report cannot distinguish a node
+                    // renewing the leadership it already held from one that has
+                    // just taken it from somebody else, which is the difference
+                    // between a quiet cluster and a failover nobody saw.
+                    //
+                    // `null` on a node no round ever granted anything to, on the
+                    // same reasoning as the lease beside it: not leading is a
+                    // different statement from leading under the first epoch.
+                    ("epoch".to_owned(), leading),
                 ])),
             ),
         ]))

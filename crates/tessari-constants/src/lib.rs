@@ -332,6 +332,44 @@ pub const COLLECTION_SECONDS: u64 = AWARENESS_SECONDS;
 /// each round carries less than the interval produced.
 pub const COLLECTION_RECORDS: u64 = 1024;
 
+/// How long a canvass of the voting members takes on this network, end to end.
+///
+/// Unit: seconds.
+///
+/// # It is a deadline, not a measurement
+///
+/// A candidate stands when its remaining writable window has shrunk to two of
+/// these, because a round that yields a lease dated from when it **opened** has
+/// to be in hand before the old fence shuts — and one round time lands exactly
+/// on the fence with nothing left for a round that is refused, lost or slow. Two
+/// is the latest opening that still allows one complete retry.
+///
+/// One second is a canvass of three to seven members on a local network, each a
+/// TLS handshake and one frame each way. It is the value this build ships and
+/// not a property of the engine: the day a cluster spans a region, this is the
+/// number that moves, and everything derived from it moves with it.
+pub const ROUND_SECONDS: u64 = 1;
+
+/// How often a leader checks whether it is time to stand again.
+///
+/// Unit: seconds.
+///
+/// # Where the number comes from
+///
+/// It is bounded by the window between *time to stand* and *the fence shuts*,
+/// and that window is exactly `2 × ROUND_SECONDS`: a holder's usable span begins
+/// at `LEASE_TTL - LEASE_GUARD` and standing opens when two round times are left
+/// of it. A cadence slower than that window can step straight over the moment it
+/// was supposed to act on, and a leader would then lose a lease it could have
+/// renewed — while nothing anywhere reported a failure, because no round was
+/// ever attempted.
+///
+/// So the period is half the window, which leaves room for one tick to be late.
+/// A check costs nothing when there is margin left: the decision to stand is
+/// taken **before** any socket is opened, precisely so that a frequent cadence is
+/// not a frequent canvass.
+pub const CAMPAIGN_SECONDS: u64 = ROUND_SECONDS;
+
 /// The tightest staleness bound a read may ask for.
 ///
 /// Unit: seconds.

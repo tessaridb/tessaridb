@@ -150,6 +150,19 @@ pub struct Store {
     /// file asserting a cluster-wide fact, which is the split-brain ADR-0018 §1
     /// keeps out of `META`.
     lease: Arc<crate::lease::Held>,
+    /// The epoch a majority granted this node, if one ever did.
+    ///
+    /// Beside the lease rather than inside it, because they answer different
+    /// questions and `crate::lease` is deliberately about the fence alone: the
+    /// lease says *until when this node may write*, the epoch says *which
+    /// leadership it is writing under*. A greeting carries the second and a
+    /// commit is refused by the first.
+    ///
+    /// `None` for a node that never won a round, which is every single-node
+    /// store and every node before its first campaign — a different statement
+    /// from epoch zero, exactly as `None` from the lease is a different
+    /// statement from a spent one.
+    leading: Arc<std::sync::Mutex<Option<Epoch>>>,
 }
 
 impl Store {
@@ -185,6 +198,7 @@ impl Store {
             followers: Arc::new(Followers::default()),
             collections: Arc::new(crate::collections::Collections::default()),
             lease: Arc::new(crate::lease::Held::default()),
+            leading: Arc::new(std::sync::Mutex::new(None)),
         };
         // Last, because it reads the catalog: the format is settled and the
         // identity exists by the time this asks which node it is.
@@ -651,8 +665,34 @@ impl Store {
     /// Nothing is re-checked here. Whether the grant was legitimate was settled
     /// by the round; a store asking again would be asking about a fact it has no
     /// way to know.
-    pub fn hold(&self, lease: crate::lease::Lease) {
+    pub fn hold(&self, epoch: Epoch, lease: crate::lease::Lease) {
         self.lease.hold(lease);
+        if let Ok(mut leading) = self.leading.lock() {
+            *leading = Some(epoch);
+        }
+    }
+
+    /// The leadership epoch this node is writing under, if a round granted it
+    /// one.
+    ///
+    /// A greeting says *the leadership it believes is current*, and until this
+    /// existed the only honest answer a serving node could give was the constant
+    /// zero — true while nothing campaigned, and a lie to every peer the moment
+    /// something did.
+    ///
+    /// `None` is not zero. A node nobody elected is not leading under the first
+    /// epoch; it is not leading at all, and a caller that wants the constant for
+    /// a store that never campaigns can say so in one word at its own call site.
+    #[must_use]
+    pub fn leading(&self) -> Option<Epoch> {
+        match self.leading.lock() {
+            Ok(leading) => *leading,
+            // The fence's decision, for the fence's reason: a diagnostic that
+            // fails open leaves a gap in a report, and this one feeds a greeting
+            // a peer routes on. Saying nothing is the conservative answer, and
+            // it is the one a node that never campaigned gives anyway.
+            Err(_) => None,
+        }
     }
 
     /// How long this node's lease fence has been closed, if it is.
