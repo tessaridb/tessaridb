@@ -27,6 +27,21 @@
 //! client. The node id travels along inside the greeting so the redirect can
 //! also say *who* is there, which is what makes it checkable on arrival.
 //!
+//! # What a silent peer is worth
+//!
+//! A greeting can fail, and when it does the remembered reading is left alone to
+//! go on ageing. It is **not** erased, and the two behaviours differ exactly
+//! where it matters. An ageing reading drifts out of tighter bounds first and
+//! looser ones later, and comes back the moment the peer answers — a transient
+//! fault degrades routing in proportion to how long it lasted. An erased one
+//! makes the peer *no known age*, which is outside **every** bound, so a single
+//! dropped packet would take a healthy node out of all routing at once and keep
+//! it out until a greeting got through.
+//!
+//! Erasing also fails in the direction that looks like health: a smaller
+//! directory in which every entry is fresh. So: **a silent peer grows old, it
+//! does not vanish.**
+//!
 //! # Where the clock comes from
 //!
 //! Every method that needs *now* takes it. This is the same shape W232 arrived at
@@ -40,6 +55,7 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
+use tessari_storage::ReplicaDefinition;
 
 use crate::peer::Hello;
 
@@ -175,20 +191,101 @@ impl Directory {
             None => Destination::Nowhere,
         }
     }
+
+    /// Greet every declared peer this node can dial, and record what each said.
+    ///
+    /// Answers how many peers were reached. Not a `Result`: a round in which
+    /// every peer failed is a cluster in trouble, which is a different statement
+    /// from an operation that went wrong, and the caller is a timer that has to
+    /// run again either way.
+    ///
+    /// # What is skipped, and why each is skipped rather than refused
+    ///
+    /// A row whose `node` is `None` is **declared but undiallable**. Opening a
+    /// session derives the peer's TLS name from its generated identifier, so
+    /// there is no way to reach a peer whose identifier nobody has written down
+    /// — and this round cannot invent one. Failing the whole pass over it would
+    /// let one incomplete declaration disable routing for every other peer.
+    ///
+    /// This node's **own** row is skipped too. Its currency is already known
+    /// directly, so dialling itself would be a round trip to learn what the
+    /// store answers for free, and it would put this node in its own directory,
+    /// where [`Self::read_within`]'s *here first* rule has already decided it
+    /// does not belong.
+    ///
+    /// # A failure is not recorded
+    ///
+    /// When `greet` fails, nothing is written. The reading already held for that
+    /// endpoint stays where it is and goes on ageing — see the module header for
+    /// why that is the safe direction and erasing is not. One failure does not
+    /// end the round, because the peer after the failing one is the one most
+    /// likely to still be serving.
+    pub fn greet_round<G, E>(
+        &mut self,
+        declared: &[ReplicaDefinition],
+        me: &[u8; NODE_ID_LEN],
+        now: Instant,
+        greet: G,
+    ) -> usize
+    where
+        G: Fn(&str, [u8; NODE_ID_LEN]) -> Result<Hello, E>,
+    {
+        let mut reached = 0_usize;
+        for replica in declared {
+            let Some(node) = replica.node else { continue };
+            if node == *me {
+                continue;
+            }
+            if let Ok(said) = greet(&replica.endpoint, node) {
+                self.heard(&replica.endpoint, said, now);
+                reached = reached.saturating_add(1);
+            }
+        }
+        reached
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Destination, Directory};
+    use core::cell::RefCell;
     use core::time::Duration;
     use std::time::Instant;
     use tessari_encoding::{NODE_ID_LEN, NodeVersion, Roles};
+    use tessari_storage::ReplicaDefinition;
     use tessari_types::{Epoch, Sequence};
 
     use crate::peer::Hello;
 
     const ONE: [u8; NODE_ID_LEN] = [1; NODE_ID_LEN];
     const ANOTHER: [u8; NODE_ID_LEN] = [2; NODE_ID_LEN];
+    const THIRD: [u8; NODE_ID_LEN] = [3; NODE_ID_LEN];
+
+    /// A declared peer row: a name, where it answers, and who is there.
+    fn declared(id: u32, endpoint: &str, node: Option<[u8; NODE_ID_LEN]>) -> ReplicaDefinition {
+        ReplicaDefinition {
+            id,
+            name: format!("peer{id}"),
+            endpoint: endpoint.to_owned(),
+            roles: Roles::SERVING,
+            node,
+        }
+    }
+
+    /// A greeting function that records every endpoint it was asked to dial,
+    /// and refuses the ones named in `silent`.
+    fn greeter<'a>(
+        dialled: &'a RefCell<Vec<String>>,
+        silent: &'a [&'a str],
+    ) -> impl Fn(&str, [u8; NODE_ID_LEN]) -> Result<Hello, ()> + 'a {
+        move |endpoint, node| {
+            dialled.borrow_mut().push(endpoint.to_owned());
+            if silent.contains(&endpoint) {
+                return Err(());
+            }
+            Ok(said(node, Some(Duration::from_secs(1)), true))
+        }
+    }
 
     /// A greeting from `node`, saying its copy is `age` old and that it `serves`.
     fn said(node: [u8; NODE_ID_LEN], age: Option<Duration>, serves: bool) -> Hello {
@@ -369,6 +466,159 @@ mod tests {
                 endpoint: "b-fresher.example:9080".to_owned(),
                 node: ANOTHER,
             },
+        );
+    }
+
+    #[test]
+    fn a_peer_that_did_not_answer_keeps_ageing_rather_than_vanishing() {
+        // The rule the wave exists for. A peer greeted once and then silent must
+        // keep the reading it already gave, so that it drifts out of tighter
+        // bounds first and looser ones later. Erasing it would make its age
+        // unknown, and an unknown age is outside EVERY bound — so one dropped
+        // greeting would take a healthy node out of all routing at once.
+        let heard_at = Instant::now();
+        let mut directory = one_peer(heard_at);
+        let later = heard_at
+            .checked_add(Duration::from_secs(30))
+            .expect("the clock moves forward");
+
+        let dialled = RefCell::new(Vec::new());
+        let reached = directory.greet_round(
+            &[declared(1, "two.example:9080", Some(ANOTHER))],
+            &ONE,
+            later,
+            greeter(&dialled, &["two.example:9080"]),
+        );
+
+        assert_eq!(reached, 0, "the peer refused, so nothing was reached");
+        assert_eq!(
+            directory.age_of("two.example:9080", later),
+            Some(Duration::from_secs(35)),
+            "the silent peer's reading should have aged, not vanished"
+        );
+    }
+
+    #[test]
+    fn one_silent_peer_does_not_end_the_round() {
+        // The peer after the failing one is the one most likely to still be
+        // serving, so a round that returned at the first refusal would punish
+        // every peer for the misfortune of being declared later.
+        let now = Instant::now();
+        let mut directory = Directory::new();
+        let dialled = RefCell::new(Vec::new());
+
+        let reached = directory.greet_round(
+            &[
+                declared(1, "silent.example:9080", Some(ANOTHER)),
+                declared(2, "awake.example:9080", Some(THIRD)),
+            ],
+            &ONE,
+            now,
+            greeter(&dialled, &["silent.example:9080"]),
+        );
+
+        assert_eq!(reached, 1, "one of the two answered");
+        assert_eq!(
+            dialled.borrow().as_slice(),
+            ["silent.example:9080", "awake.example:9080"],
+            "both peers should have been attempted"
+        );
+        assert!(
+            directory.at("awake.example:9080").is_some(),
+            "the peer after the failing one should have been recorded"
+        );
+    }
+
+    #[test]
+    fn a_peer_whose_row_names_no_node_is_not_dialled() {
+        // Opening a session derives the peer's TLS name from its generated
+        // identifier, so a row that names no node cannot be reached at all. The
+        // round skips it rather than refusing the pass: it cannot invent an id,
+        // and one incomplete declaration must not disable routing for everyone.
+        let now = Instant::now();
+        let mut directory = Directory::new();
+        let dialled = RefCell::new(Vec::new());
+
+        let reached = directory.greet_round(
+            &[
+                declared(1, "unbound.example:9080", None),
+                declared(2, "bound.example:9080", Some(ANOTHER)),
+            ],
+            &ONE,
+            now,
+            greeter(&dialled, &[]),
+        );
+
+        assert_eq!(reached, 1, "only the bound row was diallable");
+        assert_eq!(
+            dialled.borrow().as_slice(),
+            ["bound.example:9080"],
+            "the unbound row should never have been dialled"
+        );
+        assert!(
+            directory.at("unbound.example:9080").is_none(),
+            "a row that was never dialled has nothing to record"
+        );
+    }
+
+    #[test]
+    fn a_node_does_not_greet_itself() {
+        // This node's own row sits in the same catalog as everybody else's. Its
+        // currency is already known directly, so dialling itself is a round trip
+        // to learn what the store answers for free — and it would put this node
+        // in its own directory, where `read_within`'s *here first* rule has
+        // already decided it does not belong.
+        let now = Instant::now();
+        let mut directory = Directory::new();
+        let dialled = RefCell::new(Vec::new());
+
+        let reached = directory.greet_round(
+            &[
+                declared(1, "me.example:9080", Some(ONE)),
+                declared(2, "other.example:9080", Some(ANOTHER)),
+            ],
+            &ONE,
+            now,
+            greeter(&dialled, &[]),
+        );
+
+        assert_eq!(reached, 1, "only the other node was greeted");
+        assert_eq!(
+            dialled.borrow().as_slice(),
+            ["other.example:9080"],
+            "this node should not have dialled itself"
+        );
+        assert!(
+            directory.at("me.example:9080").is_none(),
+            "this node must stay out of its own directory"
+        );
+    }
+
+    #[test]
+    fn a_round_records_what_each_peer_said_against_the_instant_it_was_heard() {
+        // The round's whole product. A greeting recorded without its instant is
+        // a claim with no date, and the ageing rule has nothing to work from.
+        let now = Instant::now();
+        let mut directory = Directory::new();
+        let dialled = RefCell::new(Vec::new());
+
+        let reached = directory.greet_round(
+            &[declared(1, "two.example:9080", Some(ANOTHER))],
+            &ONE,
+            now,
+            greeter(&dialled, &[]),
+        );
+
+        assert_eq!(reached, 1);
+        let heard = directory
+            .at("two.example:9080")
+            .expect("the peer answered, so it was recorded");
+        assert_eq!(heard.said.node, ANOTHER, "the greeting names who is there");
+        assert_eq!(heard.at, now, "recorded against the instant it was heard");
+        assert_eq!(
+            directory.age_of("two.example:9080", now),
+            Some(Duration::from_secs(1)),
+            "and the reading is usable the moment it lands"
         );
     }
 }
