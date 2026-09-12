@@ -215,9 +215,21 @@ impl Credential {
     ///
     /// [`call`] takes ownership because a TLS client configuration does, and a
     /// node that speaks to more than one peer therefore needs one copy per
-    /// conversation. `pub(crate)` on purpose: duplicating key material is a
-    /// detail of speaking to N peers, not a capability worth publishing.
-    pub(crate) fn duplicate(&self) -> Self {
+    /// conversation.
+    ///
+    /// This was `pub(crate)` while every caller that spoke to N peers lived in
+    /// this crate, on the argument that duplicating key material is a detail
+    /// rather than a capability worth publishing. W239 moved one of those
+    /// callers into the binary: the dialling thread holds the node's credential
+    /// and opens a session per peer per round, while [`Peers::bind`] has already
+    /// consumed the copy that answers the door. The argument for hiding it was
+    /// about where the callers were, and they are no longer all here.
+    ///
+    /// It stays a named method rather than a `Clone` impl for the original
+    /// reason: a private key that copies itself wherever `.clone()` is
+    /// convenient is a key whose copies nobody is counting.
+    #[must_use]
+    pub fn duplicate(&self) -> Self {
         Self {
             chain: self.chain.clone(),
             key: self.key.clone_key(),

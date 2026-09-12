@@ -35,6 +35,20 @@ const WIRE_WITH_PEERS: &str = "127.0.0.1:47826";
 /// That node's peer door.
 const PEERS: &str = "127.0.0.1:47827";
 
+/// A door this test owns and the node under test is expected to call.
+///
+/// Bound by the test itself rather than by a node, because what is being
+/// observed is the DIAL: nothing has to answer it correctly for the arrival of
+/// the connection to prove the cadence ran and reached the catalog.
+const DIALLED: &str = "127.0.0.1:47828";
+
+/// The dialling node's own peer door — a distinct address, because the wire
+/// test above is holding 47827 and these two run in the same binary.
+const PEERS_FOR_DIALLING: &str = "127.0.0.1:47830";
+
+/// A second client surface, so the dialling test does not contend for 47826.
+const WIRE_WITH_DIALLING: &str = "127.0.0.1:47829";
+
 /// Wait for the node to accept connections, or say it never did.
 ///
 /// Polled rather than slept on a guess: a fixed wait is either flaky on a loaded
@@ -701,5 +715,74 @@ fn a_peer_address_that_cannot_be_taken_is_a_failure_to_start_and_not_a_warning()
     assert!(
         !said.contains("wire protocol on"),
         "the client surface must never have been announced: {said}"
+    );
+}
+
+#[test]
+fn a_node_dials_the_peer_its_catalog_declares() {
+    // W239's own claim against the shipped binary. `tessari-wire` proves what a
+    // greeting round DOES to a directory; nothing but this proves the binary
+    // ever runs one. The observable is deliberately the weakest thing that can
+    // only happen if the whole chain worked: a TCP connection arriving at an
+    // address that appears nowhere but in this node's own replica catalog.
+    //
+    // The listener answers nothing, so the dial fails its TLS handshake. That is
+    // the correct outcome to assert on: `greet_round` records a failure and
+    // moves on, and a wave that needed the far end to be a real node would be
+    // testing two nodes rather than this node's cadence.
+    let waiting = std::net::TcpListener::bind(DIALLED).expect("the test's own door");
+    waiting
+        .set_nonblocking(true)
+        .expect("polled rather than blocked, so the assertion can time out");
+
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("store");
+    let minted = Minted::new();
+    let db = tessaridb::Db::open(&store).unwrap();
+    let node = db.store().node_identity().unwrap().id;
+    // A peer that is emphatically NOT this node: `greet_round` skips its own row
+    // on purpose, so declaring this node's own id here would make the test pass
+    // for the wrong reason — or rather, fail for the right one.
+    let peer = tessari_types::RecordId::Uuid([9u8; 16]).to_string();
+    db.session()
+        .run(&format!(
+            "DEFINE REPLICA watcher AT '{DIALLED}' NODE '{peer}' ROLES serving;"
+        ))
+        .expect("a declared peer with an id is the only diallable kind");
+    drop(db);
+    let (leaf, key, authority) = credentials(&minted, node, directory.path());
+
+    let child = Command::new(TESSARIDB)
+        .arg(&store)
+        .args(["--serve", WIRE_WITH_DIALLING])
+        .args(["--cluster-credential", &leaf])
+        .args(["--cluster-key", &key])
+        .args(["--cluster-authority", &authority])
+        .args(["--cluster-address", PEERS_FOR_DIALLING])
+        .args(["--seed", "one.example:9080"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _running = Running(child);
+
+    // The first pass runs BEFORE the first wait — `every` checks the flag, runs
+    // the pass, and only then sleeps — so this arrives at startup rather than an
+    // awareness interval later. A test that had to wait ten seconds for it would
+    // be asserting the sleep, not the dial.
+    let began = Instant::now();
+    let mut dialled = false;
+    while began.elapsed() < Duration::from_secs(20) {
+        match waiting.accept() {
+            Ok(_) => {
+                dialled = true;
+                break;
+            }
+            Err(_) => std::thread::yield_now(),
+        }
+    }
+    assert!(
+        dialled,
+        "the node never dialled the peer its own catalog declares"
     );
 }

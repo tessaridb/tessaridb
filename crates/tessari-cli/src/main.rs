@@ -248,10 +248,19 @@ fn serve(
         Some(joining) => {
             let where_to = joining.door.clone();
             let seeds = joining.seeds.len();
+            // Taken before the bind, which consumes the first copy. Both halves
+            // of the link prove the same node with the same credential.
+            let dialling = joining.mine.duplicate();
+            let authority = joining.authority.clone();
             let door =
                 tessari_wire::Peers::bind(joining.door.as_str(), joining.mine, &joining.authority)
                     .map_err(|failure| format!("{where_to}: {failure}"))?;
-            Some((door, seeds))
+            Some(Peering {
+                door,
+                seeds,
+                dialling,
+                authority,
+            })
         }
         None => None,
     };
@@ -294,8 +303,12 @@ fn serve(
     // single node, and a line printed on every start is a line operators stop
     // reading. What was *bound* rather than what was asked for, the same as the
     // two lines above, which is what makes `:0` usable here too.
-    if let Some((door, seeds)) = &peers {
-        let bound = door.address().map_err(|failure| failure.to_string())?;
+    if let Some(surface) = &peers {
+        let bound = surface
+            .door
+            .address()
+            .map_err(|failure| failure.to_string())?;
+        let seeds = surface.seeds;
         eprintln!("tessaridb — peers on {bound}, {seeds} seed address(es) to reach the cluster");
         eprintln!("tessaridb — the peer door serves greetings and ballots, and no collection yet");
     }
@@ -348,8 +361,11 @@ fn serve(
     // and a scrape reports it, for the reason the census is shared at all: what
     // a shutdown waits on and what a reader sees must be one set of numbers.
     let peering = tessari_serve::Stopping::new();
-    if let Some((door, _)) = &peers {
-        let bound = door.address().map_err(|failure| failure.to_string())?;
+    if let Some(surface) = &peers {
+        let bound = surface
+            .door
+            .address()
+            .map_err(|failure| failure.to_string())?;
         census.counting("peers", std::sync::Arc::clone(&peering));
         surfaces.push(shutdown::Surface {
             name: "the peer door",
@@ -377,10 +393,28 @@ fn serve(
     // door runs whichever of the two client surfaces was asked for — including
     // neither combination the match has to spell out. It holds a handle on the
     // store, so it is joined before the store is dropped and not after.
-    let peering_thread = peers.map(|(door, _)| {
-        let db = std::sync::Arc::clone(&db);
-        let stopping = std::sync::Arc::clone(&peering);
-        std::thread::spawn(move || greet_peers(&db, &door, &stopping))
+    let peer_threads = peers.map(|surface| {
+        let Peering {
+            door,
+            seeds: _,
+            dialling,
+            authority,
+        } = surface;
+        let answering = {
+            let db = std::sync::Arc::clone(&db);
+            let stopping = std::sync::Arc::clone(&peering);
+            std::thread::spawn(move || greet_peers(&db, &door, &stopping))
+        };
+        // A second thread, because the first one is inside `accept` for as long
+        // as no peer calls: a node that only answers learns nothing about a
+        // cluster that has stopped calling it. They share one flag, so the peer
+        // surface stops as one thing.
+        let dialling = {
+            let db = std::sync::Arc::clone(&db);
+            let stopping = std::sync::Arc::clone(&peering);
+            std::thread::spawn(move || dial_peers(&db, &dialling, &authority, &stopping))
+        };
+        (answering, dialling)
     });
 
     match (wire, http) {
@@ -408,8 +442,9 @@ fn serve(
     // Before the store, not after, and for the reason the consumers are: this
     // thread holds an `Arc` on the store, so `drop(db)` below would release one
     // handle of two and flush nothing until it ended.
-    if let Some(thread) = peering_thread {
-        drop(thread.join());
+    if let Some((answering, dialling)) = peer_threads {
+        drop(answering.join());
+        drop(dialling.join());
     }
     // Before the store, not after. Stage 1 told the consumers to stop and did
     // not wait; this is the wait. Joining after `drop(db)` would flush the store
@@ -434,6 +469,112 @@ fn serve(
 /// A connection that goes wrong ends that connection and nothing else. A node
 /// that could be stopped by one malformed peer frame would be a node anybody
 /// holding a peer credential could stop.
+/// The peer surface, once the door is open.
+///
+/// A struct rather than a tuple because the dialling half needs two things the
+/// door does not — a credential of its own and the authority to check the far
+/// end against — and four positional fields threaded through three sites is
+/// where a mix-up stops being visible.
+struct Peering {
+    /// The door peers arrive at.
+    door: tessari_wire::Peers,
+    /// How many seed addresses were given, for the startup line.
+    seeds: usize,
+    /// This node's credential, for the side that calls rather than answers.
+    dialling: tessari_wire::Credential,
+    /// The one root every peer in this cluster is issued by.
+    authority: tessari_wire::CertificateDer<'static>,
+}
+
+/// Greet every peer the catalog declares, once per awareness interval.
+///
+/// # Why this cadence and not a number chosen here
+///
+/// `tessari_session` refuses a read whose staleness bound is tighter than
+/// `STALENESS_FLOOR_SECONDS`, and that floor is derived from
+/// `AWARENESS_SECONDS`. The refusal is only honest if this node actually learns
+/// every peer's age that often, so the period is read from the same constant the
+/// floor is derived from. Two copies of it would let the promise the API makes
+/// and the mechanism behind it drift apart with nothing failing.
+///
+/// # Why the catalog is re-read every round
+///
+/// A node joining the cluster is a new catalog row, and the round after it
+/// appears is the one that should dial it. Reading the declarations once at
+/// start would mean a node that joined had to wait for every existing node to be
+/// restarted before anyone greeted it.
+///
+/// # What a failure does, and does not do
+///
+/// A peer that will not answer is left exactly as it was: its last reading stays
+/// and goes on ageing, which drifts it out of tighter bounds first and looser
+/// ones later, and restores it the moment it answers again. Erasing it instead
+/// would put it outside *every* bound at once, so one dropped packet would take
+/// a healthy node out of all routing. A round in which nobody answered is a
+/// cluster in trouble rather than an operation that went wrong, so it is logged
+/// and the cadence runs again.
+fn dial_peers(
+    db: &Db,
+    mine: &tessari_wire::Credential,
+    authority: &tessari_wire::CertificateDer<'static>,
+    stopping: &tessari_serve::Stopping,
+) {
+    let published = tessari_wire::Published::holding(tessari_wire::Directory::new());
+    tessari_wire::every(
+        std::time::Duration::from_secs(tessari_constants::AWARENESS_SECONDS),
+        stopping,
+        |now| {
+            // Read through the pieces the facade already publishes rather than
+            // through a new `Db` method: `Db::store` and `Store::begin` are both
+            // public, so a `Db::declared_peers` would be a second name for a
+            // capability this binary can already reach — which is the finding
+            // W238 recorded when it wrote and then reverted `Db::holding`.
+            let store = db.store();
+            let declared = store.begin().and_then(|mut transaction| {
+                tessari_storage::Catalog::new(&mut transaction).replicas()
+            });
+            let (me, declared) = match (store.node_identity(), declared) {
+                (Ok(identity), Ok(declared)) => (identity.id, declared),
+                (Err(why), _) => {
+                    log::warn!("this node cannot say who it is: {why}");
+                    return;
+                }
+                (_, Err(why)) => {
+                    log::warn!("this node cannot say who its peers are: {why}");
+                    return;
+                }
+            };
+            let mut reached = 0_usize;
+            published.round(|directory| {
+                reached = directory.greet_round(&declared, &me, now, |endpoint, node| {
+                    tessari_wire::call(
+                        endpoint,
+                        mine.duplicate(),
+                        authority,
+                        node,
+                        &greeting(db)?,
+                        tessari_wire::Ask::Nothing,
+                    )
+                    .map(|(said, _)| said)
+                    .map_err(|why| why.to_string())
+                });
+            });
+            // The count and not the directory, because nothing reads the
+            // directory yet — routing on it is S6.2 and is a wave of its own.
+            // What this round makes observable today is that the dialling
+            // happens at all and how much of the cluster answered.
+            if reached == 0 && !declared.is_empty() {
+                log::warn!(
+                    "no declared peer answered this round; {} were dialled",
+                    declared.len()
+                );
+            } else {
+                log::info!("{reached} of {} declared peer(s) answered", declared.len());
+            }
+        },
+    );
+}
+
 fn greet_peers(db: &Db, door: &tessari_wire::Peers, stopping: &tessari_serve::Stopping) {
     let mut voter = tessari_wire::Voter::started();
     while !stopping.asked() {

@@ -98,6 +98,10 @@ pub use crate::node::Node;
 #[cfg(feature = "server")]
 pub use crate::peer::{Hello, PeerFrame, Presented, Purpose, admit};
 pub use crate::push::{Became, Follow, Happened};
+/// The authority a cluster is issued by, re-exported because [`Joining`] hands
+/// one out and a caller cannot otherwise name the type it holds.
+#[cfg(feature = "server")]
+pub use rustls::pki_types::CertificateDer;
 
 /// How long the node will wait for a subscriber to accept a change.
 ///
