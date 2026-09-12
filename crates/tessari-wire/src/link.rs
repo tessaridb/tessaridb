@@ -273,7 +273,7 @@ fn hear(link: &mut impl std::io::Read) -> Result<Hello> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{Credential, Met, Peers, Result, call};
     use crate::credential::names;
     use crate::error::Error;
@@ -292,13 +292,13 @@ mod tests {
     /// Minted in memory on purpose: a fixture on disk is key material in a
     /// repository, and a fixture with an expiry date is a test that fails on a
     /// day nobody chose.
-    struct Authority {
+    pub(crate) struct Authority {
         certificate: rcgen::Certificate,
         key: rcgen::KeyPair,
     }
 
     impl Authority {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let mut params =
                 rcgen::CertificateParams::new(Vec::new()).expect("an authority's parameters");
             params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -307,12 +307,12 @@ mod tests {
             Self { certificate, key }
         }
 
-        fn der(&self) -> CertificateDer<'static> {
+        pub(crate) fn der(&self) -> CertificateDer<'static> {
             CertificateDer::from(self.certificate.der().to_vec())
         }
 
         /// Issue a credential naming `node` for `purpose`.
-        fn issue(&self, node: [u8; NODE_ID_LEN], purpose: Purpose) -> Credential {
+        pub(crate) fn issue(&self, node: [u8; NODE_ID_LEN], purpose: Purpose) -> Credential {
             self.named(&names(node, purpose))
         }
 
@@ -334,7 +334,7 @@ mod tests {
         NodeIdentity::alone(node)
     }
 
-    fn hello(node: [u8; NODE_ID_LEN]) -> Hello {
+    pub(crate) fn hello(node: [u8; NODE_ID_LEN]) -> Hello {
         Hello::about(&identity(node), Epoch::new(4), Sequence::new(9))
     }
 
@@ -342,7 +342,7 @@ mod tests {
     /// have granted before a restart — otherwise every door in these tests
     /// would refuse on the rule that has nothing to do with what is being
     /// tested.
-    fn settled() -> Voter {
+    pub(crate) fn settled() -> Voter {
         Voter::started_at(
             std::time::Instant::now()
                 .checked_sub(tessari_storage::LEASE_TTL)
@@ -351,7 +351,7 @@ mod tests {
     }
 
     const HERE: [u8; NODE_ID_LEN] = [1_u8; NODE_ID_LEN];
-    const THERE: [u8; NODE_ID_LEN] = [2_u8; NODE_ID_LEN];
+    pub(crate) const THERE: [u8; NODE_ID_LEN] = [2_u8; NODE_ID_LEN];
 
     /// Open a door for `HERE` and hand back where it is, plus the outcome.
     fn door(authority: &Authority) -> (Peers, Hello) {
@@ -457,7 +457,7 @@ mod tests {
     ///
     /// Each door is a separate voting member with a separate memory, which is
     /// the only shape in which a majority means anything.
-    fn voting(
+    pub(crate) fn voting(
         authority: &Authority,
         id: [u8; NODE_ID_LEN],
         mut voter: Voter,

@@ -43,6 +43,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "server")]
+mod campaign;
 mod client;
 #[cfg(feature = "server")]
 mod credential;
@@ -62,6 +64,8 @@ mod push;
 #[cfg(feature = "server")]
 use std::time::Duration;
 
+#[cfg(feature = "server")]
+pub use crate::campaign::Standing;
 pub use crate::client::{Client, Feed};
 #[cfg(feature = "server")]
 pub use crate::credential::{fingerprint, names, presented};

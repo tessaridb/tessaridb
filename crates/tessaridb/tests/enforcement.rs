@@ -332,8 +332,14 @@ const TABLES: &[Table] = &[
         // shape a wire will call, and it is deliberately the one that carries
         // the whole lease, so when a driver opens rounds on a timer this pair is
         // where "who may grant leadership" stops being hypothetical. The
-        // condition is nearer to being met than it was, and it is still not met:
-        // nothing in this build opens a round but a test.
+        // condition has moved one link along that chain. A round is now opened
+        // by something that is not a test: `Standing::renew` decides when the
+        // margin is spent and puts the ballot to every peer, and it is ordinary
+        // code behind the `server` feature rather than a fixture. What is still
+        // missing is its caller — nothing but a test calls `renew`, because the
+        // thread that would open rounds on a timer has not been written. The
+        // exemption therefore still holds, on a ground one step narrower than
+        // the one it held on before.
         expected: 25,
         count: |text| public_functions(&block(text, "impl Store")),
     },
