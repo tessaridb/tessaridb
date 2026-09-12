@@ -50,6 +50,8 @@ mod client;
 mod collection;
 #[cfg(feature = "server")]
 mod credential;
+#[cfg(feature = "server")]
+mod directory;
 mod error;
 mod frame;
 #[cfg(feature = "server")]
@@ -73,6 +75,8 @@ pub use crate::client::{Client, Feed};
 pub use crate::collection::{Collect, Collected, Collector, Origin};
 #[cfg(feature = "server")]
 pub use crate::credential::{fingerprint, names, presented};
+#[cfg(feature = "server")]
+pub use crate::directory::{Destination, Directory, Heard};
 pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]
 pub use crate::grant::{Ballot, Leadership, Refused, Round, Vote, Voter};

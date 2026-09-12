@@ -474,7 +474,12 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn hello(node: [u8; NODE_ID_LEN]) -> Hello {
-        Hello::about(&identity(node), Epoch::new(4), Sequence::new(9))
+        Hello::about(
+            &identity(node),
+            Epoch::new(4),
+            Sequence::new(9),
+            Some(core::time::Duration::ZERO),
+        )
     }
 
     /// A voter that has been up long enough to have outlived anything it could

@@ -36,6 +36,8 @@
 //! framing at all, which is unrepresentable on a port that admits anonymous
 //! clients.
 
+use core::time::Duration;
+
 use tessari_encoding::{NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};
 use tessari_types::{Epoch, RecordId, Sequence};
 
@@ -146,6 +148,24 @@ pub struct Hello {
     pub roles: Roles,
     /// How far its committed log reaches.
     pub tail: Sequence,
+    /// How old the greeter says its own copy is.
+    ///
+    /// The fact a router needs beside the tail and the roles: the tail says how
+    /// much this node holds, and this says how long ago that stopped being the
+    /// whole story. It is the greeter's own answer from
+    /// `Store::current_as_of` — `Some(0)` on a node that may write, because it
+    /// is the origin of what it holds, and the time since it was last *level*
+    /// on one that may not.
+    ///
+    /// `None` is a real answer and not an omission: a copy that has collected
+    /// and never arrived has no known age, and a node that cannot say how old
+    /// its copy is must be treated as outside every bound rather than inside
+    /// the ones nobody measured.
+    ///
+    /// Whole seconds on the wire, rounded **up**. A rounding that can only
+    /// report a copy older is the direction a staleness bound already errs in,
+    /// so the loss of precision can refuse a read and can never admit one.
+    pub current_as_of: Option<Duration>,
 }
 
 impl Hello {
@@ -156,13 +176,19 @@ impl Hello {
     /// what it actually holds. The two arguments are the two facts an identity
     /// deliberately does not carry, because both change with every commit.
     #[must_use]
-    pub fn about(identity: &NodeIdentity, epoch: Epoch, tail: Sequence) -> Self {
+    pub fn about(
+        identity: &NodeIdentity,
+        epoch: Epoch,
+        tail: Sequence,
+        current_as_of: Option<Duration>,
+    ) -> Self {
         Self {
             node: identity.id,
             build: identity.version,
             epoch,
             roles: identity.roles,
             tail,
+            current_as_of,
         }
     }
 
@@ -177,6 +203,19 @@ impl Hello {
         frame::put_u64(&mut body, self.epoch.get());
         body.push(self.roles.bits());
         frame::put_u64(&mut body, self.tail.get());
+        // A presence byte and then the seconds, rather than a sentinel value:
+        // every `u64` is a legitimate age, so there is no number left over to
+        // mean *I cannot say*.
+        match self.current_as_of {
+            Some(age) => {
+                body.push(1);
+                frame::put_u64(&mut body, whole_seconds(age));
+            }
+            None => {
+                body.push(0);
+                frame::put_u64(&mut body, 0);
+            }
+        }
         body
     }
 
@@ -199,7 +238,9 @@ impl Hello {
         let (epoch, at) = frame::take_u64(body, at)?;
         let bits = *body.get(at).ok_or(Error::Malformed)?;
         let roles = Roles::from_bits(bits).ok_or(Error::UnknownRoles { bits })?;
-        let (tail, _) = frame::take_u64(body, at.checked_add(1).ok_or(Error::Malformed)?)?;
+        let (tail, at) = frame::take_u64(body, at.checked_add(1).ok_or(Error::Malformed)?)?;
+        let present = *body.get(at).ok_or(Error::Malformed)?;
+        let (seconds, _) = frame::take_u64(body, at.checked_add(1).ok_or(Error::Malformed)?)?;
 
         Ok(Self {
             node,
@@ -211,8 +252,21 @@ impl Hello {
             epoch: Epoch::new(epoch),
             roles,
             tail: Sequence::new(tail),
+            current_as_of: (present != 0).then(|| Duration::from_secs(seconds)),
         })
     }
+}
+
+/// An age in whole seconds, rounded up.
+///
+/// Up rather than down, and the direction is the point: a bound admits a copy
+/// no older than it says, so reporting a fraction of a second as a whole one can
+/// only put a copy *outside* a bound it was marginally inside. Refusing a read
+/// that was borderline is recoverable; admitting one that was not is the thing
+/// the bound exists to stop.
+fn whole_seconds(age: Duration) -> u64 {
+    age.as_secs()
+        .saturating_add(u64::from(age.subsec_nanos() > 0))
 }
 
 /// Decide whether the other end may speak on this link.
@@ -251,6 +305,7 @@ mod tests {
     use super::{Hello, PeerFrame, Presented, Purpose, admit};
     use crate::error::Error;
     use crate::frame;
+    use core::time::Duration;
     use tessari_encoding::{NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};
     use tessari_types::{Epoch, Sequence};
 
@@ -268,6 +323,7 @@ mod tests {
             epoch: Epoch::new(7),
             roles: Roles::ALONE,
             tail: Sequence::new(4096),
+            current_as_of: Some(Duration::from_secs(3)),
         }
     }
 
@@ -295,6 +351,36 @@ mod tests {
         let said = greeting(ONE);
         let heard = Hello::decode(&said.encode()).expect("a greeting this build wrote");
         assert_eq!(heard, said);
+    }
+
+    #[test]
+    fn a_greeting_carries_how_old_its_own_copy_is() {
+        // The fact a router needs, and the one a greeting did not carry until
+        // this wave. Three readings, because they are three different claims: a
+        // copy of a known age, a copy whose age nobody can state, and a fraction
+        // of a second -- which must come back as the whole second ABOVE it, so
+        // the rounding can only refuse a borderline read and never admit one.
+        let mut said = greeting(ONE);
+
+        said.current_as_of = Some(Duration::from_secs(41));
+        let heard = Hello::decode(&said.encode()).expect("a greeting this build wrote");
+        assert_eq!(heard.current_as_of, Some(Duration::from_secs(41)));
+
+        said.current_as_of = None;
+        let heard = Hello::decode(&said.encode()).expect("a greeting this build wrote");
+        assert_eq!(
+            heard.current_as_of, None,
+            "a node that cannot say how old its copy is came back claiming an age"
+        );
+
+        said.current_as_of = Some(Duration::from_millis(1_500));
+        let heard = Hello::decode(&said.encode()).expect("a greeting this build wrote");
+        assert_eq!(
+            heard.current_as_of,
+            Some(Duration::from_secs(2)),
+            "a fraction of a second rounded the copy younger, which is the one \
+             direction a staleness reading may never move"
+        );
     }
 
     #[test]
@@ -388,7 +474,12 @@ mod tests {
         // disagree with the node's own stored identity, and nothing downstream
         // would ever see the difference.
         let identity = NodeIdentity::alone(ONE);
-        let said = Hello::about(&identity, Epoch::new(3), Sequence::new(90));
+        let said = Hello::about(
+            &identity,
+            Epoch::new(3),
+            Sequence::new(90),
+            Some(Duration::from_secs(11)),
+        );
         assert_eq!(said.node, identity.id);
         assert_eq!(said.roles, identity.roles);
         assert_eq!(said.build, identity.version);
