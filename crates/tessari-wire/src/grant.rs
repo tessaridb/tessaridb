@@ -469,6 +469,33 @@ impl Voter {
         self.granted.map(|held| held.epoch)
     }
 
+    /// When this voter last **granted** a ballot, which is when it last had
+    /// evidence that a leader was alive.
+    ///
+    /// # It is the freshest liveness signal this node has, and it was already here
+    ///
+    /// A leader renews by putting a ballot to every voter, and it renews while
+    /// two round times are left of its usable window — so a voter hears from a
+    /// live leader roughly every `LEASE_TTL - LEASE_GUARD - 2 × ROUND_SECONDS`,
+    /// which is **six seconds** at today's values. The greeting directory that
+    /// [`crate::heard_a_leader`] otherwise consults is refreshed on the
+    /// awareness cadence, **ten seconds**, and the reading itself is up to that
+    /// old again. This instant is strictly fresher and costs nothing: the grant
+    /// was already recorded, with `now` and not the earlier instant, precisely
+    /// so that a renewal moves it.
+    ///
+    /// # A refusal is not evidence
+    ///
+    /// Only a grant is reported. Refusing a ballot says this voter would not
+    /// have that node as leader — a candidate standing against a leader that is
+    /// already gone refuses nothing and proves nothing about the leader. Reading
+    /// a refusal as contact would let a dead cluster keep itself quiet by
+    /// arguing with itself.
+    #[must_use]
+    pub fn granted_at(&self) -> Option<Instant> {
+        self.granted.map(|held| held.at)
+    }
+
     /// The highest epoch this voter has been shown, granted or refused.
     #[must_use]
     pub const fn seen(&self) -> Epoch {
@@ -540,6 +567,12 @@ impl Deciding {
     /// loss bought with no safety, because the value being guarded is sound.
     pub fn asked(&self, ballot: &Ballot, now: Instant, mine: Reached, candidate: Reached) -> Vote {
         self.held().asked(ballot, now, mine, candidate)
+    }
+
+    /// When this node last granted a ballot — see [`Voter::granted_at`].
+    #[must_use]
+    pub fn granted_at(&self) -> Option<Instant> {
+        self.held().granted_at()
     }
 
     /// The highest epoch this node has granted, if any.
@@ -880,6 +913,69 @@ mod tests {
             Vote::Refused(Refused::EpochAlreadyDecided {
                 granted: Epoch::new(4)
             })
+        );
+    }
+
+    #[test]
+    fn a_grant_moves_the_instant_a_leader_is_judged_alive_by_and_a_refusal_does_not() {
+        let now = base();
+        let mut voter = settled(now);
+        assert_eq!(voter.granted_at(), None, "nothing granted, nothing to read");
+
+        assert_eq!(
+            voter.asked(
+                &Ballot {
+                    epoch: Epoch::new(1),
+                    candidate: A
+                },
+                now,
+                LEVEL,
+                LEVEL
+            ),
+            Vote::Granted
+        );
+        assert_eq!(voter.granted_at(), Some(now));
+
+        // A renewal from the incumbent moves it, because that is the whole
+        // mechanism: a leader renews about every six seconds and this is how a
+        // voter knows the leader was alive that recently.
+        let later = after(now, Duration::from_secs(6));
+        assert_eq!(
+            voter.asked(
+                &Ballot {
+                    epoch: Epoch::new(1),
+                    candidate: A
+                },
+                later,
+                LEVEL,
+                LEVEL
+            ),
+            Vote::Granted
+        );
+        assert_eq!(voter.granted_at(), Some(later));
+
+        // A REFUSAL does not. B standing against the live incumbent is refused,
+        // and refusing says this voter would not have B as leader — it is no
+        // evidence at all that any leader is alive. Reading it as contact would
+        // let a cluster whose leader is long gone keep itself quiet by arguing
+        // with itself.
+        let refused_at = after(later, Duration::from_secs(1));
+        assert!(matches!(
+            voter.asked(
+                &Ballot {
+                    epoch: Epoch::new(2),
+                    candidate: B
+                },
+                refused_at,
+                LEVEL,
+                LEVEL
+            ),
+            Vote::Refused(_)
+        ));
+        assert_eq!(
+            voter.granted_at(),
+            Some(later),
+            "a refusal moved the instant a leader is judged alive by"
         );
     }
 

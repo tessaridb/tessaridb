@@ -517,7 +517,20 @@ const TABLES: &[Table] = &[
         // anything, and the global form stops every single-node deployment
         // writing, which is not a theory: deleting the role check fails 216 of
         // this crate's own tests.
-        expected: 31,
+        //
+        // 32 since the quiet-cluster counter: `Store::campaigned` records that
+        // this node stood in a leadership round. Classified **exempt, and it
+        // reaches no data at all** — it takes no argument, returns nothing, and
+        // increments one in-process atomic that is not persisted and never
+        // leaves `Health`. It is here rather than in the serving process for the
+        // reason `log_divergences` is: the scrape and `INFO FOR NODE` both read
+        // the store's health, so a detector living anywhere else is one an
+        // operator cannot see.
+        //
+        // Its re-classification trigger: giving it an argument, or making
+        // anything read it back as a decision rather than as a report. A counter
+        // that something BRANCHES on has stopped being a counter.
+        expected: 32,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -576,7 +589,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 83, "the counted tables no longer sum to 83");
+    assert_eq!(total, 84, "the counted tables no longer sum to 84");
 }
 
 /// Every `.rs` file under a directory.

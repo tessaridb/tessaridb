@@ -826,7 +826,9 @@ impl Session<'_> {
         // Asked through `health()` rather than of the lease directly, so that
         // this and `/metrics` are one answer to one question rather than two
         // that can drift.
-        let lease = match self.store.health()?.lease_remaining {
+        let held = self.store.health()?;
+        let campaigns = held.campaigns;
+        let lease = match held.lease_remaining {
             Some(left) => tessari_types::Duration::new(
                 i64::try_from(left.as_secs()).unwrap_or(i64::MAX),
                 left.subsec_nanos(),
@@ -919,6 +921,22 @@ impl Session<'_> {
                     // same reasoning as the lease beside it: not leading is a
                     // different statement from leading under the first epoch.
                     ("epoch".to_owned(), leading),
+                    // The third of the pair, and the one that says whether the
+                    // cluster is QUIET. A healthy cluster's followers do not
+                    // stand against a leader they can hear (ADR-0066), so this
+                    // staying flat while somebody holds a lease is the
+                    // observable form of that rule — and a number climbing on a
+                    // node that is not leading says the gate has stopped
+                    // working, which nothing else here would show.
+                    //
+                    // Rounds STOOD and not rounds won: a round that loses is
+                    // exactly the noise worth seeing. From the same `health()`
+                    // the lease above comes from and `/metrics` reports, so the
+                    // two surfaces cannot drift.
+                    (
+                        "campaigns".to_owned(),
+                        Value::from(i64::try_from(campaigns).unwrap_or(i64::MAX)),
+                    ),
                 ])),
             ),
         ]))

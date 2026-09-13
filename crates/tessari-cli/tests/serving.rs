@@ -845,6 +845,32 @@ fn counted(address: &str) -> Result<usize, String> {
     }
 }
 
+/// How many leadership rounds `address` has stood in.
+///
+/// From `INFO FOR NODE`, which reads the same `health()` the `/metrics` scrape
+/// does — so the quiet-cluster assertion below and an operator's dashboard
+/// cannot disagree about the number.
+fn campaigns(address: &str) -> Result<i64, String> {
+    let mut client = Client::connect(address).map_err(|why| why.to_string())?;
+    let answers = client
+        .run("INFO FOR NODE;", None)
+        .map_err(|why| why.to_string())?;
+    let Some(Answer::Value {
+        value: tessari_types::Value::Object(report),
+        ..
+    }) = answers.last()
+    else {
+        return Err(format!("not a report: {answers:?}"));
+    };
+    let Some(tessari_types::Value::Object(cluster)) = report.get("cluster") else {
+        return Err(format!("no cluster group: {report:?}"));
+    };
+    match cluster.get("campaigns") {
+        Some(tessari_types::Value::Number(tessari_types::Number::Integer(stood))) => Ok(*stood),
+        other => Err(format!("campaigns is {other:?}")),
+    }
+}
+
 #[test]
 #[ignore = "forty seconds of real cadences — a leader has to be elected, a \
             record replicated, a node killed and a successor elected, and none \
@@ -907,7 +933,13 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
         // cluster. Everything a coordinating node needs written locally is
         // written before it becomes one; afterwards, configuration is the
         // leader's to write and replicate, which is what it should be.
-        let mut script = String::new();
+        // ONE transaction, and that is not tidiness. `DEFINE REPLICA` is a
+        // catalog write and therefore a log record, and the moment the FIRST
+        // one commits this node names a peer in committed membership — which is
+        // the condition ADR-0069 put the write gate on. Statement by statement,
+        // the second declaration is refused `NoLeadershipYet` by the first.
+        // A cluster is declared atomically or not at all.
+        let mut script = String::from("BEGIN;");
         for other in 0..CLUSTER.len() {
             if other == index {
                 continue;
@@ -919,7 +951,7 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
                 CLUSTER[other].1
             ));
         }
-        script.push_str(" DEFINE NODE ROLES serving, writable, coordinating;");
+        script.push_str(" DEFINE NODE ROLES serving, writable, coordinating; COMMIT;");
         db.session()
             .run(&script)
             .expect("a cluster of three, declared");
@@ -1018,6 +1050,41 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
         "the follower never received the leader's record, so nothing below \
          would be measuring a cluster"
     );
+
+    // The criterion's SECOND half, and it has to be here rather than in its own
+    // scenario: a fast failover and a quiet cluster are satisfiable by opposite
+    // wrong changes — delete the standing gate and failover is quick and the
+    // cluster campaigns forever; leave everything alone and it is quiet and
+    // slow. Only a fixture that shows both at once distinguishes the right
+    // change from either.
+    //
+    // A leader is holding a lease and renewing it against these voters, so a
+    // follower that can hear it must not be standing. The count is read twice
+    // across a window longer than a whole lease: a follower that campaigns does
+    // so every second, so a flat number over ten seconds is not a sampling
+    // accident.
+    let quiet: Vec<i64> = (0..CLUSTER.len())
+        .filter(|index| *index != leader)
+        .map(|index| campaigns(CLUSTER[index].0).expect("a follower reports its rounds"))
+        .collect();
+    std::thread::sleep(Duration::from_secs(12));
+    for (offset, index) in (0..CLUSTER.len())
+        .filter(|index| *index != leader)
+        .enumerate()
+    {
+        let now = campaigns(CLUSTER[index].0).expect("a follower reports its rounds");
+        assert_eq!(
+            now,
+            quiet[offset],
+            "follower {index} stood {} time(s) in twelve seconds while a leader \
+             held its lease and renewed against it. A cluster that campaigns \
+             against a live leader spends the one resource an election needs — \
+             its voters' willingness to grant anything — and each round is a \
+             self-vote that refuses the real leader's next renewal for a whole \
+             lease (ADR-0066)",
+            now - quiet[offset]
+        );
+    }
 
     // The criterion's own words: the client's behaviour ACROSS the window. A
     // reader that stops at the kill and resumes afterwards proves the cluster

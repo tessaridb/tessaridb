@@ -248,6 +248,10 @@ pub(crate) fn metrics(
             "tessari_log_divergences {}\n",
             held.log_divergences
         ));
+
+        out.push_str("# HELP tessari_campaigns Leadership rounds this node has stood in.\n");
+        out.push_str("# TYPE tessari_campaigns counter\n");
+        out.push_str(&format!("tessari_campaigns {}\n", held.campaigns));
         // Absent rather than zero on a node holding no lease, because a series
         // that is always zero on every standalone store would train whoever
         // watches it to ignore the one reading that matters. When it is here it

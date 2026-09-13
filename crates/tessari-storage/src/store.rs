@@ -51,6 +51,19 @@ pub struct Health {
     /// It is here rather than nowhere because a detector added after the first
     /// incident is a detector that was absent during it.
     pub log_divergences: u64,
+    /// Leadership rounds this node has stood in.
+    ///
+    /// Here for the reason the divergence count is, and for one more: a healthy
+    /// cluster is supposed to be QUIET. A follower that can hear a leader does
+    /// not stand against it (ADR-0066), so this number staying flat while a
+    /// leader holds its lease is the observable form of that rule — and a
+    /// cluster that has started campaigning against a live leader is spending
+    /// the one resource an election needs, which is the willingness of its
+    /// voters to grant anything.
+    ///
+    /// It counts rounds STOOD, not rounds won. A round that loses is exactly
+    /// the noise this is here to make visible.
+    pub campaigns: u64,
     /// How long this node may still write under its lease, or `None` when it
     /// holds none.
     ///
@@ -130,6 +143,8 @@ pub struct Store {
     /// two handles to one store are not two stores, and a count split between
     /// them is a count nobody can read.
     divergences: Arc<AtomicU64>,
+    /// Leadership rounds stood since this process opened the store.
+    campaigns: Arc<AtomicU64>,
     /// What this process has given each follower, and when.
     ///
     /// Shared with every handle for the reason the registries above it are, and
@@ -203,6 +218,7 @@ impl Store {
             audit: Arc::new(crate::audit::AuditTrail::default()),
             series: Arc::new(crate::series::SeriesRegistry::default()),
             divergences: Arc::new(AtomicU64::new(0)),
+            campaigns: Arc::new(AtomicU64::new(0)),
             followers: Arc::new(Followers::default()),
             collections: Arc::new(crate::collections::Collections::default()),
             lease: Arc::new(crate::lease::Held::default()),
@@ -733,6 +749,17 @@ impl Store {
         &self.snapshots
     }
 
+    /// Record that this node stood in a leadership round.
+    ///
+    /// Called by the campaign cadence and by nothing else. It is a store method
+    /// rather than a counter in the serving process for the reason
+    /// [`Health::log_divergences`] is one: the scrape reads the store's health,
+    /// so a detector that lives anywhere else is a detector an operator cannot
+    /// see.
+    pub fn campaigned(&self) {
+        self.campaigns.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Whether this store is well, and what is wrong when it is not.
     ///
     /// # Why this exists rather than a metric
@@ -760,6 +787,7 @@ impl Store {
             background_errors: self.backend.background_errors()?,
             committed: self.committed_tail()?,
             log_divergences: self.divergences.load(Ordering::Relaxed),
+            campaigns: self.campaigns.load(Ordering::Relaxed),
             lease_remaining: self.lease.remaining(),
         })
     }

@@ -406,20 +406,38 @@ pub use tessari_storage::names_a_peer;
 /// an address this node's catalog does not declare is not a member speaking.
 /// The awareness round skips this node's own row, so nothing it said about
 /// itself is in the directory to be mistaken for a peer.
+/// # The grant is the faster of the two, and it was already being recorded
+///
+/// `granted` is when this node last GRANTED a ballot — see
+/// [`crate::Voter::granted_at`]. A leader renews against every voter while two
+/// round times are left of its usable window, so a voter hears from a live
+/// leader about every **six** seconds at today's values, where the directory is
+/// refreshed every **ten** and the reading is itself up to that old again. Taking
+/// the fresher of the two is what makes detection faster than the awareness
+/// round without a new frame, a new cadence, or a connection held open.
+///
+/// Neither source replaces the other. A node that grants nothing — a follower
+/// outside the deciding set — has no grant to read and is answered by the
+/// directory exactly as before; a voter in a cluster whose greetings are late
+/// still has its own grant. `None` is therefore *no such evidence*, never *no
+/// leader*.
 #[must_use]
 pub fn heard_a_leader(
     declared: &[ReplicaDefinition],
     heard: &Directory,
+    granted: Option<Instant>,
     now: Instant,
     within: Duration,
 ) -> bool {
-    declared
-        .iter()
-        .filter_map(|peer| heard.at(&peer.endpoint))
-        .any(|seen| {
-            seen.said.current_as_of == Some(Duration::ZERO)
-                && now.saturating_duration_since(seen.at) <= within
-        })
+    let by_grant = granted.is_some_and(|at| now.saturating_duration_since(at) <= within);
+    by_grant
+        || declared
+            .iter()
+            .filter_map(|peer| heard.at(&peer.endpoint))
+            .any(|seen| {
+                seen.said.current_as_of == Some(Duration::ZERO)
+                    && now.saturating_duration_since(seen.at) <= within
+            })
 }
 
 /// Whether this node is eligible to stand at all, from its own identity alone.
@@ -1154,6 +1172,7 @@ mod tests {
             heard_a_leader(
                 &declared,
                 &heard,
+                None,
                 Instant::now(),
                 tessari_storage::LEASE_TTL
             ),
@@ -1173,6 +1192,7 @@ mod tests {
             !heard_a_leader(
                 &declared,
                 &heard,
+                None,
                 long_ago + tessari_storage::LEASE_TTL + Duration::from_secs(1),
                 tessari_storage::LEASE_TTL
             ),
@@ -1193,11 +1213,76 @@ mod tests {
             !heard_a_leader(
                 &declared,
                 &heard,
+                None,
                 Instant::now(),
                 tessari_storage::LEASE_TTL
             ),
             "a follower was mistaken for a leader, so a cluster whose leader \
              died would never elect another"
+        );
+    }
+
+    #[test]
+    fn a_grant_this_node_made_holds_it_back_when_the_directory_is_already_stale() {
+        let leader = [9; NODE_ID_LEN];
+        let declared = [named("leader", "10.0.0.1:9000", leader)];
+        let mut heard = Directory::new();
+        let long_ago = Instant::now();
+        heard.heard("10.0.0.1:9000", writing(Epoch::new(7)), long_ago);
+        // One whole lease after the greeting, which is the moment the directory
+        // stops testifying — and four seconds after a renewal this node granted,
+        // which is the whole point: a leader renews about every six seconds and
+        // the directory is refreshed every ten.
+        let now = long_ago + tessari_storage::LEASE_TTL + Duration::from_secs(1);
+        let granted = now - Duration::from_secs(4);
+        assert!(
+            heard_a_leader(
+                &declared,
+                &heard,
+                Some(granted),
+                now,
+                tessari_storage::LEASE_TTL
+            ),
+            "the directory had aged out but this node had granted that leader a \
+             renewal four seconds ago — standing against a leader it just \
+             acknowledged is exactly what the quiet-cluster gate exists to stop"
+        );
+    }
+
+    #[test]
+    fn a_grant_older_than_the_lease_holds_nobody_back_either() {
+        let declared = [named("leader", "10.0.0.1:9000", [9; NODE_ID_LEN])];
+        let now = Instant::now();
+        let granted = now - tessari_storage::LEASE_TTL - Duration::from_secs(1);
+        assert!(
+            !heard_a_leader(
+                &declared,
+                &Directory::new(),
+                Some(granted),
+                now,
+                tessari_storage::LEASE_TTL
+            ),
+            "a grant older than the lease it granted cannot testify that the \
+             holder still has it, and a node that hears nothing has to stand"
+        );
+    }
+
+    #[test]
+    fn a_node_that_has_granted_nothing_is_answered_by_the_directory_exactly_as_before() {
+        let declared = [named("leader", "10.0.0.1:9000", [9; NODE_ID_LEN])];
+        let heard = greeted(&[("10.0.0.1:9000", writing(Epoch::new(7)))]);
+        // `None` is *no such evidence*, never *no leader*. A follower outside
+        // the deciding set grants nothing and must still be held back by a
+        // greeting, or this change would make every non-voter campaign.
+        assert!(
+            heard_a_leader(
+                &declared,
+                &heard,
+                None,
+                Instant::now(),
+                tessari_storage::LEASE_TTL
+            ),
+            "a node with no grant to read was not held back by a fresh greeting"
         );
     }
 

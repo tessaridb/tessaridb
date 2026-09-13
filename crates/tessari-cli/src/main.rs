@@ -952,6 +952,7 @@ fn stand_for_leadership(
             if tessari_wire::heard_a_leader(
                 &declared,
                 &published.current(),
+                voter.granted_at(),
                 now,
                 tessari_storage::LEASE_TTL,
             ) {
@@ -982,6 +983,12 @@ fn stand_for_leadership(
                     return;
                 }
             };
+            // Counted here, where the decision to stand has actually been
+            // taken: every gate above has passed and a round is about to open.
+            // Counting at the top of the cadence would count ticks, and the
+            // cadence ticks every second whether or not anything happens —
+            // which is precisely the difference this counter exists to show.
+            db.store().campaigned();
             let standing = tessari_wire::Standing {
                 candidate: me.id,
                 mine,
