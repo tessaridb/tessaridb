@@ -469,8 +469,29 @@ impl Voter {
         self.granted.map(|held| held.epoch)
     }
 
-    /// When this voter last **granted** a ballot, which is when it last had
-    /// evidence that a leader was alive.
+    /// When this voter last granted a ballot **to a node that is not itself**,
+    /// which is when it last had evidence that a leader was alive.
+    ///
+    /// # The `me` is the whole of it, and leaving it out cost a wave
+    ///
+    /// A node keeps ONE voting memory, shared by the peer door and by its own
+    /// campaign, so that it cannot grant a single epoch twice. It follows that a
+    /// candidate's self-vote lands here exactly like a peer's ballot — and until
+    /// W275 this function reported it, so the standing gate read a node's own
+    /// vote as proof that a leader was alive. The act of standing set the flag
+    /// that forbids standing, for exactly `LEASE_TTL`: a leader was silenced for
+    /// precisely as long as the lease it was trying to renew, and a lease could
+    /// only be re-won after it had already been lost. Measured at W274 in a
+    /// three-process run — two ten-second silences bracketing one round, one of
+    /// them a sitting leader.
+    ///
+    /// The candidate was in the record the whole time and nothing read it. The
+    /// argument for comparing it here rather than at the one call site is the
+    /// one this tree applies everywhere else: a rule a caller has to remember is
+    /// a rule that holds until the next caller.
+    ///
+    /// A node that voted for itself has heard nobody. That is not a refusal to
+    /// answer — it is the answer.
     ///
     /// # It is the freshest liveness signal this node has, and it was already here
     ///
@@ -492,8 +513,10 @@ impl Voter {
     /// a refusal as contact would let a dead cluster keep itself quiet by
     /// arguing with itself.
     #[must_use]
-    pub fn granted_at(&self) -> Option<Instant> {
-        self.granted.map(|held| held.at)
+    pub fn granted_elsewhere_at(&self, me: [u8; NODE_ID_LEN]) -> Option<Instant> {
+        self.granted
+            .filter(|held| held.candidate != me)
+            .map(|held| held.at)
     }
 
     /// The highest epoch this voter has been shown, granted or refused.
@@ -569,10 +592,11 @@ impl Deciding {
         self.held().asked(ballot, now, mine, candidate)
     }
 
-    /// When this node last granted a ballot — see [`Voter::granted_at`].
+    /// When this node last granted a ballot to somebody else — see
+    /// [`Voter::granted_elsewhere_at`].
     #[must_use]
-    pub fn granted_at(&self) -> Option<Instant> {
-        self.held().granted_at()
+    pub fn granted_elsewhere_at(&self, me: [u8; NODE_ID_LEN]) -> Option<Instant> {
+        self.held().granted_elsewhere_at(me)
     }
 
     /// The highest epoch this node has granted, if any.
@@ -747,6 +771,7 @@ mod tests {
 
     const A: [u8; NODE_ID_LEN] = [0xA1; NODE_ID_LEN];
     const B: [u8; NODE_ID_LEN] = [0xB2; NODE_ID_LEN];
+    const C: [u8; NODE_ID_LEN] = [0xC3; NODE_ID_LEN];
     const ONE: [u8; NODE_ID_LEN] = [1; NODE_ID_LEN];
     const TWO: [u8; NODE_ID_LEN] = [2; NODE_ID_LEN];
     const THREE: [u8; NODE_ID_LEN] = [3; NODE_ID_LEN];
@@ -920,7 +945,14 @@ mod tests {
     fn a_grant_moves_the_instant_a_leader_is_judged_alive_by_and_a_refusal_does_not() {
         let now = base();
         let mut voter = settled(now);
-        assert_eq!(voter.granted_at(), None, "nothing granted, nothing to read");
+        // Asked as C throughout: every grant below is to somebody else, which is
+        // the case this test has always been about. The self-grant is the test
+        // underneath this one.
+        assert_eq!(
+            voter.granted_elsewhere_at(C),
+            None,
+            "nothing granted, nothing to read"
+        );
 
         assert_eq!(
             voter.asked(
@@ -934,7 +966,7 @@ mod tests {
             ),
             Vote::Granted
         );
-        assert_eq!(voter.granted_at(), Some(now));
+        assert_eq!(voter.granted_elsewhere_at(C), Some(now));
 
         // A renewal from the incumbent moves it, because that is the whole
         // mechanism: a leader renews about every six seconds and this is how a
@@ -952,7 +984,7 @@ mod tests {
             ),
             Vote::Granted
         );
-        assert_eq!(voter.granted_at(), Some(later));
+        assert_eq!(voter.granted_elsewhere_at(C), Some(later));
 
         // A REFUSAL does not. B standing against the live incumbent is refused,
         // and refusing says this voter would not have B as leader — it is no
@@ -973,10 +1005,48 @@ mod tests {
             Vote::Refused(_)
         ));
         assert_eq!(
-            voter.granted_at(),
+            voter.granted_elsewhere_at(C),
             Some(later),
             "a refusal moved the instant a leader is judged alive by"
         );
+    }
+
+    #[test]
+    fn a_node_that_voted_for_itself_has_heard_nobody() {
+        // The assertion W273 did not have, and the whole of Q-602. A candidate
+        // self-votes through this same memory — one voting memory per node, so
+        // that a node cannot grant one epoch twice — so its own ballot is
+        // indistinguishable from a peer's unless the candidate is compared.
+        //
+        // Read the other way it would silence the only node that must not be
+        // silenced: a leader renews by standing, standing self-votes, and a
+        // self-vote read as a leader's liveness stops the next renewal for a
+        // whole `LEASE_TTL` — exactly the lease being renewed.
+        let now = base();
+        let mut voter = settled(now);
+
+        assert_eq!(
+            voter.asked(
+                &Ballot {
+                    epoch: Epoch::new(1),
+                    candidate: A
+                },
+                now,
+                LEVEL,
+                LEVEL
+            ),
+            Vote::Granted
+        );
+
+        assert_eq!(
+            voter.granted_elsewhere_at(A),
+            None,
+            "a node read its own vote as evidence that a leader was alive"
+        );
+        // And the same grant, asked about by anybody else, still answers — the
+        // filter is about who asked, not about forgetting the grant.
+        assert_eq!(voter.granted_elsewhere_at(B), Some(now));
+        assert_eq!(voter.granted_elsewhere_at(C), Some(now));
     }
 
     #[test]

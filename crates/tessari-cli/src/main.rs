@@ -949,10 +949,16 @@ fn stand_for_leadership(
             // than the leader's lease cannot testify that the leader still holds
             // it. A node that hears nothing stands, which is the condition an
             // election exists for.
+            //
+            // `granted_elsewhere_at(me.id)` and not the grant instant alone: a
+            // candidate self-votes through this same memory, so a node reading
+            // its own vote here would be silenced by the act of standing — and
+            // a leader renews by standing. That is Q-602, and it made a lease
+            // un-renewable.
             if tessari_wire::heard_a_leader(
                 &declared,
                 &published.current(),
-                voter.granted_at(),
+                voter.granted_elsewhere_at(me.id),
                 now,
                 tessari_storage::LEASE_TTL,
             ) {

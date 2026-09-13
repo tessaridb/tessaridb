@@ -408,8 +408,9 @@ pub use tessari_storage::names_a_peer;
 /// itself is in the directory to be mistaken for a peer.
 /// # The grant is the faster of the two, and it was already being recorded
 ///
-/// `granted` is when this node last GRANTED a ballot — see
-/// [`crate::Voter::granted_at`]. A leader renews against every voter while two
+/// `granted` is when this node last granted a ballot **to somebody else** — see
+/// [`crate::Voter::granted_elsewhere_at`], whose doc block carries why the
+/// *else* is load-bearing rather than tidy. A leader renews against every voter while two
 /// round times are left of its usable window, so a voter hears from a live
 /// leader about every **six** seconds at today's values, where the directory is
 /// refreshed every **ten** and the reading is itself up to that old again. Taking
