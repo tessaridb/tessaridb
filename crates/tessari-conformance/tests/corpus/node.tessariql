@@ -45,7 +45,7 @@ INFO FOR NODE;
 --- expect: ok
 
 --- case: node is a contextual word, so it is still a table name
-DEFINE NAMESPACE prod;
+DEFINE NAMESPACE prod REPLICATION NONE;
 USE NAMESPACE prod;
 DEFINE DATABASE orders;
 USE DATABASE orders;
@@ -99,8 +99,12 @@ DEFINE NAMESPACE replicated REPLICATION FACTOR 3;
 DEFINE NAMESPACE declined REPLICATION NONE;
 --- expect: ok
 
---- case: a bare definition still works and states nothing
+--- case: a definition that says nothing is refused once a peer could hold a copy
 DEFINE NAMESPACE unsaid;
+--- expect: error ReplicationUnstated
+
+--- case: and the same namespace declining deliberately is accepted
+DEFINE NAMESPACE unsaid REPLICATION NONE;
 --- expect: ok
 
 --- case: replication is turned on for a namespace that already exists

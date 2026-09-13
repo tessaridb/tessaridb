@@ -1228,3 +1228,186 @@ fn a_definition_that_did_nothing_changes_no_policy() {
     };
     assert_eq!(fields.get("replication"), Some(&Value::from(4_i64)));
 }
+
+// ---------------------------------------------------------------------------
+// G024 S2.3 — the clause is required where the choice is real
+//
+// ADR-0060 requires a replication clause so that a single-copy namespace is a
+// decision somebody took rather than a default nobody saw. W211 shipped it
+// optional, and its reason was sound at the time: with no peers declared the
+// only clause an operator could write was `REPLICATION NONE`, and forcing
+// everybody to type a refusal is the inherited default in a costume.
+//
+// W241 removed that premise by shipping the placement vocabulary. So the
+// obligation attaches to the condition it was always about: **a store that has
+// somewhere to put a second copy**. These five hold both halves — that the
+// single-node form still works, and that the cluster form cannot say nothing.
+// ---------------------------------------------------------------------------
+
+/// The corpus's own shape, and the reason the refusal is conditional:
+/// `DEFINE NAMESPACE` appears 333 times across this workspace's five
+/// repositories, every one of them on a store with no peers. If this test ever
+/// goes red, the change under it broke all of them.
+#[test]
+fn a_store_with_no_peers_still_defines_a_namespace_that_says_nothing() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run("DEFINE NAMESPACE solo; USE NAMESPACE solo;")
+        .unwrap();
+
+    let Value::Object(fields) = report(&mut session, "INFO FOR NAMESPACE;") else {
+        panic!("expected an object");
+    };
+    assert_eq!(
+        fields.get("replication"),
+        Some(&Value::None),
+        "a namespace defined where no copy could go must still read as never \
+         stated — not as one that declined"
+    );
+}
+
+/// G024 **S2.3**. The refusal itself, and it is asserted by its parts rather
+/// than by a `contains` over the whole sentence: a message that names the peer
+/// count *and* both accepted clauses can lose any one of the three and still
+/// match a substring taken from the other two.
+#[test]
+fn a_store_that_declares_a_peer_refuses_a_namespace_that_says_nothing() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run("DEFINE REPLICA second AT 'there:9001';")
+        .unwrap();
+
+    let refusal = session
+        .run("DEFINE NAMESPACE prod;")
+        .expect_err("a namespace that says nothing has become a decision nobody wrote down");
+    let said = refusal.to_string();
+
+    assert!(
+        said.contains("prod"),
+        "the refusal must name the namespace: {said}"
+    );
+    assert!(
+        said.contains("1 peer"),
+        "the refusal must say why the clause became required — how many peers \
+         could hold a copy: {said}"
+    );
+    assert!(
+        said.contains("REPLICATION NONE"),
+        "a caller told only that something is missing cannot write a statement \
+         that would be accepted: {said}"
+    );
+    assert!(
+        said.contains("REPLICATION FACTOR"),
+        "and the other accepted clause, or the refusal teaches only the refusal: {said}"
+    );
+
+    // Nothing was written. A refusal that left the namespace standing would be
+    // worse than no refusal at all, because the next statement would find it.
+    // Asked of the store's own listing rather than of `USE NAMESPACE`, which
+    // accepts a name nothing has been defined under yet and would have passed
+    // whether or not the namespace was created.
+    assert!(
+        !listed(&report(&mut session, "INFO FOR STORE;"), "namespaces")
+            .contains(&"prod".to_owned()),
+        "the refused definition must not have created the namespace"
+    );
+}
+
+/// Both ways of answering are accepted on a peered store — including the
+/// refusal. `REPLICATION NONE` is the operator declining *deliberately*, which
+/// is the whole distinction ADR-0060 exists to preserve, and a rule that
+/// accepted only `FACTOR` would have abolished the choice instead of surfacing
+/// it.
+#[test]
+fn a_store_with_a_peer_accepts_either_answer_including_the_refusal() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE REPLICA second AT 'there:9001';\n\
+             DEFINE NAMESPACE archive REPLICATION FACTOR 3;\n\
+             DEFINE NAMESPACE scratch REPLICATION NONE;",
+        )
+        .unwrap();
+
+    let policy = |session: &mut Session<'_>, namespace: &str| {
+        let script = format!("USE NAMESPACE {namespace}; INFO FOR NAMESPACE;");
+        let Value::Object(fields) = report(session, &script) else {
+            panic!("expected an object");
+        };
+        fields.get("replication").cloned().unwrap()
+    };
+
+    assert_eq!(policy(&mut session, "archive"), Value::from(3_i64));
+    assert_eq!(
+        policy(&mut session, "scratch"),
+        Value::from("none"),
+        "declining on a store that has a peer is a decision, and it is honoured"
+    );
+}
+
+/// `IF NOT EXISTS` against a namespace that is already there creates nothing,
+/// so there is no unstated namespace to prevent. Refusing it would break every
+/// idempotent bootstrap script the moment its store gained a peer — which is
+/// the moment those scripts matter most.
+#[test]
+fn an_idempotent_redefinition_is_not_refused_after_the_store_gains_a_peer() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run("DEFINE NAMESPACE prod; DEFINE REPLICA second AT 'there:9001';")
+        .unwrap();
+
+    session
+        .run("DEFINE NAMESPACE IF NOT EXISTS prod;")
+        .expect("a statement that creates nothing leaves nothing unstated");
+
+    // And it did not quietly acquire a policy on the way through.
+    let Value::Object(fields) = report(&mut session, "USE NAMESPACE prod; INFO FOR NAMESPACE;")
+    else {
+        panic!("expected an object");
+    };
+    assert_eq!(fields.get("replication"), Some(&Value::None));
+}
+
+/// The owner's path, asserted rather than assumed: a namespace created on a
+/// single server, the store clusterised afterwards, and the policy set — and
+/// then withdrawn — with the peer standing. `ALTER` is how a namespace that
+/// said nothing is fixed, so a rule that made `DEFINE` stricter must leave it
+/// alone or the fix is unreachable.
+#[test]
+fn a_namespace_defined_before_the_peer_is_still_altered_in_both_directions_after_it() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run("DEFINE NAMESPACE prod; DEFINE REPLICA second AT 'there:9001';")
+        .unwrap();
+
+    let policy = |session: &mut Session<'_>| {
+        let Value::Object(fields) = report(session, "USE NAMESPACE prod; INFO FOR NAMESPACE;")
+        else {
+            panic!("expected an object");
+        };
+        fields.get("replication").cloned().unwrap()
+    };
+
+    assert_eq!(
+        policy(&mut session),
+        Value::None,
+        "it said nothing, and it was allowed to"
+    );
+    session
+        .run("ALTER NAMESPACE prod REPLICATION FACTOR 2;")
+        .unwrap();
+    assert_eq!(policy(&mut session), Value::from(2_i64));
+    session
+        .run("ALTER NAMESPACE prod REPLICATION NONE;")
+        .unwrap();
+    assert_eq!(
+        policy(&mut session),
+        Value::from("none"),
+        "a policy that cannot be withdrawn is one an operator hesitates to set"
+    );
+}

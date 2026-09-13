@@ -1559,6 +1559,23 @@ impl Session<'_> {
             // `ALTER` wearing a `DEFINE`'s spelling.
             return Ok(Outcome::Done);
         }
+        // Asked only of the branch that actually creates one, and only when the
+        // statement said nothing: a store with no peers has nowhere to put a
+        // second copy, so there the bare form is what a single-node install has
+        // always written and is stored as *never stated*. A store that declares
+        // a peer is a cluster, and there a namespace holding one copy is a
+        // decision somebody is making — ADR-0060's whole point — so it is
+        // written down rather than inherited.
+        if replication.is_none() {
+            let peers = Catalog::new(transaction).replicas()?.len();
+            if peers > 0 {
+                return Err(Error::ReplicationUnstated {
+                    namespace: name.text.clone(),
+                    peers,
+                    span: name.span,
+                });
+            }
+        }
         let definition = Catalog::new(transaction).create_namespace(&name.text)?;
         if let Some(replication) = replication {
             // Through the same call an `ALTER` makes, so the two statements

@@ -858,6 +858,48 @@ pub enum Error {
         span: Span,
     },
 
+    /// A namespace was defined without saying how many copies of it to keep, on
+    /// a store that has somewhere to keep them.
+    ///
+    /// ADR-0060 requires the clause so that a single-copy namespace is a
+    /// decision somebody took rather than a default nobody saw. W211 shipped it
+    /// optional, because with no peers declared the only clause an operator
+    /// could write was `REPLICATION NONE`, and a grammar that forces everybody
+    /// to type a refusal teaches them to decline without reading — which is the
+    /// inherited default the ADR abolishes, in a costume.
+    ///
+    /// **So the obligation is conditional on the risk existing.** A store that
+    /// declares no peers has nowhere to put a second copy, and there the bare
+    /// form is accepted and stored as *never stated*. A store that declares one
+    /// is a cluster, and there declining a copy is a choice — so it has to be
+    /// written down.
+    ///
+    /// **It is refused at execute and not at parse**, because how many peers
+    /// this store declares is a fact about the cluster and the parser has no
+    /// cluster. That is the placement `StalenessBelowFloor` already settled.
+    ///
+    /// **The refusal names both accepted clauses**, for the reason the staleness
+    /// floor is named in its own: a caller told only that something is missing
+    /// cannot write a statement that would be accepted.
+    ///
+    /// It does not fire for `IF NOT EXISTS` against a namespace that is already
+    /// there. That branch creates nothing, so there is no unstated namespace to
+    /// prevent, and refusing it would break every idempotent bootstrap script.
+    #[error(
+        "`{namespace}` (at {span}) does not say how many copies to keep, and this \
+         store declares {peers} peer(s) that could hold one: write \
+         `REPLICATION NONE` to keep a single copy deliberately, or \
+         `REPLICATION FACTOR <n>` to keep more"
+    )]
+    ReplicationUnstated {
+        /// The namespace as the statement named it.
+        namespace: String,
+        /// How many peers this store declares — why the clause is now required.
+        peers: usize,
+        /// Where the name is.
+        span: Span,
+    },
+
     /// A `SELECT` named a vault as its source.
     ///
     /// Refused rather than answered, and what it would have answered is worth
