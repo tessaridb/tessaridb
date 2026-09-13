@@ -1239,9 +1239,13 @@ fn namespace_named(namespace: NamespaceId, catalog: &Catalog<'_, '_>) -> Result<
 /// has almost no `quiet_for`; only `behind` grows. That is why PostgreSQL
 /// publishes positions and lags from the primary rather than either alone.
 ///
-/// `quiet_for` is time since this follower last collected — not the delay
-/// between a commit here and its application there, which needs either a time
-/// in the log or a report from the follower and this build has neither.
+/// `quiet_for` is time since this follower last collected. `copy_age` is the
+/// other question — how old the data it holds is — and the two come apart on an
+/// idle leader, where a perfectly level follower's `quiet_for` grows for as long
+/// as there is nothing to collect while its copy stays current. `copy_age` is
+/// read against the leader's own timeline of its tail, so it is an upper bound
+/// overstating by at most one sampling interval, and it is `null` when the copy
+/// predates everything this leader has sampled — beyond every bound, not zero.
 fn described_follower(lag: FollowerLag) -> Value {
     Value::Object(BTreeMap::from([
         ("node".to_owned(), Value::Uuid(lag.node)),
@@ -1264,6 +1268,16 @@ fn described_follower(lag: FollowerLag) -> Value {
                 lag.quiet_for.subsec_nanos(),
             )
             .map_or(Value::Null, Value::Duration),
+        ),
+        (
+            "copy_age".to_owned(),
+            lag.copy_age.map_or(Value::Null, |age| {
+                tessari_types::Duration::new(
+                    i64::try_from(age.as_secs()).unwrap_or(i64::MAX),
+                    age.subsec_nanos(),
+                )
+                .map_or(Value::Null, Value::Duration)
+            }),
         ),
     ]))
 }

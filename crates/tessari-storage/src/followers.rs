@@ -77,6 +77,19 @@ pub struct FollowerLag {
     /// this long ago; when it is behind, this is how long it has not been
     /// trying.
     pub quiet_for: Duration,
+    /// How old the copy this follower holds is.
+    ///
+    /// The number `quiet_for` is not, and the reason both are published: on an
+    /// idle leader a level follower's `quiet_for` grows without bound while its
+    /// copy stays perfectly current, because there has been nothing to collect.
+    /// This one is read against the leader's own timeline — see
+    /// [`crate::tailmarks`] — so it stands still exactly when the leader does.
+    ///
+    /// An **upper bound**, overstating by at most one sampling interval, and
+    /// `None` when the copy predates everything the leader has sampled. A caller
+    /// must read `None` as beyond every bound, the way
+    /// [`crate::Store::current_as_of`] is read.
+    pub copy_age: Option<Duration>,
 }
 
 /// The followers this process has served, by the id each named itself with.

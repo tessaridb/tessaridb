@@ -6542,7 +6542,7 @@ than one flat object:
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],
              "followers": [{"node": "4b81…", "sequence": 812, "behind": 4,
-                            "quiet_for": "2s143ms"}],
+                            "quiet_for": "2s143ms", "copy_age": "11s"}],
              "lease": "58s"}}
 ```
 
@@ -6558,17 +6558,33 @@ follower holds and needs no connection back to it to say how far it has got —
 which matters, because a leader that dialled out to measure lag would lose the
 measurement exactly when the follower became unreachable.
 
-Each row carries **two** numbers, and each is blind to a failure the other sees:
+Each row carries **three** numbers, and each is blind to a failure the others
+see:
 
 | Field | What it says | The failure it catches alone |
 |---|---|---|
 | `sequence` | the highest log position this follower has been given | — |
 | `behind` | how many sequences short of this node's committed tail that is | a follower collecting steadily but unable to keep up |
 | `quiet_for` | how long since it last collected anything | a follower that has stopped, while this node is idle and there is nothing to be behind by |
+| `copy_age` | how old the data it holds is | a follower that is asking often and is still serving stale reads |
 
 `quiet_for` is time since the last collection, not the delay between a commit
 here and its application there. A follower that is level was current as of that
 long ago; one that is behind has not been trying for that long.
+
+`copy_age` is the other question, and the two come apart on an idle node: a
+follower that is perfectly level goes on reporting a `quiet_for` that grows for
+as long as there is nothing to collect, while the copy it holds stays current.
+The node answers it by dating its **own** committed tail once per awareness
+interval and reading each follower's position against that timeline, so the
+figure is an **upper bound** — it overstates by at most one interval and never
+understates, which refuses a copy that might have been fine rather than serving
+one that might not be.
+
+It is `null`, and not zero, when the copy predates everything this node has
+dated — a copy that far behind has no age this node can state, and a caller must
+read `null` as beyond every bound. A node that has just started reports `null`
+for every follower until its first interval has passed, for the same reason.
 
 An empty collection still counts: a follower that is level asks and receives
 nothing, and reading that as silence would report the healthiest follower there

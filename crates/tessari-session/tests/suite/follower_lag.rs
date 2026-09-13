@@ -95,6 +95,7 @@ struct Reported {
     sequence: i64,
     behind: i64,
     quiet_for: tessari_types::Duration,
+    copy_age: Option<tessari_types::Duration>,
 }
 
 /// The follower rows `INFO FOR NODE` publishes, by node id.
@@ -123,6 +124,7 @@ fn followers(store: &Store) -> Vec<([u8; 16], Reported)> {
                     sequence: number(row.get("sequence")),
                     behind: number(row.get("behind")),
                     quiet_for: duration(row.get("quiet_for")),
+                    copy_age: maybe_duration(row.get("copy_age")),
                 },
             )
         })
@@ -133,6 +135,19 @@ fn number(found: Option<&Value>) -> i64 {
     match found {
         Some(Value::Number(tessari_types::Number::Integer(value))) => *value,
         other => panic!("not a whole number: {other:?}"),
+    }
+}
+
+/// A span that may be absent — `null` where the leader cannot state an age.
+///
+/// Absent is not zero here, and the distinction is the whole point of the
+/// column: zero says *this copy is current*, `null` says *this copy is older
+/// than anything I dated*, which is beyond every bound.
+fn maybe_duration(found: Option<&Value>) -> Option<tessari_types::Duration> {
+    match found {
+        Some(Value::Null) => None,
+        Some(Value::Duration(span)) => Some(*span),
+        other => panic!("neither a span of time nor null: {other:?}"),
     }
 }
 
@@ -301,5 +316,131 @@ fn two_followers_are_two_rows_and_neither_moves_the_other() {
     assert!(
         behind.1.behind > 0,
         "it collected one record, and its neighbour's progress is not its own"
+    );
+}
+
+/// Zero, as a span, for comparing a measured one against.
+fn no_time() -> tessari_types::Duration {
+    tessari_types::Duration::new(0, 0).unwrap()
+}
+
+#[test]
+fn a_leader_that_has_dated_nothing_states_no_copy_age_at_all() {
+    // Unknown rather than zero, for the reason `Store::current_as_of` answers
+    // `None`: a leader with no timeline has not measured a current copy, it has
+    // measured nothing, and zero would be a claim it cannot support.
+    let store = leader();
+    writes(&store, 3, 1);
+    collects(&store, ONE_FOLLOWER, Sequence::new(1), 256);
+
+    assert!(
+        only(&store).copy_age.is_none(),
+        "a leader that never dated its own tail can date nobody's copy"
+    );
+}
+
+#[test]
+fn a_follower_level_with_a_dated_tail_holds_a_copy_with_no_age_to_speak_of() {
+    let store = leader();
+    writes(&store, 3, 1);
+    store.mark_tail().unwrap();
+    collects(&store, ONE_FOLLOWER, Sequence::new(1), 256);
+
+    let row = only(&store);
+    assert_eq!(row.behind, 0, "it collected everything there was");
+    let age = row
+        .copy_age
+        .expect("the leader dated the tail it served from");
+    assert!(
+        age < tessari_types::Duration::new(5, 0).unwrap(),
+        "a copy taken from a tail dated a moment ago is not old: {age:?}"
+    );
+}
+
+#[test]
+fn the_age_of_a_copy_does_not_grow_while_the_leader_writes_nothing() {
+    // The test that holds `copy_age` and `quiet_for` apart, and the reason
+    // Q-542 was not answered by accepting `quiet_for`. This follower is level
+    // and the leader is idle, so its copy is perfectly current — while the time
+    // since it last asked goes on growing, because there is nothing to ask for.
+    let store = leader();
+    writes(&store, 2, 1);
+    store.mark_tail().unwrap();
+    collects(&store, ONE_FOLLOWER, Sequence::new(1), 256);
+
+    std::thread::sleep(Duration::from_millis(40));
+    // The cadence keeps running on an idle leader; this is one of its rounds.
+    store.mark_tail().unwrap();
+
+    let row = only(&store);
+    let age = row.copy_age.expect("the tail is dated");
+    assert!(
+        row.quiet_for > age,
+        "on an idle leader the silence outgrows the copy's age: quiet_for {:?} against copy_age {age:?}",
+        row.quiet_for
+    );
+    assert!(
+        age < tessari_types::Duration::new(1, 0).unwrap(),
+        "nothing was written, so the copy did not age: {age:?}"
+    );
+}
+
+#[test]
+fn a_copy_older_than_every_position_the_leader_dated_has_no_age_it_can_state() {
+    let store = leader();
+    writes(&store, 4, 1);
+    let served = collects(&store, ONE_FOLLOWER, Sequence::new(1), 1);
+    assert_eq!(served, 1, "it asked for one and was given one");
+
+    // Everything this leader has dated is beyond what that follower holds.
+    writes(&store, 4, 10);
+    store.mark_tail().unwrap();
+
+    let row = only(&store);
+    assert!(row.behind > 0, "it is short of the tail");
+    assert!(
+        row.copy_age.is_none(),
+        "a copy from before the leader's timeline has no age it can state"
+    );
+}
+
+#[test]
+fn two_followers_at_different_positions_are_given_different_ages() {
+    // Per follower and not per leader: a single global reading would pass every
+    // test above and fail only this one.
+    let store = leader();
+    writes(&store, 2, 1);
+    store.mark_tail().unwrap();
+    collects(&store, ONE_FOLLOWER, Sequence::new(1), 256);
+
+    std::thread::sleep(Duration::from_millis(40));
+    writes(&store, 2, 10);
+    store.mark_tail().unwrap();
+    collects(&store, ANOTHER_FOLLOWER, Sequence::new(1), 256);
+
+    let rows = followers(&store);
+    assert_eq!(rows.len(), 2, "two followers have collected");
+    let older = rows
+        .iter()
+        .find(|(node, _)| *node == ONE_FOLLOWER)
+        .expect("the first follower is listed")
+        .1
+        .copy_age
+        .expect("its position was dated");
+    let newer = rows
+        .iter()
+        .find(|(node, _)| *node == ANOTHER_FOLLOWER)
+        .expect("the second follower is listed")
+        .1
+        .copy_age
+        .expect("its position was dated");
+
+    assert!(
+        older > newer,
+        "the follower holding the earlier tail holds the older copy: {older:?} against {newer:?}"
+    );
+    assert!(
+        older > no_time(),
+        "and that age is a measured span, not zero"
     );
 }

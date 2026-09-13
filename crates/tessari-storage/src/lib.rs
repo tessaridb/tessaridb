@@ -43,6 +43,7 @@ mod sealing;
 mod series;
 mod snapshots;
 mod store;
+mod tailmarks;
 mod transaction;
 mod vault;
 

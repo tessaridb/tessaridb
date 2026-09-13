@@ -393,7 +393,33 @@ const TABLES: &[Table] = &[
         // read by two different readers — the fence by every commit, the epoch
         // by every greeting — which is why they are stored together and neither
         // is derived from the other.
-        expected: 28,
+        //
+        // 29 since the tail timeline (G024 **S6.1**, Q-542): `Store::mark_tail`
+        // dates this node's own committed tail so a follower's copy has an age
+        // rather than only a silence. Classified **exempt, on the narrowest
+        // ground in this block and one that is worth stating precisely**: it
+        // takes no reach and no identity, it reads a single number this node
+        // already publishes through `committed_tail`, and what it writes is a
+        // bounded ring of `(position, Instant)` in process memory that is never
+        // persisted, never replicated and not reachable by any query.
+        //
+        // It is the write side of the pair whose read side is `follower_lag`,
+        // and it shares that method's re-classification trigger rather than
+        // inventing one: a caller who could call it at a time of their choosing
+        // could **understate** how old a follower's copy is, and a bounded read
+        // routed on that figure would then be served by a node the bound was
+        // written to exclude. Nothing in this build offers that: its only caller
+        // is the awareness cadence in the node binary, sampling a value it read
+        // from its own store. The day a management statement, an HTTP route or a
+        // peer frame can ask a node to date its tail, this becomes an
+        // enforcement point and must be enforced where it is called.
+        //
+        // Worth recording beside the classification, because it is the reason
+        // the method exists at all rather than a sample taken where the tail
+        // moves: putting this on the commit path would have made it exact and
+        // would have put a lock on the hottest path in the engine for the sake
+        // of a diagnostic.
+        expected: 29,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -452,7 +478,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 77, "the counted tables no longer sum to 77");
+    assert_eq!(total, 78, "the counted tables no longer sum to 78");
 }
 
 /// Every `.rs` file under a directory.

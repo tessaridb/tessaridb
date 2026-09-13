@@ -609,6 +609,13 @@ fn dial_peers(
             // capability this binary can already reach — which is the finding
             // W238 recorded when it wrote and then reverted `Db::holding`.
             let store = db.store();
+            // Date this node's own tail on the same cadence, because the copy
+            // age this makes measurable is only honest at the interval the
+            // staleness floor is derived from. It rides this round rather than
+            // the commit path deliberately: see `Store::mark_tail`.
+            if let Err(why) = store.mark_tail() {
+                log::warn!("this node cannot date its own log position: {why}");
+            }
             let declared = store.begin().and_then(|mut transaction| {
                 tessari_storage::Catalog::new(&mut transaction).replicas()
             });

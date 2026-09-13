@@ -163,6 +163,13 @@ pub struct Store {
     /// from epoch zero, exactly as `None` from the lease is a different
     /// statement from a spent one.
     leading: Arc<std::sync::Mutex<Option<Epoch>>>,
+    /// When this leader's own log reached each position.
+    ///
+    /// Shared with every handle for the reason the registries above it are, and
+    /// held in memory for the sharpest of their reasons: it is a timeline of
+    /// `Instant`s, which have no meaning outside the process that took them.
+    /// See `crate::tailmarks` for why a follower's copy has no age without it.
+    tailmarks: Arc<crate::tailmarks::TailMarks>,
 }
 
 impl Store {
@@ -199,6 +206,7 @@ impl Store {
             collections: Arc::new(crate::collections::Collections::default()),
             lease: Arc::new(crate::lease::Held::default()),
             leading: Arc::new(std::sync::Mutex::new(None)),
+            tailmarks: Arc::new(crate::tailmarks::TailMarks::default()),
         };
         // Last, because it reads the catalog: the format is settled and the
         // identity exists by the time this asks which node it is.
@@ -635,8 +643,31 @@ impl Store {
                 sequence: held.sequence,
                 behind: tail.get().saturating_sub(held.sequence.get()),
                 quiet_for: held.at.elapsed(),
+                copy_age: self.tailmarks.age_of(held.sequence),
             })
             .collect())
+    }
+
+    /// Date this leader's own committed tail, as of now.
+    ///
+    /// Called once per awareness interval by the node binary, and by nothing
+    /// else. It is what gives [`crate::FollowerLag::copy_age`] a timeline to be
+    /// read against; a leader that never calls it reports every follower's copy
+    /// age as unknown, which is the honest answer for a leader that has never
+    /// dated anything.
+    ///
+    /// Deliberately **not** on the commit path. Sampling where the tail actually
+    /// moves would be exact and would put a lock on the hottest path in the
+    /// engine for the sake of a diagnostic; the cadence already runs and already
+    /// opens the store. What that costs is precision, bounded at one interval
+    /// and always in the safe direction — see [`crate::tailmarks`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's failure when the committed tail cannot be read.
+    pub fn mark_tail(&self) -> Result<()> {
+        self.tailmarks.mark(self.committed_tail()?);
+        Ok(())
     }
 
     /// Take or renew the lease this process writes under.
