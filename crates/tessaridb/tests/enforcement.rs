@@ -733,3 +733,96 @@ fn no_serving_surface_reaches_the_raw_change_feed() {
         reached.join("\n  "),
     );
 }
+
+/// Where an epoch may be turned back into an [`Epoch`] from something that
+/// already carried one, classified by the name of the function doing it.
+///
+/// Every permitted site is a **decoder**: it reads a number that some other node
+/// or some earlier write already decided and rebuilds the type around it. None
+/// of them invents one, which is why the rule can be a name rather than a list
+/// of line numbers that goes stale on the next `cargo fmt`.
+const DECODERS: [&str; 3] = ["decode", "from_value", "split_epoch"];
+
+/// The one function allowed to CREATE an epoch, and the file it lives in.
+///
+/// `Renewing::once` computes `max(standing, stood, heard) + 1`. Both halves of
+/// this pair are asserted: that nothing else creates one, and that this still
+/// does — a ratchet whose subject has been renamed away passes by finding
+/// nothing, which is the failure mode of every allow-list nobody re-reads.
+const PRODUCER: (&str, &str) = ("tessari-wire/src/driver.rs", "once");
+
+#[test]
+fn the_campaign_is_the_only_place_an_epoch_is_created() {
+    // G025 S3.3. An epoch is the cluster's count of leaderships, and its whole
+    // value is that two nodes cannot hold one: a second place that allocates
+    // one is two promotions handing out the same number, each with an honest
+    // majority behind it and nothing anywhere in an error state.
+    //
+    // Inline test modules are excluded by truncating each file at its
+    // `#[cfg(test)]`, because a fixture standing an epoch up by hand is exactly
+    // what a test is for. That convention — tests last, in one module — is what
+    // makes the truncation sound, and `cargo fmt` keeps it.
+    let mut created = Vec::new();
+    let mut found_producer = false;
+    for entry in fs::read_dir(repo().join("crates")).expect("the crate directory") {
+        let root = entry.expect("a crate").path().join("src");
+        if !root.is_dir() {
+            continue;
+        }
+        for path in sources(&root) {
+            let text = fs::read_to_string(&path).unwrap();
+            let production = text.split("#[cfg(test)]").next().unwrap_or_default();
+            let shown = path.display().to_string();
+            let lines: Vec<&str> = production.lines().collect();
+            for (number, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("//") || !line.contains("Epoch::new(") {
+                    continue;
+                }
+                let enclosing = lines[..=number]
+                    .iter()
+                    .rev()
+                    .find_map(|above| {
+                        above
+                            .trim_start()
+                            .trim_start_matches("pub ")
+                            .trim_start_matches("const ")
+                            .strip_prefix("fn ")
+                            .map(|rest| rest.split('(').next().unwrap_or_default().to_owned())
+                    })
+                    .unwrap_or_default();
+                if DECODERS.contains(&enclosing.as_str()) {
+                    continue;
+                }
+                if shown.ends_with(PRODUCER.0) && enclosing == PRODUCER.1 {
+                    found_producer = true;
+                    continue;
+                }
+                created.push(format!(
+                    "{shown}:{} in `{enclosing}` — {}",
+                    number + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        created.is_empty(),
+        "an epoch is created outside the campaign:\n  {}\n\n\
+         An epoch is the cluster's count of leaderships and the campaign is the \
+         only thing entitled to advance it: `Renewing::once` takes the highest \
+         number this node holds, has stood for, or has heard granted, and adds \
+         one. A second producer allocates a number somebody else may already \
+         hold, which is two leaders with one epoch — the exact ambiguity the \
+         epoch exists to remove. If the new site decodes a number that already \
+         existed, put it in a function named for what it does ({}).",
+        created.join("\n  "),
+        DECODERS.join(", "),
+    );
+    assert!(
+        found_producer,
+        "`{}` no longer creates an epoch in {} — this test now passes by \
+         finding nothing, which is not the same as the rule holding",
+        PRODUCER.1, PRODUCER.0,
+    );
+}

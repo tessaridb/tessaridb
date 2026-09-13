@@ -359,24 +359,12 @@ pub fn bootstrap_from(
 
 /// Does the catalog name a peer that is not this node?
 ///
-/// The question the seed's bound actually asks, and it is not "is the catalog
-/// empty". `Catalog::replicas` returns every membership row, including the one
-/// that describes THIS node — and the row a cluster writes to admit a newcomer
-/// is exactly that row. So a joiner's first collection brings in one row, its
-/// own, and an emptiness bound reads that as *the catalog can answer* and stops
-/// dialling the seed, while `upstream` and `Directory::greet_round` both skip
-/// the row for naming this node. The node collects once, follows nobody
-/// afterwards, and nothing is in an error state while it happens (W260).
-///
-/// A row naming no node at all counts for nothing here, for the same reason it
-/// counts for nothing in [`upstream`]: there is no identity to dial or to
-/// verify a credential against.
-#[must_use]
-pub fn names_a_peer(declared: &[ReplicaDefinition], me: &[u8; NODE_ID_LEN]) -> bool {
-    declared
-        .iter()
-        .any(|peer| peer.node.is_some_and(|node| node != *me))
-}
+/// Re-exported from `tessari_storage` and not defined here: the write gate asks
+/// the same question of the same rows, and membership defined twice is
+/// membership that agrees until it does not. The reasoning — why this is not
+/// *is the catalog empty*, and why the gate asks it rather than asking what
+/// role the node was given — is on the definition.
+pub use tessari_storage::names_a_peer;
 
 /// Whether a leader this node can hear is still leading.
 ///

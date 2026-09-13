@@ -165,7 +165,7 @@ pub enum Error {
         for_the_last: std::time::Duration,
     },
 
-    /// This node is in a deciding set and has not been given a leadership yet.
+    /// This node is in a cluster and has not been given a leadership yet.
     ///
     /// A different state from [`Self::LeaseSpent`] and deliberately a different
     /// refusal. *Your lease ran out* names a leadership this node held and lost,
@@ -174,9 +174,20 @@ pub enum Error {
     /// or a node that has not yet won a round — and sends them somewhere else
     /// entirely. Spelling both as the lapse would report a fence closing on a
     /// node that was never behind one.
+    ///
+    /// # The sentence used to say *takes part in deciding*, and that became
+    /// false
+    ///
+    /// ADR-0069 moved the condition from the `coordinating` role to the
+    /// catalog, so this now reaches a node that was never declared to take part
+    /// in anything and simply has a peer. Such a node cannot win a round
+    /// either — nothing campaigns unless the role says to — so the message
+    /// names the remedy rather than only the state.
     #[error(
-        "this node takes part in deciding and holds no leadership: \
-         it does not accept writes until a majority grants it one"
+        "this node is in a cluster and holds no leadership: \
+         it does not accept writes until a majority grants it one. \
+         A node that should be leading needs the coordinating role \
+         (DEFINE NODE ROLES ... coordinating) so that it stands for one"
     )]
     NoLeadershipYet,
 

@@ -309,6 +309,20 @@ fn millis(span: Duration) -> u64 {
 pub struct Voter {
     started: Instant,
     granted: Option<Granted>,
+    /// The highest epoch this voter has been shown, granted or not.
+    ///
+    /// Granting is the only thing [`Granted`] records, and the gap that leaves
+    /// is a whole restart window wide: a ballot for epoch 9 arriving inside
+    /// [`Refused::TooSoonAfterStarting`] is refused and **forgotten**, so one
+    /// `LEASE_TTL` later a ballot for epoch 5 finds a voter that remembers
+    /// nothing and grants it — below an epoch the cluster had already reached,
+    /// with nothing anywhere in an error state.
+    ///
+    /// So the number is adopted from every ballot this voter sees, which is
+    /// Raft §5.1's rule for `currentTerm` — adopt first, judge afterwards —
+    /// minus the persistence, because the start guard already covers the window
+    /// persistence would be protecting.
+    seen: Epoch,
 }
 
 /// The one grant a voter is holding, and who it is holding it for.
@@ -343,6 +357,7 @@ impl Voter {
         Self {
             started,
             granted: None,
+            seen: Epoch::ZERO,
         }
     }
 
@@ -382,6 +397,22 @@ impl Voter {
                 tail: mine.tail,
             });
         }
+        // Adopted before it is judged, and judged against what was seen BEFORE
+        // this ballot — otherwise every ballot is trivially not below the
+        // number it just installed. Adoption is unconditional on purpose: an
+        // epoch is a cluster-wide count, so seeing a higher one anywhere means
+        // the cluster has moved, whoever showed it and whatever else is wrong
+        // with them. Raft adopts a higher term from an RPC it is about to
+        // reject, for this reason.
+        let seen = self.seen;
+        self.seen = seen.max(ballot.epoch);
+        // Before the waiting refusals below, for the reason `LogBehind` is
+        // first: a candidate told that the cluster has passed it has something
+        // to do about it, where *wait six seconds* leaves it to stand again at
+        // the same stale number.
+        if ballot.epoch < seen {
+            return Vote::Refused(Refused::EpochAlreadyDecided { granted: seen });
+        }
         if let Some(held) = self.granted {
             // The node this voter is already holding a grant for. Both rules
             // below turn on it, and neither is safe without the **proved**
@@ -394,6 +425,11 @@ impl Voter {
             // CANDIDATE* — `two_candidates_cannot_both_carry_one_epoch` — and
             // that is what this says. An epoch below the one held is somebody
             // working from a stale picture whoever they are.
+            // The `<` half can no longer be reached — a granted epoch is a
+            // seen epoch, so anything below it was refused above — and it stays
+            // because `seen` is in-memory hygiene while this is the authority:
+            // the day the two are made to disagree, the rule that matters is
+            // still written where the grant is.
             if ballot.epoch < held.epoch || (ballot.epoch == held.epoch && !incumbent) {
                 return Vote::Refused(Refused::EpochAlreadyDecided {
                     granted: held.epoch,
@@ -431,6 +467,12 @@ impl Voter {
     #[must_use]
     pub fn decided(&self) -> Option<Epoch> {
         self.granted.map(|held| held.epoch)
+    }
+
+    /// The highest epoch this voter has been shown, granted or refused.
+    #[must_use]
+    pub const fn seen(&self) -> Epoch {
+        self.seen
     }
 
     /// When this voter is next free to grant, if it has granted at all.
@@ -913,6 +955,113 @@ mod tests {
         assert_eq!(
             voter.asked(&ballot, after(started, LEASE_TTL), LEVEL, LEVEL),
             Vote::Granted
+        );
+    }
+
+    #[test]
+    fn a_voter_adopts_an_epoch_it_refused_and_will_not_grant_below_it_afterwards() {
+        // G025 S3.2, and the hole it closes is entirely inside the restart
+        // window. `a_voter_that_has_just_started_sits_out_one_lease` above
+        // asserts the refusal; what it cannot see is that the refusal used to
+        // throw the NUMBER away with the ballot.
+        let started = base();
+        let mut voter = Voter::started_at(started);
+
+        let high = Ballot {
+            epoch: Epoch::new(9),
+            candidate: A,
+        };
+        assert_eq!(
+            voter.asked(&high, after(started, Duration::from_secs(1)), LEVEL, LEVEL),
+            Vote::Refused(Refused::TooSoonAfterStarting {
+                for_the_next: LEASE_TTL.saturating_sub(Duration::from_secs(1))
+            })
+        );
+        assert_eq!(voter.decided(), None, "a refusal grants nothing");
+        assert_eq!(
+            voter.seen(),
+            Epoch::new(9),
+            "and it keeps the number regardless, because an epoch is the              cluster's count and not this voter's"
+        );
+
+        // One whole TTL later the start guard is spent and this voter may grant
+        // again. Before the adoption it granted THIS — an epoch four below one
+        // it had already been shown, to a candidate working from a stale
+        // picture, with nothing in an error state.
+        let low = Ballot {
+            epoch: Epoch::new(5),
+            candidate: B,
+        };
+        assert_eq!(
+            voter.asked(&low, after(started, LEASE_TTL), LEVEL, LEVEL),
+            Vote::Refused(Refused::EpochAlreadyDecided {
+                granted: Epoch::new(9)
+            })
+        );
+        assert_eq!(voter.decided(), None, "and still nothing has been granted");
+
+        // The refusal is actionable rather than merely safe: it carries the
+        // number, and a candidate that catches up to it wins.
+        let caught_up = Ballot {
+            epoch: Epoch::new(10),
+            candidate: B,
+        };
+        assert_eq!(
+            voter.asked(&caught_up, after(started, LEASE_TTL), LEVEL, LEVEL),
+            Vote::Granted
+        );
+    }
+
+    #[test]
+    fn an_epoch_seen_after_a_grant_holds_that_grant_to_the_higher_number() {
+        // The same rule on the other branch: a voter holding a grant at 3 that
+        // is then shown 9 by somebody else must not go back to granting 4 when
+        // its hold comes free, because the cluster is at 9 and 4 is behind it.
+        let opened = base();
+        let mut voter = settled(opened);
+        assert_eq!(
+            voter.asked(
+                &Ballot {
+                    epoch: Epoch::new(3),
+                    candidate: A
+                },
+                opened,
+                LEVEL,
+                LEVEL
+            ),
+            Vote::Granted
+        );
+        assert_eq!(
+            voter.asked(
+                &Ballot {
+                    epoch: Epoch::new(9),
+                    candidate: B
+                },
+                opened,
+                LEVEL,
+                LEVEL
+            ),
+            Vote::Refused(Refused::EarlierGrantStillAlive {
+                for_the_next: LEASE_TTL
+            }),
+            "the hold it made for A is still alive, so 9 is refused"
+        );
+
+        let free = after(opened, LEASE_TTL);
+        assert_eq!(
+            voter.asked(
+                &Ballot {
+                    epoch: Epoch::new(4),
+                    candidate: A
+                },
+                free,
+                LEVEL,
+                LEVEL
+            ),
+            Vote::Refused(Refused::EpochAlreadyDecided {
+                granted: Epoch::new(9)
+            }),
+            "refused against what was SEEN, which is above what was granted"
         );
     }
 

@@ -23,9 +23,11 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tessari_encoding::Roles;
+use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_storage::{Currency, Error, LEASE_GUARD, LEASE_TTL, Lease, RecordAddress, Store};
+use tessari_storage::{
+    Catalog, Currency, Error, LEASE_GUARD, LEASE_TTL, Lease, RecordAddress, Store,
+};
 use tessari_types::{DatabaseId, Epoch, NamespaceId, RecordId, Sequence, TableId};
 
 fn store() -> Store {
@@ -493,10 +495,31 @@ fn a_lease_installed_whole_keeps_the_instant_it_was_taken_at() {
     write(&store, "two").expect("inside the window it writes");
 }
 
-/// A store that has declared itself a member of a deciding set.
+/// A store whose catalog names a peer: a node that has joined a cluster.
 ///
 /// The one fact that separates *a node in a cluster* from *a store on its own*,
-/// and the predicate ADR-0063 already uses to decide who may stand.
+/// and it is a fact about the catalog rather than about this node's declared
+/// role. The roles stay exactly as a fresh store adopts them — `SERVING |
+/// WRITABLE`, no `COORDINATING` — which is what makes the pair of tests below
+/// evidence rather than illustration: the refusal happens with the role the
+/// old predicate required deliberately ABSENT.
+fn joined() -> Store {
+    let store = store();
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .create_replica(
+            "other",
+            "10.0.0.2:9081",
+            Roles::SERVING.and(Roles::WRITABLE),
+            Some([9; NODE_ID_LEN]),
+            None,
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+    store
+}
+
+/// A store declared into a deciding set with nobody to decide with.
 fn deciding() -> Store {
     let store = store();
     store
@@ -509,22 +532,27 @@ fn deciding() -> Store {
 }
 
 #[test]
-fn a_member_of_a_deciding_set_does_not_write_before_it_has_won_anything() {
+fn a_node_whose_catalog_names_a_peer_does_not_write_before_it_has_won_anything() {
     // The hole W254 found, stated as the split-brain it is. Once more than one
     // node may stand (ADR-0063), the only configuration in which a failover can
-    // produce a writer at all is one where every coordinating node is declared
+    // produce a writer at all is one where every candidate is declared
     // `writable` — and before this rule, all of them reported `writable` from
     // the moment they opened, because none of them held a lease and
     // `Held::spent` answers `None` both for *still open* and for *never
     // granted*. Three nodes, three writers, nothing anywhere in an error state.
-    let store = deciding();
+    //
+    // G025 S3.1 moves the condition off the ROLE and onto the CATALOG, and this
+    // node carries no `COORDINATING` bit at all: the refusal below comes from a
+    // membership row and from nothing else.
+    let store = joined();
+    let adopted = store.node_identity().unwrap().roles;
     assert!(
-        store.node_identity().unwrap().roles.has(Roles::WRITABLE),
-        "the catalog still says the operator wants this node to lead"
+        adopted.has(Roles::WRITABLE) && !adopted.has(Roles::COORDINATING),
+        "the operator declared a writable node that does not vote — the exact          combination the role predicate could not see"
     );
     assert!(
         !store.effective_roles().unwrap().has(Roles::WRITABLE),
-        "a node in a deciding set writes under a leadership, and holds none yet"
+        "a node in a cluster writes under a leadership, and holds none yet"
     );
     write(&store, "before").expect_err("and the refusal is the write path's too");
 
@@ -535,13 +563,35 @@ fn a_member_of_a_deciding_set_does_not_write_before_it_has_won_anything() {
 }
 
 #[test]
+fn a_deciding_set_of_one_is_not_a_cluster_and_goes_on_writing() {
+    // The other half of *`names_a_peer` and nothing else*. `COORDINATING` is
+    // what decides who may STAND (ADR-0063) and it is not what decides who may
+    // write: a node declared into a deciding set whose catalog names nobody has
+    // no cluster to be behind, and stopping it would be the upgrade-day outage
+    // the standalone rule exists to prevent — reached by a different route.
+    let store = deciding();
+    assert!(
+        store
+            .node_identity()
+            .unwrap()
+            .roles
+            .has(Roles::COORDINATING)
+    );
+    assert!(
+        store.effective_roles().unwrap().has(Roles::WRITABLE),
+        "the role is not the predicate, in this direction too"
+    );
+    write(&store, "alone-but-coordinating").expect("no peer is declared, so there is no cluster");
+}
+
+#[test]
 fn a_store_standing_alone_is_untouched_by_the_leadership_rule() {
     // The control, and the property the rule is scoped to preserve. A store with
-    // nobody to coordinate with has no cluster to grant it anything, so a global
+    // no peer declared has no cluster to grant it anything, so a global
     // "no lease, no writes" would stop every existing single-node deployment
-    // accepting writes the day it upgraded. `Roles::ALONE` is documented as NOT
-    // carrying `COORDINATING` precisely because there is nothing to coordinate
-    // with, so one predicate scopes both this rule and ADR-0063's.
+    // accepting writes the day it upgraded. The clustered node above and this
+    // one are separated by one fact — whether the catalog names somebody else —
+    // which is what the criterion means by *by the same predicate*.
     let store = store();
     let adopted = store.node_identity().unwrap().roles;
     assert!(adopted.has(Roles::WRITABLE) && !adopted.has(Roles::COORDINATING));
@@ -550,13 +600,13 @@ fn a_store_standing_alone_is_untouched_by_the_leadership_rule() {
 }
 
 #[test]
-fn the_role_and_the_refusal_agree_for_a_member_of_a_deciding_set_too() {
+fn the_role_and_the_refusal_agree_for_a_node_in_a_cluster_too() {
     // `the_role_reported_and_the_write_refused_cannot_disagree` above asserts
     // this pair for a store standing alone. The pair is only worth anything if
     // it holds wherever the rule reaches, and this wave gave the rule a second
     // branch — so the second branch gets the same assertion rather than a
     // comment saying it ought to hold.
-    for store in [deciding(), store()] {
+    for store in [joined(), store()] {
         for lease in [None, Some(Duration::ZERO), Some(LEASE_TTL)] {
             if let Some(ttl) = lease {
                 store.hold_lease(ttl);
@@ -569,4 +619,44 @@ fn the_role_and_the_refusal_agree_for_a_member_of_a_deciding_set_too() {
             );
         }
     }
+}
+
+#[test]
+fn a_cluster_is_declared_in_one_transaction_because_the_gate_shuts_on_the_first_peer() {
+    // The operator-facing edge of G025 S3.1, pinned so that it is a decision
+    // rather than something found on a bad afternoon. The gate reads the
+    // COMMITTED membership, so the first `DEFINE REPLICA` is judged against a
+    // catalog that still names nobody and goes through — and from the instant it
+    // commits this node is in a cluster and writes under a leadership it has not
+    // been granted. A statement-per-transaction script therefore declares one
+    // peer and is refused for the second.
+    let one_at_a_time = store();
+    let mut first = one_at_a_time.begin().unwrap();
+    Catalog::new(&mut first)
+        .create_replica("a", "a:9081", Roles::SERVING, Some([1; NODE_ID_LEN]), None)
+        .unwrap();
+    first
+        .commit()
+        .expect("the first peer is declared from a store still alone");
+    let mut second = one_at_a_time.begin().unwrap();
+    Catalog::new(&mut second)
+        .create_replica("b", "b:9081", Roles::SERVING, Some([2; NODE_ID_LEN]), None)
+        .unwrap();
+    second
+        .commit()
+        .expect_err("and by now this node is in a cluster that has elected nobody");
+
+    // One commit is judged once, so a whole cluster goes in at once.
+    let together = store();
+    let mut both = together.begin().unwrap();
+    let mut catalog = Catalog::new(&mut both);
+    catalog
+        .create_replica("a", "a:9081", Roles::SERVING, Some([1; NODE_ID_LEN]), None)
+        .unwrap();
+    catalog
+        .create_replica("b", "b:9081", Roles::SERVING, Some([2; NODE_ID_LEN]), None)
+        .unwrap();
+    both.commit()
+        .expect("a cluster declared in one transaction");
+    write(&together, "afterwards").expect_err("and the door is shut behind it");
 }

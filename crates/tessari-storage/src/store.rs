@@ -250,15 +250,16 @@ impl Store {
     /// Returns the substrate's failure, and a decoding failure when the node
     /// identity cannot be read.
     pub fn effective_roles(&self) -> Result<Roles> {
-        let adopted = self.node_identity()?.roles;
-        if self.lease.spent().is_none() && !awaiting(adopted, &self.lease) {
+        let identity = self.node_identity()?;
+        let adopted = identity.roles;
+        if self.lease.spent().is_none() && !self.awaiting(&identity.id)? {
             return Ok(adopted);
         }
         let without_writing = adopted.bits() & !Roles::WRITABLE.bits();
         Ok(Roles::from_bits(without_writing).unwrap_or(Roles::NONE))
     }
 
-    /// Whether this node takes part in deciding and holds no leadership yet.
+    /// Whether this node is in a cluster and holds no leadership yet.
     ///
     /// The second half of *the effective role is the lease*, and it was missing
     /// until ADR-0064. The first half only ever **subtracted**: a node whose
@@ -276,22 +277,86 @@ impl Store {
     /// lease and the two that lose a round never will. Three writers, and
     /// nothing anywhere in an error state.
     ///
-    /// # Why the predicate is `COORDINATING` and not simply *has no lease*
+    /// # Why the predicate is the catalog and not the role
     ///
     /// A store standing alone has no cluster to grant it anything, so a global
-    /// rule would stop every existing single-node deployment accepting writes on
-    /// the day it upgraded. [`Roles::ALONE`] is documented as *not
-    /// `COORDINATING`, because there is nothing to coordinate with*, which makes
-    /// that role exactly the line between *a member of a deciding set* and *a
-    /// store on its own* — and it is already the predicate ADR-0063 uses to
-    /// decide who may stand. One predicate, two rules that cannot drift apart.
+    /// *has no lease* rule would stop every existing single-node deployment
+    /// accepting writes on the day it upgraded. That much is unchanged, and it
+    /// is why there has to be a predicate at all.
+    ///
+    /// It used to be [`Roles::COORDINATING`], on the reasoning that
+    /// [`Roles::ALONE`] is documented as *not `COORDINATING`, because there is
+    /// nothing to coordinate with*, so the bit already drew the line between a
+    /// member of a deciding set and a store on its own — one predicate, two
+    /// rules that cannot drift apart. The line is drawn correctly and it
+    /// answers the wrong question. Roles are a **set**: `SERVING | WRITABLE`
+    /// without `COORDINATING` is a legal, ordinary declaration for a writable
+    /// node that does not vote, and such a node standing in a cluster beside an
+    /// elected leader was never fenced at all — the gate asked for a bit it does
+    /// not carry, so it wrote freely and silently beside somebody else's
+    /// leadership.
+    ///
+    /// *May this node take part in deciding* (ADR-0063's `stands`) and *could
+    /// there be a leader other than me* are two questions, and only the first is
+    /// about the role. The second is about the catalog:
+    /// [`Self::in_a_cluster`], which is `names_a_peer` over the committed
+    /// membership rows — already this engine's one spelling of it, and already
+    /// the bound a joiner follows.
     ///
     /// # Errors
     ///
     /// Returns the substrate's failure, and a decoding failure when the node
     /// identity cannot be read.
     pub fn awaiting_leadership(&self) -> Result<bool> {
-        Ok(awaiting(self.node_identity()?.roles, &self.lease))
+        self.awaiting(&self.node_identity()?.id)
+    }
+
+    /// Whether this node holds no leadership and is not alone in holding none.
+    ///
+    /// Takes the identity rather than reading it, so the two public callers pay
+    /// for one node read between them instead of one each.
+    ///
+    /// # The lease is asked first because it is free
+    ///
+    /// [`crate::lease::Held::remaining`] is an in-memory read and the catalog is
+    /// not, so a node that holds a leadership never reaches the second question
+    /// — which is the state a leader is in for every commit it takes.
+    fn awaiting(&self, me: &[u8; NODE_ID_LEN]) -> Result<bool> {
+        if self.lease.remaining().is_some() {
+            return Ok(false);
+        }
+        self.in_a_cluster(me)
+    }
+
+    /// Whether the committed catalog names a peer that is not this node.
+    ///
+    /// [`crate::names_a_peer`] over [`crate::Catalog::replicas`], and the
+    /// definition carries the reasoning for both halves: why this is not *is the
+    /// catalog empty*, and why the write gate asks this rather than asking what
+    /// role the node was given.
+    ///
+    /// # Committed, deliberately, and it is the difference between joining and
+    /// being unable to
+    ///
+    /// This opens its own transaction rather than reading through the one that
+    /// is committing. A transaction sees its **own** pending writes, so the
+    /// statement that declares the very first peer would find that peer while
+    /// being judged, become clustered mid-commit, and refuse itself — leaving a
+    /// standalone store with no way to join anything. A membership row that has
+    /// not committed has not joined a cluster, so the committed state is also
+    /// the answer that is true.
+    ///
+    /// Once it commits the node IS clustered and cannot write again until a
+    /// round grants it something. That is the criterion, not a side effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns the substrate's failure, and a decoding failure when a stored
+    /// membership row cannot be read.
+    fn in_a_cluster(&self, me: &[u8; NODE_ID_LEN]) -> Result<bool> {
+        let mut transaction = self.begin()?;
+        let declared = crate::catalog::Catalog::new(&mut transaction).replicas()?;
+        Ok(crate::catalog::names_a_peer(&declared, me))
     }
 
     /// How current this node's copy is known to be, or `None` when that cannot
@@ -1183,22 +1248,6 @@ impl Store {
 /// A free function rather than a method because it runs before the store
 /// exists: `open` settles the format before it resolves the node identity, and
 /// the identity is one of the store's own fields.
-/// Whether `adopted` puts this node in a deciding set that has granted it
-/// nothing yet.
-///
-/// A free function so that [`Store::effective_roles`] and
-/// [`Store::awaiting_leadership`] are one derivation rather than two that agree
-/// today — the failure the pair is written to prevent is a report saying *you
-/// may write* beside a write path that refuses, and the cheapest way to make
-/// that unrepresentable is to have one place where the answer exists.
-///
-/// [`crate::lease::Held::remaining`] is the half of the pair that distinguishes
-/// *never granted* from *granted and still open*; `spent` cannot, because it
-/// answers `None` for both.
-fn awaiting(adopted: Roles, lease: &crate::lease::Held) -> bool {
-    adopted.has(Roles::COORDINATING) && lease.remaining().is_none()
-}
-
 fn read_format_version(backend: &Arc<dyn KvBackend>) -> Result<Option<FormatVersion>> {
     let key = FormatVersionKey.encode();
     let stored = backend.get(FormatVersionKey::keyspace(), &key)?;

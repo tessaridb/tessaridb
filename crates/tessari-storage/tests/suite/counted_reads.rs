@@ -809,3 +809,74 @@ fn a_walk_over_the_whole_table_holds_one_batch_at_a_time() {
         fixture.counting.largest_fetch()
     );
 }
+
+// ---------------------------------------------------------------- G025 · S3.1
+
+/// What the admission predicate costs a commit, measured rather than argued.
+///
+/// G025 S3.1 moved the write gate from a role bit — free, already in memory — to
+/// a question about the catalog, which is a read. Whether that is affordable is
+/// not a matter of opinion and this file is the instrument for it.
+///
+/// The two arms differ by ONE thing and it is a fact about the store rather than
+/// about the build: a node **holding a leadership** never reaches the catalog,
+/// because [`tessari_storage::Store`] asks the in-memory lease first and returns
+/// on it. So the difference between the arms is exactly the predicate's cost, on
+/// one binary, with no before-and-after tree to get wrong.
+///
+/// **Measured 2026-09-14 (W270): two round trips, and they are named** — the
+/// point read that `Store::begin` makes for the committed tail, and the one scan
+/// of `system::REPLICAS`. A leader pays neither.
+///
+/// The bound is the measurement, and it can be that tight because the two arms
+/// cancel: an unrelated change to the commit path lands on both and leaves the
+/// difference alone. What it catches is the thing that must never happen — this
+/// growing with the size of the store rather than with the size of the cluster.
+#[test]
+fn the_admission_predicate_costs_a_leader_nothing_and_a_follower_a_bounded_read() {
+    let counting = Counting::new();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let at = |id: &str| {
+        RecordAddress::new(
+            NamespaceId::new(1),
+            DatabaseId::new(1),
+            TableId::new(1),
+            RecordId::from(id),
+        )
+    };
+    let write = |id: &str| {
+        let mut transaction = store.begin().unwrap();
+        transaction.put(at(id), b"{}".to_vec());
+        transaction.commit().unwrap();
+    };
+
+    // Warm: the first commit of a store's life pays for metadata every later
+    // one finds in place, and measuring it would measure the fixture.
+    write("warm");
+
+    counting.reset();
+    write("without-a-lease");
+    let without = counting.round_trips();
+
+    store.hold(
+        tessari_types::Epoch::new(1),
+        tessari_storage::Lease::taken_at(std::time::Instant::now(), tessari_storage::LEASE_TTL),
+    );
+    counting.reset();
+    write("holding-a-lease");
+    let with = counting.round_trips();
+
+    assert!(
+        with < without,
+        "a node holding a leadership asked the backend {with} times and one \
+         without asked {without} — the lease is supposed to answer first"
+    );
+    assert!(
+        without.saturating_sub(with) <= 2,
+        "the predicate added {} round trips to a commit; it is a membership \
+         table with a handful of rows plus the transaction it opens, measured \
+         at two, and anything above that is a scan that has started tracking \
+         the store's size instead",
+        without.saturating_sub(with)
+    );
+}

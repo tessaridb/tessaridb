@@ -6377,20 +6377,32 @@ DEFINE REPLICA second AT 'db-2.internal:9000' ROLES serving, writable;
 INFO FOR NODE;
 ```
 
-**Write the peers first and the node's own roles last.** `DEFINE NODE ROLES`
-takes effect immediately and locally, and a node whose roles carry `coordinating`
-holds no leadership until a majority grants it one — so from that statement
-onward it refuses every local write, including the `DEFINE REPLICA` statements
-that describe the cluster. Run in the order shown above and the second statement
-is refused. Declare the peers while the node is still on its own, then say what
-the node is:
+**Declare every peer in one transaction.** A store is on its own until its
+catalog names somebody else, and from the moment the first `DEFINE REPLICA`
+naming another node commits, this node is in a cluster: it writes under a
+leadership, and until a majority grants it one it refuses every local write —
+including the `DEFINE REPLICA` statements that describe the rest of the cluster.
+A statement-at-a-time script therefore declares one peer and is refused for the
+second. One transaction is judged once, against a catalog that still names
+nobody:
 
 ```
+BEGIN;
 DEFINE REPLICA second AT 'db-2.internal:9000'
     NODE '9f2c4e1a70bb43d5a1c6e2f480937d55'
     ROLES serving, coordinating;
+DEFINE REPLICA third AT 'db-3.internal:9000'
+    NODE 'c81b0f37a4e94a6f8d2e5417b90c3f26'
+    ROLES serving, coordinating;
+COMMIT;
 DEFINE NODE ROLES serving, writable, coordinating;
 ```
+
+`DEFINE NODE ROLES` is not part of the transaction and does not need to be: what
+a node is for is written to the machine rather than to the log, so it takes
+effect immediately, locally, and is never refused by the leadership gate. Put it
+last anyway — it is the statement that makes the node stand for elections, and
+there is nothing to stand for until the peers are declared.
 
 After that, configuration is the leader's to write and the cluster's to receive,
 which is where a replicated membership belongs.
@@ -6569,11 +6581,24 @@ of which may be the candidate itself — so a cluster of three goes on electing
 after it loses one. The node counts its own ballot through the same memory a
 peer's ballot reaches, which is what stops it from granting one epoch twice.
 
-**A node with no coordinating peer declared stands for nothing, and is therefore
-never fenced.** A single machine has nothing to coordinate with, so it takes no
-lease, and a store that never needed leadership does not acquire a new way to
-stop accepting writes. Declaring the first coordinating peer is what turns the
-mechanism on.
+**A node with no peer declared is never fenced.** A single machine has nobody to
+diverge from, so it takes no lease, and a store that never needed leadership does
+not acquire a new way to stop accepting writes. Declaring the first peer that
+names another node is what turns the mechanism on — and it turns it on whatever
+roles that peer or this node carry, because being in a cluster is a fact about
+the catalog and not about a role.
+
+**So a node that has peers must also be able to lead.** The gate is satisfied by
+a leadership and nothing else, and nothing stands for one unless its own roles
+say `coordinating`. A machine declared `serving, writable` with a read-only
+replica beside it therefore stops accepting writes and never starts again: it is
+in a cluster, and it is not a candidate for anything. Declare it `coordinating`
+as well — a deciding set of one elects itself, a majority of one being itself —
+and it takes a leadership at once and goes on writing:
+
+```
+DEFINE NODE ROLES serving, writable, coordinating;
+```
 
 **Which roles let a node stand is what the catalog says, not what it is currently
 doing.** A leader that misses a round stops writing — that is the fence — but it
@@ -6590,16 +6615,19 @@ it is no longer the only machine that *can*. A single-node store is unaffected: 
 node with no `coordinating` role declared on itself stands for nothing, so
 nothing that has never needed a lease begins taking one.
 
-**A coordinating node writes under a leadership and at no other time.** Once a
-node is declared `coordinating`, its `writable` role is what the operator *wants*
-and the lease is what it *has*: until a majority grants it one, it refuses writes
-with *this node takes part in deciding and holds no leadership*. That refusal is
+**A node in a cluster writes under a leadership and at no other time.** What
+makes a node part of a cluster is its **catalog**, not the roles it was given: a
+store whose membership rows name another node is in one, whatever it is declared
+to be. From then on its `writable` role is what the operator *wants* and the
+lease is what it *has*, and until a majority grants it one it refuses writes with
+*this node is in a cluster and holds no leadership*. That refusal is
 deliberately not the lease-ran-out one — a leadership never held and a leadership
 lost send you to different places. The consequence is worth stating plainly: **a
 cluster that has elected nobody takes no writes anywhere**, which is a real
 availability change from a set of nodes that each accepted writes the others
-would never see. A store with no `coordinating` role — every single-node
-deployment — is unaffected and goes on writing exactly as before.
+would never see. A store that names no peer — every single-node deployment —
+is unaffected and goes on writing exactly as before, including one declared
+`coordinating`: a deciding set of one has nobody to diverge from.
 
 **A follower collects from whichever peer says it may write, not from the row
 you marked writable.** In a cluster that can fail over, every coordinating node

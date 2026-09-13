@@ -667,6 +667,7 @@ fn a_row_bound_to_another_node_moves_nothing_here() {
     let held = backend();
     let store = closed(&held);
     let before = effective(&reported(&store));
+    let adopted = store.node_identity().unwrap().roles;
     owner(&store)
         .run(&format!(
             "DEFINE REPLICA elsewhere AT 'there:9001' NODE '{}' ROLES coordinating;",
@@ -682,7 +683,22 @@ fn a_row_bound_to_another_node_moves_nothing_here() {
         None,
         "somebody else's row was read as ours: {report:?}"
     );
-    assert_eq!(effective(&report), before, "{report:?}");
+    assert_eq!(
+        reopened.node_identity().unwrap().roles,
+        adopted,
+        "the row moved what this node ADOPTED, which is the subject here: \
+         {report:?}"
+    );
+
+    // What it does move, and it is a different mechanism reached by the same
+    // statement: the catalog now names a peer, so this store is in a cluster
+    // and writes under a leadership it does not hold (G025 S3.1, ADR-0069).
+    // `before` was taken while it was still alone.
+    assert!(before.contains(&"writable".to_owned()));
+    assert!(
+        !effective(&report).contains(&"writable".to_owned()),
+        "a node in a cluster reports what it may actually do: {report:?}"
+    );
 }
 
 #[test]
@@ -879,13 +895,21 @@ fn a_subscription_reads_back_in_the_spelling_that_wrote_it() {
     // write and cannot read back is one they cannot check before the bad day.
     let store = closed(&backend());
     let mut session = owner(&store);
+    // Every peer in ONE transaction, which is what declaring a cluster by hand
+    // looks like after G025 S3.1: the gate reads the COMMITTED membership, so a
+    // statement-per-transaction script gets its first `DEFINE REPLICA` through
+    // and is refused for the second — the node is in a cluster by then and
+    // holds no leadership. One commit is judged once, against a catalog that
+    // still names nobody.
     session
         .run(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
+             BEGIN; \
              DEFINE REPLICA whole AT 'a:9001' NODE '{SOMEBODY}' REPLICATES STORE; \
              DEFINE REPLICA part AT 'b:9001' NODE '{SOMEBODY}' REPLICATES NAMESPACE prod; \
              DEFINE REPLICA sliver AT 'c:9001' NODE '{SOMEBODY}' \
-                 REPLICATES DATABASE prod.orders;"
+                 REPLICATES DATABASE prod.orders; \
+             COMMIT;"
         ))
         .unwrap();
 
