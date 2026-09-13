@@ -311,6 +311,35 @@ pub enum Error {
         bits: u8,
     },
 
+    /// A redirect decided under a leadership this caller has already moved past.
+    ///
+    /// Raft §3.3's shape and its reason: a party meeting a term below its own
+    /// rejects and returns its own, so the sender learns in the same round trip
+    /// that it is behind. Here the epoch plays the term's role.
+    ///
+    /// **Why refusing is better than following it.** Undated, a caller walking a
+    /// chain of redirects cannot tell a LOOP from PROGRESS — it arrives, is sent
+    /// on, arrives, is sent on. Dated, a redirect naming an epoch already
+    /// superseded is recognisably a replay of a decision that no longer holds: a
+    /// node with a stale directory, a frame that took a long path, a copy
+    /// somebody kept. Following it walks back into the arrangement that has
+    /// already been left.
+    ///
+    /// **Equal is not stale.** Two redirects under one leadership are ordinary —
+    /// a caller sent to one node, and that node sending it to a second, both
+    /// deciding under the same epoch. Only strictly older is refused.
+    #[error(
+        "that redirect was decided under leadership {named}, and this caller has \
+         already been told about {held}: it names an arrangement that has been \
+         superseded"
+    )]
+    StaleRedirect {
+        /// The leadership the redirect named.
+        named: tessari_types::Epoch,
+        /// The newest leadership this caller has been told about.
+        held: tessari_types::Epoch,
+    },
+
     /// A read this node declined, answered by a caller that cannot follow it.
     ///
     /// Not what the redirect IS — it is an instruction and

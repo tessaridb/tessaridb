@@ -14,6 +14,7 @@ use crate::message::{Answer, Request};
 use crate::push::{Follow, Happened};
 use crate::redirect::Elsewhere;
 use crate::{frame, message};
+use tessari_types::Epoch;
 
 /// What a node did with a script: answered it, or said where it belongs.
 ///
@@ -38,6 +39,16 @@ pub enum Served {
 pub struct Client {
     reader: BufReader<TcpStream>,
     writer: BufWriter<TcpStream>,
+    /// The newest leadership any node has named in a redirect to this client.
+    ///
+    /// `None` until the first one arrives — a client that has been told nothing
+    /// has nothing to compare against, and every redirect is news to it.
+    ///
+    /// This is the whole of the client's routing memory, and it is deliberately
+    /// one number rather than a chain: what a caller needs to distinguish is a
+    /// loop from progress, and the epoch already answers that. A hop counter or
+    /// a redirect history would be a second mechanism for a job this does.
+    seen: Option<Epoch>,
 }
 
 impl std::fmt::Debug for Client {
@@ -74,7 +85,11 @@ impl Client {
             };
             frame::greet(&mut both)?;
         }
-        Ok(Self { reader, writer })
+        Ok(Self {
+            reader,
+            writer,
+            seen: None,
+        })
     }
 
     /// Run a script and read what came back.
@@ -132,7 +147,24 @@ impl Client {
                 }
                 Ok(Served::Answers(answers))
             }
-            frame::Kind::Elsewhere => Ok(Served::Elsewhere(Elsewhere::decode(&body)?)),
+            frame::Kind::Elsewhere => {
+                let sent = Elsewhere::decode(&body)?;
+                // Strictly older, never merely not-newer. Two redirects under
+                // one leadership are the ordinary two-hop route — sent to one
+                // node, and that node sending this caller to a second — and
+                // refusing equality would break it.
+                if self.seen.is_some_and(|held| sent.epoch < held) {
+                    return Err(Error::StaleRedirect {
+                        named: sent.epoch,
+                        // Unwrapped against the guard immediately above: the
+                        // comparison only ran because there was something to
+                        // compare against.
+                        held: self.seen.unwrap_or(sent.epoch),
+                    });
+                }
+                self.seen = Some(sent.epoch);
+                Ok(Served::Elsewhere(sent))
+            }
             // A node does not send a request, and a change only arrives on a
             // connection that asked to follow — which this one has not.
             frame::Kind::Request | frame::Kind::Subscribe | frame::Kind::Change => {
@@ -275,6 +307,8 @@ impl Feed {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic)]
+
     use std::io::{BufReader, BufWriter};
     use std::net::TcpListener;
     use std::thread;
@@ -309,6 +343,121 @@ mod tests {
             frame::write(&mut writer, kind, &body).expect("the answer this test exists to send");
         });
         address
+    }
+
+    /// A node that answers a **sequence** of frames, one per request.
+    ///
+    /// The single-answer helper above cannot express this wave's subject at all:
+    /// staleness is a relation between two redirects, so a client that has seen
+    /// one is the only client the check applies to.
+    fn node_answering_in_turn(frames: Vec<(frame::Kind, Vec<u8>)>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let address = listener.local_addr().expect("the port it took").to_string();
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("the client this test dials");
+            let mut reader = BufReader::new(stream.try_clone().expect("a second handle"));
+            let mut writer = BufWriter::new(stream);
+            {
+                let mut both = frame::Duplex {
+                    reader: &mut reader,
+                    writer: &mut writer,
+                };
+                frame::greet(&mut both).expect("a greeting from a client this build wrote");
+            }
+            for (kind, body) in frames {
+                frame::read(&mut reader)
+                    .expect("the request")
+                    .expect("a request");
+                frame::write(&mut writer, kind, &body).expect("the answer in its turn");
+            }
+        });
+        address
+    }
+
+    /// A redirect decided under `epoch`, at an address that names it.
+    fn a_redirect_under(epoch: u64) -> Elsewhere {
+        Elsewhere {
+            endpoint: format!("10.0.0.9:{}", 9080_u64.saturating_add(epoch)),
+            node: [3; NODE_ID_LEN],
+            epoch: Epoch::new(epoch),
+            settlement: Settlement::Transient,
+        }
+    }
+
+    #[test]
+    fn a_redirect_older_than_one_already_taken_is_refused_and_names_the_newer() {
+        // The criterion's own scenario: routed under a leadership, told about a
+        // newer one, then handed the old decision again. Undated, the client
+        // would follow it back into an arrangement it has already left and could
+        // not tell that from progress.
+        let address = node_answering_in_turn(vec![
+            (frame::Kind::Elsewhere, a_redirect_under(5).encode()),
+            (frame::Kind::Elsewhere, a_redirect_under(4).encode()),
+        ]);
+        let mut client = Client::connect(&address).expect("a node this test started");
+
+        client
+            .run_routed("SELECT 1;", None, &Parameters::new())
+            .expect("the first redirect is news to a client that has been told nothing");
+
+        let refused = client
+            .run_routed("SELECT 1;", None, &Parameters::new())
+            .expect_err("a decision this client has already moved past is not an instruction");
+
+        let Error::StaleRedirect { named, held } = refused else {
+            panic!("refused for the wrong reason: {refused}");
+        };
+        assert_eq!(named, Epoch::new(4));
+        // **Naming the newer one is the requirement**, not merely failing: a
+        // caller told only *no* learns nothing about why, while a caller told
+        // which leadership is current knows it is behind and by how much. Raft
+        // returns its own term for the same reason.
+        assert_eq!(held, Epoch::new(5));
+    }
+
+    #[test]
+    fn the_refusal_carries_both_leaderships_in_its_own_words() {
+        let address = node_answering_in_turn(vec![
+            (frame::Kind::Elsewhere, a_redirect_under(9).encode()),
+            (frame::Kind::Elsewhere, a_redirect_under(2).encode()),
+        ]);
+        let mut client = Client::connect(&address).expect("a node this test started");
+        client
+            .run_routed("SELECT 1;", None, &Parameters::new())
+            .expect("the first");
+        let said = client
+            .run_routed("SELECT 1;", None, &Parameters::new())
+            .expect_err("the replay")
+            .to_string();
+
+        assert!(
+            said.contains('9'),
+            "the refusal hid the current leadership: {said}"
+        );
+        assert!(
+            said.contains('2'),
+            "the refusal hid the one it refused: {said}"
+        );
+    }
+
+    #[test]
+    fn two_redirects_under_one_leadership_both_route() {
+        // The ordinary two-hop route — sent to one node, and that node sending
+        // this caller to a second, both deciding under the same leadership.
+        // Refusing equality would break it, which is why the comparison is
+        // strictly less-than and not less-or-equal.
+        let address = node_answering_in_turn(vec![
+            (frame::Kind::Elsewhere, a_redirect_under(7).encode()),
+            (frame::Kind::Elsewhere, a_redirect_under(7).encode()),
+        ]);
+        let mut client = Client::connect(&address).expect("a node this test started");
+
+        for hop in 1..=2 {
+            let served = client
+                .run_routed("SELECT 1;", None, &Parameters::new())
+                .unwrap_or_else(|why| panic!("hop {hop} of a same-epoch route was refused: {why}"));
+            assert!(matches!(served, Served::Elsewhere(_)));
+        }
     }
 
     fn a_redirect() -> Elsewhere {
