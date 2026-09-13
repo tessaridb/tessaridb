@@ -170,8 +170,27 @@ impl Published {
 /// asked because the answer was no.
 impl tessari_session::Elsewhere for Published {
     fn within(&self, bound: Duration) -> Option<tessari_session::Peer> {
-        match self.current().read_within(None, bound, Instant::now()) {
-            Destination::There { endpoint, node } => Some(tessari_session::Peer { endpoint, node }),
+        let directory = self.current();
+        match directory.read_within(None, bound, Instant::now()) {
+            // The epoch comes back out of the same reading that chose the
+            // endpoint, rather than from a second decision: `Heard.said` is
+            // exactly what that peer last claimed about itself, and its `epoch`
+            // field is documented as the leadership it believes current. Looking
+            // it up here and not widening `Destination` keeps the three-valued
+            // routing answer about *where*, which is all it has ever decided.
+            //
+            // A row chosen by `read_within` is a row that is in the map, so the
+            // lookup cannot miss — but it is written as a lookup and not as an
+            // unwrap because a panic in a routing decision would take a serving
+            // node down over a redirect it could simply decline to issue.
+            Destination::There { endpoint, node } => {
+                let epoch = directory.at(&endpoint)?.said.epoch;
+                Some(tessari_session::Peer {
+                    endpoint,
+                    node,
+                    epoch,
+                })
+            }
             // `Here` cannot arise with no currency of our own offered, and
             // `Nowhere` is the answer the caller already holds. Both mean *not
             // that I know of*, which is what `None` says.
@@ -1386,5 +1405,32 @@ mod tests {
             named("leader", "10.0.0.2:9000", ANOTHER),
         ];
         assert!(names_a_peer(&declared, &NODE));
+    }
+
+    #[test]
+    fn a_routing_answer_carries_the_epoch_the_named_node_claimed() {
+        // The value a redirect is DATED by, and the one thing this node could
+        // not have produced from its own state: `said()` claims epoch 7 and this
+        // node holds no leadership at all. An implementation that reached for
+        // `Db::leading()` here would answer `None` and have to invent a
+        // placeholder, which is how an undateable redirect gets shipped looking
+        // exactly like a dated one.
+        use tessari_session::Elsewhere as _;
+
+        let mut directory = Directory::new();
+        directory.heard("10.0.0.2:9000", said(), Instant::now());
+        let published = Published::holding(directory);
+
+        let peer = published
+            .within(Duration::from_secs(30))
+            .expect("a serving peer one second behind is inside a thirty-second bound");
+
+        assert_eq!(peer.endpoint, "10.0.0.2:9000");
+        assert_eq!(peer.node, NODE);
+        assert_eq!(
+            peer.epoch,
+            Epoch::new(7),
+            "the routing answer lost the leadership the named node published"
+        );
     }
 }

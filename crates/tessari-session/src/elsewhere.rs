@@ -34,18 +34,30 @@
 use core::time::Duration;
 
 use tessari_encoding::NODE_ID_LEN;
+use tessari_types::Epoch;
 
 /// A copy this node does not hold, and where to find it.
 ///
-/// Both halves travel, and the node id is the half that makes the redirect
-/// checkable: a client sent to an address alone has no way to notice that it
-/// met a different node than the one it was promised.
+/// All three halves travel, and the node id is the one that makes the redirect
+/// checkable on arrival: a client sent to an address alone has no way to notice
+/// that it met a different node than the one it was promised.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
     /// The address to dial — the same string the declaration carried.
     pub endpoint: String,
     /// Who was last heard there.
     pub node: [u8; NODE_ID_LEN],
+    /// The leadership that node itself last claimed was current.
+    ///
+    /// Not this node's own leadership, and the distinction is the whole reason
+    /// the field is worth carrying. A node deciding that somebody else's copy is
+    /// fresher is, by construction, a node whose own copy failed the bound — it
+    /// may hold no lease at all, so its own epoch is either absent or irrelevant.
+    /// What it does hold is the last thing the named peer said about itself, and
+    /// that is the value a redirect can be **checked** against: the client
+    /// presents an epoch the target published, so a target that has since moved
+    /// on can refuse it and name the newer one instead of failing opaquely.
+    pub epoch: Epoch,
 }
 
 /// What this node knows about the copies it does not hold.

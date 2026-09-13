@@ -593,6 +593,7 @@ impl Session<'_> {
                             written,
                             endpoint: peer.endpoint,
                             node: peer.node,
+                            epoch: peer.epoch,
                             span: bound.span,
                         },
                         // C-05's other half, unchanged: a read no node can

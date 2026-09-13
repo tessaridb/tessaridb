@@ -17,7 +17,7 @@ use tessaridb::{Db, Sequence};
 use crate::error::{Error, Result};
 use crate::message::Request;
 use crate::push::Follow;
-use crate::{READING, client, frame, message, push};
+use crate::{READING, client, frame, message, push, redirect};
 
 /// Names one connection across every line it produces.
 ///
@@ -280,7 +280,10 @@ fn converse(
     stream.set_read_timeout(Some(Duration::from_secs(GREETING_SECONDS)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
-    {
+    // Kept, not discarded. The peer's minor decides exactly one thing — what
+    // this side may *send* to an older client — and until this build had
+    // something to withhold there was nothing for it to decide.
+    let theirs = {
         // The greeting needs both directions on one object; after it they are
         // used independently, which is what lets a push frame be written while a
         // read is waiting.
@@ -288,8 +291,8 @@ fn converse(
             reader: &mut reader,
             writer: &mut writer,
         };
-        frame::greet(&mut both)?;
-    }
+        frame::greet(&mut both)?
+    };
     // Greeted, so this is a session rather than a stranger. An idle prompt
     // between two statements is the ordinary case and must not be disconnected;
     // what bounds it now is the door, not a clock.
@@ -359,6 +362,49 @@ fn converse(
                     why.to_string().as_bytes(),
                 )?,
             }
+            continue;
+        }
+        // A redirect is an **instruction**, and it leaves as its own frame
+        // rather than as a refusal carrying a hint. `redirect.rs` states the
+        // reason: a client that handles failures correctly — logs them, retries
+        // a bounded number of times, gives up — handles an instruction encoded
+        // as one incorrectly, every time, by construction. Until this arm
+        // existed, that is exactly what every client did with it.
+        //
+        // Matched on the **variant**, for the reason the forward above is: a
+        // routing decision taken by string comparison changes meaning the day
+        // somebody rewords an error.
+        //
+        // Gated on what the client said at the greeting. A client built before
+        // tag 13 was assigned cannot name the frame, and the refusal it has
+        // always received is a worse answer than the redirect and a better one
+        // than a frame it would have to treat as corruption.
+        if let Err(tessaridb::Error::ReadIsElsewhere {
+            endpoint,
+            node,
+            epoch,
+            ..
+        }) = &ran
+            && theirs >= frame::REDIRECTS
+        {
+            let sent = redirect::Elsewhere {
+                endpoint: endpoint.clone(),
+                node: *node,
+                epoch: *epoch,
+                // This read, and not this arrangement. The bound that sent the
+                // client away is a bound on *currency*, so this node's own copy
+                // may satisfy the very same bound at the next request — a client
+                // that remembered the answer would pin its map to a freshness
+                // accident. `Settled` belongs to a decision about where data
+                // lives, which is not a decision this path takes.
+                settlement: redirect::Settlement::Transient,
+            };
+            reply(
+                &mut writer,
+                stopping,
+                frame::Kind::Elsewhere,
+                &sent.encode(),
+            )?;
             continue;
         }
         match ran {
@@ -531,4 +577,140 @@ fn follow(
 /// The store's own words, travelling as a refusal.
 fn refuse(writer: &mut BufWriter<TcpStream>, message: &str) -> Result<()> {
     frame::write(writer, frame::Kind::Refusal, message.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use tessari_encoding::{NODE_ID_LEN, NodeVersion, Roles};
+    use tessari_types::{Epoch, Sequence};
+    use tessaridb::{Db, Parameters};
+
+    use super::Node;
+    use crate::directory::Directory;
+    use crate::driver::Published;
+    use crate::frame;
+    use crate::message::Request;
+    use crate::peer::Hello;
+
+    /// A node that cannot answer a bounded read, beside one that can.
+    ///
+    /// The same arrangement `talking.rs` builds for the happy path, and it is
+    /// built again here rather than shared because that file cannot reach the
+    /// crate-private frame vocabulary this test is written in — the whole point
+    /// of the test is to speak the protocol as a client of an older build would,
+    /// which no `Client` in this workspace will ever do again.
+    fn a_node_that_must_redirect() -> String {
+        let mut directory = Directory::new();
+        directory.heard(
+            "two.example:9080",
+            Hello {
+                node: [3; NODE_ID_LEN],
+                build: NodeVersion {
+                    major: 0,
+                    minor: 1,
+                    patch: 1,
+                },
+                epoch: Epoch::new(1),
+                roles: Roles::SERVING,
+                tail: Sequence::new(4096),
+                tail_leadership: Epoch::new(1),
+                current_as_of: Some(std::time::Duration::from_secs(1)),
+            },
+            Instant::now(),
+        );
+
+        let db = Db::in_memory().expect("an in-memory store");
+        {
+            // Schema first, role second: a node that may not write cannot define
+            // a collection either. Holding somebody else's writes is what puts
+            // this node's own copy outside every bound.
+            let mut session = db.session();
+            session
+                .run(
+                    "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
+                     USE DATABASE orders; DEFINE COLLECTION users;",
+                )
+                .expect("the schema");
+            session
+                .run("DEFINE NODE ROLES serving;")
+                .expect("the role that stops this node writing");
+        }
+
+        let node = Node::bind(Arc::new(db), "127.0.0.1:0")
+            .expect("a loopback port")
+            .among(Arc::new(Published::holding(directory)));
+        let address = node.address().expect("the port it took");
+        drop(std::thread::spawn(move || {
+            drop(node.serve_one());
+        }));
+        address
+    }
+
+    /// Greet as a build of `MAJOR.minor`, and hear the node's greeting back.
+    ///
+    /// Written out as six bytes rather than through `frame::greet`, because that
+    /// function sends whatever this build's `MINOR` happens to be — which is the
+    /// value under test, so using it would make the test agree with itself.
+    fn greet_as(stream: &mut TcpStream, minor: u8) {
+        stream.write_all(b"TESS").expect("the magic");
+        stream.write_all(&[frame::MAJOR, minor]).expect("a version");
+        stream.flush().expect("the greeting");
+        let mut theirs = [0_u8; 6];
+        stream.read_exact(&mut theirs).expect("a greeting back");
+        assert_eq!(&theirs[..4], b"TESS");
+    }
+
+    /// Ask for the bounded read, and answer with the tag that came back.
+    fn tag_answering_a_bounded_read(minor: u8) -> u8 {
+        let address = a_node_that_must_redirect();
+        let mut stream = TcpStream::connect(&address).expect("the node this test started");
+        greet_as(&mut stream, minor);
+
+        let body = Request {
+            script: "USE NAMESPACE prod; USE DATABASE orders; \
+                     SELECT * FROM users STALENESS 60s;"
+                .to_owned(),
+            credentials: None,
+            parameters: Parameters::new(),
+        }
+        .encode();
+        let length = u32::try_from(body.len()).expect("a script smaller than four gibibytes");
+        stream
+            .write_all(&[frame::Kind::Request.tag()])
+            .expect("the tag");
+        stream.write_all(&length.to_be_bytes()).expect("the length");
+        stream.write_all(&body).expect("the request");
+        stream.flush().expect("the request to leave");
+
+        let mut header = [0_u8; 5];
+        stream.read_exact(&mut header).expect("an answer");
+        header[0]
+    }
+
+    #[test]
+    fn a_client_that_can_read_a_redirect_is_sent_one() {
+        assert_eq!(
+            tag_answering_a_bounded_read(frame::REDIRECTS),
+            frame::Kind::Elsewhere.tag(),
+            "the node had somewhere to send this read and refused instead"
+        );
+    }
+
+    #[test]
+    fn a_client_from_before_the_redirect_existed_is_refused_rather_than_confused() {
+        // The minor's whole job: what this side may SEND to an older peer. A
+        // build that predates tag 13 cannot name the frame, and would have to
+        // decide whether an unknown tag is corruption — which is a worse answer
+        // than the refusal it has always had.
+        assert_eq!(
+            tag_answering_a_bounded_read(0),
+            frame::Kind::Refusal.tag(),
+            "a client that cannot name tag 13 was sent tag 13"
+        );
+    }
 }

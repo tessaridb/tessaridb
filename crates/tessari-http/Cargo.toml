@@ -34,6 +34,12 @@ tessari-kv.workspace = true
 tessari-ql.workspace = true
 tessari-session.workspace = true
 tessari-storage.workspace = true
+# The redirect's epoch and the width of the node id it names, for the same
+# reason: `ReadIsElsewhere` carries both and `tessaridb` re-exports the error
+# without the types inside it. The width comes from the constant that owns it
+# rather than being written as `16` here, which is how a restated number drifts.
+tessari-types.workspace = true
+tessari-encoding.workspace = true
 
 [lints]
 workspace = true

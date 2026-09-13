@@ -55,7 +55,35 @@ pub(crate) const MAJOR: u8 = 1;
 /// This is why a new outcome kind is a minor change and a new value type is a
 /// major one: a value nested inside an array carries no length of its own, so an
 /// unknown one cannot be stepped over.
-pub(crate) const MINOR: u8 = 0;
+///
+/// # Why this is 1
+///
+/// It was 0 through the two waves that built the redirect — the frame kind and
+/// the client that can receive one — because **advertising a capability nothing
+/// sends is worse than the gap**: a peer that believed this build could redirect
+/// would have been believing something false. This build sends one, so the minor
+/// moves with the sender and not with the frame.
+pub(crate) const MINOR: u8 = 1;
+
+/// The minor at which a peer can be sent a [`Kind::Elsewhere`] frame.
+///
+/// Named rather than written as `1` at the comparison, because the number alone
+/// cannot say what it is a threshold *for*, and the next thing gated on a minor
+/// will need its own name beside this one rather than a second bare literal.
+pub(crate) const REDIRECTS: u8 = 1;
+
+/// This build's own client must be able to read what this build's node sends.
+///
+/// The two constants above answer different questions — what we speak, and what
+/// a peer must speak to be sent a redirect — so nothing but this line notices if
+/// they drift apart. A build advertising a minor below the one its own redirect
+/// needs would refuse to send a frame it can read perfectly well, and every test
+/// in the crate would pass.
+///
+/// Checked at compile time rather than in a test, because a threshold that is
+/// wrong is wrong for every caller at once and there is nothing to gain by
+/// finding out at run time.
+const _: () = assert!(MINOR >= REDIRECTS);
 
 /// The largest frame this build will read.
 ///
@@ -361,7 +389,14 @@ mod tests {
     /// exactly how this drifted to a five-byte greeting at version 3 while every
     /// test in the crate passed. The specification says six bytes; six bytes are
     /// written here by hand.
-    const SPECIFIED_GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 0];
+    ///
+    /// The last byte moved from 0 to 1 in W267, and this test is the reason the
+    /// move was noticed at all: the minor bump was made in the engine, and the
+    /// **specification** is what had to be changed to match. Written out, the
+    /// constant makes a protocol change fail in this crate until somebody has
+    /// been to `spec/protocol-v1.md` §2.3 and §3.1 and changed the document a
+    /// third-party client is written against.
+    const SPECIFIED_GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 1];
 
     /// A peer: what it will say, and what it hears.
     ///
@@ -406,7 +441,7 @@ mod tests {
             peer.heard, SPECIFIED_GREETING,
             "what this node puts on the wire is not what the specification says"
         );
-        assert_eq!(minor, 0, "the peer's minor is kept, not discarded");
+        assert_eq!(minor, 1, "the peer's minor is kept, not discarded");
     }
 
     #[test]

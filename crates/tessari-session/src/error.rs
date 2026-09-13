@@ -854,6 +854,13 @@ pub enum Error {
         endpoint: String,
         /// Who was last heard there, so the redirect is checkable on arrival.
         node: [u8; tessari_encoding::NODE_ID_LEN],
+        /// The leadership that node itself last claimed was current.
+        ///
+        /// Carried so the surface rendering this can date the redirect. It is
+        /// the named peer's own claim and not this node's: a node redirecting a
+        /// bounded read is one whose own copy failed the bound, and it may hold
+        /// no leadership at all.
+        epoch: tessari_types::Epoch,
         /// Where the clause is.
         span: Span,
     },

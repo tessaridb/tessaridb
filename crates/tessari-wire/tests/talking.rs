@@ -393,28 +393,51 @@ fn a_bounded_read_this_node_cannot_answer_is_redirected_over_the_wire() {
     let (_node, address) = serving_among(db, Arc::new(tessari_wire::Published::holding(directory)));
     let mut client = Client::connect(&address).unwrap();
 
-    let redirect = client
+    // **Not `expect_err`.** Until this wave the redirect arrived as a refusal
+    // and this block read the address out of prose; a client had to parse an
+    // error message to route, which is the failure `redirect.rs` names.
+    let served = client
+        .run_routed(
+            "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users STALENESS 60s;",
+            None,
+            &tessaridb::Parameters::new(),
+        )
+        .expect("a redirect is an instruction, and an instruction is not a failure");
+    let tessari_wire::Served::Elsewhere(sent) = served else {
+        panic!("the node answered something that was not a redirect: {served:?}");
+    };
+    assert_eq!(sent.endpoint, "two.example:9080");
+    assert_eq!(
+        sent.node,
+        [3; tessari_encoding::NODE_ID_LEN],
+        "a redirect naming only a place cannot be checked on arrival"
+    );
+    // The epoch is the one **that** node published in its greeting, not this
+    // node's own: a node redirecting a bounded read is one whose copy failed the
+    // bound, and it may hold no leadership at all.
+    assert_eq!(
+        sent.epoch,
+        tessari_types::Epoch::new(1),
+        "the redirect crossed the wire undated, so nothing downstream can tell a          loop from progress"
+    );
+    assert_eq!(
+        sent.settlement,
+        tessari_wire::Settlement::Transient,
+        "a staleness redirect is about this read; a client that remembered it          would pin its map to a freshness accident"
+    );
+
+    // The other contract, unchanged and still honoured: `run` promises the
+    // answers, so it cannot hand back a redirect — but it names where the read
+    // belonged instead of reporting tag 13 as an unknown frame.
+    let refused = client
         .run(
             "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users STALENESS 60s;",
             None,
         )
-        .expect_err("this node cannot answer it, so it names the node that can");
-    let said = redirect.to_string();
+        .expect_err("`run` asked for answers and there are none here");
     assert!(
-        said.contains("two.example:9080"),
-        "the redirect crossed the wire without the address to go to: {said}"
-    );
-    assert!(
-        said.contains("redirects rather than fetching on your behalf"),
-        "the redirect crossed the wire without saying it was one: {said}"
-    );
-    // The half that makes the redirect checkable on arrival. Derived rather
-    // than spelled out, so the test asserts *the id travels* and never a
-    // particular rendering of it.
-    let expect = tessari_types::RecordId::Uuid([3; tessari_encoding::NODE_ID_LEN]).to_string();
-    assert!(
-        said.contains(&expect),
-        "the redirect named a place but not the node to expect there ({expect}): {said}"
+        refused.to_string().contains("two.example:9080"),
+        "the caller that cannot follow a redirect was not told where the read          belonged: {refused}"
     );
 
     // And the connection lives, because a redirect is an answer.

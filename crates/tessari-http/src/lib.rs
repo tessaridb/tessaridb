@@ -461,6 +461,16 @@ fn answer(id: u64, node: &Serving<'_>, busy: &mut Busy, mut request: Request) {
     {
         response = response.with_header(header);
     }
+    // A `307` without a `Location` is not a redirect a client can act on, which
+    // is the `401` rule above applied to the other status that carries an
+    // obligation. The difference is that the challenge is a constant and the
+    // address is not, so this one follows from the answer rather than from the
+    // status — see `Answer::location`.
+    if let Some(where_to) = &reply.location
+        && let Ok(header) = format!("Location: {where_to}").parse::<tiny_http::Header>()
+    {
+        response = response.with_header(header);
+    }
     // The answer says what it is. A constant either way, so it parses — and if it
     // somehow did not, an answer without a content type still beats no answer.
     if let Ok(header) = format!("Content-Type: {}", reply.kind).parse::<tiny_http::Header>() {

@@ -36,6 +36,7 @@ use tessari_encoding::NODE_ID_LEN;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Elsewhere, Error, Peer, Session};
 use tessari_storage::Store;
+use tessari_types::Epoch;
 
 fn store() -> Store {
     Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
@@ -64,6 +65,12 @@ fn allowed() -> String {
 /// against.
 const THERE: [u8; NODE_ID_LEN] = [3; NODE_ID_LEN];
 
+/// The leadership that peer last claimed for itself.
+///
+/// A value this node could not have produced on its own, which is the point:
+/// the redirect has to carry what the NAMED node said, not what this one holds.
+const THEIR_EPOCH: Epoch = Epoch::new(7);
+
 /// A cluster of exactly one peer, whose copy is `age` old.
 ///
 /// Hand-written rather than a real `Directory`, and not because a stub is
@@ -82,6 +89,7 @@ impl Elsewhere for OnePeer {
         (self.age <= bound).then(|| Peer {
             endpoint: self.endpoint.clone(),
             node: THERE,
+            epoch: THEIR_EPOCH,
         })
     }
 }
@@ -316,13 +324,26 @@ fn a_bounded_read_this_node_cannot_answer_is_sent_to_a_peer_that_can() {
         .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
         .expect_err("a redirect is an answer, and it arrives as one of these");
 
-    let Error::ReadIsElsewhere { endpoint, node, .. } = &sent else {
+    let Error::ReadIsElsewhere {
+        endpoint,
+        node,
+        epoch,
+        ..
+    } = &sent
+    else {
         panic!("answered the wrong way: {sent}");
     };
     assert_eq!(endpoint, "two.example:9080");
     assert_eq!(
         *node, THERE,
         "a redirect naming only a place cannot be checked on arrival"
+    );
+    // Undated, a client that followed a redirect written under an old
+    // leadership would arrive, be redirected again, and have no way to tell a
+    // loop from progress.
+    assert_eq!(
+        *epoch, THEIR_EPOCH,
+        "the redirect lost the leadership the named node claimed"
     );
 }
 

@@ -1416,6 +1416,7 @@ dependencies = [
  "log",
  "tessari-backup",
  "tessari-constants",
+ "tessari-encoding",
  "tessari-kv",
  "tessari-ql",
  "tessari-serve",
