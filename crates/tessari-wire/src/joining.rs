@@ -47,6 +47,7 @@ use std::path::{Path, PathBuf};
 
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use tessari_encoding::NODE_ID_LEN;
 
 use crate::error::{Error, Result};
 use crate::link::Credential;
@@ -142,6 +143,70 @@ impl Told {
     }
 }
 
+/// One address to reach an existing cluster through, and who answers there.
+///
+/// # Why a seed names a node
+///
+/// The obvious spelling is a bare `host:port`, and it is the one `--seed` had
+/// until ADR-0067. It cannot be dialled. [`crate::call`] derives the TLS server
+/// name from the peer's id — `<id>.peer.tessari` — so the handshake refuses any
+/// node but the one the caller meant, which is ADR-0062's whole point: *the
+/// caller names the node it means to reach*. An address with no id attached is
+/// therefore not a dial this transport can express, and wiring one through
+/// would have failed at the handshake and read like a certificate problem.
+///
+/// So the operator writes down the id, which is the value `INFO FOR NODE`
+/// already prints. The alternative — accepting any credential this cluster's
+/// authority issued, whoever answers at that address — is a real option and is
+/// deliberately not taken here: it replaces an exact name with *any member* on
+/// the security-critical path, and that is the concept's own open question C-17
+/// rather than something to settle as a side effect of a flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seed {
+    /// The node expected to answer there, checked by the handshake.
+    pub node: [u8; NODE_ID_LEN],
+    /// Where it answers.
+    ///
+    /// Carried unparsed for the reason [`Joining::door`] is: whether an address
+    /// resolves is a question for whoever dials it, and refusing it here would
+    /// make startup depend on the network being up at that instant.
+    pub endpoint: String,
+}
+
+impl Seed {
+    /// Read one `--seed` value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::SeedMalformed`] when the value is not
+    /// `<node-id>@<host:port>`, naming which half was wrong.
+    pub fn parse(given: &str) -> Result<Self> {
+        // `rsplit_once`, not `split_once`: the id half holds no `@` and the
+        // address half is the remainder, so splitting at the LAST separator
+        // would silently accept an id containing one. Splitting at the first
+        // and refusing an unparseable id is the stricter of the two, and the
+        // refusal names the half rather than the whole.
+        let (id, endpoint) = given.split_once('@').ok_or_else(|| Error::SeedMalformed {
+            given: given.to_owned(),
+            reason: "there is no @ between the node id and the address",
+        })?;
+        let node = tessari_types::parse_uuid(id).ok_or_else(|| Error::SeedMalformed {
+            given: given.to_owned(),
+            reason: "the part before @ is not a node id",
+        })?;
+        if endpoint.is_empty() {
+            return Err(Error::SeedMalformed {
+                given: given.to_owned(),
+                reason: "there is no address after the @",
+            });
+        }
+        Ok(Self {
+            node,
+            endpoint: endpoint.to_owned(),
+        })
+    }
+}
+
 /// A cluster configuration, read.
 #[derive(Debug)]
 pub struct Joining {
@@ -155,8 +220,11 @@ pub struct Joining {
     /// address is usable is binding it, and that happens where the door is
     /// opened rather than here.
     pub door: String,
-    /// Addresses to dial for a first contact.
-    pub seeds: Vec<String>,
+    /// Where to reach the cluster, until the catalog names a peer instead.
+    ///
+    /// Parsed here and not at the dial, so a mistyped seed stops the node at
+    /// start rather than at the first round.
+    pub seeds: Vec<Seed>,
 }
 
 impl Joining {
@@ -168,6 +236,8 @@ impl Joining {
     /// [`Error::CredentialEmpty`] when one opens and holds nothing of its kind,
     /// and [`Error::AuthorityNotSingle`] when the authority file holds any
     /// number of certificates other than one.
+    /// [`Error::SeedMalformed`] when a `--seed` value is not
+    /// `<node-id>@<host:port>`.
     pub fn read(told: &Told) -> Result<Self> {
         let chain = slurp(&told.chain, CHAIN)?;
         let key = slurp(&told.key, KEY)?;
@@ -239,6 +309,10 @@ impl Joining {
                 found: found.len(),
             }
         })?;
+        let seeds = seeds
+            .iter()
+            .map(|given| Seed::parse(given))
+            .collect::<Result<Vec<Seed>>>()?;
         Ok(Self {
             mine: Credential { chain, key },
             authority,
@@ -278,6 +352,10 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    /// A seed in the form the flag now takes, `<node-id>@<host:port>`.
+    const ONE_SEED: &str = "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a@one.example:9080";
+    const TWO_SEED: &str = "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b@two.example:9080";
 
     /// A PEM authority and a PEM leaf it signed, minted in memory.
     ///
@@ -326,7 +404,7 @@ mod tests {
             pem.authority.as_bytes(),
             &at("ca.pem"),
             DOOR.to_owned(),
-            vec!["one.example:9080".to_owned()],
+            vec![ONE_SEED.to_owned()],
         )
     }
 
@@ -346,7 +424,7 @@ mod tests {
             None,
             Some(at("ca.pem")),
             Some(DOOR.to_owned()),
-            vec!["one.example:9080".to_owned()],
+            vec![ONE_SEED.to_owned()],
         )
         .expect_err("half a cluster is refused");
         let said = failure.to_string();
@@ -380,7 +458,7 @@ mod tests {
             Some(at("key.pem")),
             Some(at("ca.pem")),
             Some(DOOR.to_owned()),
-            vec!["one.example:9080".to_owned(), "two.example:9080".to_owned()],
+            vec![ONE_SEED.to_owned(), TWO_SEED.to_owned()],
         )
         .unwrap()
         .expect("all five given");
@@ -402,7 +480,7 @@ mod tests {
             Some(at("key.pem")),
             Some(at("ca.pem")),
             None,
-            vec!["one.example:9080".to_owned()],
+            vec![ONE_SEED.to_owned()],
         )
         .expect_err("a peer address is a part like the others");
         let said = failure.to_string();
@@ -418,7 +496,14 @@ mod tests {
         let pem = minted();
         let joining = parsed(&pem).expect("a well-formed configuration");
         assert_eq!(joining.mine.chain.len(), 1, "the leaf");
-        assert_eq!(joining.seeds, vec!["one.example:9080".to_owned()]);
+        assert_eq!(
+            joining.seeds,
+            vec![Seed {
+                node: [0x1a; NODE_ID_LEN],
+                endpoint: "one.example:9080".to_owned(),
+            }],
+            "the seed is held as the pair it names, not as the text it was given"
+        );
         assert!(
             !joining.authority.as_ref().is_empty(),
             "the authority's own bytes"
@@ -436,7 +521,7 @@ mod tests {
             pem.authority.as_bytes(),
             &at("ca.pem"),
             DOOR.to_owned(),
-            vec!["one.example:9080".to_owned()],
+            vec![ONE_SEED.to_owned()],
         )
         .expect_err("an empty chain is not a credential");
         let said = failure.to_string();
@@ -461,7 +546,7 @@ mod tests {
             pem.authority.as_bytes(),
             &at("ca.pem"),
             DOOR.to_owned(),
-            vec!["one.example:9080".to_owned()],
+            vec![ONE_SEED.to_owned()],
         )
         .expect_err("a file with no key in it is not a key");
         let said = failure.to_string();
@@ -489,7 +574,7 @@ mod tests {
             pem.authority.as_bytes(),
             &at("ca.pem"),
             DOOR.to_owned(),
-            vec!["one.example:9080".to_owned()],
+            vec![ONE_SEED.to_owned()],
         )
         .expect_err("a certificate that will not decode is not a certificate");
         let said = failure.to_string();
@@ -525,7 +610,7 @@ mod tests {
             pem.authority.as_bytes(),
             &at("ca.pem"),
             DOOR.to_owned(),
-            vec!["one.example:9080".to_owned()],
+            vec![ONE_SEED.to_owned()],
         )
         .expect_err("a key that will not decode is not a key");
         let said = failure.to_string();
@@ -552,12 +637,61 @@ mod tests {
             two.as_bytes(),
             &at("ca.pem"),
             DOOR.to_owned(),
-            vec!["one.example:9080".to_owned()],
+            vec![ONE_SEED.to_owned()],
         )
         .expect_err("the door trusts exactly one root");
         let said = failure.to_string();
         assert!(said.contains("2 certificates"), "says how many were found");
         assert!(said.contains("ca.pem"), "names the file");
+    }
+
+    #[test]
+    fn a_seed_is_the_node_and_the_address_together() {
+        let seed = Seed::parse(ONE_SEED).expect("a well-formed seed");
+        assert_eq!(seed.node, [0x1a; NODE_ID_LEN], "the id before the @");
+        assert_eq!(seed.endpoint, "one.example:9080", "the address after it");
+    }
+
+    #[test]
+    fn a_seed_reads_the_hyphenated_form_of_an_id_too() {
+        // `INFO FOR NODE` prints one form and a person copying an id out of a
+        // ticket may paste the other. Both are the same sixteen bytes, and a
+        // refusal that depends on which one was pasted would be a refusal about
+        // punctuation dressed as a refusal about identity.
+        let hyphenated = "1a1a1a1a-1a1a-1a1a-1a1a-1a1a1a1a1a1a@one.example:9080";
+        let seed = Seed::parse(hyphenated).expect("the hyphenated form is an id");
+        assert_eq!(seed.node, [0x1a; NODE_ID_LEN]);
+    }
+
+    #[test]
+    fn a_seed_that_is_only_an_address_is_refused_at_start() {
+        // The form the flag carried until ADR-0067. It cannot be dialled — the
+        // handshake derives the peer's name from its id — so it is refused here
+        // rather than at the first round, where it would arrive as a TLS
+        // failure and read like a certificate problem.
+        let refused = Seed::parse("one.example:9080").expect_err("no id, no dial");
+        let said = refused.to_string();
+        assert!(said.contains("one.example:9080"), "quotes what was given");
+        assert!(said.contains("no @"), "names which half is missing: {said}");
+    }
+
+    #[test]
+    fn a_seed_whose_id_is_not_an_id_is_refused_at_start() {
+        let refused = Seed::parse("not-an-id@one.example:9080").expect_err("that is no id");
+        assert!(
+            refused.to_string().contains("not a node id"),
+            "names the half that was wrong, not the whole value"
+        );
+    }
+
+    #[test]
+    fn a_seed_with_an_id_and_no_address_is_refused_at_start() {
+        let given = format!("{}@", "1a".repeat(NODE_ID_LEN));
+        let refused = Seed::parse(&given).expect_err("nowhere to dial");
+        assert!(
+            refused.to_string().contains("no address after"),
+            "an id on its own is not a seed"
+        );
     }
 
     #[test]
@@ -567,7 +701,7 @@ mod tests {
             key: at("/nowhere/that/exists/key.pem"),
             authority: at("/nowhere/that/exists/ca.pem"),
             door: DOOR.to_owned(),
-            seeds: vec!["one.example:9080".to_owned()],
+            seeds: vec![ONE_SEED.to_owned()],
         };
         let failure = Joining::read(&told).expect_err("nothing to read");
         assert!(

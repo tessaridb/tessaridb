@@ -47,6 +47,7 @@ use tessari_types::{Epoch, Sequence};
 use crate::campaign::Stood;
 use crate::directory::{Destination, Directory};
 use crate::grant::Leadership;
+use crate::joining::Seed;
 
 /// How long to wait before the next pass, given when the last one started.
 ///
@@ -286,6 +287,55 @@ pub fn upstream(
         .filter(|(_, _, heard)| heard.said.current_as_of == Some(Duration::ZERO))
         .max_by_key(|(_, _, heard)| heard.said.epoch)
         .map(|(node, peer, _)| (node, peer.endpoint.clone()))
+}
+
+/// Where a node whose catalog names nobody collects from.
+///
+/// The bootstrap twin of [`upstream`], and every rule it applies is that
+/// function's: a node that may write has no upstream, a greeting is required
+/// before anything is followed, `current_as_of == Some(0)` is what *may write
+/// right now* looks like on the wire, and the epoch breaks a tie between a
+/// demoted leader and its successor. Only the candidate set differs — seeds
+/// instead of declared peers — which is why the two are siblings rather than
+/// one function with a flag: the set is the whole difference, and a flag would
+/// invite a caller to pass both.
+///
+/// # Only while the catalog is empty
+///
+/// The caller uses this **instead of** [`upstream`] while the catalog declares
+/// no peer, and never as a fallback when `upstream` happens to answer `None`.
+/// The distinction matters and it is not stylistic. `upstream` answers `None`
+/// for ordinary, temporary reasons — no greeting has landed yet, every declared
+/// peer is currently a follower, this node may write — and a seed consulted on
+/// any of those would be a node that stops believing its own membership the
+/// moment the leader is briefly unreachable, and goes back to an address written
+/// on a command line months ago. Empty is the only condition that means *this
+/// node has not joined yet*.
+///
+/// # The seed is spent as soon as it works
+///
+/// `DEFINE REPLICA` is a catalog write and therefore already a log record, so
+/// the membership arrives through the very collection this function starts.
+/// After the first successful round the catalog names peers, the caller stops
+/// asking this question, and nothing reads the seed again for the life of the
+/// node. That is `04_concept.md` §6.3 holding exactly as written — *the seed
+/// address is configuration, and everything after first contact lives in the
+/// database* — and it needs no frame of its own to be true.
+#[must_use]
+pub fn bootstrap_from(
+    mine: Roles,
+    seeds: &[Seed],
+    heard: &Directory,
+) -> Option<([u8; NODE_ID_LEN], String)> {
+    if mine.has(Roles::WRITABLE) {
+        return None;
+    }
+    seeds
+        .iter()
+        .filter_map(|seed| Some((seed, heard.at(&seed.endpoint)?)))
+        .filter(|(_, heard)| heard.said.current_as_of == Some(Duration::ZERO))
+        .max_by_key(|(_, heard)| heard.said.epoch)
+        .map(|(seed, _)| (seed.node, seed.endpoint.clone()))
 }
 
 /// Whether a leader this node can hear is still leading.
@@ -587,14 +637,15 @@ mod tests {
     use tessari_types::{Epoch, Sequence};
 
     use super::{
-        Collecting, Published, Renewing, ReplicaDefinition, Stood, due_in, every, heard_a_leader,
-        stands, upstream, voters,
+        Collecting, Published, Renewing, ReplicaDefinition, Seed, Stood, bootstrap_from, due_in,
+        every, heard_a_leader, stands, upstream, voters,
     };
     use crate::directory::Directory;
     use crate::grant::Leadership;
     use crate::peer::Hello;
 
     const NODE: [u8; NODE_ID_LEN] = [7; NODE_ID_LEN];
+    const ANOTHER: [u8; NODE_ID_LEN] = [9; NODE_ID_LEN];
 
     /// A serving peer one second behind.
     fn said() -> Hello {
@@ -685,6 +736,79 @@ mod tests {
         assert_eq!(
             upstream(Roles::SERVING, &declared, &heard),
             Some((NODE, "10.0.0.2:9000".to_owned()))
+        );
+    }
+
+    /// A seed, as an operator would have written it on the command line.
+    fn seed(node: [u8; NODE_ID_LEN], endpoint: &str) -> Seed {
+        Seed {
+            node,
+            endpoint: endpoint.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_joining_node_collects_from_the_seed_that_says_it_may_write_now() {
+        // The one round that exists to break a circle: the membership lives in
+        // the catalog, the catalog arrives by collecting from a member, and a
+        // node that has just been told to join holds neither.
+        let seeds = [seed(NODE, "10.0.0.2:9000")];
+        let heard = greeted(&[("10.0.0.2:9000", writing(Epoch::new(7)))]);
+        assert_eq!(
+            bootstrap_from(Roles::SERVING, &seeds, &heard),
+            Some((NODE, "10.0.0.2:9000".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_node_that_may_write_does_not_collect_from_a_seed_either() {
+        // The same rule `upstream` applies, and stated separately because the
+        // two functions are siblings rather than one with a flag: a rule that
+        // held in one of them and not the other would be a node that ignores
+        // its peers and follows a command-line address.
+        let seeds = [seed(NODE, "10.0.0.2:9000")];
+        let heard = greeted(&[("10.0.0.2:9000", writing(Epoch::new(7)))]);
+        assert_eq!(bootstrap_from(Roles::ALONE, &seeds, &heard), None);
+        assert_eq!(bootstrap_from(Roles::WRITABLE, &seeds, &heard), None);
+    }
+
+    #[test]
+    fn a_seed_that_has_not_been_greeted_is_not_collected_from() {
+        // Absence of a greeting is not evidence that a seed may write, and the
+        // consequence here is sharper than it is for a declared peer: this node
+        // holds nothing at all, so the first thing it collects is the whole of
+        // what it will believe.
+        let seeds = [seed(NODE, "10.0.0.2:9000")];
+        assert_eq!(
+            bootstrap_from(Roles::SERVING, &seeds, &Directory::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_seed_that_is_a_follower_is_not_collected_from() {
+        // A seed is an address an operator wrote down, and which node happens to
+        // be leading is not a fact an operator can write down — so a seed
+        // pointing at a node that may not write is the ordinary case, not a
+        // misconfiguration. The joiner waits rather than pulling from a copy.
+        let seeds = [seed(NODE, "10.0.0.2:9000")];
+        let heard = greeted(&[("10.0.0.2:9000", following())]);
+        assert_eq!(bootstrap_from(Roles::SERVING, &seeds, &heard), None);
+    }
+
+    #[test]
+    fn among_seeds_the_newer_leadership_is_collected_from() {
+        // The same tie `upstream` breaks and for the same reason: a leader
+        // demoted a moment ago and its successor can both be in this directory,
+        // because a greeting is as fresh as the last awareness round.
+        let seeds = [seed(NODE, "10.0.0.2:9000"), seed(ANOTHER, "10.0.0.3:9000")];
+        let heard = greeted(&[
+            ("10.0.0.2:9000", writing(Epoch::new(7))),
+            ("10.0.0.3:9000", writing(Epoch::new(8))),
+        ]);
+        assert_eq!(
+            bootstrap_from(Roles::SERVING, &seeds, &heard),
+            Some((ANOTHER, "10.0.0.3:9000".to_owned()))
         );
     }
 

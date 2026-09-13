@@ -221,6 +221,22 @@ pub enum Error {
         fingerprint: String,
     },
 
+    /// A seed was written in a form that cannot be dialled.
+    ///
+    /// A seed names a node and an address together, because the peer link
+    /// verifies the certificate against `<node>.peer.tessari` and so a dial to a
+    /// bare `host:port` is not expressible (ADR-0062, ADR-0067). Refused at
+    /// start for the reason the credential read is: a typo found at the first
+    /// dial is ten seconds away at best, and arrives looking like a network
+    /// fault rather than like a flag somebody mistyped.
+    #[error("--seed {given:?} is not <node-id>@<host:port>: {reason}")]
+    SeedMalformed {
+        /// Exactly what the flag was given, so the operator can see the typo.
+        given: String,
+        /// Which half of the form was wrong.
+        reason: &'static str,
+    },
+
     /// A node told some of what a cluster takes, and not the rest.
     ///
     /// Refused at start rather than carried, for the reason

@@ -57,6 +57,7 @@ use std::time::Instant;
 use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_storage::ReplicaDefinition;
 
+use crate::joining::Seed;
 use crate::peer::Hello;
 
 /// One greeting, and the instant it arrived.
@@ -238,6 +239,60 @@ impl Directory {
             }
             if let Ok(said) = greet(&replica.endpoint, node) {
                 self.heard(&replica.endpoint, said, now);
+                reached = reached.saturating_add(1);
+            }
+        }
+        reached
+    }
+
+    /// Greet the seeds, for a node whose catalog names nobody yet.
+    ///
+    /// Answers how many were reached, the same as [`Self::greet_round`] and for
+    /// the same reason.
+    ///
+    /// # This is the bootstrap round and only the bootstrap round
+    ///
+    /// A node that has just been told to join holds an **empty** catalog: it has
+    /// no `ReplicaDefinition` rows, so [`Self::greet_round`] dials nobody and
+    /// [`crate::upstream`] chooses from nothing. The circle is real — the
+    /// membership lives in the catalog, and the catalog arrives by collecting
+    /// from a member — and the seed is the single pointer that breaks it.
+    ///
+    /// The caller runs this **instead of** [`Self::greet_round`] while the
+    /// catalog is empty, and never alongside it. That is not a saving, it is the
+    /// rule: `DEFINE REPLICA` is a catalog write and therefore already a log
+    /// record, so the moment collection brings the membership in, the catalog is
+    /// the answer and a seed still being dialled would be a second source of
+    /// truth about who the members are. This session shipped four decisions
+    /// (ADR-0063 to ADR-0066) whose common subject was exactly that failure —
+    /// configuration answering a question the protocol had already answered —
+    /// and a permanently-consulted seed would be a fifth.
+    ///
+    /// # A seed is not skipped for want of an id
+    ///
+    /// The one row [`Self::greet_round`] cannot dial is one whose `node` is
+    /// `None`. A [`Seed`] has no such state: it does not parse without an id
+    /// (ADR-0067), so every seed this node holds is diallable by construction.
+    /// Its own id is still skipped, for [`Self::greet_round`]'s reason — an
+    /// operator who seeds a node with itself has written a loop, and dialling it
+    /// would put this node in its own directory.
+    pub fn greet_seeds<G, E>(
+        &mut self,
+        seeds: &[Seed],
+        me: &[u8; NODE_ID_LEN],
+        now: Instant,
+        greet: G,
+    ) -> usize
+    where
+        G: Fn(&str, [u8; NODE_ID_LEN]) -> Result<Hello, E>,
+    {
+        let mut reached = 0_usize;
+        for seed in seeds {
+            if seed.node == *me {
+                continue;
+            }
+            if let Ok(said) = greet(&seed.endpoint, seed.node) {
+                self.heard(&seed.endpoint, said, now);
                 reached = reached.saturating_add(1);
             }
         }
@@ -625,5 +680,63 @@ mod tests {
             Some(Duration::from_secs(1)),
             "and the reading is usable the moment it lands"
         );
+    }
+
+    #[test]
+    fn a_joining_node_greets_its_seeds_because_its_catalog_names_nobody() {
+        // The bootstrap round. A node just told to join holds no replica rows,
+        // so `greet_round` would dial nobody at all and this node would never
+        // learn anything about anything.
+        let seeds = [
+            crate::joining::Seed {
+                node: ANOTHER,
+                endpoint: "10.0.0.2:9000".to_owned(),
+            },
+            crate::joining::Seed {
+                node: THIRD,
+                endpoint: "10.0.0.3:9000".to_owned(),
+            },
+        ];
+        let mut directory = Directory::new();
+        let now = Instant::now();
+        let reached = directory.greet_seeds(&seeds, &ONE, now, |_endpoint, node| {
+            Ok::<_, ()>(said(node, Some(Duration::ZERO), true))
+        });
+        assert_eq!(reached, 2, "both seeds answered");
+        assert!(directory.at("10.0.0.2:9000").is_some());
+        assert!(directory.at("10.0.0.3:9000").is_some());
+    }
+
+    #[test]
+    fn a_node_seeded_with_itself_does_not_dial_itself() {
+        // An operator who seeds a node with its own address has written a loop.
+        // Dialling it would put this node in its own directory, where the
+        // *here first* rule has already decided it does not belong.
+        let seeds = [crate::joining::Seed {
+            node: ONE,
+            endpoint: "10.0.0.1:9000".to_owned(),
+        }];
+        let mut directory = Directory::new();
+        let reached = directory.greet_seeds(&seeds, &ONE, Instant::now(), |_endpoint, node| {
+            Ok::<_, ()>(said(node, Some(Duration::ZERO), true))
+        });
+        assert_eq!(reached, 0, "the one seed was this node");
+        assert!(directory.at("10.0.0.1:9000").is_none());
+    }
+
+    #[test]
+    fn a_seed_that_does_not_answer_leaves_the_directory_as_it_was() {
+        // One failure does not end the round and nothing is erased — the same
+        // rule the declared round follows, stated here because a joining node
+        // has no earlier reading to keep and the count is all it has.
+        let seeds = [crate::joining::Seed {
+            node: ANOTHER,
+            endpoint: "10.0.0.2:9000".to_owned(),
+        }];
+        let mut directory = Directory::new();
+        let reached =
+            directory.greet_seeds(&seeds, &ONE, Instant::now(), |_, _| Err::<Hello, ()>(()));
+        assert_eq!(reached, 0);
+        assert!(directory.at("10.0.0.2:9000").is_none());
     }
 }

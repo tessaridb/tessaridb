@@ -27,7 +27,7 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --cluster-key <file> its private key, PEM
   --cluster-authority <file> the one certificate this cluster trusts, PEM
   --cluster-address <host:port> where this node's own peer door binds
-  --seed <host:port> a node to reach the cluster through; repeatable
+  --seed <node-id>@<host:port> a node to reach the cluster through; repeatable
   --param <name>=<value> bind $name to <value>, written as TessariQL; repeatable
   -e, --execute <script> run this and exit
   -f, --file <file> run this file and exit
@@ -280,7 +280,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                 seeds.push(
                     arguments
                         .next()
-                        .ok_or_else(|| "--seed wants a host:port".to_owned())?,
+                        .ok_or_else(|| "--seed wants <node-id>@<host:port>".to_owned())?,
                 );
             }
             "--restore" => {
@@ -560,7 +560,10 @@ mod tests {
     fn a_seed_with_no_address_after_it_is_refused_rather_than_swallowing_the_next_flag() {
         let refused = asked(&["--serve", "127.0.0.1:0", "--seed"])
             .expect_err("a flag that wants a value and got none");
-        assert!(refused.contains("--seed wants a host:port"), "{refused}");
+        assert!(
+            refused.contains("--seed wants <node-id>@<host:port>"),
+            "{refused}"
+        );
     }
 
     #[test]

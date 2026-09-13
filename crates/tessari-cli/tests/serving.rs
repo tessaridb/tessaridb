@@ -537,6 +537,13 @@ fn the_binary_refuses_an_address_and_a_path_together() {
 /// In memory and then written to the temporary directory, because the binary
 /// takes paths — but never a fixture committed to the repository, which would be
 /// key material with an expiry date nobody chose.
+/// A well-formed seed for a node that never dials one.
+///
+/// `<node-id>@<host:port>` since ADR-0067 — a bare address is refused at start,
+/// because the handshake derives the peer's TLS name from its id and so an
+/// address with no id attached is not a dial this transport can express.
+const A_SEED: &str = "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a@one.example:9080";
+
 struct Minted {
     authority: rcgen::Certificate,
     key: rcgen::KeyPair,
@@ -609,7 +616,7 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", PEERS])
-        .args(["--seed", "one.example:9080"])
+        .args(["--seed", A_SEED])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -643,7 +650,7 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
         minted.authority.pem().as_bytes(),
         std::path::Path::new("ca.pem"),
         PEERS.to_owned(),
-        vec![PEERS.to_owned()],
+        vec![A_SEED.to_owned()],
     )
     .expect("a credential this authority issued");
     let (heard, answered) = tessari_wire::call(
@@ -698,7 +705,7 @@ fn a_peer_address_that_cannot_be_taken_is_a_failure_to_start_and_not_a_warning()
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", "127.0.0.1:1"])
-        .args(["--seed", "one.example:9080"])
+        .args(["--seed", A_SEED])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -760,7 +767,7 @@ fn a_node_dials_the_peer_its_catalog_declares() {
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", PEERS_FOR_DIALLING])
-        .args(["--seed", "one.example:9080"])
+        .args(["--seed", A_SEED])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -929,7 +936,19 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
             .args(["--cluster-address", CLUSTER[index].1])
-            .args(["--seed", CLUSTER[(index + 1) % CLUSTER.len()].1])
+            // A seed names the node as well as the address (ADR-0067): the
+            // handshake derives the peer's TLS name from its id, so a bare
+            // address is not a dial this transport can express. These three
+            // declare each other in their catalogs, so the seed is never read
+            // — it is here because a running node takes the flag.
+            .args([
+                "--seed",
+                &format!(
+                    "{}@{}",
+                    tessari_types::RecordId::Uuid(ids[(index + 1) % CLUSTER.len()]),
+                    CLUSTER[(index + 1) % CLUSTER.len()].1
+                ),
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -1099,5 +1118,195 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
         seen.len() > refused,
         "every one of the {} reads across the window was refused",
         seen.len()
+    );
+}
+
+/// The leader of a one-node cluster, and the node that joins it by seed alone.
+///
+/// A clean band: 47881-47886 belong to the three-node failover above.
+const JOIN: [(&str, &str); 2] = [
+    ("127.0.0.1:47891", "127.0.0.1:47892"),
+    ("127.0.0.1:47893", "127.0.0.1:47894"),
+];
+
+/// What the joiner must end up holding, written only on the node it joins.
+const WRITTEN: &str = "DEFINE NAMESPACE prod REPLICATION NONE; USE NAMESPACE prod; \
+                       DEFINE DATABASE orders; USE DATABASE orders; \
+                       DEFINE COLLECTION item; CREATE item:1 = { n: 1 };";
+
+/// G024's title, which no criterion asked for — Q-570.
+///
+/// Every one of the goal's fifteen criteria passes and a cluster is still
+/// assembled by configuring each node before any of them starts. This is the
+/// other shape: one node that is already a cluster, and a second that is told
+/// exactly one thing — an address to reach it through — and writes nothing of
+/// its own.
+///
+/// # What is asserted, and why it is the records rather than the catalog
+///
+/// The joiner is checked for the LEADER'S DATA, not for its membership rows.
+/// That is the stronger assertion and it is also the cheaper one: the
+/// membership arrives because `DEFINE REPLICA` is a catalog write and therefore
+/// already a log record, so a joiner holding the leader's records has
+/// necessarily collected the rows that came before them. Asserting the rows
+/// directly would test the same thing one step earlier and would pass on a node
+/// that had collected the catalog and then stopped.
+///
+/// # The two acts that add a node, and which side each is on
+///
+/// On the cluster: one `DEFINE REPLICA` naming the newcomer and granting it the
+/// log. On the newcomer: `DEFINE NODE ROLES serving` — a `META` write, local and
+/// deliberately **not** a log record (ADR-0018), so it creates none of the
+/// divergence W256 recorded when three nodes each wrote their own membership at
+/// the same sequences under `Epoch::ZERO`.
+#[test]
+#[ignore = "a minute of real cadences against two spawned processes; run it with \
+            cargo test -p tessari-cli --test serving a_node_joins -- --ignored"]
+fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
+    let directory = tempfile::tempdir().unwrap();
+    let minted = Minted::new();
+
+    let mut stores = Vec::new();
+    let mut ids = Vec::new();
+    let mut papers = Vec::new();
+    for (index, _) in JOIN.iter().enumerate() {
+        let home = directory.path().join(format!("j{index}"));
+        std::fs::create_dir_all(&home).unwrap();
+        let store = home.join("store");
+        let db = tessaridb::Db::open(&store).unwrap();
+        let id = db.store().node_identity().unwrap().id;
+        drop(db);
+        papers.push(credentials(&minted, id, &home));
+        ids.push(id);
+        stores.push(store);
+    }
+
+    // The cluster side of adding a node: the leader is told who the newcomer is
+    // and that it may take the log. `REPLICATES STORE` because the namespace
+    // does not exist yet on either node, and a namespace subscription resolves
+    // to a namespace id when the row is written.
+    //
+    // The leader stays `alone` — serving and writable and NOT coordinating — so
+    // it holds no election and needs no lease to write (ADR-0064's predicate is
+    // `COORDINATING`). One node is a cluster here; what is being demonstrated is
+    // the join, not the election, and the election has its own test above.
+    {
+        let db = tessaridb::Db::open(&stores[0]).unwrap();
+        let joiner = tessari_types::RecordId::Uuid(ids[1]).to_string();
+        db.session()
+            .run(&format!(
+                "DEFINE REPLICA joiner AT '{}' NODE '{joiner}' ROLES serving \
+                 REPLICATES STORE; {WRITTEN}",
+                JOIN[1].1
+            ))
+            .expect("a leader that knows who is joining it");
+        drop(db);
+    }
+
+    // The newcomer's side, and this is the whole of what it is told. No replica
+    // row, so its catalog names nobody and it cannot campaign, cannot route and
+    // cannot collect — which is the circle the seed exists to break. `serving`
+    // and not `writable`, because a node that collects while it also writes is
+    // the divergence this design refuses everywhere else.
+    {
+        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        db.session()
+            .run("DEFINE NODE ROLES serving;")
+            .expect("a node that knows it is not the cluster");
+        let peers = tessari_storage::Catalog::new(&mut db.store().begin().unwrap())
+            .replicas()
+            .unwrap();
+        assert!(
+            peers.is_empty(),
+            "the joiner must be told nothing but an address, and its catalog \
+             names {} peer(s)",
+            peers.len()
+        );
+        drop(db);
+    }
+
+    let mut running = Vec::new();
+    for (index, (client, peer)) in JOIN.iter().enumerate() {
+        let (leaf, key, authority) = &papers[index];
+        let mut command = Command::new(TESSARIDB);
+        command
+            .arg(&stores[index])
+            .args(["--serve", client])
+            .args(["--cluster-credential", leaf])
+            .args(["--cluster-key", key])
+            .args(["--cluster-authority", authority])
+            .args(["--cluster-address", peer]);
+        // Both nodes carry a seed, and only one of them will ever read it.
+        //
+        // `Told::from_parts` demands all five cluster parts, so a node cannot be
+        // clustered without naming a seed — including the founding node, which
+        // has nowhere to be reached FROM. That constraint became visible only
+        // when the flag started being used; it is left standing (Q-577) because
+        // it costs one flag and it means every node can be re-pointed, while
+        // relaxing it would weaken the half-configuration check that exists to
+        // stop a node coming up believing it has peers it cannot prove itself
+        // to. The leader's seed is inert: its catalog names a peer, so the
+        // bootstrap round is never the one that runs.
+        let other = usize::from(index == 0);
+        command.args([
+            "--seed",
+            &format!(
+                "{}@{}",
+                tessari_types::RecordId::Uuid(ids[other]),
+                JOIN[other].1
+            ),
+        ]);
+        let child = command
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        running.push(Running(child));
+    }
+    for (client, peer) in JOIN {
+        assert!(listening(client, Duration::from_secs(30)), "{client}");
+        assert!(listening(peer, Duration::from_secs(30)), "{peer}");
+    }
+
+    // One awareness round to greet the seed, one collection round to take the
+    // log, and both cadences are ten seconds. Generous, because what is being
+    // asserted is that it happens at all rather than how fast.
+    let began = Instant::now();
+    let mut held = None;
+    let mut refusals = Vec::new();
+    while began.elapsed() < Duration::from_secs(90) && held.is_none() {
+        match counted(JOIN[1].0) {
+            Ok(1) => held = Some(began.elapsed()),
+            Ok(other) => refusals.push(format!("{other} record(s)")),
+            Err(why) => refusals.push(why),
+        }
+        std::thread::sleep(POLL);
+    }
+    let held = held.unwrap_or_else(|| {
+        panic!(
+            "the joiner was given an address and never reached the leader's \
+             records; the last thing it said was {:?}",
+            refusals.last()
+        )
+    });
+    assert!(
+        held < Duration::from_secs(90),
+        "the joiner took {held:?}, which is outside the window it was given"
+    );
+
+    // And the membership came with the records rather than from the flag. The
+    // joiner wrote no replica row — that was asserted before it started — so a
+    // row in its catalog now is one it collected. This is what makes the seed
+    // spent: from here the catalog answers who the members are, and the address
+    // on the command line is never read again.
+    drop(running);
+    let db = tessaridb::Db::open(&stores[1]).expect("the joiner's store, once it has stopped");
+    let peers = tessari_storage::Catalog::new(&mut db.store().begin().unwrap())
+        .replicas()
+        .unwrap();
+    assert!(
+        peers.iter().any(|peer| peer.name == "joiner"),
+        "the joiner reached the leader's records in {held:?} and still does not \
+         hold the membership row that was written before them"
     );
 }

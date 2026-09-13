@@ -247,7 +247,7 @@ fn serve(
     let peers = match cluster {
         Some(joining) => {
             let where_to = joining.door.clone();
-            let seeds = joining.seeds.len();
+            let seeds = joining.seeds.clone();
             // Taken before the bind, which consumes the first copy. Both halves
             // of the link prove the same node with the same credential.
             let dialling = joining.mine.duplicate();
@@ -330,7 +330,7 @@ fn serve(
             .door
             .address()
             .map_err(|failure| failure.to_string())?;
-        let seeds = surface.seeds;
+        let seeds = surface.seeds.len();
         eprintln!("tessaridb — peers on {bound}, {seeds} seed address(es) to reach the cluster");
         eprintln!("tessaridb — the peer door serves greetings and ballots, and no collection yet");
     }
@@ -418,11 +418,17 @@ fn serve(
     let peer_threads = peers.map(|surface| {
         let Peering {
             door,
-            seeds: _,
+            seeds,
             dialling,
             authority,
             routing,
         } = surface;
+        // One copy per cadence, because the two threads that read them outlive
+        // each other independently: the greeting round dials the seeds while
+        // the catalog names nobody, and the collection round pulls from one of
+        // them on the same condition.
+        let collecting_seeds = seeds.clone();
+        let dialling_seeds = seeds;
         // One voting memory, held by the door and by the campaign alike. A
         // node votes in two places — a peer's ballot arrives at the door, its
         // own arrives at home — and *a voter grants an epoch at most once* is a
@@ -459,7 +465,16 @@ fn serve(
         let dialling = {
             let db = std::sync::Arc::clone(&db);
             let stopping = std::sync::Arc::clone(&peering);
-            std::thread::spawn(move || dial_peers(&db, &dialling, &authority, &routing, &stopping))
+            std::thread::spawn(move || {
+                dial_peers(
+                    &db,
+                    &dialling,
+                    &authority,
+                    &dialling_seeds,
+                    &routing,
+                    &stopping,
+                );
+            })
         };
         // A third, and for the reason `driver.rs` opens with: a missed greeting
         // costs the freshness of a routing reading while a missed collection
@@ -474,6 +489,7 @@ fn serve(
                     &db,
                     &collecting_credential,
                     &collecting_authority,
+                    &collecting_seeds,
                     &collecting_routing,
                     &stopping,
                 );
@@ -565,8 +581,13 @@ fn serve(
 struct Peering {
     /// The door peers arrive at.
     door: tessari_wire::Peers,
-    /// How many seed addresses were given, for the startup line.
-    seeds: usize,
+    /// Where to reach the cluster, until the catalog names a peer instead.
+    ///
+    /// Held rather than counted. It was a `usize` until W258 — enough for the
+    /// startup line and nothing else — which is the whole of Q-570: the flag
+    /// was parsed, counted, printed and discarded, so a node could be told
+    /// where its cluster was and still had no way to reach it.
+    seeds: Vec<tessari_wire::Seed>,
     /// This node's credential, for the side that calls rather than answers.
     dialling: tessari_wire::Credential,
     /// The one root every peer in this cluster is issued by.
@@ -610,6 +631,7 @@ fn dial_peers(
     db: &Db,
     mine: &tessari_wire::Credential,
     authority: &tessari_wire::CertificateDer<'static>,
+    seeds: &[tessari_wire::Seed],
     published: &tessari_wire::Published,
     stopping: &tessari_serve::Stopping,
 ) {
@@ -646,7 +668,14 @@ fn dial_peers(
             };
             let mut reached = 0_usize;
             published.round(|directory| {
-                reached = directory.greet_round(&declared, &me, now, |endpoint, node| {
+                // The seeds INSTEAD of the catalog, and only while the catalog
+                // names nobody. A node that has just been told to join holds no
+                // replica rows, so `greet_round` would dial nobody and this
+                // node would never learn anything; once collection brings the
+                // rows in, the catalog is the answer and a seed still being
+                // dialled would be a second source of truth about who the
+                // members are — see `Directory::greet_seeds`.
+                let greet = |endpoint: &str, node| {
                     tessari_wire::call(
                         endpoint,
                         mine.duplicate(),
@@ -657,29 +686,36 @@ fn dial_peers(
                     )
                     .map(|(said, _)| said)
                     .map_err(|why| {
-                        // Said here rather than swallowed. `greet_round` keeps
-                        // only a count, so without this the one line an
-                        // operator gets for a directory that has stopped
-                        // refreshing is *nobody answered* — and a directory
-                        // that stops refreshing is a follower that stops
-                        // knowing who to follow, whose symptom is a copy that
-                        // silently never changes.
+                        // Said here rather than swallowed. The rounds keep only
+                        // a count, so without this the one line an operator
+                        // gets for a directory that has stopped refreshing is
+                        // *nobody answered* — and a directory that stops
+                        // refreshing is a follower that stops knowing who to
+                        // follow, whose symptom is a copy that silently never
+                        // changes.
                         log::warn!("the greeting to {endpoint} did not land: {why}");
                         why.to_string()
                     })
-                });
+                };
+                reached = if declared.is_empty() {
+                    directory.greet_seeds(seeds, &me, now, greet)
+                } else {
+                    directory.greet_round(&declared, &me, now, greet)
+                };
             });
             // The count and not the directory, because nothing reads the
             // directory yet — routing on it is S6.2 and is a wave of its own.
             // What this round makes observable today is that the dialling
             // happens at all and how much of the cluster answered.
-            if reached == 0 && !declared.is_empty() {
-                log::warn!(
-                    "no declared peer answered this round; {} were dialled",
-                    declared.len()
-                );
+            let (kind, dialled) = if declared.is_empty() {
+                ("seed", seeds.len())
             } else {
-                log::info!("{reached} of {} declared peer(s) answered", declared.len());
+                ("declared peer", declared.len())
+            };
+            if reached == 0 && dialled > 0 {
+                log::warn!("no {kind} answered this round; {dialled} were dialled");
+            } else {
+                log::info!("{reached} of {dialled} {kind}(s) answered");
             }
         },
     );
@@ -720,6 +756,7 @@ fn collect_from_upstream(
     db: &Db,
     mine: &tessari_wire::Credential,
     authority: &tessari_wire::CertificateDer<'static>,
+    seeds: &[tessari_wire::Seed],
     published: &tessari_wire::Published,
     stopping: &tessari_serve::Stopping,
 ) {
@@ -760,7 +797,18 @@ fn collect_from_upstream(
                 }
             };
             let heard = published.current();
-            let Some((node, endpoint)) = tessari_wire::upstream(roles, &declared, &heard) else {
+            // The seed INSTEAD of the catalog, and only while the catalog names
+            // nobody — `bootstrap_from` carries the reason it is not a fallback
+            // for `upstream` answering `None`. `DEFINE REPLICA` is a catalog
+            // write and therefore already a log record, so the membership
+            // arrives through this very collection and the seed is spent as
+            // soon as it works.
+            let origin = if declared.is_empty() {
+                tessari_wire::bootstrap_from(roles, seeds, &heard)
+            } else {
+                tessari_wire::upstream(roles, &declared, &heard)
+            };
+            let Some((node, endpoint)) = origin else {
                 return;
             };
             let address = match endpoint.parse() {
