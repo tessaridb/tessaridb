@@ -664,9 +664,11 @@ const RAW_FEED: &[&str] = &[
 /// cursor read inside the collector, which would have put the raw feed behind a
 /// network-facing type instead of in the process that owns the store.
 ///
-/// **Three and four.** `Serving::collected` is the peer door's scoped log
-/// reader, and `preceding` reads the one record before the batch to state the
-/// leadership it follows. Both read at `over` — the subscription's own reach —
+/// **Three and four.** `Serving::fill` is the peer door's scoped log reader —
+/// the loop behind `Serving::collected` that fills one answer under a byte
+/// budget, reading a page at a time so that a follower's uncapped record count
+/// cannot make one read of the whole log — and `preceding` reads the one record
+/// before the batch to state the leadership it follows. Both read at `over` — the subscription's own reach —
 /// and they are the only callers of `log_records_within` in any crate this test
 /// scans. The second one earned its place here: it read at `Reach::Store` until
 /// this rule was written, for an answer a scoped read gives identically, which
@@ -687,7 +689,7 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ),
     (
         "tessari-wire/src/collection.rs",
-        ".log_records_within(over, asked.from, limit)",
+        ".log_records_within(over, cursor, room.min(COLLECTION_PAGE_RECORDS))",
     ),
     (
         "tessari-wire/src/collection.rs",

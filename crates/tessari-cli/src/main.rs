@@ -1032,25 +1032,15 @@ fn greet_peers(
     stopping: &tessari_serve::Stopping,
 ) {
     while !stopping.asked() {
-        // Read before the wait rather than after it, because `greet` accepts
-        // inside itself — so a door that sat idle greets with the facts it held
-        // when it began waiting. Nothing routes on a greeting yet, which is why
-        // that is recorded as a question rather than fixed by changing a
-        // signature four tests depend on.
-        let mine = match greeting(db) {
-            Ok(mine) => mine,
-            // Not a connection failure: the store itself would not answer. The
-            // loop ends rather than spinning on it, and the client surfaces are
-            // untouched — a node that cannot greet can still serve.
-            Err(why) => {
-                log::warn!("the peer door cannot say what this node holds: {why}");
-                break;
-            }
-        };
+        // The facts are read inside the door, when a peer has arrived and
+        // proved who it is — not here, before the wait. A door idle for an hour
+        // used to greet with hour-old epoch, tail and copy age, which are
+        // exactly the fields a router reads.
+        let mine = || greeting(db).map_err(tessari_wire::Error::NothingToSay);
         // The door serves the log at last, and serves it to exactly the peers
         // this store's own catalog subscribed — `NoLog` was the honest answer
         // only while nothing could ask the catalog that question.
-        match door.greet(&mine, voter, &tessari_wire::Serving::declared(db.store())) {
+        match door.greet(mine, voter, &tessari_wire::Serving::declared(db.store())) {
             Ok(met) => log::info!(
                 "peer {} greeted at epoch {}, tail {}{}",
                 hex(&met.said.node),
@@ -1059,6 +1049,15 @@ fn greet_peers(
                 met.voted
                     .map_or(String::new(), |vote| format!(", {vote:?}")),
             ),
+            // Not a connection failure: the store itself would not answer. The
+            // loop ends rather than spinning on it, and the client surfaces are
+            // untouched — a node that cannot greet can still serve. It reaches
+            // here rather than being read before the wait because that is the
+            // whole point of reading it on arrival.
+            Err(why @ tessari_wire::Error::NothingToSay(_)) => {
+                log::warn!("the peer door cannot say what this node holds: {why}");
+                break;
+            }
             // Info and not warn. A peer hanging up, a wake-up connection, and a
             // credential this cluster does not issue are all ordinary events on
             // a door, and reporting them as problems makes the level useless for

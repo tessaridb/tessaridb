@@ -33,6 +33,7 @@ use std::net::SocketAddr;
 
 use rustls::pki_types::CertificateDer;
 
+use tessari_constants::{COLLECTION_BUDGET_BYTES, COLLECTION_PAGE_RECORDS};
 use tessari_encoding::{LogRecord, NODE_ID_LEN, StoreValue};
 use tessari_storage::{Catalog, Currency, Reach, Store};
 use tessari_types::{Epoch, Sequence};
@@ -99,6 +100,21 @@ pub struct Collected {
     /// a leader that cannot serve the position at all answers a different frame
     /// rather than an empty one.
     pub records: Vec<(Sequence, LogRecord)>,
+    /// The leader had more to give and stopped because this answer was full.
+    ///
+    /// # It is not an optimisation and the receiver cannot infer it
+    ///
+    /// A collector reads *level* off a short answer: fewer records than it asked
+    /// for meant the leader had no more. A byte budget breaks that inference,
+    /// because a short answer now means either *you are level* or *the budget
+    /// filled* — and those are opposite instructions to a follower. Without this
+    /// field a follower whose leader stopped on bytes would record itself
+    /// current while it is behind, and *current* is what a staleness bound reads
+    /// before admitting the node to a read.
+    ///
+    /// A body that does not carry it reads `false`, which is the right answer
+    /// rather than a default: a leader with no budget never stopped early.
+    pub stopped_early: bool,
 }
 
 impl Collected {
@@ -117,6 +133,7 @@ impl Collected {
             // record is a second thing that has to stay true across a version.
             frame::put_bytes(&mut body, record.encode().as_slice());
         }
+        body.push(u8::from(self.stopped_early));
         body
     }
 
@@ -142,9 +159,14 @@ impl Collected {
             at = next;
             records.push((Sequence::new(sequence), LogRecord::decode(&bytes)?));
         }
+        // Absent reads `false` — see the field. A body from a leader that has no
+        // budget carries nothing here and never stopped early, so the missing
+        // byte and the byte it would have written say the same thing.
+        let stopped_early = body.get(at).is_some_and(|flag| *flag != 0);
         Ok(Self {
             previous: Epoch::new(previous),
             records,
+            stopped_early,
         })
     }
 }
@@ -270,13 +292,24 @@ pub struct Serving<'a> {
     log: &'a Store,
     /// Who may have it.
     granted: &'a dyn Subscriptions,
+    /// The most bytes of records one answer carries.
+    ///
+    /// A field rather than a constant read at the point of use, for the reason
+    /// [`Self::asking`] is a constructor: a bound nothing can afford to exercise
+    /// is a bound nothing checks, and forcing this one at its real value costs
+    /// four megabytes of log per assertion.
+    budget: usize,
 }
 
 impl<'a> Serving<'a> {
     /// Serve `log` to the peers `log`'s own catalog subscribed.
     #[must_use]
     pub fn declared(log: &'a Store) -> Self {
-        Self { log, granted: log }
+        Self {
+            log,
+            granted: log,
+            budget: COLLECTION_BUDGET_BYTES,
+        }
     }
 
     /// Serve `log`, asking `granted` who may have it.
@@ -286,7 +319,26 @@ impl<'a> Serving<'a> {
     /// declare a peer to find out.
     #[must_use]
     pub fn asking(log: &'a Store, granted: &'a dyn Subscriptions) -> Self {
-        Self { log, granted }
+        Self {
+            log,
+            granted,
+            budget: COLLECTION_BUDGET_BYTES,
+        }
+    }
+
+    /// Serve `log` with a byte budget of `budget` rather than the standard one.
+    ///
+    /// The second seam, and the same argument as the first: the consequence of
+    /// an answer stopping early is what a follower records about how current its
+    /// copy is, and a test that cannot make a leader stop early cannot observe
+    /// that consequence at all.
+    #[must_use]
+    pub fn within(log: &'a Store, granted: &'a dyn Subscriptions, budget: usize) -> Self {
+        Self {
+            log,
+            granted,
+            budget,
+        }
     }
 }
 
@@ -303,10 +355,7 @@ impl Origin for Serving<'_> {
         // two differ the ask is larger than anything this node could answer, so
         // the whole log is the honest ceiling.
         let limit = usize::try_from(asked.limit).unwrap_or(usize::MAX);
-        let records = self
-            .log
-            .log_records_within(over, asked.from, limit)
-            .map_err(refused)?;
+        let (records, stopped_early) = self.fill(over, asked.from, limit)?;
         // What the follower now holds: the last position it was handed, or —
         // when it was handed nothing — the one it told us it was at. The same
         // rule the leader's own door uses, because it is the same event.
@@ -315,7 +364,79 @@ impl Origin for Serving<'_> {
             |(sequence, _)| *sequence,
         );
         self.log.follower_served(follower, reached);
-        Ok(Collected { previous, records })
+        Ok(Collected {
+            previous,
+            records,
+            stopped_early,
+        })
+    }
+}
+
+impl Serving<'_> {
+    /// Fill one answer under both bounds and say whether more was waiting.
+    ///
+    /// # Why the log is read a page at a time
+    ///
+    /// The follower's `limit` is a record count and nothing caps what it may
+    /// name, so an ask for the whole log would otherwise be one read of the
+    /// whole log — and the frame writer's ceiling, the only thing that refuses
+    /// today, refuses after the reading has already happened. A budget can only
+    /// be honoured by a read that stops, so this reads a page, measures what it
+    /// has, and asks for another page only while there is room.
+    ///
+    /// The budget is bytes because records differ in size by orders of
+    /// magnitude: any record count either throttles a follower carrying small
+    /// commits or fails to protect against one carrying large ones.
+    ///
+    /// The first record is always carried, even when it alone exceeds the
+    /// budget. A budget that could return nothing would leave a follower asking
+    /// for the same position forever, which is worse than the frame this node
+    /// then has to build.
+    ///
+    /// The budget is [`Serving`]'s own field so that a test can observe the
+    /// bound without writing four megabytes to reach it — see [`Serving::within`].
+    fn fill(
+        &self,
+        over: Reach,
+        from: Sequence,
+        limit: usize,
+    ) -> Result<(Vec<(Sequence, LogRecord)>, bool)> {
+        let mut carried: Vec<(Sequence, LogRecord)> = Vec::new();
+        let mut spent = 0_usize;
+        let mut cursor = from;
+        loop {
+            let room = limit.saturating_sub(carried.len());
+            if room == 0 {
+                // The follower's own count is full. Whether more is waiting is
+                // the question its next ask answers, and a count-full answer has
+                // always meant *ask again*.
+                return Ok((carried, false));
+            }
+            let page = self
+                .log
+                .log_records_within(over, cursor, room.min(COLLECTION_PAGE_RECORDS))
+                .map_err(refused)?;
+            if page.is_empty() {
+                return Ok((carried, false));
+            }
+            let read = page.len();
+            for (at, record) in page {
+                // Measured as the answer will carry it, which is the encoding
+                // the frame uses — a size taken from anywhere else is a second
+                // account of one number.
+                let size = record.encode().len();
+                if !carried.is_empty() && spent.saturating_add(size) > self.budget {
+                    return Ok((carried, true));
+                }
+                spent = spent.saturating_add(size);
+                cursor = Sequence::new(at.get().saturating_add(1));
+                carried.push((at, record));
+            }
+            if read < room.min(COLLECTION_PAGE_RECORDS) {
+                // The page came back short, so the log had no more to give.
+                return Ok((carried, false));
+            }
+        }
     }
 }
 
@@ -443,7 +564,14 @@ impl Collector<'_> {
         // can observe that its copy was current. A full answer is contact and
         // not arrival, and recording it as arrival would admit exactly the read
         // a staleness bound exists to exclude.
-        let currency = if carried < self.limit {
+        //
+        // Short is no longer enough on its own. A leader fills one answer under
+        // a byte budget as well as a record count, so an answer can be short
+        // because the leader had no more OR because the answer was full — and
+        // only the leader knows which. It says so, and a follower that read
+        // *level* off the budget would record itself current while it is
+        // behind, which is precisely the reading the bound exists to exclude.
+        let currency = if carried < self.limit && !collected.stopped_early {
             Currency::Level
         } else {
             Currency::Behind
@@ -462,7 +590,9 @@ fn refused(why: tessari_storage::Error) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{Collect, Collected, Collector, Reach, Result, Serving};
+    use super::{
+        COLLECTION_BUDGET_BYTES, Collect, Collected, Collector, Reach, Result, Serving, StoreValue,
+    };
     use crate::error::Error;
     use crate::grant::Deciding;
     use crate::link::tests::{Authority, THERE, hello, settled};
@@ -519,6 +649,131 @@ mod tests {
         db
     }
 
+    /// What one empty record costs in the answer, measured rather than assumed.
+    ///
+    /// The budget is in bytes, so a test that hard-coded a size would be
+    /// asserting today's encoding instead of the bound.
+    fn one_record() -> usize {
+        LogRecord::at(Epoch::new(1), Vec::new()).encode().len()
+    }
+
+    #[test]
+    fn a_collection_stops_at_the_byte_budget_and_says_that_it_did() {
+        let db = logged(&[1, 1, 1, 1, 1, 1]);
+        // Room for two records and not the third, against a follower asking for
+        // the whole log — which is the ask nothing caps.
+        let serving = Serving::within(db.store(), &Everything, one_record() * 2);
+        let (records, stopped_early) = serving
+            .fill(Reach::Store, Sequence::new(1), usize::MAX)
+            .expect("a store-reach read of its own log");
+
+        assert_eq!(
+            records.len(),
+            2,
+            "the budget bounds the answer, not the ask"
+        );
+        assert!(
+            stopped_early,
+            "an answer the budget cut short says so, because the receiver cannot tell"
+        );
+    }
+
+    #[test]
+    fn the_answer_after_a_budgeted_one_resumes_where_it_stopped() {
+        let db = logged(&[1, 1, 1, 1, 1, 1]);
+        let serving = Serving::within(db.store(), &Everything, one_record() * 2);
+        let (first, _) = serving
+            .fill(Reach::Store, Sequence::new(1), usize::MAX)
+            .expect("a store-reach read of its own log");
+        let next = Sequence::new(
+            first
+                .last()
+                .expect("the first answer carried records")
+                .0
+                .get()
+                .saturating_add(1),
+        );
+
+        // There is no continuation state on the leader — the cursor is a value
+        // the collector holds — so resuming is the same call from a later
+        // position, which is what a follower actually does.
+        let roomy = Serving::within(db.store(), &Everything, one_record() * 64);
+        let (second, stopped_early) = roomy
+            .fill(Reach::Store, next, usize::MAX)
+            .expect("a store-reach read of its own log");
+
+        assert_eq!(second.len(), 4, "the rest of the log, and none of it twice");
+        assert_eq!(second.first().expect("records").0, Sequence::new(3));
+        assert!(
+            !stopped_early,
+            "the second answer reached the end of the log and did not stop early"
+        );
+    }
+
+    #[test]
+    fn a_record_that_alone_exceeds_the_budget_is_still_carried() {
+        let db = logged(&[1, 1, 1]);
+        let serving = Serving::within(db.store(), &Everything, 0);
+        let (records, stopped_early) = serving
+            .fill(Reach::Store, Sequence::new(1), usize::MAX)
+            .expect("a store-reach read of its own log");
+
+        // A budget that could answer nothing would leave a follower asking for
+        // the same position forever, which is worse than the frame it costs.
+        assert_eq!(records.len(), 1, "the first record is carried regardless");
+        assert!(stopped_early);
+    }
+
+    #[test]
+    fn an_answer_that_reached_the_end_of_the_log_did_not_stop_early() {
+        let db = logged(&[1, 1, 1]);
+        let serving = Serving::within(db.store(), &Everything, one_record() * 64);
+        let (records, stopped_early) = serving
+            .fill(Reach::Store, Sequence::new(1), usize::MAX)
+            .expect("a store-reach read of its own log");
+
+        assert_eq!(records.len(), 3);
+        assert!(
+            !stopped_early,
+            "*you are level* and *the budget filled* are opposite instructions"
+        );
+    }
+
+    #[test]
+    fn a_follower_whose_leader_stopped_on_the_budget_does_not_record_itself_current() {
+        let authority = Authority::new();
+        let leader = logged(&[1, 1, 1]);
+        // Room for one record against a log of three, so the leader stops on
+        // bytes with the follower's own record count nowhere near full.
+        let (address, door) = serving_within(&authority, &leader, 1, one_record());
+
+        let follower = Db::in_memory().expect("an in-memory store");
+        // A node that may not write, because a writable one answers zero by
+        // identity and would prove nothing here.
+        follower.hold_lease(Duration::ZERO);
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+
+        // A generous count: the answer comes back short of it, which is the
+        // reading that used to mean *the peer had no more* and now does not.
+        collector(&mine, &der, &said, address, 64)
+            .collect(follower.store(), Sequence::new(1))
+            .expect("the collection");
+        door.join().expect("the door's thread");
+
+        assert_eq!(
+            follower
+                .store()
+                .current_as_of()
+                .expect("a store can be asked"),
+            None,
+            "an answer the budget cut short is contact, not arrival — a follower \
+             that read it as arrival would report a copy as current while it is \
+             three records behind, and *current* is what a staleness bound reads"
+        );
+    }
+
     /// A leader whose catalog actually grants, built by running statements.
     ///
     /// The other helper in this module applies log records directly, which is
@@ -561,7 +816,7 @@ mod tests {
         let db = Arc::clone(db);
         let door = std::thread::spawn(move || {
             drop(peers.greet(
-                &mine,
+                || Ok(mine),
                 &Deciding::holding(settled()),
                 &Serving::declared(db.store()),
             ));
@@ -571,6 +826,16 @@ mod tests {
 
     /// A peer door for `LEADER` that serves `rounds` connections out of `db`.
     fn serving(authority: &Authority, db: &Arc<Db>, rounds: usize) -> (SocketAddr, JoinHandle<()>) {
+        serving_within(authority, db, rounds, COLLECTION_BUDGET_BYTES)
+    }
+
+    /// The same door, serving under a byte budget a test can actually reach.
+    fn serving_within(
+        authority: &Authority,
+        db: &Arc<Db>,
+        rounds: usize,
+        budget: usize,
+    ) -> (SocketAddr, JoinHandle<()>) {
         let peers = Peers::bind(
             "127.0.0.1:0",
             authority.issue(LEADER, Purpose::Peer),
@@ -583,9 +848,9 @@ mod tests {
         let door = std::thread::spawn(move || {
             for _ in 0..rounds {
                 drop(peers.greet(
-                    &mine,
+                    || Ok(mine),
                     &Deciding::holding(settled()),
-                    &Serving::asking(db.store(), &Everything),
+                    &Serving::within(db.store(), &Everything, budget),
                 ));
             }
         });
@@ -639,9 +904,30 @@ mod tests {
                 (Sequence::new(7), LogRecord::at(Epoch::new(4), Vec::new())),
                 (Sequence::new(8), LogRecord::at(Epoch::new(4), Vec::new())),
             ],
+            stopped_early: true,
         };
         let back = Collected::decode(&answer.encode()).expect("an answer");
         assert_eq!(back, answer);
+        // `true` above and `false` here, because a flag that survived a round
+        // trip in one state only would pass a test written with either.
+        let full = Collected {
+            stopped_early: false,
+            ..answer.clone()
+        };
+        assert_eq!(
+            Collected::decode(&full.encode()).expect("an answer"),
+            full,
+            "the flag travels in both states"
+        );
+        // A body from a leader with no budget carries no flag at all, and reads
+        // as the thing such a leader always was: never stopped early.
+        let mut older = full.encode();
+        older.pop();
+        assert_eq!(
+            Collected::decode(&older).expect("an answer with no flag"),
+            full,
+            "a body with no flag reads as an answer that did not stop early"
+        );
         // The leadership before the batch travels separately from the ones
         // inside it, and they differ here on purpose: a codec that carried one
         // of them twice would pass a test where they were equal.

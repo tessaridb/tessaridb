@@ -113,20 +113,41 @@ impl Peers {
         Ok(self.listener.local_addr()?)
     }
 
-    /// Take one peer, prove who it is, and answer with `mine`.
+    /// Take one peer, prove who it is, and answer with what `mine` says now.
     ///
     /// The order is deliberate and is the module's whole argument: the
     /// credential is settled first, the greeting is read second, and this node
     /// says what it holds only after both. A node that greeted first would be
     /// telling an unproven stranger its epoch and how far its log reaches.
     ///
+    /// # Why `mine` is a closure and not a value
+    ///
+    /// This function accepts **inside itself**, so everything a caller computes
+    /// before the call is computed before the wait. A `Hello` is entirely a
+    /// claim about *state* — epoch, roles, log tail, how old this copy is — and
+    /// a door that sat idle for an hour would have greeted with hour-old facts.
+    /// The tail and the copy's age are exactly what a router reads, and a
+    /// staleness bound applied to an hour-old answer excludes or admits a node
+    /// that no longer exists.
+    ///
+    /// It is called at the latest moment that is still honest: after the
+    /// credential is settled and the peer's own greeting is heard, immediately
+    /// before this node answers. Later is not possible, and anywhere earlier
+    /// re-opens the gap by however long the step it precedes takes.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Unidentified`] when nothing was presented,
     /// [`Error::CredentialNamesAnother`] when what was presented does not name
-    /// the node the greeting claims, and [`Error::NotAPeerCredential`] when it
-    /// names that node for the client link instead of this one.
-    pub fn greet(&self, mine: &Hello, voter: &Deciding, log: &dyn Origin) -> Result<Met> {
+    /// the node the greeting claims, [`Error::NotAPeerCredential`] when it
+    /// names that node for the client link instead of this one, and whatever
+    /// `mine` returns when this node cannot state what it holds.
+    pub fn greet(
+        &self,
+        mine: impl FnOnce() -> Result<Hello>,
+        voter: &Deciding,
+        log: &dyn Origin,
+    ) -> Result<Met> {
         let (mut socket, _) = self.listener.accept()?;
         let bound = Some(Duration::from_secs(GREETING_SECONDS));
         socket.set_read_timeout(bound)?;
@@ -142,7 +163,12 @@ impl Peers {
         let said = hear(&mut link)?;
         let presented = credential::presented(shown.as_ref(), said.node)?;
         admit(Some(&presented), &said)?;
-        say(&mut link, mine)?;
+        // Read here and not before the accept above: see the note on this
+        // function. A peer has arrived and proved who it is, so the facts this
+        // node is about to state are the ones it holds at the moment it states
+        // them.
+        let mine = mine()?;
+        say(&mut link, &mine)?;
 
         // Whatever the peer asks next rides the connection the greeting opened.
         // Nothing at all is a peer that only wanted to know who we are — and a
@@ -533,8 +559,9 @@ pub(crate) mod tests {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
-        let listening =
-            std::thread::spawn(move || peers.greet(&mine, &Deciding::holding(settled()), &NoLog));
+        let listening = std::thread::spawn(move || {
+            peers.greet(|| Ok(mine), &Deciding::holding(settled()), &NoLog)
+        });
 
         let theirs = call(
             address,
@@ -562,12 +589,78 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_greeting_carries_what_this_node_holds_when_the_peer_arrives_not_when_the_door_opened() {
+        let authority = Authority::new();
+        let (peers, _) = door(&authority);
+        let address = peers.address().expect("the door's address");
+
+        // The node's log tail, which moves while the door is waiting. A `Hello`
+        // is entirely a claim about state, and this is the field a router reads
+        // beside the copy's age — so *when* it was read is the whole criterion.
+        let tail = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(9));
+        let read = std::sync::Arc::clone(&tail);
+        let (entered, waiting) = std::sync::mpsc::channel();
+
+        let listening = std::thread::spawn(move || {
+            // Sent before `greet`, so the advance below cannot land while this
+            // thread is still being scheduled.
+            entered.send(()).expect("the test is still listening");
+            peers.greet(
+                || {
+                    Ok(Hello::about(
+                        &identity(HERE),
+                        Epoch::new(4),
+                        Sequence::new(read.load(std::sync::atomic::Ordering::SeqCst)),
+                        LEVEL.leadership,
+                        Some(core::time::Duration::ZERO),
+                    ))
+                },
+                &Deciding::holding(settled()),
+                &NoLog,
+            )
+        });
+        waiting.recv().expect("the door's thread starts");
+        // The pause is for the FALSIFICATION and not for this assertion. Reading
+        // on arrival is correct whatever the timing, because the closure cannot
+        // run until `accept` returns and `accept` cannot return until the
+        // connection below is made. Restore the eager read and the door has
+        // microseconds in which to take the stale value — this widens that
+        // window so the arm bites every run instead of most of them.
+        std::thread::sleep(core::time::Duration::from_millis(100));
+        tail.store(41, std::sync::atomic::Ordering::SeqCst);
+
+        let theirs = call(
+            address,
+            authority.issue(THERE, Purpose::Peer),
+            &authority.der(),
+            HERE,
+            &hello(THERE),
+            Ask::Nothing,
+        )
+        .expect("a peer that proved itself is answered")
+        .0;
+
+        listening
+            .join()
+            .expect("the door's thread")
+            .expect("the door admits a peer credential naming the greeter");
+        // 41 and not 9: the door greeted with what this node held when the peer
+        // arrived, not with what it held an idle stretch earlier.
+        assert_eq!(
+            theirs.tail,
+            Sequence::new(41),
+            "the greeting carries the tail read on arrival, not the one read when the door opened"
+        );
+    }
+
+    #[test]
     fn a_door_with_no_log_refuses_a_collection_as_a_refusal_and_not_by_hanging_up() {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
-        let listening =
-            std::thread::spawn(move || peers.greet(&mine, &Deciding::holding(settled()), &NoLog));
+        let listening = std::thread::spawn(move || {
+            peers.greet(|| Ok(mine), &Deciding::holding(settled()), &NoLog)
+        });
 
         let failure = call(
             address,
@@ -606,8 +699,9 @@ pub(crate) mod tests {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
-        let listening =
-            std::thread::spawn(move || peers.greet(&mine, &Deciding::holding(settled()), &NoLog));
+        let listening = std::thread::spawn(move || {
+            peers.greet(|| Ok(mine), &Deciding::holding(settled()), &NoLog)
+        });
 
         // The id is perfectly correct. What is wrong is the link it was issued
         // for, which is the criterion's own sentence.
@@ -632,8 +726,9 @@ pub(crate) mod tests {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
-        let listening =
-            std::thread::spawn(move || peers.greet(&mine, &Deciding::holding(settled()), &NoLog));
+        let listening = std::thread::spawn(move || {
+            peers.greet(|| Ok(mine), &Deciding::holding(settled()), &NoLog)
+        });
 
         // Issued by the right authority, for the right link, for the wrong node.
         drop(call(
@@ -678,7 +773,7 @@ pub(crate) mod tests {
         let address = peers.address().expect("the door's address");
         let mine = hello(id);
         let deciding = Deciding::holding(voter);
-        let answering = std::thread::spawn(move || peers.greet(&mine, &deciding, &NoLog));
+        let answering = std::thread::spawn(move || peers.greet(|| Ok(mine), &deciding, &NoLog));
         (address, answering)
     }
 
@@ -797,7 +892,7 @@ pub(crate) mod tests {
         let mine = hello(HERE);
         let answering = std::thread::spawn(move || {
             let voter = Deciding::holding(settled());
-            let met = peers.greet(&mine, &voter, &NoLog);
+            let met = peers.greet(|| Ok(mine), &voter, &NoLog);
             // The voter is handed back untouched: nothing was decided, which is
             // the half a refusal-shaped answer would not have given.
             (met, voter.decided())
@@ -839,8 +934,9 @@ pub(crate) mod tests {
         // distinction decide the vote: the same candidate asking again is
         // granted, because re-granting to the holder adds no second holder.
         let mine = hello(HERE);
-        let answering =
-            std::thread::spawn(move || peers.greet(&mine, &Deciding::holding(incumbent()), &NoLog));
+        let answering = std::thread::spawn(move || {
+            peers.greet(|| Ok(mine), &Deciding::holding(incumbent()), &NoLog)
+        });
 
         let refused = call(
             address,
@@ -1150,8 +1246,9 @@ pub(crate) mod tests {
         let authority = Authority::new();
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
-        let listening =
-            std::thread::spawn(move || peers.greet(&mine, &Deciding::holding(settled()), &NoLog));
+        let listening = std::thread::spawn(move || {
+            peers.greet(|| Ok(mine), &Deciding::holding(settled()), &NoLog)
+        });
 
         let mut roots = rustls::RootCertStore::empty();
         roots.add(authority.der()).expect("the test authority");

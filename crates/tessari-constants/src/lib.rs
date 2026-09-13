@@ -332,6 +332,39 @@ pub const COLLECTION_SECONDS: u64 = AWARENESS_SECONDS;
 /// each round carries less than the interval produced.
 pub const COLLECTION_RECORDS: u64 = 1024;
 
+/// The most bytes of records one collection answer carries.
+///
+/// Unit: bytes.
+///
+/// # Why bytes and not only records
+///
+/// [`COLLECTION_RECORDS`] is what a follower *asks* for, and nothing caps what
+/// it may name. A peer asking for the whole log would otherwise make the leader
+/// read every record and build one frame out of them, with the frame writer's
+/// own ceiling refusing only after the reading had already happened — so the
+/// bound that protects the leader has to be checked while the answer is being
+/// filled, not when it is sent.
+///
+/// A record ceiling cannot be that bound. Records differ in size by orders of
+/// magnitude, so any count either throttles a follower carrying small commits or
+/// fails to protect against one carrying large ones. Both limits apply and
+/// whichever is reached first stops the answer.
+///
+/// Well under the frame ceiling, which this is not a second copy of: the frame
+/// ceiling refuses a frame, and this fills one.
+pub const COLLECTION_BUDGET_BYTES: usize = 4 * 1024 * 1024;
+
+/// The most records the leader reads from its log in one pass while filling a
+/// collection answer.
+///
+/// Unit: records.
+///
+/// The answer is bounded by [`COLLECTION_BUDGET_BYTES`], and a budget can only
+/// be honoured by a read that stops — so the log is read a page at a time and
+/// the pages stop when the budget is full. It bounds the leader's memory to one
+/// page plus the answer, whatever a follower names as its own limit.
+pub const COLLECTION_PAGE_RECORDS: usize = 256;
+
 /// How long a canvass of the voting members takes on this network, end to end.
 ///
 /// Unit: seconds.

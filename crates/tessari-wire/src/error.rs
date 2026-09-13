@@ -202,6 +202,20 @@ pub enum Error {
     #[error("the peer link's transport refused this connection: {0}")]
     Transport(String),
 
+    /// This node could not state what it holds, so it had nothing to greet with.
+    ///
+    /// Distinct from [`Self::Transport`] for the reason that one carries the
+    /// transport's own words: the connection is fine and the peer is proved, and
+    /// what failed is a read of this node's own store. Reporting it as a
+    /// transport refusal would send an operator to the certificates when the
+    /// answer is here.
+    ///
+    /// It exists because the greeting is read **when a peer arrives** rather
+    /// than when the door opened, which is what makes the read able to fail
+    /// inside the exchange at all.
+    #[error("this node cannot say what it holds: {0}")]
+    NothingToSay(String),
+
     /// A credential the transport accepted, which does not name this node.
     ///
     /// Distinct from [`Self::IdentityDisagrees`] by what it is able to say.
