@@ -6528,6 +6528,15 @@ availability change from a set of nodes that each accepted writes the others
 would never see. A store with no `coordinating` role — every single-node
 deployment — is unaffected and goes on writing exactly as before.
 
+**A follower collects from whichever peer says it may write, not from the row
+you marked writable.** In a cluster that can fail over, every coordinating node
+is also declared `writable` — otherwise the node that wins a round could not
+take writes — so the declaration cannot pick an upstream on its own. Each node
+therefore follows the declared peer whose most recent greeting says it may write
+right now, preferring the newer leadership when two of them do. A node that has
+just started follows nobody until its first greeting round lands, which is one
+awareness interval.
+
 **A voter refuses a candidate whose log is behind its own.** Opening the
 candidate set makes this necessary rather than merely tidy: a node holding less
 history could otherwise win a majority, lead, and silently drop every write it

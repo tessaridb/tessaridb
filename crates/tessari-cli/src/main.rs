@@ -442,6 +442,12 @@ fn serve(
         // surface stops as one thing.
         let collecting_credential = dialling.duplicate();
         let collecting_authority = authority.clone();
+        // A third holder of the same `Published`. The greeting round writes it,
+        // the sessions read it for staleness routing, and the collection cadence
+        // now reads it to decide whose records to pull — which is the whole of
+        // ADR-0065: the catalog says who may be followed, the greeting says
+        // which of them is the origin right now.
+        let collecting_routing = std::sync::Arc::clone(&routing);
         let standing_credential = dialling.duplicate();
         let standing_authority = authority.clone();
         let dialling = {
@@ -462,6 +468,7 @@ fn serve(
                     &db,
                     &collecting_credential,
                     &collecting_authority,
+                    &collecting_routing,
                     &stopping,
                 );
             })
@@ -696,6 +703,7 @@ fn collect_from_upstream(
     db: &Db,
     mine: &tessari_wire::Credential,
     authority: &tessari_wire::CertificateDer<'static>,
+    published: &tessari_wire::Published,
     stopping: &tessari_serve::Stopping,
 ) {
     let store = db.store();
@@ -720,17 +728,22 @@ fn collect_from_upstream(
                     return;
                 }
             };
-            let writable = match db.writable_peer() {
-                Ok(writable) => writable,
-                // Two peers declared writable is reported rather than guessed
-                // past: picking either would be a routing decision taken by a
-                // sort order, and the message names both.
+            // Every declared peer, not the one row the catalog marks writable.
+            // Two writable rows is the NORMAL configuration of a cluster that
+            // can fail over (ADR-0063, ADR-0064), and the rule that read the
+            // declaration refused exactly that shape — so the candidate set
+            // comes from the catalog and the choice comes from the greetings.
+            let declared = match db.store().begin().and_then(|mut transaction| {
+                tessari_storage::Catalog::new(&mut transaction).replicas()
+            }) {
+                Ok(declared) => declared,
                 Err(why) => {
-                    log::warn!("this node cannot say which peer may write: {why}");
+                    log::warn!("this node cannot say who its peers are: {why}");
                     return;
                 }
             };
-            let Some((node, endpoint)) = tessari_wire::upstream(roles, writable) else {
+            let heard = published.current();
+            let Some((node, endpoint)) = tessari_wire::upstream(roles, &declared, &heard) else {
                 return;
             };
             let address = match endpoint.parse() {

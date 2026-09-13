@@ -227,6 +227,35 @@ impl Collecting {
 /// The roles are re-read every round rather than decided at start, so a node
 /// that is told to stop writing begins following without being restarted.
 ///
+/// # The catalog says who may be followed; the greeting says who to follow
+///
+/// ADR-0065. Until W255 this took the one peer the catalog declared `WRITABLE`,
+/// which was correct while exactly one node could ever write. ADR-0063 and
+/// ADR-0064 together make *every coordinating node also declared writable* the
+/// configuration a cluster needs in order to fail over at all — and a rule that
+/// reads the declaration then finds two writable rows and gives up, which is
+/// what it did: `Error::ManyWritablePeers` once per collection interval, on
+/// every node, forever, with nothing replicating and nothing in an error state
+/// except a log line.
+///
+/// The leadership is a lease, so the answer moves at runtime and is not in a
+/// row. It is already on the wire: [`crate::Hello::current_as_of`] is the
+/// greeter's own `Store::current_as_of`, which answers `Some(0)` **exactly
+/// when** its *effective* roles carry `WRITABLE` — a node that may write is the
+/// origin of what it holds and has nothing to be stale relative to. So a
+/// greeting says *I may write right now* as an effective fact rather than a
+/// declared one, and [`crate::Hello::epoch`] says under which leadership.
+///
+/// The epoch breaks the tie, and the tie is not hypothetical: a leader demoted
+/// a moment ago and its successor can both be in this directory, because a
+/// greeting is as fresh as the last awareness round and no fresher. ADR-0059's
+/// ordering picks the newer leadership, which is the same rule a voter applies
+/// to a ballot.
+///
+/// Nothing is added to the wire and no new cadence is introduced — the
+/// awareness round already fills this directory, and until now only the
+/// staleness router read it.
+///
 /// # A peer declared without a node cannot be dialled
 ///
 /// A peer connection demands a certificate valid for a name derived from the
@@ -234,16 +263,28 @@ impl Collecting {
 /// — the same wall the seed address runs into. `None` here rather than a
 /// half-formed attempt: a row that says who but not where, or where but not
 /// who, is a declaration the operator has not finished.
+///
+/// # A peer this node has never greeted is not followed
+///
+/// Absence of a greeting is not evidence that a peer may write, so a cold node
+/// collects from nobody until its first awareness round has landed. One
+/// interval of not collecting, against the alternative of pulling records from
+/// whichever address happened to be declared first.
 #[must_use]
 pub fn upstream(
     mine: Roles,
-    writable: Option<ReplicaDefinition>,
+    declared: &[ReplicaDefinition],
+    heard: &Directory,
 ) -> Option<([u8; NODE_ID_LEN], String)> {
     if mine.has(Roles::WRITABLE) {
         return None;
     }
-    let peer = writable?;
-    Some((peer.node?, peer.endpoint))
+    declared
+        .iter()
+        .filter_map(|peer| Some((peer.node?, peer, heard.at(&peer.endpoint)?)))
+        .filter(|(_, _, heard)| heard.said.current_as_of == Some(Duration::ZERO))
+        .max_by_key(|(_, _, heard)| heard.said.epoch)
+        .map(|(node, peer, _)| (node, peer.endpoint.clone()))
 }
 
 /// Whether this node is eligible to stand at all, from its own identity alone.
@@ -407,6 +448,47 @@ mod tests {
         }
     }
 
+    /// A greeting from a node that may write right now.
+    ///
+    /// `current_as_of` answering `Some(0)` is exactly what a node says when its
+    /// EFFECTIVE roles carry `writable`: it is the origin of what it holds, so
+    /// there is nothing for it to be stale relative to.
+    fn writing(epoch: Epoch) -> Hello {
+        Hello {
+            epoch,
+            current_as_of: Some(Duration::ZERO),
+            ..said()
+        }
+    }
+
+    /// A greeting from a node that holds somebody else's writes.
+    fn following() -> Hello {
+        said()
+    }
+
+    /// A directory holding one greeting per endpoint, all heard just now.
+    fn greeted(rows: &[(&str, Hello)]) -> Directory {
+        let mut directory = Directory::new();
+        let now = Instant::now();
+        for (endpoint, said) in rows {
+            directory.heard(endpoint, *said, now);
+        }
+        directory
+    }
+
+    /// A declared peer row naming a node at an address, writable and
+    /// coordinating — the shape every member of a cluster that can fail over
+    /// carries for every other member.
+    fn named(name: &str, endpoint: &str, node: [u8; NODE_ID_LEN]) -> ReplicaDefinition {
+        ReplicaDefinition {
+            name: name.to_owned(),
+            endpoint: endpoint.to_owned(),
+            roles: Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING),
+            node: Some(node),
+            ..peer(Roles::WRITABLE, Some(node))
+        }
+    }
+
     /// A declared peer row, as an operator would have written it.
     fn peer(roles: Roles, node: Option<[u8; NODE_ID_LEN]>) -> ReplicaDefinition {
         ReplicaDefinition {
@@ -429,25 +511,21 @@ mod tests {
         // `current_as_of` says when it answers zero. Collecting into it would
         // apply a peer's records beside its own — the divergence the epoch chain
         // refuses at apply time, prevented here at the timer instead.
-        assert_eq!(
-            upstream(Roles::ALONE, Some(peer(Roles::WRITABLE, Some(NODE)))),
-            None
-        );
-        assert_eq!(
-            upstream(Roles::WRITABLE, Some(peer(Roles::WRITABLE, Some(NODE)))),
-            None
-        );
+        let declared = [peer(Roles::WRITABLE, Some(NODE))];
+        let heard = greeted(&[("10.0.0.2:9000", writing(Epoch::new(7)))]);
+        assert_eq!(upstream(Roles::ALONE, &declared, &heard), None);
+        assert_eq!(upstream(Roles::WRITABLE, &declared, &heard), None);
         // And the same node with the role taken away follows the same peer, so
         // the rule is the role and not something about the peer.
         assert_eq!(
-            upstream(Roles::SERVING, Some(peer(Roles::WRITABLE, Some(NODE)))),
+            upstream(Roles::SERVING, &declared, &heard),
             Some((NODE, "10.0.0.2:9000".to_owned()))
         );
     }
 
     #[test]
     fn a_follower_with_no_writable_peer_collects_from_nobody() {
-        assert_eq!(upstream(Roles::SERVING, None), None);
+        assert_eq!(upstream(Roles::SERVING, &[], &Directory::new()), None);
     }
 
     #[test]
@@ -456,10 +534,61 @@ mod tests {
         // the peer's id, so an endpoint whose id nobody knows cannot be dialled
         // at all — the same wall the seed address runs into. `None` rather than
         // a half-formed attempt.
+        let declared = [peer(Roles::WRITABLE, None)];
+        let heard = greeted(&[("10.0.0.2:9000", writing(Epoch::new(7)))]);
+        assert_eq!(upstream(Roles::SERVING, &declared, &heard), None);
+    }
+
+    #[test]
+    fn a_follower_collects_from_the_peer_that_says_it_may_write_now() {
+        // ADR-0065, and the configuration that forced it: ADR-0063 and ADR-0064
+        // together make *every coordinating node also declared writable* the
+        // only shape in which a failover produces a writer, so two writable ROWS
+        // is the normal cluster rather than a misconfiguration. The row says who
+        // may be followed; the greeting says which of them is the origin now.
+        let declared = [
+            named("one", "10.0.0.2:9000", [1; NODE_ID_LEN]),
+            named("two", "10.0.0.3:9000", [2; NODE_ID_LEN]),
+        ];
+        let heard = greeted(&[
+            ("10.0.0.2:9000", following()),
+            ("10.0.0.3:9000", writing(Epoch::new(4))),
+        ]);
         assert_eq!(
-            upstream(Roles::SERVING, Some(peer(Roles::WRITABLE, None))),
-            None
+            upstream(Roles::SERVING, &declared, &heard),
+            Some(([2; NODE_ID_LEN], "10.0.0.3:9000".to_owned())),
+            "both rows are declared writable; only one of them said it may write"
         );
+    }
+
+    #[test]
+    fn the_newer_leadership_wins_a_directory_holding_both() {
+        // Not hypothetical. A greeting is as fresh as the last awareness round
+        // and no fresher, so a leader demoted a moment ago and its successor are
+        // both in this directory saying they may write. ADR-0059's ordering
+        // settles it, which is the same rule a voter applies to a ballot.
+        let declared = [
+            named("old", "10.0.0.2:9000", [1; NODE_ID_LEN]),
+            named("new", "10.0.0.3:9000", [2; NODE_ID_LEN]),
+        ];
+        let heard = greeted(&[
+            ("10.0.0.2:9000", writing(Epoch::new(4))),
+            ("10.0.0.3:9000", writing(Epoch::new(5))),
+        ]);
+        assert_eq!(
+            upstream(Roles::SERVING, &declared, &heard),
+            Some(([2; NODE_ID_LEN], "10.0.0.3:9000".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_peer_this_node_has_never_greeted_is_not_followed() {
+        // Absence of a greeting is not evidence that a peer may write. A cold
+        // node collects from nobody until its first awareness round lands —
+        // one interval of not collecting, against pulling records from whichever
+        // address happened to be declared first.
+        let declared = [named("one", "10.0.0.2:9000", [1; NODE_ID_LEN])];
+        assert_eq!(upstream(Roles::SERVING, &declared, &Directory::new()), None);
     }
 
     #[test]
