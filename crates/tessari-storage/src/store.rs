@@ -5,6 +5,7 @@
 //! speaks in records and sequences; nothing above it sees a key, a keyspace or
 //! a batch.
 
+use std::collections::BTreeSet;
 use std::ops::Bound;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -313,15 +314,16 @@ impl Store {
 
     /// Whether this node holds no leadership and is not alone in holding none.
     ///
-    /// Takes the identity rather than reading it, so the two public callers pay
-    /// for one node read between them instead of one each.
+    /// Takes the identity rather than reading it, so the callers pay for one
+    /// node read between them instead of one each — the commit gate reads the
+    /// identity once and hands it to both questions it asks.
     ///
     /// # The lease is asked first because it is free
     ///
     /// [`crate::lease::Held::remaining`] is an in-memory read and the catalog is
     /// not, so a node that holds a leadership never reaches the second question
     /// — which is the state a leader is in for every commit it takes.
-    fn awaiting(&self, me: &[u8; NODE_ID_LEN]) -> Result<bool> {
+    pub(crate) fn awaiting(&self, me: &[u8; NODE_ID_LEN]) -> Result<bool> {
         if self.lease.remaining().is_some() {
             return Ok(false);
         }
@@ -357,6 +359,80 @@ impl Store {
         let mut transaction = self.begin()?;
         let declared = crate::catalog::Catalog::new(&mut transaction).replicas()?;
         Ok(crate::catalog::names_a_peer(&declared, me))
+    }
+
+    /// Refuse when the committed log names another node as the leader of a
+    /// range this transaction writes.
+    ///
+    /// The half of the admission question the store-wide gate could not ask.
+    /// [`Self::awaiting`] answers *does this node hold a leadership*, which was
+    /// the whole question while a lease covered the whole store. It stopped
+    /// being the whole question when two nodes could lead two namespaces: a node
+    /// holding a perfectly live lease over one namespace was accepted writing
+    /// into another node's, because nothing in the gate ever mentioned the range
+    /// being written.
+    ///
+    /// # It is asked before the lease and not after it
+    ///
+    /// [`Self::awaiting`] returns early on a live lease, so a question asked
+    /// after it never reaches a leader — and a leader writing into somebody
+    /// else's namespace is exactly the case this exists to catch. Asking first
+    /// costs a leader one scan per commit that it did not pay before, and that
+    /// cost is the criterion rather than a side effect of it: a leader that
+    /// writes without asking whose range this is, is the defect.
+    ///
+    /// # One scan, however many ranges the transaction touches
+    ///
+    /// The table is read once and every range resolved against the result by
+    /// [`crate::catalog::covering`], rather than calling
+    /// [`crate::Catalog::leader_of`] per range. The row count is the number of
+    /// ranges a cluster has elected a leader for — O(members), not O(state) —
+    /// so this is the same shape as the membership scan and not an engine
+    /// introspection on a hot path.
+    ///
+    /// # The endpoint is read only when there is a refusal to build
+    ///
+    /// A [`crate::LeadershipDefinition`] carries the node and the epoch and no
+    /// address; the address is on the membership row. Reading `system::REPLICAS`
+    /// inside the refusal branch keeps the accepting path at one scan instead of
+    /// two, which is the path every commit in a healthy cluster takes.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::WriteIsElsewhere`] when another node leads one of the
+    /// ranges, plus the substrate's failure and a decoding failure when a stored
+    /// definition cannot be read.
+    pub(crate) fn refuse_if_led_elsewhere(
+        &self,
+        ranges: &BTreeSet<Reach>,
+        me: &[u8; NODE_ID_LEN],
+    ) -> Result<()> {
+        let mut transaction = self.begin()?;
+        let held = crate::catalog::Catalog::new(&mut transaction).leaderships()?;
+        drop(transaction);
+        let Some(elsewhere) = ranges
+            .iter()
+            .filter_map(|range| crate::catalog::covering(&held, *range))
+            .find(|leader| leader.node != *me)
+            .copied()
+        else {
+            return Ok(());
+        };
+        let mut transaction = self.begin()?;
+        let declared = crate::catalog::Catalog::new(&mut transaction).replicas()?;
+        // A leadership the log carries whose node no membership row names is a
+        // catalog that disagrees with itself. Refusing with an empty address is
+        // still the right refusal — this node may not take the write — and it
+        // says so rather than accepting it because the address was missing.
+        let endpoint = declared
+            .iter()
+            .find(|peer| peer.node == Some(elsewhere.node))
+            .map_or_else(String::new, |peer| peer.endpoint.clone());
+        Err(Error::WriteIsElsewhere {
+            endpoint,
+            node: elsewhere.node,
+            epoch: elsewhere.epoch,
+        })
     }
 
     /// How current this node's copy is known to be, or `None` when that cannot

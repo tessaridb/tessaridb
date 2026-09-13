@@ -1,0 +1,300 @@
+//! Two nodes, two namespaces, and each refuses the other's write — G025 S6.1.
+//!
+//! This is the goal's **kill criterion**, and it is posed here rather than at
+//! the end because a kill criterion checked at the end is decoration. The goal
+//! it tests is *two masters with different data*: partitioned multi-leader, in
+//! which two leaders never lead the same range and therefore need no rule for
+//! resolving a conflict between them. If it turns out they do need one, that
+//! variant was never distinct from true multi-master on one dataset and the
+//! goal folds into the deferred one instead of being rescued.
+//!
+//! # What was wrong before this module existed
+//!
+//! The write gate was store-wide. `Store::awaiting` asks the in-memory lease and
+//! then the membership catalog, and **neither question mentions the range being
+//! written**. A node that had been granted *a* leadership therefore wrote
+//! *everything*, including a namespace another node leads, with no error and no
+//! log line. It was invisible because no test had ever put two leaderships in
+//! one catalog, and one lease over one store is a shape in which the question
+//! cannot come up.
+//!
+//! # The scenario is two stores and no socket
+//!
+//! Each node is a `Store` on its own backend, and the arrangement they share is
+//! written into each one's catalog the way an applied log record would leave it:
+//! a membership row for the peer and a leadership row per namespace. That is a
+//! stronger form of *the peer link is down* than cutting a live one — there is
+//! no link in this module at all — and it is the same construction S1.2 used.
+//!
+//! # The refusal carries three fields and the third is what makes it checkable
+//!
+//! Endpoint, node and epoch. A redirect naming only a place cannot be verified
+//! on arrival, and a client that dialled it and met a different node would have
+//! no way to notice; a redirect carrying no epoch cannot be refused by a client
+//! that has already been told about a newer leadership.
+
+#![allow(clippy::panic, clippy::unwrap_used)]
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use tessari_encoding::{NODE_ID_LEN, Roles};
+use tessari_kv::{KvBackend, MemoryBackend};
+use tessari_storage::{Catalog, Error, LEASE_TTL, Lease, Reach, RecordAddress, Store};
+use tessari_types::{DatabaseId, Epoch, NamespaceId, RecordId, TableId};
+
+/// The namespace the store under test leads.
+const MINE: u32 = 1;
+/// The namespace the other node leads.
+const THEIRS: u32 = 2;
+
+const THEIR_NODE: [u8; NODE_ID_LEN] = [9; NODE_ID_LEN];
+const THEIR_ENDPOINT: &str = "10.0.0.2:9081";
+const MY_EPOCH: u64 = 4;
+const THEIR_EPOCH: u64 = 7;
+
+fn store() -> Store {
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+}
+
+/// A store that leads `Namespace(MINE)` beside a peer that leads
+/// `Namespace(THEIRS)`.
+///
+/// The whole arrangement is declared in **one** transaction, which is not a
+/// convenience: ADR-0069 made the first committed membership row put the node in
+/// a cluster, so a second statement would be judged against a catalog that had
+/// already fenced it.
+fn between_two_leaders(leading: Reach, followed: Reach, their_node: [u8; NODE_ID_LEN]) -> Store {
+    let store = store();
+    let me = store.node_identity().unwrap().id;
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    catalog
+        .create_replica(
+            "other",
+            THEIR_ENDPOINT,
+            Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING),
+            Some(their_node),
+            None,
+        )
+        .unwrap();
+    catalog
+        .record_leadership(leading, me, Epoch::new(MY_EPOCH))
+        .unwrap();
+    catalog
+        .record_leadership(followed, their_node, Epoch::new(THEIR_EPOCH))
+        .unwrap();
+    transaction.commit().unwrap();
+    store.hold(
+        Epoch::new(MY_EPOCH),
+        Lease::taken_at(Instant::now(), LEASE_TTL),
+    );
+    store
+}
+
+/// The node of the two-leader arrangement, leading `MINE`.
+fn one_of_two() -> Store {
+    between_two_leaders(
+        Reach::Namespace(NamespaceId::new(MINE)),
+        Reach::Namespace(NamespaceId::new(THEIRS)),
+        THEIR_NODE,
+    )
+}
+
+fn at(namespace: u32, id: &str) -> RecordAddress {
+    RecordAddress::new(
+        NamespaceId::new(namespace),
+        DatabaseId::new(1),
+        TableId::new(1),
+        RecordId::Text(id.to_owned()),
+    )
+}
+
+fn write(store: &Store, namespace: u32, id: &str) -> Result<(), Error> {
+    let mut transaction = store.begin()?;
+    transaction.put(at(namespace, id), b"{}".to_vec());
+    transaction.commit().map(|_| ())
+}
+
+#[test]
+fn a_node_writes_the_namespace_it_leads() {
+    write(&one_of_two(), MINE, "ours").unwrap();
+}
+
+#[test]
+fn a_node_refuses_a_write_into_the_namespace_another_node_leads() {
+    let refused = write(&one_of_two(), THEIRS, "theirs").unwrap_err();
+    assert!(
+        matches!(refused, Error::WriteIsElsewhere { .. }),
+        "a write into a namespace another node leads was not refused as a \
+         redirect: {refused:?}"
+    );
+}
+
+#[test]
+fn the_refusal_names_the_other_leaders_endpoint_and_epoch() {
+    // The criterion's own assertion. A refusal that merely says no leaves the
+    // client with nowhere to go, and this goal's whole claim is that a write
+    // arriving at the wrong leader is a routing answer rather than a failure.
+    let Error::WriteIsElsewhere {
+        endpoint,
+        node,
+        epoch,
+    } = write(&one_of_two(), THEIRS, "theirs").unwrap_err()
+    else {
+        panic!("expected a redirect");
+    };
+    assert_eq!(endpoint, THEIR_ENDPOINT);
+    assert_eq!(node, THEIR_NODE);
+    assert_eq!(epoch, Epoch::new(THEIR_EPOCH));
+}
+
+#[test]
+fn the_refusal_carries_the_other_leaders_epoch_and_never_this_nodes_own() {
+    // Separated from the assertion above because the two numbers differ here on
+    // purpose: a redirect built from this node's own leadership would still pass
+    // a test whose fixture gave both nodes the same epoch, and would date every
+    // redirect with a number the target never published.
+    let Error::WriteIsElsewhere { epoch, .. } = write(&one_of_two(), THEIRS, "theirs").unwrap_err()
+    else {
+        panic!("expected a redirect");
+    };
+    assert_ne!(epoch, Epoch::new(MY_EPOCH));
+}
+
+#[test]
+fn the_two_leaders_refuse_each_other_symmetrically() {
+    // A rule that works one way round is a coincidence until it works the other.
+    // The second node is built by swapping the two ranges, so it leads THEIRS
+    // and follows MINE.
+    let theirs = between_two_leaders(
+        Reach::Namespace(NamespaceId::new(THEIRS)),
+        Reach::Namespace(NamespaceId::new(MINE)),
+        THEIR_NODE,
+    );
+    write(&theirs, THEIRS, "ours").unwrap();
+    let refused = write(&theirs, MINE, "not ours").unwrap_err();
+    assert!(
+        matches!(refused, Error::WriteIsElsewhere { node, .. } if node == THEIR_NODE),
+        "the mirrored node did not refuse-and-redirect: {refused:?}"
+    );
+}
+
+#[test]
+fn a_leadership_over_the_whole_store_still_lets_its_holder_write_everywhere() {
+    // The row every deployment that exists today would carry, because
+    // `Reach::Store` is the only range anything has ever recorded. `contains`
+    // must keep answering yes for every namespace under it, or this wave breaks
+    // every single-leader cluster in the field.
+    let store = store();
+    let me = store.node_identity().unwrap().id;
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    catalog
+        .create_replica(
+            "other",
+            THEIR_ENDPOINT,
+            Roles::SERVING,
+            Some(THEIR_NODE),
+            None,
+        )
+        .unwrap();
+    catalog
+        .record_leadership(Reach::Store, me, Epoch::new(MY_EPOCH))
+        .unwrap();
+    transaction.commit().unwrap();
+    store.hold(
+        Epoch::new(MY_EPOCH),
+        Lease::taken_at(Instant::now(), LEASE_TTL),
+    );
+    write(&store, MINE, "one").unwrap();
+    write(&store, THEIRS, "two").unwrap();
+}
+
+#[test]
+fn a_store_with_no_leadership_row_writes_exactly_as_it_did_before() {
+    // The standalone path, and the one every existing test in this workspace
+    // runs on. An empty leadership table must resolve to *nobody leads this*,
+    // which falls through to the admission predicate ADR-0069 left in place.
+    write(&store(), MINE, "alone").unwrap();
+}
+
+#[test]
+fn a_clustered_node_with_no_leadership_anywhere_still_meets_the_older_refusal() {
+    // The two refusals are different sentences and both must survive. This node
+    // is in a cluster, holds no lease and no range is led by anyone: the honest
+    // answer is *wait*, not *go there*, because there is nowhere to send it.
+    let store = store();
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .create_replica(
+            "other",
+            THEIR_ENDPOINT,
+            Roles::SERVING.and(Roles::WRITABLE),
+            Some(THEIR_NODE),
+            None,
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+    let refused = write(&store, MINE, "nobody leads this").unwrap_err();
+    assert!(
+        matches!(refused, Error::NoLeadershipYet),
+        "a clustered node with no leadership anywhere answered something other \
+         than the older refusal: {refused:?}"
+    );
+}
+
+#[test]
+fn a_rehearsal_meets_the_redirect_the_commit_would() {
+    // `VERIFY` runs every check a commit runs and discards the work. A fence a
+    // rehearsal cannot see is one an operator meets for the first time in
+    // production, which is the argument the lease fence already makes.
+    let store = one_of_two();
+    let mut transaction = store.begin().unwrap();
+    transaction.put(at(THEIRS, "theirs"), b"{}".to_vec());
+    let refused = transaction.dry_run().unwrap_err();
+    assert!(
+        matches!(refused, Error::WriteIsElsewhere { .. }),
+        "a rehearsal did not meet the redirect: {refused:?}"
+    );
+}
+
+#[test]
+fn a_clustered_node_with_no_lease_is_redirected_rather_than_told_to_wait() {
+    // The case that decides the ORDER of the two questions. This node is in a
+    // cluster, holds no lease at all, and another node leads the range: both
+    // refusals are true of it, and only one is useful. `NoLeadershipYet` tells a
+    // client to wait for a round that may never concern it; the redirect names
+    // the node that can take the write now.
+    //
+    // The range question therefore goes first. It is also the reason it cannot
+    // simply go last: `Store::awaiting` returns early on a live lease, so a
+    // question asked after it never reaches a leader at all.
+    let store = store();
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    catalog
+        .create_replica(
+            "other",
+            THEIR_ENDPOINT,
+            Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING),
+            Some(THEIR_NODE),
+            None,
+        )
+        .unwrap();
+    catalog
+        .record_leadership(
+            Reach::Namespace(NamespaceId::new(MINE)),
+            THEIR_NODE,
+            Epoch::new(THEIR_EPOCH),
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+    // No `hold`: this node was granted nothing.
+    let refused = write(&store, MINE, "not mine either").unwrap_err();
+    assert!(
+        matches!(refused, Error::WriteIsElsewhere { node, .. } if node == THEIR_NODE),
+        "a clustered node with no lease and a known leader elsewhere was told to \
+         wait instead of where to go: {refused:?}"
+    );
+}

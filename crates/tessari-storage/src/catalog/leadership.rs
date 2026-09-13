@@ -237,12 +237,29 @@ impl Catalog<'_, '_> {
     ///
     /// Returns an error when a stored definition cannot be read.
     pub fn leader_of(&self, range: Reach) -> Result<Option<LeadershipDefinition>> {
-        Ok(self
-            .leaderships()?
-            .into_iter()
-            .filter(|held| held.range.contains(range))
-            .max_by_key(|held| ordered(held.range)))
+        Ok(covering(&self.leaderships()?, range).copied())
     }
+}
+
+/// The most specific leadership in `held` that covers `range`.
+///
+/// Factored out of [`Catalog::leader_of`] because the write gate asks the same
+/// question of several ranges at once and would otherwise re-read the table per
+/// range. The gate reads once and resolves here, which is the difference between
+/// one scan per commit and one per namespace a transaction touches.
+///
+/// A second implementation of *most specific wins* is what this exists to
+/// prevent: two spellings of that rule would agree until a transaction wrote
+/// into a database whose namespace also held a leadership, which is precisely
+/// the case S6.2 makes ordinary.
+#[must_use]
+pub(crate) fn covering(
+    held: &[LeadershipDefinition],
+    range: Reach,
+) -> Option<&LeadershipDefinition> {
+    held.iter()
+        .filter(|held| held.range.contains(range))
+        .max_by_key(|held| ordered(held.range))
 }
 
 /// A range as a sort key: wider first, and more specific later.

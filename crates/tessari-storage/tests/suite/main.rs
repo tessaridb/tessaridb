@@ -25,6 +25,7 @@ mod series_floor;
 mod spatial_nearest;
 mod spatial_region;
 mod term_dictionary;
+mod two_leaders;
 mod values_in_records;
 mod view_definitions;
 mod walking_a_table;

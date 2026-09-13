@@ -50,7 +50,7 @@ use tessari_kv::{
     WriteBatch,
 };
 use tessari_storage::{
-    Catalog, EDGE_IN, EDGE_OUT, EdgeKindDefinition, FieldShape, IndexDefinition, IndexShape,
+    Catalog, EDGE_IN, EDGE_OUT, EdgeKindDefinition, FieldShape, IndexDefinition, IndexShape, Reach,
     RecordAddress, Store, TableShape,
 };
 use tessari_types::{
@@ -878,5 +878,86 @@ fn the_admission_predicate_costs_a_leader_nothing_and_a_follower_a_bounded_read(
          at two, and anything above that is a scan that has started tracking \
          the store's size instead",
         without.saturating_sub(with)
+    );
+}
+
+// ---------------------------------------------------------------- G025 · S6.1
+
+/// That the range gate tracks the cluster and never the store.
+///
+/// G025 S6.1 put a second catalog question on the commit path: *does the log
+/// name somebody else as the leader of a range this transaction writes*. It is a
+/// scan of `system::LEADERSHIPS`, and the one thing that must never be true of
+/// it is that its cost is proportional to the STATE rather than to the request.
+/// That is the classic way an embedded engine's introspection call becomes the
+/// dominant cost of a hot path, and it raises no error while it happens. A
+/// leadership table has one row per range a cluster has elected a leader for: it
+/// is O(members), and it is allowed to grow. The record count is not.
+///
+/// The two arms differ by ONE fact about the store and nothing about the build
+/// or the work: the same commit, taken against a store holding ten records and
+/// against one holding a thousand. Everything else about the commit path lands
+/// on both and cancels.
+///
+/// **Measured 2026-09-14 (W271): equal, and the difference is zero.** A commit
+/// on the thousand-record store asks the backend exactly what the ten-record
+/// store's commit asks.
+///
+/// # What this test is NOT, and it took two wrong versions to find out
+///
+/// It is not a measurement of *one scan however many ranges a transaction
+/// writes*. That was the first thing it tried, with arms of one namespace
+/// against three, and it read 19 against 31; widening the first arm to the same
+/// three records still read 23 against 31. Neither gap was the gate. A commit
+/// validates a schema and maintains indexes **per distinct tenancy**, so
+/// spreading writes across namespaces costs more for reasons that have nothing
+/// to do with leadership, and an instrument whose arms differ in two ways
+/// reports the sum and names it after whichever one it was written to find.
+/// That the table is read once and resolved in memory is held by construction —
+/// `Store::refuse_if_led_elsewhere` calls `Catalog::leaderships` once and then
+/// `catalog::covering` per range — and there is no arm pair through a commit
+/// that can isolate it.
+#[test]
+fn the_range_gate_costs_a_commit_the_same_on_a_large_store_as_on_a_small_one() {
+    let at = |namespace: u32, id: &str| {
+        RecordAddress::new(
+            NamespaceId::new(namespace),
+            DatabaseId::new(1),
+            TableId::new(1),
+            RecordId::from(id),
+        )
+    };
+
+    let measure = |filled: usize| {
+        let counting = Counting::new();
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+        let me = store.node_identity().unwrap().id;
+        let mut transaction = store.begin().unwrap();
+        Catalog::new(&mut transaction)
+            .record_leadership(Reach::Store, me, tessari_types::Epoch::new(1))
+            .unwrap();
+        transaction.commit().unwrap();
+        for nth in 0..filled {
+            let mut transaction = store.begin().unwrap();
+            transaction.put(at(1, &format!("filler-{nth}")), b"{}".to_vec());
+            transaction.commit().unwrap();
+        }
+        counting.reset();
+        let mut transaction = store.begin().unwrap();
+        transaction.put(at(1, "measured"), b"{}".to_vec());
+        transaction.commit().unwrap();
+        counting.round_trips()
+    };
+
+    let small = measure(10);
+    let large = measure(1_000);
+
+    assert_eq!(
+        small, large,
+        "a commit on a store holding a thousand records asked the backend \
+         {large} times and the same commit on one holding ten asked {small} — \
+         the leadership question is supposed to read a table with one row per \
+         range the cluster has elected, and a difference here means it has \
+         started tracking the size of the store instead"
     );
 }

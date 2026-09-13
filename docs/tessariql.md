@@ -6629,6 +6629,26 @@ would never see. A store that names no peer — every single-node deployment —
 is unaffected and goes on writing exactly as before, including one declared
 `coordinating`: a deciding set of one has nobody to diverge from.
 
+**And it writes the ranges it leads, not every range it can reach.** *May this
+node write* and *may this node write **here*** are two questions, and they had one
+answer only while one lease covered one store. Once two nodes lead two namespaces,
+a write arriving at the wrong one is refused with *this range is led by another
+node: write it at …*, naming the address, the node to expect there and the epoch
+that node took the range under. It is a routing answer rather than a failure: the
+write was correct, and there is a named place to take it. A node holding a
+perfectly live lease meets this refusal, which is the point — a leader over one
+namespace has no authority at all over another's.
+
+The two refusals say different things and it is worth telling them apart. *Holds
+no leadership* means **wait**: nobody has been elected for this range and there is
+nowhere to send you. *Is led by another node* means **go there**. A node that
+knows a leader names it rather than telling you to wait for a round that may never
+concern you.
+
+A node whose leadership covers the **whole store** — which is every cluster that
+has elected a single leader — is unaffected, because the whole store contains
+every namespace in it.
+
 **A follower collects from whichever peer says it may write, not from the row
 you marked writable.** In a cluster that can fail over, every coordinating node
 is also declared `writable` — otherwise the node that wins a round could not

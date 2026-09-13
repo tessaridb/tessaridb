@@ -733,9 +733,35 @@ const LEADER: [u8; tessari_storage::NODE_ID_LEN] = [7; tessari_storage::NODE_ID_
 
 /// Record a leadership on `store`, exactly as the campaign thread does.
 fn lead(store: &Store, range: Reach, epoch: u64) -> Sequence {
+    lead_as(store, range, LEADER, epoch)
+}
+
+/// Record a leadership held by **this** store, which is the only one it can
+/// commit for itself.
+///
+/// The distinction became load-bearing with ADR-0070: the commit gate resolves
+/// the range a write addresses against the leadership catalog, and a row naming
+/// somebody else as the leader of the whole store covers the system tenancy too
+/// — so a store that has committed *node seven leads everything* may not then
+/// commit a second row, and is right not to. In production another node's
+/// leadership never arrives by a local commit at all; it arrives by applying the
+/// log record that created it, which is what
+/// `a_replica_answers_who_leads_from_the_log_it_applied_and_from_nothing_else`
+/// does. A test that needs two rows in one catalog is a test about this node.
+fn lead_here(store: &Store, range: Reach, epoch: u64) -> Sequence {
+    let me = store.node_identity().unwrap().id;
+    lead_as(store, range, me, epoch)
+}
+
+fn lead_as(
+    store: &Store,
+    range: Reach,
+    node: [u8; tessari_storage::NODE_ID_LEN],
+    epoch: u64,
+) -> Sequence {
     let mut transaction = store.begin().unwrap();
     Catalog::new(&mut transaction)
-        .record_leadership(range, LEADER, Epoch::new(epoch))
+        .record_leadership(range, node, Epoch::new(epoch))
         .unwrap();
     transaction.commit().unwrap()
 }
@@ -781,8 +807,11 @@ fn a_replica_answers_who_leads_from_the_log_it_applied_and_from_nothing_else() {
 fn a_new_leadership_replaces_the_previous_answer_rather_than_joining_it() {
     let leader_backend = backend();
     let store = store_on(&leader_backend);
-    lead(&store, Reach::Store, 5);
-    lead(&store, Reach::Store, 6);
+    // This node's own, both of them: a store that has committed somebody else's
+    // store-wide leadership may not commit anything afterwards (ADR-0070), and
+    // the subject here is which row answers rather than whose name is on it.
+    lead_here(&store, Reach::Store, 5);
+    lead_here(&store, Reach::Store, 6);
 
     let held = leads(&store, Reach::Store).unwrap();
     assert_eq!(held.epoch, Epoch::new(6));
@@ -816,9 +845,12 @@ fn the_most_specific_leadership_covering_a_range_is_the_one_that_answers() {
     let store = store_on(&leader_backend);
     let namespace = NamespaceId::new(3);
     let database = DatabaseId::new(7);
-    lead(&store, Reach::Store, 5);
-    lead(&store, Reach::Namespace(namespace), 6);
-    lead(&store, Reach::Database(namespace, database), 7);
+    // This node's own, all three: the subject is which of several covering rows
+    // answers, and a store that has committed somebody else's store-wide
+    // leadership may not commit the next two (ADR-0070).
+    lead_here(&store, Reach::Store, 5);
+    lead_here(&store, Reach::Namespace(namespace), 6);
+    lead_here(&store, Reach::Database(namespace, database), 7);
 
     // S6.2 splits the epoch by range, and this is the rule that has to be right
     // before it does: a node asked about a database whose leadership is its own

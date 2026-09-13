@@ -6,6 +6,7 @@
 //! together.
 
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::hash::{BuildHasher, Hasher};
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ use tessari_encoding::{LogRecord, Mutation, RecordValue};
 use tessari_types::Sequence;
 
 use super::{RecordAddress, Transaction};
+use crate::catalog::Reach;
 use crate::error::{Error, Result};
 
 /// What becomes of a settled transaction's batch.
@@ -163,6 +165,19 @@ impl Transaction<'_> {
         self.settle(Settle::Discard).map(|_| ())
     }
 
+    /// The ranges this transaction's writes address, deduplicated.
+    ///
+    /// A [`Reach::Database`] per write, because that is the narrowest range a
+    /// record belongs to and [`Reach::contains`] widens it: a leadership over
+    /// the namespace or over the whole store covers these without the gate
+    /// having to construct those ranges itself.
+    fn ranges_written(&self) -> BTreeSet<Reach> {
+        self.writes
+            .keys()
+            .map(|address| Reach::Database(address.namespace, address.database))
+            .collect()
+    }
+
     fn settle(self, settle: Settle) -> Result<Sequence> {
         if self.writes.is_empty() {
             return Ok(self.snapshot);
@@ -180,13 +195,22 @@ impl Transaction<'_> {
         if let Some(for_the_last) = self.store.lease_spent() {
             return Err(Error::LeaseSpent { for_the_last });
         }
+        // And before the store-wide question, because the store-wide question
+        // returns early on a live lease and would therefore never reach a leader
+        // — while a leader writing into a range somebody else leads is exactly
+        // what this catches (G025 S6.1). *May this node write* and *may this
+        // node write HERE* stopped being one question the moment two nodes could
+        // lead two namespaces.
+        let identity = self.store.node_identity()?;
+        self.store
+            .refuse_if_led_elsewhere(&self.ranges_written(), &identity.id)?;
         // And the other half of *the effective role is the lease* (ADR-0064):
         // a node that takes part in deciding writes under a leadership and at
         // no other time. Asked here rather than only at the statement layer for
         // the reason the paragraph above gives — `dry_run` must rehearse it, and
         // a refusal a `VERIFY` cannot see is one an operator meets for the first
         // time in production.
-        if self.store.awaiting_leadership()? {
+        if self.store.awaiting(&identity.id)? {
             return Err(Error::NoLeadershipYet);
         }
         let record = self.log_record();

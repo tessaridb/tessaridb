@@ -191,6 +191,50 @@ pub enum Error {
     )]
     NoLeadershipYet,
 
+    /// A write belongs to a range another node leads, and this is which one.
+    ///
+    /// The other half of the admission question, and the half ADR-0069 could
+    /// not ask. [`Self::NoLeadershipYet`] answers *nobody here holds one*; this
+    /// answers *somebody else holds this one*, and they are different sentences
+    /// to a caller: the first says wait, the second says go there.
+    ///
+    /// # Why this became possible to ask
+    ///
+    /// A lease is store-wide and a leadership is per-range, so *may this node
+    /// write* and *may this node write here* stopped being one question the
+    /// moment two nodes could lead two namespaces. A node holding a leadership
+    /// over one namespace and writing into another meets this while holding a
+    /// perfectly live lease — the arrangement G025's S6.1 exists to make
+    /// representable, and the one the store-wide gate accepted silently.
+    ///
+    /// # The three fields are [`tessari_session::Peer`]'s, deliberately
+    ///
+    /// This engine already has one spelling of *a copy you do not hold and
+    /// where to find it*, and a second one that carried different fields would
+    /// be two answers to one question. The node id is what makes the redirect
+    /// checkable on arrival: a client that dialled the address and met a
+    /// different node would otherwise have no way to notice. The epoch dates
+    /// the claim, so a client already told about a newer leadership can refuse
+    /// this one rather than follow it backwards.
+    ///
+    /// The range is not carried. The caller issued the write and knows what it
+    /// addressed; a field restating it would be a second source for a fact the
+    /// statement already holds.
+    #[error(
+        "this range is led by another node: write it at {endpoint}. \
+         This node refuses rather than forwarding on your behalf. \
+         The node to expect is {}, leading under epoch {epoch}",
+        tessari_types::RecordId::Uuid(*node)
+    )]
+    WriteIsElsewhere {
+        /// The address to dial — the same string the membership row carried.
+        endpoint: String,
+        /// Who the log says leads it, so the redirect is checkable on arrival.
+        node: [u8; tessari_encoding::NODE_ID_LEN],
+        /// The leadership that node took the range under.
+        epoch: Epoch,
+    },
+
     /// A log record was offered out of order.
     ///
     /// State is a deterministic function of the log, so a gap is not something
@@ -553,7 +597,9 @@ impl Error {
             // one of the three that is true: the write was not wrong and
             // retrying *here* will not help, but the cluster may well accept it
             // somewhere else a moment from now.
-            Self::LeaseSpent { .. } | Self::NoLeadershipYet => ErrorCategory::Unavailable,
+            Self::LeaseSpent { .. }
+            | Self::NoLeadershipYet
+            | Self::WriteIsElsewhere { .. } => ErrorCategory::Unavailable,
             Self::LogGap { .. }
             | Self::NameTaken { .. }
             | Self::NoSuchParent { .. }
