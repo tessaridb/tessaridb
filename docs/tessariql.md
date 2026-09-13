@@ -6395,6 +6395,57 @@ DEFINE NODE ROLES serving, writable, coordinating;
 After that, configuration is the leader's to write and the cluster's to receive,
 which is where a replicated membership belongs.
 
+### Adding a node to a cluster that already exists
+
+Everything above configures a cluster by writing to every node before any of them
+starts. That works, and it is not how a node is added to a cluster that is
+already running — for which the newcomer writes **nothing** about the membership
+at all.
+
+Two statements, one on each side. On the cluster, name the newcomer and grant it
+the log:
+
+```
+DEFINE REPLICA third AT 'db-3.internal:9000'
+    NODE 'c41d8f2b60ae47f5b9c3e1a780d24e66'
+    ROLES serving
+    REPLICATES STORE;
+```
+
+On the newcomer, say what it is for, and nothing else:
+
+```
+DEFINE NODE ROLES serving;
+```
+
+Then start it with one extra flag naming a node already in the cluster:
+
+```sh
+tessaridb /var/lib/tessaridb --serve 0.0.0.0:9080 \
+    --cluster-credential db-3.pem --cluster-key db-3.key \
+    --cluster-authority cluster-ca.pem \
+    --cluster-address db-3.internal:9000 \
+    --seed 9f2c4e1a70bb43d5a1c6e2f480937d55@db-1.internal:9000
+```
+
+**A seed names a node as well as an address.** Peers prove themselves to each
+other with a credential issued for the node's own identifier, and the handshake
+will not complete against any other node — so an address on its own is not
+something a node can dial. The identifier is the one `INFO FOR NODE` prints.
+
+**The newcomer declares no peers of its own, and that is the point.** A
+`DEFINE REPLICA` is a catalog write and therefore a record in the log, so a
+cluster whose nodes were each told their own membership before starting holds
+several logs carrying *different records at the same positions*. Nothing reports
+it, because a divergence check compares the leadership a record was written
+under and all of those were written under none. A newcomer that writes no
+membership row cannot produce that, and it does not need to: the membership
+reaches it through the same replication as everything else.
+
+The seed is read only while the newcomer's catalog names no peer. Once the first
+records arrive, the catalog says who the members are, and the address on the
+command line is never consulted again.
+
 `DEFINE REPLICA`'s `ROLES` is optional and is spelled exactly as `DEFINE NODE`'s
 is, because it is the same membership field seen from the other side — one
 written about a peer, one about this node, and two spellings for one set of words
