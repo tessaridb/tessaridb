@@ -85,6 +85,14 @@ pub(crate) enum Kind {
     Subscribe,
     /// One change, sent because it happened.
     Change,
+    /// This read belongs somewhere else, and this is where.
+    ///
+    /// Numbered **13** rather than 6, which is where 1-5 leaves off, because the
+    /// peer link claims 6-12 out of the same byte. See
+    /// [`crate::peer::PeerFrame`] for what the two spaces owe each other — the
+    /// rule is that neither reader accepts the other's tags, and a contiguous
+    /// range was only ever a convenient way to say so.
+    Elsewhere,
 }
 
 impl Kind {
@@ -95,6 +103,7 @@ impl Kind {
             Self::Refusal => 3,
             Self::Subscribe => 4,
             Self::Change => 5,
+            Self::Elsewhere => 13,
         }
     }
 
@@ -105,10 +114,13 @@ impl Kind {
             3 => Some(Self::Refusal),
             4 => Some(Self::Subscribe),
             5 => Some(Self::Change),
-            // 6 and above stay unclaimed, and an unknown kind still closes the
-            // connection rather than being skipped: a protocol that ignores what
-            // it does not understand is one where a version mismatch looks like
-            // silence.
+            13 => Some(Self::Elsewhere),
+            // 6-12 belong to the peer link and are refused here on purpose, so a
+            // peer frame arriving on the client port closes the connection
+            // instead of being misread. Everything else is simply unclaimed, and
+            // an unknown kind closes the connection rather than being skipped: a
+            // protocol that ignores what it does not understand is one where a
+            // version mismatch looks like silence.
             _ => None,
         }
     }

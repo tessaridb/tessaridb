@@ -82,9 +82,18 @@ pub enum PeerFrame {
 impl PeerFrame {
     /// The tag written on the wire.
     ///
-    /// Six and upward, which is exactly the range the client's reader refuses as
-    /// unknown — so a peer frame arriving on the client port is closed rather
-    /// than misread, and the two spaces cannot silently overlap.
+    /// Out of the same byte the client's frames are tagged from, and **the rule
+    /// is disjointness, not a range**: no tag is claimed by both protocols, so a
+    /// peer frame arriving on the client port is closed rather than misread, and
+    /// a client frame arriving here is too.
+    ///
+    /// These seven took 6-12 because 1-5 was what the client had, which made
+    /// *"six and upward is the peer's"* an exact description of the arrangement
+    /// — and a false sentence the moment a client kind took 13
+    /// ([`crate::frame::Kind::Elsewhere`]). The property never moved. A
+    /// contiguous range is a convenient way to say *disjoint* and is never the
+    /// thing itself, which is why `no_peer_tag_is_a_client_tag` asserts the
+    /// property and no longer asserts the shape.
     #[must_use]
     pub const fn tag(self) -> u8 {
         match self {
@@ -387,11 +396,24 @@ mod tests {
                 "tag {tag} is claimed by both the peer and the client protocol"
             );
         }
-        assert_eq!(
-            PeerFrame::Hello.tag(),
-            6,
-            "the peer space starts where 1-5 ends"
-        );
+        // The safety property stated directly rather than inferred from the
+        // sweep: every peer tag must be one the client's reader refuses, because
+        // that refusal is what closes a misdirected connection instead of
+        // decoding it as something else.
+        for kind in [
+            PeerFrame::Hello,
+            PeerFrame::Ballot,
+            PeerFrame::Vote,
+            PeerFrame::Collect,
+            PeerFrame::Collected,
+            PeerFrame::Uncollectable,
+            PeerFrame::Unsubscribed,
+        ] {
+            assert!(
+                frame::Kind::from_tag(kind.tag()).is_none(),
+                "the client reader accepts {kind:?}, which it must close on"
+            );
+        }
     }
 
     #[test]

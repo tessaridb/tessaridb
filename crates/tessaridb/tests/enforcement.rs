@@ -18,11 +18,36 @@
 //!
 //! # What is counted, and what is not
 //!
-//! Seven tables, carrying **73** paths. The original derivation counted 74 on
-//! the day it ran. This line said **66** while the assertion below said 68 —
-//! prose and number drifting apart is the very decay this test exists to catch,
-//! and it had happened to the sentence describing the test. Both now come from
-//! one place: change the table, change the assertion, change this line.
+//! Seven tables, carrying **81** paths — the sum of the `expected` fields below,
+//! which the assertion at the end of the test holds. That assertion is the
+//! authority; this sentence is a copy of it.
+//!
+//! **And the copy has now been wrong twice.** It said **66** while the assertion
+//! said 68. It was corrected to **73** while the assertion said **80** — so the
+//! correction restored the habit and not the number, and the gap was wider
+//! afterwards than before. W265 found it at 73/80 while adding the sixth frame
+//! kind. The remedy written here after the first drift was *change the table,
+//! change the assertion, change this line*, which is discipline; the assertion
+//! held both times because it is checked, and this line failed both times
+//! because it is not. **Whether a number in prose should exist at all when the
+//! assertion beside it is derived is Q-585.**
+//!
+//! # The path added by the redirect frame, and how it was classified
+//!
+//! `frame::Kind::Elsewhere` is the sixth frame kind, and it is classified
+//! **not a data path**. It carries no record, no catalog entry and no grant: its
+//! whole body is an address, a node id, an epoch and one byte saying whether the
+//! address is worth remembering. Everything in it is topology, and topology a
+//! caller already reached this node to ask about.
+//!
+//! It is also, today, a kind this build never SENDS — both client readers refuse
+//! it as meaningless on their connection.
+//!
+//! **Re-classification trigger:** the day a redirect names anything the receiver
+//! could not otherwise learn — a namespace, a table, a tenant — it stops being
+//! topology and becomes a disclosure, and the decision to send one has to be
+//! reached through the same grant the read itself was. Today it names an
+//! endpoint an operator declared and a node id already proved on the link.
 //!
 //! # The path added by the vault, and how it was classified
 //!
@@ -470,7 +495,7 @@ const TABLES: &[Table] = &[
     Table {
         file: "crates/tessari-wire/src/frame.rs",
         what: "frame kinds the binary protocol accepts",
-        expected: 5,
+        expected: 6,
         count: |text| variants(&block(text, "pub(crate) enum Kind")),
     },
     Table {
@@ -517,7 +542,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 80, "the counted tables no longer sum to 80");
+    assert_eq!(total, 81, "the counted tables no longer sum to 81");
 }
 
 /// Every `.rs` file under a directory.

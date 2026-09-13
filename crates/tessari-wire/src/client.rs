@@ -113,9 +113,18 @@ impl Client {
             }
             // A node does not send a request, and a change only arrives on a
             // connection that asked to follow — which this one has not.
-            frame::Kind::Request | frame::Kind::Subscribe | frame::Kind::Change => {
-                Err(Error::UnknownFrame { tag: kind.tag() })
-            }
+            //
+            // A redirect joins them for a different reason and only for now:
+            // nothing sends one yet, and FOLLOWING one is a change to what this
+            // method returns rather than an arm in this match — a redirect is an
+            // instruction, so handing it back as an error is precisely the shape
+            // the frame exists to avoid. Until that lands, a redirect arriving
+            // here has no meaning on this connection, which is what these arms
+            // say.
+            frame::Kind::Request
+            | frame::Kind::Subscribe
+            | frame::Kind::Change
+            | frame::Kind::Elsewhere => Err(Error::UnknownFrame { tag: kind.tag() }),
         }
     }
 
@@ -207,9 +216,14 @@ impl Feed {
             frame::Kind::Refusal => Err(Error::Refused {
                 message: String::from_utf8(body).unwrap_or_else(|_| "unreadable".to_owned()),
             }),
-            frame::Kind::Request | frame::Kind::Answer | frame::Kind::Subscribe => {
-                Err(Error::UnknownFrame { tag: kind.tag() })
-            }
+            // A redirect belongs to a read that can be answered elsewhere. A
+            // subscription is a position in one node's log, so there is nothing
+            // for another node to answer and this arm stays a refusal even after
+            // redirects are followed.
+            frame::Kind::Request
+            | frame::Kind::Answer
+            | frame::Kind::Subscribe
+            | frame::Kind::Elsewhere => Err(Error::UnknownFrame { tag: kind.tag() }),
         }
     }
 }

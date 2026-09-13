@@ -310,4 +310,16 @@ pub enum Error {
         /// The bits that arrived.
         bits: u8,
     },
+
+    /// A redirect naming a settlement this build does not assign.
+    ///
+    /// The same distinction [`Self::UnknownRoles`] draws, for the same reason:
+    /// the body is exactly the shape a redirect takes, so this is a newer build
+    /// on the other end rather than a broken frame, and reporting it as
+    /// corruption would send somebody to the wrong question.
+    #[error("that redirect carries settlement {byte}, which this build does not know")]
+    UnknownSettlement {
+        /// The byte that arrived.
+        byte: u8,
+    },
 }
