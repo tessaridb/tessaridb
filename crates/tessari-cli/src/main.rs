@@ -1001,6 +1001,25 @@ fn stand_for_leadership(
                 // voters' window rather than this node's.
                 db.hold(held.epoch, held.lease());
                 log::info!("leading at epoch {}", held.epoch.get());
+                // Written here and nowhere else, because `held != before` is
+                // the change: a lease is renewed every round for as long as
+                // this node keeps leading, and a row per renewal would put a
+                // log record on the wire every few seconds forever — one every
+                // follower then pays to apply, on a log that would never
+                // quiesce.
+                //
+                // Logged rather than propagated. The round already granted the
+                // leadership and `hold` already installed it; this records that
+                // grant in the log so a partitioned node can still answer who
+                // leads. A store that refuses the write has not un-elected this
+                // node, and treating it as fatal would let a disk hiccup
+                // overturn a decision a majority took.
+                if let Err(refused) = db.record_leadership(tessaridb::Reach::Store, held.epoch) {
+                    log::warn!(
+                        "leading at epoch {} but could not record it: {refused}",
+                        held.epoch.get()
+                    );
+                }
             }
         },
     );

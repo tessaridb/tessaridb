@@ -138,6 +138,12 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
         (t, Some(value)) if t == system::CONSUMERS => Carried::Within(Reach::Namespace(
             super::ConsumerDefinition::from_value(&value)?.namespace,
         )),
+        // A leadership travels to whoever holds the range it is about: a
+        // follower subscribed to one namespace needs to know who leads that
+        // namespace, and has no business learning who leads another's.
+        (t, Some(value)) if t == system::LEADERSHIPS => {
+            Carried::Within(super::LeadershipDefinition::from_value(&value)?.range)
+        }
         (t, Some(value)) if t == system::USERS => {
             let declared = super::UserDefinition::from_value(&value)?;
             match Reach::of(declared.namespace, declared.database) {
@@ -156,6 +162,8 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
         //   VAULT_ROOT        one record, the store's
         //   VAULT_AUDIT       the store's own trail
         //   RECORD_COUNTS     derived on apply and never logged; classified anyway
+        //   LEADERSHIPS       a tombstone only; the range is in the value, and
+        //                     nothing in this build removes a leadership row
         _ => Carried::StoreOnly,
     })
 }

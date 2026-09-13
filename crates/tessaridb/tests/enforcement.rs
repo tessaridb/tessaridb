@@ -253,7 +253,41 @@ const TABLES: &[Table] = &[
         // process observed about itself and must be enforced where it is
         // written. Today the only writer is the campaign thread, from a round it
         // opened and counted itself.
-        expected: 19,
+        //
+        // 21 since the leadership row (G025 **S1.2**): `Db::record_leadership`
+        // and `Db::leader_of`. **This pair is NOT exempt on the ground the three
+        // above share, and saying so is the point of the entry.** They take a
+        // reach, and `record_leadership` writes a catalog entry and therefore a
+        // log record that every subscribing follower applies. Everything that
+        // made `hold`, `leading` and `hold_lease` exempt — no reach, no record,
+        // process memory that is never persisted — is false of it.
+        //
+        // It is classified **ENFORCED**, by two things already in the path
+        // rather than by a check added beside it:
+        //
+        //   * the **lease fence**. It commits an ordinary transaction, so a node
+        //     past its fence is refused by the same rule that refuses every
+        //     other write. A node that may not write may not record that it
+        //     leads.
+        //   * **its own identity**. There is no `node` argument: the id is read
+        //     from this store's `node_identity`, the one fact ADR-0018 keeps out
+        //     of the log precisely so it cannot be inherited. The only sentence
+        //     this method can produce is *I took a leadership*, so no caller can
+        //     write a row claiming somebody else leads.
+        //
+        // `leader_of` is a **read** of what was applied. It discloses a node id,
+        // a range and an epoch — the same three facts a greeting already carries
+        // to every peer on the link — and reads no record, no user, no grant.
+        //
+        // **Re-classification trigger, the same condition `hold` and `leading`
+        // already carry and now half met:** a caller outside this process
+        // reaches `record_leadership` the moment a management statement, an HTTP
+        // route or a peer frame exposes it. Today the only caller is the
+        // campaign thread in the binary, after a round it opened and counted
+        // itself, under the guard that the epoch changed. The day that stops
+        // being true the fence is not enough alone, and the grant model has to
+        // reach this write.
+        expected: 21,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -542,7 +576,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 81, "the counted tables no longer sum to 81");
+    assert_eq!(total, 83, "the counted tables no longer sum to 83");
 }
 
 /// Every `.rs` file under a directory.

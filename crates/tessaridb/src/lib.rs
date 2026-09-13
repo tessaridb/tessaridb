@@ -89,7 +89,10 @@ pub use tessari_session::{
     AccessPath, Error, Exactness, Nearest, Note, Outcome, Parameters, Result, Session, Suggestion,
     Ticket,
 };
-pub use tessari_storage::{BUILD_VERSION, Change, ChangeKind, Changes, Lease, Subscription, Watch};
+pub use tessari_storage::{
+    BUILD_VERSION, Change, ChangeKind, Changes, LeadershipDefinition, Lease, Reach, Subscription,
+    Watch,
+};
 pub use tessari_types::{
     DatabaseId, Datetime, Duration, FieldKind, Geometry, NamespaceId, Number, Path as FieldPath,
     Polygon, Position, RecordId, RecordRef, Ring, Sequence, Step, TableId, Value, from_geojson,
@@ -226,6 +229,75 @@ impl Db {
     /// second to every peer that routes on it.
     pub fn hold(&self, epoch: tessari_types::Epoch, lease: Lease) {
         self.store.hold(epoch, lease);
+    }
+
+    /// Write into the log that this node took the leadership of `range`.
+    ///
+    /// The companion of [`Db::hold`] and deliberately **not** part of it. `hold`
+    /// installs a grant a majority already made and cannot fail; this records
+    /// that grant in the log, and can. Folding the two together would let a
+    /// storage hiccup revoke a decision the cluster had taken — a node that won
+    /// a round and could not write the row still legitimately holds the lease,
+    /// because the row is a *record* of the grant and never the grant itself.
+    ///
+    /// # Called on a change and never on a renewal
+    ///
+    /// A lease is renewed for as long as a node keeps leading. Writing this per
+    /// renewal would put a log record on every round forever, which every
+    /// follower then pays to apply. The caller writes it only when the epoch it
+    /// holds is not the one it held a moment ago.
+    ///
+    /// # What this buys
+    ///
+    /// It is the only thing that makes *who leads this range* answerable from
+    /// the log. A [`tessari_encoding::LogRecord`] carries the epoch it was
+    /// written under but never the node that wrote it, so until this row exists
+    /// the answer can only come from a greeting — over the network, from a peer
+    /// that has to be reachable.
+    ///
+    /// # It writes this node, and cannot be asked to write another
+    ///
+    /// There is no `node` argument. The id comes from this store's own identity,
+    /// which is deliberately the one thing that never travels in the log
+    /// (ADR-0018) — so *this node took a leadership* is the only sentence this
+    /// method can produce. A signature taking the id would have been a way for
+    /// any caller to write a row claiming somebody **else** leads, which every
+    /// other node would then apply and route on.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this node's identity or the transaction cannot be
+    /// read, the row cannot be encoded, or the commit is refused — including by
+    /// this node's own lease fence, which is the correct refusal: a node past
+    /// its fence may not write.
+    pub fn record_leadership(&self, range: Reach, epoch: tessari_types::Epoch) -> Result<()> {
+        let me = self.store.node_identity()?.id;
+        let mut transaction = self.store.begin()?;
+        Catalog::new(&mut transaction).record_leadership(range, me, epoch)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Who the log says leads `range`, and under which leadership.
+    ///
+    /// Answered from a row this node holds because it **applied the log record
+    /// that created it** — no greeting, no peer, no socket. A node cut off from
+    /// every other still answers, from what it had already applied.
+    ///
+    /// `None` means the log has never carried a leadership covering that range,
+    /// which is the honest answer for a store that has elected nobody.
+    ///
+    /// The answer carries the epoch it was decided under, so a caller holding a
+    /// newer one knows this describes an arrangement that has been superseded
+    /// rather than following it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transaction cannot be opened or a stored
+    /// definition cannot be read.
+    pub fn leader_of(&self, range: Reach) -> Result<Option<LeadershipDefinition>> {
+        let mut transaction = self.store.begin()?;
+        Ok(Catalog::new(&mut transaction).leader_of(range)?)
     }
 
     /// The leadership epoch this node is writing under, if a round granted it

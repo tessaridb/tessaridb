@@ -51,11 +51,11 @@ pub use catalog::{
     AnalyzerDefinition, Authority, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
     ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition,
     EdgeOrder, FieldDefinition, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition, Held,
-    IndexDefinition, IndexShape, Kind, Mapped, NamespaceDefinition, OnFailure, QUEUE_ATTEMPTS,
-    QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach,
-    ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE, SeriesDeclaration, StoredKind,
-    TableDefinition, TableKind, TableShape, UserDefinition, VECTOR_FIELD, VaultDeclaration,
-    VectorDeclaration, VectorDistance, Verb, ViewDeclaration,
+    IndexDefinition, IndexShape, Kind, LeadershipDefinition, Mapped, NamespaceDefinition,
+    OnFailure, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
+    RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE,
+    SeriesDeclaration, StoredKind, TableDefinition, TableKind, TableShape, UserDefinition,
+    VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance, Verb, ViewDeclaration,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
@@ -79,7 +79,7 @@ pub use sealing::{
     open_field, recipients, remove_recipient, reseal_named, seal_secrets, vault_key_scope,
 };
 pub use store::{Health, Store};
-pub use tessari_encoding::{BUILD_VERSION, Roles};
+pub use tessari_encoding::{BUILD_VERSION, NODE_ID_LEN, Roles};
 pub use transaction::{
     Expansion, Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction,
 };

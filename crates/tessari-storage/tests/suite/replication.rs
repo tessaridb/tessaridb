@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use tessari_encoding::{LogRecord, Mutation, RecordValue, encode_payload};
 use tessari_kv::{Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value};
-use tessari_storage::{Catalog, EDGE_IN, EDGE_OUT, Error, RecordAddress, Store, TableShape};
+use tessari_storage::{Catalog, EDGE_IN, EDGE_OUT, Error, Reach, RecordAddress, Store, TableShape};
 use tessari_types::{
     DatabaseId, Epoch, NamespaceId, RecordId, RecordRef, Sequence, TableId, Value as FieldValue,
 };
@@ -713,4 +713,132 @@ fn the_first_record_of_a_log_claims_the_epoch_of_a_store_that_elected_nobody() {
         .apply_from_stream(Sequence::new(1), Epoch::new(9), &first)
         .unwrap_err();
     assert!(matches!(error, Error::LogDivergence { .. }), "{error}");
+}
+
+// ---------------------------------------------------------------------------
+// G025 S1.2 — who leads this range, answered from what the log left behind.
+//
+// The criterion: *a node answers who leads this range from a locally
+// materialized view built by log application, with no network call*, validated
+// by answering with the peer link down.
+//
+// There is no link in this module at all — no socket is opened, no greeting is
+// exchanged, no peer exists. That is a stronger form of *the link is down* than
+// cutting a live one, because a test that cut a link could still be answered by
+// something cached from when it was up.
+// ---------------------------------------------------------------------------
+
+/// A node id that is not the zero any store would hold by accident.
+const LEADER: [u8; tessari_storage::NODE_ID_LEN] = [7; tessari_storage::NODE_ID_LEN];
+
+/// Record a leadership on `store`, exactly as the campaign thread does.
+fn lead(store: &Store, range: Reach, epoch: u64) -> Sequence {
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .record_leadership(range, LEADER, Epoch::new(epoch))
+        .unwrap();
+    transaction.commit().unwrap()
+}
+
+/// What `store` says leads `range`.
+fn leads(store: &Store, range: Reach) -> Option<tessari_storage::LeadershipDefinition> {
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction).leader_of(range).unwrap()
+}
+
+#[test]
+fn a_replica_answers_who_leads_from_the_log_it_applied_and_from_nothing_else() {
+    let source_backend = backend();
+    let source = store_on(&source_backend);
+    lead(&source, Reach::Store, 5);
+
+    // The replica is a separate store on a separate backend. It never speaks to
+    // the source: the only thing that crosses is the log.
+    let replica_backend = backend();
+    let replica = store_on(&replica_backend);
+    assert_eq!(
+        leads(&replica, Reach::Store),
+        None,
+        "a store that has applied nothing must not claim to know who leads"
+    );
+
+    for (sequence, record) in source.log_records(Sequence::ZERO, PLENTY).unwrap() {
+        replica.apply_record(sequence, &record).unwrap();
+    }
+
+    let answered = leads(&replica, Reach::Store).expect("the log carried the leadership");
+    assert_eq!(answered.node, LEADER);
+    assert_eq!(
+        answered.epoch,
+        Epoch::new(5),
+        "the answer carries the epoch it was decided under, or a caller holding \
+         a newer one cannot tell that this describes a superseded arrangement"
+    );
+    assert_eq!(answered.range, Reach::Store);
+}
+
+#[test]
+fn a_new_leadership_replaces_the_previous_answer_rather_than_joining_it() {
+    let leader_backend = backend();
+    let store = store_on(&leader_backend);
+    lead(&store, Reach::Store, 5);
+    lead(&store, Reach::Store, 6);
+
+    let held = leads(&store, Reach::Store).unwrap();
+    assert_eq!(held.epoch, Epoch::new(6));
+    // One row per range, not a history: two answers to *who leads the store*
+    // would be two answers to one question, and nothing here chooses between
+    // them.
+    let mut transaction = store.begin().unwrap();
+    assert_eq!(
+        Catalog::new(&mut transaction).leaderships().unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn a_range_with_no_leadership_of_its_own_is_answered_by_the_one_above_it() {
+    let leader_backend = backend();
+    let store = store_on(&leader_backend);
+    lead(&store, Reach::Store, 5);
+
+    // Today this is the only case that ever runs: one lease over the whole
+    // store, and every range inside it asking the same question.
+    let inside = Reach::Database(NamespaceId::new(3), DatabaseId::new(7));
+    let answered = leads(&store, inside).expect("the store's leadership covers every range in it");
+    assert_eq!(answered.range, Reach::Store);
+    assert_eq!(answered.epoch, Epoch::new(5));
+}
+
+#[test]
+fn the_most_specific_leadership_covering_a_range_is_the_one_that_answers() {
+    let leader_backend = backend();
+    let store = store_on(&leader_backend);
+    let namespace = NamespaceId::new(3);
+    let database = DatabaseId::new(7);
+    lead(&store, Reach::Store, 5);
+    lead(&store, Reach::Namespace(namespace), 6);
+    lead(&store, Reach::Database(namespace, database), 7);
+
+    // S6.2 splits the epoch by range, and this is the rule that has to be right
+    // before it does: a node asked about a database whose leadership is its own
+    // must not be answered with the store's.
+    assert_eq!(
+        leads(&store, Reach::Database(namespace, database))
+            .unwrap()
+            .range,
+        Reach::Database(namespace, database)
+    );
+    assert_eq!(
+        leads(&store, Reach::Namespace(namespace)).unwrap().range,
+        Reach::Namespace(namespace)
+    );
+    assert_eq!(leads(&store, Reach::Store).unwrap().range, Reach::Store);
+    // A leadership over one namespace says nothing about another's.
+    assert_eq!(
+        leads(&store, Reach::Namespace(NamespaceId::new(9)))
+            .unwrap()
+            .range,
+        Reach::Store
+    );
 }

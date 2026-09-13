@@ -31,10 +31,20 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tessari_types::{DatabaseId, NamespaceId, Value};
+use tessari_types::{DatabaseId, NamespaceId, Number, Value};
 
+use super::definition::number;
 use super::user::Role;
 use crate::error::{Error, Result};
+
+/// The field naming which of the three shapes a stored reach carries.
+const FIELD_REACH: &str = "reach";
+const FIELD_NAMESPACE: &str = "namespace";
+const FIELD_DATABASE: &str = "database";
+
+const REACH_STORE: &str = "store";
+const REACH_NAMESPACE: &str = "namespace";
+const REACH_DATABASE: &str = "database";
 
 const ENTITY: &str = "authority";
 
@@ -175,6 +185,89 @@ impl Reach {
             // here instead of silently answering `false`.
             (Self::Namespace(_) | Self::Database(_, _), Self::Store)
             | (Self::Database(_, _), Self::Namespace(_)) => false,
+        }
+    }
+
+    /// This reach, as a catalog record stores it.
+    ///
+    /// Tagged rather than inferred from which ids are present, because
+    /// [`Self::Store`] carries no ids at all and an object with no ids would
+    /// then be the same bytes as an object somebody wrote wrong. The tag makes
+    /// the whole store a thing that was said rather than a thing the reader
+    /// assumed.
+    ///
+    /// # Why the codec lives beside the type and not beside its first caller
+    ///
+    /// It has two callers now — a peer's subscription and a leadership's range —
+    /// and a reach that encoded one way in one row and another way in the other
+    /// would be two on-disk spellings of one type. Two readings of the same
+    /// bytes is a thing that can disagree with itself, which is the reason the
+    /// log record carries no mutation count either.
+    #[must_use]
+    pub fn to_value(self) -> Value {
+        let (namespace, database) = self.parts();
+        let mut fields = BTreeMap::from([(
+            FIELD_REACH.to_owned(),
+            Value::from(match self {
+                Self::Store => REACH_STORE,
+                Self::Namespace(_) => REACH_NAMESPACE,
+                Self::Database(_, _) => REACH_DATABASE,
+            }),
+        )]);
+        if let Some(namespace) = namespace {
+            fields.insert(FIELD_NAMESPACE.to_owned(), number(namespace.get()));
+        }
+        if let Some(database) = database {
+            fields.insert(FIELD_DATABASE.to_owned(), number(database.get()));
+        }
+        Value::Object(fields)
+    }
+
+    /// Read a reach back from the value [`Self::to_value`] wrote.
+    ///
+    /// `entity` and `field` are carried so the refusal names the row the caller
+    /// was reading rather than this type: a malformed reach is a defect in some
+    /// definition, and a reader told only *reach* has to guess which one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when the value is not an object, the
+    /// tag is missing or unknown, or a tag's ids are absent or out of range.
+    pub fn from_value(value: &Value, entity: &'static str, field: &'static str) -> Result<Self> {
+        let malformed = || Error::CatalogMalformed {
+            entity,
+            field,
+            found: "reach",
+        };
+        let Value::Object(inner) = value else {
+            return Err(Error::CatalogMalformed {
+                entity,
+                field,
+                found: value.type_name(),
+            });
+        };
+        let Some(Value::String(tag)) = inner.get(FIELD_REACH) else {
+            return Err(malformed());
+        };
+        let id = |field: &'static str| -> Option<u32> {
+            match inner.get(field) {
+                Some(Value::Number(Number::Integer(raw))) => u32::try_from(*raw).ok(),
+                _ => None,
+            }
+        };
+        match tag.as_str() {
+            REACH_STORE => Ok(Self::Store),
+            REACH_NAMESPACE => id(FIELD_NAMESPACE)
+                .map(|namespace| Self::Namespace(NamespaceId::new(namespace)))
+                .ok_or_else(malformed),
+            REACH_DATABASE => match (id(FIELD_NAMESPACE), id(FIELD_DATABASE)) {
+                (Some(namespace), Some(database)) => Ok(Self::Database(
+                    NamespaceId::new(namespace),
+                    DatabaseId::new(database),
+                )),
+                _ => Err(malformed()),
+            },
+            _ => Err(malformed()),
         }
     }
 }
