@@ -85,7 +85,7 @@ use std::time::Duration;
 
 #[cfg(feature = "server")]
 pub use crate::campaign::{Standing, Stood};
-pub use crate::client::{Client, Feed};
+pub use crate::client::{Client, Feed, Served};
 #[cfg(feature = "server")]
 pub use crate::collection::{Collect, Collected, Collector, NoLog, Origin, Serving, Subscriptions};
 #[cfg(feature = "server")]

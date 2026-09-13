@@ -311,6 +311,21 @@ pub enum Error {
         bits: u8,
     },
 
+    /// A read this node declined, answered by a caller that cannot follow it.
+    ///
+    /// Not what the redirect IS — it is an instruction and
+    /// [`crate::Client::run_routed`] hands it over intact. This is what becomes
+    /// of one when the caller asked for answers and has no way to act on being
+    /// sent elsewhere: a genuine failure, and one that says where the read
+    /// belonged rather than reporting an unknown frame.
+    #[error("that read belongs at {endpoint}, which this caller cannot follow")]
+    Redirected {
+        /// The address the read belonged at.
+        endpoint: String,
+        /// Who was expected there.
+        node: [u8; tessari_encoding::NODE_ID_LEN],
+    },
+
     /// A redirect naming a settlement this build does not assign.
     ///
     /// The same distinction [`Self::UnknownRoles`] draws, for the same reason:

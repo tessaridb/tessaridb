@@ -12,7 +12,24 @@ use tessari_ql::Parameters;
 
 use crate::message::{Answer, Request};
 use crate::push::{Follow, Happened};
+use crate::redirect::Elsewhere;
 use crate::{frame, message};
+
+/// What a node did with a script: answered it, or said where it belongs.
+///
+/// Two answers rather than an `Option` or an error, for the reason
+/// [`crate::Destination`] gives one layer down — *answered here* and *go to that
+/// node* are both successes and mean opposite things to the caller. An
+/// instruction handed back as a failure is followed by nobody, because every
+/// client that treats failures correctly treats this one incorrectly.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum Served {
+    /// The node answered, one outcome per statement.
+    Answers(Vec<Answer>),
+    /// The node did not answer, and this is where the read belongs.
+    Elsewhere(Elsewhere),
+}
 
 /// A connection to a node.
 ///
@@ -70,23 +87,27 @@ impl Client {
         self.run_with(script, credentials, &Parameters::new())
     }
 
-    /// Run a script whose parameters take the values `parameters` binds.
+    /// Run a script and take back either the answers or the redirect.
     ///
-    /// The values travel in the store's own codec, so all seventeen kinds cross
-    /// unchanged and the server never has to *read* one — which is what keeps
-    /// the grammar's rule intact at this distance: a supplied value cannot
-    /// become syntax, and nothing about being remote gives that back.
+    /// The primitive [`Self::run`] and [`Self::run_with`] are written on top of.
+    /// A node may decline a read because a copy elsewhere is the one inside the
+    /// staleness bound the caller asked for, and *answered here* and *go to that
+    /// node* are both successes that mean opposite things — the same argument
+    /// [`crate::Destination`] makes one layer down, where the decision is taken.
+    ///
+    /// A caller that cannot act on a redirect wants `run_with`, which turns it
+    /// into a refusal naming where the read belonged.
     ///
     /// # Errors
     ///
-    /// As [`Client::run`], and [`Error::Refused`] naming the parameter when the
-    /// script asks for one this map has no value for.
-    pub fn run_with(
+    /// As [`Self::run_with`], except that a redirect is an answer here rather
+    /// than an error.
+    pub fn run_routed(
         &mut self,
         script: &str,
         credentials: Option<(&str, &str)>,
         parameters: &Parameters,
-    ) -> Result<Vec<Answer>> {
+    ) -> Result<Served> {
         let request = Request {
             script: script.to_owned(),
             credentials: credentials.map(|(name, password)| (name.to_owned(), password.to_owned())),
@@ -109,22 +130,46 @@ impl Client {
                     at = next;
                     answers.push(answer);
                 }
-                Ok(answers)
+                Ok(Served::Answers(answers))
             }
+            frame::Kind::Elsewhere => Ok(Served::Elsewhere(Elsewhere::decode(&body)?)),
             // A node does not send a request, and a change only arrives on a
             // connection that asked to follow — which this one has not.
-            //
-            // A redirect joins them for a different reason and only for now:
-            // nothing sends one yet, and FOLLOWING one is a change to what this
-            // method returns rather than an arm in this match — a redirect is an
-            // instruction, so handing it back as an error is precisely the shape
-            // the frame exists to avoid. Until that lands, a redirect arriving
-            // here has no meaning on this connection, which is what these arms
-            // say.
-            frame::Kind::Request
-            | frame::Kind::Subscribe
-            | frame::Kind::Change
-            | frame::Kind::Elsewhere => Err(Error::UnknownFrame { tag: kind.tag() }),
+            frame::Kind::Request | frame::Kind::Subscribe | frame::Kind::Change => {
+                Err(Error::UnknownFrame { tag: kind.tag() })
+            }
+        }
+    }
+
+    /// Run a script whose parameters take the values `parameters` binds.
+    ///
+    /// The values travel in the store's own codec, so all seventeen kinds cross
+    /// unchanged and the server never has to *read* one — which is what keeps
+    /// the grammar's rule intact at this distance: a supplied value cannot
+    /// become syntax, and nothing about being remote gives that back.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::run`], and [`Error::Refused`] naming the parameter when the
+    /// script asks for one this map has no value for.
+    pub fn run_with(
+        &mut self,
+        script: &str,
+        credentials: Option<(&str, &str)>,
+        parameters: &Parameters,
+    ) -> Result<Vec<Answer>> {
+        match self.run_routed(script, credentials, parameters)? {
+            Served::Answers(answers) => Ok(answers),
+            // Not the frame's shape leaking back as an error. This method's
+            // contract is *give me the answers*, and a caller that asked for
+            // answers, cannot follow an instruction, and was handed one has
+            // genuinely failed. What matters is that the refusal names where the
+            // read belonged — [`Self::run_routed`] is where a caller that can act
+            // on it gets it intact.
+            Served::Elsewhere(elsewhere) => Err(Error::Redirected {
+                endpoint: elsewhere.endpoint,
+                node: elsewhere.node,
+            }),
         }
     }
 
@@ -225,5 +270,97 @@ impl Feed {
             | frame::Kind::Subscribe
             | frame::Kind::Elsewhere => Err(Error::UnknownFrame { tag: kind.tag() }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufReader, BufWriter};
+    use std::net::TcpListener;
+    use std::thread;
+
+    use tessari_encoding::NODE_ID_LEN;
+    use tessari_types::Epoch;
+
+    use super::*;
+    use crate::redirect::Settlement;
+
+    /// A node that greets, reads one frame, and answers with the tag it was
+    /// given — the smallest thing a real `Client` will talk to over a real
+    /// socket, which is the only way to exercise `run_routed`'s reader.
+    ///
+    /// Bound to port zero rather than a number: the two suites that use fixed
+    /// ports have to run alone, and this one has no reason to join them.
+    fn node_answering(kind: frame::Kind, body: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let address = listener.local_addr().expect("the port it took").to_string();
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("the client this test dials");
+            let mut reader = BufReader::new(stream.try_clone().expect("a second handle"));
+            let mut writer = BufWriter::new(stream);
+            let mut both = frame::Duplex {
+                reader: &mut reader,
+                writer: &mut writer,
+            };
+            frame::greet(&mut both).expect("a greeting from a client this build wrote");
+            frame::read(&mut reader)
+                .expect("the request")
+                .expect("a request");
+            frame::write(&mut writer, kind, &body).expect("the answer this test exists to send");
+        });
+        address
+    }
+
+    fn a_redirect() -> Elsewhere {
+        Elsewhere {
+            endpoint: "10.0.0.9:9080".to_owned(),
+            node: [3; NODE_ID_LEN],
+            epoch: Epoch::new(41),
+            settlement: Settlement::Settled,
+        }
+    }
+
+    #[test]
+    fn a_redirect_is_an_answer_to_run_routed_and_not_an_error() {
+        let sent = a_redirect();
+        let address = node_answering(frame::Kind::Elsewhere, sent.encode());
+        let mut client = Client::connect(&address).expect("a node this test started");
+        let served = client
+            .run_routed("SELECT 1;", None, &Parameters::new())
+            .expect("a redirect is not a failure");
+        assert_eq!(served, Served::Elsewhere(sent));
+    }
+
+    #[test]
+    fn a_caller_that_cannot_follow_a_redirect_is_told_where_the_read_belonged() {
+        // The point of the wrapper: `run_with` must fail — its contract is
+        // *give me the answers* — but the failure has to name the endpoint
+        // rather than report tag 13 as an unknown frame, which is what it said
+        // before this wave.
+        let address = node_answering(frame::Kind::Elsewhere, a_redirect().encode());
+        let mut client = Client::connect(&address).expect("a node this test started");
+        let held = client
+            .run_with("SELECT 1;", None, &Parameters::new())
+            .expect_err("a caller asking for answers cannot follow an instruction");
+        assert!(
+            matches!(held, Error::Redirected { ref endpoint, .. } if endpoint == "10.0.0.9:9080"),
+            "the refusal said {held:?} instead of naming where the read belonged"
+        );
+    }
+
+    #[test]
+    fn a_subscriber_still_refuses_a_redirect() {
+        // A subscription is a position in ONE node's log, so there is nothing
+        // for another node to answer and this refusal outlives the delivery
+        // work — it is not a placeholder.
+        let address = node_answering(frame::Kind::Elsewhere, a_redirect().encode());
+        let client = Client::connect(&address).expect("a node this test started");
+        let mut feed = client
+            .follow(&Follow {
+                from: 0,
+                table: None,
+            })
+            .expect("the subscription this test sends");
+        assert!(matches!(feed.wait(), Err(Error::UnknownFrame { tag: 13 })));
     }
 }
