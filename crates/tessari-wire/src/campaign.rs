@@ -130,7 +130,14 @@ impl Standing<'_> {
             now,
         );
         let ballot = round.ballot();
-        if let Some(won) = round.counts(self.candidate, voter.asked(&ballot, now)) {
+        // Both sides of the comparison are this node's own greeting, so the log
+        // restriction never refuses a candidate its own vote — a node is not
+        // behind itself. It is passed rather than skipped because the rule lives
+        // in one place, and a self-vote that took a different path through it
+        // would be a second rule nobody is reading.
+        let reached = self.said.reached();
+        if let Some(won) = round.counts(self.candidate, voter.asked(&ballot, now, reached, reached))
+        {
             return Some(won);
         }
         for (peer, address) in self.peers {
@@ -182,6 +189,13 @@ mod tests {
     /// a margin a test can state, short enough that every case here runs at
     /// once.
     const ROUND: Duration = Duration::from_millis(100);
+
+    /// A log position both sides of a vote share — see the note on the constant
+    /// of the same name in `grant`.
+    const LEVEL: crate::grant::Reached = crate::grant::Reached {
+        leadership: Epoch::new(3),
+        tail: tessari_types::Sequence::new(9),
+    };
 
     fn standing<'a>(
         mine: &'a Credential,
@@ -499,6 +513,8 @@ mod tests {
                 candidate: rival,
             },
             Instant::now(),
+            LEVEL,
+            LEVEL,
         );
         assert!(
             matches!(

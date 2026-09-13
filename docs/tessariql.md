@@ -6505,8 +6505,27 @@ mechanism on.
 **Which roles let a node stand is what the catalog says, not what it is currently
 doing.** A leader that misses a round stops writing — that is the fence — but it
 goes on standing, because the role the operator wrote has not changed. A node the
-operator has not made writable never stands at all, however quiet the leader
-gets: which machine *should* lead is a decision the catalog holds.
+operator has not made `coordinating` never stands at all, however quiet the
+leader gets: which machines make up the deciding set is a decision the catalog
+holds.
+
+**Every coordinating node may stand, not only the writable one.** The role that
+lets a node put a ballot is `coordinating` — the same role that lets it answer
+one — because a failover with one eligible candidate is not a failover. `writable`
+still says which machine the operator *wants* to lead and is what a voter weighs;
+it is no longer the only machine that *can*. A single-node store is unaffected: a
+node with no `coordinating` role declared on itself stands for nothing, so
+nothing that has never needed a lease begins taking one.
+
+**A voter refuses a candidate whose log is behind its own.** Opening the
+candidate set makes this necessary rather than merely tidy: a node holding less
+history could otherwise win a majority, lead, and silently drop every write it
+never received. The comparison is the pair *(leadership that wrote the tail,
+tail)* — a higher leadership wins outright, and the longer log decides only
+within one leadership, because a node that led an old epoch and then fell away
+can hold a higher sequence than the node carrying the history that actually won.
+The refusal names the **voter's** own position, so a candidate can tell *catch up
+and stand again* from *the history you hold is not the one that won*.
 
 `INFO FOR NODE` reports the epoch this node is leading under beside the time left
 on its lease. The pair is the one an operator watches: a lease heading toward

@@ -303,6 +303,7 @@ mod tests {
             epoch: Epoch::new(7),
             roles: if serves { Roles::SERVING } else { Roles::NONE },
             tail: Sequence::new(4096),
+            tail_leadership: Epoch::new(1),
             current_as_of: age,
         }
     }

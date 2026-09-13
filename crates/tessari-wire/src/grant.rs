@@ -56,16 +56,30 @@
 //! handshake be written before the transport decision was taken and survive it
 //! unchanged.
 //!
-//! **No campaign.** Nothing decides *when* to stand, nothing renews on a timer,
-//! and nothing checks whether a candidate's log is complete enough to lead. Those
-//! are the next wave's, and they are policy over these rules rather than changes
-//! to them.
+//! **No campaign.** Nothing here decides *when* to stand and nothing renews on a
+//! timer; that is policy over these rules rather than a change to them.
+//!
+//! # One grant per epoch is not enough on its own
+//!
+//! It stops two leaders holding one epoch. It says nothing about *which* of
+//! several eligible candidates should hold it, and while exactly one node could
+//! stand that gap cost nothing — the only candidate's log was the cluster's by
+//! definition. ADR-0063 widened who may stand, and the gap became a way to lose
+//! data silently: a candidate holding less history wins a majority, leads, and
+//! the writes it never received are gone with nothing anywhere in an error
+//! state.
+//!
+//! So a voter also refuses a candidate whose log is behind its own, which is
+//! Raft's election restriction. The comparison is ADR-0059's ordering over
+//! [`Reached`] — a higher leadership first, the higher sequence at equal
+//! leadership — and the refusal names the voter's own position, so a candidate
+//! can tell *catch up* from *you lost*.
 
 use std::time::{Duration, Instant};
 
 use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::{LEASE_TTL, Lease};
-use tessari_types::Epoch;
+use tessari_types::{Epoch, Sequence};
 
 use crate::error::{Error, Result};
 use crate::frame;
@@ -114,13 +128,50 @@ impl Ballot {
     }
 }
 
+/// How far a log has got, as the pair that orders two of them.
+///
+/// The sequence alone does not order two logs. A node that led an epoch, wrote
+/// records no majority ever saw, and fell away can hold a **higher** sequence
+/// than the node carrying the history that actually won — so ranking on the
+/// number would promote the diverged branch. The leadership that wrote the tail
+/// is what breaks that tie, and it is the fact ADR-0059 put in every record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reached {
+    /// The leadership under which the record at `tail` was written.
+    pub leadership: Epoch,
+    /// How far the committed log reaches.
+    pub tail: Sequence,
+}
+
+impl Reached {
+    /// Whether this log is strictly behind `other`.
+    ///
+    /// ADR-0059's ordering, written out rather than derived: a higher leadership
+    /// wins outright, and the higher sequence decides only within one
+    /// leadership. Deriving it from field order would make a safety rule a
+    /// property of how the struct happens to be declared.
+    ///
+    /// Strictly, so that two logs at the same position are not behind each
+    /// other — a voter must be able to grant to a candidate level with it, and a
+    /// candidate must be able to vote for itself.
+    #[must_use]
+    pub fn behind(self, other: Self) -> bool {
+        match self.leadership.cmp(&other.leadership) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Equal => self.tail < other.tail,
+        }
+    }
+}
+
 /// Why a voter said no.
 ///
-/// Three refusals rather than one, because they send an operator somewhere
+/// Four refusals rather than one, because they send an operator somewhere
 /// different: an epoch already decided means a candidate is re-running a round
-/// that concluded; a grant still alive is the healthy steady state; and a voter
-/// too recently started is a node that has restarted and is deliberately sitting
-/// out one lease.
+/// that concluded; a grant still alive is the healthy steady state; a voter too
+/// recently started is a node that has restarted and is deliberately sitting out
+/// one lease; and a log behind this voter's own is a candidate that must not
+/// lead yet whatever else is true.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Refused {
@@ -139,6 +190,19 @@ pub enum Refused {
     TooSoonAfterStarting {
         /// How long until it has outlived anything it may have forgotten.
         for_the_next: Duration,
+    },
+    /// The candidate's log is behind this voter's own.
+    ///
+    /// It carries the voter's own position and not the candidate's, which the
+    /// candidate already knows. The pair is what makes the answer actionable:
+    /// the same leadership and a higher sequence says *catch up and stand
+    /// again*, a higher leadership says *the history you hold is not the one
+    /// that won*, and those send whoever reads them to different places.
+    LogBehind {
+        /// The leadership under which this voter's own tail was written.
+        leadership: Epoch,
+        /// How far this voter's own committed log reaches.
+        tail: Sequence,
     },
 }
 
@@ -160,7 +224,7 @@ impl Vote {
     /// informative than the rules behind it.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut body = Vec::with_capacity(9);
+        let mut body = Vec::with_capacity(17);
         match self {
             Self::Granted => body.push(0),
             Self::Refused(Refused::EpochAlreadyDecided { granted }) => {
@@ -174,6 +238,11 @@ impl Vote {
             Self::Refused(Refused::TooSoonAfterStarting { for_the_next }) => {
                 body.push(3);
                 frame::put_u64(&mut body, millis(*for_the_next));
+            }
+            Self::Refused(Refused::LogBehind { leadership, tail }) => {
+                body.push(4);
+                frame::put_u64(&mut body, leadership.get());
+                frame::put_u64(&mut body, tail.get());
             }
         }
         body
@@ -207,6 +276,14 @@ impl Vote {
                 let (left, _) = frame::take_u64(body, 1)?;
                 Ok(Self::Refused(Refused::TooSoonAfterStarting {
                     for_the_next: Duration::from_millis(left),
+                }))
+            }
+            4 => {
+                let (leadership, at) = frame::take_u64(body, 1)?;
+                let (tail, _) = frame::take_u64(body, at)?;
+                Ok(Self::Refused(Refused::LogBehind {
+                    leadership: Epoch::new(leadership),
+                    tail: Sequence::new(tail),
                 }))
             }
             tag => Err(Error::UnknownFrame { tag }),
@@ -271,11 +348,40 @@ impl Voter {
 
     /// Answer one ballot.
     ///
-    /// The checks are ordered by how different their remedies are. A repeated
-    /// epoch is a confused candidate; a live grant is the normal answer and the
-    /// caller wants to know how long to wait; a recent start is a node sitting
-    /// out a lease it cannot remember.
-    pub fn asked(&mut self, ballot: &Ballot, now: Instant) -> Vote {
+    /// The checks are ordered by how different their remedies are. A log behind
+    /// this voter's own is first because it is the only refusal that does not
+    /// depend on what this voter has done — it is a statement about the
+    /// candidate, true whatever this voter granted and whenever it started, and
+    /// a candidate told to catch up has something to do about it. Then: a
+    /// repeated epoch is a confused candidate; a live grant is the normal answer
+    /// and the caller wants to know how long to wait; a recent start is a node
+    /// sitting out a lease it cannot remember.
+    ///
+    /// # Both positions are arguments, and neither is read from a frame
+    ///
+    /// `mine` is this node's own log position and `candidate` is the position
+    /// the candidate **proved** when it greeted — not one it wrote into the
+    /// ballot. It is the rule [`crate::Error::NotItsOwnBallot`] already applies
+    /// to the candidate's identity, for the same reason: a fact a candidate
+    /// states about itself in the frame being judged is a fact it can choose,
+    /// and an election restriction a candidate can opt out of restricts nothing.
+    ///
+    /// They are arguments rather than fields because a log position changes with
+    /// every commit, so a voter that remembered one would be answering from a
+    /// picture the store has already moved past.
+    pub fn asked(
+        &mut self,
+        ballot: &Ballot,
+        now: Instant,
+        mine: Reached,
+        candidate: Reached,
+    ) -> Vote {
+        if candidate.behind(mine) {
+            return Vote::Refused(Refused::LogBehind {
+                leadership: mine.leadership,
+                tail: mine.tail,
+            });
+        }
         if let Some(held) = self.granted {
             // The node this voter is already holding a grant for. Both rules
             // below turn on it, and neither is safe without the **proved**
@@ -390,8 +496,8 @@ impl Deciding {
     /// Refusing to read it would take this node out of every round for the rest
     /// of the process's life over a panic elsewhere — a permanent availability
     /// loss bought with no safety, because the value being guarded is sound.
-    pub fn asked(&self, ballot: &Ballot, now: Instant) -> Vote {
-        self.held().asked(ballot, now)
+    pub fn asked(&self, ballot: &Ballot, now: Instant, mine: Reached, candidate: Reached) -> Vote {
+        self.held().asked(ballot, now, mine, candidate)
     }
 
     /// The highest epoch this node has granted, if any.
@@ -519,11 +625,21 @@ fn free_at(at: Instant) -> Instant {
 
 #[cfg(test)]
 mod tests {
-    use super::{Ballot, Leadership, Refused, Round, Vote, Voter, majority};
+    use super::{Ballot, Leadership, Reached, Refused, Round, Vote, Voter, majority};
     use std::time::{Duration, Instant};
     use tessari_encoding::NODE_ID_LEN;
     use tessari_storage::{LEASE_GUARD, LEASE_TTL};
-    use tessari_types::Epoch;
+    use tessari_types::{Epoch, Sequence};
+
+    /// A log position both sides of a vote share.
+    ///
+    /// Every case below is about the lease rules, so the two logs are level and
+    /// the restriction added in W253 never fires — a test about when a voter may
+    /// grant should not also be a test about what it is granting to.
+    const LEVEL: Reached = Reached {
+        leadership: Epoch::new(3),
+        tail: Sequence::new(9),
+    };
 
     /// A base far enough ahead that every test can subtract from it without
     /// depending on how long this machine has been up.
@@ -557,7 +673,7 @@ mod tests {
         let mut first = Round::opened_at(Epoch::new(1), A, voters.len(), now);
         let mut held = None;
         for (voter, id) in voters.iter_mut().zip([ONE, TWO, THREE]) {
-            let vote = voter.asked(&first.ballot(), now);
+            let vote = voter.asked(&first.ballot(), now, LEVEL, LEVEL);
             held = first.counts(id, vote);
         }
         assert!(
@@ -570,7 +686,7 @@ mod tests {
         let later = after(now, Duration::from_millis(1));
         let mut second = Round::opened_at(Epoch::new(1), B, voters.len(), later);
         for (voter, id) in voters.iter_mut().zip([ONE, TWO, THREE]) {
-            let vote = voter.asked(&second.ballot(), later);
+            let vote = voter.asked(&second.ballot(), later, LEVEL, LEVEL);
             assert_eq!(
                 vote,
                 Vote::Refused(Refused::EpochAlreadyDecided {
@@ -602,7 +718,7 @@ mod tests {
             candidate: A,
         };
 
-        assert_eq!(voter.asked(&ballot, now), Vote::Granted);
+        assert_eq!(voter.asked(&ballot, now, LEVEL, LEVEL), Vote::Granted);
 
         let long_after = after(now, LEASE_TTL.saturating_add(Duration::from_secs(60)));
         assert_eq!(
@@ -611,14 +727,16 @@ mod tests {
                     epoch: Epoch::new(7),
                     candidate: B
                 },
-                long_after
+                long_after,
+                LEVEL,
+                LEVEL
             ),
             Vote::Refused(Refused::EpochAlreadyDecided {
                 granted: Epoch::new(7)
             })
         );
         assert_eq!(
-            voter.asked(&ballot, long_after),
+            voter.asked(&ballot, long_after, LEVEL, LEVEL),
             Vote::Granted,
             "the holder re-asking its own epoch adds no second holder"
         );
@@ -641,13 +759,13 @@ mod tests {
             epoch: Epoch::new(4),
             candidate: A,
         };
-        assert_eq!(voter.asked(&ballot, now), Vote::Granted);
+        assert_eq!(voter.asked(&ballot, now, LEVEL, LEVEL), Vote::Granted);
 
         // The last moment a renewal is any use: one instant before the holder
         // stops writing. The voter is still holding for `LEASE_GUARD` longer.
         let renewing = after(now, LEASE_TTL.saturating_sub(LEASE_GUARD));
         assert_eq!(
-            voter.asked(&ballot, renewing),
+            voter.asked(&ballot, renewing, LEVEL, LEVEL),
             Vote::Granted,
             "a leader that cannot renew before its own fence holds a terminal lease"
         );
@@ -666,10 +784,10 @@ mod tests {
             epoch: Epoch::new(4),
             candidate: A,
         };
-        assert_eq!(voter.asked(&ballot, now), Vote::Granted);
+        assert_eq!(voter.asked(&ballot, now, LEVEL, LEVEL), Vote::Granted);
 
         let renewed = after(now, LEASE_TTL.saturating_sub(LEASE_GUARD));
-        assert_eq!(voter.asked(&ballot, renewed), Vote::Granted);
+        assert_eq!(voter.asked(&ballot, renewed, LEVEL, LEVEL), Vote::Granted);
         assert_eq!(
             voter.free_at(),
             Some(after(renewed, LEASE_TTL)),
@@ -690,7 +808,9 @@ mod tests {
                     epoch: Epoch::new(4),
                     candidate: A
                 },
-                now
+                now,
+                LEVEL,
+                LEVEL
             ),
             Vote::Granted
         );
@@ -700,7 +820,9 @@ mod tests {
                     epoch: Epoch::new(4),
                     candidate: B
                 },
-                after(now, Duration::from_secs(1))
+                after(now, Duration::from_secs(1)),
+                LEVEL,
+                LEVEL
             ),
             Vote::Refused(Refused::EpochAlreadyDecided {
                 granted: Epoch::new(4)
@@ -718,7 +840,9 @@ mod tests {
                     epoch: Epoch::new(1),
                     candidate: A
                 },
-                now
+                now,
+                LEVEL,
+                LEVEL
             ),
             Vote::Granted
         );
@@ -730,7 +854,9 @@ mod tests {
                     epoch: Epoch::new(2),
                     candidate: B
                 },
-                soon
+                soon,
+                LEVEL,
+                LEVEL
             ),
             Vote::Refused(Refused::EarlierGrantStillAlive {
                 for_the_next: LEASE_TTL.saturating_sub(Duration::from_secs(1))
@@ -747,7 +873,9 @@ mod tests {
                     epoch: Epoch::new(2),
                     candidate: B
                 },
-                after(now, LEASE_TTL)
+                after(now, LEASE_TTL),
+                LEVEL,
+                LEVEL
             ),
             Vote::Granted
         );
@@ -764,7 +892,7 @@ mod tests {
 
         let early = after(started, Duration::from_secs(4));
         assert_eq!(
-            voter.asked(&ballot, early),
+            voter.asked(&ballot, early, LEVEL, LEVEL),
             Vote::Refused(Refused::TooSoonAfterStarting {
                 for_the_next: LEASE_TTL.saturating_sub(Duration::from_secs(4))
             })
@@ -772,7 +900,7 @@ mod tests {
         assert_eq!(voter.decided(), None, "a refusal decides nothing");
 
         assert_eq!(
-            voter.asked(&ballot, after(started, LEASE_TTL)),
+            voter.asked(&ballot, after(started, LEASE_TTL), LEVEL, LEVEL),
             Vote::Granted
         );
     }
@@ -793,7 +921,7 @@ mod tests {
         ];
         let mut held = None;
         for ((voter, id), at) in voters.iter_mut().zip([ONE, TWO, THREE]).zip(answered) {
-            let vote = voter.asked(&round.ballot(), at);
+            let vote = voter.asked(&round.ballot(), at, LEVEL, LEVEL);
             assert_eq!(vote, Vote::Granted);
             held = round.counts(id, vote);
         }
@@ -825,7 +953,7 @@ mod tests {
         let mut round = Round::opened_at(Epoch::new(1), A, 1, opened);
 
         let answered = after(opened, LEASE_TTL.saturating_sub(Duration::from_secs(1)));
-        let vote = voter.asked(&round.ballot(), answered);
+        let vote = voter.asked(&round.ballot(), answered, LEVEL, LEVEL);
         let held = round.counts(ONE, vote).expect("one of one carried it");
 
         assert!(
@@ -866,5 +994,121 @@ mod tests {
         let now = base();
         let round = Round::opened_at(Epoch::new(1), A, 0, now);
         assert_eq!(round.held(), None);
+    }
+
+    #[test]
+    fn a_candidate_behind_this_voter_is_refused_and_told_how_far_to_come() {
+        // ADR-0063's second half. Widening who may stand without this turns a
+        // liveness improvement into a way to lose data: a candidate holding less
+        // history wins, leads, and the writes it never received are gone with
+        // nothing in an error state.
+        let now = base();
+        let mut voter = settled(now);
+        let ballot = Ballot {
+            epoch: Epoch::new(4),
+            candidate: A,
+        };
+        let behind = Reached {
+            leadership: LEVEL.leadership,
+            tail: Sequence::new(LEVEL.tail.get().saturating_sub(1)),
+        };
+
+        assert_eq!(
+            voter.asked(&ballot, now, LEVEL, behind),
+            Vote::Refused(Refused::LogBehind {
+                leadership: LEVEL.leadership,
+                tail: LEVEL.tail,
+            }),
+            "the refusal names the VOTER'S position, which is the half the \
+             candidate does not already know"
+        );
+        // And the refusal is about the log rather than about this voter's state:
+        // it granted nothing, so the same candidate level with it is granted.
+        assert_eq!(voter.decided(), None);
+        assert_eq!(voter.asked(&ballot, now, LEVEL, LEVEL), Vote::Granted);
+    }
+
+    #[test]
+    fn a_candidate_ahead_of_this_voter_is_not_refused_for_being_ahead() {
+        // Strictly behind, not merely different. A voter that refused everyone
+        // it was not level with would refuse every candidate in a cluster where
+        // anything had been written since it last collected — which is every
+        // cluster, most of the time.
+        let now = base();
+        let mut voter = settled(now);
+        let ahead = Reached {
+            leadership: LEVEL.leadership,
+            tail: Sequence::new(LEVEL.tail.get().saturating_add(40)),
+        };
+        assert_eq!(
+            voter.asked(
+                &Ballot {
+                    epoch: Epoch::new(4),
+                    candidate: A
+                },
+                now,
+                LEVEL,
+                ahead
+            ),
+            Vote::Granted
+        );
+    }
+
+    #[test]
+    fn a_longer_log_under_an_older_leadership_still_loses() {
+        // The reason the comparison is a pair and not a number. A node that led
+        // an epoch, wrote records no majority ever saw, and fell away holds a
+        // HIGHER sequence than the node carrying the history that actually won.
+        // Ranking on the sequence alone would hand leadership to the diverged
+        // branch and call it the most up-to-date.
+        let now = base();
+        let mut voter = settled(now);
+        let diverged = Reached {
+            leadership: Epoch::new(LEVEL.leadership.get().saturating_sub(1)),
+            tail: Sequence::new(LEVEL.tail.get().saturating_add(1_000)),
+        };
+        assert!(diverged.behind(LEVEL), "a lower leadership is behind");
+        assert_eq!(
+            voter.asked(
+                &Ballot {
+                    epoch: Epoch::new(9),
+                    candidate: A
+                },
+                now,
+                LEVEL,
+                diverged
+            ),
+            Vote::Refused(Refused::LogBehind {
+                leadership: LEVEL.leadership,
+                tail: LEVEL.tail,
+            })
+        );
+        // And the other direction, which is what makes the pair an ordering
+        // rather than a preference: a shorter log under a newer leadership wins.
+        assert!(!LEVEL.behind(diverged));
+    }
+
+    #[test]
+    fn two_logs_at_one_position_are_behind_neither() {
+        // The self-vote depends on this: a candidate asks its own memory with
+        // its own position on both sides, and a rule that refused equality would
+        // stop every node voting for itself.
+        assert!(!LEVEL.behind(LEVEL));
+    }
+
+    #[test]
+    fn a_refusal_that_names_a_log_crosses_the_wire() {
+        // The reason a refusal carries values at all: *catch up to sequence 9*
+        // and *you are re-running a decided epoch* send a candidate to different
+        // places, and a wire that kept only the "no" would be less informative
+        // than the rule behind it.
+        let refused = Vote::Refused(Refused::LogBehind {
+            leadership: Epoch::new(6),
+            tail: Sequence::new(4_096),
+        });
+        assert_eq!(
+            Vote::decode(&refused.encode()).expect("a vote this build wrote"),
+            refused
+        );
     }
 }

@@ -967,10 +967,16 @@ fn greeting(db: &Db) -> Result<tessari_wire::Hello, String> {
     // `None` becomes `Epoch::ZERO`, so a node that never campaigns greets
     // byte-identically to every build before this one.
     let leading = store.leading().unwrap_or(tessari_types::Epoch::ZERO);
+    // And the other epoch, which is a different fact: the leadership that WROTE
+    // what this node holds, rather than the one it holds a lease under. A voter
+    // ranks candidates on this pair, and ranking on `leading` instead would put
+    // a follower carrying the newest records below an ex-leader carrying fewer.
+    let tail_leadership = store.tail_leadership().map_err(|why| why.to_string())?;
     Ok(tessari_wire::Hello::about(
         &identity,
         leading,
         tail,
+        tail_leadership,
         current_as_of,
     ))
 }

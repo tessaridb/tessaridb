@@ -204,7 +204,17 @@ impl Peers {
                     if asked.candidate != said.node {
                         return Err(Error::NotItsOwnBallot);
                     }
-                    let vote = voter.asked(&asked, std::time::Instant::now());
+                    // The candidate's log position comes from the greeting it
+                    // proved a moment ago on this connection, for the reason the
+                    // line above gives about its identity: a position a
+                    // candidate writes into the ballot being judged is a
+                    // position it can choose.
+                    let vote = voter.asked(
+                        &asked,
+                        std::time::Instant::now(),
+                        mine.reached(),
+                        said.reached(),
+                    );
                     frame::write_tagged(&mut link, PeerFrame::Vote.tag(), &vote.encode())?;
                     Some(vote)
                 }
@@ -479,9 +489,18 @@ pub(crate) mod tests {
             &identity(node),
             Epoch::new(4),
             Sequence::new(9),
+            LEVEL.leadership,
             Some(core::time::Duration::ZERO),
         )
     }
+
+    /// The log position every greeting here carries, so that two nodes built by
+    /// [`hello`] are level and a case about the handshake is not also a case
+    /// about the election restriction.
+    pub(crate) const LEVEL: crate::grant::Reached = crate::grant::Reached {
+        leadership: Epoch::new(3),
+        tail: Sequence::new(9),
+    };
 
     /// A voter that has been up long enough to have outlived anything it could
     /// have granted before a restart — otherwise every door in these tests
@@ -674,6 +693,8 @@ pub(crate) mod tests {
                 candidate: HERE,
             },
             std::time::Instant::now(),
+            LEVEL,
+            LEVEL,
         );
         voter
     }
@@ -703,6 +724,55 @@ pub(crate) mod tests {
             .expect("the door's thread")
             .expect("served");
         assert_eq!(met.voted, Some(Vote::Granted), "both ends saw one answer");
+    }
+
+    /// A greeting from a node whose log stops short of [`LEVEL`].
+    fn falling_behind(node: [u8; NODE_ID_LEN]) -> Hello {
+        Hello::about(
+            &identity(node),
+            Epoch::new(4),
+            Sequence::new(LEVEL.tail.get().saturating_sub(3)),
+            LEVEL.leadership,
+            Some(core::time::Duration::ZERO),
+        )
+    }
+
+    #[test]
+    fn a_candidate_whose_log_is_behind_is_refused_at_the_door() {
+        // The wiring test for ADR-0063's second half, and it is the half a unit
+        // test cannot reach: the rule lives in the voter, but the position it
+        // judges has to arrive from the GREETING the candidate proved rather
+        // than from the ballot it wrote. A door that passed the ballot's word
+        // for it would pass every unit test in `grant` and restrict nothing.
+        let authority = Authority::new();
+        let (address, answering) = voting(&authority, HERE, settled());
+
+        let (_, vote) = call(
+            address,
+            authority.issue(THERE, Purpose::Peer),
+            &authority.der(),
+            HERE,
+            &falling_behind(THERE),
+            Ask::Ballot(&Ballot {
+                epoch: Epoch::new(12),
+                candidate: THERE,
+            }),
+        )
+        .expect("a peer that proved itself may ask");
+
+        assert_eq!(
+            voted(&vote),
+            Some(Vote::Refused(Refused::LogBehind {
+                leadership: LEVEL.leadership,
+                tail: LEVEL.tail,
+            })),
+            "the door judged the position the candidate greeted with"
+        );
+        let met = answering
+            .join()
+            .expect("the door's thread")
+            .expect("served");
+        assert_eq!(met.voted, voted(&vote), "both ends saw one answer");
     }
 
     #[test]

@@ -755,6 +755,49 @@ impl Store {
         }
     }
 
+    /// The leadership under which the newest record this node holds was written.
+    ///
+    /// Raft's `lastLogTerm`, and it is a different fact from [`Self::leading`].
+    /// `leading` says *which epoch a majority granted THIS node*, which is
+    /// `None` on a follower that has never campaigned however much history it
+    /// holds. This says *which leadership wrote the last thing here*, which is
+    /// what an election restriction has to compare: a follower carrying the
+    /// newest records must not read as behind a node that once led and then
+    /// fell away. Ordering a candidate by the wrong one of the two inverts the
+    /// answer exactly where it matters.
+    ///
+    /// [`Epoch::ZERO`] for an empty log, which is the same value a store that
+    /// has elected nobody holds — so the first record of a fresh log needs no
+    /// special case at any call site, and it is the convention
+    /// `refuse_a_parted_history` already uses one position further back.
+    ///
+    /// Costs one point read and a fixed eight-byte inspection: the epoch sits at
+    /// a known offset in the stored record and the mutations are never decoded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the tail cannot be read, or when the record stored
+    /// at it cannot be inspected — which is corruption rather than an absence.
+    pub fn tail_leadership(&self) -> Result<Epoch> {
+        let tail = self.committed_tail()?;
+        if tail == Sequence::ZERO {
+            return Ok(Epoch::ZERO);
+        }
+        let stored = self
+            .backend
+            .get(LogKey::keyspace(), &LogKey::new(tail).encode())?;
+        // A tail naming a record the log does not hold is the retention case
+        // Q-529 owns, and the honest answer here is the same one
+        // `refuse_a_parted_history` gives: nothing to compare against. A node
+        // that cannot state the leadership of its own tail is treated as
+        // holding none, which makes it lose every comparison rather than win
+        // one it cannot support.
+        let Some(value) = stored else {
+            return Ok(Epoch::ZERO);
+        };
+        Ok(LogRecord::epoch_in(value.as_slice())?)
+    }
+
     /// Read log records from `from` onward, oldest first.
     ///
     /// `limit` bounds the read because a log is unbounded by nature and a caller

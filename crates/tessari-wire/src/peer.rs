@@ -159,6 +159,23 @@ pub struct Hello {
     pub roles: Roles,
     /// How far its committed log reaches.
     pub tail: Sequence,
+    /// The leadership under which the record at that tail was written.
+    ///
+    /// Beside the tail and not instead of it, because the two answer one
+    /// question together: *which of these two logs is further along*. The
+    /// sequence alone cannot, since a node that led an old epoch and diverged
+    /// can hold a higher sequence than a node holding the newer history — the
+    /// ordering is ADR-0059's, a higher epoch first and the higher sequence at
+    /// equal epoch.
+    ///
+    /// It is deliberately NOT [`Self::epoch`]. That one is the leadership the
+    /// greeter believes is current, which is `Epoch::ZERO` on a node that has
+    /// never campaigned however much history it holds; this one is the
+    /// leadership that actually wrote what it holds. A voter comparing the wrong
+    /// one of the two would rank a complete follower below an outdated
+    /// ex-leader, which is precisely the ordering an election restriction
+    /// exists to prevent.
+    pub tail_leadership: Epoch,
     /// How old the greeter says its own copy is.
     ///
     /// The fact a router needs beside the tail and the roles: the tail says how
@@ -191,6 +208,7 @@ impl Hello {
         identity: &NodeIdentity,
         epoch: Epoch,
         tail: Sequence,
+        tail_leadership: Epoch,
         current_as_of: Option<Duration>,
     ) -> Self {
         Self {
@@ -199,14 +217,29 @@ impl Hello {
             epoch,
             roles: identity.roles,
             tail,
+            tail_leadership,
             current_as_of,
+        }
+    }
+
+    /// Where this greeter's log has got to, as the pair that orders two logs.
+    ///
+    /// The two fields travel together in every comparison, so they are paired
+    /// here rather than at each call site — a caller that assembled them itself
+    /// could pair [`Self::tail`] with [`Self::epoch`], which is the one mistake
+    /// that inverts the answer.
+    #[must_use]
+    pub fn reached(&self) -> crate::grant::Reached {
+        crate::grant::Reached {
+            leadership: self.tail_leadership,
+            tail: self.tail,
         }
     }
 
     /// The body of a [`PeerFrame::Hello`] frame.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut body = Vec::with_capacity(45);
+        let mut body = Vec::with_capacity(53);
         body.extend_from_slice(&self.node);
         frame::put_u32(&mut body, self.build.major);
         frame::put_u32(&mut body, self.build.minor);
@@ -214,6 +247,7 @@ impl Hello {
         frame::put_u64(&mut body, self.epoch.get());
         body.push(self.roles.bits());
         frame::put_u64(&mut body, self.tail.get());
+        frame::put_u64(&mut body, self.tail_leadership.get());
         // A presence byte and then the seconds, rather than a sentinel value:
         // every `u64` is a legitimate age, so there is no number left over to
         // mean *I cannot say*.
@@ -250,6 +284,7 @@ impl Hello {
         let bits = *body.get(at).ok_or(Error::Malformed)?;
         let roles = Roles::from_bits(bits).ok_or(Error::UnknownRoles { bits })?;
         let (tail, at) = frame::take_u64(body, at.checked_add(1).ok_or(Error::Malformed)?)?;
+        let (tail_leadership, at) = frame::take_u64(body, at)?;
         let present = *body.get(at).ok_or(Error::Malformed)?;
         let (seconds, _) = frame::take_u64(body, at.checked_add(1).ok_or(Error::Malformed)?)?;
 
@@ -263,6 +298,7 @@ impl Hello {
             epoch: Epoch::new(epoch),
             roles,
             tail: Sequence::new(tail),
+            tail_leadership: Epoch::new(tail_leadership),
             current_as_of: (present != 0).then(|| Duration::from_secs(seconds)),
         })
     }
@@ -334,6 +370,7 @@ mod tests {
             epoch: Epoch::new(7),
             roles: Roles::ALONE,
             tail: Sequence::new(4096),
+            tail_leadership: Epoch::new(7),
             current_as_of: Some(Duration::from_secs(3)),
         }
     }
@@ -489,6 +526,7 @@ mod tests {
             &identity,
             Epoch::new(3),
             Sequence::new(90),
+            Epoch::new(2),
             Some(Duration::from_secs(11)),
         );
         assert_eq!(said.node, identity.id);

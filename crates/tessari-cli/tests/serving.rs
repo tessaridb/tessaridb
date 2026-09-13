@@ -657,6 +657,7 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
             epoch: tessari_types::Epoch::ZERO,
             roles: tessari_storage::Roles::NONE,
             tail: tessari_types::Sequence::new(0),
+            tail_leadership: tessari_types::Epoch::ZERO,
             current_as_of: None,
         },
         tessari_wire::Ask::Nothing,

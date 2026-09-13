@@ -419,7 +419,30 @@ const TABLES: &[Table] = &[
         // moves: putting this on the commit path would have made it exact and
         // would have put a lock on the hottest path in the engine for the sake
         // of a diagnostic.
-        expected: 29,
+        // 30 since the election restriction (G024 **S7.1**, ADR-0063):
+        // `Store::tail_leadership` answers which leadership wrote the record at
+        // this node's committed tail. Classified **exempt, on the same ground as
+        // `committed_tail` beside it**: it takes no reach and no identity, it
+        // reads one epoch out of one log record the node already publishes the
+        // position of, and it returns a number that is already on the wire in
+        // every greeting this node sends.
+        //
+        // Its re-classification trigger is sharper than most in this block and
+        // is worth stating, because the value is now a **safety input**: a voter
+        // refuses a candidate whose log is behind its own, and this is the half
+        // of that comparison the voter supplies about itself. A caller who could
+        // make it answer LOWER than the truth could make a voter grant to a
+        // candidate it should have refused, which is how leadership reaches a
+        // node that does not hold the cluster's history. Nothing in this build
+        // offers that: it is read-only, it is derived from the log on every
+        // call, and its callers are the greeting path and this test.
+        //
+        // It is deliberately NOT `leading`, which sits above it and answers a
+        // different question — the epoch a majority granted THIS node. Reading
+        // that one into the comparison would rank a follower holding the newest
+        // records below an ex-leader holding fewer, so the two are separate
+        // methods rather than one with a flag.
+        expected: 30,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -478,7 +501,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 78, "the counted tables no longer sum to 78");
+    assert_eq!(total, 79, "the counted tables no longer sum to 79");
 }
 
 /// Every `.rs` file under a directory.
