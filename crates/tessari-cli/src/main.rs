@@ -448,6 +448,12 @@ fn serve(
         // ADR-0065: the catalog says who may be followed, the greeting says
         // which of them is the origin right now.
         let collecting_routing = std::sync::Arc::clone(&routing);
+        // A fourth holder, and the last reader the awareness round gains. A node
+        // that can hear a leader does not stand against it (ADR-0066) — without
+        // this the campaign cadence sees only its own lease, and a follower that
+        // has none stands every second, granting an epoch to itself each time
+        // and refusing the real leader's renewal for a whole TTL.
+        let standing_routing = std::sync::Arc::clone(&routing);
         let standing_credential = dialling.duplicate();
         let standing_authority = authority.clone();
         let dialling = {
@@ -488,6 +494,7 @@ fn serve(
                     &standing_credential,
                     &standing_authority,
                     &deciding,
+                    &standing_routing,
                     &stopping,
                 );
             })
@@ -649,7 +656,17 @@ fn dial_peers(
                         tessari_wire::Ask::Nothing,
                     )
                     .map(|(said, _)| said)
-                    .map_err(|why| why.to_string())
+                    .map_err(|why| {
+                        // Said here rather than swallowed. `greet_round` keeps
+                        // only a count, so without this the one line an
+                        // operator gets for a directory that has stopped
+                        // refreshing is *nobody answered* — and a directory
+                        // that stops refreshing is a follower that stops
+                        // knowing who to follow, whose symptom is a copy that
+                        // silently never changes.
+                        log::warn!("the greeting to {endpoint} did not land: {why}");
+                        why.to_string()
+                    })
                 });
             });
             // The count and not the directory, because nothing reads the
@@ -816,6 +833,7 @@ fn stand_for_leadership(
     mine: &tessari_wire::Credential,
     authority: &tessari_wire::CertificateDer<'static>,
     voter: &tessari_wire::Deciding,
+    published: &tessari_wire::Published,
     stopping: &tessari_serve::Stopping,
 ) {
     let started = std::time::Instant::now();
@@ -861,6 +879,21 @@ fn stand_for_leadership(
             let Some(voting) = tessari_wire::voters(me.roles, &declared) else {
                 return;
             };
+            // ADR-0066. A node that can still hear a leader does not stand
+            // against it — and this is not politeness, it is what stops a
+            // follower's own self-vote from refusing that leader's renewal for a
+            // whole lease. The bound is the lease term, because a greeting older
+            // than the leader's lease cannot testify that the leader still holds
+            // it. A node that hears nothing stands, which is the condition an
+            // election exists for.
+            if tessari_wire::heard_a_leader(
+                &declared,
+                &published.current(),
+                now,
+                tessari_storage::LEASE_TTL,
+            ) {
+                return;
+            }
             // A member whose endpoint will not parse is dropped from the set it
             // is a member of, not silently skipped inside the round: a majority
             // counted over members that cannot be asked is a majority of a
@@ -895,7 +928,9 @@ fn stand_for_leadership(
                 round: std::time::Duration::from_secs(tessari_constants::ROUND_SECONDS),
             };
             let before = renewing.standing();
-            let held = renewing.once(|lease, next| standing.renew(voter, lease, next, now));
+            let held = renewing.once(me.id, now, |lease, next| {
+                standing.renew(voter, lease, next, now)
+            });
             if held != before {
                 // Installed as it was granted, whole. The lease is dated from the
                 // instant the round opened, so handing the store a span instead

@@ -44,6 +44,7 @@ use tessari_serve::Stopping;
 use tessari_storage::{Lease, ReplicaDefinition};
 use tessari_types::{Epoch, Sequence};
 
+use crate::campaign::Stood;
 use crate::directory::{Destination, Directory};
 use crate::grant::Leadership;
 
@@ -287,6 +288,62 @@ pub fn upstream(
         .map(|(node, peer, _)| (node, peer.endpoint.clone()))
 }
 
+/// Whether a leader this node can hear is still leading.
+///
+/// # A follower that hears a leader does not become a candidate
+///
+/// ADR-0066, and it is the part with no analogue anywhere else in this engine.
+/// [`stands`] asks what the operator declared and the renewal cadence asks about
+/// this node's own lease, so until W257 nothing in the campaign path ever looked
+/// at whether somebody else was already leading — and a `COORDINATING` node
+/// holding no lease has no margin, so it stood on every single tick.
+///
+/// That is not merely noisy, it is a denial of service against the leader.
+/// `Voter::asked` refuses a non-incumbent with `EarlierGrantStillAlive` until a
+/// grant it made is certainly dead, one whole `LEASE_TTL` later. A node that
+/// stands every second grants an epoch to *itself* every second, so two such
+/// followers can refuse the real leader's renewal indefinitely: the cluster
+/// elects somebody, loses them a TTL later, and never gets them back. Raft's
+/// answer is not a rule about voting at all — a follower that hears from a
+/// current leader resets its election timer and does not stand.
+///
+/// # The signal is the one already on the wire
+///
+/// [`crate::Hello::current_as_of`] answers `Some(0)` exactly when the greeter's
+/// **effective** roles carry `WRITABLE` — *I may write right now* — which is the
+/// same fact [`upstream`] routes a follower by (ADR-0065). No new frame, no new
+/// cadence, and one more reader of the awareness round.
+///
+/// # How fresh the hearing has to be
+///
+/// `within` is the caller's, and the value that makes sense is the lease term: a
+/// greeting older than the leader's own lease cannot testify that the leader
+/// still holds it. The awareness interval and the lease are the same length by
+/// design, so in practice this tolerates one missed round and no more — and a
+/// node that hears nothing stands, which is the condition an election is for.
+///
+/// # Declared peers only, and this node is never one of them
+///
+/// The same set [`upstream`] chooses from, for the same reason: a greeting from
+/// an address this node's catalog does not declare is not a member speaking.
+/// The awareness round skips this node's own row, so nothing it said about
+/// itself is in the directory to be mistaken for a peer.
+#[must_use]
+pub fn heard_a_leader(
+    declared: &[ReplicaDefinition],
+    heard: &Directory,
+    now: Instant,
+    within: Duration,
+) -> bool {
+    declared
+        .iter()
+        .filter_map(|peer| heard.at(&peer.endpoint))
+        .any(|seen| {
+            seen.said.current_as_of == Some(Duration::ZERO)
+                && now.saturating_duration_since(seen.at) <= within
+        })
+}
+
 /// Whether this node is eligible to stand at all, from its own identity alone.
 ///
 /// The half of [`voters`]'s question that needs no catalog. A node the operator
@@ -374,16 +431,44 @@ pub fn voters(
 }
 
 /// The leadership this node holds, and what a lost round does to it.
+///
+/// # A lost round has to leave a mark, or it is not a round
+///
+/// ADR-0066. Until W257 this held one field — the leadership won — and derived
+/// the next epoch from it. So a candidate that lost stood for the same epoch
+/// again, against voters that had already spent it, for the life of the
+/// process: three nodes started together elected nobody in ninety seconds, all
+/// healthy, nothing in an error state. Losing is the ordinary case in an
+/// election and it needs its own memory.
+///
+/// Three facts, because they answer three different questions. What this node
+/// **holds** decides whether it may write. What it has **stood for** stops it
+/// re-asking an epoch it has already spent. What it has **heard granted** stops
+/// it climbing one epoch per round towards a cluster that is already far above
+/// it — a node that never led holds [`Epoch::ZERO`] however long the cluster
+/// has been running, and every refusal it gets is already carrying the number.
 #[derive(Debug)]
 pub struct Renewing {
     standing: Leadership,
+    stood: Epoch,
+    heard: Epoch,
+    /// When this node may open its next round, after losing one.
+    ///
+    /// `None` means *now*. See [`Renewing::stagger`] for why a fixed wait is not
+    /// enough and what this is derived from.
+    not_before: Option<Instant>,
 }
 
 impl Renewing {
     /// Hold `standing` until something better is won.
     #[must_use]
     pub fn holding(standing: Leadership) -> Self {
-        Self { standing }
+        Self {
+            stood: standing.epoch,
+            standing,
+            heard: Epoch::ZERO,
+            not_before: None,
+        }
     }
 
     /// The leadership this node is currently standing on.
@@ -402,12 +487,91 @@ impl Renewing {
     /// ordinary case — a cadence that ran a little early. Standing down on
     /// `None` would make a healthy leader resign because its timer fired before
     /// its fence needed defending.
-    pub fn once(&mut self, pass: impl FnOnce(Lease, Epoch) -> Option<Leadership>) -> Leadership {
-        let next = Epoch::new(self.standing.epoch.get().saturating_add(1));
-        if let Some(won) = pass(self.standing.lease(), next) {
-            self.standing = won;
+    pub fn once(
+        &mut self,
+        candidate: [u8; NODE_ID_LEN],
+        now: Instant,
+        pass: impl FnOnce(Lease, Epoch) -> Stood,
+    ) -> Leadership {
+        if self.not_before.is_some_and(|until| now < until) {
+            return self.standing;
+        }
+        let next = Epoch::new(
+            self.standing
+                .epoch
+                .get()
+                .max(self.stood.get())
+                .max(self.heard.get())
+                .saturating_add(1),
+        );
+        match pass(self.standing.lease(), next) {
+            // Untouched, and that is the ordinary case: a cadence that ran a
+            // little early while the fence was still far off. Standing down here
+            // would make a healthy leader resign because its timer fired.
+            Stood::NotDue => {}
+            Stood::Won(won) => {
+                self.standing = won;
+                self.stood = won.epoch;
+                self.not_before = None;
+            }
+            Stood::Lost { granted } => {
+                self.stood = next;
+                if granted > self.heard {
+                    self.heard = granted;
+                }
+                // `None` on an instant so far out that the addition cannot be
+                // represented, which reads as *stand now*. That is the safe
+                // direction: an unrepresentable clock should not be able to
+                // stop a node standing for an epoch.
+                self.not_before = now.checked_add(Self::stagger(candidate, next));
+            }
         }
         self.standing
+    }
+
+    /// How long this node waits before standing again, having just lost.
+    ///
+    /// # Why a wait at all
+    ///
+    /// Advancing the epoch alone does not break a tie. Three candidates that
+    /// lose together stand for the next epoch on the same tick, each grants it
+    /// to itself, each refuses the other two, and the deadlock repeats one epoch
+    /// higher forever. Raft states the randomised election timeout as the
+    /// liveness argument itself rather than as a tuning detail, and this is why.
+    ///
+    /// # Why it is derived rather than random
+    ///
+    /// The property needed is only that two candidates do not retry in step. A
+    /// value derived from the candidate gives that, and gives one thing a random
+    /// one cannot: a test may state the instant a node will stand and assert it,
+    /// where randomness can only be observed not to deadlock over some number of
+    /// runs. It also keeps this crate's dependency list as it is.
+    ///
+    /// **The epoch is in the mix and that is what makes it as strong as
+    /// randomness.** Two nodes whose ids happen to fall close together collide
+    /// at one epoch and not at the next; derived from the id alone, an unlucky
+    /// pair would collide at every epoch forever — which is the failure this
+    /// exists to remove, reintroduced one level down.
+    fn stagger(candidate: [u8; NODE_ID_LEN], epoch: Epoch) -> Duration {
+        // A 64-bit mix of the id and the epoch, spread over one round. The
+        // constants are SplitMix64's; nothing here needs a distribution better
+        // than "two different inputs land in different places", and a named
+        // mixer is easier to recognise than an invented one.
+        let mut mixed = epoch.get();
+        for chunk in candidate.chunks(8) {
+            let mut byte = 0_u64;
+            for (place, value) in chunk.iter().enumerate() {
+                byte |= u64::from(*value) << (place.saturating_mul(8));
+            }
+            mixed ^= byte;
+            mixed = mixed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            mixed ^= mixed >> 31;
+        }
+        let round = Duration::from_secs(tessari_constants::ROUND_SECONDS);
+        let spread = u64::try_from(round.as_millis()).unwrap_or(u64::MAX).max(1);
+        Duration::from_millis(mixed.rem_euclid(spread))
     }
 }
 
@@ -423,7 +587,8 @@ mod tests {
     use tessari_types::{Epoch, Sequence};
 
     use super::{
-        Collecting, Published, Renewing, ReplicaDefinition, due_in, every, stands, upstream, voters,
+        Collecting, Published, Renewing, ReplicaDefinition, Stood, due_in, every, heard_a_leader,
+        stands, upstream, voters,
     };
     use crate::directory::Directory;
     use crate::grant::Leadership;
@@ -696,6 +861,194 @@ mod tests {
         assert_eq!(collecting.reached(), Sequence::new(9));
     }
 
+    /// The deadlock W256 measured against three processes, as a unit.
+    #[test]
+    fn a_lost_round_stands_higher_the_next_time_it_stands() {
+        let mut renewing = Renewing::holding(Leadership {
+            epoch: Epoch::ZERO,
+            from: Instant::now(),
+        });
+        let stood_for = RefCell::new(Vec::new());
+        let ask = |renewing: &mut Renewing, now: Instant| {
+            renewing.once(NODE, now, |_, next| {
+                stood_for.borrow_mut().push(next);
+                Stood::Lost {
+                    granted: Epoch::ZERO,
+                }
+            });
+        };
+
+        let opened = Instant::now();
+        ask(&mut renewing, opened);
+        // Far enough past any stagger that the wait is not what is being tested.
+        ask(&mut renewing, opened + Duration::from_secs(30));
+        ask(&mut renewing, opened + Duration::from_secs(60));
+
+        assert_eq!(
+            *stood_for.borrow(),
+            vec![Epoch::new(1), Epoch::new(2), Epoch::new(3)],
+            "a candidate that lost stood for the same epoch again, against \
+             voters that had already spent it — which is how three healthy \
+             nodes elect nobody forever"
+        );
+    }
+
+    /// The number is already in the answer the candidate is given.
+    #[test]
+    fn a_refusal_that_names_a_granted_epoch_is_learned_from() {
+        let mut renewing = Renewing::holding(Leadership {
+            epoch: Epoch::ZERO,
+            from: Instant::now(),
+        });
+        let opened = Instant::now();
+        renewing.once(NODE, opened, |_, _| Stood::Lost {
+            granted: Epoch::new(50),
+        });
+        let stood_for = RefCell::new(None);
+        renewing.once(NODE, opened + Duration::from_secs(30), |_, next| {
+            *stood_for.borrow_mut() = Some(next);
+            Stood::Lost {
+                granted: Epoch::ZERO,
+            }
+        });
+        assert_eq!(
+            *stood_for.borrow(),
+            Some(Epoch::new(51)),
+            "a node that never led holds Epoch::ZERO however far the cluster \
+             has got, so without adopting what the refusals report it would \
+             climb one epoch per round to reach the conversation"
+        );
+    }
+
+    /// A lost round is not retried on the same tick as everyone else's.
+    #[test]
+    fn a_candidate_that_just_lost_waits_before_standing_again() {
+        let mut renewing = Renewing::holding(Leadership {
+            epoch: Epoch::ZERO,
+            from: Instant::now(),
+        });
+        let opened = Instant::now();
+        renewing.once(NODE, opened, |_, _| Stood::Lost {
+            granted: Epoch::ZERO,
+        });
+        let asked = RefCell::new(false);
+        renewing.once(NODE, opened, |_, _| {
+            *asked.borrow_mut() = true;
+            Stood::Lost {
+                granted: Epoch::ZERO,
+            }
+        });
+        assert!(
+            !*asked.borrow(),
+            "a candidate stood again on the same instant it lost, which is how \
+             three of them split every epoch as reliably as they split the first"
+        );
+    }
+
+    /// And the wait is different per node, which is the whole of the property.
+    #[test]
+    fn two_candidates_do_not_come_back_at_the_same_instant() {
+        let opened = Instant::now();
+        let waited = |candidate: [u8; NODE_ID_LEN]| {
+            let mut renewing = Renewing::holding(Leadership {
+                epoch: Epoch::ZERO,
+                from: opened,
+            });
+            renewing.once(candidate, opened, |_, _| Stood::Lost {
+                granted: Epoch::ZERO,
+            });
+            // The first instant at which it will ask again, found by asking.
+            (0..2000)
+                .map(|millis| opened + Duration::from_millis(millis))
+                .find(|at| {
+                    let asked = RefCell::new(false);
+                    renewing.once(candidate, *at, |_, _| {
+                        *asked.borrow_mut() = true;
+                        Stood::NotDue
+                    });
+                    *asked.borrow()
+                })
+                .expect("a stagger inside one round time")
+        };
+        assert_ne!(
+            waited([1; NODE_ID_LEN]),
+            waited([2; NODE_ID_LEN]),
+            "two candidates that lost together came back together"
+        );
+    }
+
+    /// The epoch is in the mix, so an unlucky pair does not collide forever.
+    #[test]
+    fn a_pair_that_collides_at_one_epoch_is_not_condemned_to_collide_at_every_one() {
+        let offsets = |epoch: Epoch| {
+            (0_u8..64)
+                .map(|seed| Renewing::stagger([seed; NODE_ID_LEN], epoch))
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(
+            offsets(Epoch::new(1)),
+            offsets(Epoch::new(2)),
+            "the offsets did not move with the epoch, so a pair whose ids fall \
+             close together would collide at every epoch there is"
+        );
+    }
+
+    #[test]
+    fn a_node_that_can_hear_a_leader_does_not_stand_against_it() {
+        let leader = [9; NODE_ID_LEN];
+        let declared = [named("leader", "10.0.0.1:9000", leader)];
+        let heard = greeted(&[("10.0.0.1:9000", writing(Epoch::new(7)))]);
+        assert!(
+            heard_a_leader(
+                &declared,
+                &heard,
+                Instant::now(),
+                tessari_storage::LEASE_TTL
+            ),
+            "a follower stood against a leader it had just heard from, and its \
+             own self-vote then refuses that leader's renewal for a whole lease"
+        );
+    }
+
+    #[test]
+    fn a_greeting_older_than_the_lease_holds_nobody_back() {
+        let leader = [9; NODE_ID_LEN];
+        let declared = [named("leader", "10.0.0.1:9000", leader)];
+        let mut heard = Directory::new();
+        let long_ago = Instant::now();
+        heard.heard("10.0.0.1:9000", writing(Epoch::new(7)), long_ago);
+        assert!(
+            !heard_a_leader(
+                &declared,
+                &heard,
+                long_ago + tessari_storage::LEASE_TTL + Duration::from_secs(1),
+                tessari_storage::LEASE_TTL
+            ),
+            "a greeting older than the leader's own lease cannot testify that \
+             the leader still holds it, and a node that hears nothing has to \
+             stand — that is what an election is for"
+        );
+    }
+
+    #[test]
+    fn a_peer_that_is_not_the_origin_is_not_a_leader() {
+        let peer = [9; NODE_ID_LEN];
+        let declared = [named("peer", "10.0.0.1:9000", peer)];
+        // `following()` carries a non-zero `current_as_of`: it holds somebody
+        // else's writes, so it is not leading whatever its catalog row says.
+        let heard = greeted(&[("10.0.0.1:9000", following())]);
+        assert!(
+            !heard_a_leader(
+                &declared,
+                &heard,
+                Instant::now(),
+                tessari_storage::LEASE_TTL
+            ),
+            "a follower was mistaken for a leader, so a cluster whose leader \
+             died would never elect another"
+        );
+    }
+
     #[test]
     fn a_renewal_that_wins_nothing_keeps_the_lease_it_holds() {
         let held = Leadership {
@@ -703,7 +1056,7 @@ mod tests {
             from: Instant::now(),
         };
         let mut renewing = Renewing::holding(held);
-        let standing = renewing.once(|_, _| None);
+        let standing = renewing.once(NODE, Instant::now(), |_, _| Stood::NotDue);
         assert_eq!(standing, held, "a round that won nothing changed the lease");
         assert_eq!(renewing.standing(), held);
     }
@@ -720,9 +1073,9 @@ mod tests {
             epoch: Epoch::new(5),
             from,
         };
-        let standing = renewing.once(|_: Lease, next| {
+        let standing = renewing.once(NODE, from, |_: Lease, next| {
             stood_for.borrow_mut().push(next);
-            Some(won)
+            Stood::Won(won)
         });
         assert_eq!(*stood_for.borrow(), vec![Epoch::new(5)]);
         assert_eq!(standing, won, "a round that was won was not taken up");

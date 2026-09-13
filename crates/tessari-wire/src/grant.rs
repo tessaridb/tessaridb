@@ -593,6 +593,17 @@ impl Round {
         self.held()
     }
 
+    /// How many more grants this round still needs.
+    ///
+    /// Zero when it is already carried. It exists so a candidate can tell
+    /// whether its own ballot would decide anything before casting it — see
+    /// [`crate::Standing::renew`], where casting it too early was a permanent
+    /// outage rather than an inefficiency (ADR-0066).
+    #[must_use]
+    pub fn needs(&self) -> usize {
+        majority(self.voters).saturating_sub(self.granted.len())
+    }
+
     /// The grant this round has won, if it has won one.
     #[must_use]
     pub fn held(&self) -> Option<Leadership> {

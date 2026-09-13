@@ -44,9 +44,35 @@ use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::Lease;
 use tessari_types::Epoch;
 
-use crate::grant::{Deciding, Leadership, Round};
+use crate::grant::{Deciding, Leadership, Refused, Round, Vote};
 use crate::link::{Answered, Ask, Credential, call};
 use crate::peer::Hello;
+
+/// What one pass at standing actually did.
+///
+/// `Option<Leadership>` said *won* or *not won*, and those are three answers
+/// wearing two names: a round that never opened because the margin was intact,
+/// and a round that opened and lost, are the same value and want opposite
+/// treatment. The second has to move the candidate on; the first must not touch
+/// it (ADR-0066).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stood {
+    /// The margin had not been spent, so nobody was asked.
+    NotDue,
+    /// A majority granted the epoch.
+    Won(Leadership),
+    /// The round opened and no majority granted it.
+    Lost {
+        /// The highest epoch any voter reported having already granted, and
+        /// [`Epoch::ZERO`] when none of them said.
+        ///
+        /// It is the number a candidate needs to stop climbing one epoch per
+        /// round towards a conversation that is already far above it — a node
+        /// that never led holds `Epoch::ZERO` whatever the cluster has reached,
+        /// and every refusal it receives is already carrying the answer.
+        granted: Epoch,
+    },
+}
 
 /// Everything a node holds in order to be able to stand for an epoch.
 ///
@@ -71,6 +97,21 @@ pub struct Standing<'a> {
     pub peers: &'a [([u8; NODE_ID_LEN], SocketAddr)],
     /// How long a round takes on this network, end to end.
     pub round: Duration,
+}
+
+impl Stood {
+    /// The leadership this pass won, if it won one.
+    ///
+    /// For a caller that only needs to know whether it leads. The three-way
+    /// match is for the one caller that has to act differently on a loss —
+    /// [`crate::Renewing`], which is where the memory of a lost round lives.
+    #[must_use]
+    pub fn won(self) -> Option<Leadership> {
+        match self {
+            Self::Won(leadership) => Some(leadership),
+            Self::NotDue | Self::Lost { .. } => None,
+        }
+    }
 }
 
 impl Standing<'_> {
@@ -113,15 +154,9 @@ impl Standing<'_> {
     /// forgotten, and that is as true of a ballot it wrote as of one that
     /// arrived on a socket.
     #[must_use]
-    pub fn renew(
-        &self,
-        voter: &Deciding,
-        held: Lease,
-        next: Epoch,
-        now: Instant,
-    ) -> Option<Leadership> {
+    pub fn renew(&self, voter: &Deciding, held: Lease, next: Epoch, now: Instant) -> Stood {
         if renew_in(held, self.round, now) > Duration::ZERO {
-            return None;
+            return Stood::NotDue;
         }
         let mut round = Round::opened_at(
             next,
@@ -135,12 +170,16 @@ impl Standing<'_> {
         // behind itself. It is passed rather than skipped because the rule lives
         // in one place, and a self-vote that took a different path through it
         // would be a second rule nobody is reading.
-        let reached = self.said.reached();
-        if let Some(won) = round.counts(self.candidate, voter.asked(&ballot, now, reached, reached))
-        {
-            return Some(won);
-        }
+        let mut granted = Epoch::ZERO;
         for (peer, address) in self.peers {
+            // One short of carried, not carried: the ballot below is this
+            // node's own and costs no handshake, so a peer asked past this
+            // point would have its voter spent — for a whole `LEASE_TTL` — on a
+            // round that was already decided. The old order asked the same
+            // number of peers by counting the self-vote first.
+            if round.needs() <= 1 {
+                break;
+            }
             let Ok((_, answered)) = call(
                 *address,
                 self.mine.duplicate(),
@@ -154,11 +193,43 @@ impl Standing<'_> {
             let Answered::Voted(vote) = answered else {
                 continue;
             };
-            if let Some(won) = round.counts(*peer, vote) {
-                return Some(won);
-            }
+            note(&mut granted, vote);
+            round.counts(*peer, vote);
         }
-        None
+        // The candidate's own ballot is cast LAST, and only when it still
+        // decides something. Casting it first is what W257 found had to change:
+        // a grant is a LEASE, so a voter that made one refuses everybody else
+        // until that lease is certainly dead — a whole `LEASE_TTL`. A candidate
+        // that voted for itself on every round therefore spent its own voter on
+        // a round it had already lost, and three candidates doing that starve
+        // each other of voters permanently: epochs climb, every answer is
+        // `EarlierGrantStillAlive`, and nobody is ever elected.
+        //
+        // It is still cast when the peers alone carried the round, and that is
+        // not an optimisation to remove. A winner whose own voter holds no
+        // record of the grant would go on to grant the NEXT epoch to somebody
+        // else while it was itself still writing under this one.
+        if round.needs() <= 1 {
+            let reached = self.said.reached();
+            let mine = voter.asked(&ballot, now, reached, reached);
+            note(&mut granted, mine);
+            round.counts(self.candidate, mine);
+        }
+        round.held().map_or(Stood::Lost { granted }, Stood::Won)
+    }
+}
+
+/// Keep the highest epoch a refusal reported having been granted.
+///
+/// This node's own vote is passed through it too, and deliberately: a candidate
+/// whose own voting memory has moved past the epoch it is standing for has
+/// learned the same fact from the same kind of answer, and reading it twice in
+/// two places is how the two come to disagree.
+fn note(highest: &mut Epoch, vote: Vote) {
+    if let Vote::Refused(Refused::EpochAlreadyDecided { granted }) = vote {
+        if granted > *highest {
+            *highest = granted;
+        }
     }
 }
 
@@ -173,7 +244,7 @@ fn renew_in(held: Lease, round: Duration, now: Instant) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::Standing;
+    use super::{Standing, Stood};
     use crate::grant::{Ballot, Deciding, Refused, Vote, Voter};
     use crate::link::tests::{Authority, THERE, hello, settled, voting};
     use crate::link::{Answered, Ask, Credential, Peers, call};
@@ -240,6 +311,52 @@ mod tests {
     }
 
     #[test]
+    fn a_lost_round_reports_the_highest_epoch_a_voter_said_it_had_granted() {
+        // ADR-0066's learning half, against a real refusal over the wire rather
+        // than a constructed one. The peer has already granted epoch 40 to
+        // somebody else, so it refuses this ballot and says so — and that number
+        // is what stops a candidate climbing one epoch per round towards a
+        // cluster it is far behind.
+        let authority = Authority::new();
+        let voter = [64_u8; NODE_ID_LEN];
+        let now = Instant::now();
+        let mut spent = Voter::started_at(
+            now.checked_sub(LEASE_TTL.saturating_mul(2))
+                .expect("this machine has been up for twenty seconds"),
+        );
+        let elsewhere = Ballot {
+            epoch: Epoch::new(40),
+            candidate: [200_u8; NODE_ID_LEN],
+        };
+        assert_eq!(
+            spent.asked(&elsewhere, now, LEVEL, LEVEL),
+            Vote::Granted,
+            "the voter has to have granted 40 for the refusal below to name it"
+        );
+        let (address, answering) = voting(&authority, voter, spent);
+
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let peers = [(voter, address)];
+        let standing = standing(&mine, &der, &said, &peers);
+
+        assert_eq!(
+            standing.renew(
+                &mine_voting(now),
+                leaving(Duration::ZERO, now),
+                Epoch::new(2),
+                now
+            ),
+            Stood::Lost {
+                granted: Epoch::new(40)
+            },
+            "the round threw away the one number the refusal was carrying"
+        );
+        drop(answering.join().expect("the door's thread"));
+    }
+
+    #[test]
     fn a_leader_with_margin_left_asks_nobody() {
         // The door would grant — that is what makes this a test of the ordering
         // rather than of the arithmetic. If the canvass ran and its answer was
@@ -260,7 +377,7 @@ mod tests {
         let held = leaving(Duration::from_secs(5), now);
         assert_eq!(
             standing.renew(&mine_voting(now), held, Epoch::new(2), now),
-            None,
+            Stood::NotDue,
             "five seconds of margin against a tenth-second round"
         );
 
@@ -312,6 +429,7 @@ mod tests {
         );
         let won = standing
             .renew(&mine_voting(now), held, Epoch::new(2), now)
+            .won()
             .expect("inside two round times, a leader stands");
         assert_eq!(won.epoch, Epoch::new(2));
         drop(answering.join().expect("the door's thread"));
@@ -347,6 +465,7 @@ mod tests {
                 Epoch::new(7),
                 now,
             )
+            .won()
             .expect("a majority of four — this node and two of its three peers");
         let answered = Instant::now();
 
@@ -428,6 +547,7 @@ mod tests {
                 Epoch::new(3),
                 now,
             )
+            .won()
             .expect("this node and the two that answered carry a membership of four");
         assert_eq!(won.epoch, Epoch::new(3));
 
@@ -476,6 +596,7 @@ mod tests {
                 Epoch::new(9),
                 now,
             )
+            .won()
             .expect("this node and the one peer that answered are two of three");
         assert_eq!(won.epoch, Epoch::new(9));
         drop(answering.join().expect("the door's thread"));
@@ -502,6 +623,7 @@ mod tests {
         let ours = mine_voting(now);
         let won = standing
             .renew(&ours, leaving(Duration::ZERO, now), Epoch::new(11), now)
+            .won()
             .expect("this node and its one peer are two of two");
         assert_eq!(won.epoch, Epoch::new(11));
 
@@ -559,7 +681,9 @@ mod tests {
                 Epoch::new(13),
                 now
             ),
-            None,
+            Stood::Lost {
+                granted: Epoch::ZERO
+            },
             "a node just restarted counted a vote it had refused to cast"
         );
         drop(answering.join().expect("the door's thread"));

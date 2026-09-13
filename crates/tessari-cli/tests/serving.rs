@@ -806,9 +806,16 @@ const CLUSTER: [(&str, &str); 3] = [
 /// `NoLeadershipYet` — so the node that accepts this script **is** the one a
 /// majority granted the epoch to, and asking costs nothing beyond the write the
 /// test needed anyway.
-const SCHEMA: &str = "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
+const SCHEMA: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 2; USE NAMESPACE prod; \
                       DEFINE DATABASE orders; USE DATABASE orders; \
                       DEFINE COLLECTION item; CREATE item:1 = { n: 1 };";
+
+/// How often anything in this test asks a node a question.
+///
+/// A busy loop is not free here: every pass opens a TCP connection, and a spin
+/// exhausts the machine's ephemeral port range in seconds — at which point the
+/// nodes' own peer dials start failing and the cluster appears to be broken.
+const POLL: Duration = Duration::from_millis(100);
 
 /// The read the client keeps making, on every node, throughout.
 const READ: &str = "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM item;";
@@ -832,11 +839,12 @@ fn counted(address: &str) -> Result<usize, String> {
 }
 
 #[test]
-#[ignore = "three nodes that start together never elect anybody: each grants \
-            epoch 1 to itself, every cross-ballot is then refused \
-            EpochAlreadyDecided, and a lost round never stands for a higher \
-            epoch. Un-ignore this when the election-liveness decision ships; \
-            it is the criterion's own validation and it is written to run."]
+#[ignore = "forty seconds of real cadences — a leader has to be elected, a \
+            record replicated, a node killed and a successor elected, and none \
+            of those can be hurried. It is criterion S7.1's own validation and \
+            is run explicitly, following the S6.2 validation in \
+            tessari-wire/tests/pushing.rs: cargo test -p tessari-cli --test \
+            serving three_nodes -- --ignored"]
 fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
     // G024 S7.1, the last criterion, against three operating-system processes.
     //
@@ -938,22 +946,39 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
     // working, not a defect, and it is why this polls rather than writing once.
     let began = Instant::now();
     let mut elected = None;
+    let mut refusals = [String::new(), String::new(), String::new()];
     while began.elapsed() < Duration::from_secs(90) && elected.is_none() {
         for (index, (surface, _)) in CLUSTER.iter().enumerate() {
             if let Ok(mut client) = Client::connect(surface) {
-                if client.run(SCHEMA, None).is_ok() {
-                    elected = Some(index);
-                    break;
+                match client.run(SCHEMA, None) {
+                    Ok(_) => {
+                        elected = Some(index);
+                        break;
+                    }
+                    // Kept so the failure below can name the refusal. A test
+                    // that reports only *nobody wrote* sends the next reader to
+                    // the logs of three processes to learn something the client
+                    // was told every second.
+                    Err(why) => refusals[index] = why.to_string(),
                 }
             }
         }
-        std::thread::yield_now();
+        // Paced, and this is not politeness. A spin here opens three TCP
+        // connections per iteration and the first draft managed nine thousand a
+        // second — enough to exhaust this machine's ephemeral ports, after
+        // which the NODES' own peer dials began failing with `Can't assign
+        // requested address`. The harness was breaking the thing it was
+        // measuring, and the symptom looked exactly like a cluster defect.
+        std::thread::sleep(POLL);
     }
-    let leader = elected.expect(
-        "no node accepted a write: a cluster of three that elects nobody has no \
-         writer anywhere, which is what ADR-0064 made possible and what an \
-         election is supposed to resolve",
-    );
+    let leader = elected.unwrap_or_else(|| {
+        panic!(
+            "no node accepted a write in ninety seconds. A cluster of three \
+             that elects nobody has no writer anywhere, which is what ADR-0064 \
+             made possible and what an election is supposed to resolve. The \
+             last refusal from each node: {refusals:?}"
+        )
+    });
 
     let follower = (0..CLUSTER.len()).find(|index| *index != leader).unwrap();
 
@@ -967,7 +992,7 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
             replicated = true;
             break;
         }
-        std::thread::yield_now();
+        std::thread::sleep(POLL);
     }
     assert!(
         replicated,
@@ -991,6 +1016,9 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
                     at: from.elapsed(),
                     outcome: counted(address),
                 });
+                // Often enough to describe the window, rarely enough not to be
+                // the reason the window looks the way it does.
+                std::thread::sleep(POLL);
             }
             seen
         })
@@ -1024,7 +1052,7 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
                 }
             }
         }
-        std::thread::yield_now();
+        std::thread::sleep(POLL);
     }
     let successor = successor.expect(
         "the cluster lost its leader and never got another: two of three nodes \

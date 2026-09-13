@@ -83,7 +83,7 @@ mod push;
 use std::time::Duration;
 
 #[cfg(feature = "server")]
-pub use crate::campaign::Standing;
+pub use crate::campaign::{Standing, Stood};
 pub use crate::client::{Client, Feed};
 #[cfg(feature = "server")]
 pub use crate::collection::{Collect, Collected, Collector, NoLog, Origin, Serving, Subscriptions};
@@ -92,7 +92,9 @@ pub use crate::credential::{fingerprint, names, presented};
 #[cfg(feature = "server")]
 pub use crate::directory::{Destination, Directory, Heard};
 #[cfg(feature = "server")]
-pub use crate::driver::{Collecting, Published, Renewing, due_in, every, stands, upstream, voters};
+pub use crate::driver::{
+    Collecting, Published, Renewing, due_in, every, heard_a_leader, stands, upstream, voters,
+};
 pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]
 pub use crate::grant::{Ballot, Deciding, Leadership, Reached, Refused, Round, Vote, Voter};

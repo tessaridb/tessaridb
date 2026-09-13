@@ -6377,6 +6377,24 @@ DEFINE REPLICA second AT 'db-2.internal:9000' ROLES serving, writable;
 INFO FOR NODE;
 ```
 
+**Write the peers first and the node's own roles last.** `DEFINE NODE ROLES`
+takes effect immediately and locally, and a node whose roles carry `coordinating`
+holds no leadership until a majority grants it one — so from that statement
+onward it refuses every local write, including the `DEFINE REPLICA` statements
+that describe the cluster. Run in the order shown above and the second statement
+is refused. Declare the peers while the node is still on its own, then say what
+the node is:
+
+```
+DEFINE REPLICA second AT 'db-2.internal:9000'
+    NODE '9f2c4e1a70bb43d5a1c6e2f480937d55'
+    ROLES serving, coordinating;
+DEFINE NODE ROLES serving, writable, coordinating;
+```
+
+After that, configuration is the leader's to write and the cluster's to receive,
+which is where a replicated membership belongs.
+
 `DEFINE REPLICA`'s `ROLES` is optional and is spelled exactly as `DEFINE NODE`'s
 is, because it is the same membership field seen from the other side — one
 written about a peer, one about this node, and two spellings for one set of words
