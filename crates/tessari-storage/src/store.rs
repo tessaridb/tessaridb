@@ -251,11 +251,47 @@ impl Store {
     /// identity cannot be read.
     pub fn effective_roles(&self) -> Result<Roles> {
         let adopted = self.node_identity()?.roles;
-        if self.lease.spent().is_none() {
+        if self.lease.spent().is_none() && !awaiting(adopted, &self.lease) {
             return Ok(adopted);
         }
         let without_writing = adopted.bits() & !Roles::WRITABLE.bits();
         Ok(Roles::from_bits(without_writing).unwrap_or(Roles::NONE))
+    }
+
+    /// Whether this node takes part in deciding and holds no leadership yet.
+    ///
+    /// The second half of *the effective role is the lease*, and it was missing
+    /// until ADR-0064. The first half only ever **subtracted**: a node whose
+    /// lease lapsed stopped being writable. But [`crate::lease::Held::spent`]
+    /// answers `None` in two states that are not alike — *this lease is still
+    /// open* and *this node was never given one* — so a node that had never won
+    /// a round fell through to the adopted set and reported the `WRITABLE` the
+    /// catalog declared.
+    ///
+    /// While exactly one node could stand that cost nothing: the only writable
+    /// node was the only candidate. ADR-0063 widened the candidate set, and the
+    /// only configuration in which a failover can produce a writer at all is one
+    /// where every coordinating node is declared writable — at which point every
+    /// one of them writes from the moment it opens, because none of them holds a
+    /// lease and the two that lose a round never will. Three writers, and
+    /// nothing anywhere in an error state.
+    ///
+    /// # Why the predicate is `COORDINATING` and not simply *has no lease*
+    ///
+    /// A store standing alone has no cluster to grant it anything, so a global
+    /// rule would stop every existing single-node deployment accepting writes on
+    /// the day it upgraded. [`Roles::ALONE`] is documented as *not
+    /// `COORDINATING`, because there is nothing to coordinate with*, which makes
+    /// that role exactly the line between *a member of a deciding set* and *a
+    /// store on its own* — and it is already the predicate ADR-0063 uses to
+    /// decide who may stand. One predicate, two rules that cannot drift apart.
+    ///
+    /// # Errors
+    ///
+    /// Returns the substrate's failure, and a decoding failure when the node
+    /// identity cannot be read.
+    pub fn awaiting_leadership(&self) -> Result<bool> {
+        Ok(awaiting(self.node_identity()?.roles, &self.lease))
     }
 
     /// How current this node's copy is known to be, or `None` when that cannot
@@ -1147,6 +1183,22 @@ impl Store {
 /// A free function rather than a method because it runs before the store
 /// exists: `open` settles the format before it resolves the node identity, and
 /// the identity is one of the store's own fields.
+/// Whether `adopted` puts this node in a deciding set that has granted it
+/// nothing yet.
+///
+/// A free function so that [`Store::effective_roles`] and
+/// [`Store::awaiting_leadership`] are one derivation rather than two that agree
+/// today — the failure the pair is written to prevent is a report saying *you
+/// may write* beside a write path that refuses, and the cheapest way to make
+/// that unrepresentable is to have one place where the answer exists.
+///
+/// [`crate::lease::Held::remaining`] is the half of the pair that distinguishes
+/// *never granted* from *granted and still open*; `spent` cannot, because it
+/// answers `None` for both.
+fn awaiting(adopted: Roles, lease: &crate::lease::Held) -> bool {
+    adopted.has(Roles::COORDINATING) && lease.remaining().is_none()
+}
+
 fn read_format_version(backend: &Arc<dyn KvBackend>) -> Result<Option<FormatVersion>> {
     let key = FormatVersionKey.encode();
     let stored = backend.get(FormatVersionKey::keyspace(), &key)?;

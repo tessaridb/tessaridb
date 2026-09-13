@@ -442,7 +442,23 @@ const TABLES: &[Table] = &[
         // that one into the comparison would rank a follower holding the newest
         // records below an ex-leader holding fewer, so the two are separate
         // methods rather than one with a flag.
-        expected: 30,
+        // 31 since the leadership gate (G024 **S7.1**, ADR-0064):
+        // `Store::awaiting_leadership` answers whether this node takes part in
+        // deciding and holds no leadership yet. Classified **enforced, and it is
+        // the enforcement itself rather than a path to it** — it is one half of
+        // the write gate, consulted by `effective_roles` (what a node reports)
+        // and by `Transaction::settle` (what a node does), which is why it is a
+        // free function underneath both rather than a rule written twice.
+        //
+        // Its re-classification trigger: anything that makes it answer `false`
+        // where it should answer `true` re-opens a split-brain, because the two
+        // nodes that lost a round would go on accepting writes the winner will
+        // never see. The predicate is deliberately `COORDINATING` and not merely
+        // *has no lease* — a store standing alone has no cluster to grant it
+        // anything, and the global form stops every single-node deployment
+        // writing, which is not a theory: deleting the role check fails 216 of
+        // this crate's own tests.
+        expected: 31,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -501,7 +517,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 79, "the counted tables no longer sum to 79");
+    assert_eq!(total, 80, "the counted tables no longer sum to 80");
 }
 
 /// Every `.rs` file under a directory.

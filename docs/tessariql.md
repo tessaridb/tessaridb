@@ -6517,6 +6517,17 @@ it is no longer the only machine that *can*. A single-node store is unaffected: 
 node with no `coordinating` role declared on itself stands for nothing, so
 nothing that has never needed a lease begins taking one.
 
+**A coordinating node writes under a leadership and at no other time.** Once a
+node is declared `coordinating`, its `writable` role is what the operator *wants*
+and the lease is what it *has*: until a majority grants it one, it refuses writes
+with *this node takes part in deciding and holds no leadership*. That refusal is
+deliberately not the lease-ran-out one — a leadership never held and a leadership
+lost send you to different places. The consequence is worth stating plainly: **a
+cluster that has elected nobody takes no writes anywhere**, which is a real
+availability change from a set of nodes that each accepted writes the others
+would never see. A store with no `coordinating` role — every single-node
+deployment — is unaffected and goes on writing exactly as before.
+
 **A voter refuses a candidate whose log is behind its own.** Opening the
 candidate set makes this necessary rather than merely tidy: a node holding less
 history could otherwise win a majority, lead, and silently drop every write it

@@ -165,6 +165,21 @@ pub enum Error {
         for_the_last: std::time::Duration,
     },
 
+    /// This node is in a deciding set and has not been given a leadership yet.
+    ///
+    /// A different state from [`Self::LeaseSpent`] and deliberately a different
+    /// refusal. *Your lease ran out* names a leadership this node held and lost,
+    /// and sends an operator to look at why it could not renew. *No leadership
+    /// yet* names one it has never had — a cluster that has not elected anybody,
+    /// or a node that has not yet won a round — and sends them somewhere else
+    /// entirely. Spelling both as the lapse would report a fence closing on a
+    /// node that was never behind one.
+    #[error(
+        "this node takes part in deciding and holds no leadership: \
+         it does not accept writes until a majority grants it one"
+    )]
+    NoLeadershipYet,
+
     /// A log record was offered out of order.
     ///
     /// State is a deterministic function of the log, so a gap is not something
@@ -527,7 +542,7 @@ impl Error {
             // one of the three that is true: the write was not wrong and
             // retrying *here* will not help, but the cluster may well accept it
             // somewhere else a moment from now.
-            Self::LeaseSpent { .. } => ErrorCategory::Unavailable,
+            Self::LeaseSpent { .. } | Self::NoLeadershipYet => ErrorCategory::Unavailable,
             Self::LogGap { .. }
             | Self::NameTaken { .. }
             | Self::NoSuchParent { .. }

@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use tessari_encoding::Roles;
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_storage::{Currency, Error, LEASE_GUARD, Lease, RecordAddress, Store};
+use tessari_storage::{Currency, Error, LEASE_GUARD, LEASE_TTL, Lease, RecordAddress, Store};
 use tessari_types::{DatabaseId, Epoch, NamespaceId, RecordId, Sequence, TableId};
 
 fn store() -> Store {
@@ -491,4 +491,82 @@ fn a_lease_installed_whole_keeps_the_instant_it_was_taken_at() {
     store.hold(Epoch::new(5), Lease::taken_at(Instant::now(), span));
     assert_eq!(store.lease_spent(), None);
     write(&store, "two").expect("inside the window it writes");
+}
+
+/// A store that has declared itself a member of a deciding set.
+///
+/// The one fact that separates *a node in a cluster* from *a store on its own*,
+/// and the predicate ADR-0063 already uses to decide who may stand.
+fn deciding() -> Store {
+    let store = store();
+    store
+        .configure_node(
+            Some(Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING)),
+            None,
+        )
+        .unwrap();
+    store
+}
+
+#[test]
+fn a_member_of_a_deciding_set_does_not_write_before_it_has_won_anything() {
+    // The hole W254 found, stated as the split-brain it is. Once more than one
+    // node may stand (ADR-0063), the only configuration in which a failover can
+    // produce a writer at all is one where every coordinating node is declared
+    // `writable` — and before this rule, all of them reported `writable` from
+    // the moment they opened, because none of them held a lease and
+    // `Held::spent` answers `None` both for *still open* and for *never
+    // granted*. Three nodes, three writers, nothing anywhere in an error state.
+    let store = deciding();
+    assert!(
+        store.node_identity().unwrap().roles.has(Roles::WRITABLE),
+        "the catalog still says the operator wants this node to lead"
+    );
+    assert!(
+        !store.effective_roles().unwrap().has(Roles::WRITABLE),
+        "a node in a deciding set writes under a leadership, and holds none yet"
+    );
+    write(&store, "before").expect_err("and the refusal is the write path's too");
+
+    // What it is waiting for, and the whole of it: a lease.
+    store.hold(Epoch::new(1), Lease::taken_at(Instant::now(), LEASE_TTL));
+    assert!(store.effective_roles().unwrap().has(Roles::WRITABLE));
+    write(&store, "after").expect("the node a majority elected writes");
+}
+
+#[test]
+fn a_store_standing_alone_is_untouched_by_the_leadership_rule() {
+    // The control, and the property the rule is scoped to preserve. A store with
+    // nobody to coordinate with has no cluster to grant it anything, so a global
+    // "no lease, no writes" would stop every existing single-node deployment
+    // accepting writes the day it upgraded. `Roles::ALONE` is documented as NOT
+    // carrying `COORDINATING` precisely because there is nothing to coordinate
+    // with, so one predicate scopes both this rule and ADR-0063's.
+    let store = store();
+    let adopted = store.node_identity().unwrap().roles;
+    assert!(adopted.has(Roles::WRITABLE) && !adopted.has(Roles::COORDINATING));
+    assert_eq!(store.effective_roles().unwrap(), adopted);
+    write(&store, "alone").expect("a store on its own goes on writing");
+}
+
+#[test]
+fn the_role_and_the_refusal_agree_for_a_member_of_a_deciding_set_too() {
+    // `the_role_reported_and_the_write_refused_cannot_disagree` above asserts
+    // this pair for a store standing alone. The pair is only worth anything if
+    // it holds wherever the rule reaches, and this wave gave the rule a second
+    // branch — so the second branch gets the same assertion rather than a
+    // comment saying it ought to hold.
+    for store in [deciding(), store()] {
+        for lease in [None, Some(Duration::ZERO), Some(LEASE_TTL)] {
+            if let Some(ttl) = lease {
+                store.hold_lease(ttl);
+            }
+            let writable = store.effective_roles().unwrap().has(Roles::WRITABLE);
+            let refused = write(&store, "pair").is_err();
+            assert_eq!(
+                writable, !refused,
+                "reported writable={writable} while the write refused={refused}"
+            );
+        }
+    }
 }

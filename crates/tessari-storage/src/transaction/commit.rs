@@ -180,6 +180,15 @@ impl Transaction<'_> {
         if let Some(for_the_last) = self.store.lease_spent() {
             return Err(Error::LeaseSpent { for_the_last });
         }
+        // And the other half of *the effective role is the lease* (ADR-0064):
+        // a node that takes part in deciding writes under a leadership and at
+        // no other time. Asked here rather than only at the statement layer for
+        // the reason the paragraph above gives — `dry_run` must rehearse it, and
+        // a refusal a `VERIFY` cannot see is one an operator meets for the first
+        // time in production.
+        if self.store.awaiting_leadership()? {
+            return Err(Error::NoLeadershipYet);
+        }
         let record = self.log_record();
 
         let mut attempt = 0_u32;
