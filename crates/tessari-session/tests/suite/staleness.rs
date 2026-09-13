@@ -407,3 +407,112 @@ fn a_node_told_about_no_peers_refuses_exactly_as_it_did_before() {
         "expected the refusal, got {refusal:?}"
     );
 }
+
+/// Level with the peer it collects from, as of now.
+///
+/// Goes through `Store::collected`, which is the one way this node's currency is
+/// set anywhere — the collector calls it with what it observed on a link it
+/// opened itself. A test seam that wrote `level_at` directly would be exactly
+/// the caller the enforcement-point classification for that method warns about:
+/// one that can make a stale copy look current.
+/// A session on a node that is already `serving` only, so it cannot write.
+///
+/// `ready` defines the tenant and creates a record, which a node told
+/// `DEFINE NODE ROLES serving` refuses — correctly, and that refusal is why the
+/// aged test cannot simply open a second `ready`.
+fn reader(store: &Store) -> Session<'_> {
+    let mut session = Session::new(store);
+    session
+        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    session
+}
+
+fn level(store: &Store, reached: u64) {
+    store.collected(
+        tessari_types::Sequence::new(reached),
+        tessari_storage::Currency::Level,
+    );
+}
+
+#[test]
+fn a_copy_whose_age_is_known_and_inside_the_bound_is_answered_here() {
+    // The branch every other test in this file walks around. They all arrive
+    // with `current_as_of()` answering `None` — a node that may not write and
+    // has never collected — so the comparison between a KNOWN age and the bound
+    // is reached by none of them, and the criterion's own sentence is about
+    // exactly that comparison.
+    //
+    // The peer offered here is FRESHER than this node and is still not taken,
+    // which is the *here first* rule: a redirect this node did not need costs
+    // the client a round trip and hands it a node it had no reason to learn
+    // about.
+    let store = store();
+    let mut session = ready(&store).among(one_peer(Duration::ZERO));
+    session.run("DEFINE NODE ROLES serving;").unwrap();
+    level(&store, 1);
+
+    let outcomes = session
+        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .expect("a copy level a moment ago is inside a bound three floors wide");
+
+    assert_eq!(outcomes.len(), 1, "and it is answered here, not redirected");
+}
+
+#[test]
+#[ignore = "waits out the staleness floor, which is 20 seconds by design; \
+            run it with --ignored as G024 S6.2's validation"]
+fn a_copy_that_has_really_aged_past_the_bound_is_routed_away_from() {
+    // S6.2's validation method, in real time because the property is about real
+    // time. The tightest bound the API accepts is the floor, so a copy that is
+    // genuinely beyond a legal bound cannot be produced any faster than this —
+    // and the alternative, a seam that backdates the currency, is the one thing
+    // the currency must not have.
+    //
+    // One wait, both halves: past the bound, a node with a qualifying peer
+    // NAMES it, and a node with no peer REFUSES rather than promoting the read
+    // to the leader. Those are the two answers §C-05 and §C-07 divide between
+    // them, and they differ only in what this node knows about anybody else.
+    let store = store();
+    let mut opening = ready(&store);
+    opening.run("DEFINE NODE ROLES serving;").unwrap();
+    level(&store, 1);
+
+    // The bound is the floor itself — the tightest this API admits, so the
+    // shortest honest wait. A second on top of it, because the comparison is
+    // strict and a copy exactly at the bound is inside it.
+    let bound = format!("{STALENESS_FLOOR_SECONDS}s");
+    std::thread::sleep(Duration::from_secs(
+        STALENESS_FLOOR_SECONDS.saturating_add(1),
+    ));
+
+    let mut with_a_peer = reader(&store).among(one_peer(Duration::from_secs(1)));
+    let sent = with_a_peer
+        .run(&format!("SELECT * FROM orders STALENESS {bound};"))
+        .expect_err("this node's own copy has aged past the bound it was given");
+    let Error::ReadIsElsewhere { endpoint, node, .. } = &sent else {
+        panic!("a node beyond the bound answered the read itself: {sent}");
+    };
+    assert_eq!(endpoint, "two.example:9080");
+    assert_eq!(
+        *node, THERE,
+        "a redirect naming only a place cannot be checked on arrival"
+    );
+
+    let mut alone = reader(&store);
+    let refusal = alone
+        .run(&format!("SELECT * FROM orders STALENESS {bound};"))
+        .expect_err("nothing this node knows of is inside the bound");
+    assert!(
+        matches!(refusal, Error::NoCopyWithinStaleness { .. }),
+        "a read no copy can satisfy must be refused, not promoted: {refusal:?}"
+    );
+
+    // The control that makes this about the BOUND rather than about a node that
+    // has stopped answering reads: the same copy, a bound wide enough to hold
+    // it, answered here.
+    let generous = format!("{}s", STALENESS_FLOOR_SECONDS.saturating_mul(60));
+    alone
+        .run(&format!("SELECT * FROM orders STALENESS {generous};"))
+        .expect("a bound wide enough for this copy is answered here");
+}
