@@ -6442,9 +6442,13 @@ under and all of those were written under none. A newcomer that writes no
 membership row cannot produce that, and it does not need to: the membership
 reaches it through the same replication as everything else.
 
-The seed is read only while the newcomer's catalog names no peer. Once the first
-records arrive, the catalog says who the members are, and the address on the
-command line is never consulted again.
+The seed is read only while the newcomer's catalog names no peer **other than
+this node itself**. That qualification is the whole of it: the row the cluster
+wrote to admit the newcomer describes the *newcomer*, so it is the first row the
+newcomer collects and it answers nothing about who to follow. The catalog takes
+over the moment it names somebody else — a second member, or this cluster
+declaring its own — and until then the address on the command line is what keeps
+this node in touch, which is what it is for.
 
 `DEFINE REPLICA`'s `ROLES` is optional and is spelled exactly as `DEFINE NODE`'s
 is, because it is the same membership field seen from the other side — one

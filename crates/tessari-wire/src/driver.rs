@@ -338,6 +338,27 @@ pub fn bootstrap_from(
         .map(|(seed, _)| (seed.node, seed.endpoint.clone()))
 }
 
+/// Does the catalog name a peer that is not this node?
+///
+/// The question the seed's bound actually asks, and it is not "is the catalog
+/// empty". `Catalog::replicas` returns every membership row, including the one
+/// that describes THIS node — and the row a cluster writes to admit a newcomer
+/// is exactly that row. So a joiner's first collection brings in one row, its
+/// own, and an emptiness bound reads that as *the catalog can answer* and stops
+/// dialling the seed, while `upstream` and `Directory::greet_round` both skip
+/// the row for naming this node. The node collects once, follows nobody
+/// afterwards, and nothing is in an error state while it happens (W260).
+///
+/// A row naming no node at all counts for nothing here, for the same reason it
+/// counts for nothing in [`upstream`]: there is no identity to dial or to
+/// verify a credential against.
+#[must_use]
+pub fn names_a_peer(declared: &[ReplicaDefinition], me: &[u8; NODE_ID_LEN]) -> bool {
+    declared
+        .iter()
+        .any(|peer| peer.node.is_some_and(|node| node != *me))
+}
+
 /// Whether a leader this node can hear is still leading.
 ///
 /// # A follower that hears a leader does not become a candidate
@@ -638,7 +659,7 @@ mod tests {
 
     use super::{
         Collecting, Published, Renewing, ReplicaDefinition, Seed, Stood, bootstrap_from, due_in,
-        every, heard_a_leader, stands, upstream, voters,
+        every, heard_a_leader, names_a_peer, stands, upstream, voters,
     };
     use crate::directory::Directory;
     use crate::grant::Leadership;
@@ -1327,5 +1348,43 @@ mod tests {
             "a reader saw a half-finished round"
         );
         assert!(published.current().age_of("one:9080", at).is_some());
+    }
+
+    #[test]
+    fn an_empty_catalog_names_no_peer() {
+        assert!(!names_a_peer(&[], &NODE));
+    }
+
+    #[test]
+    fn a_catalog_naming_another_node_names_a_peer() {
+        let declared = [named("leader", "10.0.0.2:9000", ANOTHER)];
+        assert!(names_a_peer(&declared, &NODE));
+    }
+
+    /// The shape W260 found, and the reason this predicate is not `is_empty`.
+    ///
+    /// A cluster admits a newcomer by writing a row that describes the
+    /// NEWCOMER, so the first row the newcomer ever collects is its own. It
+    /// names a member — itself — and answers nothing about who to follow, since
+    /// `upstream` and `greet_round` both skip it.
+    #[test]
+    fn a_catalog_holding_only_this_nodes_own_row_names_no_peer() {
+        let declared = [named("joiner", "10.0.0.9:9000", NODE)];
+        assert!(!names_a_peer(&declared, &NODE));
+    }
+
+    #[test]
+    fn a_row_naming_no_node_names_no_peer() {
+        let declared = [peer(Roles::WRITABLE, None)];
+        assert!(!names_a_peer(&declared, &NODE));
+    }
+
+    #[test]
+    fn one_row_for_somebody_else_is_enough_beside_this_nodes_own() {
+        let declared = [
+            named("joiner", "10.0.0.9:9000", NODE),
+            named("leader", "10.0.0.2:9000", ANOTHER),
+        ];
+        assert!(names_a_peer(&declared, &NODE));
     }
 }

@@ -669,12 +669,17 @@ fn dial_peers(
             let mut reached = 0_usize;
             published.round(|directory| {
                 // The seeds INSTEAD of the catalog, and only while the catalog
-                // names nobody. A node that has just been told to join holds no
-                // replica rows, so `greet_round` would dial nobody and this
-                // node would never learn anything; once collection brings the
-                // rows in, the catalog is the answer and a seed still being
-                // dialled would be a second source of truth about who the
-                // members are — see `Directory::greet_seeds`.
+                // names no peer BUT THIS NODE. A node that has just been told
+                // to join holds no replica rows, so `greet_round` would dial
+                // nobody and this node would never learn anything; once
+                // collection brings a row naming somebody else in, the catalog
+                // is the answer and a seed still being dialled would be a
+                // second source of truth about who the members are — see
+                // `Directory::greet_seeds`. The *but this node* is load-bearing
+                // and was `is_empty` until W260: the row a cluster writes to
+                // admit a newcomer describes the NEWCOMER, so the joiner's
+                // first collection left it holding one row, its own, which
+                // answers nothing and stopped the seed all the same.
                 let greet = |endpoint: &str, node| {
                     tessari_wire::call(
                         endpoint,
@@ -697,20 +702,20 @@ fn dial_peers(
                         why.to_string()
                     })
                 };
-                reached = if declared.is_empty() {
-                    directory.greet_seeds(seeds, &me, now, greet)
-                } else {
+                reached = if tessari_wire::names_a_peer(&declared, &me) {
                     directory.greet_round(&declared, &me, now, greet)
+                } else {
+                    directory.greet_seeds(seeds, &me, now, greet)
                 };
             });
             // The count and not the directory, because nothing reads the
             // directory yet — routing on it is S6.2 and is a wave of its own.
             // What this round makes observable today is that the dialling
             // happens at all and how much of the cluster answered.
-            let (kind, dialled) = if declared.is_empty() {
-                ("seed", seeds.len())
-            } else {
+            let (kind, dialled) = if tessari_wire::names_a_peer(&declared, &me) {
                 ("declared peer", declared.len())
+            } else {
+                ("seed", seeds.len())
             };
             if reached == 0 && dialled > 0 {
                 log::warn!("no {kind} answered this round; {dialled} were dialled");
@@ -796,17 +801,27 @@ fn collect_from_upstream(
                     return;
                 }
             };
+            let me = match store.node_identity() {
+                Ok(identity) => identity.id,
+                Err(why) => {
+                    log::warn!("this node cannot say who it is: {why}");
+                    return;
+                }
+            };
             let heard = published.current();
             // The seed INSTEAD of the catalog, and only while the catalog names
-            // nobody — `bootstrap_from` carries the reason it is not a fallback
-            // for `upstream` answering `None`. `DEFINE REPLICA` is a catalog
-            // write and therefore already a log record, so the membership
-            // arrives through this very collection and the seed is spent as
-            // soon as it works.
-            let origin = if declared.is_empty() {
-                tessari_wire::bootstrap_from(roles, seeds, &heard)
-            } else {
+            // no peer but this node — `bootstrap_from` carries the reason it is
+            // not a fallback for `upstream` answering `None`. `DEFINE REPLICA`
+            // is a catalog write and therefore already a log record, so the
+            // membership arrives through this very collection and the seed is
+            // spent as soon as the catalog can answer. `names_a_peer` and not
+            // `is_empty` because the first row that arrives is this node's own
+            // and answers nothing — the bound that spent the seed on it left a
+            // joiner collecting exactly once (W260).
+            let origin = if tessari_wire::names_a_peer(&declared, &me) {
                 tessari_wire::upstream(roles, &declared, &heard)
+            } else {
+                tessari_wire::bootstrap_from(roles, seeds, &heard)
             };
             let Some((node, endpoint)) = origin else {
                 return;

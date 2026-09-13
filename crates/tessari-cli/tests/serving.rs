@@ -1294,11 +1294,55 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
         "the joiner took {held:?}, which is outside the window it was given"
     );
 
+    // And it keeps receiving. The first collection is the join; whether the
+    // node goes on being a member is a different question, and a node that took
+    // the log once and then went quiet has joined nothing. The write goes over
+    // the leader's client door because a running process holds its store from
+    // the moment it started.
+    {
+        let mut client = Client::connect(JOIN[0].0).expect("the leader's client door");
+        client
+            .run(
+                "USE NAMESPACE prod; USE DATABASE orders; CREATE item:2 = { n: 2 };",
+                None,
+            )
+            .expect("a write on the one node that takes writes");
+    }
+    let since = Instant::now();
+    let mut second = None;
+    let mut silence = Vec::new();
+    while since.elapsed() < Duration::from_secs(60) && second.is_none() {
+        match counted(JOIN[1].0) {
+            Ok(2) => second = Some(since.elapsed()),
+            Ok(other) => silence.push(format!("{other} record(s)")),
+            Err(why) => silence.push(why),
+        }
+        std::thread::sleep(POLL);
+    }
+    let second = second.unwrap_or_else(|| {
+        panic!(
+            "the joiner reached the leader's records in {held:?} and then \
+             stopped: a record written after it joined never arrived, and the \
+             last thing it said was {:?}",
+            silence.last()
+        )
+    });
+    assert!(
+        second < Duration::from_secs(60),
+        "the joiner took {second:?} to receive a write made after it joined"
+    );
+
     // And the membership came with the records rather than from the flag. The
     // joiner wrote no replica row — that was asserted before it started — so a
-    // row in its catalog now is one it collected. This is what makes the seed
-    // spent: from here the catalog answers who the members are, and the address
-    // on the command line is never read again.
+    // row in its catalog now is one it collected.
+    //
+    // What that row does NOT do is spend the seed, and saying so here is the
+    // correction W260 made: the row a cluster writes to admit a newcomer
+    // describes the NEWCOMER, so this is the joiner reading its own name. It
+    // names no peer to follow, `upstream` and `greet_round` both skip it, and a
+    // bound that stopped dialling the seed on it left this node collecting
+    // exactly once — which is what the second-write assertion above now
+    // catches. The seed is spent when the catalog names somebody ELSE.
     drop(running);
     let db = tessaridb::Db::open(&stores[1]).expect("the joiner's store, once it has stopped");
     let peers = tessari_storage::Catalog::new(&mut db.store().begin().unwrap())
