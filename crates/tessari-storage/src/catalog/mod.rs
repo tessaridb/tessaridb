@@ -61,7 +61,7 @@ pub use grant::GrantDefinition;
 pub use graph::GraphDefinition;
 pub use leadership::LeadershipDefinition;
 pub(crate) use leadership::covering;
-pub use replica::{ReplicaDefinition, names_a_peer};
+pub use replica::{ReplicaDefinition, another_node_may_write, names_a_peer};
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 pub use user::{Role, UserDefinition, Verb};
 pub use vault::VaultRoot;

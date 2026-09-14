@@ -562,6 +562,58 @@ fn a_node_whose_catalog_names_a_peer_does_not_write_before_it_has_won_anything()
     write(&store, "after").expect("the node a majority elected writes");
 }
 
+/// A store whose one declared peer is a read-only follower.
+///
+/// The topology ADR-0067 documents and the one `serving.rs`'s join test builds:
+/// a node that IS the cluster, and a second told one address.
+fn following() -> Store {
+    let store = store();
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .create_replica(
+            "reader",
+            "10.0.0.3:9081",
+            Roles::SERVING,
+            Some([7; NODE_ID_LEN]),
+            None,
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+    store
+}
+
+#[test]
+fn a_read_only_follower_is_not_a_leadership_and_the_leader_goes_on_writing() {
+    // Q-609. `names_a_peer` answers *is this store in a cluster* and the fence
+    // asks *could another node accept a write*. A follower declared `serving`
+    // can be neither elected nor written to, so fencing against it guarded a
+    // leadership `driver::voters` refuses to form — and nothing recovers that,
+    // because a lease is written only by a completed round. Declaring the first
+    // read-only replica stopped the leader's writes permanently, on the exact
+    // procedure the join is documented as.
+    let store = following();
+    assert!(
+        store.effective_roles().unwrap().has(Roles::WRITABLE),
+        "a node whose only peer takes no writes is still the only writer"
+    );
+    write(&store, "still-the-writer").expect("a read-only follower is not a leadership");
+}
+
+#[test]
+fn two_peers_that_can_elect_nobody_still_fence_each_other() {
+    // The other direction, and the reason the predicate is not narrowed to
+    // `COORDINATING` alone: two nodes declared `SERVING | WRITABLE` and neither
+    // `COORDINATING` can elect nobody at all, so a coordination-only reading
+    // would leave BOTH of them writing — ADR-0069's split brain arriving by a
+    // different road. Fenced, they are a dead cluster an operator can see.
+    let store = joined();
+    assert!(
+        !store.effective_roles().unwrap().has(Roles::WRITABLE),
+        "a declared peer that may write is a peer this node must not race"
+    );
+    write(&store, "raced").expect_err("unable to write is the property, and it takes both bits");
+}
+
 #[test]
 fn a_deciding_set_of_one_is_not_a_cluster_and_goes_on_writing() {
     // The other half of *`names_a_peer` and nothing else*. `COORDINATING` is
@@ -630,17 +682,37 @@ fn a_cluster_is_declared_in_one_transaction_because_the_gate_shuts_on_the_first_
     // commits this node is in a cluster and writes under a leadership it has not
     // been granted. A statement-per-transaction script therefore declares one
     // peer and is refused for the second.
+    //
+    // The peers are declared `writable` and were `serving` until Q-609. That was
+    // not a detail of the fixture: a read-only follower can neither be elected
+    // nor be written to, so fencing against one guarded a leadership nothing can
+    // create and left the store unwritable for good. What this test is about —
+    // that the gate shuts on the COMMIT of the first peer it must race, not on
+    // the statement that declares it — is unchanged, and now it is asserted with
+    // a peer that shuts it.
     let one_at_a_time = store();
     let mut first = one_at_a_time.begin().unwrap();
     Catalog::new(&mut first)
-        .create_replica("a", "a:9081", Roles::SERVING, Some([1; NODE_ID_LEN]), None)
+        .create_replica(
+            "a",
+            "a:9081",
+            Roles::SERVING.and(Roles::WRITABLE),
+            Some([1; NODE_ID_LEN]),
+            None,
+        )
         .unwrap();
     first
         .commit()
         .expect("the first peer is declared from a store still alone");
     let mut second = one_at_a_time.begin().unwrap();
     Catalog::new(&mut second)
-        .create_replica("b", "b:9081", Roles::SERVING, Some([2; NODE_ID_LEN]), None)
+        .create_replica(
+            "b",
+            "b:9081",
+            Roles::SERVING.and(Roles::WRITABLE),
+            Some([2; NODE_ID_LEN]),
+            None,
+        )
         .unwrap();
     second
         .commit()
@@ -651,10 +723,22 @@ fn a_cluster_is_declared_in_one_transaction_because_the_gate_shuts_on_the_first_
     let mut both = together.begin().unwrap();
     let mut catalog = Catalog::new(&mut both);
     catalog
-        .create_replica("a", "a:9081", Roles::SERVING, Some([1; NODE_ID_LEN]), None)
+        .create_replica(
+            "a",
+            "a:9081",
+            Roles::SERVING.and(Roles::WRITABLE),
+            Some([1; NODE_ID_LEN]),
+            None,
+        )
         .unwrap();
     catalog
-        .create_replica("b", "b:9081", Roles::SERVING, Some([2; NODE_ID_LEN]), None)
+        .create_replica(
+            "b",
+            "b:9081",
+            Roles::SERVING.and(Roles::WRITABLE),
+            Some([2; NODE_ID_LEN]),
+            None,
+        )
         .unwrap();
     both.commit()
         .expect("a cluster declared in one transaction");

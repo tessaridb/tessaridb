@@ -82,16 +82,41 @@ pub struct Told {
     /// cluster that cannot form. An operator told to name it names it.
     pub door: String,
     /// Addresses to dial for a first contact.
+    ///
+    /// May be empty, and an empty list is not a half-configuration. A node that
+    /// IS the cluster has nowhere to be reached the cluster *through*, and a
+    /// node whose catalog already names a peer has somewhere better to look —
+    /// see [`Self::from_parts`] for why the check that used to live here could
+    /// not answer either case.
     pub seeds: Vec<String>,
 }
 
 impl Told {
-    /// What five flags amount to: all of it, none of it, or a refusal.
+    /// What the cluster flags amount to: all of it, none of it, or a refusal.
     ///
-    /// A seed list is a part like the others, and an empty one is absence
-    /// rather than emptiness — a cluster runs three to seven voting members, so
-    /// one address is a single point of failure at the moment a node most needs
-    /// to succeed, and none is not a configuration at all.
+    /// **Four parts are all-or-nothing** — the credential, its key, the
+    /// authority that issued both, and the address this node's own door binds.
+    /// Each is about proving an identity or being reachable at all, and any
+    /// subset of them describes a node that would come up believing it has
+    /// peers it cannot prove itself to.
+    ///
+    /// # Why the seeds are not the fifth
+    ///
+    /// They were, until this wave, and the constraint became visible the moment
+    /// the flag started being read (Q-577): a founding node — the first one,
+    /// whose catalog already names its peers — has nowhere to be reached the
+    /// cluster *through*, and was made to name an address anyway so that a list
+    /// could be non-empty. The value was inert on every such node.
+    ///
+    /// The check it was standing in for is real and it is not this one. *Can
+    /// this node reach anybody* is answered by the seeds **or** by the catalog,
+    /// and this function reads flags and not a store, so it can see one half of
+    /// a disjunction and never the other. Asked here it refuses the founding
+    /// node; asked where the store is open it refuses exactly the node that has
+    /// no route to anyone. It is asked there instead.
+    ///
+    /// An empty list given alongside none of the four is still not a cluster:
+    /// that is the unclustered node, and it answers `None`.
     ///
     /// # Errors
     ///
@@ -109,10 +134,16 @@ impl Told {
             ("a private key", key.is_some()),
             ("a cluster authority", authority.is_some()),
             ("a peer address", door.is_some()),
-            ("seed addresses", !seeds.is_empty()),
         ];
-        let given: Vec<&str> = present.iter().filter(|p| p.1).map(|p| p.0).collect();
+        let mut given: Vec<&str> = present.iter().filter(|p| p.1).map(|p| p.0).collect();
         let missing: Vec<&str> = present.iter().filter(|p| !p.1).map(|p| p.0).collect();
+        if !seeds.is_empty() {
+            // Named among what was given but never among what is missing: a
+            // seed cannot complete a configuration and its absence cannot
+            // break one, yet an operator who passed only `--seed` has to be
+            // told their four other flags never arrived.
+            given.push("seed addresses");
+        }
         if given.is_empty() {
             return Ok(None);
         }
@@ -126,20 +157,13 @@ impl Told {
                 missing: missing.join(", "),
             });
         };
-        if missing.is_empty() {
-            Ok(Some(Self {
-                chain,
-                key,
-                authority,
-                door,
-                seeds,
-            }))
-        } else {
-            Err(Error::ClusterHalfConfigured {
-                given: given.join(", "),
-                missing: missing.join(", "),
-            })
-        }
+        Ok(Some(Self {
+            chain,
+            key,
+            authority,
+            door,
+            seeds,
+        }))
     }
 }
 
@@ -436,18 +460,44 @@ mod tests {
     }
 
     #[test]
-    fn a_cluster_with_no_seed_to_dial_is_half_configured() {
-        let failure = Told::from_parts(
+    fn a_cluster_that_names_no_seed_is_a_configuration_the_store_completes() {
+        // The founding node, and the single-node deployment being clustered.
+        // Both have somewhere to be reached and nowhere to be reached FROM, and
+        // refusing them here refuses the one node that needs no seed at all
+        // (Q-577). Whether this node can actually reach anybody is a question
+        // about the seeds OR the catalog, and only `serve` can see both.
+        let told = Told::from_parts(
             Some(at("leaf.pem")),
             Some(at("key.pem")),
             Some(at("ca.pem")),
             Some(DOOR.to_owned()),
             Vec::new(),
         )
-        .expect_err("a seed list is a part like the others");
+        .expect("four parts and no seed is a cluster configuration")
+        .expect("all four given");
         assert!(
-            failure.to_string().contains("seed addresses"),
-            "names the seeds"
+            told.seeds.is_empty(),
+            "no seed was named and none is invented"
+        );
+        assert_eq!(told.door, DOOR, "the address its own door binds");
+    }
+
+    #[test]
+    fn a_seed_on_its_own_is_still_half_a_cluster() {
+        // The other side of the same relaxation: a seed cannot COMPLETE a
+        // configuration, so an operator who passed only `--seed` must be told
+        // their four other flags never arrived rather than quietly starting a
+        // node that is not in a cluster at all.
+        let failure = Told::from_parts(None, None, None, None, vec![ONE_SEED.to_owned()])
+            .expect_err("a seed alone is not a cluster configuration");
+        let said = failure.to_string();
+        let (given, missing) = said
+            .split_once("but not")
+            .expect("the refusal separates what was given from what was missing");
+        assert!(given.contains("seed addresses"), "names what was given");
+        assert!(
+            missing.contains("a peer credential") && missing.contains("a peer address"),
+            "names the parts that never arrived, not just the first of them"
         );
     }
 

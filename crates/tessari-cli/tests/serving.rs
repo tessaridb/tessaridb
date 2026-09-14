@@ -727,6 +727,249 @@ fn a_peer_address_that_cannot_be_taken_is_a_failure_to_start_and_not_a_warning()
 }
 
 #[test]
+fn a_clustered_node_with_no_seed_and_no_peer_refuses_to_start() {
+    // The half of `Told::from_parts`'s old five-part rule that was doing real
+    // work, restated where it can be true. Four cluster parts and no seed is a
+    // legal configuration — it is the founding node, and every node whose
+    // catalog already names somebody — so the flag parser cannot decide this
+    // one: *can this node reach anybody* is answered by the seeds OR by the
+    // store, and it sees only the first (Q-577).
+    //
+    // A node with neither has no route into the cluster it was configured for.
+    // It would come up, refresh nothing, and go on serving whatever it last
+    // collected, with nothing anywhere in an error state — so it fails to
+    // start, and the refusal names both halves rather than one.
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("store");
+    let minted = Minted::new();
+    let (leaf, key, authority) = credentials(&minted, [7u8; 16], directory.path());
+
+    let mut refused = Command::new(TESSARIDB)
+        .arg(&store)
+        .args(["--serve", "127.0.0.1:0"])
+        .args(["--cluster-credential", &leaf])
+        .args(["--cluster-key", &key])
+        .args(["--cluster-authority", &authority])
+        .args(["--cluster-address", "127.0.0.1:0"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(refused.stdin.take());
+    let done = refused.wait_with_output().unwrap();
+    assert!(
+        !done.status.success(),
+        "a node with no route into its cluster is a failure to start"
+    );
+    let said = String::from_utf8_lossy(&done.stderr);
+    assert!(
+        said.contains("no seed") && said.contains("no peer"),
+        "the refusal must name both halves, because fixing either one settles \
+         it and the operator has to be told which they have: {said}"
+    );
+    assert!(
+        !said.contains("wire protocol on"),
+        "the client surface must never have been announced: {said}"
+    );
+}
+
+/// The self-declaring cluster, and the joiner that restarts with no seed.
+///
+/// A clean band: 47891-47894 belong to the join above.
+const NAMED: [(&str, &str); 2] = [
+    ("127.0.0.1:47895", "127.0.0.1:47896"),
+    ("127.0.0.1:47897", "127.0.0.1:47898"),
+];
+
+/// G025 S5.1 — a cluster declares a membership row for itself.
+///
+/// # What the self-row buys, and why nothing else can buy it
+///
+/// The row a cluster writes to admit a newcomer describes the NEWCOMER, so a
+/// joiner's first collection leaves it holding exactly one membership row: its
+/// own. That row names nobody to follow — `upstream` and `greet_round` both
+/// skip it — and the only route the joiner has to the leader is the address on
+/// its command line. Lose the flag and restart, and the node is alone with a
+/// catalog that is about itself (Q-579).
+///
+/// Every consensus system's membership list contains every member *including
+/// the one reading it*. So the node holding the original declares a row for
+/// itself, replicated like any other record, and what the joiner collects then
+/// names somebody. The seed becomes what §6.3 always said it was — an address
+/// for first contact, spent as soon as it works.
+///
+/// # It is a declaration and not something the node writes
+///
+/// `DEFINE REPLICA` is an operator's word everywhere else in this engine, for
+/// the reason `replica.rs` states: a self-maintained membership row needs a
+/// heartbeat, and a heartbeat is failure detection. Nothing new is built here.
+/// The row was always expressible — `ROLES` and `NODE` both already take what
+/// it needs — and what was missing is that the seed could not be dropped, so
+/// the row it makes redundant could never be observed doing its job.
+///
+/// # The assertion is a write made AFTER the restart
+///
+/// Not the presence of the row, which proves only that a collection once
+/// happened, and not the records collected before the restart, which the seed
+/// could account for. A record written on the leader while the joiner is
+/// running without a seed can have arrived by one route only.
+#[test]
+#[ignore = "two minutes of real cadences against three process starts; run it with \
+            cargo test -p tessari-cli --test serving a_joiner_restarted -- --ignored"]
+fn a_joiner_restarted_without_its_seed_still_finds_the_leader() {
+    let directory = tempfile::tempdir().unwrap();
+    let minted = Minted::new();
+
+    let mut stores = Vec::new();
+    let mut ids = Vec::new();
+    let mut papers = Vec::new();
+    for (index, _) in NAMED.iter().enumerate() {
+        let home = directory.path().join(format!("n{index}"));
+        std::fs::create_dir_all(&home).unwrap();
+        let store = home.join("store");
+        let db = tessaridb::Db::open(&store).unwrap();
+        let id = db.store().node_identity().unwrap().id;
+        drop(db);
+        papers.push(credentials(&minted, id, &home));
+        ids.push(id);
+        stores.push(store);
+    }
+
+    // The cluster side, and it is the join test's two acts plus ONE statement:
+    // the leader declares a row for itself. `ROLES serving, writable` is what
+    // `Roles::ALONE` already is, so the row agrees with what this node is
+    // rather than asking it to become something.
+    {
+        let db = tessaridb::Db::open(&stores[0]).unwrap();
+        let joiner = tessari_types::RecordId::Uuid(ids[1]).to_string();
+        let leader = tessari_types::RecordId::Uuid(ids[0]).to_string();
+        db.session()
+            .run(&format!(
+                "DEFINE REPLICA joiner AT '{}' NODE '{joiner}' ROLES serving \
+                 REPLICATES STORE; \
+                 DEFINE REPLICA origin AT '{}' NODE '{leader}' ROLES serving, writable; \
+                 {WRITTEN}",
+                NAMED[1].1, NAMED[0].1
+            ))
+            .expect("a leader that knows who is joining it, and who it is itself");
+        drop(db);
+    }
+    {
+        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        db.session()
+            .run("DEFINE NODE ROLES serving;")
+            .expect("a node that knows it is not the cluster");
+        drop(db);
+    }
+
+    let start = |index: usize, seed: bool| {
+        let (leaf, key, authority) = &papers[index];
+        let mut command = Command::new(TESSARIDB);
+        command
+            .arg(&stores[index])
+            .args(["--serve", NAMED[index].0])
+            .args(["--cluster-credential", leaf])
+            .args(["--cluster-key", key])
+            .args(["--cluster-authority", authority])
+            .args(["--cluster-address", NAMED[index].1]);
+        if seed {
+            let other = usize::from(index == 0);
+            command.args([
+                "--seed",
+                &format!(
+                    "{}@{}",
+                    tessari_types::RecordId::Uuid(ids[other]),
+                    NAMED[other].1
+                ),
+            ]);
+        }
+        Running(
+            command
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        )
+    };
+
+    // The leader keeps its seed for the whole test. It never reads it — its
+    // catalog names a peer from the first statement — and leaving it in place
+    // keeps the joiner as the only variable.
+    let leader = start(0, true);
+    {
+        let joiner = start(1, true);
+        for (client, peer) in NAMED {
+            assert!(listening(client, Duration::from_secs(30)), "{client}");
+            assert!(listening(peer, Duration::from_secs(30)), "{peer}");
+        }
+        let began = Instant::now();
+        let mut joined = false;
+        let mut refusals = Vec::new();
+        while began.elapsed() < Duration::from_secs(90) && !joined {
+            match counted(NAMED[1].0) {
+                Ok(1) => joined = true,
+                Ok(other) => refusals.push(format!("{other} record(s)")),
+                Err(why) => refusals.push(why),
+            }
+            std::thread::sleep(POLL);
+        }
+        assert!(
+            joined,
+            "the joiner never reached the leader's records with its seed, so \
+             the restart below would prove nothing; the last thing it said was \
+             {:?}",
+            refusals.last()
+        );
+        drop(joiner);
+    }
+
+    // Restarted with the four cluster parts and NO seed. Everything it now
+    // knows about where the cluster is, it collected.
+    let joiner = start(1, false);
+    assert!(
+        listening(NAMED[1].0, Duration::from_secs(30)),
+        "the joiner refused to start without a seed, and its catalog names the \
+         leader — the refusal is for a node that can reach NOBODY"
+    );
+
+    {
+        let mut client = Client::connect(NAMED[0].0).expect("the leader's client door");
+        client
+            .run(
+                "USE NAMESPACE prod; USE DATABASE orders; CREATE item:2 = { n: 2 };",
+                None,
+            )
+            .expect("a write on the one node that takes writes");
+    }
+    let since = Instant::now();
+    let mut arrived = None;
+    let mut silence = Vec::new();
+    while since.elapsed() < Duration::from_secs(90) && arrived.is_none() {
+        match counted(NAMED[1].0) {
+            Ok(2) => arrived = Some(since.elapsed()),
+            Ok(other) => silence.push(format!("{other} record(s)")),
+            Err(why) => silence.push(why),
+        }
+        std::thread::sleep(POLL);
+    }
+    let arrived = arrived.unwrap_or_else(|| {
+        panic!(
+            "the joiner restarted without a seed and never collected again: a \
+             record written after the restart never arrived, and the last thing \
+             it said was {:?}",
+            silence.last()
+        )
+    });
+    assert!(
+        arrived < Duration::from_secs(90),
+        "the restarted joiner took {arrived:?} to receive a write made after it \
+         came back"
+    );
+    drop(joiner);
+    drop(leader);
+}
+
+#[test]
 fn a_node_dials_the_peer_its_catalog_declares() {
     // W239's own claim against the shipped binary. `tessari-wire` proves what a
     // greeting round DOES to a directory; nothing but this proves the binary

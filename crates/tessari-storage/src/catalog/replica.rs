@@ -416,3 +416,51 @@ pub fn names_a_peer(declared: &[ReplicaDefinition], me: &[u8; NODE_ID_LEN]) -> b
         .iter()
         .any(|peer| peer.node.is_some_and(|node| node != *me))
 }
+
+/// Could a node other than this one accept a write?
+///
+/// The question the write fence actually asks, and it is **not**
+/// [`names_a_peer`]. That one answers *is this store in a cluster*, which its
+/// two other callers need — a joiner deciding whether its catalog can yet name
+/// somebody to follow counts a read-only peer, and should.
+///
+/// A peer that carries neither [`Roles::WRITABLE`] nor [`Roles::COORDINATING`]
+/// can do neither thing this fence exists to guard against. It cannot be
+/// elected, because `driver::voters` will not ballot a row without
+/// `COORDINATING` and a majority counted over members that cannot be asked is a
+/// majority of a fiction; and it cannot write under somebody else's leadership,
+/// because the row declares that it takes no writes.
+///
+/// # What asking the wider question cost
+///
+/// A store whose only declared peer was a read-only follower was fenced against
+/// a leadership its own election machinery refuses to create, with no
+/// configuration that recovers it: a lease is written only by a completed round,
+/// no round is possible, and the store never writes again. That is the topology
+/// ADR-0067 documents — one node that is already a cluster, and a second told
+/// one address — so following the join procedure stopped the leader's writes on
+/// its first statement (Q-609).
+///
+/// # Why it is not narrowed to `COORDINATING` alone
+///
+/// Because that is the hole ADR-0069 closed, arriving by a different road. Two
+/// nodes declared `SERVING | WRITABLE` and neither `COORDINATING` can elect
+/// nobody, so neither would be fenced — and both would write. Under the wider
+/// reading they fence each other, which is a dead cluster an operator can see
+/// rather than a silent divergence. **Unable to write** is the property, and it
+/// takes both bits to be absent.
+///
+/// # A row that understates its peer
+///
+/// `roles` is what an operator declared, not what the peer has since become. A
+/// row that understates a peer defeats this, and it defeats the election and the
+/// forwarding lookup in exactly the same breath — they all read the same field,
+/// so the deciding set is what the catalog says it is, and one wrong row is one
+/// wrong answer rather than two that disagree.
+#[must_use]
+pub fn another_node_may_write(declared: &[ReplicaDefinition], me: &[u8; NODE_ID_LEN]) -> bool {
+    declared.iter().any(|peer| {
+        peer.node.is_some_and(|node| node != *me)
+            && (peer.roles.has(Roles::WRITABLE) || peer.roles.has(Roles::COORDINATING))
+    })
+}

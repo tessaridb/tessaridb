@@ -374,7 +374,7 @@ impl Store {
     fn in_a_cluster(&self, me: &[u8; NODE_ID_LEN]) -> Result<bool> {
         let mut transaction = self.begin()?;
         let declared = crate::catalog::Catalog::new(&mut transaction).replicas()?;
-        Ok(crate::catalog::names_a_peer(&declared, me))
+        Ok(crate::catalog::another_node_may_write(&declared, me))
     }
 
     /// Refuse when the committed log names another node as the leader of a

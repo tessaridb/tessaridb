@@ -240,6 +240,42 @@ fn serve(
         }
         None => None,
     };
+    // A cluster configuration with no seed address is legal, and it is legal
+    // because the catalog is the other half of the answer: a node whose
+    // membership rows already name a peer has somewhere to dial and needs no
+    // address on a command line — the founding node, and every node after its
+    // first successful collection. `Told::from_parts` cannot ask this, because
+    // it reads flags and not a store, which is the whole reason the seed used
+    // to be demanded of nodes that would never read it (Q-577).
+    //
+    // A node with neither is the state that check was really about. It would
+    // come up in a cluster it has no route into, refresh nothing, and go on
+    // serving whatever it last collected — silently, because nothing is in an
+    // error state while it happens. So it fails to start, here, beside the
+    // credential read and for the same reason.
+    if let Some(joining) = &cluster
+        && joining.seeds.is_empty()
+    {
+        let me = db
+            .store()
+            .node_identity()
+            .map_err(|why| format!("this node cannot say who it is: {why}"))?
+            .id;
+        let declared = db
+            .store()
+            .begin()
+            .and_then(|mut transaction| tessari_storage::Catalog::new(&mut transaction).replicas())
+            .map_err(|why| format!("this node cannot say who its peers are: {why}"))?;
+        if !tessari_wire::names_a_peer(&declared, &me) {
+            return Err(
+                "this node is configured for a cluster, names no seed address, \
+                        and its catalog names no peer: there is nobody it can reach. \
+                        Give it --seed <node-id>@<host:port>, or declare the peer it \
+                        should follow."
+                    .to_owned(),
+            );
+        }
+    }
     // Before the client doors, and before the store is touched, for the reason
     // the credential read above gives: a node that cannot take the address its
     // cluster will call it back on is a node that should fail to start, not one
