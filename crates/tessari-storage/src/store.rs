@@ -413,6 +413,43 @@ impl Store {
     /// inside the refusal branch keeps the accepting path at one scan instead of
     /// two, which is the path every commit in a healthy cluster takes.
     ///
+    /// # A strictly greater epoch supersedes the row
+    ///
+    /// The row says who led a range when it was written, and the epoch beside it
+    /// says under which decision. A node that has since been granted a **higher**
+    /// epoch is not writing into somebody else's range: it is writing into one
+    /// whose recorded leader has been superseded, and ordering exactly that is
+    /// what the epoch is for.
+    ///
+    /// Without this the gate is a latch rather than a gate. Recording a
+    /// leadership is itself a write, so it meets this question — and the row that
+    /// refuses it is the row it would replace. The first election in a cluster's
+    /// life succeeds because no row exists yet; every one after it was refused
+    /// permanently, while the epoch climbed without bound because the winner
+    /// re-stood each time its unrecorded lease lapsed.
+    ///
+    /// **Equal and absent do not supersede.** A voter grants an epoch at most
+    /// once and a round concludes only on a strict majority, so two nodes cannot
+    /// hold the same epoch: a row naming another node at the epoch this node
+    /// holds is a catalog disagreeing with itself, and the safe reading of that
+    /// is the refusal. `None` is not zero either — a node nobody elected has
+    /// nothing to supersede with, which is the state every redirect to a known
+    /// leader is served from.
+    ///
+    /// # The epoch is the proved one, by construction
+    ///
+    /// [`Self::leading`] is written only by [`Self::hold`], which installs what a
+    /// majority granted. The roundless [`Self::hold_lease`] sets a fence and no
+    /// epoch at all. So nothing a caller asserts about itself in the frame being
+    /// judged can reach this comparison.
+    ///
+    /// # One epoch, for as long as a round is store-wide
+    ///
+    /// A grant in this build covers the whole store, so a node holds exactly one
+    /// epoch and comparing it against a per-range row is the comparison the
+    /// design intends. When a round can grant one range at a time, this becomes
+    /// a per-range comparison with it.
+    ///
     /// # Errors
     ///
     /// [`crate::Error::WriteIsElsewhere`] when another node leads one of the
@@ -426,10 +463,11 @@ impl Store {
         let mut transaction = self.begin()?;
         let held = crate::catalog::Catalog::new(&mut transaction).leaderships()?;
         drop(transaction);
+        let mine = self.leading();
         let Some(elsewhere) = ranges
             .iter()
             .filter_map(|range| crate::catalog::covering(&held, *range))
-            .find(|leader| leader.node != *me)
+            .find(|leader| leader.node != *me && mine.is_none_or(|mine| mine <= leader.epoch))
             .copied()
         else {
             return Ok(());
