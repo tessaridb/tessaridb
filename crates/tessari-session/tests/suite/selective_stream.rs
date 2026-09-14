@@ -60,10 +60,17 @@ fn two_tenants(store: &Store) {
         .unwrap();
 
     let mut root = signed_in(store, "root");
+    // `node` holds `replicate` over the **store** and subscribes over one
+    // namespace, which is not a contradiction — it is the separation S4.1 drew.
+    // The authority answers *who may open a subscription at all*, and the log it
+    // opens carries every tenancy's users, so the only principal it discloses
+    // nothing new to is one already entitled to the whole store. The `over`
+    // argument answers *what this subscription carries*, and that is still one
+    // namespace. Declaring `node` at `ON NAMESPACE prod` is now refused outright.
     root.run(
         "DEFINE USER prod_reader ON NAMESPACE prod AUTHORITIES read \
          PASSWORD 'correct horse battery';\n\
-         DEFINE USER node ON NAMESPACE prod AUTHORITIES replicate \
+         DEFINE USER node AUTHORITIES replicate \
          PASSWORD 'correct horse battery';",
     )
     .unwrap();
@@ -219,23 +226,36 @@ fn a_namespace_subscriber_does_not_receive_the_stores_credentials() {
             if rendered.contains("$argon2id$") {
                 hashes += 1;
             }
-            if rendered.contains("\"root\"") || rendered.contains("\"prod_reader\"") {
+            if rendered.contains("\"root\"")
+                || rendered.contains("\"prod_reader\"")
+                || rendered.contains("\"node\"")
+            {
                 names.push(rendered);
             }
         }
     }
-    // Two, and naming them is the assertion: `prod_reader` and `node` both live
-    // `ON NAMESPACE prod`, so both are this follower's to hold — the reader in
-    // the test above signs in with one of them, and a follower that could not
-    // would have no identity at all. `root` is the **store's**, and that hash is
-    // what must not be here.
+    // One, and naming it is the assertion: `prod_reader` lives `ON NAMESPACE
+    // prod`, so it is this follower's to hold — the reader in the test above
+    // signs in with it, and a follower that could not would have no identity at
+    // all. `root` and `node` are the **store's**, and those hashes are what must
+    // not be here.
+    //
+    // It was two until `replicate` became store-only: `node` used to be declared
+    // at `ON NAMESPACE prod` and so travelled with the tenancy it named. Moving
+    // it to the store moved its credential record out of this stream, which
+    // sharpens the test rather than weakening it — the subscriber's own hash is
+    // now among the ones that must not arrive.
     assert_eq!(
-        hashes, 2,
+        hashes, 1,
         "exactly the subscribed namespace's own users travel, got {hashes} credential records: {names:?}"
     );
     assert!(
         !names.iter().any(|rendered| rendered.contains("\"root\"")),
         "the store owner's credential record must not reach a namespace subscriber: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|rendered| rendered.contains("\"node\"")),
+        "nor the subscriber's own, which is a store user like any other: {names:?}"
     );
 }
 
@@ -251,9 +271,10 @@ fn a_commit_entirely_outside_the_reach_arrives_empty_and_the_tail_advances() {
     let leader = store();
     two_tenants(&leader);
 
-    // The whole-store baseline is taken as the owner, because `node` holds
-    // `replicate` over one namespace and is refused the store — which is W214's
-    // reach check still doing its job, and worth not defeating here.
+    // The whole-store baseline is taken as the owner. `node` could now take it
+    // too — it holds `replicate` over the store — and the owner is kept here on
+    // purpose, so that the two subscriptions being compared differ in their
+    // `over` argument and in nothing else about them that is easy to overlook.
     let mut owner = Session::new(&leader);
     owner.sign_in("root", PASSWORD).unwrap();
     let whole = owner

@@ -46,6 +46,16 @@ const PASSWORD: &str = "correct horse battery";
 /// recorded in `Held::from_role`. Narrowing a role on upgrade is an outage;
 /// widening one is an escalation; both have to be somebody's decision, and this
 /// table is where they are made to be.
+///
+/// # And the second such decision, in the other direction
+///
+/// `replicate` later became holdable over the whole store or not at all, which
+/// **narrows** an owner declared at a namespace or a database — the outage case,
+/// taken deliberately. What they lose is an authority that authorised nothing at
+/// that reach, and what it buys is that the log may carry every tenancy's users
+/// without a tenant being able to ask for it. Recorded as a subtraction below,
+/// so the table keeps saying what the ladder said and the exception stays
+/// visible instead of being edited away.
 const LADDER: [(&str, &[&str]); 3] = [
     ("viewer", &["read@R"]),
     ("editor", &["manage@R", "read@R", "write@R"]),
@@ -61,6 +71,18 @@ const LADDER: [(&str, &[&str]); 3] = [
         ],
     ),
 ];
+
+/// The entries the ladder promises that a reach cannot actually hold.
+///
+/// The table above says what a role *stood for*; this says where one of those
+/// entries stops being expressible. `replicate` is held over the whole store or
+/// not at all, so an owner of a namespace or a database keeps the other five.
+///
+/// Written as a subtraction from the table rather than as three separate tables,
+/// because the point of `LADDER` is that it is a second source for
+/// `Held::from_role` — and three hand-written lists would make it a second
+/// source for nothing.
+const NOT_BELOW_THE_STORE: &[&str] = &["replicate@R"];
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
@@ -131,6 +153,7 @@ fn every_ladder_role_keeps_exactly_the_authorities_it_stood_for() {
             .unwrap();
             let mut want: Vec<String> = expected
                 .iter()
+                .filter(|entry| reach == "store" || !NOT_BELOW_THE_STORE.contains(entry))
                 .map(|entry| entry.replace("@R", &format!("@{reach}")))
                 .collect();
             want.sort();

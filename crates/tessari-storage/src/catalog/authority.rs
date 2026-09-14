@@ -116,6 +116,46 @@ impl Kind {
     pub fn parse(text: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|held| held.name() == text)
     }
+
+    /// Whether this kind can be held at `reach` at all.
+    ///
+    /// Every kind but one can be held anywhere, because every kind but one is
+    /// about the container it names. [`Self::Replicate`] is not: it is the right
+    /// to take the log, and the log carries the **system tenancy** — the
+    /// definitions, and the users, credentials and grants that travel to every
+    /// subscriber. A holder of it sees what the store *is*, not what one
+    /// namespace contains, so a namespace is not a size it comes in.
+    ///
+    /// # This is a refusal, not a narrowing
+    ///
+    /// The alternative was to keep the grant sayable and defend the credentials
+    /// in the stream's filter instead. That fails on its own terms: the identity
+    /// class is replicated **everywhere, always** — one set of users per cluster
+    /// — so there is no filter left to hide them behind. Whoever may subscribe
+    /// at all sees every credential hash in the store, and the only principal
+    /// for whom that discloses nothing new is one already entitled to the whole
+    /// store.
+    ///
+    /// # The selective stream is untouched, because two things were riding here
+    ///
+    /// A subscription has a gate and a filter, and they were both spelled with
+    /// this kind. The gate is who may open one; the filter is `over`, the reach
+    /// the log is narrowed to. Only the gate moves. A store-reach holder may
+    /// still subscribe over one namespace and receive only that tenancy —
+    /// [`Reach::contains`] runs downward, so the store answers for a namespace
+    /// inside it. What the narrowing stops being is a right a tenant holds, and
+    /// what it becomes is an arrangement the cluster makes.
+    #[must_use]
+    pub const fn may_be_held_at(self, reach: Reach) -> bool {
+        match self {
+            Self::Replicate => matches!(reach, Reach::Store),
+            // Written out rather than left to a catch-all, so a seventh kind
+            // fails to compile here instead of silently answering `true`. The
+            // set is closed and a new member is a decision (see the type's own
+            // doc); this is one of the places that decision has to be made.
+            Self::Read | Self::Write | Self::Manage | Self::Govern | Self::Operate => true,
+        }
+    }
 }
 
 /// How far an authority reaches.
@@ -289,9 +329,25 @@ impl Authority {
     }
 
     /// Whether holding this answers a demand for `kind` at `reach`.
+    ///
+    /// # An authority held where its kind cannot be held answers nothing
+    ///
+    /// The middle question looks redundant beside the two statements that refuse
+    /// such a grant, and it is the one that matters most: the refusals govern
+    /// what can be **said from now on**, and this governs what is **already
+    /// written down**. Every namespace owner declared before [`Kind`] gained its
+    /// reach rule holds `replicate` over their namespace in the catalog this
+    /// moment, put there by [`Held::every_kind_at`] rather than by anybody's
+    /// statement. Guarding only the statements would leave every one of those
+    /// rows live and the guard decorative — an upgrade that closes a door while
+    /// the ones already open stay open.
+    ///
+    /// Asked here rather than at each caller because this is the single
+    /// predicate every authorization read funnels through, and a rule applied at
+    /// call sites is a rule the next call site inherits nothing of.
     #[must_use]
     pub fn permits(self, kind: Kind, reach: Reach) -> bool {
-        self.kind == kind && self.reach.contains(reach)
+        self.kind == kind && self.kind.may_be_held_at(self.reach) && self.reach.contains(reach)
     }
 }
 
@@ -320,10 +376,22 @@ impl Held {
         Self(authorities.into_iter().collect())
     }
 
-    /// Every kind at one reach — the shape an owner of something has.
+    /// Every kind that can be held at one reach — the shape an owner of
+    /// something has.
+    ///
+    /// "Every kind" is filtered rather than literal, and the filter is the whole
+    /// point of putting it here. This is not a statement anybody types: it is
+    /// the bundle [`Self::from_role`] hands an owner, so a kind that must not
+    /// reach a namespace would arrive at every namespace owner in the store by a
+    /// road with no author. One filter, and the role follows it for free.
     #[must_use]
     pub fn every_kind_at(reach: Reach) -> Self {
-        Self::of(Kind::ALL.iter().map(|kind| Authority::new(*kind, reach)))
+        Self::of(
+            Kind::ALL
+                .iter()
+                .filter(|kind| kind.may_be_held_at(reach))
+                .map(|kind| Authority::new(*kind, reach)),
+        )
     }
 
     /// Add one.
@@ -423,12 +491,21 @@ impl Held {
     /// not hold, so a store whose users were all declared by role could never
     /// grant `replicate` to anybody, including to itself.
     ///
-    /// The residue is an owner of one **namespace**, who gains an authority that
-    /// today authorises nothing — the only subscription that can be served is
-    /// the whole store's — and that must not, when a selective stream exists,
-    /// carry the identity class with it. A namespace's owner receiving every
-    /// credential hash in the store would be this decision's cost, and it is
-    /// recorded against the wave that builds the stream rather than left here.
+    /// The residue was an owner of one **namespace**, who gained an authority
+    /// that authorised nothing while the only subscription that could be served
+    /// was the whole store's — and which must not, once a selective stream
+    /// exists, carry the identity class with it. **That residue is now paid.**
+    /// [`Kind::may_be_held_at`] makes `replicate` a thing held over the store or
+    /// not at all, [`Self::every_kind_at`] filters by it, and this mapping
+    /// inherits the narrowing without an edit: an owner at the store still holds
+    /// every kind, an owner of a namespace no longer holds that one.
+    ///
+    /// Note which direction that moved. Narrowing a role on upgrade is the
+    /// outage this doc warns about two paragraphs above, and this is one — a
+    /// namespace owner loses an authority they were declared with. It is taken
+    /// anyway because what they lose is an authority that never authorised
+    /// anything, and what it buys is that the identity class can travel to every
+    /// follower without a tenant being able to ask for it.
     #[must_use]
     pub fn from_role(role: Role, reach: Reach) -> Self {
         match role {
@@ -758,8 +835,49 @@ mod tests {
 
         let owner = held_of(&fields, Some(Role::Owner), reach).expect("an owner");
         for kind in Kind::ALL {
-            assert!(owner.permits(*kind, reach));
+            assert_eq!(
+                owner.permits(*kind, reach),
+                kind.may_be_held_at(reach),
+                "an owner holds every kind this reach can hold and only those: {}",
+                kind.name()
+            );
         }
+        // Named as well as derived. The loop above compares the bundle against
+        // the rule, so both being wrong the same way would pass it; this says
+        // which kind the rule is about at a reach below the store.
+        assert!(
+            !owner.permits(Kind::Replicate, reach),
+            "an owner of one database does not hold the store's log"
+        );
+    }
+
+    /// The row an older binary already wrote, and the reason the rule is asked
+    /// in `permits` rather than only at the two statements that refuse it.
+    ///
+    /// Constructed directly because there is no longer any way to say it: every
+    /// road into the set now filters or refuses. That is the point — this is the
+    /// state of every store on disk that declared a namespace owner before the
+    /// rule existed, and a guard that only closes the door leaves all of those
+    /// standing open.
+    #[test]
+    fn a_stored_authority_at_a_reach_its_kind_cannot_reach_answers_nothing() {
+        let reach = Reach::Namespace(PROD);
+        let legacy = Held::of([
+            Authority::new(Kind::Replicate, reach),
+            Authority::new(Kind::Read, reach),
+        ]);
+
+        assert!(
+            !legacy.permits(Kind::Replicate, reach),
+            "a namespace-reach replication row from an older binary must authorise nothing"
+        );
+        assert!(
+            !legacy.permits(Kind::Replicate, Reach::Store),
+            "and it must not have been read upward into the store either"
+        );
+        // The neighbouring row is untouched, so this refuses one authority and
+        // not the record that carries it.
+        assert!(legacy.permits(Kind::Read, reach));
     }
 
     #[test]

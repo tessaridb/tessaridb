@@ -1364,6 +1364,36 @@ pub enum Error {
         span: Span,
     },
 
+    /// An authority named at a reach its kind cannot be held at.
+    ///
+    /// One kind is store-only — `replicate`, because the log it hands over
+    /// carries the users, credentials and grants of every tenancy — so naming it
+    /// over a namespace or a database asks for something that does not exist at
+    /// that size.
+    ///
+    /// # Refused rather than accepted and quietly dropped
+    ///
+    /// The alternative was to store what can be held and discard the rest, which
+    /// is what a **role** does here: `ROLE owner` at a namespace is a name for a
+    /// set, and a set may narrow. An explicitly named kind is not a name for a
+    /// set — it is a request, and the operator's only evidence that a request
+    /// landed is the statement not complaining. Answering it with silence
+    /// produces a grant that reads as present in the script and is absent from
+    /// the store.
+    ///
+    /// Distinct from [`Self::CannotHandOut`], which is about the caller: that
+    /// one says *you do not hold this*, and is fixed by somebody granting it.
+    /// This one says *nobody holds this here*, and is fixed by asking at the
+    /// store. Distinct from [`Self::NotTheWholeStore`], which refuses a
+    /// subscription already authorized rather than the grant behind it.
+    #[error("{kind} is held over the whole store or not at all (at {span})")]
+    NotAtThatReach {
+        /// The authority that was named.
+        kind: &'static str,
+        /// Where it was named.
+        span: Span,
+    },
+
     /// No user carries that id.
     ///
     /// Carries an id and no span because nothing typed it: it is reached when a
