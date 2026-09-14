@@ -298,3 +298,125 @@ fn a_clustered_node_with_no_lease_is_redirected_rather_than_told_to_wait() {
          wait instead of where to go: {refused:?}"
     );
 }
+
+/// G025 S6.2, the epoch half — a leadership row is judged by the range it
+/// describes, not by the tenancy it is stored in.
+///
+/// Q-597, and it was the wall S6.2 walked into rather than a defect anybody had
+/// met: nothing narrowed a leadership from `Reach::Store` until S6.1, so a node
+/// under somebody else's store-wide leadership had never had its own to record.
+///
+/// The shape is worth stating because it is silent. `Db::record_leadership`
+/// commits into the system tenancy, so by ADDRESS the row is a write into
+/// `Reach::Database(0, 0)` — which a store-wide leadership covers. A node that
+/// has just won a round for its own namespace would therefore be refused
+/// permission to write down the leadership a majority granted it. `Store::hold`
+/// installs the lease and cannot fail, so the node believes it leads; the log
+/// never learns, so every other node goes on routing that namespace's writes
+/// elsewhere. Nothing is in an error state anywhere.
+#[test]
+fn a_node_under_somebody_elses_store_wide_leadership_can_record_its_own() {
+    let store = between_two_leaders(
+        Reach::Namespace(NamespaceId::new(MINE)),
+        Reach::Store,
+        THEIR_NODE,
+    );
+    let me = store.node_identity().unwrap().id;
+
+    // A SECOND transaction, and that is the whole test. The fixture wrote both
+    // rows in one commit, before the first membership row had fenced anything;
+    // this is the write a node takes after a majority has granted it a round,
+    // which is the one that has to pass the gate.
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .record_leadership(
+            Reach::Namespace(NamespaceId::new(MINE)),
+            me,
+            Epoch::new(MY_EPOCH + 1),
+        )
+        .unwrap();
+    transaction
+        .commit()
+        .expect("a node cannot be refused permission to record a leadership it holds");
+
+    let mut transaction = store.begin().unwrap();
+    let held = Catalog::new(&mut transaction).leaderships().unwrap();
+    let mine = held
+        .iter()
+        .find(|row| row.range == Reach::Namespace(NamespaceId::new(MINE)))
+        .expect("this node's own leadership row");
+    assert_eq!(mine.node, me);
+    assert_eq!(mine.epoch, Epoch::new(MY_EPOCH + 1));
+}
+
+/// The exemption is a change of question, not a bypass.
+///
+/// Judging the row by what it describes must not let a node write a leadership
+/// for a range somebody else leads — which is the failure the other way out of
+/// Q-597 would have had, exempting the system tenancy wholesale and letting any
+/// node with any lease write any system row, another node's membership included.
+#[test]
+fn a_node_cannot_record_a_leadership_over_a_range_another_node_leads() {
+    let store = one_of_two();
+    let me = store.node_identity().unwrap().id;
+
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .record_leadership(
+            Reach::Namespace(NamespaceId::new(THEIRS)),
+            me,
+            Epoch::new(MY_EPOCH + 1),
+        )
+        .unwrap();
+    let refused = transaction
+        .commit()
+        .expect_err("a node claimed a leadership over a range it does not lead");
+    assert!(
+        matches!(refused, Error::WriteIsElsewhere { node, .. } if node == THEIR_NODE),
+        "{refused}"
+    );
+}
+
+/// G025 S6.2 — two ranges carry their own epochs, and one advancing leaves the
+/// other where it was.
+///
+/// The epoch was per-range in the record from `LeadershipDefinition`'s first
+/// version; what had never been asserted is the consequence, which is that the
+/// two numbers are independent. A store-wide epoch would make this test read the
+/// same value twice.
+#[test]
+fn two_ranges_advance_their_epochs_independently() {
+    let store = one_of_two();
+    let me = store.node_identity().unwrap().id;
+
+    let epochs = |store: &Store| {
+        let mut transaction = store.begin().unwrap();
+        let held = Catalog::new(&mut transaction).leaderships().unwrap();
+        let of = |range: Reach| {
+            held.iter()
+                .find(|row| row.range == range)
+                .map(|row| row.epoch.get())
+        };
+        (
+            of(Reach::Namespace(NamespaceId::new(MINE))),
+            of(Reach::Namespace(NamespaceId::new(THEIRS))),
+        )
+    };
+
+    assert_eq!(epochs(&store), (Some(MY_EPOCH), Some(THEIR_EPOCH)));
+
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .record_leadership(
+            Reach::Namespace(NamespaceId::new(MINE)),
+            me,
+            Epoch::new(MY_EPOCH + 3),
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+
+    // The one this node leads moved by three; the one it does not is untouched,
+    // and it is still the LOWER of the two having started as the higher — which
+    // a single store-wide counter could not produce.
+    assert_eq!(epochs(&store), (Some(MY_EPOCH + 3), Some(THEIR_EPOCH)));
+}

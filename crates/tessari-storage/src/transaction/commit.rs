@@ -11,7 +11,7 @@ use std::hash::{BuildHasher, Hasher};
 use std::time::Duration;
 
 use tessari_constants::{COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS};
-use tessari_encoding::{LogRecord, Mutation, RecordValue};
+use tessari_encoding::{LogRecord, Mutation, RecordValue, decode_payload};
 use tessari_types::Sequence;
 
 use super::{RecordAddress, Transaction};
@@ -106,6 +106,17 @@ fn jitter() -> u64 {
     })
 }
 
+/// Is this address the leadership table?
+///
+/// A free function and not a method, because it is a fact about an address and
+/// nothing about the transaction holding it — and because the gate above reads
+/// better when the condition it turns on has a name.
+fn is_a_leadership(address: &RecordAddress) -> bool {
+    address.namespace == crate::catalog::system::SYSTEM_NAMESPACE
+        && address.database == crate::catalog::system::SYSTEM_DATABASE
+        && address.table == crate::catalog::system::LEADERSHIPS
+}
+
 impl Transaction<'_> {
     /// Buffer a write. Nothing reaches the store until commit.
     pub fn put(&mut self, address: RecordAddress, payload: Vec<u8>) {
@@ -171,10 +182,44 @@ impl Transaction<'_> {
     /// record belongs to and [`Reach::contains`] widens it: a leadership over
     /// the namespace or over the whole store covers these without the gate
     /// having to construct those ranges itself.
-    fn ranges_written(&self) -> BTreeSet<Reach> {
+    ///
+    /// # A leadership row is judged by the range it describes
+    ///
+    /// One exception, and it is the wall Q-597 named before anything could reach
+    /// it. A leadership row lives in the system tenancy, so by address it is a
+    /// write into `Reach::Database(0, 0)` — and in a cluster where somebody else
+    /// holds `Reach::Store`, that range is led elsewhere. A node that has just
+    /// won a round for `Namespace(Y)` would therefore be refused permission to
+    /// record the leadership a majority granted it: the lease is installed and
+    /// cannot fail, but the log never learns about it, so every other node goes
+    /// on routing `Namespace(Y)`'s writes to the store-wide leader.
+    ///
+    /// The row is a **claim about `Namespace(Y)`**, so the question worth asking
+    /// is who leads `Namespace(Y)` — which is this node, by construction, because
+    /// the row exists only because it won that round. Asking instead who leads
+    /// the tenancy the row happens to be stored in is asking about the filing
+    /// cabinet rather than the document.
+    ///
+    /// This is narrower than exempting the system tenancy, which was the other
+    /// way out and would have let any node holding any lease write any system
+    /// row — another node's membership included.
+    ///
+    /// A row that cannot be decoded is **refused** rather than judged by its
+    /// address: a leadership whose range this node cannot read is one it cannot
+    /// place, and placing it wrongly is the failure this whole function exists to
+    /// prevent.
+    fn ranges_written(&self) -> Result<BTreeSet<Reach>> {
         self.writes
-            .keys()
-            .map(|address| Reach::Database(address.namespace, address.database))
+            .iter()
+            .map(|(address, value)| match value {
+                RecordValue::Present(payload) if is_a_leadership(address) => {
+                    let described = crate::catalog::LeadershipDefinition::from_value(
+                        &decode_payload(payload)?,
+                    )?;
+                    Ok(described.range)
+                }
+                _ => Ok(Reach::Database(address.namespace, address.database)),
+            })
             .collect()
     }
 
@@ -203,7 +248,7 @@ impl Transaction<'_> {
         // lead two namespaces.
         let identity = self.store.node_identity()?;
         self.store
-            .refuse_if_led_elsewhere(&self.ranges_written(), &identity.id)?;
+            .refuse_if_led_elsewhere(&self.ranges_written()?, &identity.id)?;
         // And the other half of *the effective role is the lease* (ADR-0064):
         // a node that takes part in deciding writes under a leadership and at
         // no other time. Asked here rather than only at the statement layer for
