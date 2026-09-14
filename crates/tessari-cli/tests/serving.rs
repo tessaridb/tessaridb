@@ -17,6 +17,7 @@
 
 #![allow(clippy::panic, clippy::unwrap_used)]
 
+use std::collections::BTreeMap;
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -965,6 +966,229 @@ fn a_joiner_restarted_without_its_seed_still_finds_the_leader() {
         "the restarted joiner took {arrived:?} to receive a write made after it \
          came back"
     );
+    drop(joiner);
+    drop(leader);
+}
+
+/// The row declared without `NODE`, and the joiner that binds it by arriving.
+///
+/// A clean band: 47895-47898 belong to the self-declaring cluster above.
+const UNBOUND: [(&str, &str); 2] = [
+    ("127.0.0.1:47899", "127.0.0.1:47900"),
+    ("127.0.0.1:47901", "127.0.0.1:47902"),
+];
+
+/// The replica row named `joiner`, as the node at `address` reports it.
+///
+/// Read through `INFO FOR NODE` rather than off the disk, because a binding an
+/// operator cannot read back is a binding they cannot check, and this is the
+/// surface they would check it on. The whole row and not one field: the
+/// criterion is as much about what did NOT change as about what did.
+fn joiner_row(address: &str) -> Result<BTreeMap<String, tessari_types::Value>, String> {
+    let mut client = Client::connect(address).map_err(|why| why.to_string())?;
+    let answers = client
+        .run("INFO FOR NODE;", None)
+        .map_err(|why| why.to_string())?;
+    let Some(Answer::Value {
+        value: tessari_types::Value::Object(report),
+        ..
+    }) = answers.last()
+    else {
+        return Err(format!("not a report: {answers:?}"));
+    };
+    let Some(tessari_types::Value::Object(cluster)) = report.get("cluster") else {
+        return Err(format!("no cluster group: {report:?}"));
+    };
+    let Some(tessari_types::Value::Array(peers)) = cluster.get("peers") else {
+        return Err(format!("no peers: {cluster:?}"));
+    };
+    peers
+        .iter()
+        .find_map(|peer| match peer {
+            tessari_types::Value::Object(fields)
+                if fields.get("name") == Some(&tessari_types::Value::from("joiner")) =>
+            {
+                Some(fields.clone())
+            }
+            _ => None,
+        })
+        .ok_or_else(|| format!("no row named joiner among {peers:?}"))
+}
+
+/// What that row says its node is — `Ok(None)` while nobody has bound it.
+fn bound_node(address: &str) -> Result<Option<String>, String> {
+    match joiner_row(address)?.get("node") {
+        Some(tessari_types::Value::Uuid(bytes)) => {
+            Ok(Some(tessari_types::RecordId::Uuid(*bytes).to_string()))
+        }
+        Some(tessari_types::Value::Null) | None => Ok(None),
+        other => Err(format!("node is {other:?}")),
+    }
+}
+
+/// G025 S5.2 — a replica row's node id is bound by the first inbound greeting.
+///
+/// # Why inbound is the only route, and therefore not a choice
+///
+/// A row whose `node` is `None` is declared but **undiallable**:
+/// `Directory::greet_round` skips it, because opening a session derives the
+/// peer's transport name from its identifier and an unbound row has none to
+/// derive from. So this node can never bind the row by reaching out. The single
+/// event that can ever bind it is that peer arriving here and proving who it is
+/// — which is what the criterion means by *the first inbound greeting*, and it
+/// is a statement about the design rather than a preference between two.
+///
+/// # The greeting supplies the id and nothing else
+///
+/// W281 made a row's `roles` decide whether this node is fenced, so a row bound
+/// by a greeting is a row that can move the write gate. That is Q-553's own
+/// recorded objection to binding by greeting — *a self-binding row is a role
+/// somebody else's first packet gets to assign* — and the answer is that only
+/// `node` is written. The endpoint, the roles and the reach stay exactly as the
+/// operator declared them, which the assertion below checks rather than assumes.
+///
+/// # The assertion is the transition, not the end state
+///
+/// The row is read once **before** the joiner starts and asserted unbound. A
+/// test that only checked the end state would pass against a fixture that had
+/// been bound all along, which is the failure mode this whole criterion is about.
+#[test]
+#[ignore = "a minute of real cadences against two process starts; run it with \
+            cargo test -p tessari-cli --test serving a_row_nobody_bound -- --ignored"]
+fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
+    let directory = tempfile::tempdir().unwrap();
+    let minted = Minted::new();
+
+    let mut stores = Vec::new();
+    let mut ids = Vec::new();
+    let mut papers = Vec::new();
+    for (index, _) in UNBOUND.iter().enumerate() {
+        let home = directory.path().join(format!("n{index}"));
+        std::fs::create_dir_all(&home).unwrap();
+        let store = home.join("store");
+        let db = tessaridb::Db::open(&store).unwrap();
+        let id = db.store().node_identity().unwrap().id;
+        drop(db);
+        papers.push(credentials(&minted, id, &home));
+        ids.push(id);
+        stores.push(store);
+    }
+
+    // The one difference from the self-declaring cluster above: the `joiner`
+    // row carries no `NODE`. The operator wrote down where the peer will be and
+    // what it is for, and left the identity to be proved rather than typed.
+    {
+        let db = tessaridb::Db::open(&stores[0]).unwrap();
+        let leader = tessari_types::RecordId::Uuid(ids[0]).to_string();
+        db.session()
+            .run(&format!(
+                "DEFINE REPLICA joiner AT '{}' ROLES serving REPLICATES STORE; \
+                 DEFINE REPLICA origin AT '{}' NODE '{leader}' ROLES serving, writable; \
+                 {WRITTEN}",
+                UNBOUND[1].1, UNBOUND[0].1
+            ))
+            .expect("a leader that declared a peer it has not met");
+        drop(db);
+    }
+    {
+        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        db.session()
+            .run("DEFINE NODE ROLES serving;")
+            .expect("a node that knows it is not the cluster");
+        drop(db);
+    }
+
+    let start = |index: usize| {
+        let (leaf, key, authority) = &papers[index];
+        let mut command = Command::new(TESSARIDB);
+        command
+            .arg(&stores[index])
+            .args(["--serve", UNBOUND[index].0])
+            .args(["--cluster-credential", leaf])
+            .args(["--cluster-key", key])
+            .args(["--cluster-authority", authority])
+            .args(["--cluster-address", UNBOUND[index].1]);
+        // Both nodes are seeded, and the leader's seed is not decoration. Its
+        // catalog names an unbound row and its own, so `names_a_peer` answers
+        // no — it names nobody it could follow — and W281's startup refusal
+        // would stop it dead. It never reads the seed, because nothing it needs
+        // is anywhere else; carrying it keeps the binding as the only variable,
+        // which is the shape the S5.1 scenario above settled on for the same
+        // reason. Q-612 records that the origin of a cluster should not need one.
+        let other = usize::from(index == 0);
+        command.args([
+            "--seed",
+            &format!(
+                "{}@{}",
+                tessari_types::RecordId::Uuid(ids[other]),
+                UNBOUND[other].1
+            ),
+        ]);
+        Running(
+            command
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        )
+    };
+
+    let leader = start(0);
+    assert!(
+        listening(UNBOUND[0].0, Duration::from_secs(30)),
+        "the leader never opened its client door"
+    );
+    assert_eq!(
+        bound_node(UNBOUND[0].0),
+        Ok(None),
+        "the row must start unbound, or what follows proves nothing"
+    );
+
+    let joiner = start(1);
+    assert!(
+        listening(UNBOUND[1].0, Duration::from_secs(30)),
+        "the joiner never opened its client door"
+    );
+
+    let expected = tessari_types::RecordId::Uuid(ids[1]).to_string();
+    let began = Instant::now();
+    let mut bound = false;
+    let mut answers = Vec::new();
+    while began.elapsed() < Duration::from_secs(60) && !bound {
+        match bound_node(UNBOUND[0].0) {
+            Ok(Some(said)) if said == expected => bound = true,
+            Ok(other) => answers.push(format!("{other:?}")),
+            Err(why) => answers.push(why),
+        }
+        std::thread::sleep(POLL);
+    }
+    assert!(
+        bound,
+        "the joiner greeted the leader and the leader never bound the row it \
+         declared for it; the last thing the leader said was {:?}",
+        answers.last()
+    );
+
+    // The other half of the rule, and the reason it is asserted here rather
+    // than trusted: the greeting carried an epoch, a role set and a log tail,
+    // and exactly none of them is allowed to reach this row. Asserted on the
+    // joiner's OWN row — the leader's `origin` row beside it really is
+    // `writable`, so a check over the whole report would pass on the wrong row.
+    let row = joiner_row(UNBOUND[0].0).expect("the joiner's row after binding");
+    assert_eq!(
+        row.get("endpoint"),
+        Some(&tessari_types::Value::from(UNBOUND[1].1)),
+        "the endpoint the operator wrote must survive the binding: {row:?}"
+    );
+    assert_eq!(
+        row.get("roles"),
+        Some(&tessari_types::Value::Array(vec![
+            tessari_types::Value::from("serving")
+        ])),
+        "the joiner was declared `serving` and greeted carrying `serving, \
+         writable`; the greeting must not have moved its roles: {row:?}"
+    );
+
     drop(joiner);
     drop(leader);
 }

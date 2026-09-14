@@ -6542,11 +6542,24 @@ must never look alike. Every peer declared before this clause existed therefore
 receives nothing until somebody says otherwise, which is the direction a
 permission should fail in.
 
-**`REPLICATES` needs `NODE`.** A subscription grants to a machine, and the door
-looks a follower up by the id its certificate proved — so a row that names no
-node holds a grant nobody can present. The statement is refused where it is
-written rather than stored, because afterwards a row that granted to nobody and
-a row nobody granted are the same row.
+**`REPLICATES` without `NODE` is a grant nobody holds *yet*.** A subscription
+grants to a machine, and the door looks a follower up by the id its certificate
+proved — so until the row names a node it matches no follower and hands over
+nothing. That is not a mistake to be refused, it is how a peer is admitted
+without being pre-registered: the row is bound by the first peer that dials this
+node and proves its identity with a credential this cluster issued, and the
+subscription takes effect at that moment.
+
+The binding writes the node id and **nothing else**. The address and the roles
+stay exactly as they were written here, so nothing a greeting carries — its
+epoch, its roles, how far its log reaches — can change what this row grants or
+what it says the peer is for.
+
+Two rows left unbound at once bind neither, and a row is never re-bound once it
+names a node. Nothing on an inbound connection could choose between two waiting
+rows, and guessing would put a node at another's address under another's roles —
+so peers are admitted one at a time, and an operator who wants the identity
+settled in advance writes `NODE` here and gets exactly the old behaviour.
 
 **What a subscription hands over is more than records.** The log is a stream of
 mutations and the identity class is in it, so a subscription carries the users,

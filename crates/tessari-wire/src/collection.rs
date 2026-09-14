@@ -817,6 +817,7 @@ mod tests {
         let door = std::thread::spawn(move || {
             drop(peers.greet(
                 || Ok(mine),
+                &LEADER,
                 &Deciding::holding(settled()),
                 &Serving::declared(db.store()),
             ));
@@ -849,6 +850,7 @@ mod tests {
             for _ in 0..rounds {
                 drop(peers.greet(
                     || Ok(mine),
+                    &LEADER,
                     &Deciding::holding(settled()),
                     &Serving::within(db.store(), &Everything, budget),
                 ));

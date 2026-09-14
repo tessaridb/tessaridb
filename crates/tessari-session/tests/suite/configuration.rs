@@ -925,33 +925,31 @@ fn a_subscription_reads_back_in_the_spelling_that_wrote_it() {
 }
 
 #[test]
-fn a_subscription_on_a_row_that_names_no_node_is_refused() {
-    // A grant needs somebody to hold it. Without `NODE` the row is a peer
-    // declared by name and address — all anyone can say about a machine they
-    // have not spoken to — so the door, which looks a follower up by the id its
-    // certificate proved, would never find this grant. Refused where the span
-    // is, because afterwards a row granting to nobody and a row nobody granted
-    // are the same row.
+fn a_subscription_on_a_row_that_names_no_node_is_declared_and_holds_nobody() {
+    // This was a refusal until W282, on the reasoning that a grant needs
+    // somebody to hold it: the door looks a follower up by the id its
+    // certificate proved, so a subscription on a row naming no node could never
+    // be found. What made that argument sound was that nothing could ever bind
+    // such a row. The first inbound greeting now does, so the grant is
+    // *pending* rather than *lost*, and refusing it would force an operator to
+    // type an id nobody has told them yet (Q-611).
+    //
+    // What has NOT changed is who can hold it, and that is the half worth
+    // asserting: an unbound row matches no follower, so the grant reaches
+    // nobody until a peer this cluster issued a credential to arrives and
+    // proves which node it is.
     let store = closed(&backend());
     let mut session = owner(&store);
     session.run("DEFINE NAMESPACE prod;").unwrap();
 
-    let refused = session
+    session
         .run("DEFINE REPLICA second AT 'there:9001' REPLICATES NAMESPACE prod;")
-        .unwrap_err();
-    assert!(
-        matches!(refused, Error::SubscriptionNamesNoNode { .. }),
-        "{refused}"
-    );
-    let said = refused.to_string();
-    assert!(said.contains("NODE"), "it names the clause to add: {said}");
+        .expect("a peer declared before anybody has spoken to it");
 
-    // And nothing was declared: the statement either declares the peer it was
-    // asked for or declares nothing, which is the order this statement already
-    // uses for a misspelled role.
-    assert!(
-        subscriptions(&reported(&store)).is_empty(),
-        "a refused declaration left a row behind"
+    assert_eq!(
+        subscriptions(&reported(&store)),
+        vec![("second".to_owned(), Some("NAMESPACE prod".to_owned()))],
+        "the reach the operator wrote is stored as written"
     );
 }
 

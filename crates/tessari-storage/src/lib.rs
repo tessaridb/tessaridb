@@ -56,7 +56,7 @@ pub use catalog::{
     RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE,
     SeriesDeclaration, StoredKind, TableDefinition, TableKind, TableShape, UserDefinition,
     VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance, Verb, ViewDeclaration,
-    another_node_may_write, names_a_peer,
+    another_node_may_write, names_a_peer, the_row_a_greeting_binds,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.

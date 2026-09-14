@@ -196,7 +196,6 @@ impl Session<'_> {
                     replicates: replicates.as_ref(),
                 },
                 *if_not_exists,
-                span,
             ),
             StatementKind::DefineConsumer {
                 name,
@@ -2875,7 +2874,6 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         peer: &Peer<'_>,
         if_not_exists: bool,
-        span: Span,
     ) -> Result<Outcome> {
         let declared = Catalog::new(transaction)
             .replicas()?
@@ -2892,14 +2890,21 @@ impl Session<'_> {
             .map(named_roles)
             .transpose()?
             .unwrap_or(Roles::NONE);
-        // A subscription grants to a node, so a declaration that names none is
-        // refused before anything is claimed — the order this statement already
-        // uses for a misspelled role, for the same reason.
+        // A subscription on a row that names no node used to be refused here,
+        // on the reasoning that a grant needs somebody to hold it and the peer
+        // door — which looks a follower up by the id its certificate proved —
+        // would never find one written against nobody. That was true while
+        // nothing could ever bind such a row, and W282 is the wave that makes it
+        // false: the row is bound by the first inbound greeting, and the grant
+        // becomes findable at the moment the peer arrives (Q-611).
+        //
+        // It is inert until then rather than broad: `Subscriptions::granted`
+        // matches `row.node == Some(follower)`, so an unbound row answers
+        // nobody. What changes is only *when* the grant takes effect, never who
+        // it can reach — and the recipient is still a node this cluster issued a
+        // peer credential to, which is the act that admits a member.
         let replicates = match peer.replicates {
             None => None,
-            Some(_) if peer.node.is_none() => {
-                return Err(Error::SubscriptionNamesNoNode { span });
-            }
             Some(named) => Some(self.reach_of(transaction, named)?),
         };
         Catalog::new(transaction).create_replica(

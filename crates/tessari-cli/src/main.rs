@@ -1080,6 +1080,17 @@ fn greet_peers(
     voter: &tessari_wire::Deciding,
     stopping: &tessari_serve::Stopping,
 ) {
+    // Settled once, before the loop, and deliberately unlike the greeting below
+    // it. An identity is fixed when the store is initialised, so reading it here
+    // cannot go stale the way an epoch or a log tail would; a node that cannot
+    // say who it is cannot admit anybody either, and the loop never opens.
+    let me = match db.store().node_identity() {
+        Ok(identity) => identity.id,
+        Err(why) => {
+            log::warn!("the peer door cannot say who this node is: {why}");
+            return;
+        }
+    };
     while !stopping.asked() {
         // The facts are read inside the door, when a peer has arrived and
         // proved who it is — not here, before the wait. A door idle for an hour
@@ -1089,15 +1100,23 @@ fn greet_peers(
         // The door serves the log at last, and serves it to exactly the peers
         // this store's own catalog subscribed — `NoLog` was the honest answer
         // only while nothing could ask the catalog that question.
-        match door.greet(mine, voter, &tessari_wire::Serving::declared(db.store())) {
-            Ok(met) => log::info!(
-                "peer {} greeted at epoch {}, tail {}{}",
-                hex(&met.said.node),
-                met.said.epoch.get(),
-                met.said.tail.get(),
-                met.voted
-                    .map_or(String::new(), |vote| format!(", {vote:?}")),
-            ),
+        match door.greet(
+            mine,
+            &me,
+            voter,
+            &tessari_wire::Serving::declared(db.store()),
+        ) {
+            Ok(met) => {
+                log::info!(
+                    "peer {} greeted at epoch {}, tail {}{}",
+                    hex(&met.said.node),
+                    met.said.epoch.get(),
+                    met.said.tail.get(),
+                    met.voted
+                        .map_or(String::new(), |vote| format!(", {vote:?}")),
+                );
+                bind_the_greeter(db, met.said.node);
+            }
             // Not a connection failure: the store itself would not answer. The
             // loop ends rather than spinning on it, and the client surfaces are
             // untouched — a node that cannot greet can still serve. It reaches
@@ -1113,6 +1132,50 @@ fn greet_peers(
             // finding one.
             Err(why) => log::info!("a peer connection ended: {why}"),
         }
+    }
+}
+
+/// Bind the row this greeting is evidence for, when there is exactly one.
+///
+/// # Why this is here and not inside the door
+///
+/// `Peers::greet` has no store, deliberately — it settles a credential, hears a
+/// greeting and answers, and a door that could also write the catalog would be a
+/// transport with an opinion about membership. The rule needs two things the door
+/// cannot both see, so it lives in the caller that holds both, which is the shape
+/// W281 arrived at for the write fence for the same reason.
+///
+/// # Why a refusal is not an error here
+///
+/// Binding is a catalog write and therefore a log record, so only a node that may
+/// write can take it: on a follower the fence refuses the commit, which is
+/// correct, because membership arrives at a follower by collection and a
+/// follower writing its own would be a second source of truth about who the
+/// members are. The read runs first and commits nothing, so in the ordinary case
+/// — every row already bound — this costs one catalog read and writes nothing at
+/// all.
+///
+/// Logged at the level the loop already uses for ordinary peer outcomes. A
+/// greeting that arrived and a row that did not need binding are both the normal
+/// course of a running cluster.
+fn bind_the_greeter(db: &Db, node: [u8; tessari_storage::NODE_ID_LEN]) {
+    let bind = || -> Result<Option<u32>, String> {
+        let mut transaction = db.store().begin().map_err(|why| why.to_string())?;
+        let mut catalog = tessari_storage::Catalog::new(&mut transaction);
+        let declared = catalog.replicas().map_err(|why| why.to_string())?;
+        let Some(id) = tessari_storage::the_row_a_greeting_binds(&declared, &node) else {
+            return Ok(None);
+        };
+        catalog
+            .bind_replica_node(id, node)
+            .map_err(|why| why.to_string())?;
+        transaction.commit().map_err(|why| why.to_string())?;
+        Ok(Some(id))
+    };
+    match bind() {
+        Ok(Some(id)) => log::info!("peer {} now names replica {id}", hex(&node)),
+        Ok(None) => {}
+        Err(why) => log::info!("peer {} was not bound to a declared row: {why}", hex(&node)),
     }
 }
 

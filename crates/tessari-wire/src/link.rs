@@ -135,16 +135,28 @@ impl Peers {
     /// before this node answers. Later is not possible, and anywhere earlier
     /// re-opens the gap by however long the step it precedes takes.
     ///
+    /// # Why `me` is a value while `mine` is a closure
+    ///
+    /// They look like the same fact read twice and are not. `mine` is a claim
+    /// about **state** — epoch, roles, log tail, how old this copy is — and is
+    /// therefore read on arrival. `me` is this node's identity, which is fixed
+    /// when the store is initialised and cannot go stale however long the door
+    /// waits, so it is settled before the wait and used by the refusal that runs
+    /// before this node says anything at all.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Unidentified`] when nothing was presented,
     /// [`Error::CredentialNamesAnother`] when what was presented does not name
     /// the node the greeting claims, [`Error::NotAPeerCredential`] when it
-    /// names that node for the client link instead of this one, and whatever
-    /// `mine` returns when this node cannot state what it holds.
+    /// names that node for the client link instead of this one,
+    /// [`Error::ClaimsOurOwnIdentity`] when the peer arrives under this node's
+    /// own id, and whatever `mine` returns when this node cannot state what it
+    /// holds.
     pub fn greet(
         &self,
         mine: impl FnOnce() -> Result<Hello>,
+        me: &[u8; NODE_ID_LEN],
         voter: &Deciding,
         log: &dyn Origin,
     ) -> Result<Met> {
@@ -162,7 +174,7 @@ impl Peers {
         let mut link = rustls::Stream::new(&mut session, &mut socket);
         let said = hear(&mut link)?;
         let presented = credential::presented(shown.as_ref(), said.node)?;
-        admit(Some(&presented), &said)?;
+        admit(Some(&presented), &said, me)?;
         // Read here and not before the accept above: see the note on this
         // function. A peer has arrived and proved who it is, so the facts this
         // node is about to state are the ones it holds at the moment it states
@@ -560,7 +572,7 @@ pub(crate) mod tests {
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
         let listening = std::thread::spawn(move || {
-            peers.greet(|| Ok(mine), &Deciding::holding(settled()), &NoLog)
+            peers.greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
         });
 
         let theirs = call(
@@ -615,6 +627,7 @@ pub(crate) mod tests {
                         Some(core::time::Duration::ZERO),
                     ))
                 },
+                &HERE,
                 &Deciding::holding(settled()),
                 &NoLog,
             )
@@ -659,7 +672,7 @@ pub(crate) mod tests {
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
         let listening = std::thread::spawn(move || {
-            peers.greet(|| Ok(mine), &Deciding::holding(settled()), &NoLog)
+            peers.greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
         });
 
         let failure = call(
@@ -700,7 +713,7 @@ pub(crate) mod tests {
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
         let listening = std::thread::spawn(move || {
-            peers.greet(|| Ok(mine), &Deciding::holding(settled()), &NoLog)
+            peers.greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
         });
 
         // The id is perfectly correct. What is wrong is the link it was issued
@@ -727,7 +740,7 @@ pub(crate) mod tests {
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
         let listening = std::thread::spawn(move || {
-            peers.greet(|| Ok(mine), &Deciding::holding(settled()), &NoLog)
+            peers.greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
         });
 
         // Issued by the right authority, for the right link, for the wrong node.
@@ -773,7 +786,8 @@ pub(crate) mod tests {
         let address = peers.address().expect("the door's address");
         let mine = hello(id);
         let deciding = Deciding::holding(voter);
-        let answering = std::thread::spawn(move || peers.greet(|| Ok(mine), &deciding, &NoLog));
+        let answering =
+            std::thread::spawn(move || peers.greet(|| Ok(mine), &HERE, &deciding, &NoLog));
         (address, answering)
     }
 
@@ -892,7 +906,7 @@ pub(crate) mod tests {
         let mine = hello(HERE);
         let answering = std::thread::spawn(move || {
             let voter = Deciding::holding(settled());
-            let met = peers.greet(|| Ok(mine), &voter, &NoLog);
+            let met = peers.greet(|| Ok(mine), &HERE, &voter, &NoLog);
             // The voter is handed back untouched: nothing was decided, which is
             // the half a refusal-shaped answer would not have given.
             (met, voter.decided())
@@ -935,7 +949,7 @@ pub(crate) mod tests {
         // granted, because re-granting to the holder adds no second holder.
         let mine = hello(HERE);
         let answering = std::thread::spawn(move || {
-            peers.greet(|| Ok(mine), &Deciding::holding(incumbent()), &NoLog)
+            peers.greet(|| Ok(mine), &HERE, &Deciding::holding(incumbent()), &NoLog)
         });
 
         let refused = call(
@@ -1247,7 +1261,7 @@ pub(crate) mod tests {
         let (peers, mine) = door(&authority);
         let address = peers.address().expect("the door's address");
         let listening = std::thread::spawn(move || {
-            peers.greet(|| Ok(mine), &Deciding::holding(settled()), &NoLog)
+            peers.greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
         });
 
         let mut roots = rustls::RootCertStore::empty();

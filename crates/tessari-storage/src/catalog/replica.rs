@@ -282,6 +282,34 @@ impl Catalog<'_, '_> {
         Ok(definition)
     }
 
+    /// Bind a declared row to the node whose greeting proved it.
+    ///
+    /// Writes the `node` field and nothing else. The endpoint, the roles and the
+    /// reach stay exactly as the operator declared them, because those are the
+    /// operator's decision and the greeting is evidence of an identity only.
+    ///
+    /// Answers `false` when there is no row under that id — the same shape
+    /// [`Self::drop_replica`] uses, and for the same reason: the caller is
+    /// reconciling against a list it read a moment ago, and a row that has since
+    /// been dropped is an ordinary race rather than a failure.
+    ///
+    /// It does **not** decide whether the row should be bound. That question has
+    /// two refusals in it and they live in [`the_row_a_greeting_binds`], which is
+    /// a pure function over the declarations and is therefore testable without a
+    /// store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definitions cannot be read.
+    pub fn bind_replica_node(&mut self, id: u32, node: [u8; NODE_ID_LEN]) -> Result<bool> {
+        let Some(mut definition) = self.replicas()?.into_iter().find(|found| found.id == id) else {
+            return Ok(false);
+        };
+        definition.node = Some(node);
+        self.write(system::REPLICAS, id, &definition.to_value());
+        Ok(true)
+    }
+
     /// Remove a peer's declaration and release its name.
     ///
     /// Answers `false` when there was nothing under that id.
@@ -463,4 +491,124 @@ pub fn another_node_may_write(declared: &[ReplicaDefinition], me: &[u8; NODE_ID_
         peer.node.is_some_and(|node| node != *me)
             && (peer.roles.has(Roles::WRITABLE) || peer.roles.has(Roles::COORDINATING))
     })
+}
+
+/// Which declared row, if any, the greeting of `node` binds itself to.
+///
+/// A row with no `node` is **declared but undiallable**: `Directory::greet_round`
+/// skips it, because opening a session derives the peer's transport name from
+/// its identifier and there is none to derive from. So a row nobody bound can
+/// never be bound from this side, and the only event that can ever bind it is
+/// that peer arriving here and proving who it is. The greeting supplies the
+/// **id and nothing else** — the endpoint, the roles and the reach are what the
+/// operator wrote, and a row that took its role from the wire would be a role
+/// somebody else's first packet got to assign.
+///
+/// # Two refusals, and the second is the load-bearing one
+///
+/// Nothing is bound when a row **already names** `node`: that peer is known, and
+/// binding a second row to one id would put one node in the catalog twice, where
+/// the two rows can disagree about its endpoint and its roles.
+///
+/// Nothing is bound when **more than one** row is unbound either, and this is
+/// the refusal that matters. An inbound connection carries no discriminator that
+/// could choose between them — the source port is ephemeral and two peers on one
+/// host share an address — so a binding taken among several would be a guess, and
+/// the cost of guessing wrong is a node running under somebody else's roles at
+/// somebody else's dial-back address. Declining leaves the operator with a row
+/// they can bind by hand with `NODE`, which is a visible non-event rather than a
+/// silent wrong answer.
+///
+/// One at a time is also the settled answer in this class of system: a cluster
+/// that has been told about a member it has not yet heard from holds further
+/// membership changes until it has, for exactly this reason. The comparison and
+/// its source are recorded in ADR-0072.
+#[must_use]
+pub fn the_row_a_greeting_binds(
+    declared: &[ReplicaDefinition],
+    node: &[u8; NODE_ID_LEN],
+) -> Option<u32> {
+    if declared.iter().any(|row| row.node == Some(*node)) {
+        return None;
+    }
+    let mut unbound = declared.iter().filter(|row| row.node.is_none());
+    let candidate = unbound.next()?;
+    if unbound.next().is_some() {
+        return None;
+    }
+    Some(candidate.id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReplicaDefinition, the_row_a_greeting_binds};
+    use tessari_encoding::{NODE_ID_LEN, Roles};
+
+    const GREETER: [u8; NODE_ID_LEN] = [9; NODE_ID_LEN];
+    const SOMEBODY_ELSE: [u8; NODE_ID_LEN] = [7; NODE_ID_LEN];
+
+    /// A row an operator declared with `NODE`.
+    fn bound(id: u32, name: &str, node: [u8; NODE_ID_LEN]) -> ReplicaDefinition {
+        ReplicaDefinition {
+            node: Some(node),
+            ..unbound(id, name)
+        }
+    }
+
+    /// A row an operator declared without `NODE`.
+    ///
+    /// The ids differ per row throughout, so that a rule taking the wrong
+    /// candidate is detectable rather than accidentally right.
+    fn unbound(id: u32, name: &str) -> ReplicaDefinition {
+        ReplicaDefinition {
+            id,
+            name: name.to_owned(),
+            endpoint: "10.0.0.2:9000".to_owned(),
+            roles: Roles::SERVING,
+            node: None,
+            replicates: None,
+        }
+    }
+
+    #[test]
+    fn the_one_row_nobody_bound_is_the_row_a_greeting_binds() {
+        let declared = [bound(1, "leader", SOMEBODY_ELSE), unbound(4, "joiner")];
+        assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), Some(4));
+    }
+
+    #[test]
+    fn an_empty_catalog_binds_nothing_because_there_is_no_row_to_bind() {
+        assert_eq!(the_row_a_greeting_binds(&[], &GREETER), None);
+    }
+
+    #[test]
+    fn a_catalog_whose_every_row_is_bound_binds_nothing() {
+        let declared = [bound(1, "leader", SOMEBODY_ELSE)];
+        assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), None);
+    }
+
+    /// The peer is already known, and knowing it twice is worse than once.
+    ///
+    /// Two rows for one id can disagree about that node's endpoint and its
+    /// roles, and every reader of the catalog then gets whichever it reaches
+    /// first. The unbound row beside it is what makes this a real test: without
+    /// it there would be nothing to bind either way.
+    #[test]
+    fn a_greeting_from_a_node_a_row_already_names_binds_nothing() {
+        let declared = [bound(1, "leader", GREETER), unbound(4, "joiner")];
+        assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), None);
+    }
+
+    /// The refusal the whole rule is built around.
+    ///
+    /// Nothing on an inbound connection can choose between two unbound rows —
+    /// the source port is ephemeral and two peers on one host share an address
+    /// — so binding either would be a guess, and the cost of guessing wrong is
+    /// a node running under somebody else's roles at somebody else's dial-back
+    /// address.
+    #[test]
+    fn two_rows_nobody_bound_bind_nothing_because_neither_can_be_chosen() {
+        let declared = [unbound(4, "joiner"), unbound(5, "another")];
+        assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), None);
+    }
 }

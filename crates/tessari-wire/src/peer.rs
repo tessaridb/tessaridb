@@ -327,22 +327,33 @@ fn whole_seconds(age: Duration) -> u64 {
 
 /// Decide whether the other end may speak on this link.
 ///
-/// The three refusals are three different failures and are kept apart, because
+/// The four refusals are four different failures and are kept apart, because
 /// one "handshake failed" sends whoever reads it to a packet capture for each:
 /// nothing was proven at all means the port let a stranger through; the wrong
-/// purpose means a credential was presented where it was never meant to be; and
-/// a disagreeing id means either a mis-issued credential or a node claiming
-/// somebody else's name.
+/// purpose means a credential was presented where it was never meant to be; a
+/// disagreeing id means either a mis-issued credential or a node claiming
+/// somebody else's name; and this node's own id means a collision only this end
+/// can see.
 ///
 /// Absence is refused rather than defaulted. A handshake that admitted an
 /// unproven peer would make every check after it a formality performed on
 /// whoever asked.
 ///
+/// # Why `me` is an argument and not read from the greeting this node sends
+///
+/// The door builds its own `Hello` **after** this function, deliberately: the
+/// epoch, the log tail and the copy's age are facts about state, and a door idle
+/// for an hour would otherwise state hour-old ones. An identity is not that kind
+/// of fact. It is fixed when the store is initialised and cannot go stale, so
+/// taking it early costs nothing and moving the greeting early would cost the
+/// property that ordering was chosen for.
+///
 /// # Errors
 ///
-/// Returns [`Error::Unidentified`], [`Error::NotAPeerCredential`] or
-/// [`Error::IdentityDisagrees`], one per refusal above.
-pub fn admit(presented: Option<&Presented>, said: &Hello) -> Result<()> {
+/// Returns [`Error::Unidentified`], [`Error::NotAPeerCredential`],
+/// [`Error::IdentityDisagrees`] or [`Error::ClaimsOurOwnIdentity`], one per
+/// refusal above.
+pub fn admit(presented: Option<&Presented>, said: &Hello, me: &[u8; NODE_ID_LEN]) -> Result<()> {
     let presented = presented.ok_or(Error::Unidentified)?;
     if presented.purpose != Purpose::Peer {
         return Err(Error::NotAPeerCredential);
@@ -351,6 +362,17 @@ pub fn admit(presented: Option<&Presented>, said: &Hello) -> Result<()> {
         return Err(Error::IdentityDisagrees {
             said: RecordId::Uuid(said.node).to_string(),
             presented: RecordId::Uuid(presented.node).to_string(),
+        });
+    }
+    // Last, and after the credential rather than before it. A caller with no
+    // credential at all gets the refusal that names the real problem, and only a
+    // peer holding a credential this cluster issued for this node's own name —
+    // which is to say a mis-issue — reaches this line. That is the case the
+    // second layer exists for; putting the check first would make it the answer
+    // to every unauthenticated connection that guessed an id.
+    if said.node == *me {
+        return Err(Error::ClaimsOurOwnIdentity {
+            said: RecordId::Uuid(said.node).to_string(),
         });
     }
     Ok(())
@@ -367,6 +389,9 @@ mod tests {
 
     const ONE: [u8; NODE_ID_LEN] = [1; NODE_ID_LEN];
     const ANOTHER: [u8; NODE_ID_LEN] = [2; NODE_ID_LEN];
+    /// The node doing the admitting, distinct from both peers above so that the
+    /// fourth refusal cannot fire by accident in a test about the other three.
+    const ME: [u8; NODE_ID_LEN] = [3; NODE_ID_LEN];
 
     fn greeting(node: [u8; NODE_ID_LEN]) -> Hello {
         Hello {
@@ -488,7 +513,7 @@ mod tests {
             node: ONE,
             purpose: Purpose::Peer,
         };
-        assert!(admit(Some(&presented), &greeting(ONE)).is_ok());
+        assert!(admit(Some(&presented), &greeting(ONE), &ME).is_ok());
     }
 
     #[test]
@@ -496,7 +521,7 @@ mod tests {
         // Absence is the default-deny case, and it is checked first: a greeting
         // from nobody is not improved by being well formed.
         assert!(matches!(
-            admit(None, &greeting(ONE)),
+            admit(None, &greeting(ONE), &ME),
             Err(Error::Unidentified)
         ));
     }
@@ -510,8 +535,41 @@ mod tests {
             purpose: Purpose::Client,
         };
         assert!(matches!(
-            admit(Some(&presented), &greeting(ONE)),
+            admit(Some(&presented), &greeting(ONE), &ME),
             Err(Error::NotAPeerCredential)
+        ));
+    }
+
+    #[test]
+    fn a_peer_arriving_under_this_nodes_own_id_is_refused() {
+        // The credential agrees with the frame, which is what makes this worth
+        // checking: every other refusal has already passed, so the only thing
+        // left that can catch it is this end knowing its own name. A cluster
+        // that issued this credential mis-issued it, and the door survives that
+        // rather than trusting it did not happen.
+        let presented = Presented {
+            node: ME,
+            purpose: Purpose::Peer,
+        };
+        let refused = admit(Some(&presented), &greeting(ME), &ME)
+            .expect_err("a peer claiming this node's own id was admitted");
+        assert!(matches!(refused, Error::ClaimsOurOwnIdentity { .. }));
+        let said = refused.to_string();
+        assert!(
+            said.contains(&"03".repeat(NODE_ID_LEN)),
+            "the claim: {said}"
+        );
+    }
+
+    #[test]
+    fn an_unproven_connection_claiming_this_nodes_id_is_refused_for_proving_nothing() {
+        // The order of the two checks stated as a property rather than left to
+        // the reading. A caller with no credential gets the refusal that names
+        // the real problem; being told it collided with an identity would send
+        // whoever reads the log looking for a second node that does not exist.
+        assert!(matches!(
+            admit(None, &greeting(ME), &ME),
+            Err(Error::Unidentified)
         ));
     }
 
@@ -521,7 +579,7 @@ mod tests {
             node: ONE,
             purpose: Purpose::Peer,
         };
-        let refused = admit(Some(&presented), &greeting(ANOTHER))
+        let refused = admit(Some(&presented), &greeting(ANOTHER), &ME)
             .expect_err("a frame naming another node was admitted");
         assert!(matches!(refused, Error::IdentityDisagrees { .. }));
         // Both ids reach the operator, because whoever reads this needs to know

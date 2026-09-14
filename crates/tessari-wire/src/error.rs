@@ -191,6 +191,32 @@ pub enum Error {
         presented: String,
     },
 
+    /// A peer arriving under **this node's own** id.
+    ///
+    /// The second of the two layers that make one id belong to one node. The
+    /// first is issuance: this cluster signs a peer credential for a name only
+    /// the node that generated the id can ask for, so an impostor has nothing
+    /// to present. This is the door refusing it anyway, on the reasoning that a
+    /// mis-issued credential is the case worth surviving — the layer that
+    /// cannot be checked at run time is exactly the one worth not relying on
+    /// alone.
+    ///
+    /// It is a different failure from every other refusal here and says so. A
+    /// greeting that claims somebody else's id is a claim this node cannot
+    /// adjudicate; a greeting that claims *this* node's id is one it can settle
+    /// with certainty, because the other party to the collision is reading the
+    /// frame.
+    ///
+    /// The consequence is not abstract. This node's own row is the one
+    /// `Directory::greet_round` skips and `upstream` never picks, so a peer
+    /// admitted under this id would be a peer nothing in the directory can ever
+    /// choose to follow — present, greeted, and unreachable by construction.
+    #[error("that node's greeting claims {said}, which is this node's own identity")]
+    ClaimsOurOwnIdentity {
+        /// The id both ends now name.
+        said: String,
+    },
+
     /// The transport itself refused, and this is what it said.
     ///
     /// A handshake that fails has already decided the connection is not
