@@ -128,6 +128,17 @@ impl CausalStamp {
         &self.entries
     }
 
+    /// Whether this stamp has seen everything the other has.
+    ///
+    /// Expressed through [`Self::compare`] rather than by walking the entries
+    /// again: two routines answering one question is how they come to disagree,
+    /// and a disagreement here would be a superseded version quietly surviving
+    /// or a live one quietly dropped.
+    #[must_use]
+    pub fn descends(&self, other: &Self) -> bool {
+        matches!(self.compare(other), CausalOrder::After | CausalOrder::Same)
+    }
+
     /// How this stamp stands to another.
     ///
     /// One pass over both, since both are in node order. A node named by only
@@ -184,6 +195,78 @@ impl CausalStamp {
     }
 }
 
+/// The versions of one record that nothing has superseded.
+///
+/// A record under multi-master does not have *a* version; it has whichever
+/// versions no later write has seen. Most of the time that is one, and the set
+/// exists for the times it is not.
+///
+/// # What keeps it bounded
+///
+/// A new write **drops every version it descends**, because a writer that had a
+/// version in hand has superseded it. Three concurrent writes leave three; a
+/// fourth write that saw all three leaves one. The set does not shrink on its
+/// own and is not supposed to — what survives is a fact about what writers
+/// actually saw, and discarding it on a size threshold would be dropping a
+/// user's write to save a few bytes.
+///
+/// The *stamps* are bounded separately and by a different thing: one entry per
+/// node that has written the record, however many times it writes. Those are two
+/// structures and they are bounded by two arguments; asking one number to report
+/// both is what the goal's first wording did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CausalVersions {
+    /// Stamps no other stamp in the set descends.
+    stamps: Vec<CausalStamp>,
+}
+
+impl CausalVersions {
+    /// A record nothing has written yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Admit a write, superseding every version it had seen.
+    ///
+    /// A stamp the set already descends is dropped rather than added: it is a
+    /// version this record has moved past, and re-admitting one is how a set
+    /// that looks bounded grows anyway.
+    pub fn record(&mut self, stamp: CausalStamp) {
+        if self.stamps.iter().any(|held| held.descends(&stamp)) {
+            return;
+        }
+        self.stamps.retain(|held| !stamp.descends(held));
+        self.stamps.push(stamp);
+    }
+
+    /// How many versions survive.
+    ///
+    /// One whenever the record is settled. More than one means writers
+    /// disagreed, which is the condition the engine refuses on rather than
+    /// resolves.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.stamps.len()
+    }
+
+    /// Whether the record has no version at all.
+    ///
+    /// Present because a public `len` without it is a lint error, and the lint
+    /// is right: a caller that can ask how many should not have to compare to
+    /// zero to ask whether there are any.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.stamps.is_empty()
+    }
+
+    /// Whether more than one version survives.
+    #[must_use]
+    pub fn is_contested(&self) -> bool {
+        self.stamps.len() > 1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tessari_types::Sequence;
@@ -193,6 +276,7 @@ mod tests {
     const ONE_NODE: [u8; NODE_ID_LEN] = [1; NODE_ID_LEN];
     const ANOTHER_NODE: [u8; NODE_ID_LEN] = [2; NODE_ID_LEN];
     const A_THIRD_NODE: [u8; NODE_ID_LEN] = [3; NODE_ID_LEN];
+    const A_FOURTH_NODE: [u8; NODE_ID_LEN] = [4; NODE_ID_LEN];
 
     /// Two writes to one record, made on two nodes with no clock agreement.
     ///
@@ -291,6 +375,97 @@ mod tests {
         assert!(ours.entries().windows(2).all(|pair| {
             pair.first().map(|(node, _)| *node) < pair.get(1).map(|(node, _)| *node)
         }));
+    }
+
+    /// S1.2 property (a): the entry count is bounded by the NODE set.
+    ///
+    /// Falsification, stated because the test cannot contain it: key the entries
+    /// on the write rather than on the node and this count grows with every
+    /// write instead of standing still. That is the client-keyed vector clock
+    /// whose recorded field failure is sibling explosion, and it is the reason
+    /// the key here is the node.
+    #[test]
+    fn writing_again_from_the_same_node_adds_no_entry() {
+        let mut stamp = CausalStamp::new();
+        for _ in 0..8 {
+            stamp.advance(ONE_NODE);
+        }
+
+        assert_eq!(stamp.len(), 1);
+        assert_eq!(stamp.count(&ONE_NODE), 8);
+
+        for _ in 0..8 {
+            stamp.advance(ANOTHER_NODE);
+            stamp.advance(A_THIRD_NODE);
+        }
+
+        assert_eq!(stamp.len(), 3, "three nodes have written, so three entries");
+    }
+
+    /// S1.2 property (b): a write that saw every version leaves exactly one.
+    ///
+    /// Falsification: remove the `retain` in `record` and the count keeps
+    /// growing every round, which is the sibling explosion this is here to
+    /// refuse.
+    #[test]
+    fn a_write_that_saw_every_version_leaves_exactly_one() {
+        let mut ours = CausalStamp::new();
+        ours.advance(ONE_NODE);
+        let mut theirs = CausalStamp::new();
+        theirs.advance(ANOTHER_NODE);
+        let mut a_third = CausalStamp::new();
+        a_third.advance(A_THIRD_NODE);
+
+        let mut versions = CausalVersions::new();
+        versions.record(ours.clone());
+        versions.record(theirs.clone());
+        versions.record(a_third.clone());
+
+        assert_eq!(versions.len(), 3, "three writers saw none of each other");
+        assert!(versions.is_contested());
+
+        // A fourth writer reads all three, so its stamp carries all three counts
+        // and then its own.
+        let mut having_seen_all_three = CausalStamp::new();
+        having_seen_all_three.advance(ONE_NODE);
+        having_seen_all_three.advance(ANOTHER_NODE);
+        having_seen_all_three.advance(A_THIRD_NODE);
+        having_seen_all_three.advance(A_FOURTH_NODE);
+
+        versions.record(having_seen_all_three);
+
+        assert_eq!(versions.len(), 1);
+        assert!(!versions.is_contested());
+    }
+
+    #[test]
+    fn a_version_the_record_has_already_moved_past_is_not_re_admitted() {
+        let mut earlier = CausalStamp::new();
+        earlier.advance(ONE_NODE);
+        let mut later = earlier.clone();
+        later.advance(ANOTHER_NODE);
+
+        let mut versions = CausalVersions::new();
+        versions.record(later);
+        versions.record(earlier);
+
+        assert_eq!(versions.len(), 1);
+    }
+
+    #[test]
+    fn descends_agrees_with_compare_on_every_relation() {
+        let mut earlier = CausalStamp::new();
+        earlier.advance(ONE_NODE);
+        let mut later = earlier.clone();
+        later.advance(ANOTHER_NODE);
+        let mut elsewhere = CausalStamp::new();
+        elsewhere.advance(A_THIRD_NODE);
+
+        assert!(later.descends(&earlier));
+        assert!(earlier.descends(&earlier));
+        assert!(!earlier.descends(&later));
+        assert!(!elsewhere.descends(&earlier));
+        assert!(!earlier.descends(&elsewhere));
     }
 
     #[test]
